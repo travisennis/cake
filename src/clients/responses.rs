@@ -1,4 +1,4 @@
-use tracing::{debug, trace, warn};
+use tracing::{debug, trace};
 
 use crate::config::model::ResolvedModelConfig;
 use crate::models::Role;
@@ -53,7 +53,7 @@ pub(super) async fn send_request(
         max_tokens: reasoning_max_tokens,
     });
 
-    let (instructions, non_system_history) = extract_instructions(history);
+    let (instructions, non_system_history) = extract_instructions(history)?;
 
     let prompt = Request {
         model: &config.config.model,
@@ -133,10 +133,11 @@ fn map_usage(api_usage: &ApiUsage) -> Usage {
 ///
 /// Returns `None` if no system message exists. Any system message in
 /// the history must be first; if one appears at a later index the
-/// function returns only the prefix up to (but not including) that
-/// system message and emits a warning. This protects callers from
-/// accidentally sending a system prompt as a normal conversation message.
-fn extract_instructions(history: &[ConversationItem]) -> (Option<&str>, &[ConversationItem]) {
+/// function returns an error. This protects callers from accidentally
+/// sending truncated or malformed conversation history.
+fn extract_instructions(
+    history: &[ConversationItem],
+) -> anyhow::Result<(Option<&str>, &[ConversationItem])> {
     let system_idx = history.iter().position(|item| {
         matches!(
             item,
@@ -150,20 +151,15 @@ fn extract_instructions(history: &[ConversationItem]) -> (Option<&str>, &[Conver
     match system_idx {
         Some(0) => {
             let ConversationItem::Message { content, .. } = &history[0] else {
-                return (None, history);
+                return Ok((None, history));
             };
-            (Some(content.as_str()), &history[1..])
+            Ok((Some(content.as_str()), &history[1..]))
         },
-        Some(idx @ 1..) => {
-            // System message found not in first position.
-            warn!(
-                "System message at index {idx} in conversation history; \
-                 only the first message should be a system message. \
-                 Truncating history to exclude it."
-            );
-            (None, &history[..idx])
-        },
-        None => (None, history),
+        Some(idx @ 1..) => anyhow::bail!(
+            "invalid Responses API conversation history: system message found at index {idx}; \
+             system messages are only valid as the first history item"
+        ),
+        None => Ok((None, history)),
     }
 }
 
@@ -324,7 +320,7 @@ mod tests {
                 timestamp: None,
             },
         ];
-        let (instructions, remaining) = extract_instructions(&history);
+        let (instructions, remaining) = extract_instructions(&history).unwrap();
         assert_eq!(instructions, Some("You are cake."));
         assert_eq!(remaining.len(), 1);
         assert!(matches!(
@@ -362,7 +358,7 @@ mod tests {
             },
         ];
 
-        let (instructions, remaining) = extract_instructions(&history);
+        let (instructions, remaining) = extract_instructions(&history).unwrap();
         assert_eq!(instructions, Some("You are cake."));
         assert_eq!(remaining.len(), 2);
 
@@ -381,7 +377,7 @@ mod tests {
             status: None,
             timestamp: None,
         }];
-        let (instructions, remaining) = extract_instructions(&history);
+        let (instructions, remaining) = extract_instructions(&history).unwrap();
         assert!(instructions.is_none());
         assert_eq!(remaining.len(), 1);
     }
@@ -389,15 +385,13 @@ mod tests {
     #[test]
     fn extract_instructions_empty_history() {
         let history: Vec<ConversationItem> = vec![];
-        let (instructions, remaining) = extract_instructions(&history);
+        let (instructions, remaining) = extract_instructions(&history).unwrap();
         assert!(instructions.is_none());
         assert!(remaining.is_empty());
     }
 
     #[test]
-    fn extract_instructions_system_message_non_first_position() {
-        // System message at index 1 — should be excluded, returning only
-        // the preceding user message.
+    fn extract_instructions_system_message_non_first_position_errors() {
         let history = vec![
             ConversationItem::Message {
                 role: Role::User,
@@ -413,17 +407,20 @@ mod tests {
                 status: None,
                 timestamp: None,
             },
-        ];
-        let (instructions, remaining) = extract_instructions(&history);
-        assert!(instructions.is_none());
-        assert_eq!(remaining.len(), 1);
-        assert!(matches!(
-            &remaining[0],
             ConversationItem::Message {
-                role: Role::User,
-                ..
-            }
-        ));
+                role: Role::Assistant,
+                content: "Later history must not be silently dropped.".to_string(),
+                id: Some("msg-1".to_string()),
+                status: Some("completed".to_string()),
+                timestamp: None,
+            },
+        ];
+        let err = extract_instructions(&history).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "invalid Responses API conversation history: system message found at index 1; \
+             system messages are only valid as the first history item"
+        );
     }
 
     #[test]
@@ -774,7 +771,7 @@ mod tests {
                 "required": ["cmd"]
             }),
         }];
-        let (instructions, non_system_history) = extract_instructions(&history);
+        let (instructions, non_system_history) = extract_instructions(&history).unwrap();
         let request = Request {
             model: "openai/gpt-5",
             input: build_input(non_system_history),
