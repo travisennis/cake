@@ -1,3 +1,4 @@
+use anyhow::{bail, ensure};
 use std::borrow::Cow;
 use tracing::{debug, trace};
 
@@ -107,7 +108,7 @@ pub(super) async fn parse_response(response: reqwest::Response) -> anyhow::Resul
         },
     });
 
-    let items = parse_choices(&chat_response);
+    let items = parse_choices(&chat_response)?;
 
     Ok(TurnResult { items, usage })
 }
@@ -292,11 +293,12 @@ fn convert_tools(tools: &[Tool]) -> Vec<ChatTool> {
 }
 
 /// Parse the choices from a Chat Completions response into `ConversationItem` values.
-fn parse_choices(response: &ChatResponse) -> Vec<ConversationItem> {
+fn parse_choices(response: &ChatResponse) -> anyhow::Result<Vec<ConversationItem>> {
     let mut items = Vec::new();
+    let response_id = required_response_id(response)?;
 
     let Some(choice) = response.choices.first() else {
-        return items;
+        return Ok(items);
     };
 
     let message = &choice.message;
@@ -304,7 +306,7 @@ fn parse_choices(response: &ChatResponse) -> Vec<ConversationItem> {
 
     if let Some(reasoning_content) = &message.reasoning_content {
         items.push(ConversationItem::Reasoning {
-            id: response.id.clone().unwrap_or_default(),
+            id: response_id.clone(),
             summary: vec!["Thinking...".to_string()],
             encrypted_content: None,
             content: Some(vec![super::types::ReasoningContent {
@@ -335,7 +337,7 @@ fn parse_choices(response: &ChatResponse) -> Vec<ConversationItem> {
         items.push(ConversationItem::Message {
             role: Role::Assistant,
             content: content.clone(),
-            id: response.id.clone(),
+            id: Some(response_id.clone()),
             status: Some("completed".to_string()),
             timestamp: Some(timestamp.clone()),
         });
@@ -348,13 +350,26 @@ fn parse_choices(response: &ChatResponse) -> Vec<ConversationItem> {
         items.push(ConversationItem::Message {
             role: Role::Assistant,
             content: String::new(),
-            id: response.id.clone(),
+            id: Some(response_id),
             status: Some("completed".to_string()),
             timestamp: Some(timestamp),
         });
     }
 
-    items
+    Ok(items)
+}
+
+fn required_response_id(response: &ChatResponse) -> anyhow::Result<String> {
+    let Some(id) = &response.id else {
+        bail!("Chat Completions response is missing required id");
+    };
+
+    ensure!(
+        !id.is_empty(),
+        "Chat Completions response is missing required id"
+    );
+
+    Ok(id.clone())
 }
 
 #[cfg(test)]
@@ -739,7 +754,7 @@ mod tests {
             }],
             usage: None,
         };
-        let items = parse_choices(&response);
+        let items = parse_choices(&response).unwrap();
         assert_eq!(items.len(), 1);
         assert!(matches!(&items[0], ConversationItem::Message {
             role: Role::Assistant,
@@ -771,7 +786,7 @@ mod tests {
             }],
             usage: None,
         };
-        let items = parse_choices(&response);
+        let items = parse_choices(&response).unwrap();
         assert_eq!(items.len(), 1);
         assert!(matches!(&items[0], ConversationItem::FunctionCall {
             name, call_id, ..
@@ -802,7 +817,7 @@ mod tests {
             usage: None,
         };
 
-        let items = parse_choices(&response);
+        let items = parse_choices(&response).unwrap();
         assert_eq!(items.len(), 2);
         assert!(matches!(&items[0], ConversationItem::Reasoning {
             content: Some(content), ..
@@ -815,18 +830,18 @@ mod tests {
     #[test]
     fn parse_choices_empty_response() {
         let response = ChatResponse {
-            id: None,
+            id: Some("chatcmpl-empty".to_string()),
             choices: vec![],
             usage: None,
         };
-        let items = parse_choices(&response);
+        let items = parse_choices(&response).unwrap();
         assert!(items.is_empty());
     }
 
     #[test]
     fn parse_choices_with_usage() {
         let response = ChatResponse {
-            id: None,
+            id: Some("chatcmpl-usage".to_string()),
             choices: vec![ChatChoice {
                 index: 0,
                 message: ChatResponseMessage {
@@ -846,7 +861,7 @@ mod tests {
             }),
         };
         // parse_choices doesn't handle usage — the caller does
-        let items = parse_choices(&response);
+        let items = parse_choices(&response).unwrap();
         assert_eq!(items.len(), 1);
     }
 
@@ -1165,7 +1180,7 @@ mod tests {
             }],
             usage: None,
         };
-        let items = parse_choices(&response);
+        let items = parse_choices(&response).unwrap();
         // Empty content should not create a message item
         assert_eq!(items.len(), 1);
         // But it should create an empty assistant message
@@ -1192,7 +1207,7 @@ mod tests {
             }],
             usage: None,
         };
-        let items = parse_choices(&response);
+        let items = parse_choices(&response).unwrap();
         // Should create an empty assistant message
         assert_eq!(items.len(), 1);
         assert!(matches!(&items[0], ConversationItem::Message {
@@ -1235,7 +1250,7 @@ mod tests {
             }],
             usage: None,
         };
-        let items = parse_choices(&response);
+        let items = parse_choices(&response).unwrap();
         assert_eq!(items.len(), 2);
         assert!(matches!(&items[0], ConversationItem::FunctionCall {
             name, ..
@@ -1269,7 +1284,7 @@ mod tests {
             }],
             usage: None,
         };
-        let items = parse_choices(&response);
+        let items = parse_choices(&response).unwrap();
         // Should have both tool call and message
         assert_eq!(items.len(), 2);
         // Tool call comes first
@@ -1282,7 +1297,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_choices_missing_id_defaults_to_none() {
+    fn parse_choices_missing_id_fails() {
         let response = ChatResponse {
             id: None, // Missing id
             choices: vec![ChatChoice {
@@ -1297,12 +1312,11 @@ mod tests {
             }],
             usage: None,
         };
-        let items = parse_choices(&response);
-        assert_eq!(items.len(), 1);
-        assert!(matches!(&items[0], ConversationItem::Message {
-            id,
-            ..
-        } if id.is_none()));
+        let err = parse_choices(&response).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Chat Completions response is missing required id"
+        );
     }
 
     #[test]
@@ -1321,7 +1335,7 @@ mod tests {
             }],
             usage: None,
         };
-        let items = parse_choices(&response);
+        let items = parse_choices(&response).unwrap();
         // Should still create a message item
         assert_eq!(items.len(), 1);
     }
@@ -1438,6 +1452,38 @@ mod response_parsing_tests {
         let result = parse_response(response).await;
         // Should fail because "choices" is a required field
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn parse_response_missing_id_fails() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": "Hello!"
+                    },
+                    "finish_reason": "stop"
+                }]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let response = client
+            .post(format!("{}/chat/completions", mock_server.uri()))
+            .send()
+            .await
+            .unwrap();
+
+        let err = parse_response(response).await.unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Chat Completions response is missing required id"
+        );
     }
 
     #[tokio::test]
