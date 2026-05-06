@@ -181,3 +181,109 @@ fn test_invalid_session_uuid_exits_three() {
         "Error should reject non-UUID resume values. Stderr: {stderr}"
     );
 }
+
+#[test]
+fn test_continue_and_resume_conflict_exits_three() {
+    let env = cake_env();
+    let output = env
+        .command()
+        .arg("--continue")
+        .arg("--resume")
+        .arg("550e8400-e29b-41d4-a716-446655440000")
+        .arg("test prompt")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("Failed to execute command");
+
+    let code = output.status.code().unwrap_or(-1);
+    assert_eq!(
+        code, 3,
+        "Conflicting session mode flags should exit 3, got {code}"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("cannot be used with"),
+        "Error should mention the flag conflict. Stderr: {stderr}"
+    );
+}
+
+#[test]
+fn test_continue_and_fork_conflict_exits_three() {
+    let env = cake_env();
+    let output = env
+        .command()
+        .arg("--continue")
+        .arg("--fork")
+        .arg("test prompt")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("Failed to execute command");
+
+    let code = output.status.code().unwrap_or(-1);
+    assert_eq!(
+        code, 3,
+        "Conflicting session mode flags should exit 3, got {code}"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("cannot be used with"),
+        "Error should mention the flag conflict. Stderr: {stderr}"
+    );
+}
+
+#[test]
+fn test_resume_and_fork_conflict_exits_three() {
+    let env = cake_env();
+    let output = env
+        .command()
+        .arg("--resume")
+        .arg("550e8400-e29b-41d4-a716-446655440000")
+        .arg("--fork")
+        .arg("test prompt")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("Failed to execute command");
+
+    let code = output.status.code().unwrap_or(-1);
+    assert_eq!(
+        code, 3,
+        "Conflicting session mode flags should exit 3, got {code}"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("cannot be used with"),
+        "Error should mention the flag conflict. Stderr: {stderr}"
+    );
+}
+
+#[test]
+fn test_no_session_and_restore_mode_conflict_exits_three() {
+    let env = cake_env();
+    let output = env
+        .command()
+        .arg("--no-session")
+        .arg("--continue")
+        .arg("test prompt")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("Failed to execute command");
+
+    let code = output.status.code().unwrap_or(-1);
+    assert_eq!(
+        code, 3,
+        "Conflicting session mode flags should exit 3, got {code}"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("cannot be used with"),
+        "Error should mention the flag conflict. Stderr: {stderr}"
+    );
+}

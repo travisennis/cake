@@ -26,7 +26,7 @@ use crate::config::{
 use crate::hooks::{HookContext, HookRunner};
 use crate::models::{Message, Role};
 use crate::prompts::build_initial_prompt_messages;
-use clap::{Parser, ValueEnum};
+use clap::{ArgGroup, Parser, ValueEnum};
 use indicatif::{ProgressBar, ProgressStyle};
 use tracing::info;
 
@@ -43,6 +43,11 @@ pub enum OutputFormat {
 /// AI coding assistant CLI
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
+#[command(group(
+    ArgGroup::new("session_mode")
+        .args(["continue_session", "resume", "fork", "no_session"])
+        .multiple(false)
+))]
 #[allow(clippy::struct_excessive_bools)]
 struct CodingAssistant {
     /// The prompt to send to the AI (use `-` to read from stdin)
