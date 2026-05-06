@@ -437,7 +437,7 @@ fn check_git_stash(lower: &str, original: &str) -> Result<(), String> {
 // =============================================================================
 
 /// Block `rm -rf` targeting obviously dangerous paths.
-/// Allowed: `/tmp/*`, `/var/tmp/*`, `$TMPDIR/*`, `${TMPDIR}/*`.
+/// Allowed: `/tmp/*`, `/var/tmp/*`.
 fn check_dangerous_rm(normalized: &str, original: &str) -> Result<(), String> {
     let lower = normalized.to_lowercase();
     if !lower.contains("rm ") {
@@ -488,7 +488,7 @@ fn check_dangerous_rm(normalized: &str, original: &str) -> Result<(), String> {
                         return Err(blocked(
                             "rm -rf outside of temporary directories can cause permanent data loss",
                             original,
-                            "rm -rf is only allowed for /tmp/*, /var/tmp/*, or $TMPDIR/* paths.",
+                            "rm -rf is only allowed for literal /tmp/* or /var/tmp/* paths.",
                         ));
                     }
                 }
@@ -501,16 +501,7 @@ fn check_dangerous_rm(normalized: &str, original: &str) -> Result<(), String> {
 
 /// Check if an `rm -rf` target is in an allowed temporary directory.
 fn is_allowed_rm_target(target: &str) -> bool {
-    let allowed_prefixes = [
-        "/tmp/",
-        "/tmp",
-        "/var/tmp/",
-        "/var/tmp",
-        "$TMPDIR/",
-        "$TMPDIR",
-        "${TMPDIR}/",
-        "${TMPDIR}",
-    ];
+    let allowed_prefixes = ["/tmp/", "/tmp", "/var/tmp/", "/var/tmp"];
 
     for prefix in &allowed_prefixes {
         if target == *prefix || target.starts_with(&format!("{prefix}/")) {
@@ -716,17 +707,24 @@ mod tests {
     }
 
     #[test]
+    fn blocks_rm_rf_shell_variable_temp_targets() {
+        assert_blocked("rm -rf $TMPDIR/foo");
+        assert_blocked("rm -rf ${TMPDIR}/bar");
+        assert_blocked("rm -rf $TMPDIR");
+        assert_blocked("rm -rf ${TMPDIR}");
+        assert_blocked("rm -rf /tmp/build-cache $TMPDIR/foo");
+        assert_blocked("rm -rf /tmp/build-cache ${TMPDIR}/bar");
+    }
+
+    #[test]
     fn allows_rm_rf_temp_dirs() {
         assert_allowed("rm -rf /tmp/build-cache");
         assert_allowed("rm -rf /var/tmp/test");
-        assert_allowed("rm -rf $TMPDIR/foo");
-        assert_allowed("rm -rf ${TMPDIR}/bar");
     }
 
     #[test]
     fn allows_rm_rf_multiple_temp_targets() {
         assert_allowed("rm -rf /tmp/build-cache /var/tmp/test");
-        assert_allowed("rm -r -f $TMPDIR/foo ${TMPDIR}/bar");
         assert_allowed("rm -rf -- /tmp/build-cache /var/tmp/test");
     }
 
