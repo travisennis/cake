@@ -75,49 +75,49 @@ impl MacOsSandbox {
     }
 
     /// Append device and PTY rules to the profile
-    fn append_device_rules(lines: &mut Vec<String>) {
-        lines.push("; Allow access to standard and PTY devices".to_string());
-        lines.push("(allow file-read* file-write* (literal \"/dev/null\"))".to_string());
-        lines.push("(allow file-read* (literal \"/dev/urandom\"))".to_string());
-        lines.push("(allow file-read* (literal \"/dev/random\"))".to_string());
-        lines.push("(allow file-read* (literal \"/dev/zero\"))".to_string());
-        lines.push("(allow file-read* file-write* (literal \"/dev/tty\"))".to_string());
-        lines.push("(allow file-read* file-write* (literal \"/dev/ptmx\"))".to_string());
-        lines.push("(allow file-read* file-write* (literal \"/dev/dtracehelper\"))".to_string());
-        lines.push("(allow file-read* file-write* (literal \"/dev/stdout\"))".to_string());
-        lines.push("(allow file-read* file-write* (literal \"/dev/stderr\"))".to_string());
-        lines.push("(allow file-read* file-write* (subpath \"/dev/fd\"))".to_string());
-        lines.push("(allow file-read* file-write* (regex #\"^/dev/ttys\"))".to_string());
-        lines.push("(allow file-read* file-write* (regex #\"^/dev/pty\"))".to_string());
-        lines.push(String::new());
+    fn append_device_rules(profile: &mut SeatbeltProfileBuilder) {
+        profile.comment("Allow access to standard and PTY devices");
+        profile.allow_literal("file-read* file-write*", "/dev/null");
+        profile.allow_literal("file-read*", "/dev/urandom");
+        profile.allow_literal("file-read*", "/dev/random");
+        profile.allow_literal("file-read*", "/dev/zero");
+        profile.allow_literal("file-read* file-write*", "/dev/tty");
+        profile.allow_literal("file-read* file-write*", "/dev/ptmx");
+        profile.allow_literal("file-read* file-write*", "/dev/dtracehelper");
+        profile.allow_literal("file-read* file-write*", "/dev/stdout");
+        profile.allow_literal("file-read* file-write*", "/dev/stderr");
+        profile.allow_subpath("file-read* file-write*", "/dev/fd");
+        profile.allow_regex("file-read* file-write*", "^/dev/ttys");
+        profile.allow_regex("file-read* file-write*", "^/dev/pty");
+        profile.blank();
     }
 
     /// Append git configuration read-only rules to the profile
-    fn append_git_rules(lines: &mut Vec<String>) {
-        lines.push("; Git configuration (read-only)".to_string());
+    fn append_git_rules(profile: &mut SeatbeltProfileBuilder) {
+        profile.comment("Git configuration (read-only)");
         if let Some(home) = home_dir() {
-            push_home_rule(lines, "file-read*", "prefix", &home, ".gitconfig");
-            push_home_rule(lines, "file-read*", "prefix", &home, ".gitignore");
-            push_home_rule(lines, "file-read*", "subpath", &home, ".config/git");
-            push_home_rule(lines, "file-read*", "literal", &home, ".gitattributes");
+            profile.allow_prefix("file-read*", home.join(".gitconfig"));
+            profile.allow_prefix("file-read*", home.join(".gitignore"));
+            profile.allow_subpath("file-read*", home.join(".config/git"));
+            profile.allow_literal("file-read*", home.join(".gitattributes"));
             // Allow reading .ssh directory itself (for listing)
-            push_home_rule(lines, "file-read*", "literal", &home, ".ssh");
-            push_home_rule(lines, "file-read*", "literal", &home, ".ssh/config");
-            push_home_rule(lines, "file-read*", "literal", &home, ".ssh/known_hosts");
+            profile.allow_literal("file-read*", home.join(".ssh"));
+            profile.allow_literal("file-read*", home.join(".ssh/config"));
+            profile.allow_literal("file-read*", home.join(".ssh/known_hosts"));
         }
-        lines.push(String::new());
+        profile.blank();
     }
 
     /// Append SSH agent socket rules to the profile
-    fn append_ssh_agent_rules(lines: &mut Vec<String>) {
-        lines.push("; SSH agent sockets (for git push over SSH)".to_string());
+    fn append_ssh_agent_rules(profile: &mut SeatbeltProfileBuilder) {
+        profile.comment("SSH agent sockets (for git push over SSH)");
         // SSH agent sockets are typically in /tmp/ssh-XXXXXX/agent.XXXXXX
-        lines.push("(allow file-read* file-write* (regex #\"^/tmp/ssh-\"))".to_string());
+        profile.allow_regex("file-read* file-write*", "^/tmp/ssh-");
         // On macOS, launchd-managed ssh-agent uses /private/tmp
-        lines.push("(allow file-read* file-write* (regex #\"^/private/tmp/ssh-\"))".to_string());
-        lines.push(
-            "(allow file-read* file-write* (regex #\"^/private/tmp/com\\.apple\\.launchd\\.*/Listeners\"))"
-                .to_string(),
+        profile.allow_regex("file-read* file-write*", "^/private/tmp/ssh-");
+        profile.allow_regex(
+            "file-read* file-write*",
+            "^/private/tmp/com\\.apple\\.launchd\\.*/Listeners",
         );
         // Allow the actual SSH_AUTH_SOCK path (may be in a non-standard location
         // such as ~/.ssh/agent/). Grant read-write on the parent directory so the
@@ -125,79 +125,28 @@ impl MacOsSandbox {
         if let Ok(sock) = std::env::var("SSH_AUTH_SOCK") {
             let sock_path = std::path::Path::new(&sock);
             if let Some(parent) = sock_path.parent() {
-                let escaped = escape_path(parent);
-                lines.push(format!(
-                    "(allow file-read* file-write* (subpath \"{escaped}\"))"
-                ));
+                profile.allow_subpath("file-read* file-write*", parent);
             }
         }
-        lines.push(String::new());
+        profile.blank();
     }
 
     /// Append SCM CLI (gh, glab) configuration, cache, and state rules to the profile.
-    fn append_scm_cli_rules(lines: &mut Vec<String>) {
-        lines.push("; SCM CLIs: GitHub CLI (gh) and GitLab CLI (glab)".to_string());
+    fn append_scm_cli_rules(profile: &mut SeatbeltProfileBuilder) {
+        profile.comment("SCM CLIs: GitHub CLI (gh) and GitLab CLI (glab)");
         if let Some(home) = home_dir() {
             // GitHub CLI
-            push_home_rule(
-                lines,
-                "file-read* file-write*",
-                "subpath",
-                &home,
-                ".config/gh",
-            );
-            push_home_rule(
-                lines,
-                "file-read* file-write*",
-                "subpath",
-                &home,
-                ".cache/gh",
-            );
-            push_home_rule(
-                lines,
-                "file-read* file-write*",
-                "subpath",
-                &home,
-                ".local/share/gh",
-            );
-            push_home_rule(
-                lines,
-                "file-read* file-write*",
-                "subpath",
-                &home,
-                ".local/state/gh",
-            );
+            profile.allow_subpath("file-read* file-write*", home.join(".config/gh"));
+            profile.allow_subpath("file-read* file-write*", home.join(".cache/gh"));
+            profile.allow_subpath("file-read* file-write*", home.join(".local/share/gh"));
+            profile.allow_subpath("file-read* file-write*", home.join(".local/state/gh"));
             // GitLab CLI
-            push_home_rule(
-                lines,
-                "file-read* file-write*",
-                "subpath",
-                &home,
-                ".config/glab-cli",
-            );
-            push_home_rule(
-                lines,
-                "file-read* file-write*",
-                "subpath",
-                &home,
-                ".cache/glab-cli",
-            );
-            push_home_rule(
-                lines,
-                "file-read* file-write*",
-                "subpath",
-                &home,
-                ".local/share/glab-cli",
-            );
-            push_home_rule(
-                lines,
-                "file-read* file-write*",
-                "subpath",
-                &home,
-                ".local/state/glab-cli",
-            );
+            profile.allow_subpath("file-read* file-write*", home.join(".config/glab-cli"));
+            profile.allow_subpath("file-read* file-write*", home.join(".cache/glab-cli"));
+            profile.allow_subpath("file-read* file-write*", home.join(".local/share/glab-cli"));
+            profile.allow_subpath("file-read* file-write*", home.join(".local/state/glab-cli"));
         }
-        lines.push(String::new());
+        profile.blank();
     }
 
     /// Append macOS Keychain access rules to the profile.
@@ -207,79 +156,67 @@ impl MacOsSandbox {
     /// IPC, which is covered by the `(allow mach-lookup)` rule above. The
     /// file-level rules here allow tools that read keychain database files
     /// directly (rare, but harmless to permit).
-    fn append_keychain_rules(lines: &mut Vec<String>) {
-        lines.push(
-            "; macOS Keychain file access (supplementary; primary access is via mach-lookup)"
-                .to_string(),
+    fn append_keychain_rules(profile: &mut SeatbeltProfileBuilder) {
+        profile.comment(
+            "macOS Keychain file access (supplementary; primary access is via mach-lookup)",
         );
-        lines.push("(allow file-read* (subpath \"/Library/Keychains\"))".to_string());
-        lines.push("(allow file-read* (subpath \"/System/Library/Keychains\"))".to_string());
+        profile.allow_subpath("file-read*", "/Library/Keychains");
+        profile.allow_subpath("file-read*", "/System/Library/Keychains");
         if let Some(home) = home_dir() {
-            push_home_rule(
-                lines,
-                "file-read* file-write*",
-                "subpath",
-                &home,
-                "Library/Keychains",
-            );
+            profile.allow_subpath("file-read* file-write*", home.join("Library/Keychains"));
         }
-        lines.push(String::new());
+        profile.blank();
     }
 
     /// Generate a deny-default sandbox profile (.sb file content) from the configuration
     fn generate_profile(config: &SandboxConfig) -> String {
-        let mut lines = vec![
-            "(version 1)".to_string(),
-            "(deny default)".to_string(),
-            String::new(),
-        ];
+        let mut profile = SeatbeltProfileBuilder::deny_default();
 
         // Process execution (fork/exec needed for bash and subcommands)
-        lines.push("; Allow process execution".to_string());
-        lines.push("(allow process-fork)".to_string());
-        lines.push("(allow process-exec)".to_string());
-        lines.push("(allow pseudo-tty)".to_string());
-        lines.push(String::new());
+        profile.comment("Allow process execution");
+        profile.allow("process-fork");
+        profile.allow("process-exec");
+        profile.allow("pseudo-tty");
+        profile.blank();
 
         // Process introspection scoped to same sandbox
-        lines.push("; Allow process introspection within same sandbox".to_string());
-        lines.push("(allow process-info* (target same-sandbox))".to_string());
-        lines.push("(allow signal (target same-sandbox))".to_string());
-        lines.push("(allow mach-priv-task-port (target same-sandbox))".to_string());
-        lines.push(String::new());
+        profile.comment("Allow process introspection within same sandbox");
+        profile.allow_with_target("process-info*", "same-sandbox");
+        profile.allow_with_target("signal", "same-sandbox");
+        profile.allow_with_target("mach-priv-task-port", "same-sandbox");
+        profile.blank();
 
         // Mach services (required for dyld, DNS, system frameworks, etc.)
-        lines.push("; Allow mach lookups (needed for basic process operation)".to_string());
-        lines.push("(allow mach-lookup)".to_string());
-        lines.push(String::new());
+        profile.comment("Allow mach lookups (needed for basic process operation)");
+        profile.allow("mach-lookup");
+        profile.blank();
 
         // Sysctl reads (needed by many tools)
-        lines.push("; Allow sysctl reads".to_string());
-        lines.push("(allow sysctl-read)".to_string());
-        lines.push(String::new());
+        profile.comment("Allow sysctl reads");
+        profile.allow("sysctl-read");
+        profile.blank();
 
         // System socket (needed for kernel event monitoring by network stack)
-        lines.push("; Allow system sockets and shared memory".to_string());
-        lines.push("(allow system-socket)".to_string());
-        lines.push(
-            "(allow ipc-posix-shm-read-data (ipc-posix-name \"apple.shm.notification_center\"))"
-                .to_string(),
+        profile.comment("Allow system sockets and shared memory");
+        profile.allow("system-socket");
+        profile.allow_raw(
+            "(allow ipc-posix-shm-read-data (ipc-posix-name \"apple.shm.notification_center\"))",
         );
-        lines.push(String::new());
+        profile.blank();
 
         // Network access (sandbox only restricts filesystem, not network)
-        lines.push("; Allow network access".to_string());
-        lines.push("(allow network*)".to_string());
-        lines.push(String::new());
+        profile.comment("Allow network access");
+        profile.allow("network*");
+        profile.blank();
 
         // Root directory literal (dyld needs to traverse root)
-        lines.push("; Allow reading root directory (needed by dyld)".to_string());
-        lines.push("(allow file-read* (literal \"/\"))".to_string());
-        lines.push(String::new());
+        profile.comment("Allow reading root directory (needed by dyld)");
+        profile.allow_literal("file-read*", "/");
+        profile.blank();
 
         // Ancestor directory literals for all read-write, read-only, and system paths.
         // (agents and tools call readdir() and stat() on ancestors to traverse paths)
-        lines.push("; Allow reading ancestor directories of allowed paths".to_string());
+        profile.comment("Allow reading ancestor directories of allowed paths");
         let mut ancestor_set = std::collections::BTreeSet::new();
         for path in config
             .read_write
@@ -296,60 +233,52 @@ impl MacOsSandbox {
             }
         }
         for ancestor in &ancestor_set {
-            let escaped = escape_path(ancestor);
-            lines.push(format!("(allow file-read* (literal \"{escaped}\"))"));
+            profile.allow_literal("file-read*", ancestor);
         }
-        lines.push(String::new());
+        profile.blank();
 
         // Read-write access for working directory and temp dirs
         if !config.read_write.is_empty() {
-            lines.push(
-                "; Read-write access: working directory, temp dirs, and toolchains".to_string(),
-            );
+            profile.comment("Read-write access: working directory, temp dirs, and toolchains");
             for path in &config.read_write {
-                let escaped = escape_path(path);
-                lines.push(format!(
-                    "(allow file-read* file-write* (subpath \"{escaped}\"))"
-                ));
+                profile.allow_subpath("file-read* file-write*", path);
             }
-            lines.push(String::new());
+            profile.blank();
         }
 
         // Read + execute access for system paths
         if !config.read_only_exec.is_empty() {
-            lines.push("; Read + execute access: system paths".to_string());
+            profile.comment("Read + execute access: system paths");
             for path in &config.read_only_exec {
-                let escaped = escape_path(path);
-                lines.push(format!("(allow file-read* (subpath \"{escaped}\"))"));
+                profile.allow_subpath("file-read*", path);
             }
-            lines.push(String::new());
+            profile.blank();
         }
 
         // Read-only access for config/device paths
         if !config.read_only.is_empty() {
-            lines.push("; Read-only access: config and device paths".to_string());
+            profile.comment("Read-only access: config and device paths");
             for path in &config.read_only {
-                let escaped = escape_path(path);
-                lines.push(format!("(allow file-read* (subpath \"{escaped}\"))"));
+                profile.allow_subpath("file-read*", path);
             }
-            lines.push(String::new());
+            profile.blank();
         }
 
-        Self::append_git_rules(&mut lines);
-        Self::append_ssh_agent_rules(&mut lines);
-        Self::append_scm_cli_rules(&mut lines);
-        Self::append_keychain_rules(&mut lines);
-        Self::append_device_rules(&mut lines);
+        Self::append_git_rules(&mut profile);
+        Self::append_ssh_agent_rules(&mut profile);
+        Self::append_scm_cli_rules(&mut profile);
+        Self::append_keychain_rules(&mut profile);
+        Self::append_device_rules(&mut profile);
 
         // Allow file-ioctl scoped to terminal devices
-        lines.push("; Allow file-ioctl for terminal operations".to_string());
-        lines.push("(allow file-ioctl)".to_string());
+        profile.comment("Allow file-ioctl for terminal operations");
+        profile.allow("file-ioctl");
 
         // Allow file locking (needed by cargo and other build tools)
-        lines.push("; Allow file locking (needed by cargo and other build tools)".to_string());
-        lines.push("(allow file-lock)".to_string());
+        profile.comment("Allow file locking (needed by cargo and other build tools)");
+        profile.allow("file-lock");
 
-        lines.join("\n")
+        profile.finish()
     }
 
     /// Write the profile to a temp file and return its path
@@ -426,26 +355,78 @@ impl SandboxStrategy for MacOsSandbox {
     }
 }
 
-/// Escape special characters in paths for the sandbox profile
-fn escape_path(path: &Path) -> String {
-    path.to_string_lossy()
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"")
-}
-
 fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
 }
 
-fn push_home_rule(
-    lines: &mut Vec<String>,
-    permissions: &str,
-    matcher: &str,
-    home: &Path,
-    relative: &str,
-) {
-    let escaped = escape_path(&home.join(relative));
-    lines.push(format!("(allow {permissions} ({matcher} \"{escaped}\"))"));
+struct SeatbeltProfileBuilder {
+    lines: Vec<String>,
+}
+
+impl SeatbeltProfileBuilder {
+    fn deny_default() -> Self {
+        Self {
+            lines: vec![
+                "(version 1)".to_string(),
+                "(deny default)".to_string(),
+                String::new(),
+            ],
+        }
+    }
+
+    fn comment(&mut self, comment: &str) {
+        self.lines.push(format!("; {comment}"));
+    }
+
+    fn blank(&mut self) {
+        self.lines.push(String::new());
+    }
+
+    fn allow(&mut self, permissions: &str) {
+        self.lines.push(format!("(allow {permissions})"));
+    }
+
+    fn allow_with_target(&mut self, permissions: &str, target: &str) {
+        self.lines
+            .push(format!("(allow {permissions} (target {target}))"));
+    }
+
+    fn allow_raw(&mut self, rule: &str) {
+        self.lines.push(rule.to_string());
+    }
+
+    fn allow_literal(&mut self, permissions: &str, path: impl AsRef<Path>) {
+        self.allow_path(permissions, "literal", path);
+    }
+
+    fn allow_prefix(&mut self, permissions: &str, path: impl AsRef<Path>) {
+        self.allow_path(permissions, "prefix", path);
+    }
+
+    fn allow_subpath(&mut self, permissions: &str, path: impl AsRef<Path>) {
+        self.allow_path(permissions, "subpath", path);
+    }
+
+    fn allow_regex(&mut self, permissions: &str, pattern: &str) {
+        self.lines
+            .push(format!("(allow {permissions} (regex #\"{pattern}\"))"));
+    }
+
+    fn allow_path(&mut self, permissions: &str, matcher: &str, path: impl AsRef<Path>) {
+        let escaped = Self::escape_path(path.as_ref());
+        self.lines
+            .push(format!("(allow {permissions} ({matcher} \"{escaped}\"))"));
+    }
+
+    fn escape_path(path: &Path) -> String {
+        path.to_string_lossy()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+    }
+
+    fn finish(self) -> String {
+        self.lines.join("\n")
+    }
 }
 
 #[cfg(test)]
@@ -552,7 +533,7 @@ mod tests {
     #[test]
     fn test_profile_escaping() {
         let path = PathBuf::from("/path/with\"quote\\backslash (and spaces)");
-        let escaped = escape_path(&path);
+        let escaped = SeatbeltProfileBuilder::escape_path(&path);
         assert_eq!(escaped, "/path/with\\\"quote\\\\backslash (and spaces)");
     }
 
