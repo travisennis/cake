@@ -7,8 +7,8 @@ use crate::clients::agent::TurnResult;
 use crate::clients::retry::RequestOverrides;
 use crate::clients::tools::Tool;
 use crate::clients::types::{
-    ApiResponse, ApiUsage, ConversationItem, InputTokensDetails, OutputTokensDetails,
-    ProviderConfig, ReasoningConfig, Request, Usage,
+    ApiResponse, ApiUsage, ConversationItem, InputTokensDetails, OutputMessage,
+    OutputTokensDetails, ProviderConfig, ReasoningConfig, Request, Usage,
 };
 
 // =============================================================================
@@ -97,7 +97,7 @@ pub(super) async fn parse_response(response: reqwest::Response) -> anyhow::Resul
     trace!(target: "cake", "{api_response:?}");
 
     let usage = api_response.usage.as_ref().map(map_usage);
-    let items = parse_output_items(&api_response);
+    let items = parse_output_items(&api_response)?;
 
     Ok(TurnResult { items, usage })
 }
@@ -173,10 +173,14 @@ fn build_input(history: &[ConversationItem]) -> Vec<serde_json::Value> {
 }
 
 /// Parse the output items from an API response into `ConversationItem` values.
-fn parse_output_items(api_response: &ApiResponse) -> Vec<ConversationItem> {
+///
+/// # Errors
+///
+/// Returns an error if a function call item is missing required fields.
+fn parse_output_items(api_response: &ApiResponse) -> anyhow::Result<Vec<ConversationItem>> {
     let mut items = Vec::new();
 
-    for output in &api_response.output {
+    for (index, output) in api_response.output.iter().enumerate() {
         match output.msg_type.as_str() {
             "reasoning" => {
                 if let Some(id) = &output.id {
@@ -217,14 +221,7 @@ fn parse_output_items(api_response: &ApiResponse) -> Vec<ConversationItem> {
                 }
             },
             "function_call" => {
-                let timestamp = chrono::Utc::now().to_rfc3339();
-                items.push(ConversationItem::FunctionCall {
-                    id: output.id.clone().unwrap_or_default(),
-                    call_id: output.call_id.clone().unwrap_or_default(),
-                    name: output.name.clone().unwrap_or_default(),
-                    arguments: output.arguments.clone().unwrap_or_default(),
-                    timestamp: Some(timestamp),
-                });
+                items.push(parse_function_call_output(api_response, output, index)?);
             },
             "message" => {
                 let text = output
@@ -247,7 +244,60 @@ fn parse_output_items(api_response: &ApiResponse) -> Vec<ConversationItem> {
         }
     }
 
-    items
+    Ok(items)
+}
+
+fn parse_function_call_output(
+    api_response: &ApiResponse,
+    output: &OutputMessage,
+    index: usize,
+) -> anyhow::Result<ConversationItem> {
+    let (Some(id), Some(call_id), Some(name), Some(arguments)) = (
+        output.id.as_ref(),
+        output.call_id.as_ref(),
+        output.name.as_ref(),
+        output.arguments.as_ref(),
+    ) else {
+        return Err(malformed_function_call_error(api_response, output, index));
+    };
+
+    if id.is_empty() || call_id.is_empty() || name.is_empty() || arguments.is_empty() {
+        return Err(malformed_function_call_error(api_response, output, index));
+    }
+
+    let timestamp = chrono::Utc::now().to_rfc3339();
+    Ok(ConversationItem::FunctionCall {
+        id: id.clone(),
+        call_id: call_id.clone(),
+        name: name.clone(),
+        arguments: arguments.clone(),
+        timestamp: Some(timestamp),
+    })
+}
+
+fn malformed_function_call_error(
+    api_response: &ApiResponse,
+    output: &OutputMessage,
+    index: usize,
+) -> anyhow::Error {
+    let missing_fields = [
+        ("id", output.id.as_deref()),
+        ("call_id", output.call_id.as_deref()),
+        ("name", output.name.as_deref()),
+        ("arguments", output.arguments.as_deref()),
+    ]
+    .into_iter()
+    .filter_map(|(field, value)| match value {
+        Some(value) if !value.is_empty() => None,
+        _ => Some(field),
+    })
+    .collect::<Vec<_>>();
+
+    anyhow::anyhow!(
+        "malformed Responses API function_call at output[{index}] in response {}: missing or empty required field(s): {}",
+        api_response.id.as_deref().unwrap_or("<missing id>"),
+        missing_fields.join(", ")
+    )
 }
 
 #[cfg(test)]
@@ -420,7 +470,7 @@ mod tests {
             status: None,
             error: None,
         };
-        let items = parse_output_items(&response);
+        let items = parse_output_items(&response).unwrap();
         assert_eq!(items.len(), 1);
         assert!(matches!(&items[0], ConversationItem::Message {
             role: Role::Assistant, content, ..
@@ -447,7 +497,7 @@ mod tests {
             status: None,
             error: None,
         };
-        let items = parse_output_items(&response);
+        let items = parse_output_items(&response).unwrap();
         assert_eq!(items.len(), 1);
         assert!(matches!(&items[0], ConversationItem::FunctionCall {
             name, ..
@@ -477,7 +527,7 @@ mod tests {
             status: None,
             error: None,
         };
-        let items = parse_output_items(&response);
+        let items = parse_output_items(&response).unwrap();
         assert_eq!(items.len(), 1);
         assert!(matches!(&items[0], ConversationItem::Reasoning { .. }));
     }
@@ -502,7 +552,7 @@ mod tests {
             status: None,
             error: None,
         };
-        let items = parse_output_items(&response);
+        let items = parse_output_items(&response).unwrap();
         assert_eq!(items.len(), 1);
         if let ConversationItem::Reasoning {
             summary,
@@ -541,7 +591,7 @@ mod tests {
             status: None,
             error: None,
         };
-        let items = parse_output_items(&response);
+        let items = parse_output_items(&response).unwrap();
         assert_eq!(items.len(), 1);
         let api_input = items[0].to_api_input();
         assert_eq!(api_input["content"][0]["type"], "reasoning_text");
@@ -568,7 +618,7 @@ mod tests {
             status: None,
             error: None,
         };
-        let items = parse_output_items(&response);
+        let items = parse_output_items(&response).unwrap();
         assert!(items.is_empty());
     }
 
@@ -612,7 +662,7 @@ mod tests {
             status: None,
             error: None,
         };
-        let items = parse_output_items(&response);
+        let items = parse_output_items(&response).unwrap();
         assert_eq!(items.len(), 2);
     }
 
@@ -636,7 +686,7 @@ mod tests {
             status: None,
             error: None,
         };
-        let items = parse_output_items(&response);
+        let items = parse_output_items(&response).unwrap();
         assert_eq!(items.len(), 1);
         assert!(matches!(&items[0], ConversationItem::Message {
             content, ..
@@ -763,7 +813,7 @@ mod tests {
             status: None,
             error: None,
         };
-        let items = parse_output_items(&response);
+        let items = parse_output_items(&response).unwrap();
         assert!(items.is_empty());
     }
 
@@ -791,16 +841,15 @@ mod tests {
             status: None,
             error: None,
         };
-        let items = parse_output_items(&response);
+        let items = parse_output_items(&response).unwrap();
         // Reasoning without id is skipped
         assert!(items.is_empty());
     }
 
     #[test]
     fn parse_output_items_function_call_missing_fields() {
-        // Function call with missing optional fields should still work
         let response = ApiResponse {
-            id: None,
+            id: Some("resp-123".to_string()),
             output: vec![OutputMessage {
                 msg_type: "function_call".to_string(),
                 id: None,
@@ -817,16 +866,12 @@ mod tests {
             status: None,
             error: None,
         };
-        let items = parse_output_items(&response);
-        assert_eq!(items.len(), 1);
-        // Should use default values
-        assert!(matches!(&items[0], ConversationItem::FunctionCall {
-            id,
-            call_id,
-            name,
-            arguments,
-            ..
-        } if id.is_empty() && call_id.is_empty() && name.is_empty() && arguments.is_empty()));
+        let error = parse_output_items(&response).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("malformed Responses API function_call"));
+        assert!(message.contains("output[0]"));
+        assert!(message.contains("resp-123"));
+        assert!(message.contains("id, call_id, name, arguments"));
     }
 
     #[test]
@@ -849,7 +894,7 @@ mod tests {
             status: None,
             error: None,
         };
-        let items = parse_output_items(&response);
+        let items = parse_output_items(&response).unwrap();
         assert_eq!(items.len(), 1);
         // Should default to empty string
         assert!(matches!(&items[0], ConversationItem::Message {
@@ -882,7 +927,7 @@ mod tests {
             status: None,
             error: None,
         };
-        let items = parse_output_items(&response);
+        let items = parse_output_items(&response).unwrap();
         assert_eq!(items.len(), 1);
         // Should default to empty string since no output_text found
         assert!(matches!(&items[0], ConversationItem::Message {
@@ -912,7 +957,7 @@ mod tests {
             status: None,
             error: None,
         };
-        let items = parse_output_items(&response);
+        let items = parse_output_items(&response).unwrap();
         assert_eq!(items.len(), 1);
         if let ConversationItem::Reasoning { summary, .. } = &items[0] {
             assert_eq!(summary.len(), 2);
@@ -946,7 +991,7 @@ mod tests {
             status: None,
             error: None,
         };
-        let items = parse_output_items(&response);
+        let items = parse_output_items(&response).unwrap();
         assert_eq!(items.len(), 1);
         if let ConversationItem::Reasoning { summary, .. } = &items[0] {
             // Summary should be derived from content
@@ -1066,6 +1111,36 @@ mod response_parsing_tests {
         let result = parse_response(response).await;
         // Should fail because "output" is a required field
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn parse_response_function_call_missing_required_fields_fails() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "resp-123",
+                "output": [{
+                    "type": "function_call",
+                    "call_id": "call-1",
+                    "arguments": "{}"
+                }]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let response = client
+            .post(format!("{}/responses", mock_server.uri()))
+            .send()
+            .await
+            .unwrap();
+
+        let error = parse_response(response).await.unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("malformed Responses API function_call"));
+        assert!(message.contains("resp-123"));
+        assert!(message.contains("id, name"));
     }
 
     #[tokio::test]

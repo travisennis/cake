@@ -687,7 +687,6 @@ pub(super) struct Request<'a> {
 
 #[derive(Deserialize, Debug)]
 pub(super) struct ApiResponse {
-    #[expect(dead_code)]
     pub(super) id: Option<String>,
     pub(super) output: Vec<OutputMessage>,
     pub(super) usage: Option<ApiUsage>,
