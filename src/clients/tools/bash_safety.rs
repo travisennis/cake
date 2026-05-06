@@ -18,14 +18,14 @@ pub(super) fn validate_command_safety(command: &str) -> Result<(), String> {
         return Ok(());
     }
 
-    // Split on top-level command separators and check each segment
+    // Best-effort split on documented separators outside simple quotes.
     for segment in split_segments(trimmed) {
         let seg = segment.trim();
         if seg.is_empty() {
             continue;
         }
 
-        // Check for shell -c wrappers and recurse into the inner script
+        // Check documented shell -c wrappers and recurse into the inner script.
         if let Some(inner) = extract_inline_script(seg) {
             validate_command_safety(&inner)?;
             continue;
@@ -69,9 +69,10 @@ fn normalize_whitespace(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Split a command string on top-level separators (`;`, `&&`, `||`, `|`, `\n`).
+/// Split a command string on common separators (`;`, `&&`, `||`, `|`, `\n`).
 /// Tracks single and double quotes so that separators inside quoted strings
-/// are not treated as split points.
+/// are not treated as split points. This is scoped preflight matching, not
+/// complete shell tokenization.
 fn split_segments(command: &str) -> Vec<&str> {
     let mut segments = Vec::new();
     let bytes = command.as_bytes();
@@ -137,20 +138,20 @@ fn split_segments(command: &str) -> Vec<&str> {
     segments
 }
 
-/// Extract the inner script from `bash -c "..."` or `sh -c "..."`.
+/// Extract the inner script from documented `bash -c "..."` or `sh -c "..."`
+/// wrappers.
+///
+/// Other shells and invocation forms are intentionally outside this guard's
+/// scope; the OS sandbox remains the filesystem enforcement boundary.
 /// Returns `None` if the command is not a shell -c invocation.
 /// Handles flexible whitespace between the shell name and `-c`.
 fn extract_inline_script(command: &str) -> Option<String> {
     let normalized = normalize_whitespace(command);
     let lower = normalized.to_lowercase();
 
-    // Match: bash -c or sh -c (with optional leading env/path)
-    let idx = lower.find("bash -c ").or_else(|| lower.find("sh -c "))?;
-    let shell_len = if lower[idx..].starts_with("bash") {
-        8 // len("bash -c ")
-    } else {
-        6 // len("sh -c ")
-    };
+    // Match: bash -c or sh -c as command/path tokens, not substrings of other
+    // command names such as zsh.
+    let (idx, shell_len) = find_inline_shell_invocation(&lower)?;
 
     // Map back to original command: count the corresponding characters
     // by finding the same position accounting for whitespace normalization
@@ -188,6 +189,30 @@ fn extract_inline_script(command: &str) -> Option<String> {
 
     // Unquoted — take everything
     Some(trimmed.to_string())
+}
+
+fn find_inline_shell_invocation(normalized_lower: &str) -> Option<(usize, usize)> {
+    find_shell_token(normalized_lower, "bash -c ")
+        .map(|idx| (idx, 8))
+        .or_else(|| find_shell_token(normalized_lower, "sh -c ").map(|idx| (idx, 6)))
+}
+
+fn find_shell_token(normalized_lower: &str, needle: &str) -> Option<usize> {
+    let mut offset = 0;
+
+    while let Some(relative_idx) = normalized_lower[offset..].find(needle) {
+        let idx = offset + relative_idx;
+        if is_shell_token_boundary(normalized_lower.as_bytes(), idx) {
+            return Some(idx);
+        }
+        offset = idx + 1;
+    }
+
+    None
+}
+
+fn is_shell_token_boundary(bytes: &[u8], idx: usize) -> bool {
+    idx == 0 || matches!(bytes[idx - 1], b' ' | b'\t' | b'\n' | b'/')
 }
 
 /// Map a position in the whitespace-normalized string back to the original,
@@ -914,6 +939,12 @@ mod tests {
     fn allows_inline_script_with_safe_command() {
         assert_allowed("bash -c \"echo hello\"");
         assert_allowed("sh -c \"git status\"");
+    }
+
+    #[test]
+    fn unsupported_inline_script_forms_are_out_of_scope() {
+        assert_allowed("zsh -c 'git reset --hard'");
+        assert_allowed("sh -lc 'git clean -f'");
     }
 
     // =========================================================================
