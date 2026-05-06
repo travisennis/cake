@@ -8,17 +8,35 @@
 
 use crate::clients::tools::sandbox::{SandboxConfig, SandboxStrategy};
 
+#[cfg(feature = "landlock")]
+use std::os::unix::process::CommandExt;
+
 /// Linux sandbox strategy using Landlock LSM
 #[derive(Debug, Clone, Copy)]
 pub struct LandlockSandbox;
 
 impl LandlockSandbox {
+    #[cfg(feature = "landlock")]
+    fn enforce_full_ruleset(status: landlock::RulesetStatus) -> Result<(), std::io::Error> {
+        match status {
+            landlock::RulesetStatus::FullyEnforced => Ok(()),
+            landlock::RulesetStatus::PartiallyEnforced => Err(std::io::Error::other(
+                "Linux sandbox unavailable: Landlock only partially enforced the filesystem \
+                 ruleset. Set CAKE_SANDBOX=off to run Bash commands without filesystem \
+                 sandboxing.",
+            )),
+            landlock::RulesetStatus::NotEnforced => Err(std::io::Error::other(
+                "Linux sandbox unavailable: Landlock did not enforce the filesystem ruleset. \
+                 This usually means the kernel lacks required Landlock support. Set \
+                 CAKE_SANDBOX=off to run Bash commands without filesystem sandboxing.",
+            )),
+        }
+    }
+
     /// Apply Landlock rules in the current process (to be called in `pre_exec`)
     #[cfg(feature = "landlock")]
     fn apply_landlock_rules(config: &SandboxConfig) -> Result<(), std::io::Error> {
-        use landlock::{
-            ABI, Access, AccessFs, Ruleset, RulesetAttr, RulesetCreatedAttr, RulesetStatus,
-        };
+        use landlock::{ABI, Access, AccessFs, Ruleset, RulesetAttr, RulesetCreatedAttr};
 
         let abi = ABI::V5;
 
@@ -79,15 +97,7 @@ impl LandlockSandbox {
             std::io::Error::other(format!("Failed to restrict process with Landlock: {e}"))
         })?;
 
-        match status.ruleset {
-            RulesetStatus::FullyEnforced
-            | RulesetStatus::PartiallyEnforced
-            | RulesetStatus::NotEnforced => {
-                // Can't use log in pre_exec (async-signal-unsafe), just continue
-            },
-        }
-
-        Ok(())
+        Self::enforce_full_ruleset(status.ruleset)
     }
 }
 
@@ -109,13 +119,53 @@ impl SandboxStrategy for LandlockSandbox {
         #[cfg(not(feature = "landlock"))]
         {
             let _ = config;
-            tracing::warn!(
-                "Landlock feature not enabled during compilation; \
-                 bash commands will run without filesystem sandboxing. \
-                 Rebuild with --features landlock to enable."
+            let _ = command;
+            return Err(
+                "Linux sandbox unavailable: cake was built without Landlock support. Rebuild \
+                 with --features landlock, or set CAKE_SANDBOX=off to run Bash commands without \
+                 filesystem sandboxing."
+                    .to_string(),
             );
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(all(target_os = "linux", not(feature = "landlock")))]
+    #[test]
+    fn apply_fails_closed_without_landlock_feature() {
+        let sandbox = LandlockSandbox;
+        let config = SandboxConfig::build(std::path::Path::new("/tmp"));
+        let mut command = tokio::process::Command::new("bash");
+
+        let error = sandbox
+            .apply(&mut command, &config)
+            .expect_err("Linux sandboxing should fail closed without Landlock support");
+
+        assert!(error.contains("built without Landlock support"));
+        assert!(error.contains("CAKE_SANDBOX=off"));
+    }
+
+    #[cfg(all(target_os = "linux", feature = "landlock"))]
+    #[test]
+    fn landlock_status_must_be_fully_enforced() {
+        use landlock::RulesetStatus;
+
+        assert!(LandlockSandbox::enforce_full_ruleset(RulesetStatus::FullyEnforced).is_ok());
+
+        let partial = LandlockSandbox::enforce_full_ruleset(RulesetStatus::PartiallyEnforced)
+            .expect_err("partial enforcement must fail closed")
+            .to_string();
+        assert!(partial.contains("partially enforced"));
+
+        let missing = LandlockSandbox::enforce_full_ruleset(RulesetStatus::NotEnforced)
+            .expect_err("missing enforcement must fail closed")
+            .to_string();
+        assert!(missing.contains("did not enforce"));
     }
 }

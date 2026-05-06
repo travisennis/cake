@@ -48,13 +48,15 @@ The Landlock sandbox is applied via `pre_exec`, so rules take effect in the chil
 cargo build --release --features landlock
 ```
 
-Without the `landlock` feature, a warning is logged and commands run without filesystem restrictions.
+With sandboxing enabled, Linux fails closed if cake was built without Landlock
+support or if Landlock reports anything less than a fully enforced ruleset.
+Use `CAKE_SANDBOX=off` as the explicit opt-out for unsandboxed Bash execution.
 
 System paths on Linux include `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64`, `/etc/alternatives`, and `/snap`.
 
 ## Layered Defense
 
-The sandbox provides OS-level filesystem restriction as the primary enforcement mechanism. In addition, the Bash tool includes a pre-execution command safety check that blocks known-destructive commands (e.g., `git reset --hard`, `git push --force`, `rm -rf` outside temp dirs) before they reach the shell. This complements the sandbox by catching destructive operations that are technically allowed within the sandbox's permitted zones—for example, destructive git operations inside the repository directory. See [tools.md](./tools.md) for the full list of blocked commands.
+The sandbox provides OS-level filesystem restriction as the primary enforcement mechanism. In addition, the Bash tool includes a narrow pre-execution destructive command guard that blocks known-destructive commands (e.g., `git reset --hard`, `git push --force`, `rm -rf` outside literal `/tmp` or `/var/tmp` targets) before they reach the shell. This best-effort guard complements the sandbox by catching destructive operations that are technically allowed within the sandbox's permitted zones—for example, destructive git operations inside the repository directory. It is not a shell security policy engine. See [tools.md](./tools.md) for the full list of blocked commands.
 
 ## Configuration
 
@@ -176,7 +178,7 @@ to apply another Seatbelt profile. Bash commands fail closed. Run cake from a
 normal terminal to preserve sandbox enforcement, or set `CAKE_SANDBOX=off` when
 intentionally running without cake's filesystem sandbox.
 
-### "Landlock feature not enabled" warning (Linux)
+### "Landlock feature not enabled" error (Linux)
 
 Rebuild with the Landlock feature:
 
@@ -186,7 +188,7 @@ cargo build --release --features landlock
 
 ### Sandbox not enforced on older Linux kernels
 
-Landlock requires kernel 5.13 or later. On older kernels, Landlock reports `NotEnforced` status and commands run without restrictions. Check your kernel version with `uname -r`.
+Landlock requires kernel 5.13 or later. On older kernels, Landlock reports `NotEnforced` status and Bash commands fail closed unless sandboxing is explicitly disabled with `CAKE_SANDBOX=off`. Cake also fails closed when Landlock reports `PartiallyEnforced`, because the filesystem sandbox is treated as unavailable unless the ruleset is fully enforced. Check your kernel version with `uname -r`.
 
 ### SSH git operations fail with host key verification
 

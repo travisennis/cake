@@ -1,9 +1,10 @@
-// Pre-execution safety checks for the Bash tool.
+// Best-effort destructive command guard for the Bash tool.
 //
 // Blocks known-destructive commands that operate within the sandbox's allowed
 // zone (e.g. destructive git operations inside the repo) or affect remote
 // state (e.g. force-push). This is a best-effort guard, not a security
-// boundary — the OS-level sandbox remains the primary enforcement layer.
+// boundary or shell policy engine. The OS-level sandbox remains the primary
+// filesystem enforcement layer.
 
 // =============================================================================
 // Public API

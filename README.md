@@ -310,11 +310,13 @@ Commands executed by the Bash tool run inside an OS-level filesystem sandbox tha
 - **macOS**: Uses `sandbox-exec` with a deny-default Seatbelt profile
 - **Linux**: Uses Landlock LSM (kernel 5.13+, requires `--features landlock`)
 
-The sandbox can be disabled by setting `CAKE_SANDBOX=off`.
+Linux Bash execution fails closed when sandboxing is enabled but cake was built
+without Landlock support, or when Landlock cannot fully enforce the filesystem
+ruleset. The sandbox can be disabled explicitly by setting `CAKE_SANDBOX=off`.
 
 #### Destructive Command Protection
 
-The Bash tool also blocks known-destructive commands before execution, covering destructive git operations (`git reset --hard`, `git push --force`, `git clean -f`, etc.) and `rm -rf` outside temp directories. This includes detection of commands wrapped in `bash -c` or `sh -c`. A blocked command returns an error explaining the reason and suggesting a safe alternative.
+The Bash tool also has a best-effort destructive command guard before execution, covering destructive git operations (`git reset --hard`, `git push --force`, `git clean -f`, etc.) and `rm -rf` outside literal `/tmp` or `/var/tmp` targets. This guard is not a shell security policy engine; the OS sandbox is the filesystem enforcement boundary. A blocked command returns an error explaining the reason and suggesting a safe alternative.
 
 #### Adding Read-Only Directories
 

@@ -194,7 +194,7 @@ You can inspect the file with appropriate tools (e.g., `file`, `hexdump`, `xxd`)
 
 **Destructive Command Blocking**:
 
-The Bash tool includes a pre-execution safety check that blocks known-destructive commands before they reach the sandbox or process spawn. This complements the OS-level sandbox by catching destructive operations that are allowed within the sandbox's permitted zones — for example, destructive git operations inside the repo or remote-affecting operations like force-push.
+The Bash tool includes a narrow, best-effort pre-execution destructive command guard that blocks known-destructive commands before they reach the sandbox or process spawn. This complements the OS-level sandbox by catching destructive operations that are allowed within the sandbox's permitted zones — for example, destructive git operations inside the repo or remote-affecting operations like force-push. It is not a shell security policy engine; the OS sandbox is the filesystem enforcement boundary.
 
 Blocked git commands:
 
@@ -212,12 +212,13 @@ Blocked filesystem commands:
 
 | Blocked Command | Reason |
 |---|---|
-| `rm -rf` outside temp directories (`/tmp`, `/var/tmp`, `$TMPDIR`) | Irreversible recursive deletion |
+| `rm -rf` outside literal `/tmp` or `/var/tmp` targets | Irreversible recursive deletion |
 
 Additional protections:
 - **Wrapper detection**: `bash -c` / `sh -c` wrappers are detected and the inner script is recursively checked
 - **Command chaining**: Commands joined via `&&`, `||`, `;`, or newlines are split and each segment is checked independently
 - **False positive avoidance**: Commit messages, `echo`, `printf`, and similar data contexts are skipped to avoid flagging non-destructive uses
+- **Temp target scope**: `$TMPDIR`, `$TEMP`, and other environment-variable or shell-expanded temp paths are blocked unless the guard deliberately supports and tests that exact form
 
 Error format:
 
