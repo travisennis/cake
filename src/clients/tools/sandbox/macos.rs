@@ -7,7 +7,7 @@
 
 use crate::clients::tools::sandbox::{SandboxConfig, SandboxStrategy};
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::OnceLock;
 
@@ -95,23 +95,15 @@ impl MacOsSandbox {
     /// Append git configuration read-only rules to the profile
     fn append_git_rules(lines: &mut Vec<String>) {
         lines.push("; Git configuration (read-only)".to_string());
-        if let Ok(home) = std::env::var("HOME") {
-            lines.push(format!("(allow file-read* (prefix \"{home}/.gitconfig\"))"));
-            lines.push(format!("(allow file-read* (prefix \"{home}/.gitignore\"))"));
-            lines.push(format!(
-                "(allow file-read* (subpath \"{home}/.config/git\"))"
-            ));
-            lines.push(format!(
-                "(allow file-read* (literal \"{home}/.gitattributes\"))"
-            ));
+        if let Some(home) = home_dir() {
+            push_home_rule(lines, "file-read*", "prefix", &home, ".gitconfig");
+            push_home_rule(lines, "file-read*", "prefix", &home, ".gitignore");
+            push_home_rule(lines, "file-read*", "subpath", &home, ".config/git");
+            push_home_rule(lines, "file-read*", "literal", &home, ".gitattributes");
             // Allow reading .ssh directory itself (for listing)
-            lines.push(format!("(allow file-read* (literal \"{home}/.ssh\"))"));
-            lines.push(format!(
-                "(allow file-read* (literal \"{home}/.ssh/config\"))"
-            ));
-            lines.push(format!(
-                "(allow file-read* (literal \"{home}/.ssh/known_hosts\"))"
-            ));
+            push_home_rule(lines, "file-read*", "literal", &home, ".ssh");
+            push_home_rule(lines, "file-read*", "literal", &home, ".ssh/config");
+            push_home_rule(lines, "file-read*", "literal", &home, ".ssh/known_hosts");
         }
         lines.push(String::new());
     }
@@ -145,33 +137,65 @@ impl MacOsSandbox {
     /// Append SCM CLI (gh, glab) configuration, cache, and state rules to the profile.
     fn append_scm_cli_rules(lines: &mut Vec<String>) {
         lines.push("; SCM CLIs: GitHub CLI (gh) and GitLab CLI (glab)".to_string());
-        if let Ok(home) = std::env::var("HOME") {
+        if let Some(home) = home_dir() {
             // GitHub CLI
-            lines.push(format!(
-                "(allow file-read* file-write* (subpath \"{home}/.config/gh\"))"
-            ));
-            lines.push(format!(
-                "(allow file-read* file-write* (subpath \"{home}/.cache/gh\"))"
-            ));
-            lines.push(format!(
-                "(allow file-read* file-write* (subpath \"{home}/.local/share/gh\"))"
-            ));
-            lines.push(format!(
-                "(allow file-read* file-write* (subpath \"{home}/.local/state/gh\"))"
-            ));
+            push_home_rule(
+                lines,
+                "file-read* file-write*",
+                "subpath",
+                &home,
+                ".config/gh",
+            );
+            push_home_rule(
+                lines,
+                "file-read* file-write*",
+                "subpath",
+                &home,
+                ".cache/gh",
+            );
+            push_home_rule(
+                lines,
+                "file-read* file-write*",
+                "subpath",
+                &home,
+                ".local/share/gh",
+            );
+            push_home_rule(
+                lines,
+                "file-read* file-write*",
+                "subpath",
+                &home,
+                ".local/state/gh",
+            );
             // GitLab CLI
-            lines.push(format!(
-                "(allow file-read* file-write* (subpath \"{home}/.config/glab-cli\"))"
-            ));
-            lines.push(format!(
-                "(allow file-read* file-write* (subpath \"{home}/.cache/glab-cli\"))"
-            ));
-            lines.push(format!(
-                "(allow file-read* file-write* (subpath \"{home}/.local/share/glab-cli\"))"
-            ));
-            lines.push(format!(
-                "(allow file-read* file-write* (subpath \"{home}/.local/state/glab-cli\"))"
-            ));
+            push_home_rule(
+                lines,
+                "file-read* file-write*",
+                "subpath",
+                &home,
+                ".config/glab-cli",
+            );
+            push_home_rule(
+                lines,
+                "file-read* file-write*",
+                "subpath",
+                &home,
+                ".cache/glab-cli",
+            );
+            push_home_rule(
+                lines,
+                "file-read* file-write*",
+                "subpath",
+                &home,
+                ".local/share/glab-cli",
+            );
+            push_home_rule(
+                lines,
+                "file-read* file-write*",
+                "subpath",
+                &home,
+                ".local/state/glab-cli",
+            );
         }
         lines.push(String::new());
     }
@@ -190,10 +214,14 @@ impl MacOsSandbox {
         );
         lines.push("(allow file-read* (subpath \"/Library/Keychains\"))".to_string());
         lines.push("(allow file-read* (subpath \"/System/Library/Keychains\"))".to_string());
-        if let Ok(home) = std::env::var("HOME") {
-            lines.push(format!(
-                "(allow file-read* file-write* (subpath \"{home}/Library/Keychains\"))"
-            ));
+        if let Some(home) = home_dir() {
+            push_home_rule(
+                lines,
+                "file-read* file-write*",
+                "subpath",
+                &home,
+                "Library/Keychains",
+            );
         }
         lines.push(String::new());
     }
@@ -405,10 +433,24 @@ fn escape_path(path: &Path) -> String {
         .replace('"', "\\\"")
 }
 
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(PathBuf::from)
+}
+
+fn push_home_rule(
+    lines: &mut Vec<String>,
+    permissions: &str,
+    matcher: &str,
+    home: &Path,
+    relative: &str,
+) {
+    let escaped = escape_path(&home.join(relative));
+    lines.push(format!("(allow {permissions} ({matcher} \"{escaped}\"))"));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     fn test_config() -> SandboxConfig {
         SandboxConfig {
@@ -509,9 +551,38 @@ mod tests {
 
     #[test]
     fn test_profile_escaping() {
-        let path = PathBuf::from("/path/with\"quote");
+        let path = PathBuf::from("/path/with\"quote\\backslash (and spaces)");
         let escaped = escape_path(&path);
-        assert_eq!(escaped, "/path/with\\\"quote");
+        assert_eq!(escaped, "/path/with\\\"quote\\\\backslash (and spaces)");
+    }
+
+    #[test]
+    fn test_profile_escapes_home_based_paths() {
+        temp_env::with_var(
+            "HOME",
+            Some("/Users/Test User/quote\"backslash\\paren(home)"),
+            || {
+                let profile = MacOsSandbox::generate_profile(&test_config());
+                let escaped_home = "/Users/Test User/quote\\\"backslash\\\\paren(home)";
+
+                assert!(profile.contains(&format!(
+                    "(allow file-read* (prefix \"{escaped_home}/.gitconfig\"))"
+                )));
+                assert!(profile.contains(&format!(
+                    "(allow file-read* (subpath \"{escaped_home}/.config/git\"))"
+                )));
+                assert!(profile.contains(&format!(
+                    "(allow file-read* file-write* (subpath \"{escaped_home}/.config/gh\"))"
+                )));
+                assert!(profile.contains(&format!(
+                    "(allow file-read* file-write* (subpath \"{escaped_home}/Library/Keychains\"))"
+                )));
+                assert!(
+                    !profile.contains("quote\"backslash"),
+                    "unescaped HOME should not appear in generated profile"
+                );
+            },
+        );
     }
 
     #[test]
