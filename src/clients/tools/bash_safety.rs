@@ -30,13 +30,13 @@ pub(super) fn validate_command_safety(command: &str) -> Result<(), String> {
             continue;
         }
 
-        let normalized = normalize_whitespace(seg);
-        let lower = normalized.to_lowercase();
-
-        // Skip segments that are commit/tag messages (data, not commands)
-        if is_data_context(&lower) {
-            continue;
+        for substitution in extract_command_substitutions(seg) {
+            validate_command_safety(&substitution)?;
         }
+
+        let inspection_segment = strip_shell_data(seg);
+        let normalized = normalize_whitespace(&inspection_segment);
+        let lower = normalized.to_lowercase();
 
         check_git_reset(&lower, seg)?;
         check_git_checkout(&lower, seg)?;
@@ -136,18 +136,6 @@ fn split_segments(command: &str) -> Vec<&str> {
     segments
 }
 
-/// Check if a (lowercased, normalized) command is in a data context where
-/// destructive-looking text is not actually executed (e.g. commit messages).
-fn is_data_context(lower: &str) -> bool {
-    lower.starts_with("git commit")
-        || lower.starts_with("git tag")
-        || lower.starts_with("echo ")
-        || lower.starts_with("printf ")
-        || lower.starts_with("cat >")
-        || lower.starts_with("cat >>")
-        || lower.starts_with("tee ")
-}
-
 /// Extract the inner script from `bash -c "..."` or `sh -c "..."`.
 /// Returns `None` if the command is not a shell -c invocation.
 /// Handles flexible whitespace between the shell name and `-c`.
@@ -226,6 +214,169 @@ fn skip_to_after_flag(original: &str, norm_pos: usize, shell_len: usize) -> Opti
     }
 
     (i <= original.len()).then(|| &original[i..])
+}
+
+/// Extract executable command substitutions from a shell segment.
+///
+/// Single-quoted text is shell data. Double-quoted text can still execute
+/// substitutions, so `$()` and backticks are inspected there too.
+fn extract_command_substitutions(command: &str) -> Vec<String> {
+    let bytes = command.as_bytes();
+    let mut substitutions = Vec::new();
+    let mut i = 0;
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\'' if !in_double_quote => {
+                in_single_quote = !in_single_quote;
+                i += 1;
+            },
+            b'"' if !in_single_quote => {
+                in_double_quote = !in_double_quote;
+                i += 1;
+            },
+            b'\\' => {
+                i += 2;
+            },
+            b'$' if !in_single_quote && i + 1 < bytes.len() && bytes[i + 1] == b'(' => {
+                if let Some((inner, end)) = extract_dollar_paren(command, i + 2) {
+                    substitutions.push(inner);
+                    i = end;
+                } else {
+                    i += 2;
+                }
+            },
+            b'`' if !in_single_quote => {
+                if let Some((inner, end)) = extract_backticks(command, i + 1) {
+                    substitutions.push(inner);
+                    i = end;
+                } else {
+                    i += 1;
+                }
+            },
+            _ => i += 1,
+        }
+    }
+
+    substitutions
+}
+
+/// Strip shell data contexts before looking for destructive command text.
+/// Command substitutions are replaced with spaces because they are recursively
+/// validated by `extract_command_substitutions`.
+fn strip_shell_data(command: &str) -> String {
+    let bytes = command.as_bytes();
+    let mut stripped = String::with_capacity(command.len());
+    let mut i = 0;
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\'' if !in_double_quote => {
+                in_single_quote = !in_single_quote;
+                stripped.push(' ');
+                i += 1;
+            },
+            b'"' if !in_single_quote => {
+                in_double_quote = !in_double_quote;
+                stripped.push(' ');
+                i += 1;
+            },
+            b'\\' if in_double_quote => {
+                stripped.push(' ');
+                if i + 1 < bytes.len() {
+                    stripped.push(' ');
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            },
+            b'$' if !in_single_quote && i + 1 < bytes.len() && bytes[i + 1] == b'(' => {
+                if let Some((_inner, end)) = extract_dollar_paren(command, i + 2) {
+                    stripped.push(' ');
+                    i = end;
+                } else {
+                    stripped.push(bytes[i] as char);
+                    i += 1;
+                }
+            },
+            b'`' if !in_single_quote => {
+                if let Some((_inner, end)) = extract_backticks(command, i + 1) {
+                    stripped.push(' ');
+                    i = end;
+                } else {
+                    stripped.push(bytes[i] as char);
+                    i += 1;
+                }
+            },
+            _ if in_single_quote || in_double_quote => {
+                stripped.push(' ');
+                i += 1;
+            },
+            _ => {
+                stripped.push(bytes[i] as char);
+                i += 1;
+            },
+        }
+    }
+
+    stripped
+}
+
+fn extract_dollar_paren(command: &str, start: usize) -> Option<(String, usize)> {
+    let bytes = command.as_bytes();
+    let mut i = start;
+    let mut depth = 1;
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\'' if !in_double_quote => {
+                in_single_quote = !in_single_quote;
+                i += 1;
+            },
+            b'"' if !in_single_quote => {
+                in_double_quote = !in_double_quote;
+                i += 1;
+            },
+            b'\\' => {
+                i += 2;
+            },
+            b'$' if !in_single_quote && i + 1 < bytes.len() && bytes[i + 1] == b'(' => {
+                depth += 1;
+                i += 2;
+            },
+            b')' if !in_single_quote => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((command[start..i].to_string(), i + 1));
+                }
+                i += 1;
+            },
+            _ => i += 1,
+        }
+    }
+
+    None
+}
+
+fn extract_backticks(command: &str, start: usize) -> Option<(String, usize)> {
+    let bytes = command.as_bytes();
+    let mut i = start;
+
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i += 2,
+            b'`' => return Some((command[start..i].to_string(), i + 1)),
+            _ => i += 1,
+        }
+    }
+
+    None
 }
 
 // =============================================================================
@@ -801,6 +952,28 @@ mod tests {
     #[test]
     fn allows_echo_containing_destructive_text() {
         assert_allowed("echo \"git reset --hard\"");
+    }
+
+    #[test]
+    fn blocks_destructive_commands_inside_data_context_substitutions() {
+        assert_blocked("echo \"$(git reset --hard)\"");
+        assert_blocked("printf '%s\\n' \"$(git clean -fd)\"");
+        assert_blocked("cat > out.txt <<EOF\n$(rm -rf /)\nEOF");
+        assert_blocked("git commit -m \"$(git branch -D feature)\"");
+        assert_blocked("git tag -a v1 -m \"$(git stash clear)\"");
+        assert_blocked("git status | tee \"$(git reset --hard)\"");
+    }
+
+    #[test]
+    fn blocks_destructive_commands_inside_backtick_substitutions() {
+        assert_blocked("echo `git reset --hard`");
+        assert_blocked("git commit -m \"`rm -rf /`\"");
+    }
+
+    #[test]
+    fn allows_single_quoted_substitution_text_as_literal_data() {
+        assert_allowed("echo '$(git reset --hard)'");
+        assert_allowed("git commit -m '$(git clean -fd)'");
     }
 
     #[test]
