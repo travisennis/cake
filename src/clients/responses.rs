@@ -175,6 +175,7 @@ fn build_input(history: &[ConversationItem]) -> Vec<serde_json::Value> {
 /// Returns an error if a function call item is missing required fields.
 fn parse_output_items(api_response: &ApiResponse) -> anyhow::Result<Vec<ConversationItem>> {
     let mut items = Vec::new();
+    let mut unknown_output_types = Vec::new();
 
     for (index, output) in api_response.output.iter().enumerate() {
         match output.msg_type.as_str() {
@@ -236,11 +237,43 @@ fn parse_output_items(api_response: &ApiResponse) -> anyhow::Result<Vec<Conversa
                     timestamp: Some(timestamp),
                 });
             },
-            _ => {},
+            unknown_type => {
+                tracing::warn!(
+                    response_id = api_response.id.as_deref().unwrap_or("<missing id>"),
+                    output_index = index,
+                    output_id = output.id.as_deref(),
+                    output_type = unknown_type,
+                    "Unknown Responses API output type"
+                );
+                unknown_output_types.push((index, unknown_type.to_string()));
+            },
         }
     }
 
+    if items.is_empty() && !unknown_output_types.is_empty() {
+        return Err(unknown_output_type_error(
+            api_response,
+            &unknown_output_types,
+        ));
+    }
+
     Ok(items)
+}
+
+fn unknown_output_type_error(
+    api_response: &ApiResponse,
+    unknown_output_types: &[(usize, String)],
+) -> anyhow::Error {
+    let unknown_types = unknown_output_types
+        .iter()
+        .map(|(index, output_type)| format!("output[{index}] type '{output_type}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    anyhow::anyhow!(
+        "Responses API response {} contained only unknown output type(s): {unknown_types}",
+        api_response.id.as_deref().unwrap_or("<missing id>")
+    )
 }
 
 fn parse_function_call_output(
@@ -596,12 +629,12 @@ mod tests {
     }
 
     #[test]
-    fn parse_output_items_unknown_type_ignored() {
+    fn parse_output_items_unknown_type_errors_when_no_items_are_recognized() {
         let response = ApiResponse {
-            id: None,
+            id: Some("resp-123".to_string()),
             output: vec![OutputMessage {
                 msg_type: "unknown_type".to_string(),
-                id: None,
+                id: Some("out-1".to_string()),
                 call_id: None,
                 name: None,
                 arguments: None,
@@ -615,8 +648,55 @@ mod tests {
             status: None,
             error: None,
         };
+        let error = parse_output_items(&response).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("contained only unknown output type(s)"));
+        assert!(message.contains("resp-123"));
+        assert!(message.contains("output[0] type 'unknown_type'"));
+    }
+
+    #[test]
+    fn parse_output_items_unknown_type_is_skipped_when_known_items_exist() {
+        let response = ApiResponse {
+            id: Some("resp-123".to_string()),
+            output: vec![
+                OutputMessage {
+                    msg_type: "unknown_type".to_string(),
+                    id: Some("out-1".to_string()),
+                    call_id: None,
+                    name: None,
+                    arguments: None,
+                    role: None,
+                    status: None,
+                    content: None,
+                    encrypted_content: None,
+                    summary: None,
+                },
+                OutputMessage {
+                    msg_type: "message".to_string(),
+                    id: Some("msg-1".to_string()),
+                    call_id: None,
+                    name: None,
+                    arguments: None,
+                    role: Some("assistant".to_string()),
+                    status: Some("completed".to_string()),
+                    content: Some(vec![OutputContent {
+                        content_type: "output_text".to_string(),
+                        text: Some("Hello!".to_string()),
+                    }]),
+                    encrypted_content: None,
+                    summary: None,
+                },
+            ],
+            usage: None,
+            status: None,
+            error: None,
+        };
         let items = parse_output_items(&response).unwrap();
-        assert!(items.is_empty());
+        assert_eq!(items.len(), 1);
+        assert!(matches!(&items[0], ConversationItem::Message {
+            role: Role::Assistant, content, ..
+        } if content == "Hello!"));
     }
 
     #[test]
