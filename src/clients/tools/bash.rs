@@ -91,8 +91,12 @@ pub(super) fn bash_tool() -> super::Tool {
 // Bash Execution
 // =============================================================================
 
-/// Detect if command output indicates a sandbox-related permission failure
-fn is_sandbox_violation(output: &str) -> bool {
+/// Detect if a failed sandboxed command looks like a sandbox-related permission failure.
+fn is_sandbox_violation(sandboxed: bool, success: bool, output: &str) -> bool {
+    if !sandboxed || success {
+        return false;
+    }
+
     if is_sandbox_initialization_failure(output) {
         return false;
     }
@@ -431,7 +435,7 @@ async fn execute_bash_with_args(args: BashExecutionArgs) -> Result<super::ToolRe
         format!("{output_str}\n[... output truncated at {BASH_READ_CAP} bytes ...]")
     } else if success {
         output_str.into_owned()
-    } else if args.use_sandbox && is_sandbox_violation(&output_str) {
+    } else if is_sandbox_violation(args.use_sandbox, success, &output_str) {
         format!(
             "{output_str}\n\n\
             [Sandbox restriction]: This command was blocked by the filesystem sandbox. \
@@ -851,7 +855,42 @@ mod tests {
     fn sandbox_initialization_failure_is_not_a_sandbox_violation() {
         let output = "sandbox-exec: sandbox_apply: Operation not permitted";
         assert!(is_sandbox_initialization_failure(output));
-        assert!(!is_sandbox_violation(output));
+        assert!(!is_sandbox_violation(true, false, output));
+    }
+
+    #[test]
+    fn sandbox_violation_requires_sandboxed_failed_command() {
+        let output = "Operation not permitted";
+
+        assert!(is_sandbox_violation(true, false, output));
+        assert!(!is_sandbox_violation(true, true, output));
+        assert!(!is_sandbox_violation(false, false, output));
+    }
+
+    #[tokio::test]
+    async fn successful_command_output_does_not_trigger_sandbox_warning() {
+        let args = r#"{"command": "printf 'Operation not permitted\n'"}"#;
+        let result = Box::pin(execute_bash_unsandboxed(args)).await.unwrap();
+
+        assert!(result.output.contains("Operation not permitted"));
+        assert!(
+            !result.output.contains("[Sandbox restriction]"),
+            "successful command output should not be classified as sandbox restriction: {}",
+            result.output
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_unsandboxed_command_output_does_not_trigger_sandbox_warning() {
+        let args = r#"{"command": "printf 'Operation not permitted\n'; exit 1"}"#;
+        let result = Box::pin(execute_bash_unsandboxed(args)).await.unwrap();
+
+        assert!(result.output.contains("Operation not permitted"));
+        assert!(
+            !result.output.contains("[Sandbox restriction]"),
+            "unsandboxed command output should not be classified as sandbox restriction: {}",
+            result.output
+        );
     }
 
     #[test]
