@@ -82,12 +82,23 @@ pub fn summarize_args(arguments: &str) -> String {
 struct MatchedEdit {
     /// The replacement text
     new_text: String,
-    /// Position in content where the match starts (byte offset)
+    /// Position in original content where the match starts (byte offset)
     index: usize,
-    /// Length of the matched text
+    /// Length of the matched original text
     match_length: usize,
     /// Original index in the edits array (1-based for error messages)
     edit_index: usize,
+}
+
+/// Normalized content with byte offsets back to the original string.
+#[derive(Debug)]
+struct NormalizedContent {
+    /// Content with CRLF line endings represented as LF.
+    content: String,
+    /// Original byte offset for each normalized byte offset.
+    original_offsets: Vec<usize>,
+    /// Original content length in bytes.
+    original_len: usize,
 }
 
 /// Line ending type for preservation
@@ -160,17 +171,14 @@ pub(super) fn execute_edit(arguments: &str) -> Result<super::ToolResult, String>
     // Detect line ending style
     let line_ending = detect_line_ending(content);
 
-    // Normalize line endings to LF for consistent processing
-    let normalized_content = normalize_line_endings(content);
+    // Normalize CRLF to LF for matching while keeping original byte ranges.
+    let normalized_content = normalize_crlf_line_endings(content);
 
     // Preflight validation: find all match positions
-    let matched_edits = preflight_edits(&args.edits, &normalized_content, &path)?;
+    let matched_edits = preflight_edits(&args.edits, &normalized_content, line_ending, &path)?;
 
     // Apply edits in reverse order (highest position first)
-    let new_content = apply_edits_reverse_order(&normalized_content, &matched_edits);
-
-    // Restore line endings if needed
-    let new_content = restore_line_endings(&new_content, line_ending);
+    let new_content = apply_edits_reverse_order(content, &matched_edits);
 
     // Restore BOM if it was present
     let new_content = restore_bom(new_content, bom);
@@ -180,11 +188,7 @@ pub(super) fn execute_edit(arguments: &str) -> Result<super::ToolResult, String>
         .map_err(|e| format!("Failed to write file '{}': {e}", path.display()))?;
 
     // Generate diff output
-    let diff = generate_unified_diff(
-        &restore_bom(restore_line_endings(content, line_ending), bom),
-        &new_content,
-        &path,
-    );
+    let diff = generate_unified_diff(&restore_bom(content.to_string(), bom), &new_content, &path);
 
     let result = format!(
         "Applied {} edit{} to: {}\n{}",
@@ -202,14 +206,20 @@ pub(super) fn execute_edit(arguments: &str) -> Result<super::ToolResult, String>
 // =============================================================================
 
 /// Validate all edits and find their match positions
-fn preflight_edits(edits: &[Edit], content: &str, path: &Path) -> Result<Vec<MatchedEdit>, String> {
+fn preflight_edits(
+    edits: &[Edit],
+    normalized_content: &NormalizedContent,
+    line_ending: LineEnding,
+    path: &Path,
+) -> Result<Vec<MatchedEdit>, String> {
     let mut matched_edits = Vec::with_capacity(edits.len());
 
     for (i, edit) in edits.iter().enumerate() {
         let edit_index = i + 1; // 1-based for error messages
 
         // Count occurrences
-        let occurrences: Vec<usize> = content
+        let occurrences: Vec<usize> = normalized_content
+            .content
             .match_indices(&edit.old_text)
             .map(|(idx, _)| idx)
             .collect();
@@ -230,10 +240,13 @@ fn preflight_edits(edits: &[Edit], content: &str, path: &Path) -> Result<Vec<Mat
             ));
         }
 
+        let (index, match_length) =
+            normalized_content.original_range(occurrences[0], edit.old_text.len())?;
+
         matched_edits.push(MatchedEdit {
-            new_text: edit.new_text.clone(),
-            index: occurrences[0],
-            match_length: edit.old_text.len(),
+            new_text: normalize_replacement_line_endings(&edit.new_text, line_ending),
+            index,
+            match_length,
             edit_index,
         });
     }
@@ -292,16 +305,64 @@ fn detect_line_ending(content: &str) -> LineEnding {
     }
 }
 
-/// Normalize line endings to LF for consistent processing
-fn normalize_line_endings(content: &str) -> String {
-    content.replace("\r\n", "\n").replace('\r', "\n")
+/// Normalize CRLF line endings to LF for consistent processing.
+///
+/// Bare CR characters are preserved, and every normalized byte offset can be
+/// mapped back to the original string so unrelated bytes are not rewritten.
+fn normalize_crlf_line_endings(content: &str) -> NormalizedContent {
+    let mut normalized = String::with_capacity(content.len());
+    let mut original_offsets = Vec::with_capacity(content.len());
+    let mut chars = content.char_indices().peekable();
+
+    while let Some((index, ch)) = chars.next() {
+        if ch == '\r' && chars.peek().is_some_and(|(_, next)| *next == '\n') {
+            normalized.push('\n');
+            original_offsets.push(index);
+            let _ = chars.next();
+            continue;
+        }
+
+        let normalized_index = normalized.len();
+        normalized.push(ch);
+        original_offsets.resize(normalized.len(), index);
+
+        debug_assert!(normalized.is_char_boundary(normalized_index));
+    }
+
+    NormalizedContent {
+        content: normalized,
+        original_offsets,
+        original_len: content.len(),
+    }
 }
 
-/// Restore line endings to the content
-fn restore_line_endings(content: &str, ending: LineEnding) -> String {
+/// Convert replacement LF line endings to the file's dominant line ending.
+fn normalize_replacement_line_endings(content: &str, ending: LineEnding) -> String {
     match ending {
         LineEnding::Crlf => content.replace('\n', "\r\n"),
         LineEnding::Lf => content.to_string(),
+    }
+}
+
+impl NormalizedContent {
+    /// Return the original byte range corresponding to a normalized match.
+    fn original_range(&self, start: usize, len: usize) -> Result<(usize, usize), String> {
+        let end = start + len;
+        let original_start = self.original_offset(start)?;
+        let original_end = if end == self.content.len() {
+            self.original_len
+        } else {
+            self.original_offset(end)?
+        };
+
+        Ok((original_start, original_end - original_start))
+    }
+
+    /// Return the original byte offset for a normalized byte offset.
+    fn original_offset(&self, index: usize) -> Result<usize, String> {
+        self.original_offsets.get(index).copied().ok_or_else(|| {
+            "Internal error: edit match did not map to original file content".to_string()
+        })
     }
 }
 
@@ -589,6 +650,46 @@ mod tests {
         let content = String::from_utf8(fs::read(&file_path).unwrap()).unwrap();
         assert!(content.contains("Hello universe\r\n"));
         assert!(content.contains("\r\n"));
+    }
+
+    #[test]
+    fn preserves_unrelated_bare_cr_bytes() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+        fs::write(&file_path, b"header\runrelated\r\nHello world\r\n").unwrap();
+
+        let args = serde_json::json!({
+            "path": file_path.to_str().unwrap(),
+            "edits": [
+                { "old_text": "Hello world\n", "new_text": "Hello universe\n" }
+            ]
+        })
+        .to_string();
+
+        let _ = execute_edit(&args).unwrap();
+
+        let content = fs::read(&file_path).unwrap();
+        assert_eq!(content, b"header\runrelated\r\nHello universe\r\n");
+    }
+
+    #[test]
+    fn preserves_unedited_mixed_line_endings() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+        fs::write(&file_path, b"lf only\ncrlf only\r\nreplace me\r\n").unwrap();
+
+        let args = serde_json::json!({
+            "path": file_path.to_str().unwrap(),
+            "edits": [
+                { "old_text": "replace me\n", "new_text": "replaced\n" }
+            ]
+        })
+        .to_string();
+
+        let _ = execute_edit(&args).unwrap();
+
+        let content = fs::read(&file_path).unwrap();
+        assert_eq!(content, b"lf only\ncrlf only\r\nreplaced\r\n");
     }
 
     // =========================================================================
