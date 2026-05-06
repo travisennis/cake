@@ -444,38 +444,53 @@ fn check_dangerous_rm(normalized: &str, original: &str) -> Result<(), String> {
         return Ok(());
     }
 
-    // Find `rm` invocations with `-rf` or `-fr` (including combined flags)
+    // Find `rm` invocations with recursive + force flags (including combined flags)
     let tokens: Vec<&str> = normalized.split_whitespace().collect();
     for (i, &tok) in tokens.iter().enumerate() {
         if tok.eq_ignore_ascii_case("rm") {
-            // Collect all flag tokens after rm
             let mut has_r = false;
             let mut has_f = false;
-            let mut target_start = i + 1;
+            let mut targets = Vec::new();
+            let mut options_ended = false;
 
-            for (j, &flag_tok) in tokens.iter().enumerate().skip(i + 1) {
-                if flag_tok.starts_with('-') && !flag_tok.starts_with("--") {
-                    let flags = &flag_tok[1..];
+            for &arg in tokens.iter().skip(i + 1) {
+                if !options_ended && arg == "--" {
+                    options_ended = true;
+                    continue;
+                }
+
+                if !options_ended && arg.starts_with("--") {
+                    match arg {
+                        "--recursive" => has_r = true,
+                        "--force" => has_f = true,
+                        _ => {},
+                    }
+                    continue;
+                }
+
+                if !options_ended && arg.starts_with('-') {
+                    let flags = &arg[1..];
                     if flags.contains('r') || flags.contains('R') {
                         has_r = true;
                     }
                     if flags.contains('f') || flags.contains('F') {
                         has_f = true;
                     }
-                    target_start = j + 1;
-                } else {
-                    break;
+                    continue;
                 }
+
+                targets.push(arg);
             }
 
-            if has_r && has_f && target_start < tokens.len() {
-                let target = tokens[target_start];
-                if !is_allowed_rm_target(target) {
-                    return Err(blocked(
-                        "rm -rf outside of temporary directories can cause permanent data loss",
-                        original,
-                        "rm -rf is only allowed for /tmp/*, /var/tmp/*, or $TMPDIR/* paths.",
-                    ));
+            if has_r && has_f {
+                for target in targets {
+                    if !is_allowed_rm_target(target) {
+                        return Err(blocked(
+                            "rm -rf outside of temporary directories can cause permanent data loss",
+                            original,
+                            "rm -rf is only allowed for /tmp/*, /var/tmp/*, or $TMPDIR/* paths.",
+                        ));
+                    }
                 }
             }
         }
@@ -693,11 +708,26 @@ mod tests {
     }
 
     #[test]
+    fn blocks_rm_rf_when_any_target_is_dangerous() {
+        assert_blocked("rm -rf /tmp/build-cache ~/projects");
+        assert_blocked("rm -rf /tmp/build-cache /home/user");
+        assert_blocked("rm -r -f /tmp/build-cache ..");
+        assert_blocked("rm -rf /tmp/build-cache -- ~/projects");
+    }
+
+    #[test]
     fn allows_rm_rf_temp_dirs() {
         assert_allowed("rm -rf /tmp/build-cache");
         assert_allowed("rm -rf /var/tmp/test");
         assert_allowed("rm -rf $TMPDIR/foo");
         assert_allowed("rm -rf ${TMPDIR}/bar");
+    }
+
+    #[test]
+    fn allows_rm_rf_multiple_temp_targets() {
+        assert_allowed("rm -rf /tmp/build-cache /var/tmp/test");
+        assert_allowed("rm -r -f $TMPDIR/foo ${TMPDIR}/bar");
+        assert_allowed("rm -rf -- /tmp/build-cache /var/tmp/test");
     }
 
     #[test]
