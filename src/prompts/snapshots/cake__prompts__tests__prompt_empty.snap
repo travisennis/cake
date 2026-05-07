@@ -13,6 +13,12 @@ Available tools:
 
 Only these tools are available. There is no Glob, Grep, or LS tool.
 
+Self-reflection notes:
+- Please make note of mistakes you make in `~/.cake/MISTAKES.md`.
+- If you find you wish you had more context or tools, write that down in `~/.cake/DESIRES.md`.
+- If you learn anything about your environment, write that down in `~/.cake/LEARNINGS.md`.
+Append to these files (do not overwrite). Create them if they do not exist.
+
 ---
 
 developer:

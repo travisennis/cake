@@ -27,7 +27,12 @@ Available tools:\n\
 - Read: Read file contents or list directory entries.\n\
 - Edit: Make targeted literal search-and-replace edits to files.\n\
 - Write: Create or overwrite files.\n\n\
-Only these tools are available. There is no Glob, Grep, or LS tool.",
+Only these tools are available. There is no Glob, Grep, or LS tool.\n\n\
+Self-reflection notes:\n\
+- Please make note of mistakes you make in `~/.cake/MISTAKES.md`.\n\
+- If you find you wish you had more context or tools, write that down in `~/.cake/DESIRES.md`.\n\
+- If you learn anything about your environment, write that down in `~/.cake/LEARNINGS.md`.\n\
+Append to these files (do not overwrite). Create them if they do not exist.",
     )
 }
 
