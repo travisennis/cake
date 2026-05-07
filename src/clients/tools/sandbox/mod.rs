@@ -562,37 +562,40 @@ mod tests {
 
     #[test]
     fn build_allows_fnm_runtime_manager_paths() {
-        let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
-            return;
-        };
+        // Pin HOME via temp_env so this test serializes with other tests that
+        // mutate HOME (e.g. test_profile_escapes_home_based_paths). Without
+        // the lock, parallel tests can swap HOME mid-build and break the
+        // expected paths below.
+        temp_env::with_var("HOME", Some("/tmp/cake-sandbox-test-home"), || {
+            let home = PathBuf::from("/tmp/cake-sandbox-test-home");
+            let config = SandboxConfig::build(std::path::Path::new("/workspace"));
 
-        let config = SandboxConfig::build(std::path::Path::new("/workspace"));
+            for expected in [
+                home.join(".fnm"),
+                home.join(".local/share/fnm"),
+                home.join(".local/state/fnm"),
+                home.join(".local/state/fnm_multishells"),
+                home.join(".cache/fnm"),
+            ] {
+                assert!(
+                    config.read_write.contains(&expected),
+                    "expected read-write sandbox access for {}",
+                    expected.display()
+                );
+            }
 
-        for expected in [
-            home.join(".fnm"),
-            home.join(".local/share/fnm"),
-            home.join(".local/state/fnm"),
-            home.join(".local/state/fnm_multishells"),
-            home.join(".cache/fnm"),
-        ] {
-            assert!(
-                config.read_write.contains(&expected),
-                "expected read-write sandbox access for {}",
-                expected.display()
-            );
-        }
-
-        #[cfg(target_os = "macos")]
-        for expected in [
-            home.join("Library/Caches/fnm"),
-            home.join("Library/Application Support/fnm"),
-        ] {
-            assert!(
-                config.read_write.contains(&expected),
-                "expected read-write sandbox access for {}",
-                expected.display()
-            );
-        }
+            #[cfg(target_os = "macos")]
+            for expected in [
+                home.join("Library/Caches/fnm"),
+                home.join("Library/Application Support/fnm"),
+            ] {
+                assert!(
+                    config.read_write.contains(&expected),
+                    "expected read-write sandbox access for {}",
+                    expected.display()
+                );
+            }
+        });
     }
 
     /// Smoke test that every major toolchain category from the safehouse
@@ -601,82 +604,83 @@ mod tests {
     /// project relies on so cake works across many codebases.
     #[test]
     fn build_covers_common_toolchains() {
-        let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
-            return;
-        };
+        // Pin HOME via temp_env so this test serializes with other tests that
+        // mutate HOME and does not depend on the ambient HOME value.
+        temp_env::with_var("HOME", Some("/tmp/cake-sandbox-test-home"), || {
+            let home = PathBuf::from("/tmp/cake-sandbox-test-home");
+            let config = SandboxConfig::build(std::path::Path::new("/workspace"));
 
-        let config = SandboxConfig::build(std::path::Path::new("/workspace"));
+            let cross_platform_expected = [
+                // Node ecosystem
+                home.join(".npm"),
+                home.join(".npmrc"),
+                home.join(".config/configstore"),
+                home.join(".node-gyp"),
+                home.join(".pnpm-store"),
+                home.join(".yarn"),
+                home.join(".cache/node/corepack"),
+                home.join(".nvm"),
+                home.join(".cache/turbo"),
+                // Bun / Deno
+                home.join(".bun"),
+                home.join(".deno"),
+                // Go
+                home.join("go"),
+                home.join(".cache/go-build"),
+                // Java / JVM
+                home.join(".m2"),
+                home.join(".gradle"),
+                home.join(".sdkman"),
+                home.join(".cache/coursier"),
+                // Python
+                home.join(".cache/uv"),
+                home.join(".cache/pip"),
+                home.join(".local/pipx"),
+                home.join(".pyenv"),
+                home.join(".cache/ruff"),
+                home.join(".cache/mypy"),
+                home.join(".virtualenvs"),
+                home.join(".conda"),
+                // Ruby
+                home.join(".rbenv"),
+                home.join(".bundle"),
+                home.join(".gem"),
+                // Perl / PHP
+                home.join(".cpanm"),
+                home.join(".composer"),
+                // Runtime managers
+                home.join(".proto"),
+                home.join(".pkgx"),
+            ];
 
-        let cross_platform_expected = [
-            // Node ecosystem
-            home.join(".npm"),
-            home.join(".npmrc"),
-            home.join(".config/configstore"),
-            home.join(".node-gyp"),
-            home.join(".pnpm-store"),
-            home.join(".yarn"),
-            home.join(".cache/node/corepack"),
-            home.join(".nvm"),
-            home.join(".cache/turbo"),
-            // Bun / Deno
-            home.join(".bun"),
-            home.join(".deno"),
-            // Go
-            home.join("go"),
-            home.join(".cache/go-build"),
-            // Java / JVM
-            home.join(".m2"),
-            home.join(".gradle"),
-            home.join(".sdkman"),
-            home.join(".cache/coursier"),
-            // Python
-            home.join(".cache/uv"),
-            home.join(".cache/pip"),
-            home.join(".local/pipx"),
-            home.join(".pyenv"),
-            home.join(".cache/ruff"),
-            home.join(".cache/mypy"),
-            home.join(".virtualenvs"),
-            home.join(".conda"),
-            // Ruby
-            home.join(".rbenv"),
-            home.join(".bundle"),
-            home.join(".gem"),
-            // Perl / PHP
-            home.join(".cpanm"),
-            home.join(".composer"),
-            // Runtime managers
-            home.join(".proto"),
-            home.join(".pkgx"),
-        ];
+            for expected in cross_platform_expected {
+                assert!(
+                    config.read_write.contains(&expected),
+                    "expected read-write sandbox access for {}",
+                    expected.display()
+                );
+            }
 
-        for expected in cross_platform_expected {
-            assert!(
-                config.read_write.contains(&expected),
-                "expected read-write sandbox access for {}",
-                expected.display()
-            );
-        }
-
-        #[cfg(target_os = "macos")]
-        for expected in [
-            home.join("Library/Caches/npm"),
-            home.join("Library/pnpm"),
-            home.join("Library/Caches/Yarn"),
-            home.join("Library/Caches/bun"),
-            home.join("Library/Caches/deno"),
-            home.join("Library/Caches/go-build"),
-            home.join("Library/Java"),
-            home.join("Library/Caches/Coursier"),
-            home.join("Library/Caches/uv"),
-            home.join("Library/Caches/bundle"),
-            home.join("Library/Caches/composer"),
-        ] {
-            assert!(
-                config.read_write.contains(&expected),
-                "expected read-write sandbox access for {}",
-                expected.display()
-            );
-        }
+            #[cfg(target_os = "macos")]
+            for expected in [
+                home.join("Library/Caches/npm"),
+                home.join("Library/pnpm"),
+                home.join("Library/Caches/Yarn"),
+                home.join("Library/Caches/bun"),
+                home.join("Library/Caches/deno"),
+                home.join("Library/Caches/go-build"),
+                home.join("Library/Java"),
+                home.join("Library/Caches/Coursier"),
+                home.join("Library/Caches/uv"),
+                home.join("Library/Caches/bundle"),
+                home.join("Library/Caches/composer"),
+            ] {
+                assert!(
+                    config.read_write.contains(&expected),
+                    "expected read-write sandbox access for {}",
+                    expected.display()
+                );
+            }
+        });
     }
 }
