@@ -57,6 +57,7 @@ just rust-version-check
 ## Agent Instructions
 
 - Run the `Full CI check` command when you complete a task that invovles code, config or dependecy changes to make sure the code is correct.
+- When asked to create, choose, update, or work on a task, first read `.agents/TASKS.md`, then use `.agents/.tasks/index.md` as the task queue and open the specific task file before acting.
 - Do not commit or push code unless explicitly asked to.
 
 ---
@@ -96,7 +97,7 @@ This project uses [Conventional Commits](https://www.conventionalcommits.org/). 
 
 ## ExecPlans
 
-When writing complex features or significant refactors, use an ExecPlan (as described in .agents/PLANS.md) from design to implementation.
+When writing complex features or significant refactors (e.g. L or XL tasks), use an ExecPlan (as described in .agents/PLANS.md) from design to implementation.
 
 ---
 
