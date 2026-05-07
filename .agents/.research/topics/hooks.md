@@ -1,10 +1,10 @@
 # Hooks
 
-Hooks is a feature we are considering adding to acai. We are currently in the research phase.
+Hooks is a feature we are considering adding to cake. We are currently in the research phase.
 
 ## Research Findings
 
-This document summarizes hooks implementations across four major AI coding assistants: Claude Code, OpenAI Codex, Cursor, and GitHub Copilot. Each system takes a slightly different approach, but there are common patterns that can inform acai's implementation.
+This document summarizes hooks implementations across four major AI coding assistants: Claude Code, OpenAI Codex, Cursor, and GitHub Copilot. Each system takes a slightly different approach, but there are common patterns that can inform cake's implementation.
 
 ---
 
@@ -601,9 +601,9 @@ Note: Only `"deny"` is currently processed. `"allow"` and `"ask"` are parsed but
 
 ---
 
-## Recommendations for acai
+## Recommendations for cake
 
-Based on this research, here are recommendations for implementing hooks in acai:
+Based on this research, here are recommendations for implementing hooks in cake:
 
 ### 1. Core Architecture
 
@@ -695,9 +695,9 @@ Exit 1 (or other) = Non-blocking error, continue execution
 
 | Location | Path | Priority |
 |----------|------|----------|
-| User | `~/.config/acai/hooks.json` | Lowest |
-| Project | `.acai/hooks.json` | Medium |
-| Local (gitignored) | `.acai/hooks.local.json` | Highest |
+| User | `~/.config/cake/hooks.json` | Lowest |
+| Project | `.cake/hooks.json` | Medium |
+| Local (gitignored) | `.cake/hooks.local.json` | Highest |
 
 ### 8. Rust Implementation Considerations
 
@@ -744,11 +744,11 @@ pub enum HookDecision {
 
 ### 9. Sandbox Integration
 
-Since acai uses OS-level sandboxing (macOS Seatbelt, Linux Landlock), hooks should:
+Since cake uses OS-level sandboxing (macOS Seatbelt, Linux Landlock), hooks should:
 
 1. **Run outside the sandbox** by default (for flexibility)
 2. **Optionally run sandboxed** for security-sensitive deployments
-3. **Inherit environment** from the acai session
+3. **Inherit environment** from the cake session
 4. **Receive sandbox context** in input (e.g., which sandbox profile is active)
 
 ### 10. Security Considerations

@@ -1,8 +1,8 @@
 # Reasoning
 
-I want to provide better support for controlling the reasoning effort of models in acai. This is currently in the research phase. The reasoning effort for models can be configured when creating a model via settings.toml.
+I want to provide better support for controlling the reasoning effort of models in cake. This is currently in the research phase. The reasoning effort for models can be configured when creating a model via settings.toml.
 
-## Current State in acai
+## Current State in cake
 
 - **Reasoning output parsing** works for the Responses API: reasoning items (with `summary`, `encrypted_content`, and `content`) are captured as `ConversationItem::Reasoning` and echoed back for multi-turn.
 - **Reasoning tokens** are tracked in `OutputTokensDetails::reasoning_tokens` for the Responses API; hardcoded to `0` for Chat Completions.
@@ -31,11 +31,11 @@ The Responses API accepts a top-level `reasoning` object on the request:
 
 **`summary`** (enum, optional): `"concise"` | `"detailed"` | `"auto"`
 - Controls whether the response includes a human-readable summary of the reasoning.
-- Currently acai already parses summaries from response output; this parameter lets you *request* them.
+- Currently cake already parses summaries from response output; this parameter lets you *request* them.
 
-**Response shape**: Reasoning appears as an output item of `type: "reasoning"` with `encrypted_content` (opaque, must be echoed back) and `summary` (array of summary text). Usage includes `output_tokens_details.reasoning_tokens`. acai already handles all of this.
+**Response shape**: Reasoning appears as an output item of `type: "reasoning"` with `encrypted_content` (opaque, must be echoed back) and `summary` (array of summary text). Usage includes `output_tokens_details.reasoning_tokens`. cake already handles all of this.
 
-**Streaming events**: `response.reasoning.delta`, `response.reasoning.done`, `response.reasoning_summary_part.added`, `response.reasoning_summary_part.done`. (Not relevant until acai supports streaming.)
+**Streaming events**: `response.reasoning.delta`, `response.reasoning.done`, `response.reasoning_summary_part.added`, `response.reasoning_summary_part.done`. (Not relevant until cake supports streaming.)
 
 ### 2. Chat Completions API — `reasoning_effort` parameter
 
@@ -54,7 +54,7 @@ The Chat Completions API accepts a top-level `reasoning_effort` string:
 - `gpt-5.1` defaults to `"none"` (no reasoning); earlier models default to `"medium"`.
 - `"xhigh"` only supported for models after `gpt-5.1-codex-max`.
 
-**Response shape**: Reasoning tokens are reported in `usage.completion_tokens_details.reasoning_tokens`. The Chat Completions API does *not* return reasoning text/traces in the response body — it only reports the token count. acai currently hardcodes `reasoning_tokens: 0` for Chat Completions and should instead parse `completion_tokens_details` from the response.
+**Response shape**: Reasoning tokens are reported in `usage.completion_tokens_details.reasoning_tokens`. The Chat Completions API does *not* return reasoning text/traces in the response body — it only reports the token count. cake currently hardcodes `reasoning_tokens: 0` for Chat Completions and should instead parse `completion_tokens_details` from the response.
 
 ### 3. OpenRouter's Unified `reasoning` Parameter (Chat Completions)
 
@@ -78,7 +78,7 @@ When using OpenRouter as the base URL with the Chat Completions API, OpenRouter 
 - `exclude: true` hides reasoning output but still lets the model reason internally.
 - OpenRouter normalizes these across providers (OpenAI, Anthropic, Google, etc.).
 
-**Response shape with OpenRouter Chat Completions**: Reasoning text appears in `choices[0].message.reasoning` (a string) and structured detail in `choices[0].message.reasoning_details` (array). acai does not currently parse either of these fields.
+**Response shape with OpenRouter Chat Completions**: Reasoning text appears in `choices[0].message.reasoning` (a string) and structured detail in `choices[0].message.reasoning_details` (array). cake does not currently parse either of these fields.
 
 ### 4. Provider-Specific Nuances
 
@@ -131,7 +131,7 @@ New fields:
 #### Open Questions
 
 1. **Should `reasoning_effort` also be overridable at runtime?** (e.g., CLI flag `--reasoning-effort high`)
-2. **Should OpenRouter's extended `reasoning` object be supported for Chat Completions**, or should acai only support the standard `reasoning_effort` string?
+2. **Should OpenRouter's extended `reasoning` object be supported for Chat Completions**, or should cake only support the standard `reasoning_effort` string?
 3. **Should `reasoning.max_tokens` (budget-style) be exposed**, or should effort levels be the only interface?
 4. **Should `reasoning.exclude` be supported** for cases where reasoning is wanted internally but not in output?
 

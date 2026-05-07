@@ -12,7 +12,7 @@ The observable outcome is simple. When an API returns `429`, `529`, `503`, a con
 
 ## Progress
 
-- [x] 2026-04-28 00:11Z Reviewed `.agents/.research/retry-strategy.md` and the current retry path in `src/clients/agent.rs`, `src/clients/responses.rs`, `src/clients/chat_completions.rs`, `src/main.rs`, and `src/config/model.rs`.
+- [x] 2026-04-28 00:11Z Reviewed `.agents/.research/topics/retry-strategy.md` and the current retry path in `src/clients/agent.rs`, `src/clients/responses.rs`, `src/clients/chat_completions.rs`, `src/main.rs`, and `src/config/model.rs`.
 - [x] 2026-04-28 00:11Z Wrote the initial ExecPlan and scoped the research down to ideas that fit cake's current architecture.
 - [x] 2026-04-28 20:17Z Extracted retry classification, delay calculation, context-overflow recovery, and transport classification into `src/clients/retry.rs`, then threaded request overrides through both API backends.
 - [x] 2026-04-28 20:17Z Replaced the inline retry loop in `src/clients/agent.rs`, added a retry callback, and wired text-mode spinner updates in `src/main.rs` without changing session history.
@@ -272,7 +272,7 @@ In `src/clients/responses.rs` and `src/clients/chat_completions.rs`, change `sen
 
 No new external dependency should be introduced unless a concrete implementation obstacle appears. The retry module should rely on `reqwest`, `anyhow`, `uuid`, `tokio`, and the standard library types that are already in the repository.
 
-Revision Note (2026-04-28 00:11Z, Amp): Created the initial ExecPlan from `.agents/.research/retry-strategy.md`, translated the research into cake-specific milestones, and explicitly excluded fast-mode, auth-refresh, fallback-model, and persistent unattended retry ideas because cake does not implement those concepts today.
+Revision Note (2026-04-28 00:11Z, Amp): Created the initial ExecPlan from `.agents/.research/topics/retry-strategy.md`, translated the research into cake-specific milestones, and explicitly excluded fast-mode, auth-refresh, fallback-model, and persistent unattended retry ideas because cake does not implement those concepts today.
 
 Revision Note (2026-04-28 20:17Z, Amp): Updated the living plan after landing the shared retry module, per-turn request overrides, the new agent retry loop, text-mode retry callback wiring, and focused retry tests so the next contributor can resume from the current implementation state instead of the initial planning state.
 

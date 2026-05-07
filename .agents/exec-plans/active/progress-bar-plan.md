@@ -56,7 +56,7 @@ Where `<state>` is:
 
 And `<progress>` is an integer 0-100 (only meaningful for states 1 and 2).
 
-Acai implements only states 0 (off) and 3 (indeterminate). This plan does the same for cake.
+cake implements only states 0 (off) and 3 (indeterminate). This plan keeps that same scope.
 
 ## Goal
 

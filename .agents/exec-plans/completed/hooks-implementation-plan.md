@@ -23,7 +23,7 @@ The observable outcome is that a user can add `.cake/hooks.json`, run `cake "...
 
 ## Surprises & Discoveries
 
-- Observation: The research file in `.agents/.research/hooks.md` still says "acai" in its recommendation section, but this repository and executable are named `cake`.
+- Observation: The research file now lives at `.agents/.research/topics/hooks.md`; during the project rename, forward-looking references were updated to `cake`.
   Evidence: `Cargo.toml` has `name = "cake"`, and the CLI entrypoint is `src/main.rs`.
 
 - Observation: `cake` already has a single tool-dispatch boundary that can host tool hooks for Bash, Read, Edit, and Write.

@@ -1,4 +1,4 @@
-# Usage Patterns - Acai CLI
+# Usage Patterns - cake CLI
 
 ## Session: 2026-03-24 - Documentation Update Task
 
@@ -89,7 +89,7 @@ The CLI:
 
 ### Task Type: Research and Documentation
 
-**Prompt**: Research hooks implementations from four documentation URLs and update hooks.md with findings relevant to acai.
+**Prompt**: Research hooks implementations from four documentation URLs and update hooks.md with findings relevant to cake.
 
 ### Observed Behavior Patterns
 

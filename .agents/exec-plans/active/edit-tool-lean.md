@@ -81,7 +81,7 @@ Key files:
 - `src/clients/tools/edit.rs`: The production `Edit` tool implementation and current unit tests.
 - `src/clients/tools/mod.rs`: Shared tool definitions and path validation used by `Edit`.
 - `Cargo.toml`: Rust dependency manifest. Add a Rust test dependency here only if property testing requires one.
-- `.agents/.research/provers.md`: Existing research summary that motivates using a small formal model as a practical bug-finding and test-strengthening tool.
+- `.agents/.research/topics/provers.md`: Existing research summary that motivates using a small formal model as a practical bug-finding and test-strengthening tool.
 - `.agents/exec-plans/active/edit-tool-lean.md`: This plan.
 
 ## What We're NOT Doing
@@ -336,7 +336,7 @@ Do not use destructive git commands to roll back work. Prefer small manual patch
 
 ## References
 
-- Existing prover research: `.agents/.research/provers.md`
+- Existing prover research: `.agents/.research/topics/provers.md`
 - ExecPlan rules: `.agents/PLANS.md`
 - Production edit implementation: `src/clients/tools/edit.rs`
 - Shared tool path validation: `src/clients/tools/mod.rs`

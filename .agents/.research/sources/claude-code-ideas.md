@@ -445,9 +445,9 @@ An open-source project (clappie.ai) demonstrates this pattern:
 
 The creator noted: "Tmux and claude and telegram is a really powerful combo!"
 
-### Opportunity for Acai
+### Opportunity for cake
 
-Acai could implement:
+cake could implement:
 - Daemon mode that runs in the background
 - Multiple interface options (CLI, Telegram, web, etc.)
 - Scheduled task execution (cron-style)
@@ -481,9 +481,9 @@ From the documented memory architecture:
 - **Cross-session continuity**: Memory improves through consolidation across sessions
 - **Full consolidation** occurs every 24+ hours
 
-### Opportunity for Acai
+### Opportunity for cake
 
-Acai could implement:
+cake could implement:
 
 **Session Awareness**:
 - Detect when users are running multiple agents on the same project
@@ -528,7 +528,7 @@ One of the most interesting aspects of Claude Code's compaction is that the full
 
 **Recovery**: Even after compaction, if you think something was lost, you can tell Claude Code to "look in the session log files to find details about what we did with XYZ".
 
-**Opportunity for acai**: Implement recoverable compaction where full history is preserved but filtered from API calls. This provides a safety net for context recovery without sacrificing cost savings.
+**Opportunity for cake**: Implement recoverable compaction where full history is preserved but filtered from API calls. This provides a safety net for context recovery without sacrificing cost savings.
 
 ### Three Compaction Types
 
@@ -564,7 +564,7 @@ So Claude can still see "I ran Grep for foo in src/" but not the 500-line grep o
 
 **Critical detail**: This is disabled by default (`enabled: false` in `timeBasedMCConfig.ts:31`). It's behind a GrowthBook feature flag that Anthropic controls server-side.
 
-**Opportunity for acai**: Implement time-based compaction that activates after context cache expires. When the user returns after idle, automatically clear or summarize old tool outputs to reduce re-ingestion costs.
+**Opportunity for cake**: Implement time-based compaction that activates after context cache expires. When the user returns after idle, automatically clear or summarize old tool outputs to reduce re-ingestion costs.
 
 ### Context Cache and Token Economics
 
@@ -578,7 +578,7 @@ To solve this, AI providers cache the context on the GPU and only charge for the
 
 This means **idle time has real cost implications**. When you step away for lunch, your context cache has been flushed, and you pay full price to restart.
 
-**Opportunity for acai**: Track context cache health and warn users about cost implications of long idle times. Consider proactive microcompaction before returning to a session after extended idle.
+**Opportunity for cake**: Track context cache health and warn users about cost implications of long idle times. Consider proactive microcompaction before returning to a session after extended idle.
 
 ---
 

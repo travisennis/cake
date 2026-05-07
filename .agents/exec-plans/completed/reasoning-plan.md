@@ -36,7 +36,7 @@ The behavior is observable by reading generated request snapshots, running the r
 
 Reasoning configuration is implemented across settings, CLI overrides, model resolution, request construction, response parsing, and documentation. The implementation grew beyond the original note by also participating in retry recovery and by preserving richer reasoning content in chat translation for providers that return it.
 
-This document outlines the implementation plan for adding reasoning effort control to acai, based on the research findings.
+This document outlines the implementation plan for adding reasoning effort control to cake, based on the research findings.
 
 ## Overview
 
@@ -284,7 +284,7 @@ Priority: CLI override > Model config > Default
 1. **Runtime override**: Should `--reasoning-effort` CLI flag be implemented? 
    - **Decision**: **YES** - Implement in Phase 4 for flexibility
 
-2. **OpenRouter extended config**: Should acai support OpenRouter's `reasoning` object for Chat Completions?
+2. **OpenRouter extended config**: Should cake support OpenRouter's `reasoning` object for Chat Completions?
    - **Decision**: **NO** - With OpenRouter, only supporting the Responses API (not Chat Completions)
    - **Impact**: Phase 2.2 can be simplified; no OpenRouter-specific Chat Completions handling needed
 

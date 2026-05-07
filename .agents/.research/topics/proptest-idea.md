@@ -1,8 +1,8 @@
-# Property Testing Ideas for acai
+# Property Testing Ideas for cake
 
 ## Overview
 
-Property testing (via [`proptest`](https://crates.io/crates/proptest)) verifies that invariants hold for *all* inputs by generating random test cases and shrinking failures to minimal reproductions. This document outlines four areas where property testing would add value in acai.
+Property testing (via [`proptest`](https://crates.io/crates/proptest)) verifies that invariants hold for *all* inputs by generating random test cases and shrinking failures to minimal reproductions. This document outlines four areas where property testing would add value in cake.
 
 ### Setup
 
@@ -259,7 +259,7 @@ proptest! {
 }
 ```
 
-**Assessment for acai:** The config types in `src/config/` are relatively straightforward. Roundtrip testing would provide low-to-moderate value here unless the serde annotations become more complex. The other three areas above are higher priority.
+**Assessment for cake:** The config types in `src/config/` are relatively straightforward. Roundtrip testing would provide low-to-moderate value here unless the serde annotations become more complex. The other three areas above are higher priority.
 
 ---
 
