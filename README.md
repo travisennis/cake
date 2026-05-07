@@ -44,12 +44,14 @@ cake is a minimal coding harness for headless usage in the terminal. It's not a 
 To install cake, you'll need Rust and Cargo installed on your system. Then, follow these steps:
 
 1. Clone the repository:
+
    ```bash
    git clone https://github.com/travisennis/cake.git
    cd cake
    ```
 
 2. Build the project:
+
    ```bash
    cargo build --release
    ```
@@ -124,10 +126,10 @@ cake requires at least one model configured in `settings.toml`, plus an API key 
 
 #### Environment Variables
 
-| Variable | Description |
-|----------|-------------|
+| Variable        | Description                                                                                                              |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | `CAKE_DATA_DIR` | Override cache and session directories (default: cache at `~/.cache/cake/`, sessions at `~/.local/share/cake/sessions/`) |
-| `CAKE_SANDBOX` | Set to `off` to disable filesystem sandboxing |
+| `CAKE_SANDBOX`  | Set to `off` to disable filesystem sandboxing                                                                            |
 
 ### Model Configuration
 
@@ -218,11 +220,11 @@ When `--profile <name>` is passed, cake applies top-level global settings, top-l
 
 Models that support reasoning (e.g., OpenAI o-series, Anthropic Claude with extended thinking) can be configured with these fields:
 
-| Field | Description | Values |
-|-------|-------------|--------|
-| `reasoning_effort` | Controls how much reasoning the model performs | `none`, `low`, `medium`, `high`, `xhigh` |
-| `reasoning_summary` | How reasoning is summarized (Responses API only) | `concise`, `detailed`, `auto` |
-| `reasoning_max_tokens` | Token budget for reasoning (budget-style) | Any positive integer |
+| Field                  | Description                                      | Values                                   |
+| ---------------------- | ------------------------------------------------ | ---------------------------------------- |
+| `reasoning_effort`     | Controls how much reasoning the model performs   | `none`, `low`, `medium`, `high`, `xhigh` |
+| `reasoning_summary`    | How reasoning is summarized (Responses API only) | `concise`, `detailed`, `auto`            |
+| `reasoning_max_tokens` | Token budget for reasoning (budget-style)        | Any positive integer                     |
 
 These can also be overridden at runtime with CLI flags:
 
@@ -276,7 +278,7 @@ cake --fork 550e8400-e29b-41d4-a716-446655440000 "New branch of conversation"
 
 Sessions are saved to `~/.local/share/cake/sessions/` (or `$CAKE_DATA_DIR/sessions/` if set) as flat `{uuid}.jsonl` files. Each file includes full conversation history with metadata. Sessions are saved on both success and error for crash recovery.
 
-The `--output-format stream-json` output is a live task stream, not a resumable session file. It never emits session metadata; use the persisted session UUID with `--resume <uuid>`.
+The `--output-format stream-json` output is a live task stream, not a resumable session file. It never emits session metadata; use the persisted session UUID with `--resume <uuid>`. The `--output-format json` mode outputs a single JSON summary object at completion (result, usage, session path, turns, elapsed time) for scripting and CI integration.
 
 For more details, see [Session Management](docs/design-docs/session-management.md).
 
@@ -373,7 +375,7 @@ alias changelog='git log --oneline HEAD~10..HEAD | cake "Write a changelog from 
 compare() { cake --no-session --model glm "$1" & cake --no-session --model qwen "$1" & wait; }
 ```
 
-### Streaming JSON Output
+### Machine-Readable Output
 
 The `--output-format stream-json` mode emits NDJSON events for every conversation item, turning cake into a **backend for any frontend**. You can build a tmux-pane viewer, a web UI, or a VS Code extension that consumes the stream.
 
@@ -383,16 +385,22 @@ cake --output-format stream-json "List files" | jq '.type'
 
 See [Streaming JSON Output](docs/design-docs/streaming-json-output.md) for the full schema.
 
+The `--output-format json` mode prints a single JSON summary object at completion for scripting and CI:
+
+```bash
+cake --output-format json "Fix the bug" | jq '{result, usage, turns, elapsed_time}'
+```
+
 ### Exit Codes
 
 cake uses structured exit codes so that shell scripts and CI pipelines can distinguish between failure modes:
 
-| Code | Meaning       | Description                                              |
-|------|---------------|----------------------------------------------------------|
-| `0`  | Success       | The agent completed and produced a response               |
-| `1`  | Agent error   | The model or a tool encountered an error during execution|
-| `2`  | API error     | Rate limit, auth failure, or network error               |
-| `3`  | Input error   | No prompt provided, invalid flags, missing API key       |
+| Code | Meaning     | Description                                               |
+| ---- | ----------- | --------------------------------------------------------- |
+| `0`  | Success     | The agent completed and produced a response               |
+| `1`  | Agent error | The model or a tool encountered an error during execution |
+| `2`  | API error   | Rate limit, auth failure, or network error                |
+| `3`  | Input error | No prompt provided, invalid flags, missing API key        |
 
 ```bash
 # Use exit codes in scripts
@@ -412,7 +420,7 @@ fi
 
 - `[PROMPT]` - Your instruction prompt as a positional argument (use `-` to read from stdin)
 - `--max-tokens` - Set maximum tokens in response
-- `--output-format` - Output format: `text` (default) or `stream-json`
+- `--output-format` - Output format: `text` (default), `stream-json`, or `json`
 - `--model <NAME>` - Select a named model from settings.toml
 - `--profile <NAME>` - Apply a named behavior profile from settings.toml
 - `--continue` - Continue the most recent session for the current directory

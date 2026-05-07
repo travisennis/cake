@@ -7,6 +7,7 @@ Cake is an AI coding assistant CLI that integrates with language models via the 
 The core problem cake solves: provide a safe, sandboxed environment for AI agents to interact with the local filesystem and execute commands, while maintaining conversation context across sessions.
 
 Key design decisions:
+
 - **Agent loop**: The model can request tool executions; results are fed back, and the loop continues until the model returns a final response
 - **Conversation as data**: All interaction history is represented as typed `ConversationItem` values
 - **Session persistence**: Conversations can be saved, resumed, continued, or forked
@@ -46,6 +47,7 @@ The bridge to external AI services and the orchestration layer for tool executio
 Foundation modules that provide data persistence, core types, and prompt generation.
 
 **`config`**:
+
 - `DataDir`: Manages cache directory (`~/.cache/cake/`), session directory (`~/.local/share/cake/sessions/`), both overridable via `CAKE_DATA_DIR`, plus AGENTS.md discovery
 - `Session`: In-memory session state with JSONL serialization
 - `worktree`: Git worktree utilities for isolated execution environments
@@ -57,6 +59,7 @@ Foundation modules that provide data persistence, core types, and prompt generat
 Sessions are stored as flat `{uuid}.jsonl` files under `~/.local/share/cake/sessions/`. Each file's header contains the working directory, so `--continue` filters by matching the current directory.
 
 **`models`**:
+
 - `Message`: Simple role+content struct for high-level API
 - `Role`: Enum of System, Assistant, User, Tool
 
@@ -143,14 +146,15 @@ Sessions enable conversation persistence across separate cake invocations:
 
 Storage format is JSONL (JSON Lines): each line is a complete JSON object, allowing append-only writes and partial recovery.
 
-### Streaming JSON Output
+### Machine-Readable Output
 
 When `--output-format stream-json` is specified, the system emits machine-readable JSON events:
+
 - `ConversationItem` values as they are created
 - Final usage statistics
 - Error events
 
-Logging is automatically suppressed to avoid polluting stdout.
+When `--output-format json` is specified, a single JSON summary object is printed at completion containing the result, session metadata, token usage, working directory, session file path, turn count, and elapsed time. Both modes suppress console progress reporting to avoid polluting stdout.
 
 ## Finding Things
 

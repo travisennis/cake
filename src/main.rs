@@ -38,6 +38,8 @@ pub enum OutputFormat {
     Text,
     /// Stream each message as JSON as it's received
     StreamJson,
+    /// Output a single JSON object with result metadata at completion
+    Json,
 }
 
 /// AI coding assistant CLI
@@ -755,7 +757,7 @@ impl CmdRunner for CodingAssistant {
                 client = updated_client;
                 Some(spinner)
             },
-            OutputFormat::StreamJson => None,
+            OutputFormat::StreamJson | OutputFormat::Json => None,
         };
 
         let msg = Message {
@@ -802,16 +804,51 @@ impl CmdRunner for CodingAssistant {
             spinner.finish_with_message(format!("Done: {summary}"));
         }
 
-        let response = result?;
-
-        if self.output_format == OutputFormat::Text {
-            if let Some(response_msg) = response {
-                println!("{}", response_msg.content);
-            } else {
-                eprintln!(
-                    "Warning: No response received from the model. The task may be incomplete."
-                );
-            }
+        match self.output_format {
+            OutputFormat::Text => {
+                let response = result?;
+                if let Some(response_msg) = response {
+                    println!("{}", response_msg.content);
+                } else {
+                    eprintln!(
+                        "Warning: No response received from the model. The task may be incomplete."
+                    );
+                }
+            },
+            OutputFormat::Json => {
+                let json = match &result {
+                    Ok(response_msg) => {
+                        let result_text = response_msg.as_ref().map_or("", |m| m.content.as_str());
+                        serde_json::json!({
+                            "result": result_text,
+                            "session_id": client.session_id.to_string(),
+                            "usage": client.total_usage,
+                            "cwd": current_dir.to_string_lossy(),
+                            "session_file": data_dir.session_path(session.id).to_string_lossy(),
+                            "turns": client.turn_count,
+                            "elapsed_time": duration_ms,
+                        })
+                    },
+                    Err(e) => {
+                        serde_json::json!({
+                            "result": null,
+                            "error": e.to_string(),
+                            "session_id": client.session_id.to_string(),
+                            "usage": client.total_usage,
+                            "cwd": current_dir.to_string_lossy(),
+                            "session_file": data_dir.session_path(session.id).to_string_lossy(),
+                            "turns": client.turn_count,
+                            "elapsed_time": duration_ms,
+                        })
+                    },
+                };
+                println!("{}", serde_json::to_string(&json)?);
+                // Propagate errors after emitting JSON to preserve exit code behavior.
+                if result.is_err() {
+                    return result.map(|_| ());
+                }
+            },
+            OutputFormat::StreamJson => {},
         }
 
         if let Some(ref wt) = wt {

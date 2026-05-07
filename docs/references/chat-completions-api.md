@@ -28,12 +28,12 @@ match self.config.config.api_type {
 
 The `build_messages()` function translates cake's internal `ConversationItem` history into Chat Completions messages:
 
-| Internal Representation | Chat Completions Translation |
-|---|---|
-| `Role::System` | `"developer"` role |
+| Internal Representation          | Chat Completions Translation                                  |
+| -------------------------------- | ------------------------------------------------------------- |
+| `Role::System`                   | `"developer"` role                                            |
 | Consecutive `FunctionCall` items | Grouped into single assistant message with `tool_calls` array |
-| `FunctionCallOutput` | `"tool"` role message with `tool_call_id` |
-| `Reasoning` items | **Skipped** (not supported) |
+| `FunctionCallOutput`             | `"tool"` role message with `tool_call_id`                     |
+| `Reasoning` items                | **Skipped** (not supported)                                   |
 
 ### Request/Response Flow
 
@@ -217,6 +217,9 @@ The Chat Completions API does not support reasoning items. Any `ConversationItem
 # Streaming JSON output
 ./target/release/cake "Your prompt here" --output-format stream-json
 
+# JSON summary output
+./target/release/cake "Your prompt here" --output-format json
+
 # With max tokens override
 ./target/release/cake --max-tokens 4000 "Explain Rust ownership"
 ```
@@ -227,34 +230,34 @@ For complete API documentation, see the [OpenAI Chat Completions API reference](
 
 ### Key Parameters
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `model` | string | ID of the model to use |
-| `messages` | array | List of messages comprising the conversation |
-| `temperature` | number | Sampling temperature (0-2) |
-| `top_p` | number | Nucleus sampling parameter |
-| `max_completion_tokens` | number | Maximum tokens to generate |
-| `tools` | array | List of tools the model may call |
-| `tool_choice` | string/object | Controls which tool is called |
+| Parameter               | Type          | Description                                  |
+| ----------------------- | ------------- | -------------------------------------------- |
+| `model`                 | string        | ID of the model to use                       |
+| `messages`              | array         | List of messages comprising the conversation |
+| `temperature`           | number        | Sampling temperature (0-2)                   |
+| `top_p`                 | number        | Nucleus sampling parameter                   |
+| `max_completion_tokens` | number        | Maximum tokens to generate                   |
+| `tools`                 | array         | List of tools the model may call             |
+| `tool_choice`           | string/object | Controls which tool is called                |
 
 ### Message Roles
 
-| Role | Description |
-|------|-------------|
+| Role        | Description                                                          |
+| ----------- | -------------------------------------------------------------------- |
 | `developer` | Developer-provided instructions (replaces `system` for newer models) |
-| `system` | System instructions (legacy, for older models) |
-| `user` | End-user messages |
-| `assistant` | Model responses |
-| `tool` | Tool results (must include `tool_call_id`) |
+| `system`    | System instructions (legacy, for older models)                       |
+| `user`      | End-user messages                                                    |
+| `assistant` | Model responses                                                      |
+| `tool`      | Tool results (must include `tool_call_id`)                           |
 
 ### Finish Reasons
 
-| Reason | Description |
-|--------|-------------|
-| `stop` | Natural stop point or stop sequence |
-| `length` | Maximum token limit reached |
-| `tool_calls` | Model called a tool |
-| `content_filter` | Content omitted by filter |
+| Reason           | Description                         |
+| ---------------- | ----------------------------------- |
+| `stop`           | Natural stop point or stop sequence |
+| `length`         | Maximum token limit reached         |
+| `tool_calls`     | Model called a tool                 |
+| `content_filter` | Content omitted by filter           |
 
 ## Examples
 
@@ -275,9 +278,7 @@ For complete API documentation, see the [OpenAI Chat Completions API reference](
 ```json
 {
   "model": "gpt-4o",
-  "messages": [
-    { "role": "user", "content": "What's the weather in Boston?" }
-  ],
+  "messages": [{ "role": "user", "content": "What's the weather in Boston?" }],
   "tools": [
     {
       "type": "function",
@@ -312,7 +313,10 @@ For complete API documentation, see the [OpenAI Chat Completions API reference](
         {
           "id": "call_abc123",
           "type": "function",
-          "function": { "name": "get_weather", "arguments": "{\"location\": \"Boston\"}" }
+          "function": {
+            "name": "get_weather",
+            "arguments": "{\"location\": \"Boston\"}"
+          }
         }
       ]
     },

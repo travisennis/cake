@@ -28,7 +28,7 @@ pub struct CodingAssistant {
     #[arg(long)]
     pub max_tokens: Option<u32>,
 
-    /// Output format for the response (text or stream-json)
+    /// Output format for the response (text, stream-json, or json)
     #[arg(long, value_enum, default_value = "text")]
     pub output_format: OutputFormat,
 
@@ -194,23 +194,24 @@ echo "Hello" | cake -
 
 ## Output Formats
 
-Two output formats are supported:
+Three output formats are supported:
 
 - **`text`** (default): Human-readable text output. Progress is streamed to stderr while the final assistant message is printed to stdout. The final progress line includes the session ID along with duration, turn count, and token usage.
-- **`stream-json`**: Machine-readable JSON streaming with events for each conversation item
+- **`stream-json`**: Machine-readable JSON streaming with events for each conversation item as they occur. Useful for building frontends that consume cake output live.
+- **`json`**: A single JSON object printed at completion containing the result, session metadata, token usage, working directory, session file path, turn count, and elapsed time. Designed for scripting and CI integration where a structured summary is needed rather than a live stream.
 
-When using `stream-json`, console logging is automatically suppressed to avoid polluting stdout.
+When using `stream-json` or `json`, console progress reporting (spinner) is automatically suppressed to avoid polluting stdout.
 
 ## Exit Codes
 
 cake returns structured exit codes so that shell scripts and CI pipelines can branch on the reason for failure:
 
-| Code | Name         | Description                                              |
-|------|--------------|----------------------------------------------------------|
-| `0`  | Success      | The agent completed and produced a response               |
-| `1`  | Agent error  | The model or a tool encountered an error during execution|
-| `2`  | API error    | Rate limit, auth failure, or network error               |
-| `3`  | Input error  | No prompt provided, invalid flags, missing API key       |
+| Code | Name        | Description                                               |
+| ---- | ----------- | --------------------------------------------------------- |
+| `0`  | Success     | The agent completed and produced a response               |
+| `1`  | Agent error | The model or a tool encountered an error during execution |
+| `2`  | API error   | Rate limit, auth failure, or network error                |
+| `3`  | Input error | No prompt provided, invalid flags, missing API key        |
 
 ### Classification Logic
 
@@ -230,3 +231,27 @@ When using `--output-format stream-json`, the task completion event reports succ
 {"type":"task_complete","success":true,...}
 {"type":"task_complete","success":false,"error":"...",...}
 ```
+
+### JSON Summary Output
+
+When using `--output-format json`, a single JSON object is printed at the end of the run:
+
+```json
+{
+  "result": "The assistant response text",
+  "session_id": "550e8400-e29b-41d4-a716-446655440000",
+  "usage": {
+    "input_tokens": 1234,
+    "input_tokens_details": { "cached_tokens": 200 },
+    "output_tokens": 567,
+    "output_tokens_details": { "reasoning_tokens": 100 },
+    "total_tokens": 1801
+  },
+  "cwd": "/home/user/project",
+  "session_file": "/home/user/.local/share/cake/sessions/550e8400-e29b-41d4-a716-446655440000.jsonl",
+  "turns": 3,
+  "elapsed_time": 4500
+}
+```
+
+On error, `result` is `null` and an `error` field is included with the error message. The error is then propagated to produce a non-zero exit code.
