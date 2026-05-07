@@ -44,7 +44,9 @@ fn build_http_client(disable_connection_reuse: bool) -> reqwest::Client {
         builder = builder.pool_max_idle_per_host(0);
     }
 
-    builder.build().unwrap_or_default()
+    builder.build().unwrap_or_else(|error| {
+        panic!("HTTP client builder should be valid with fixed timeout and pool settings: {error}")
+    })
 }
 
 // =============================================================================
