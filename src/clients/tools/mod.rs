@@ -21,7 +21,7 @@ use serde::Serialize;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 mod sandbox;
 
@@ -128,6 +128,21 @@ impl ToolContext {
             settings_dirs,
         }
     }
+
+    /// Build a context from the legacy process-global caches.
+    ///
+    /// This is used by tests and transitional call sites until 047c removes
+    /// those caches entirely.
+    pub(crate) fn from_legacy_globals() -> Self {
+        let cwd = cached_cwd().cloned().unwrap_or_else(|_| PathBuf::from("."));
+        Self {
+            cwd,
+            temp_dirs: cached_temp_dirs().to_vec(),
+            additional_dirs: ADDITIONAL_DIRS.get().cloned().unwrap_or_default(),
+            skill_dirs: SKILL_DIRS.get().cloned().unwrap_or_default(),
+            settings_dirs: SETTINGS_DIRS.get().cloned().unwrap_or_default(),
+        }
+    }
 }
 
 // =============================================================================
@@ -151,9 +166,9 @@ pub fn set_additional_dirs(dirs: Vec<PathBuf>) {
     let _ = ADDITIONAL_DIRS.set(dirs);
 }
 
-/// Get the additional directories globally.
-pub fn get_additional_dirs() -> Vec<PathBuf> {
-    ADDITIONAL_DIRS.get().cloned().unwrap_or_default()
+/// Get the additional directories from the current tool context.
+pub fn get_additional_dirs(context: &ToolContext) -> &[PathBuf] {
+    &context.additional_dirs
 }
 
 /// Set the skill directories globally.
@@ -162,9 +177,9 @@ pub fn set_skill_dirs(dirs: Vec<PathBuf>) {
     let _ = SKILL_DIRS.set(dirs);
 }
 
-/// Get the skill directories globally.
-pub fn get_skill_dirs() -> Vec<PathBuf> {
-    SKILL_DIRS.get().cloned().unwrap_or_default()
+/// Get the skill directories from the current tool context.
+pub fn get_skill_dirs(context: &ToolContext) -> &[PathBuf] {
+    &context.skill_dirs
 }
 
 /// Set the settings directories globally.
@@ -174,9 +189,9 @@ pub fn set_settings_dirs(dirs: Vec<PathBuf>) {
     let _ = SETTINGS_DIRS.set(dirs);
 }
 
-/// Get the settings directories globally.
-pub fn get_settings_dirs() -> Vec<PathBuf> {
-    SETTINGS_DIRS.get().cloned().unwrap_or_default()
+/// Get the settings directories from the current tool context.
+pub fn get_settings_dirs(context: &ToolContext) -> &[PathBuf] {
+    &context.settings_dirs
 }
 
 /// Populate the legacy process-global directory caches from a [`ToolContext`].
@@ -229,7 +244,7 @@ pub struct ToolResult {
 }
 
 type ToolFuture = Pin<Box<dyn Future<Output = Result<ToolResult, String>> + Send>>;
-type ToolExecutor = fn(String) -> ToolFuture;
+type ToolExecutor = fn(Arc<ToolContext>, String) -> ToolFuture;
 type ToolSummarizer = fn(&str) -> String;
 
 /// Registered behavior for a callable tool.
@@ -291,12 +306,17 @@ impl ToolRegistry {
     }
 
     /// Execute a registered tool by name.
-    pub(super) async fn execute(&self, name: &str, arguments: &str) -> Result<ToolResult, String> {
+    pub(super) async fn execute(
+        &self,
+        context: Arc<ToolContext>,
+        name: &str,
+        arguments: &str,
+    ) -> Result<ToolResult, String> {
         let Some(entry) = self.find(name) else {
             return Err(format!("Unknown tool: {name}"));
         };
 
-        (entry.execute)(arguments.to_string()).await
+        (entry.execute)(context, arguments.to_string()).await
     }
 
     /// Summarize registered tool arguments for display.
@@ -336,15 +356,17 @@ pub(super) struct ValidatedPath {
 /// or directories added via --add-dir flag (read-only access).
 ///
 /// Returns the canonical path along with its access level.
-pub(super) fn validate_path(path_str: &str) -> Result<ValidatedPath, String> {
-    let cwd = cached_cwd()?;
+pub(super) fn validate_path(
+    context: &ToolContext,
+    path_str: &str,
+) -> Result<ValidatedPath, String> {
     validate_path_with_dirs(
         path_str,
-        cwd,
-        cached_temp_dirs(),
-        &get_settings_dirs(),
-        &get_additional_dirs(),
-        &get_skill_dirs(),
+        &context.cwd,
+        &context.temp_dirs,
+        get_settings_dirs(context),
+        get_additional_dirs(context),
+        get_skill_dirs(context),
     )
 }
 
@@ -429,14 +451,20 @@ fn path_starts_with(canonical: &Path, dirs: &[PathBuf]) -> bool {
 /// or directories added via --add-dir flag (read-only access).
 ///
 /// This is a convenience function for read operations that don't need to check access level.
-pub(super) fn validate_path_in_cwd(path_str: &str) -> Result<std::path::PathBuf, String> {
-    validate_path(path_str).map(|vp| vp.canonical)
+pub(super) fn validate_path_in_cwd(
+    context: &ToolContext,
+    path_str: &str,
+) -> Result<std::path::PathBuf, String> {
+    validate_path(context, path_str).map(|vp| vp.canonical)
 }
 
 /// Validate that a path is writable (not in a read-only additional directory).
 /// Returns the canonical path if valid, or an error if the path is read-only.
-pub(super) fn validate_path_for_write(path_str: &str) -> Result<std::path::PathBuf, String> {
-    let validated = validate_path(path_str)?;
+pub(super) fn validate_path_for_write(
+    context: &ToolContext,
+    path_str: &str,
+) -> Result<std::path::PathBuf, String> {
+    let validated = validate_path(context, path_str)?;
     if validated.access == PathAccess::ReadOnly {
         return Err(format!(
             "Path '{}' is read-only (added via --add-dir). Write operations are not allowed.",
@@ -447,37 +475,37 @@ pub(super) fn validate_path_for_write(path_str: &str) -> Result<std::path::PathB
 }
 
 /// Get standard temporary directory paths (cached)
-pub(super) fn get_temp_directories() -> &'static [PathBuf] {
-    cached_temp_dirs()
+pub(super) fn get_temp_directories(context: &ToolContext) -> &[PathBuf] {
+    &context.temp_dirs
 }
 
 // =============================================================================
 // Tool Execution
 // =============================================================================
 
-fn execute_bash_tool(arguments: String) -> ToolFuture {
-    Box::pin(async move { bash::execute_bash(&arguments).await })
+fn execute_bash_tool(context: Arc<ToolContext>, arguments: String) -> ToolFuture {
+    Box::pin(async move { bash::execute_bash(&context, &arguments).await })
 }
 
-fn execute_edit_tool(arguments: String) -> ToolFuture {
+fn execute_edit_tool(context: Arc<ToolContext>, arguments: String) -> ToolFuture {
     Box::pin(async move {
-        tokio::task::spawn_blocking(move || edit::execute_edit(&arguments))
+        tokio::task::spawn_blocking(move || edit::execute_edit(&context, &arguments))
             .await
             .map_err(|e| format!("Task join error: {e}"))?
     })
 }
 
-fn execute_read_tool(arguments: String) -> ToolFuture {
+fn execute_read_tool(context: Arc<ToolContext>, arguments: String) -> ToolFuture {
     Box::pin(async move {
-        tokio::task::spawn_blocking(move || read::execute_read(&arguments))
+        tokio::task::spawn_blocking(move || read::execute_read(&context, &arguments))
             .await
             .map_err(|e| format!("Task join error: {e}"))?
     })
 }
 
-fn execute_write_tool(arguments: String) -> ToolFuture {
+fn execute_write_tool(context: Arc<ToolContext>, arguments: String) -> ToolFuture {
     Box::pin(async move {
-        tokio::task::spawn_blocking(move || write::execute_write(&arguments))
+        tokio::task::spawn_blocking(move || write::execute_write(&context, &arguments))
             .await
             .map_err(|e| format!("Task join error: {e}"))?
     })
@@ -697,5 +725,51 @@ mod tests {
         let result_b =
             validate_path_with_dirs(file_b.to_str().unwrap(), &cwd, &[], &[], &[], &skill_dirs);
         assert!(result_b.is_ok());
+    }
+
+    #[test]
+    fn concurrent_tool_contexts_validate_against_their_own_additional_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path().join("project");
+        let additional_a = tmp.path().join("reference-a");
+        let additional_b = tmp.path().join("reference-b");
+        fs::create_dir_all(&cwd).unwrap();
+        fs::create_dir_all(&additional_a).unwrap();
+        fs::create_dir_all(&additional_b).unwrap();
+        let file_a = additional_a.join("notes.txt");
+        let file_b = additional_b.join("notes.txt");
+        fs::write(&file_a, "a").unwrap();
+        fs::write(&file_b, "b").unwrap();
+
+        let context_a = ToolContext::with_temp_dirs(
+            cwd.clone(),
+            Vec::new(),
+            vec![additional_a],
+            Vec::new(),
+            Vec::new(),
+        );
+        let context_b = ToolContext::with_temp_dirs(
+            cwd,
+            Vec::new(),
+            vec![additional_b],
+            Vec::new(),
+            Vec::new(),
+        );
+
+        std::thread::scope(|scope| {
+            let handle_a = scope.spawn(|| {
+                let own = validate_path(&context_a, file_a.to_str().unwrap()).unwrap();
+                let other = validate_path(&context_a, file_b.to_str().unwrap());
+                (own.access, other.is_err())
+            });
+            let handle_b = scope.spawn(|| {
+                let own = validate_path(&context_b, file_b.to_str().unwrap()).unwrap();
+                let other = validate_path(&context_b, file_a.to_str().unwrap());
+                (own.access, other.is_err())
+            });
+
+            assert_eq!(handle_a.join().unwrap(), (PathAccess::ReadOnly, true));
+            assert_eq!(handle_b.join().unwrap(), (PathAccess::ReadOnly, true));
+        });
     }
 }

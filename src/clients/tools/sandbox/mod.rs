@@ -12,6 +12,8 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::clients::tools::ToolContext;
+
 // =============================================================================
 // Platform-specific implementations
 // =============================================================================
@@ -44,8 +46,14 @@ pub(super) struct SandboxConfig {
 impl SandboxConfig {
     /// Build a sandbox configuration for the current context
     #[allow(dead_code)]
-    pub fn build(cwd: &std::path::Path) -> Self {
-        Self::build_with_additional_dirs(cwd, &[], &[], &[])
+    pub fn build(context: &ToolContext) -> Self {
+        Self::build_with_additional_dirs(
+            &context.cwd,
+            &context.temp_dirs,
+            &context.additional_dirs,
+            &context.settings_dirs,
+            &context.skill_dirs,
+        )
     }
 
     /// Build a sandbox configuration with additional directories.
@@ -55,6 +63,7 @@ impl SandboxConfig {
     /// `skill_dirs` are added as read-only (parent dirs of SKILL.md files).
     pub fn build_with_additional_dirs(
         cwd: &std::path::Path,
+        temp_dirs: &[std::path::PathBuf],
         additional_dirs: &[std::path::PathBuf],
         settings_dirs: &[std::path::PathBuf],
         skill_dirs: &[std::path::PathBuf],
@@ -62,7 +71,6 @@ impl SandboxConfig {
         let mut read_write = vec![cwd.to_path_buf()];
 
         // Add temp directories
-        let temp_dirs = super::get_temp_directories();
         read_write.extend(temp_dirs.iter().cloned());
 
         // Add user home toolchain and integration paths
@@ -557,6 +565,7 @@ pub(super) fn can_enforce_platform_sandbox() -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::clients::tools::ToolContext;
     use crate::clients::tools::sandbox::SandboxConfig;
     use std::path::PathBuf;
 
@@ -568,7 +577,14 @@ mod tests {
         // expected paths below.
         temp_env::with_var("HOME", Some("/tmp/cake-sandbox-test-home"), || {
             let home = PathBuf::from("/tmp/cake-sandbox-test-home");
-            let config = SandboxConfig::build(std::path::Path::new("/workspace"));
+            let context = ToolContext::with_temp_dirs(
+                PathBuf::from("/workspace"),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            );
+            let config = SandboxConfig::build(&context);
 
             for expected in [
                 home.join(".fnm"),
@@ -608,7 +624,14 @@ mod tests {
         // mutate HOME and does not depend on the ambient HOME value.
         temp_env::with_var("HOME", Some("/tmp/cake-sandbox-test-home"), || {
             let home = PathBuf::from("/tmp/cake-sandbox-test-home");
-            let config = SandboxConfig::build(std::path::Path::new("/workspace"));
+            let context = ToolContext::with_temp_dirs(
+                PathBuf::from("/workspace"),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            );
+            let config = SandboxConfig::build(&context);
 
             let cross_platform_expected = [
                 // Node ecosystem

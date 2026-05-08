@@ -10,7 +10,7 @@ use tracing::debug;
 use crate::clients::chat_completions;
 use crate::clients::responses;
 use crate::clients::retry::{self, HttpFailure, RequestOverrides, RetryStatus};
-use crate::clients::tools::{ToolRegistry, default_tool_registry};
+use crate::clients::tools::{ToolContext, ToolRegistry, default_tool_registry};
 use crate::clients::types::{
     ConversationItem, SessionRecord, StreamRecord, TaskCompleteSubtype, Usage,
 };
@@ -75,6 +75,7 @@ pub struct Agent {
     /// Conversation history using typed items
     history: Vec<ConversationItem>,
     tools: ToolRegistry,
+    tool_context: Arc<ToolContext>,
     /// Callback for streaming JSON output
     streaming_callback: Option<StreamingCallback>,
     /// Callback for append-only session persistence.
@@ -124,6 +125,7 @@ impl Agent {
                 })
                 .collect(),
             tools: default_tool_registry(),
+            tool_context: Arc::new(ToolContext::from_legacy_globals()),
             streaming_callback: None,
             persist_callback: None,
             progress_callback: None,
@@ -142,6 +144,12 @@ impl Agent {
     /// Returns the enabled tool names.
     pub fn tool_names(&self) -> Vec<String> {
         self.tools.names()
+    }
+
+    /// Sets the directory context used for tool execution and sandboxing.
+    pub fn with_tool_context(mut self, context: Arc<ToolContext>) -> Self {
+        self.tool_context = context;
+        self
     }
 
     /// Returns the resolved provider model identifier.
@@ -531,6 +539,7 @@ impl Agent {
             let skill_locations = self.skill_locations.clone();
             let activated_skills = Arc::clone(&self.activated_skills);
             let tools = self.tools.clone();
+            let tool_context = Arc::clone(&self.tool_context);
             let futures = tool_plans
                 .iter()
                 .map(|(call_id, name, _original_arguments, plan)| {
@@ -539,6 +548,7 @@ impl Agent {
                     let skill_locations = skill_locations.clone();
                     let activated_skills = Arc::clone(&activated_skills);
                     let tools = tools.clone();
+                    let tool_context = Arc::clone(&tool_context);
                     let hook_runner = self.hook_runner.clone();
                     match plan {
                         ToolHookPlan::Block {
@@ -565,6 +575,7 @@ impl Agent {
                             async move {
                                 let result = execute_tool_with_skill_dedup(
                                     &tools,
+                                    Arc::clone(&tool_context),
                                     &name,
                                     &arguments,
                                     &skill_locations,
@@ -776,24 +787,26 @@ fn append_hook_context(mut output: String, contexts: &[String]) -> String {
 
 async fn execute_tool_output(
     tools: &ToolRegistry,
+    context: Arc<ToolContext>,
     name: &str,
     arguments: &str,
 ) -> Result<String, String> {
     tools
-        .execute(name, arguments)
+        .execute(context, name, arguments)
         .await
         .map(|result| result.output)
 }
 
 async fn execute_tool_with_skill_dedup(
     tools: &ToolRegistry,
+    context: Arc<ToolContext>,
     name: &str,
     arguments: &str,
     skill_locations: &HashMap<PathBuf, String>,
     activated_skills: &Arc<Mutex<HashSet<String>>>,
 ) -> Result<ToolExecutionOutput, String> {
     if name != "Read" {
-        return execute_tool_output(tools, name, arguments)
+        return execute_tool_output(tools, context, name, arguments)
             .await
             .map(|output| ToolExecutionOutput {
                 output,
@@ -802,7 +815,7 @@ async fn execute_tool_with_skill_dedup(
     }
 
     let Some(path_str) = crate::clients::tools::read::extract_path(arguments) else {
-        return execute_tool_output(tools, name, arguments)
+        return execute_tool_output(tools, context, name, arguments)
             .await
             .map(|output| ToolExecutionOutput {
                 output,
@@ -811,7 +824,7 @@ async fn execute_tool_with_skill_dedup(
     };
 
     let Ok(path) = PathBuf::from(&path_str).canonicalize() else {
-        return execute_tool_output(tools, name, arguments)
+        return execute_tool_output(tools, context, name, arguments)
             .await
             .map(|output| ToolExecutionOutput {
                 output,
@@ -820,7 +833,7 @@ async fn execute_tool_with_skill_dedup(
     };
 
     let Some(skill_name) = skill_locations.get(&path) else {
-        return execute_tool_output(tools, name, arguments)
+        return execute_tool_output(tools, context, name, arguments)
             .await
             .map(|output| ToolExecutionOutput {
                 output,
@@ -842,7 +855,7 @@ async fn execute_tool_with_skill_dedup(
         });
     }
 
-    let output = execute_tool_output(tools, name, arguments).await?;
+    let output = execute_tool_output(tools, context, name, arguments).await?;
     if let Ok(mut guard) = activated_skills.lock() {
         guard.insert(skill_name.clone());
     }
@@ -1202,6 +1215,7 @@ mod tests {
 
         let result = execute_tool_with_skill_dedup(
             &default_tool_registry(),
+            Arc::new(ToolContext::from_legacy_globals()),
             "Read",
             &arguments,
             &skill_locations,
@@ -1230,6 +1244,7 @@ mod tests {
 
         let error = execute_tool_with_skill_dedup(
             &default_tool_registry(),
+            Arc::new(ToolContext::from_legacy_globals()),
             "Read",
             &arguments,
             &skill_locations,

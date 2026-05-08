@@ -297,29 +297,26 @@ pub fn summarize_args(arguments: &str) -> String {
 
 /// Execute a bash command
 #[allow(clippy::too_many_lines)]
-pub(super) async fn execute_bash(arguments: &str) -> Result<super::ToolResult, String> {
+pub(super) async fn execute_bash(
+    context: &super::ToolContext,
+    arguments: &str,
+) -> Result<super::ToolResult, String> {
     let args = BashExecutionArgs::from_json(arguments)?;
-    Box::pin(execute_bash_with_args(args)).await
+    Box::pin(execute_bash_with_args(context, args)).await
 }
 
 #[allow(clippy::too_many_lines)]
-async fn execute_bash_with_args(args: BashExecutionArgs) -> Result<super::ToolResult, String> {
+async fn execute_bash_with_args(
+    context: &super::ToolContext,
+    args: BashExecutionArgs,
+) -> Result<super::ToolResult, String> {
     // Pre-execution safety check: block known-destructive commands
     super::bash_safety::validate_command_safety(&args.command)?;
 
     let start_time = Instant::now();
 
     // Build sandbox configuration with additional directories
-    let cwd = std::env::current_dir().map_err(|e| format!("Failed to get cwd: {e}"))?;
-    let additional_dirs = super::get_additional_dirs();
-    let settings_dirs = super::get_settings_dirs();
-    let skill_dirs = super::get_skill_dirs();
-    let sandbox_config = super::sandbox::SandboxConfig::build_with_additional_dirs(
-        &cwd,
-        &additional_dirs,
-        &settings_dirs,
-        &skill_dirs,
-    );
+    let sandbox_config = super::sandbox::SandboxConfig::build(context);
 
     // Create command with proper stdio configuration
     let mut command = Command::new("bash");
@@ -456,7 +453,8 @@ async fn execute_bash_with_args(args: BashExecutionArgs) -> Result<super::ToolRe
 #[cfg(test)]
 async fn execute_bash_unsandboxed(arguments: &str) -> Result<super::ToolResult, String> {
     let args = BashExecutionArgs::from_json_with_sandbox(arguments, false)?;
-    Box::pin(execute_bash_with_args(args)).await
+    let context = super::ToolContext::from_legacy_globals();
+    Box::pin(execute_bash_with_args(&context, args)).await
 }
 
 /// If `output` exceeds [`BASH_OUTPUT_MAX_BYTES`], write the full text to a
@@ -520,6 +518,7 @@ pub(super) fn truncate_output(output: &str, exit_code: i32, elapsed_ms: u128) ->
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::clients::tools::ToolContext;
 
     #[cfg(target_os = "macos")]
     fn skip_if_sandbox_unavailable() -> bool {
@@ -715,7 +714,7 @@ mod tests {
         }
 
         let args = r#"{"command": "echo should-not-run"}"#;
-        let result = Box::pin(execute_bash(args)).await;
+        let result = Box::pin(execute_bash(&ToolContext::from_legacy_globals(), args)).await;
         let error = result.expect_err("sandbox initialization failure should fail closed");
         assert!(
             error.contains("macOS sandbox unavailable"),
@@ -735,7 +734,9 @@ mod tests {
         let target = outside.join(format!("cake_sandbox_test_{}", uuid::Uuid::new_v4()));
         let target = target.display();
         let args = format!(r#"{{"command": "touch {target}"}}"#);
-        let result = Box::pin(execute_bash(&args)).await.unwrap();
+        let result = Box::pin(execute_bash(&ToolContext::from_legacy_globals(), &args))
+            .await
+            .unwrap();
         assert!(
             result.output.contains("Operation not permitted")
                 || result.output.contains("Permission denied"),
@@ -752,7 +753,9 @@ mod tests {
         }
 
         let args = r#"{"command": "ls Cargo.toml"}"#;
-        let result = Box::pin(execute_bash(args)).await.unwrap();
+        let result = Box::pin(execute_bash(&ToolContext::from_legacy_globals(), args))
+            .await
+            .unwrap();
         assert!(
             result.output.contains("Cargo.toml"),
             "Expected ls in cwd to succeed, got: {}",
@@ -775,7 +778,9 @@ mod tests {
             tempfile::TempDir::new_in(outside).expect("should create test dir outside cwd");
         let outside_dir = temp_dir.path().display();
         let args = format!(r#"{{"command": "ls {outside_dir}"}}"#);
-        let result = Box::pin(execute_bash(&args)).await.unwrap();
+        let result = Box::pin(execute_bash(&ToolContext::from_legacy_globals(), &args))
+            .await
+            .unwrap();
         assert!(
             result.output.contains("Operation not permitted")
                 || result.output.contains("Permission denied"),

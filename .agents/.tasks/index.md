@@ -4,8 +4,8 @@ This index summarizes the task files in this directory. Use it as the manually m
 
 ## Status Summary
 
-- Completed: 31
-- Pending: 69
+- Completed: 32
+- Pending: 68
 - Tracking: 2
 - Open: 1
 - Blocked: 12
@@ -23,9 +23,9 @@ These are the highest-priority tasks currently available from the task metadata:
 
 | Task | Title | Status | Priority | Depends on |
 | --- | --- | --- | --- | --- |
-| [047b](047b.md) | Plumb &ToolContext Through Tool Execution | Pending | P1 | 047a (ToolContext exists; complete), 051 (Tool abstraction so the trait can carry the context; complete) |
+| [047c](047c.md) | Delete the Tool OnceLocks | Pending | P1 | 047b (no callers reach into globals anymore; complete) |
 
-With [047a](047a.md) and [051](051.md) complete, [047b](047b.md) is the next dependency to unblock the ToolContext parent tracker.
+With [047b](047b.md) complete, [047c](047c.md) is the next dependency to finish the ToolContext parent tracker.
 
 ## Parent Trackers
 
@@ -86,7 +86,7 @@ With [047a](047a.md) and [051](051.md) complete, [047b](047b.md) is the next dep
 | [046](046.md) | Persist Activated Skills as Structured Session Metadata | Completed | P1 | - |
 | [047](047.md) | Plumb ToolContext Through Tool Execution (Parent) | Tracking | P1 | 048 (e2e test as safety net) |
 | [047a](047a.md) | Introduce ToolContext (no plumbing yet) | Completed | P1 | 048 (e2e test as safety net) |
-| [047b](047b.md) | Plumb &ToolContext Through Tool Execution | Pending | P1 | 047a (ToolContext exists), 051 (Tool abstraction so the trait can carry the context) |
+| [047b](047b.md) | Plumb &ToolContext Through Tool Execution | Completed | P1 | 047a (ToolContext exists), 051 (Tool abstraction so the trait can carry the context) |
 | [047c](047c.md) | Delete the Tool OnceLocks | Pending | P1 | 047b (no callers reach into globals anymore) |
 | [048](048.md) | Add End-to-End Agent Loop Test with Stub Backend | Completed | P1 | - |
 | [049](049.md) | Split Agent Responsibilities | Pending | P1 | 048 (e2e test as safety net), 050 (Backend abstraction), 051 (Tool abstraction), 047 (ToolContext) |

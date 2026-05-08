@@ -140,7 +140,14 @@ mod tests {
     #[test]
     fn apply_fails_closed_without_landlock_feature() {
         let sandbox = LandlockSandbox;
-        let config = SandboxConfig::build(std::path::Path::new("/tmp"));
+        let context = crate::clients::tools::ToolContext::with_temp_dirs(
+            std::path::PathBuf::from("/tmp"),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let config = SandboxConfig::build(&context);
         let mut command = tokio::process::Command::new("bash");
 
         let error = sandbox

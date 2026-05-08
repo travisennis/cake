@@ -316,6 +316,7 @@ impl CodingAssistant {
         resolved: ResolvedModelConfig,
         initial_messages: &[(Role, String)],
         skill_locations: &HashMap<PathBuf, String>,
+        tool_context: Arc<ToolContext>,
         task_id: uuid::Uuid,
     ) -> RunSession {
         let messages = restored.messages();
@@ -324,6 +325,7 @@ impl CodingAssistant {
         let agent = Agent::new(resolved.clone(), initial_messages)
             .with_session_id(restored.id)
             .with_task_id(task_id)
+            .with_tool_context(tool_context)
             .with_history(messages)
             .with_skill_locations(skill_locations.clone())
             .with_activated_skills(prior_skills);
@@ -342,10 +344,12 @@ impl CodingAssistant {
         current_dir: PathBuf,
         initial_messages: &[(Role, String)],
         skill_locations: HashMap<PathBuf, String>,
+        tool_context: Arc<ToolContext>,
         task_id: uuid::Uuid,
     ) -> RunSession {
         let agent = Agent::new(resolved.clone(), initial_messages)
             .with_task_id(task_id)
+            .with_tool_context(tool_context)
             .with_skill_locations(skill_locations);
         let new_id = agent.session_id;
         info!(target: "cake", "New session: {new_id}");
@@ -366,11 +370,13 @@ impl CodingAssistant {
         current_dir: PathBuf,
         initial_messages: &[(Role, String)],
         skill_locations: HashMap<PathBuf, String>,
+        tool_context: Arc<ToolContext>,
         task_id: uuid::Uuid,
     ) -> RunSession {
         let prior_skills = restored.activated_skills();
         let agent = Agent::new(resolved.clone(), initial_messages)
             .with_task_id(task_id)
+            .with_tool_context(tool_context)
             .with_history(restored.messages())
             .with_skill_locations(skill_locations)
             .with_activated_skills(prior_skills);
@@ -416,6 +422,7 @@ impl CodingAssistant {
         models: &HashMap<String, ModelDefinition>,
         default_model: Option<&str>,
         skill_catalog: &SkillCatalog,
+        tool_context: &Arc<ToolContext>,
         task_id: uuid::Uuid,
     ) -> anyhow::Result<RunSession> {
         let initial_messages =
@@ -442,6 +449,7 @@ impl CodingAssistant {
                 resolved,
                 &initial_messages,
                 &skill_locations,
+                Arc::clone(tool_context),
                 task_id,
             ))
         } else if let Some(ref arg) = self.resume {
@@ -462,6 +470,7 @@ impl CodingAssistant {
                 resolved,
                 &initial_messages,
                 &skill_locations,
+                Arc::clone(tool_context),
                 task_id,
             ))
         } else if let Some(ref fork_id) = self.fork {
@@ -489,6 +498,7 @@ impl CodingAssistant {
                 current_dir,
                 &initial_messages,
                 skill_locations,
+                Arc::clone(tool_context),
                 task_id,
             ))
         } else {
@@ -499,6 +509,7 @@ impl CodingAssistant {
                 current_dir,
                 &initial_messages,
                 skill_locations,
+                Arc::clone(tool_context),
                 task_id,
             ))
         }
@@ -679,6 +690,7 @@ impl CmdRunner for CodingAssistant {
             settings_dirs,
         );
         set_tool_context(&tool_context);
+        let tool_context = Arc::new(tool_context);
 
         // Log diagnostics for skills
         for diagnostic in &skill_catalog.diagnostics {
@@ -721,6 +733,7 @@ impl CmdRunner for CodingAssistant {
             &loaded.models,
             loaded.default_model.as_deref(),
             &skill_catalog,
+            &tool_context,
             task_id,
         )?;
         let mut client = run_session.agent;
@@ -1333,6 +1346,7 @@ mod tests {
             test_resolved_model_config(),
             &[(Role::System, "system".to_string())],
             &HashMap::new(),
+            Arc::new(ToolContext::from_legacy_globals()),
             uuid::uuid!("550e8400-e29b-41d4-a716-446655440001"),
         );
 
@@ -1350,6 +1364,7 @@ mod tests {
             PathBuf::from("/work"),
             &[(Role::System, "system".to_string())],
             HashMap::new(),
+            Arc::new(ToolContext::from_legacy_globals()),
             uuid::uuid!("550e8400-e29b-41d4-a716-446655440001"),
         );
 

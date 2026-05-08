@@ -1,3 +1,4 @@
+use crate::clients::tools::ToolContext;
 use serde::Deserialize;
 use std::path::Path;
 
@@ -51,7 +52,10 @@ pub fn summarize_args(arguments: &str) -> String {
 }
 
 /// Execute a write command
-pub(super) fn execute_write(arguments: &str) -> Result<super::ToolResult, String> {
+pub(super) fn execute_write(
+    context: &ToolContext,
+    arguments: &str,
+) -> Result<super::ToolResult, String> {
     let args: WriteArgs =
         serde_json::from_str(arguments).map_err(|e| format!("Invalid write arguments: {e}"))?;
 
@@ -60,7 +64,7 @@ pub(super) fn execute_write(arguments: &str) -> Result<super::ToolResult, String
 
     // Validate path is within working directory
     // For new files, we need to handle the case where the file doesn't exist yet
-    let path = validate_path_for_write(&args.path)?;
+    let path = validate_path_for_write(context, &args.path)?;
 
     // Create parent directories if they don't exist
     if let Some(parent) = path.parent()
@@ -100,12 +104,15 @@ pub(super) fn execute_write(arguments: &str) -> Result<super::ToolResult, String
 
 /// Validate a path for writing - allows non-existent paths as long as parent is in cwd or temp directories.
 /// Rejects paths in read-only additional directories (--add-dir).
-fn validate_path_for_write(path_str: &str) -> Result<std::path::PathBuf, String> {
+fn validate_path_for_write(
+    context: &ToolContext,
+    path_str: &str,
+) -> Result<std::path::PathBuf, String> {
     let path = Path::new(path_str);
 
     // If the file exists, use the shared validation which checks read-only status
     if path.exists() {
-        return super::validate_path_for_write(path_str);
+        return super::validate_path_for_write(context, path_str);
     }
 
     // For new files, find the deepest existing parent directory
@@ -135,18 +142,16 @@ fn validate_path_for_write(path_str: &str) -> Result<std::path::PathBuf, String>
     })?;
 
     // Check if the existing parent is within allowed directories
-    let cwd = super::cached_cwd()?;
-    let is_in_cwd = canonical_parent.starts_with(cwd);
-    let is_in_temp = super::get_temp_directories()
+    let is_in_cwd = canonical_parent.starts_with(&context.cwd);
+    let is_in_temp = super::get_temp_directories(context)
         .iter()
         .any(|temp_dir| canonical_parent.starts_with(temp_dir));
-    let is_in_settings = super::get_settings_dirs()
+    let is_in_settings = super::get_settings_dirs(context)
         .iter()
         .any(|settings_dir| canonical_parent.starts_with(settings_dir));
 
     // Check if parent is in a read-only additional directory
-    let additional_dirs = super::get_additional_dirs();
-    let is_in_read_only = additional_dirs
+    let is_in_read_only = super::get_additional_dirs(context)
         .iter()
         .any(|add_dir| canonical_parent.starts_with(add_dir));
 
@@ -195,7 +200,7 @@ mod tests {
         })
         .to_string();
 
-        let result = execute_write(&args).unwrap();
+        let result = execute_write(&ToolContext::from_legacy_globals(), &args).unwrap();
         assert!(result.output.contains("Created:"));
         assert!(result.output.contains("Bytes written: 13"));
 
@@ -215,7 +220,7 @@ mod tests {
         })
         .to_string();
 
-        let result = execute_write(&args).unwrap();
+        let result = execute_write(&ToolContext::from_legacy_globals(), &args).unwrap();
         assert!(result.output.contains("Overwritten:"));
         assert!(result.output.contains("Note: Consider using Edit tool"));
 
@@ -234,7 +239,7 @@ mod tests {
         })
         .to_string();
 
-        let result = execute_write(&args).unwrap();
+        let result = execute_write(&ToolContext::from_legacy_globals(), &args).unwrap();
         assert!(result.output.contains("Created:"));
 
         let content = fs::read_to_string(&nested_path).unwrap();
@@ -249,7 +254,7 @@ mod tests {
         })
         .to_string();
 
-        let result = execute_write(&args);
+        let result = execute_write(&ToolContext::from_legacy_globals(), &args);
         assert!(result.is_err());
         assert!(
             result
@@ -269,7 +274,7 @@ mod tests {
         })
         .to_string();
 
-        let result = execute_write(&args).unwrap();
+        let result = execute_write(&ToolContext::from_legacy_globals(), &args).unwrap();
         assert!(result.output.contains("Created:"));
         assert!(result.output.contains("Bytes written: 0"));
 

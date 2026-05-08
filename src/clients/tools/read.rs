@@ -2,7 +2,7 @@ use serde::Deserialize;
 use std::io::{BufRead, BufReader, Read as _};
 use std::path::Path;
 
-use crate::clients::tools::validate_path_in_cwd;
+use crate::clients::tools::{ToolContext, validate_path_in_cwd};
 
 const DEFAULT_END_LINE: usize = 500;
 const MAX_OUTPUT_BYTES: usize = 100_000;
@@ -77,12 +77,15 @@ pub fn summarize_args(arguments: &str) -> String {
 }
 
 /// Execute a read command
-pub(super) fn execute_read(arguments: &str) -> Result<super::ToolResult, String> {
+pub(super) fn execute_read(
+    context: &ToolContext,
+    arguments: &str,
+) -> Result<super::ToolResult, String> {
     let args: ReadArgs =
         serde_json::from_str(arguments).map_err(|e| format!("Invalid read arguments: {e}"))?;
 
     // Validate and canonicalize the path
-    let path = validate_path_in_cwd(&args.path)?;
+    let path = validate_path_in_cwd(context, &args.path)?;
 
     // Check if path exists
     if !path.exists() {
@@ -235,7 +238,7 @@ mod tests {
         })
         .to_string();
 
-        let result = execute_read(&args).unwrap();
+        let result = execute_read(&ToolContext::from_legacy_globals(), &args).unwrap();
         assert!(result.output.contains("File:"));
         assert!(result.output.contains("     1: Line 1"));
         assert!(result.output.contains("     2: Line 2"));
@@ -255,7 +258,7 @@ mod tests {
         })
         .to_string();
 
-        let result = execute_read(&args).unwrap();
+        let result = execute_read(&ToolContext::from_legacy_globals(), &args).unwrap();
         assert!(result.output.contains("Lines 2-4/5"));
         assert!(result.output.contains("     2: Line 2"));
         assert!(result.output.contains("     3: Line 3"));
@@ -276,7 +279,7 @@ mod tests {
         })
         .to_string();
 
-        let result = execute_read(&args).unwrap();
+        let result = execute_read(&ToolContext::from_legacy_globals(), &args).unwrap();
         assert!(result.output.contains("Directory:"));
         assert!(result.output.contains("file1.txt"));
         assert!(result.output.contains("file2.txt"));
@@ -290,7 +293,7 @@ mod tests {
         })
         .to_string();
 
-        let result = execute_read(&args);
+        let result = execute_read(&ToolContext::from_legacy_globals(), &args);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Path not found"));
     }
@@ -307,7 +310,7 @@ mod tests {
         })
         .to_string();
 
-        let result = execute_read(&args).unwrap();
+        let result = execute_read(&ToolContext::from_legacy_globals(), &args).unwrap();
         assert!(result.output.contains("Lines 1-500/600"));
         assert!(result.output.contains("[... 100 more lines ...]"));
     }
@@ -325,7 +328,7 @@ mod tests {
         })
         .to_string();
 
-        let result = execute_read(&args).unwrap();
+        let result = execute_read(&ToolContext::from_legacy_globals(), &args).unwrap();
         assert!(result.output.contains("Lines 1-2/3"));
         assert!(result.output.contains("[... 1 more lines ...]"));
     }
@@ -339,7 +342,7 @@ mod tests {
         })
         .to_string();
 
-        let result = execute_read(&args).unwrap();
+        let result = execute_read(&ToolContext::from_legacy_globals(), &args).unwrap();
         assert!(result.output.contains("(empty)"));
     }
 }
