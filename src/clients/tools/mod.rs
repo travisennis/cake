@@ -76,6 +76,58 @@ fn compute_temp_directories() -> Vec<PathBuf> {
     dirs
 }
 
+/// Directory context used by tool execution and sandbox construction.
+///
+/// This currently feeds the legacy process-global directory caches. Future
+/// refactors will pass this context directly through tool execution.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolContext {
+    pub cwd: PathBuf,
+    pub temp_dirs: Vec<PathBuf>,
+    pub additional_dirs: Vec<PathBuf>,
+    pub skill_dirs: Vec<PathBuf>,
+    pub settings_dirs: Vec<PathBuf>,
+}
+
+impl ToolContext {
+    /// Build a tool context using the same temp directory discovery as the
+    /// existing process-global cache.
+    pub fn new(
+        cwd: PathBuf,
+        additional_dirs: Vec<PathBuf>,
+        skill_dirs: Vec<PathBuf>,
+        settings_dirs: Vec<PathBuf>,
+    ) -> Self {
+        Self::with_temp_dirs(
+            cwd,
+            compute_temp_directories(),
+            additional_dirs,
+            skill_dirs,
+            settings_dirs,
+        )
+    }
+
+    /// Build a tool context with explicitly supplied temp directories.
+    ///
+    /// This keeps construction testable without depending on process-global
+    /// cache state.
+    pub const fn with_temp_dirs(
+        cwd: PathBuf,
+        temp_dirs: Vec<PathBuf>,
+        additional_dirs: Vec<PathBuf>,
+        skill_dirs: Vec<PathBuf>,
+        settings_dirs: Vec<PathBuf>,
+    ) -> Self {
+        Self {
+            cwd,
+            temp_dirs,
+            additional_dirs,
+            skill_dirs,
+            settings_dirs,
+        }
+    }
+}
+
 // =============================================================================
 // Global Directory Storage
 // =============================================================================
@@ -123,6 +175,18 @@ pub fn set_settings_dirs(dirs: Vec<PathBuf>) {
 /// Get the settings directories globally.
 pub fn get_settings_dirs() -> Vec<PathBuf> {
     SETTINGS_DIRS.get().cloned().unwrap_or_default()
+}
+
+/// Populate the legacy process-global directory caches from a [`ToolContext`].
+///
+/// This is a compatibility bridge while tools are incrementally migrated to
+/// receive `&ToolContext` directly.
+pub fn set_tool_context(context: &ToolContext) {
+    let _ = CWD.set(Ok(context.cwd.clone()));
+    let _ = TEMP_DIRS.set(context.temp_dirs.clone());
+    set_additional_dirs(context.additional_dirs.clone());
+    set_skill_dirs(context.skill_dirs.clone());
+    set_settings_dirs(context.settings_dirs.clone());
 }
 
 // =============================================================================
@@ -399,6 +463,49 @@ pub fn write_tool() -> Tool {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn tool_context_with_temp_dirs_preserves_inputs() {
+        let cwd = PathBuf::from("/workspace/project");
+        let temp_dirs = vec![PathBuf::from("/tmp"), PathBuf::from("/private/tmp")];
+        let additional_dirs = vec![PathBuf::from("/workspace/reference")];
+        let skill_dirs = vec![PathBuf::from("/workspace/.agents/skills/example")];
+        let settings_dirs = vec![PathBuf::from("/workspace/.cake")];
+
+        let context = ToolContext::with_temp_dirs(
+            cwd.clone(),
+            temp_dirs.clone(),
+            additional_dirs.clone(),
+            skill_dirs.clone(),
+            settings_dirs.clone(),
+        );
+
+        assert_eq!(context.cwd, cwd);
+        assert_eq!(context.temp_dirs, temp_dirs);
+        assert_eq!(context.additional_dirs, additional_dirs);
+        assert_eq!(context.skill_dirs, skill_dirs);
+        assert_eq!(context.settings_dirs, settings_dirs);
+    }
+
+    #[test]
+    fn tool_context_construction_is_repeatable_with_explicit_temp_dirs() {
+        let first = ToolContext::with_temp_dirs(
+            PathBuf::from("/workspace/project"),
+            vec![PathBuf::from("/tmp")],
+            vec![PathBuf::from("/workspace/reference")],
+            vec![PathBuf::from("/workspace/skills")],
+            vec![PathBuf::from("/workspace/settings")],
+        );
+        let second = ToolContext::with_temp_dirs(
+            PathBuf::from("/workspace/project"),
+            vec![PathBuf::from("/tmp")],
+            vec![PathBuf::from("/workspace/reference")],
+            vec![PathBuf::from("/workspace/skills")],
+            vec![PathBuf::from("/workspace/settings")],
+        );
+
+        assert_eq!(first, second);
+    }
 
     /// Verify that `validate_path_with_dirs` accepts paths within skill directories.
     #[test]

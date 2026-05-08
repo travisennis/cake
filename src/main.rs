@@ -10,14 +10,12 @@ mod models;
 mod prompts;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::cli::CmdRunner;
-use crate::clients::{
-    Agent, ConversationItem, set_additional_dirs, set_settings_dirs, set_skill_dirs,
-};
+use crate::clients::{Agent, ConversationItem, ToolContext, set_tool_context};
 use crate::config::{
     AgentsFile, DataDir, DiagnosticLevel, HooksLoader, ModelConfig, ModelDefinition,
     ResolvedModelConfig, Session, SettingsLoader, SkillCatalog, discover_skills,
@@ -584,12 +582,36 @@ impl CodingAssistant {
             },
         }
     }
+
+    /// Resolve `--add-dir` values against the startup directory.
+    fn resolve_additional_dirs(&self, base_dir: &Path) -> Vec<PathBuf> {
+        self.add_dir
+            .iter()
+            .filter_map(|dir| {
+                let path = PathBuf::from(dir);
+                let path_to_check = if path.is_absolute() {
+                    path.clone()
+                } else {
+                    base_dir.join(&path)
+                };
+                if path_to_check.exists() && path_to_check.is_dir() {
+                    Some(path)
+                } else {
+                    tracing::warn!(
+                        "--add-dir path '{dir}' does not exist or is not a directory, ignoring"
+                    );
+                    None
+                }
+            })
+            .collect()
+    }
 }
 
 impl CmdRunner for CodingAssistant {
     #[allow(clippy::too_many_lines)]
     async fn run(&self, data_dir: &DataDir) -> anyhow::Result<()> {
         let original_dir = std::env::current_dir()?;
+        let additional_dirs = self.resolve_additional_dirs(&original_dir);
         let wt = self.setup_worktree(&original_dir)?;
 
         let stdin_content = Self::read_stdin_content();
@@ -627,15 +649,12 @@ impl CmdRunner for CodingAssistant {
         };
         skill_catalog = skill_config.apply(skill_catalog);
 
-        // Set up skill directories for path validation
         let skill_base_dirs: Vec<PathBuf> = skill_catalog
             .skills
             .iter()
             .map(|s| s.base_directory.clone())
             .collect();
-        set_skill_dirs(skill_base_dirs);
 
-        // Set up settings directories (from settings.toml) for read-write access
         let settings_dirs: Vec<PathBuf> = loaded
             .directories
             .iter()
@@ -652,7 +671,14 @@ impl CmdRunner for CodingAssistant {
                 }
             })
             .collect();
-        set_settings_dirs(settings_dirs);
+
+        let tool_context = ToolContext::new(
+            current_dir.clone(),
+            additional_dirs,
+            skill_base_dirs,
+            settings_dirs,
+        );
+        set_tool_context(&tool_context);
 
         // Log diagnostics for skills
         for diagnostic in &skill_catalog.diagnostics {
@@ -943,24 +969,6 @@ fn main() -> std::process::ExitCode {
             return exit;
         },
     };
-
-    // Process --add-dir flags and set them in thread-local storage
-    let additional_dirs: Vec<std::path::PathBuf> = args
-        .add_dir
-        .iter()
-        .filter_map(|dir| {
-            let path = std::path::PathBuf::from(dir);
-            if path.exists() && path.is_dir() {
-                Some(path)
-            } else {
-                tracing::warn!(
-                    "--add-dir path '{dir}' does not exist or is not a directory, ignoring"
-                );
-                None
-            }
-        })
-        .collect();
-    set_additional_dirs(additional_dirs);
 
     // Set up the Tokio runtime and run the async command
     let rt = match tokio::runtime::Runtime::new() {
