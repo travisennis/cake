@@ -4,8 +4,8 @@ This index summarizes the task files in this directory. Use it as the manually m
 
 ## Status Summary
 
-- Completed: 28
-- Pending: 72
+- Completed: 29
+- Pending: 71
 - Tracking: 2
 - Open: 1
 - Blocked: 12
@@ -23,9 +23,9 @@ These are the highest-priority tasks currently available from the task metadata:
 
 | Task | Title | Status | Priority | Depends on |
 | --- | --- | --- | --- | --- |
-| [048](048.md) | Add End-to-End Agent Loop Test with Stub Backend | Pending | P1 | - |
+| [047a](047a.md) | Introduce ToolContext (no plumbing yet) | Pending | P1 | 048 (e2e test as safety net; complete) |
 
-With P0 cleared, [048](048.md) is an important P1 unlock because multiple larger refactors depend on it.
+With [048](048.md) complete, [047a](047a.md) is the next child task for the ToolContext parent tracker.
 
 ## Parent Trackers
 
@@ -88,7 +88,7 @@ With P0 cleared, [048](048.md) is an important P1 unlock because multiple larger
 | [047a](047a.md) | Introduce ToolContext (no plumbing yet) | Pending | P1 | 048 (e2e test as safety net) |
 | [047b](047b.md) | Plumb &ToolContext Through Tool Execution | Pending | P1 | 047a (ToolContext exists), 051 (Tool abstraction so the trait can carry the context) |
 | [047c](047c.md) | Delete the Tool OnceLocks | Pending | P1 | 047b (no callers reach into globals anymore) |
-| [048](048.md) | Add End-to-End Agent Loop Test with Stub Backend | Pending | P1 | - |
+| [048](048.md) | Add End-to-End Agent Loop Test with Stub Backend | Completed | P1 | - |
 | [049](049.md) | Split Agent Responsibilities | Pending | P1 | 048 (e2e test as safety net), 050 (Backend abstraction), 051 (Tool abstraction), 047 (ToolContext) |
 | [050](050.md) | Add Backend Abstraction for API Providers | Pending | P1 | 048 (e2e test as safety net) |
 | [051](051.md) | Add Tool Abstraction and Registry | Pending | P1 | 048 (e2e test as safety net) |

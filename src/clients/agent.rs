@@ -1350,7 +1350,7 @@ mod error_tests {
     use std::time::{Duration, Instant};
 
     use wiremock::matchers::{body_partial_json, method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
+    use wiremock::{Match, Mock, MockServer, Request, ResponseTemplate};
 
     /// Create a test agent configured to use the Responses API with a mock server URL
     fn test_agent_with_url(base_url: &str) -> Agent {
@@ -1427,6 +1427,251 @@ mod error_tests {
                 "total_tokens": 2
             }
         })
+    }
+
+    fn loop_tool_call_response(read_arguments: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": "resp-tool",
+            "output": [
+                {
+                    "type": "function_call",
+                    "id": "fc-1",
+                    "call_id": "call-1",
+                    "name": "Read",
+                    "arguments": read_arguments
+                }
+            ],
+            "usage": {
+                "input_tokens": 3,
+                "output_tokens": 2,
+                "total_tokens": 5
+            }
+        })
+    }
+
+    fn loop_final_response() -> serde_json::Value {
+        serde_json::json!({
+            "id": "resp-final",
+            "output": [
+                {
+                    "type": "message",
+                    "id": "msg-final",
+                    "status": "completed",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": "done"
+                        }
+                    ]
+                }
+            ],
+            "usage": {
+                "input_tokens": 4,
+                "output_tokens": 1,
+                "total_tokens": 5
+            }
+        })
+    }
+
+    #[derive(Debug)]
+    struct FunctionCallOutputMatcher {
+        call_id: String,
+        output: String,
+    }
+
+    impl Match for FunctionCallOutputMatcher {
+        fn matches(&self, request: &Request) -> bool {
+            let Ok(body) = serde_json::from_slice::<serde_json::Value>(&request.body) else {
+                return false;
+            };
+
+            body["input"].as_array().is_some_and(|items| {
+                items.iter().any(|item| {
+                    item["type"] == "function_call_output"
+                        && item["call_id"] == self.call_id
+                        && item["output"] == self.output
+                })
+            })
+        }
+    }
+
+    struct LoopFixture {
+        _dir: tempfile::TempDir,
+        read_arguments: String,
+        expected_tool_output: String,
+    }
+
+    fn loop_fixture() -> LoopFixture {
+        let fixture_dir = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+        let fixture_path = fixture_dir.path().join("loop-input.txt");
+        std::fs::write(&fixture_path, "alpha\nbeta\ngamma\n").unwrap();
+        let read_arguments = serde_json::json!({
+            "path": fixture_path,
+            "start_line": 1,
+            "end_line": 2
+        })
+        .to_string();
+        let expected_tool_output = format!(
+            "File: {}\nLines 1-2/3\n     1: alpha\n     2: beta\n[... 1 more lines ...]",
+            fixture_path.display()
+        );
+
+        LoopFixture {
+            _dir: fixture_dir,
+            read_arguments,
+            expected_tool_output,
+        }
+    }
+
+    async fn mount_agent_loop_mocks(
+        mock_server: &MockServer,
+        read_arguments: &str,
+        expected_tool_output: &str,
+    ) {
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .and(body_partial_json(serde_json::json!({
+                "input": [
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_text",
+                                "text": "run a command"
+                            }
+                        ]
+                    }
+                ]
+            })))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(loop_tool_call_response(read_arguments)),
+            )
+            .expect(1)
+            .up_to_n_times(1)
+            .mount(mock_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .and(FunctionCallOutputMatcher {
+                call_id: "call-1".to_string(),
+                output: expected_tool_output.to_string(),
+            })
+            .respond_with(ResponseTemplate::new(200).set_body_json(loop_final_response()))
+            .expect(1)
+            .mount(mock_server)
+            .await;
+    }
+
+    fn assert_agent_loop_history(agent: &Agent, read_arguments: &str, expected_tool_output: &str) {
+        assert_eq!(
+            agent
+                .history
+                .iter()
+                .map(|item| match item {
+                    ConversationItem::Message { role, .. } => role.as_str(),
+                    ConversationItem::FunctionCall { .. } => "function_call",
+                    ConversationItem::FunctionCallOutput { .. } => "function_call_output",
+                    ConversationItem::Reasoning { .. } => "reasoning",
+                })
+                .collect::<Vec<_>>(),
+            vec![
+                "system",
+                "user",
+                "function_call",
+                "function_call_output",
+                "assistant",
+            ]
+        );
+        assert!(matches!(
+            &agent.history[2],
+            ConversationItem::FunctionCall {
+                call_id,
+                name,
+                arguments,
+                ..
+            } if call_id == "call-1" && name == "Read" && arguments == read_arguments
+        ));
+        assert!(matches!(
+            &agent.history[3],
+            ConversationItem::FunctionCallOutput {
+                call_id,
+                output,
+                ..
+            } if call_id == "call-1" && output == expected_tool_output
+        ));
+    }
+
+    fn stream_records(streamed: &Arc<Mutex<Vec<String>>>) -> Vec<serde_json::Value> {
+        let streamed = streamed.lock().unwrap();
+        streamed
+            .iter()
+            .map(|json| serde_json::from_str::<serde_json::Value>(json).unwrap())
+            .collect()
+    }
+
+    fn assert_agent_loop_stream_records(stream_records: &[serde_json::Value]) {
+        assert!(
+            stream_records
+                .iter()
+                .any(|record| record["type"] == "function_call"
+                    && record["call_id"] == "call-1"
+                    && record["name"] == "Read")
+        );
+        assert!(stream_records.iter().any(|record| {
+            record["type"] == "function_call_output"
+                && record["call_id"] == "call-1"
+                && record["output"]
+                    .as_str()
+                    .is_some_and(|output| output.contains("alpha"))
+        }));
+        assert!(
+            stream_records
+                .iter()
+                .any(|record| record["type"] == "message"
+                    && record["role"] == "assistant"
+                    && record["content"] == "done")
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_loop_executes_tool_and_continues_to_final_response() {
+        let mock_server = MockServer::start().await;
+        let fixture = loop_fixture();
+        mount_agent_loop_mocks(
+            &mock_server,
+            &fixture.read_arguments,
+            &fixture.expected_tool_output,
+        )
+        .await;
+
+        let streamed = Arc::new(Mutex::new(Vec::new()));
+        let streamed_clone = Arc::clone(&streamed);
+        let mut agent = test_agent_with_url(&mock_server.uri()).with_streaming_json(move |json| {
+            streamed_clone.lock().unwrap().push(json.to_string());
+        });
+        agent.tools = vec![read_tool()];
+
+        let result = agent
+            .send(Message {
+                role: Role::User,
+                content: "run a command".to_string(),
+            })
+            .await
+            .unwrap();
+
+        assert!(matches!(result, Some(Message { content, .. }) if content == "done"));
+        assert_eq!(agent.turn_count, 2);
+        assert_eq!(agent.total_usage.input_tokens, 7);
+        assert_eq!(agent.total_usage.output_tokens, 3);
+        assert_eq!(agent.total_usage.total_tokens, 10);
+        assert_agent_loop_history(
+            &agent,
+            &fixture.read_arguments,
+            &fixture.expected_tool_output,
+        );
+        assert_agent_loop_stream_records(&stream_records(&streamed));
     }
 
     #[tokio::test]
