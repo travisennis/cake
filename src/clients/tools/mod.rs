@@ -18,7 +18,9 @@
 //! in the working directory and temp directories.
 
 use serde::Serialize;
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::OnceLock;
 
 mod sandbox;
@@ -208,13 +210,6 @@ mod write;
 /// Represents a function tool that the AI model can call during conversation.
 /// Each tool has a name, description, and JSON schema for its parameters.
 ///
-/// # Example
-///
-/// ```
-/// use cake::clients::tools::bash_tool;
-/// let tool = bash_tool();
-/// assert_eq!(tool.name, "Bash");
-/// ```
 #[derive(Serialize, Clone, Debug)]
 pub struct Tool {
     #[serde(rename = "type")]
@@ -231,6 +226,90 @@ pub struct Tool {
 #[derive(Debug)]
 pub struct ToolResult {
     pub output: String,
+}
+
+type ToolFuture = Pin<Box<dyn Future<Output = Result<ToolResult, String>> + Send>>;
+type ToolExecutor = fn(String) -> ToolFuture;
+type ToolSummarizer = fn(&str) -> String;
+
+/// Registered behavior for a callable tool.
+///
+/// This keeps the model-facing definition, execution entry point, and display
+/// summary together so adding a tool only requires one registry entry.
+#[derive(Clone)]
+pub(super) struct ToolEntry {
+    definition: Tool,
+    execute: ToolExecutor,
+    summarize: ToolSummarizer,
+}
+
+impl ToolEntry {
+    fn new(definition: Tool, execute: ToolExecutor, summarize: ToolSummarizer) -> Self {
+        Self {
+            definition,
+            execute,
+            summarize,
+        }
+    }
+}
+
+/// Registry of tools available to an agent.
+#[derive(Clone)]
+pub(super) struct ToolRegistry {
+    entries: Vec<ToolEntry>,
+}
+
+impl ToolRegistry {
+    /// Build a registry from explicit entries.
+    #[cfg(test)]
+    pub(super) const fn new(entries: Vec<ToolEntry>) -> Self {
+        Self { entries }
+    }
+
+    /// Return an empty registry, useful for tests that do not expose tools.
+    #[cfg(test)]
+    pub(super) const fn empty() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+
+    /// Return the model-facing tool definitions.
+    pub(super) fn definitions(&self) -> Vec<Tool> {
+        self.entries
+            .iter()
+            .map(|entry| entry.definition.clone())
+            .collect()
+    }
+
+    /// Return the enabled tool names.
+    pub(super) fn names(&self) -> Vec<String> {
+        self.entries
+            .iter()
+            .map(|entry| entry.definition.name.clone())
+            .collect()
+    }
+
+    /// Execute a registered tool by name.
+    pub(super) async fn execute(&self, name: &str, arguments: &str) -> Result<ToolResult, String> {
+        let Some(entry) = self.find(name) else {
+            return Err(format!("Unknown tool: {name}"));
+        };
+
+        (entry.execute)(arguments.to_string()).await
+    }
+
+    /// Summarize registered tool arguments for display.
+    pub(super) fn summarize(&self, name: &str, arguments: &str) -> String {
+        self.find(name)
+            .map_or_else(String::new, |entry| (entry.summarize)(arguments))
+    }
+
+    fn find(&self, name: &str) -> Option<&ToolEntry> {
+        self.entries
+            .iter()
+            .find(|entry| entry.definition.name == name)
+    }
 }
 
 // =============================================================================
@@ -376,30 +455,32 @@ pub(super) fn get_temp_directories() -> &'static [PathBuf] {
 // Tool Execution
 // =============================================================================
 
-/// Execute a tool call
-pub(super) async fn execute_tool(name: &str, arguments: &str) -> Result<ToolResult, String> {
-    match name {
-        "Bash" => Box::pin(bash::execute_bash(arguments)).await,
-        "Edit" => {
-            let args = arguments.to_string();
-            tokio::task::spawn_blocking(move || edit::execute_edit(&args))
-                .await
-                .map_err(|e| format!("Task join error: {e}"))?
-        },
-        "Read" => {
-            let args = arguments.to_string();
-            tokio::task::spawn_blocking(move || read::execute_read(&args))
-                .await
-                .map_err(|e| format!("Task join error: {e}"))?
-        },
-        "Write" => {
-            let args = arguments.to_string();
-            tokio::task::spawn_blocking(move || write::execute_write(&args))
-                .await
-                .map_err(|e| format!("Task join error: {e}"))?
-        },
-        _ => Err(format!("Unknown tool: {name}")),
-    }
+fn execute_bash_tool(arguments: String) -> ToolFuture {
+    Box::pin(async move { bash::execute_bash(&arguments).await })
+}
+
+fn execute_edit_tool(arguments: String) -> ToolFuture {
+    Box::pin(async move {
+        tokio::task::spawn_blocking(move || edit::execute_edit(&arguments))
+            .await
+            .map_err(|e| format!("Task join error: {e}"))?
+    })
+}
+
+fn execute_read_tool(arguments: String) -> ToolFuture {
+    Box::pin(async move {
+        tokio::task::spawn_blocking(move || read::execute_read(&arguments))
+            .await
+            .map_err(|e| format!("Task join error: {e}"))?
+    })
+}
+
+fn execute_write_tool(arguments: String) -> ToolFuture {
+    Box::pin(async move {
+        tokio::task::spawn_blocking(move || write::execute_write(&arguments))
+            .await
+            .map_err(|e| format!("Task join error: {e}"))?
+    })
 }
 
 // =============================================================================
@@ -410,13 +491,7 @@ pub(super) async fn execute_tool(name: &str, arguments: &str) -> Result<ToolResu
 /// This function uses the same typed argument structs as the tool execution,
 /// ensuring that parameter names stay in sync.
 pub fn summarize_tool_args(tool_name: &str, arguments: &str) -> String {
-    let raw = match tool_name {
-        "Bash" => bash::summarize_args(arguments),
-        "Read" => read::summarize_args(arguments),
-        "Edit" => edit::summarize_args(arguments),
-        "Write" => write::summarize_args(arguments),
-        _ => String::new(),
-    };
+    let raw = default_tool_registry().summarize(tool_name, arguments);
 
     truncate_display(&raw, 120)
 }
@@ -431,27 +506,33 @@ fn truncate_display(s: &str, max: usize) -> String {
 }
 
 // =============================================================================
-// Tool Definitions (Re-exports)
+// Tool Registry
 // =============================================================================
 
-/// Returns the Bash tool definition
-pub fn bash_tool() -> Tool {
-    bash::bash_tool()
+/// Returns the default tool registry.
+pub(super) fn default_tool_registry() -> ToolRegistry {
+    ToolRegistry {
+        entries: vec![
+            ToolEntry::new(bash::bash_tool(), execute_bash_tool, bash::summarize_args),
+            ToolEntry::new(edit::edit_tool(), execute_edit_tool, edit::summarize_args),
+            ToolEntry::new(read::read_tool(), execute_read_tool, read::summarize_args),
+            ToolEntry::new(
+                write::write_tool(),
+                execute_write_tool,
+                write::summarize_args,
+            ),
+        ],
+    }
 }
 
-/// Returns the Edit tool definition
-pub fn edit_tool() -> Tool {
-    edit::edit_tool()
-}
-
-/// Returns the Read tool definition
-pub fn read_tool() -> Tool {
-    read::read_tool()
-}
-
-/// Returns the Write tool definition
-pub fn write_tool() -> Tool {
-    write::write_tool()
+/// Returns a registry containing only the Read tool.
+#[cfg(test)]
+pub(super) fn read_tool_registry() -> ToolRegistry {
+    ToolRegistry::new(vec![ToolEntry::new(
+        read::read_tool(),
+        execute_read_tool,
+        read::summarize_args,
+    )])
 }
 
 // =============================================================================

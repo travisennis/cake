@@ -4,8 +4,8 @@ This index summarizes the task files in this directory. Use it as the manually m
 
 ## Status Summary
 
-- Completed: 30
-- Pending: 70
+- Completed: 31
+- Pending: 69
 - Tracking: 2
 - Open: 1
 - Blocked: 12
@@ -23,9 +23,9 @@ These are the highest-priority tasks currently available from the task metadata:
 
 | Task | Title | Status | Priority | Depends on |
 | --- | --- | --- | --- | --- |
-| [051](051.md) | Add Tool Abstraction and Registry | Pending | P1 | 048 (e2e test as safety net; complete) |
+| [047b](047b.md) | Plumb &ToolContext Through Tool Execution | Pending | P1 | 047a (ToolContext exists; complete), 051 (Tool abstraction so the trait can carry the context; complete) |
 
-With [047a](047a.md) complete, [047b](047b.md) is blocked on [051](051.md), so [051](051.md) is the next dependency to unblock the ToolContext parent tracker.
+With [047a](047a.md) and [051](051.md) complete, [047b](047b.md) is the next dependency to unblock the ToolContext parent tracker.
 
 ## Parent Trackers
 
@@ -91,7 +91,7 @@ With [047a](047a.md) complete, [047b](047b.md) is blocked on [051](051.md), so [
 | [048](048.md) | Add End-to-End Agent Loop Test with Stub Backend | Completed | P1 | - |
 | [049](049.md) | Split Agent Responsibilities | Pending | P1 | 048 (e2e test as safety net), 050 (Backend abstraction), 051 (Tool abstraction), 047 (ToolContext) |
 | [050](050.md) | Add Backend Abstraction for API Providers | Pending | P1 | 048 (e2e test as safety net) |
-| [051](051.md) | Add Tool Abstraction and Registry | Pending | P1 | 048 (e2e test as safety net) |
+| [051](051.md) | Add Tool Abstraction and Registry | Completed | P1 | 048 (e2e test as safety net) |
 | [052](052.md) | Move Provider Quirks Behind Provider Strategy | Pending | P1 | 050 (Backend abstraction) |
 | [053](053.md) | Model Session Mode as a Typed Run Mode | Pending | P1 | - |
 | [054](054.md) | Refactor CodingAssistant Run Into Smaller Steps | Pending | P1 | - |

@@ -10,7 +10,7 @@ use tracing::debug;
 use crate::clients::chat_completions;
 use crate::clients::responses;
 use crate::clients::retry::{self, HttpFailure, RequestOverrides, RetryStatus};
-use crate::clients::tools::{Tool, bash_tool, edit_tool, execute_tool, read_tool, write_tool};
+use crate::clients::tools::{ToolRegistry, default_tool_registry};
 use crate::clients::types::{
     ConversationItem, SessionRecord, StreamRecord, TaskCompleteSubtype, Usage,
 };
@@ -74,7 +74,7 @@ pub struct Agent {
     config: ResolvedModelConfig,
     /// Conversation history using typed items
     history: Vec<ConversationItem>,
-    tools: Vec<Tool>,
+    tools: ToolRegistry,
     /// Callback for streaming JSON output
     streaming_callback: Option<StreamingCallback>,
     /// Callback for append-only session persistence.
@@ -123,7 +123,7 @@ impl Agent {
                     timestamp: Some(timestamp.clone()),
                 })
                 .collect(),
-            tools: vec![bash_tool(), edit_tool(), read_tool(), write_tool()],
+            tools: default_tool_registry(),
             streaming_callback: None,
             persist_callback: None,
             progress_callback: None,
@@ -141,7 +141,7 @@ impl Agent {
 
     /// Returns the enabled tool names.
     pub fn tool_names(&self) -> Vec<String> {
-        self.tools.iter().map(|tool| tool.name.clone()).collect()
+        self.tools.names()
     }
 
     /// Returns the resolved provider model identifier.
@@ -530,6 +530,7 @@ impl Agent {
 
             let skill_locations = self.skill_locations.clone();
             let activated_skills = Arc::clone(&self.activated_skills);
+            let tools = self.tools.clone();
             let futures = tool_plans
                 .iter()
                 .map(|(call_id, name, _original_arguments, plan)| {
@@ -537,6 +538,7 @@ impl Agent {
                     let name = name.clone();
                     let skill_locations = skill_locations.clone();
                     let activated_skills = Arc::clone(&activated_skills);
+                    let tools = tools.clone();
                     let hook_runner = self.hook_runner.clone();
                     match plan {
                         ToolHookPlan::Block {
@@ -562,6 +564,7 @@ impl Agent {
                             let pre_context = additional_context.clone();
                             async move {
                                 let result = execute_tool_with_skill_dedup(
+                                    &tools,
                                     &name,
                                     &arguments,
                                     &skill_locations,
@@ -644,13 +647,14 @@ impl Agent {
         let mut disable_connection_reuse = false;
 
         loop {
+            let tool_definitions = self.tools.definitions();
             let request_result = match self.config.config.api_type {
                 ApiType::Responses => {
                     responses::send_request(
                         &self.client,
                         &self.config,
                         &self.history,
-                        &self.tools,
+                        &tool_definitions,
                         &request_overrides,
                     )
                     .await
@@ -660,7 +664,7 @@ impl Agent {
                         &self.client,
                         &self.config,
                         &self.history,
-                        &self.tools,
+                        &tool_definitions,
                         &request_overrides,
                     )
                     .await
@@ -770,20 +774,26 @@ fn append_hook_context(mut output: String, contexts: &[String]) -> String {
     output
 }
 
-async fn execute_tool_output(name: &str, arguments: &str) -> Result<String, String> {
-    execute_tool(name, arguments)
+async fn execute_tool_output(
+    tools: &ToolRegistry,
+    name: &str,
+    arguments: &str,
+) -> Result<String, String> {
+    tools
+        .execute(name, arguments)
         .await
         .map(|result| result.output)
 }
 
 async fn execute_tool_with_skill_dedup(
+    tools: &ToolRegistry,
     name: &str,
     arguments: &str,
     skill_locations: &HashMap<PathBuf, String>,
     activated_skills: &Arc<Mutex<HashSet<String>>>,
 ) -> Result<ToolExecutionOutput, String> {
     if name != "Read" {
-        return execute_tool_output(name, arguments)
+        return execute_tool_output(tools, name, arguments)
             .await
             .map(|output| ToolExecutionOutput {
                 output,
@@ -792,7 +802,7 @@ async fn execute_tool_with_skill_dedup(
     }
 
     let Some(path_str) = crate::clients::tools::read::extract_path(arguments) else {
-        return execute_tool_output(name, arguments)
+        return execute_tool_output(tools, name, arguments)
             .await
             .map(|output| ToolExecutionOutput {
                 output,
@@ -801,7 +811,7 @@ async fn execute_tool_with_skill_dedup(
     };
 
     let Ok(path) = PathBuf::from(&path_str).canonicalize() else {
-        return execute_tool_output(name, arguments)
+        return execute_tool_output(tools, name, arguments)
             .await
             .map(|output| ToolExecutionOutput {
                 output,
@@ -810,7 +820,7 @@ async fn execute_tool_with_skill_dedup(
     };
 
     let Some(skill_name) = skill_locations.get(&path) else {
-        return execute_tool_output(name, arguments)
+        return execute_tool_output(tools, name, arguments)
             .await
             .map(|output| ToolExecutionOutput {
                 output,
@@ -832,7 +842,7 @@ async fn execute_tool_with_skill_dedup(
         });
     }
 
-    let output = execute_tool_output(name, arguments).await?;
+    let output = execute_tool_output(tools, name, arguments).await?;
     if let Ok(mut guard) = activated_skills.lock() {
         guard.insert(skill_name.clone());
     }
@@ -933,7 +943,7 @@ fn test_agent_for(api_type: ApiType, base_url: &str) -> Agent {
     );
     agent.session_id = uuid::uuid!("550e8400-e29b-41d4-a716-446655440000");
     agent.task_id = uuid::uuid!("550e8400-e29b-41d4-a716-446655440001");
-    agent.tools = vec![];
+    agent.tools = crate::clients::tools::ToolRegistry::empty();
     agent
 }
 
@@ -1190,10 +1200,15 @@ mod tests {
         let activated_skills = Arc::new(Mutex::new(HashSet::new()));
         let arguments = serde_json::json!({ "path": skill_path }).to_string();
 
-        let result =
-            execute_tool_with_skill_dedup("Read", &arguments, &skill_locations, &activated_skills)
-                .await
-                .unwrap();
+        let result = execute_tool_with_skill_dedup(
+            &default_tool_registry(),
+            "Read",
+            &arguments,
+            &skill_locations,
+            &activated_skills,
+        )
+        .await
+        .unwrap();
 
         assert!(result.output.contains("skill instructions"));
         assert!(matches!(
@@ -1213,10 +1228,15 @@ mod tests {
         let activated_skills = Arc::new(Mutex::new(HashSet::new()));
         let arguments = serde_json::json!({ "path": skill_path }).to_string();
 
-        let error =
-            execute_tool_with_skill_dedup("Read", &arguments, &skill_locations, &activated_skills)
-                .await
-                .unwrap_err();
+        let error = execute_tool_with_skill_dedup(
+            &default_tool_registry(),
+            "Read",
+            &arguments,
+            &skill_locations,
+            &activated_skills,
+        )
+        .await
+        .unwrap_err();
 
         assert!(error.contains("Cannot read binary file"));
         assert!(!activated_skills.lock().unwrap().contains("binary-skill"));
@@ -1651,7 +1671,7 @@ mod error_tests {
         let mut agent = test_agent_with_url(&mock_server.uri()).with_streaming_json(move |json| {
             streamed_clone.lock().unwrap().push(json.to_string());
         });
-        agent.tools = vec![read_tool()];
+        agent.tools = crate::clients::tools::read_tool_registry();
 
         let result = agent
             .send(Message {
