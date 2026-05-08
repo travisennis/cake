@@ -4,8 +4,8 @@ This index summarizes the task files in this directory. Use it as the manually m
 
 ## Status Summary
 
-- Completed: 34
-- Pending: 67
+- Completed: 35
+- Pending: 66
 - Tracking: 1
 - Open: 1
 - Blocked: 12
@@ -23,9 +23,9 @@ These are the highest-priority tasks currently available from the task metadata:
 
 | Task | Title | Status | Priority | Depends on |
 | --- | --- | --- | --- | --- |
-| [050](050.md) | Add Backend Abstraction for API Providers | Pending | P1 | 048 (e2e test as safety net; complete) |
+| [049](049.md) | Split Agent Responsibilities | Pending | P1 | 048 (e2e test as safety net), 050 (Backend abstraction), 051 (Tool abstraction), 047 (ToolContext) |
 
-With [047](047.md) complete, [050](050.md) is the next dependency needed by the [049](049.md) split-agent refactor.
+With [050](050.md) complete, [049](049.md) is unblocked for the split-agent refactor.
 
 ## Parent Trackers
 
@@ -89,7 +89,7 @@ With [047](047.md) complete, [050](050.md) is the next dependency needed by the 
 | [047c](047c.md) | Delete the Tool OnceLocks | Completed | P1 | 047b (no callers reach into globals anymore) |
 | [048](048.md) | Add End-to-End Agent Loop Test with Stub Backend | Completed | P1 | - |
 | [049](049.md) | Split Agent Responsibilities | Pending | P1 | 048 (e2e test as safety net), 050 (Backend abstraction), 051 (Tool abstraction), 047 (ToolContext) |
-| [050](050.md) | Add Backend Abstraction for API Providers | Pending | P1 | 048 (e2e test as safety net) |
+| [050](050.md) | Add Backend Abstraction for API Providers | Completed | P1 | 048 (e2e test as safety net) |
 | [051](051.md) | Add Tool Abstraction and Registry | Completed | P1 | 048 (e2e test as safety net) |
 | [052](052.md) | Move Provider Quirks Behind Provider Strategy | Pending | P1 | 050 (Backend abstraction) |
 | [053](053.md) | Model Session Mode as a Typed Run Mode | Pending | P1 | - |

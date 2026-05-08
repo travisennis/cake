@@ -7,14 +7,15 @@ use futures::FutureExt;
 use tokio::time::sleep;
 use tracing::debug;
 
-use crate::clients::chat_completions;
-use crate::clients::responses;
+use crate::clients::backend::Backend;
 use crate::clients::retry::{self, HttpFailure, RequestOverrides, RetryStatus};
 use crate::clients::tools::{ToolContext, ToolRegistry, default_tool_registry};
 use crate::clients::types::{
     ConversationItem, SessionRecord, StreamRecord, TaskCompleteSubtype, Usage,
 };
-use crate::config::model::{ApiType, ResolvedModelConfig};
+#[cfg(test)]
+use crate::config::model::ApiType;
+use crate::config::model::ResolvedModelConfig;
 use crate::hooks::{HookRunner, ToolHookPlan};
 use crate::models::{Message, Role};
 
@@ -72,6 +73,7 @@ fn build_http_client(disable_connection_reuse: bool) -> reqwest::Client {
 /// through the `ApiType` configuration.
 pub struct Agent {
     config: ResolvedModelConfig,
+    backend: Backend,
     /// Conversation history using typed items
     history: Vec<ConversationItem>,
     tools: ToolRegistry,
@@ -113,6 +115,7 @@ impl Agent {
     pub fn new(config: ResolvedModelConfig, initial_messages: &[(Role, String)]) -> Self {
         let timestamp = chrono::Utc::now().to_rfc3339();
         Self {
+            backend: Backend::from_api_type(config.config.api_type),
             config,
             history: initial_messages
                 .iter()
@@ -659,28 +662,16 @@ impl Agent {
 
         loop {
             let tool_definitions = self.tools.definitions();
-            let request_result = match self.config.config.api_type {
-                ApiType::Responses => {
-                    responses::send_request(
-                        &self.client,
-                        &self.config,
-                        &self.history,
-                        &tool_definitions,
-                        &request_overrides,
-                    )
-                    .await
-                },
-                ApiType::ChatCompletions => {
-                    chat_completions::send_request(
-                        &self.client,
-                        &self.config,
-                        &self.history,
-                        &tool_definitions,
-                        &request_overrides,
-                    )
-                    .await
-                },
-            };
+            let request_result = self
+                .backend
+                .send_request(
+                    &self.client,
+                    &self.config,
+                    &self.history,
+                    &tool_definitions,
+                    &request_overrides,
+                )
+                .await;
 
             match request_result {
                 Ok(response) => {
@@ -689,12 +680,7 @@ impl Agent {
                             self.client = build_http_client(false);
                         }
 
-                        return match self.config.config.api_type {
-                            ApiType::Responses => responses::parse_response(response).await,
-                            ApiType::ChatCompletions => {
-                                chat_completions::parse_response(response).await
-                            },
-                        };
+                        return self.backend.parse_response(response).await;
                     }
 
                     let failure = HttpFailure {
