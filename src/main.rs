@@ -9,7 +9,7 @@ mod logger;
 mod models;
 mod prompts;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -303,26 +303,6 @@ impl CodingAssistant {
         resolved
     }
 
-    /// Extract activated skills from session history by scanning for Read tool
-    /// outputs that mention skill activation messages.
-    fn extract_activated_skills(messages: &[ConversationItem]) -> HashSet<String> {
-        let mut activated = HashSet::new();
-        for item in messages {
-            if let ConversationItem::FunctionCallOutput { output, .. } = item {
-                // Check for our "already active" or activation log messages
-                for line in output.lines() {
-                    if let Some(start) = line.find("Skill '")
-                        && let Some(end) = line[start + 7..].find('\'')
-                    {
-                        let name = &line[start + 7..start + 7 + end];
-                        activated.insert(name.to_string());
-                    }
-                }
-            }
-        }
-        activated
-    }
-
     /// Build a map of skill file paths to skill names for activation deduplication.
     fn skill_locations(skill_catalog: &SkillCatalog) -> HashMap<PathBuf, String> {
         skill_catalog
@@ -341,7 +321,7 @@ impl CodingAssistant {
         task_id: uuid::Uuid,
     ) -> RunSession {
         let messages = restored.messages();
-        let prior_skills = Self::extract_activated_skills(&messages);
+        let prior_skills = restored.activated_skills();
 
         let agent = Agent::new(resolved.clone(), initial_messages)
             .with_session_id(restored.id)
@@ -390,17 +370,34 @@ impl CodingAssistant {
         skill_locations: HashMap<PathBuf, String>,
         task_id: uuid::Uuid,
     ) -> RunSession {
-        let seed_records: Vec<_> = restored
-            .records
-            .iter()
-            .filter(|record| record.to_conversation_item().is_some())
-            .cloned()
-            .collect();
+        let prior_skills = restored.activated_skills();
         let agent = Agent::new(resolved.clone(), initial_messages)
             .with_task_id(task_id)
             .with_history(restored.messages())
-            .with_skill_locations(skill_locations);
+            .with_skill_locations(skill_locations)
+            .with_activated_skills(prior_skills);
         let new_id = agent.session_id;
+        let seed_records: Vec<_> = restored
+            .records
+            .iter()
+            .filter_map(|record| match record {
+                record if record.to_conversation_item().is_some() => Some(record.clone()),
+                crate::clients::SessionRecord::SkillActivated {
+                    task_id,
+                    timestamp,
+                    name,
+                    path,
+                    ..
+                } => Some(crate::clients::SessionRecord::SkillActivated {
+                    session_id: new_id.to_string(),
+                    task_id: task_id.clone(),
+                    timestamp: *timestamp,
+                    name: name.clone(),
+                    path: path.clone(),
+                }),
+                _ => None,
+            })
+            .collect();
         info!(target: "cake", "New forked session: {new_id}");
         let mut session = Session::new(new_id, current_dir);
         session.model = Some(resolved.config.model);
@@ -991,6 +988,47 @@ mod tests {
     use super::*;
     use crate::config::model::ApiType;
 
+    fn test_resolved_model_config() -> ResolvedModelConfig {
+        ResolvedModelConfig {
+            config: ModelConfig {
+                model: "test-model".to_string(),
+                api_type: ApiType::ChatCompletions,
+                base_url: "https://api.example.com".to_string(),
+                api_key_env: "TEST_API_KEY".to_string(),
+                temperature: None,
+                top_p: None,
+                max_output_tokens: None,
+                reasoning_effort: None,
+                reasoning_summary: None,
+                reasoning_max_tokens: None,
+                providers: vec![],
+            },
+            api_key: "test-key".to_string(),
+        }
+    }
+
+    fn session_with_skill_records() -> Session {
+        let mut session = Session::new(
+            uuid::uuid!("550e8400-e29b-41d4-a716-446655440000"),
+            PathBuf::from("/work"),
+        );
+        session.records = vec![
+            crate::clients::SessionRecord::FunctionCallOutput {
+                call_id: "call-1".to_string(),
+                output: "echoed text: Skill 'fake-skill' activated".to_string(),
+                timestamp: None,
+            },
+            crate::clients::SessionRecord::SkillActivated {
+                session_id: session.id.to_string(),
+                task_id: "task-1".to_string(),
+                timestamp: chrono::Utc::now(),
+                name: "real-skill".to_string(),
+                path: PathBuf::from("/work/.agents/skills/real-skill/SKILL.md"),
+            },
+        ];
+        session
+    }
+
     #[test]
     fn test_cli_parsing_positional_prompt() {
         let args = CodingAssistant::parse_from(["cake", "test prompt"]);
@@ -1278,6 +1316,45 @@ mod tests {
         let result =
             CodingAssistant::build_content(Some("instructions"), Some("file content".to_string()));
         assert_eq!(result.unwrap(), "instructions\n\nfile content");
+    }
+
+    #[test]
+    fn restored_session_seeds_skills_from_structured_records_only() {
+        let run_session = CodingAssistant::restored_client_and_session(
+            session_with_skill_records(),
+            test_resolved_model_config(),
+            &[(Role::System, "system".to_string())],
+            &HashMap::new(),
+            uuid::uuid!("550e8400-e29b-41d4-a716-446655440001"),
+        );
+
+        let activated = run_session.agent.activated_skills();
+        assert!(activated.contains("real-skill"));
+        assert!(!activated.contains("fake-skill"));
+    }
+
+    #[test]
+    fn forked_session_seeds_skills_from_structured_records() {
+        let restored = session_with_skill_records();
+        let run_session = CodingAssistant::forked_client_and_session(
+            &restored,
+            test_resolved_model_config(),
+            PathBuf::from("/work"),
+            &[(Role::System, "system".to_string())],
+            HashMap::new(),
+            uuid::uuid!("550e8400-e29b-41d4-a716-446655440001"),
+        );
+
+        assert!(run_session.agent.activated_skills().contains("real-skill"));
+        assert!(matches!(
+            run_session.storage,
+            SessionStorage::ForkSeed(records)
+                if records.iter().any(|record| matches!(
+                    record,
+                    crate::clients::SessionRecord::SkillActivated { name, .. }
+                        if name == "real-skill"
+                ))
+        ));
     }
 
     #[test]

@@ -4,8 +4,8 @@ This index summarizes the task files in this directory. Use it as the manually m
 
 ## Status Summary
 
-- Completed: 27
-- Pending: 73
+- Completed: 28
+- Pending: 72
 - Tracking: 2
 - Open: 1
 - Blocked: 12
@@ -23,7 +23,7 @@ These are the highest-priority tasks currently available from the task metadata:
 
 | Task | Title | Status | Priority | Depends on |
 | --- | --- | --- | --- | --- |
-| [046](046.md) | Persist Activated Skills as Structured Session Metadata | Pending | P1 | - |
+| [048](048.md) | Add End-to-End Agent Loop Test with Stub Backend | Pending | P1 | - |
 
 With P0 cleared, [048](048.md) is an important P1 unlock because multiple larger refactors depend on it.
 
@@ -83,7 +83,7 @@ With P0 cleared, [048](048.md) is an important P1 unlock because multiple larger
 | [043](043.md) | Report Unknown Responses Output Types | Completed | P0 | - |
 | [044](044.md) | Add Clap Exclusivity for Session Mode Flags | Completed | P0 | - |
 | [045](045.md) | Fix HTTP Client Build Error Handling | Completed | P1 | - |
-| [046](046.md) | Persist Activated Skills as Structured Session Metadata | Pending | P1 | - |
+| [046](046.md) | Persist Activated Skills as Structured Session Metadata | Completed | P1 | - |
 | [047](047.md) | Plumb ToolContext Through Tool Execution (Parent) | Tracking | P1 | 048 (e2e test as safety net) |
 | [047a](047a.md) | Introduce ToolContext (no plumbing yet) | Pending | P1 | 048 (e2e test as safety net) |
 | [047b](047b.md) | Plumb &ToolContext Through Tool Execution | Pending | P1 | 047a (ToolContext exists), 051 (Tool abstraction so the trait can carry the context) |

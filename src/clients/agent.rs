@@ -35,6 +35,18 @@ pub(super) struct TurnResult {
     pub(super) usage: Option<Usage>,
 }
 
+#[derive(Debug, Clone)]
+struct SkillActivation {
+    name: String,
+    path: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+struct ToolExecutionOutput {
+    output: String,
+    skill_activation: Option<SkillActivation>,
+}
+
 fn build_http_client(disable_connection_reuse: bool) -> reqwest::Client {
     let mut builder = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
@@ -536,7 +548,7 @@ impl Agent {
                             async move {
                                 let output = format!("Hook blocked tool execution: {reason}");
                                 let output = append_hook_context(output, &additional_context);
-                                (call_id, output)
+                                (call_id, output, None)
                             }
                             .boxed()
                         },
@@ -556,10 +568,14 @@ impl Agent {
                                     &activated_skills,
                                 )
                                 .await;
+                                let hook_result = result
+                                    .as_ref()
+                                    .map(|result| result.output.clone())
+                                    .map_err(std::clone::Clone::clone);
 
                                 let post_context = if let Some(runner) = hook_runner {
                                     runner
-                                        .post_tool_use(&name, &call_id, &arguments, &result)
+                                        .post_tool_use(&name, &call_id, &arguments, &hook_result)
                                         .await
                                         .ok()
                                         .flatten()
@@ -567,9 +583,9 @@ impl Agent {
                                     None
                                 };
 
-                                let mut output = match result {
-                                    Ok(output) => output,
-                                    Err(error) => format!("Error: {error}"),
+                                let (mut output, skill_activation) = match result {
+                                    Ok(result) => (result.output, result.skill_activation),
+                                    Err(error) => (format!("Error: {error}"), None),
                                 };
                                 if let Some(notice) = prefix_notice {
                                     output = format!("{notice}{output}");
@@ -582,7 +598,7 @@ impl Agent {
                                 }
                                 output = append_hook_context(output, &pre_context);
 
-                                (call_id, output)
+                                (call_id, output, skill_activation)
                             }
                             .boxed()
                         },
@@ -592,7 +608,17 @@ impl Agent {
             let results = futures::future::join_all(futures).await;
 
             // Add results to history in order
-            for (call_id, output) in results {
+            for (call_id, output, skill_activation) in results {
+                if let Some(skill_activation) = skill_activation {
+                    let record = SessionRecord::SkillActivated {
+                        session_id: self.session_id.to_string(),
+                        task_id: self.task_id.to_string(),
+                        timestamp: chrono::Utc::now(),
+                        name: skill_activation.name,
+                        path: skill_activation.path,
+                    };
+                    self.persist_record(&record)?;
+                }
                 let timestamp = chrono::Utc::now().to_rfc3339();
                 let item = ConversationItem::FunctionCallOutput {
                     call_id,
@@ -755,21 +781,41 @@ async fn execute_tool_with_skill_dedup(
     arguments: &str,
     skill_locations: &HashMap<PathBuf, String>,
     activated_skills: &Arc<Mutex<HashSet<String>>>,
-) -> Result<String, String> {
+) -> Result<ToolExecutionOutput, String> {
     if name != "Read" {
-        return execute_tool_output(name, arguments).await;
+        return execute_tool_output(name, arguments)
+            .await
+            .map(|output| ToolExecutionOutput {
+                output,
+                skill_activation: None,
+            });
     }
 
     let Some(path_str) = crate::clients::tools::read::extract_path(arguments) else {
-        return execute_tool_output(name, arguments).await;
+        return execute_tool_output(name, arguments)
+            .await
+            .map(|output| ToolExecutionOutput {
+                output,
+                skill_activation: None,
+            });
     };
 
     let Ok(path) = PathBuf::from(&path_str).canonicalize() else {
-        return execute_tool_output(name, arguments).await;
+        return execute_tool_output(name, arguments)
+            .await
+            .map(|output| ToolExecutionOutput {
+                output,
+                skill_activation: None,
+            });
     };
 
     let Some(skill_name) = skill_locations.get(&path) else {
-        return execute_tool_output(name, arguments).await;
+        return execute_tool_output(name, arguments)
+            .await
+            .map(|output| ToolExecutionOutput {
+                output,
+                skill_activation: None,
+            });
     };
 
     let already_active = activated_skills
@@ -777,18 +823,27 @@ async fn execute_tool_with_skill_dedup(
         .is_ok_and(|guard| guard.contains(skill_name));
     if already_active {
         tracing::info!("Skill '{skill_name}' already activated, skipping re-read");
-        return Ok(format!(
-            "Skill '{skill_name}' is already active in this session. \
-             Its instructions are already in the conversation context."
-        ));
+        return Ok(ToolExecutionOutput {
+            output: format!(
+                "Skill '{skill_name}' is already active in this session. \
+                 Its instructions are already in the conversation context."
+            ),
+            skill_activation: None,
+        });
     }
 
-    let result = execute_tool_output(name, arguments).await;
+    let output = execute_tool_output(name, arguments).await?;
     if let Ok(mut guard) = activated_skills.lock() {
         guard.insert(skill_name.clone());
     }
     tracing::info!("Skill '{}' activated", skill_name);
-    result
+    Ok(ToolExecutionOutput {
+        output,
+        skill_activation: Some(SkillActivation {
+            name: skill_name.clone(),
+            path,
+        }),
+    })
 }
 
 /// Extract the assistant message from conversation history, or return a meaningful
@@ -888,6 +943,7 @@ mod tests {
     use super::*;
     use crate::clients::types::{InputTokensDetails, OutputTokensDetails};
     use crate::config::model::ApiType;
+    use tempfile::TempDir;
 
     fn test_agent() -> Agent {
         test_agent_for(ApiType::ChatCompletions, "https://api.example.com")
@@ -1090,6 +1146,80 @@ mod tests {
         drop(persisted);
 
         assert!(streamed.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn skill_activation_records_persist_without_streaming() {
+        let persisted = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let persisted_clone = persisted.clone();
+        let streamed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let streamed_clone = streamed.clone();
+
+        let mut agent = test_agent()
+            .with_persist_callback(move |record| {
+                persisted_clone.lock().unwrap().push(record.clone());
+                Ok(())
+            })
+            .with_streaming_json(move |json| {
+                streamed_clone.lock().unwrap().push(json.to_string());
+            });
+        let record = SessionRecord::SkillActivated {
+            session_id: agent.session_id.to_string(),
+            task_id: agent.task_id.to_string(),
+            timestamp: chrono::Utc::now(),
+            name: "debugging-cake".to_string(),
+            path: PathBuf::from("/work/.agents/skills/debugging-cake/SKILL.md"),
+        };
+
+        agent.persist_record(&record).unwrap();
+
+        assert!(matches!(
+            persisted.lock().unwrap().first(),
+            Some(SessionRecord::SkillActivated { name, .. }) if name == "debugging-cake"
+        ));
+        assert!(streamed.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn skill_read_success_marks_active_and_reports_activation() {
+        let dir = TempDir::new().unwrap();
+        let skill_path = dir.path().join("SKILL.md");
+        std::fs::write(&skill_path, "skill instructions").unwrap();
+        let skill_path = skill_path.canonicalize().unwrap();
+        let skill_locations = HashMap::from([(skill_path.clone(), "test-skill".to_string())]);
+        let activated_skills = Arc::new(Mutex::new(HashSet::new()));
+        let arguments = serde_json::json!({ "path": skill_path }).to_string();
+
+        let result =
+            execute_tool_with_skill_dedup("Read", &arguments, &skill_locations, &activated_skills)
+                .await
+                .unwrap();
+
+        assert!(result.output.contains("skill instructions"));
+        assert!(matches!(
+            result.skill_activation,
+            Some(SkillActivation { name, path }) if name == "test-skill" && path == skill_path
+        ));
+        assert!(activated_skills.lock().unwrap().contains("test-skill"));
+    }
+
+    #[tokio::test]
+    async fn failed_skill_read_does_not_mark_active() {
+        let dir = TempDir::new().unwrap();
+        let skill_path = dir.path().join("SKILL.md");
+        std::fs::write(&skill_path, b"\0binary").unwrap();
+        let skill_path = skill_path.canonicalize().unwrap();
+        let skill_locations = HashMap::from([(skill_path.clone(), "binary-skill".to_string())]);
+        let activated_skills = Arc::new(Mutex::new(HashSet::new()));
+        let arguments = serde_json::json!({ "path": skill_path }).to_string();
+
+        let error =
+            execute_tool_with_skill_dedup("Read", &arguments, &skill_locations, &activated_skills)
+                .await
+                .unwrap_err();
+
+        assert!(error.contains("Cannot read binary file"));
+        assert!(!activated_skills.lock().unwrap().contains("binary-skill"));
     }
 
     #[test]

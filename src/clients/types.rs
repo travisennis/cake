@@ -313,6 +313,14 @@ pub enum SessionRecord {
         timestamp: Option<String>,
     },
 
+    SkillActivated {
+        session_id: String,
+        task_id: String,
+        timestamp: DateTime<Utc>,
+        name: String,
+        path: PathBuf,
+    },
+
     HookEvent {
         timestamp: DateTime<Utc>,
         task_id: String,
@@ -634,6 +642,7 @@ impl SessionRecord {
             Self::SessionMeta { .. }
             | Self::TaskStart { .. }
             | Self::PromptContext { .. }
+            | Self::SkillActivated { .. }
             | Self::HookEvent { .. }
             | Self::TaskComplete { .. } => None,
         }

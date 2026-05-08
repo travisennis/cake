@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     fs::{self, File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
@@ -72,6 +73,17 @@ impl Session {
         self.records
             .iter()
             .filter_map(SessionRecord::to_conversation_item)
+            .collect()
+    }
+
+    /// Returns the names of skills activated during this session.
+    pub fn activated_skills(&self) -> HashSet<String> {
+        self.records
+            .iter()
+            .filter_map(|record| match record {
+                SessionRecord::SkillActivated { name, .. } => Some(name.clone()),
+                _ => None,
+            })
             .collect()
     }
 
@@ -447,6 +459,42 @@ mod tests {
 
         assert_eq!(loaded.records.len(), 5);
         assert_eq!(loaded.messages().len(), 4);
+    }
+
+    #[test]
+    fn test_skill_activated_records_are_metadata_not_messages() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("session.jsonl");
+
+        let session = make_test_session();
+        let mut file = Session::create_on_disk(&path, &meta_record(&session)).unwrap();
+        Session::append_records(
+            &mut file,
+            &[
+                SessionRecord::FunctionCallOutput {
+                    call_id: "call-1".to_string(),
+                    output: "echoed text: Skill 'not-real' activated".to_string(),
+                    timestamp: None,
+                },
+                SessionRecord::SkillActivated {
+                    session_id: session.id.to_string(),
+                    task_id: "task-1".to_string(),
+                    timestamp: chrono::Utc::now(),
+                    name: "real-skill".to_string(),
+                    path: PathBuf::from("/work/.agents/skills/real-skill/SKILL.md"),
+                },
+            ],
+        )
+        .unwrap();
+        drop(file);
+
+        let loaded = Session::load(&path).unwrap();
+
+        assert_eq!(loaded.messages().len(), 1);
+        assert_eq!(
+            loaded.activated_skills(),
+            HashSet::from(["real-skill".to_string()])
+        );
     }
 
     #[test]
