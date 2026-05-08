@@ -26,11 +26,18 @@ Create new tasks in `.agents/.tasks/` with the next available three-digit id. Fo
 A new task should include enough context for another agent to work it later without the original conversation. Use this shape unless the existing task family clearly uses a narrower format:
 
 - Title as the first heading.
-- Status, created date when useful, priority when known, and dependencies when known.
+- Status, created date when useful, priority when known, effort, ExecPlan, and dependencies when known.
 - Summary or problem statement.
 - Relevant files, modules, commands, or observed behavior.
 - Fix direction or implementation notes.
 - Acceptance notes describing how to know the task is complete.
+
+Use this effort scale:
+
+- `S` means a small, localized change.
+- `M` means a moderate change with limited cross-module impact.
+- `L` means a larger feature, refactor, or behavior change that needs an ExecPlan before implementation.
+- `XL` means a broad or high-risk feature, refactor, or behavior change that needs an ExecPlan before implementation.
 
 Use this standard status set:
 
@@ -49,7 +56,7 @@ Keep the index consistent with the task files:
 - Update the status summary counts.
 - Update the next ready queue when readiness changes.
 - Update parent tracker rows when child ordering or status changes.
-- Update the all-tasks table for title, status, priority, and dependencies.
+- Update the all-tasks table for title, status, priority, effort, ExecPlan, and dependencies.
 
 There is no task-index generator checked into this repository. Treat index maintenance as manual unless a generator is added later.
 
@@ -57,6 +64,12 @@ There is no task-index generator checked into this repository. Treat index maint
 
 When implementing a task, keep the change scoped to the task's problem statement and acceptance notes. Preserve unrelated worktree changes, and do not commit unless the user explicitly asks.
 
-If a task grows into a complex feature or significant refactor, use an ExecPlan as described in `.agents/PLANS.md`. The task file should then point to the ExecPlan and record whether the task is blocked on, tracked by, or completed by that plan.
+Before implementing any task, check its `Effort` field.
+
+- `Effort: L` and `Effort: XL` tasks must have an ExecPlan before code changes begin.
+- If no ExecPlan exists for an `L` or `XL` task, create one under `.agents/exec-plans/active/` using `.agents/PLANS.md` before implementation.
+- Update the task file to point to the ExecPlan and record whether the task is blocked on, tracked by, or completed by that plan.
+- Update `.agents/exec-plans/active/index.md` when creating, completing, or moving an ExecPlan.
+- For `Effort: S` or `Effort: M`, an ExecPlan is optional unless the task is a significant refactor, cross-cutting behavior change, or has substantial unknowns.
 
 After finishing a task that changes code, config, or dependencies, run the project's Full CI check as instructed in `AGENTS.md`. For docs-only task updates, verify the Markdown and links; full CI is not required unless code, config, or dependency files changed.
