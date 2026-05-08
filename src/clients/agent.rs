@@ -1,14 +1,13 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use futures::FutureExt;
-use tokio::time::sleep;
-use tracing::debug;
 
+use crate::clients::agent_observer::AgentObserver;
+use crate::clients::agent_runner::AgentRunner;
+use crate::clients::agent_state::{ConversationState, accumulate_usage};
 use crate::clients::backend::Backend;
-use crate::clients::retry::{self, HttpFailure, RequestOverrides, RetryStatus};
 use crate::clients::tools::{ToolContext, ToolRegistry, default_tool_registry};
 use crate::clients::types::{
     ConversationItem, SessionRecord, StreamRecord, TaskCompleteSubtype, Usage,
@@ -18,16 +17,6 @@ use crate::config::model::ApiType;
 use crate::config::model::ResolvedModelConfig;
 use crate::hooks::{HookRunner, ToolHookPlan};
 use crate::models::{Message, Role};
-
-/// Callback type for streaming JSON output
-type StreamingCallback = Box<dyn Fn(&str) + Send + Sync>;
-/// Callback type for live session persistence.
-type PersistCallback = Box<dyn FnMut(&SessionRecord) -> anyhow::Result<()> + Send + Sync>;
-
-/// Callback type for progress reporting (receives conversation items as they occur)
-type ProgressCallback = Box<dyn Fn(&ConversationItem) + Send + Sync>;
-/// Callback type for retry wait reporting
-type RetryCallback = Box<dyn Fn(&RetryStatus) + Send + Sync>;
 
 /// Result of a single API turn (one request/response cycle).
 #[derive(Debug)]
@@ -48,20 +37,6 @@ struct ToolExecutionOutput {
     skill_activation: Option<SkillActivation>,
 }
 
-fn build_http_client(disable_connection_reuse: bool) -> reqwest::Client {
-    let mut builder = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_mins(5));
-
-    if disable_connection_reuse {
-        builder = builder.pool_max_idle_per_host(0);
-    }
-
-    builder.build().unwrap_or_else(|error| {
-        panic!("HTTP client builder should be valid with fixed timeout and pool settings: {error}")
-    })
-}
-
 // =============================================================================
 // Agent (shared loop over any backend)
 // =============================================================================
@@ -73,19 +48,12 @@ fn build_http_client(disable_connection_reuse: bool) -> reqwest::Client {
 /// through the `ApiType` configuration.
 pub struct Agent {
     config: ResolvedModelConfig,
-    backend: Backend,
+    runner: AgentRunner,
+    observer: AgentObserver,
     /// Conversation history using typed items
-    history: Vec<ConversationItem>,
+    conversation: ConversationState,
     tools: ToolRegistry,
     tool_context: Arc<ToolContext>,
-    /// Callback for streaming JSON output
-    streaming_callback: Option<StreamingCallback>,
-    /// Callback for append-only session persistence.
-    persist_callback: Option<PersistCallback>,
-    /// Callback for human-readable progress reporting
-    progress_callback: Option<ProgressCallback>,
-    /// Callback for retry wait reporting
-    retry_callback: Option<RetryCallback>,
     /// Session ID for tracking
     pub session_id: uuid::Uuid,
     /// Task ID for the current CLI invocation.
@@ -94,8 +62,6 @@ pub struct Agent {
     pub total_usage: Usage,
     /// Number of API calls made
     pub turn_count: u32,
-    /// Reusable HTTP client for connection pooling
-    client: reqwest::Client,
     /// Maps SKILL.md paths to skill names for activation deduplication.
     /// When the Read tool targets one of these paths, the agent checks if the
     /// skill has already been activated and returns a lightweight message instead.
@@ -113,31 +79,17 @@ impl Agent {
     /// The agent is initialized with four default tools: Bash, Read, Edit, and Write.
     /// A new session ID is generated automatically.
     pub fn new(config: ResolvedModelConfig, initial_messages: &[(Role, String)]) -> Self {
-        let timestamp = chrono::Utc::now().to_rfc3339();
         Self {
-            backend: Backend::from_api_type(config.config.api_type),
+            runner: AgentRunner::new(Backend::from_api_type(config.config.api_type)),
             config,
-            history: initial_messages
-                .iter()
-                .map(|(role, content)| ConversationItem::Message {
-                    role: *role,
-                    content: content.clone(),
-                    id: None,
-                    status: None,
-                    timestamp: Some(timestamp.clone()),
-                })
-                .collect(),
+            observer: AgentObserver::default(),
+            conversation: ConversationState::new(initial_messages),
             tools: default_tool_registry(),
             tool_context: Arc::new(ToolContext::from_current_process()),
-            streaming_callback: None,
-            persist_callback: None,
-            progress_callback: None,
-            retry_callback: None,
             session_id: uuid::Uuid::new_v4(),
             task_id: uuid::Uuid::new_v4(),
             total_usage: Usage::default(),
             turn_count: 0,
-            client: build_http_client(false),
             skill_locations: HashMap::new(),
             activated_skills: Arc::new(Mutex::new(HashSet::new())),
             hook_runner: None,
@@ -147,6 +99,16 @@ impl Agent {
     /// Returns the enabled tool names.
     pub fn tool_names(&self) -> Vec<String> {
         self.tools.names()
+    }
+
+    #[cfg(test)]
+    fn history(&self) -> &[ConversationItem] {
+        self.conversation.history()
+    }
+
+    #[cfg(test)]
+    const fn history_mut(&mut self) -> &mut Vec<ConversationItem> {
+        self.conversation.history_mut()
     }
 
     /// Sets the directory context used for tool execution and sandboxing.
@@ -178,26 +140,7 @@ impl Agent {
     ///
     /// Use this when continuing a previous session to restore the conversation context.
     pub fn with_history(mut self, messages: Vec<ConversationItem>) -> Self {
-        // Preserve the current initial prompt messages set by Agent::new, then
-        // append the restored conversation history without stale prompt context.
-        debug_assert!(
-            !self.history.is_empty(),
-            "with_history requires Agent::new() to have set initial prompt messages"
-        );
-        let first_non_prompt = messages
-            .iter()
-            .position(|item| {
-                !matches!(
-                    item,
-                    ConversationItem::Message {
-                        role: Role::System | Role::Developer,
-                        ..
-                    }
-                )
-            })
-            .unwrap_or(messages.len());
-        self.history
-            .extend(messages.into_iter().skip(first_non_prompt));
+        self.conversation.with_restored_history(messages);
         self
     }
 
@@ -230,19 +173,7 @@ impl Agent {
 
     /// Append hook-provided developer context before the next provider request.
     pub fn append_developer_context(&mut self, contexts: Vec<String>) {
-        let timestamp = chrono::Utc::now().to_rfc3339();
-        for content in contexts {
-            if content.is_empty() {
-                continue;
-            }
-            self.history.push(ConversationItem::Message {
-                role: Role::Developer,
-                content,
-                id: None,
-                status: None,
-                timestamp: Some(timestamp.clone()),
-            });
-        }
+        self.conversation.append_developer_context(contexts);
     }
 
     /// Returns the names of skills that have been activated in this session.
@@ -258,7 +189,7 @@ impl Agent {
     /// The callback receives a JSON string for each message, tool call, and result.
     /// This is useful for integrating with other tools or TUIs.
     pub fn with_streaming_json(mut self, callback: impl Fn(&str) + Send + Sync + 'static) -> Self {
-        self.streaming_callback = Some(Box::new(callback));
+        self.observer.set_streaming_json(callback);
         self
     }
 
@@ -267,7 +198,7 @@ impl Agent {
         mut self,
         callback: impl FnMut(&SessionRecord) -> anyhow::Result<()> + Send + Sync + 'static,
     ) -> Self {
-        self.persist_callback = Some(Box::new(callback));
+        self.observer.set_persist_callback(callback);
         self
     }
 
@@ -279,62 +210,37 @@ impl Agent {
         mut self,
         callback: impl Fn(&ConversationItem) + Send + Sync + 'static,
     ) -> Self {
-        self.progress_callback = Some(Box::new(callback));
+        self.observer.set_progress_callback(callback);
         self
     }
 
     /// Enables retry wait reporting.
     pub fn with_retry_callback(
         mut self,
-        callback: impl Fn(&RetryStatus) + Send + Sync + 'static,
+        callback: impl Fn(&crate::clients::retry::RetryStatus) + Send + Sync + 'static,
     ) -> Self {
-        self.retry_callback = Some(Box::new(callback));
+        self.observer.set_retry_callback(callback);
         self
     }
 
     /// Report a conversation item via the progress callback, if set.
     fn report_progress(&self, item: &ConversationItem) {
-        if let Some(ref callback) = self.progress_callback {
-            callback(item);
-        }
-    }
-
-    /// Report a retry status via the retry callback, if set.
-    fn report_retry(&self, status: &RetryStatus) {
-        if let Some(ref callback) = self.retry_callback {
-            callback(status);
-        }
+        self.observer.report_progress(item);
     }
 
     /// Emit a task record to persistence and streaming sinks.
     fn stream_record(&mut self, record: StreamRecord) -> anyhow::Result<()> {
-        let stream_json = self
-            .streaming_callback
-            .as_ref()
-            .and_then(|_| serde_json::to_string(&record).ok());
-        let session_record = SessionRecord::from(record);
-        if let Some(ref mut callback) = self.persist_callback {
-            callback(&session_record)?;
-        }
-        if let Some(ref callback) = self.streaming_callback
-            && let Some(json) = stream_json
-        {
-            callback(&json);
-        }
-        Ok(())
+        self.observer.stream_record(record)
     }
 
     /// Persist a session-only audit record without emitting it to stream-json.
     fn persist_record(&mut self, record: &SessionRecord) -> anyhow::Result<()> {
-        if let Some(ref mut callback) = self.persist_callback {
-            callback(record)?;
-        }
-        Ok(())
+        self.observer.persist_record(record)
     }
 
     /// Stream a conversation item as JSON via the streaming callback, if set.
     fn stream_item(&mut self, item: &ConversationItem) -> anyhow::Result<()> {
-        self.stream_record(StreamRecord::from_conversation_item(item))
+        self.observer.stream_item(item)
     }
 
     /// Emit the task start record.
@@ -352,7 +258,8 @@ impl Agent {
     pub fn emit_prompt_context_records(&mut self) -> anyhow::Result<()> {
         let timestamp = chrono::Utc::now();
         let prompt_context: Vec<_> = self
-            .history
+            .conversation
+            .history()
             .iter()
             .take_while(|item| {
                 matches!(
@@ -385,16 +292,7 @@ impl Agent {
 
     /// Accumulate usage from an API turn
     const fn accumulate_usage(&mut self, turn_usage: Option<&Usage>) {
-        if let Some(usage) = turn_usage {
-            self.total_usage.input_tokens += usage.input_tokens;
-            self.total_usage.input_tokens_details.cached_tokens +=
-                usage.input_tokens_details.cached_tokens;
-            self.total_usage.output_tokens += usage.output_tokens;
-            self.total_usage.output_tokens_details.reasoning_tokens +=
-                usage.output_tokens_details.reasoning_tokens;
-            self.total_usage.total_tokens += usage.total_tokens;
-            self.turn_count += 1;
-        }
+        accumulate_usage(&mut self.total_usage, &mut self.turn_count, turn_usage);
     }
 
     /// Emit the task completion record with success/error and usage stats.
@@ -440,17 +338,8 @@ impl Agent {
     /// or a tool execution fails critically.
     #[allow(clippy::too_many_lines)]
     pub async fn send(&mut self, message: Message) -> anyhow::Result<Option<Message>> {
-        let user_item = ConversationItem::Message {
-            role: Role::User,
-            content: message.content.clone(),
-            id: None,
-            status: None,
-            timestamp: Some(chrono::Utc::now().to_rfc3339()),
-        };
-
-        // Stream user message before updating history so callers see it immediately.
+        let user_item = self.conversation.push_user_message(message.content.clone());
         self.stream_item(&user_item)?;
-        self.history.push(user_item);
 
         // Agent loop: continue until model stops making tool calls
         loop {
@@ -504,11 +393,11 @@ impl Agent {
             }
 
             // Move items into history
-            self.history.extend(turn_result.items);
+            self.conversation.extend_turn_items(turn_result.items);
 
             // If no function calls, resolve and return the message
             if function_calls.is_empty() {
-                return Ok(Some(resolve_assistant_message(&self.history)));
+                return Ok(Some(self.conversation.resolve_assistant_message()));
             }
 
             // Run pre-tool hooks concurrently, then execute allowed tool calls concurrently.
@@ -636,14 +525,8 @@ impl Agent {
                     };
                     self.persist_record(&record)?;
                 }
-                let timestamp = chrono::Utc::now().to_rfc3339();
-                let item = ConversationItem::FunctionCallOutput {
-                    call_id,
-                    output,
-                    timestamp: Some(timestamp),
-                };
+                let item = self.conversation.push_tool_output(call_id, output);
                 self.stream_item(&item)?;
-                self.history.push(item);
             }
 
             // Loop continues - send next request with tool results included
@@ -652,107 +535,16 @@ impl Agent {
 
     /// Execute a single API turn with retry logic.
     async fn complete_turn(&mut self) -> anyhow::Result<TurnResult> {
-        let mut attempt = 1;
-        let mut request_overrides = RequestOverrides {
-            max_output_tokens: self.config.config.max_output_tokens,
-            reasoning_max_tokens: self.config.config.reasoning_max_tokens,
-            context_overflow_retry_used: false,
-        };
-        let mut disable_connection_reuse = false;
-
-        loop {
-            let tool_definitions = self.tools.definitions();
-            let request_result = self
-                .backend
-                .send_request(
-                    &self.client,
-                    &self.config,
-                    &self.history,
-                    &tool_definitions,
-                    &request_overrides,
-                )
-                .await;
-
-            match request_result {
-                Ok(response) => {
-                    if response.status().is_success() {
-                        if disable_connection_reuse {
-                            self.client = build_http_client(false);
-                        }
-
-                        return self.backend.parse_response(response).await;
-                    }
-
-                    let failure = HttpFailure {
-                        status: response.status().as_u16(),
-                        headers: response.headers().clone(),
-                        body: response.text().await?,
-                    };
-
-                    match retry::classify_http_failure(
-                        &failure,
-                        attempt,
-                        self.session_id,
-                        &request_overrides,
-                    ) {
-                        retry::RetryDecision::Retry { status } => {
-                            self.wait_for_retry(&status).await;
-                            attempt += 1;
-                        },
-                        retry::RetryDecision::RetryWithOverrides { status, overrides } => {
-                            request_overrides = overrides;
-                            self.wait_for_retry(&status).await;
-                            attempt += 1;
-                        },
-                        retry::RetryDecision::DoNotRetry => {
-                            return Err(api_error_from_failure(
-                                &self.config.config.model,
-                                &failure,
-                            )
-                            .into());
-                        },
-                    }
-                },
-                Err(error) => {
-                    match retry::classify_transport_error(&error, attempt, self.session_id) {
-                        retry::RetryDecision::Retry { status } => {
-                            if retry::should_disable_connection_reuse(&error)
-                                && !disable_connection_reuse
-                            {
-                                self.client = build_http_client(true);
-                                disable_connection_reuse = true;
-                            }
-
-                            self.wait_for_retry(&status).await;
-                            attempt += 1;
-                        },
-                        retry::RetryDecision::RetryWithOverrides { status, overrides } => {
-                            request_overrides = overrides;
-                            self.wait_for_retry(&status).await;
-                            attempt += 1;
-                        },
-                        retry::RetryDecision::DoNotRetry => return Err(error),
-                    }
-                },
-            }
-        }
-    }
-
-    async fn wait_for_retry(&self, status: &RetryStatus) {
-        self.report_retry(status);
-        debug!(
-            target: "cake",
-            reason = ?status.reason,
-            detail = %status.detail,
-            delay_ms = status.delay.as_millis(),
-            attempt = status.attempt,
-            max_attempts = status.max_retries,
-            "Retrying API request"
-        );
-
-        if !status.delay.is_zero() {
-            sleep(status.delay).await;
-        }
+        let tool_definitions = self.tools.definitions();
+        let config = &self.config;
+        let session_id = self.session_id;
+        let history = self.conversation.history();
+        let observer = &self.observer;
+        self.runner
+            .complete_turn(config, session_id, history, &tool_definitions, |status| {
+                observer.report_retry(status);
+            })
+            .await
     }
 }
 
@@ -853,65 +645,6 @@ async fn execute_tool_with_skill_dedup(
             path,
         }),
     })
-}
-
-/// Extract the assistant message from conversation history, or return a meaningful
-/// fallback when the response was truncated or empty.
-fn resolve_assistant_message(items: &[ConversationItem]) -> Message {
-    if let Some(msg) = items.iter().rev().find_map(|item| {
-        if let ConversationItem::Message {
-            role: Role::Assistant,
-            content,
-            ..
-        } = item
-        {
-            Some(Message {
-                role: Role::Assistant,
-                content: content.clone(),
-            })
-        } else {
-            None
-        }
-    }) {
-        return msg;
-    }
-
-    let content = if items.is_empty() {
-        "No response was received from the model.".to_string()
-    } else if items
-        .iter()
-        .any(|item| matches!(item, ConversationItem::Reasoning { .. }))
-    {
-        "The model's response was incomplete. The task may have been partially completed but was cut off during reasoning.".to_string()
-    } else {
-        "The model's response was incomplete. No final message was received.".to_string()
-    };
-
-    Message {
-        role: Role::Assistant,
-        content,
-    }
-}
-
-fn api_error_from_failure(model: &str, failure: &HttpFailure) -> crate::exit_code::ApiError {
-    debug!(target: "cake", "{}", failure.body);
-
-    crate::exit_code::ApiError {
-        status: failure.status,
-        body: format_api_error_body(model, &failure.body),
-    }
-}
-
-fn format_api_error_body(model: &str, error_text: &str) -> String {
-    serde_json::from_str::<serde_json::Value>(error_text).map_or_else(
-        |_err| format!("{model}\n\n{error_text}"),
-        |resp_json| {
-            serde_json::to_string_pretty(&resp_json).map_or_else(
-                |_| format!("{model}\n\n{error_text}"),
-                |formatted| format!("{model}\n\n{formatted}"),
-            )
-        },
-    )
 }
 
 #[cfg(test)]
@@ -1244,55 +977,6 @@ mod tests {
     }
 
     #[test]
-    fn resolve_assistant_message_with_assistant_message() {
-        let items = vec![ConversationItem::Message {
-            role: Role::Assistant,
-            content: "Hello!".to_string(),
-            id: Some("msg-1".to_string()),
-            status: Some("completed".to_string()),
-            timestamp: None,
-        }];
-        let msg = resolve_assistant_message(&items);
-        assert_eq!(msg.content, "Hello!");
-    }
-
-    #[test]
-    fn resolve_assistant_message_truncated_with_reasoning() {
-        let items = vec![ConversationItem::Reasoning {
-            id: "r-1".to_string(),
-            summary: vec!["thinking...".to_string()],
-            encrypted_content: None,
-            content: None,
-            timestamp: None,
-        }];
-        let msg = resolve_assistant_message(&items);
-        assert!(msg.content.contains("cut off during reasoning"));
-    }
-
-    #[test]
-    fn resolve_assistant_message_no_output_items() {
-        let items: Vec<ConversationItem> = vec![];
-        let msg = resolve_assistant_message(&items);
-        assert_eq!(msg.content, "No response was received from the model.");
-    }
-
-    #[test]
-    fn resolve_assistant_message_items_but_no_message_or_reasoning() {
-        let items = vec![ConversationItem::FunctionCall {
-            id: "fc-1".to_string(),
-            call_id: "call-1".to_string(),
-            name: "bash".to_string(),
-            arguments: "{}".to_string(),
-            timestamp: None,
-        }];
-        let msg = resolve_assistant_message(&items);
-        assert_eq!(
-            msg.content,
-            "The model's response was incomplete. No final message was received."
-        );
-    }
-
-    #[test]
     fn builder_with_session_id() {
         let id = uuid::uuid!("6ba7b810-9dad-11d1-80b4-00c04fd430c8");
         let agent = test_agent().with_session_id(id);
@@ -1310,16 +994,16 @@ mod tests {
         }];
         let agent = test_agent().with_history(history);
         // 1 system message (from test_agent) + 1 user message from with_history
-        assert_eq!(agent.history.len(), 2);
+        assert_eq!(agent.history().len(), 2);
         assert!(matches!(
-            &agent.history[0],
+            &agent.history()[0],
             ConversationItem::Message {
                 role: Role::System,
                 ..
             }
         ));
         assert!(matches!(
-            &agent.history[1],
+            &agent.history()[1],
             ConversationItem::Message {
                 role: Role::User,
                 ..
@@ -1588,7 +1272,7 @@ mod error_tests {
     fn assert_agent_loop_history(agent: &Agent, read_arguments: &str, expected_tool_output: &str) {
         assert_eq!(
             agent
-                .history
+                .history()
                 .iter()
                 .map(|item| match item {
                     ConversationItem::Message { role, .. } => role.as_str(),
@@ -1606,7 +1290,7 @@ mod error_tests {
             ]
         );
         assert!(matches!(
-            &agent.history[2],
+            &agent.history()[2],
             ConversationItem::FunctionCall {
                 call_id,
                 name,
@@ -1615,7 +1299,7 @@ mod error_tests {
             } if call_id == "call-1" && name == "Read" && arguments == read_arguments
         ));
         assert!(matches!(
-            &agent.history[3],
+            &agent.history()[3],
             ConversationItem::FunctionCallOutput {
                 call_id,
                 output,
@@ -1750,7 +1434,7 @@ mod error_tests {
             .unwrap();
 
         assert!(matches!(result, Some(Message { content, .. }) if content == "Hello!"));
-        assert!(agent.history.iter().any(|item| matches!(
+        assert!(agent.history().iter().any(|item| matches!(
             item,
             ConversationItem::FunctionCallOutput { output, .. }
                 if output.starts_with("Hook blocked tool execution:")
@@ -1778,7 +1462,7 @@ mod error_tests {
             .await;
 
         let mut agent = test_agent_with_url(&mock_server.uri());
-        agent.history.push(ConversationItem::Message {
+        agent.history_mut().push(ConversationItem::Message {
             role: Role::User,
             content: "test".to_string(),
             id: None,
@@ -1808,7 +1492,7 @@ mod error_tests {
             .await;
 
         let mut agent = test_agent_with_url(&mock_server.uri());
-        agent.history.push(ConversationItem::Message {
+        agent.history_mut().push(ConversationItem::Message {
             role: Role::User,
             content: "test".to_string(),
             id: None,
@@ -1838,7 +1522,7 @@ mod error_tests {
             .await;
 
         let mut agent = test_agent_with_url(&mock_server.uri());
-        agent.history.push(ConversationItem::Message {
+        agent.history_mut().push(ConversationItem::Message {
             role: Role::User,
             content: "test".to_string(),
             id: None,
@@ -1868,7 +1552,7 @@ mod error_tests {
             .await;
 
         let mut agent = test_agent_with_url(&mock_server.uri());
-        agent.history.push(ConversationItem::Message {
+        agent.history_mut().push(ConversationItem::Message {
             role: Role::User,
             content: "test".to_string(),
             id: None,
@@ -1911,7 +1595,7 @@ mod error_tests {
             .await;
 
         let mut agent = test_agent_with_url(&mock_server.uri());
-        agent.history.push(ConversationItem::Message {
+        agent.history_mut().push(ConversationItem::Message {
             role: Role::User,
             content: "test".to_string(),
             id: None,
@@ -1957,7 +1641,7 @@ mod error_tests {
             test_agent_with_url(&mock_server.uri()).with_retry_callback(move |status| {
                 captured_clone.lock().unwrap().push(status.clone());
             });
-        agent.history.push(ConversationItem::Message {
+        agent.history_mut().push(ConversationItem::Message {
             role: Role::User,
             content: "test".to_string(),
             id: None,
@@ -2006,7 +1690,7 @@ mod error_tests {
             .await;
 
         let mut agent = test_agent_with_url(&mock_server.uri());
-        agent.history.push(ConversationItem::Message {
+        agent.history_mut().push(ConversationItem::Message {
             role: Role::User,
             content: "test".to_string(),
             id: None,
@@ -2043,7 +1727,7 @@ mod error_tests {
             .await;
 
         let mut agent = test_agent_with_url(&mock_server.uri());
-        agent.history.push(ConversationItem::Message {
+        agent.history_mut().push(ConversationItem::Message {
             role: Role::User,
             content: "test".to_string(),
             id: None,
@@ -2080,7 +1764,7 @@ mod error_tests {
             .await;
 
         let mut agent = test_agent_with_url(&mock_server.uri());
-        agent.history.push(ConversationItem::Message {
+        agent.history_mut().push(ConversationItem::Message {
             role: Role::User,
             content: "test".to_string(),
             id: None,
@@ -2119,7 +1803,7 @@ mod error_tests {
             .await;
 
         let mut agent = test_agent_with_url(&mock_server.uri());
-        agent.history.push(ConversationItem::Message {
+        agent.history_mut().push(ConversationItem::Message {
             role: Role::User,
             content: "test".to_string(),
             id: None,
@@ -2154,7 +1838,7 @@ mod error_tests {
             .await;
 
         let mut agent = test_agent_with_url(&mock_server.uri());
-        agent.history.push(ConversationItem::Message {
+        agent.history_mut().push(ConversationItem::Message {
             role: Role::User,
             content: "test".to_string(),
             id: None,
@@ -2189,7 +1873,7 @@ mod error_tests {
             .await;
 
         let mut agent = test_agent_with_url(&mock_server.uri());
-        agent.history.push(ConversationItem::Message {
+        agent.history_mut().push(ConversationItem::Message {
             role: Role::User,
             content: "test".to_string(),
             id: None,
@@ -2226,7 +1910,7 @@ mod error_tests {
             .await;
 
         let mut agent = test_agent_with_url(&mock_server.uri());
-        agent.history.push(ConversationItem::Message {
+        agent.history_mut().push(ConversationItem::Message {
             role: Role::User,
             content: "test".to_string(),
             id: None,
@@ -2255,7 +1939,7 @@ mod error_tests {
             .await;
 
         let mut agent = test_agent_with_url(&mock_server.uri());
-        agent.history.push(ConversationItem::Message {
+        agent.history_mut().push(ConversationItem::Message {
             role: Role::User,
             content: "test".to_string(),
             id: None,
@@ -2306,7 +1990,7 @@ mod error_tests {
         let mut agent = test_agent_with_url(&mock_server.uri());
         agent.config.config.max_output_tokens = Some(5000);
         agent.config.config.reasoning_max_tokens = Some(4000);
-        agent.history.push(ConversationItem::Message {
+        agent.history_mut().push(ConversationItem::Message {
             role: Role::User,
             content: "test".to_string(),
             id: None,
@@ -2338,7 +2022,7 @@ mod error_tests {
             .await;
 
         let mut agent = test_agent_chat_completions(&mock_server.uri());
-        agent.history.push(ConversationItem::Message {
+        agent.history_mut().push(ConversationItem::Message {
             role: Role::User,
             content: "test".to_string(),
             id: None,
@@ -2375,7 +2059,7 @@ mod error_tests {
             .await;
 
         let mut agent = test_agent_chat_completions(&mock_server.uri());
-        agent.history.push(ConversationItem::Message {
+        agent.history_mut().push(ConversationItem::Message {
             role: Role::User,
             content: "test".to_string(),
             id: None,
@@ -2402,7 +2086,7 @@ mod error_tests {
             .await;
 
         let mut agent = test_agent_with_url(&mock_server.uri());
-        agent.history.push(ConversationItem::Message {
+        agent.history_mut().push(ConversationItem::Message {
             role: Role::User,
             content: "Hello".to_string(),
             id: None,
@@ -2436,7 +2120,7 @@ mod error_tests {
             .await;
 
         let mut agent = test_agent_chat_completions(&mock_server.uri());
-        agent.history.push(ConversationItem::Message {
+        agent.history_mut().push(ConversationItem::Message {
             role: Role::User,
             content: "Hello".to_string(),
             id: None,

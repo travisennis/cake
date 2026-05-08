@@ -11,3 +11,5 @@ This index follows `.agents/PLANS.md`. Active ExecPlans are checked-in plans tha
 ## Revision Notes
 
 - 2026-05-07 / Codex: Created the active ExecPlan index while migrating plans from `.agents/.plans/` to `.agents/exec-plans/active/`.
+- 2026-05-08 / Codex: Added the active ExecPlan for task 049, `Split Agent Responsibilities`.
+- 2026-05-08 / Codex: Moved `split-agent-responsibilities.md` to completed after task 049 passed validation.

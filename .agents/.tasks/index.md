@@ -4,8 +4,8 @@ This index summarizes the task files in this directory. Use it as the manually m
 
 ## Status Summary
 
-- Completed: 35
-- Pending: 66
+- Completed: 36
+- Pending: 65
 - Tracking: 1
 - Open: 1
 - Blocked: 12
@@ -24,9 +24,9 @@ These are the highest-priority tasks currently available from the task metadata:
 
 | Task | Title | Status | Priority | Effort | ExecPlan | Depends on |
 | --- | --- | --- | --- | --- | --- | --- |
-| [049](049.md) | Split Agent Responsibilities | Pending | P1 | XL | Required before implementation | 048 (e2e test as safety net), 050 (Backend abstraction), 051 (Tool abstraction), 047 (ToolContext) |
+| [052](052.md) | Move Provider Quirks Behind Provider Strategy | Pending | P1 | L | Required before implementation | 050 (Backend abstraction) |
 
-With [050](050.md) complete, [049](049.md) is unblocked for the split-agent refactor.
+With [049](049.md) complete, [052](052.md) is the next behavior-oriented provider refactor.
 
 ## Parent Trackers
 
@@ -89,7 +89,7 @@ With [050](050.md) complete, [049](049.md) is unblocked for the split-agent refa
 | [047b](047b.md) | Plumb &ToolContext Through Tool Execution | Completed | P1 | L | - | 047a (ToolContext exists), 051 (Tool abstraction so the trait can carry the context) |
 | [047c](047c.md) | Delete the Tool OnceLocks | Completed | P1 | S | - | 047b (no callers reach into globals anymore) |
 | [048](048.md) | Add End-to-End Agent Loop Test with Stub Backend | Completed | P1 | L | - | - |
-| [049](049.md) | Split Agent Responsibilities | Pending | P1 | XL | Required before implementation | 048 (e2e test as safety net), 050 (Backend abstraction), 051 (Tool abstraction), 047 (ToolContext) |
+| [049](049.md) | Split Agent Responsibilities | Completed | P1 | XL | `.agents/exec-plans/completed/split-agent-responsibilities.md` | 048 (e2e test as safety net), 050 (Backend abstraction), 051 (Tool abstraction), 047 (ToolContext) |
 | [050](050.md) | Add Backend Abstraction for API Providers | Completed | P1 | L | - | 048 (e2e test as safety net) |
 | [051](051.md) | Add Tool Abstraction and Registry | Completed | P1 | L | - | 048 (e2e test as safety net) |
 | [052](052.md) | Move Provider Quirks Behind Provider Strategy | Pending | P1 | L | Required before implementation | 050 (Backend abstraction) |

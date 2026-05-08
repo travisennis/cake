@@ -10,6 +10,9 @@
 //! - `chat_completions` / `responses` - API-specific request handlers
 
 mod agent;
+mod agent_observer;
+mod agent_runner;
+mod agent_state;
 mod backend;
 mod chat_completions;
 mod chat_types;
