@@ -200,7 +200,7 @@ mod tests {
         })
         .to_string();
 
-        let result = execute_write(&ToolContext::from_legacy_globals(), &args).unwrap();
+        let result = execute_write(&ToolContext::from_current_process(), &args).unwrap();
         assert!(result.output.contains("Created:"));
         assert!(result.output.contains("Bytes written: 13"));
 
@@ -220,7 +220,7 @@ mod tests {
         })
         .to_string();
 
-        let result = execute_write(&ToolContext::from_legacy_globals(), &args).unwrap();
+        let result = execute_write(&ToolContext::from_current_process(), &args).unwrap();
         assert!(result.output.contains("Overwritten:"));
         assert!(result.output.contains("Note: Consider using Edit tool"));
 
@@ -239,7 +239,7 @@ mod tests {
         })
         .to_string();
 
-        let result = execute_write(&ToolContext::from_legacy_globals(), &args).unwrap();
+        let result = execute_write(&ToolContext::from_current_process(), &args).unwrap();
         assert!(result.output.contains("Created:"));
 
         let content = fs::read_to_string(&nested_path).unwrap();
@@ -254,7 +254,7 @@ mod tests {
         })
         .to_string();
 
-        let result = execute_write(&ToolContext::from_legacy_globals(), &args);
+        let result = execute_write(&ToolContext::from_current_process(), &args);
         assert!(result.is_err());
         assert!(
             result
@@ -274,7 +274,7 @@ mod tests {
         })
         .to_string();
 
-        let result = execute_write(&ToolContext::from_legacy_globals(), &args).unwrap();
+        let result = execute_write(&ToolContext::from_current_process(), &args).unwrap();
         assert!(result.output.contains("Created:"));
         assert!(result.output.contains("Bytes written: 0"));
 

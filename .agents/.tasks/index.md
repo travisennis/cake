@@ -4,9 +4,9 @@ This index summarizes the task files in this directory. Use it as the manually m
 
 ## Status Summary
 
-- Completed: 32
-- Pending: 68
-- Tracking: 2
+- Completed: 34
+- Pending: 67
+- Tracking: 1
 - Open: 1
 - Blocked: 12
 
@@ -23,15 +23,14 @@ These are the highest-priority tasks currently available from the task metadata:
 
 | Task | Title | Status | Priority | Depends on |
 | --- | --- | --- | --- | --- |
-| [047c](047c.md) | Delete the Tool OnceLocks | Pending | P1 | 047b (no callers reach into globals anymore; complete) |
+| [050](050.md) | Add Backend Abstraction for API Providers | Pending | P1 | 048 (e2e test as safety net; complete) |
 
-With [047b](047b.md) complete, [047c](047c.md) is the next dependency to finish the ToolContext parent tracker.
+With [047](047.md) complete, [050](050.md) is the next dependency needed by the [049](049.md) split-agent refactor.
 
 ## Parent Trackers
 
 | Task | Title | Status | Priority | Action |
 | --- | --- | --- | --- | --- |
-| [047](047.md) | Plumb ToolContext Through Tool Execution (Parent) | Tracking | P1 | Work [047a](047a.md), then [047b](047b.md), then [047c](047c.md). |
 | [060](060.md) | Make Hooks Observable in Typed Session Flow (Parent) | Tracking | P1 | Work [060a](060a.md), [060b](060b.md), and [060c](060c.md). |
 
 ## All Tasks
@@ -84,10 +83,10 @@ With [047b](047b.md) complete, [047c](047c.md) is the next dependency to finish 
 | [044](044.md) | Add Clap Exclusivity for Session Mode Flags | Completed | P0 | - |
 | [045](045.md) | Fix HTTP Client Build Error Handling | Completed | P1 | - |
 | [046](046.md) | Persist Activated Skills as Structured Session Metadata | Completed | P1 | - |
-| [047](047.md) | Plumb ToolContext Through Tool Execution (Parent) | Tracking | P1 | 048 (e2e test as safety net) |
+| [047](047.md) | Plumb ToolContext Through Tool Execution (Parent) | Completed | P1 | 048 (e2e test as safety net) |
 | [047a](047a.md) | Introduce ToolContext (no plumbing yet) | Completed | P1 | 048 (e2e test as safety net) |
 | [047b](047b.md) | Plumb &ToolContext Through Tool Execution | Completed | P1 | 047a (ToolContext exists), 051 (Tool abstraction so the trait can carry the context) |
-| [047c](047c.md) | Delete the Tool OnceLocks | Pending | P1 | 047b (no callers reach into globals anymore) |
+| [047c](047c.md) | Delete the Tool OnceLocks | Completed | P1 | 047b (no callers reach into globals anymore) |
 | [048](048.md) | Add End-to-End Agent Loop Test with Stub Backend | Completed | P1 | - |
 | [049](049.md) | Split Agent Responsibilities | Pending | P1 | 048 (e2e test as safety net), 050 (Backend abstraction), 051 (Tool abstraction), 047 (ToolContext) |
 | [050](050.md) | Add Backend Abstraction for API Providers | Pending | P1 | 048 (e2e test as safety net) |

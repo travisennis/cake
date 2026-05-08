@@ -238,7 +238,7 @@ mod tests {
         })
         .to_string();
 
-        let result = execute_read(&ToolContext::from_legacy_globals(), &args).unwrap();
+        let result = execute_read(&ToolContext::from_current_process(), &args).unwrap();
         assert!(result.output.contains("File:"));
         assert!(result.output.contains("     1: Line 1"));
         assert!(result.output.contains("     2: Line 2"));
@@ -258,7 +258,7 @@ mod tests {
         })
         .to_string();
 
-        let result = execute_read(&ToolContext::from_legacy_globals(), &args).unwrap();
+        let result = execute_read(&ToolContext::from_current_process(), &args).unwrap();
         assert!(result.output.contains("Lines 2-4/5"));
         assert!(result.output.contains("     2: Line 2"));
         assert!(result.output.contains("     3: Line 3"));
@@ -279,7 +279,7 @@ mod tests {
         })
         .to_string();
 
-        let result = execute_read(&ToolContext::from_legacy_globals(), &args).unwrap();
+        let result = execute_read(&ToolContext::from_current_process(), &args).unwrap();
         assert!(result.output.contains("Directory:"));
         assert!(result.output.contains("file1.txt"));
         assert!(result.output.contains("file2.txt"));
@@ -293,7 +293,7 @@ mod tests {
         })
         .to_string();
 
-        let result = execute_read(&ToolContext::from_legacy_globals(), &args);
+        let result = execute_read(&ToolContext::from_current_process(), &args);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Path not found"));
     }
@@ -310,7 +310,7 @@ mod tests {
         })
         .to_string();
 
-        let result = execute_read(&ToolContext::from_legacy_globals(), &args).unwrap();
+        let result = execute_read(&ToolContext::from_current_process(), &args).unwrap();
         assert!(result.output.contains("Lines 1-500/600"));
         assert!(result.output.contains("[... 100 more lines ...]"));
     }
@@ -328,7 +328,7 @@ mod tests {
         })
         .to_string();
 
-        let result = execute_read(&ToolContext::from_legacy_globals(), &args).unwrap();
+        let result = execute_read(&ToolContext::from_current_process(), &args).unwrap();
         assert!(result.output.contains("Lines 1-2/3"));
         assert!(result.output.contains("[... 1 more lines ...]"));
     }
@@ -342,7 +342,7 @@ mod tests {
         })
         .to_string();
 
-        let result = execute_read(&ToolContext::from_legacy_globals(), &args).unwrap();
+        let result = execute_read(&ToolContext::from_current_process(), &args).unwrap();
         assert!(result.output.contains("(empty)"));
     }
 }

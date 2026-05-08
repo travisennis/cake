@@ -125,7 +125,7 @@ impl Agent {
                 })
                 .collect(),
             tools: default_tool_registry(),
-            tool_context: Arc::new(ToolContext::from_legacy_globals()),
+            tool_context: Arc::new(ToolContext::from_current_process()),
             streaming_callback: None,
             persist_callback: None,
             progress_callback: None,
@@ -1215,7 +1215,7 @@ mod tests {
 
         let result = execute_tool_with_skill_dedup(
             &default_tool_registry(),
-            Arc::new(ToolContext::from_legacy_globals()),
+            Arc::new(ToolContext::from_current_process()),
             "Read",
             &arguments,
             &skill_locations,
@@ -1244,7 +1244,7 @@ mod tests {
 
         let error = execute_tool_with_skill_dedup(
             &default_tool_registry(),
-            Arc::new(ToolContext::from_legacy_globals()),
+            Arc::new(ToolContext::from_current_process()),
             "Read",
             &arguments,
             &skill_locations,

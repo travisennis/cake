@@ -21,28 +21,9 @@ use serde::Serialize;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 mod sandbox;
-
-// =============================================================================
-// Cached Directory Lookups
-// =============================================================================
-
-static CWD: OnceLock<Result<PathBuf, String>> = OnceLock::new();
-static TEMP_DIRS: OnceLock<Vec<PathBuf>> = OnceLock::new();
-
-fn cached_cwd() -> Result<&'static PathBuf, String> {
-    CWD.get_or_init(|| {
-        std::env::current_dir().map_err(|e| format!("Failed to get working directory: {e}"))
-    })
-    .as_ref()
-    .map_err(String::clone)
-}
-
-fn cached_temp_dirs() -> &'static [PathBuf] {
-    TEMP_DIRS.get_or_init(compute_temp_directories)
-}
 
 fn compute_temp_directories() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
@@ -79,9 +60,6 @@ fn compute_temp_directories() -> Vec<PathBuf> {
 }
 
 /// Directory context used by tool execution and sandbox construction.
-///
-/// This currently feeds the legacy process-global directory caches. Future
-/// refactors will pass this context directly through tool execution.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToolContext {
     pub cwd: PathBuf,
@@ -129,41 +107,18 @@ impl ToolContext {
         }
     }
 
-    /// Build a context from the legacy process-global caches.
-    ///
-    /// This is used by tests and transitional call sites until 047c removes
-    /// those caches entirely.
-    pub(crate) fn from_legacy_globals() -> Self {
-        let cwd = cached_cwd().cloned().unwrap_or_else(|_| PathBuf::from("."));
+    /// Build a context from the current process environment with no configured
+    /// extra directories.
+    pub(crate) fn from_current_process() -> Self {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         Self {
             cwd,
-            temp_dirs: cached_temp_dirs().to_vec(),
-            additional_dirs: ADDITIONAL_DIRS.get().cloned().unwrap_or_default(),
-            skill_dirs: SKILL_DIRS.get().cloned().unwrap_or_default(),
-            settings_dirs: SETTINGS_DIRS.get().cloned().unwrap_or_default(),
+            temp_dirs: compute_temp_directories(),
+            additional_dirs: Vec::new(),
+            skill_dirs: Vec::new(),
+            settings_dirs: Vec::new(),
         }
     }
-}
-
-// =============================================================================
-// Global Directory Storage
-// =============================================================================
-
-// Global storage for additional directories added via --add-dir flag.
-// These directories are read-only for the agent.
-// Uses OnceLock instead of thread_local! to work correctly with
-// Tokio's multi-threaded runtime where tool execution may run on
-// a different thread than the startup thread.
-static ADDITIONAL_DIRS: OnceLock<Vec<PathBuf>> = OnceLock::new();
-// Skill base directories (parent dirs of SKILL.md files) - read-only access
-static SKILL_DIRS: OnceLock<Vec<PathBuf>> = OnceLock::new();
-// Settings directories (from settings.toml) - read-write access
-static SETTINGS_DIRS: OnceLock<Vec<PathBuf>> = OnceLock::new();
-
-/// Set the additional directories globally.
-/// This should be called once at startup from main.
-pub fn set_additional_dirs(dirs: Vec<PathBuf>) {
-    let _ = ADDITIONAL_DIRS.set(dirs);
 }
 
 /// Get the additional directories from the current tool context.
@@ -171,39 +126,14 @@ pub fn get_additional_dirs(context: &ToolContext) -> &[PathBuf] {
     &context.additional_dirs
 }
 
-/// Set the skill directories globally.
-/// These directories are granted read-only access for the Read tool.
-pub fn set_skill_dirs(dirs: Vec<PathBuf>) {
-    let _ = SKILL_DIRS.set(dirs);
-}
-
 /// Get the skill directories from the current tool context.
 pub fn get_skill_dirs(context: &ToolContext) -> &[PathBuf] {
     &context.skill_dirs
 }
 
-/// Set the settings directories globally.
-/// These directories are granted read-write access and are loaded from
-/// settings.toml (both global and project-level).
-pub fn set_settings_dirs(dirs: Vec<PathBuf>) {
-    let _ = SETTINGS_DIRS.set(dirs);
-}
-
 /// Get the settings directories from the current tool context.
 pub fn get_settings_dirs(context: &ToolContext) -> &[PathBuf] {
     &context.settings_dirs
-}
-
-/// Populate the legacy process-global directory caches from a [`ToolContext`].
-///
-/// This is a compatibility bridge while tools are incrementally migrated to
-/// receive `&ToolContext` directly.
-pub fn set_tool_context(context: &ToolContext) {
-    let _ = CWD.set(Ok(context.cwd.clone()));
-    let _ = TEMP_DIRS.set(context.temp_dirs.clone());
-    set_additional_dirs(context.additional_dirs.clone());
-    set_skill_dirs(context.skill_dirs.clone());
-    set_settings_dirs(context.settings_dirs.clone());
 }
 
 // =============================================================================

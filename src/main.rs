@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::cli::CmdRunner;
-use crate::clients::{Agent, ConversationItem, ToolContext, set_tool_context};
+use crate::clients::{Agent, ConversationItem, ToolContext};
 use crate::config::{
     AgentsFile, DataDir, DiagnosticLevel, HooksLoader, ModelConfig, ModelDefinition,
     ResolvedModelConfig, Session, SettingsLoader, SkillCatalog, discover_skills,
@@ -689,7 +689,6 @@ impl CmdRunner for CodingAssistant {
             skill_base_dirs,
             settings_dirs,
         );
-        set_tool_context(&tool_context);
         let tool_context = Arc::new(tool_context);
 
         // Log diagnostics for skills
@@ -1346,7 +1345,7 @@ mod tests {
             test_resolved_model_config(),
             &[(Role::System, "system".to_string())],
             &HashMap::new(),
-            Arc::new(ToolContext::from_legacy_globals()),
+            Arc::new(ToolContext::from_current_process()),
             uuid::uuid!("550e8400-e29b-41d4-a716-446655440001"),
         );
 
@@ -1364,7 +1363,7 @@ mod tests {
             PathBuf::from("/work"),
             &[(Role::System, "system".to_string())],
             HashMap::new(),
-            Arc::new(ToolContext::from_legacy_globals()),
+            Arc::new(ToolContext::from_current_process()),
             uuid::uuid!("550e8400-e29b-41d4-a716-446655440001"),
         );
 

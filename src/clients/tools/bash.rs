@@ -453,7 +453,7 @@ async fn execute_bash_with_args(
 #[cfg(test)]
 async fn execute_bash_unsandboxed(arguments: &str) -> Result<super::ToolResult, String> {
     let args = BashExecutionArgs::from_json_with_sandbox(arguments, false)?;
-    let context = super::ToolContext::from_legacy_globals();
+    let context = super::ToolContext::from_current_process();
     Box::pin(execute_bash_with_args(&context, args)).await
 }
 
@@ -714,7 +714,7 @@ mod tests {
         }
 
         let args = r#"{"command": "echo should-not-run"}"#;
-        let result = Box::pin(execute_bash(&ToolContext::from_legacy_globals(), args)).await;
+        let result = Box::pin(execute_bash(&ToolContext::from_current_process(), args)).await;
         let error = result.expect_err("sandbox initialization failure should fail closed");
         assert!(
             error.contains("macOS sandbox unavailable"),
@@ -734,7 +734,7 @@ mod tests {
         let target = outside.join(format!("cake_sandbox_test_{}", uuid::Uuid::new_v4()));
         let target = target.display();
         let args = format!(r#"{{"command": "touch {target}"}}"#);
-        let result = Box::pin(execute_bash(&ToolContext::from_legacy_globals(), &args))
+        let result = Box::pin(execute_bash(&ToolContext::from_current_process(), &args))
             .await
             .unwrap();
         assert!(
@@ -753,7 +753,7 @@ mod tests {
         }
 
         let args = r#"{"command": "ls Cargo.toml"}"#;
-        let result = Box::pin(execute_bash(&ToolContext::from_legacy_globals(), args))
+        let result = Box::pin(execute_bash(&ToolContext::from_current_process(), args))
             .await
             .unwrap();
         assert!(
@@ -778,7 +778,7 @@ mod tests {
             tempfile::TempDir::new_in(outside).expect("should create test dir outside cwd");
         let outside_dir = temp_dir.path().display();
         let args = format!(r#"{{"command": "ls {outside_dir}"}}"#);
-        let result = Box::pin(execute_bash(&ToolContext::from_legacy_globals(), &args))
+        let result = Box::pin(execute_bash(&ToolContext::from_current_process(), &args))
             .await
             .unwrap();
         assert!(

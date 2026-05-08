@@ -20,6 +20,6 @@ pub mod types;
 #[doc(inline)]
 pub use agent::Agent;
 #[doc(inline)]
-pub use tools::{ToolContext, set_tool_context, summarize_tool_args};
+pub use tools::{ToolContext, summarize_tool_args};
 #[doc(inline)]
 pub use types::{ConversationItem, GitState, SessionRecord};

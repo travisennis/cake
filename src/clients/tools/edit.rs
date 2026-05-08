@@ -454,7 +454,7 @@ mod tests {
         })
         .to_string();
 
-        let result = execute_edit(&ToolContext::from_legacy_globals(), &args).unwrap();
+        let result = execute_edit(&ToolContext::from_current_process(), &args).unwrap();
         assert!(result.output.contains("Applied 2 edits"));
 
         let content = fs::read_to_string(&file_path).unwrap();
@@ -476,7 +476,7 @@ mod tests {
         })
         .to_string();
 
-        let result = execute_edit(&ToolContext::from_legacy_globals(), &args);
+        let result = execute_edit(&ToolContext::from_current_process(), &args);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
@@ -501,7 +501,7 @@ mod tests {
         })
         .to_string();
 
-        let result = execute_edit(&ToolContext::from_legacy_globals(), &args);
+        let result = execute_edit(&ToolContext::from_current_process(), &args);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
@@ -529,7 +529,7 @@ mod tests {
         })
         .to_string();
 
-        let result = execute_edit(&ToolContext::from_legacy_globals(), &args);
+        let result = execute_edit(&ToolContext::from_current_process(), &args);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
@@ -556,7 +556,7 @@ mod tests {
         })
         .to_string();
 
-        let result = execute_edit(&ToolContext::from_legacy_globals(), &args);
+        let result = execute_edit(&ToolContext::from_current_process(), &args);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
@@ -581,7 +581,7 @@ mod tests {
         })
         .to_string();
 
-        let result = execute_edit(&ToolContext::from_legacy_globals(), &args);
+        let result = execute_edit(&ToolContext::from_current_process(), &args);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("No edits provided"));
     }
@@ -600,7 +600,7 @@ mod tests {
         })
         .to_string();
 
-        let result = execute_edit(&ToolContext::from_legacy_globals(), &args);
+        let result = execute_edit(&ToolContext::from_current_process(), &args);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
@@ -627,7 +627,7 @@ mod tests {
         })
         .to_string();
 
-        let _ = execute_edit(&ToolContext::from_legacy_globals(), &args).unwrap();
+        let _ = execute_edit(&ToolContext::from_current_process(), &args).unwrap();
 
         let content = fs::read_to_string(&file_path).unwrap();
         assert!(content.contains("Hello universe\n"));
@@ -648,7 +648,7 @@ mod tests {
         })
         .to_string();
 
-        let _ = execute_edit(&ToolContext::from_legacy_globals(), &args).unwrap();
+        let _ = execute_edit(&ToolContext::from_current_process(), &args).unwrap();
 
         let content = String::from_utf8(fs::read(&file_path).unwrap()).unwrap();
         assert!(content.contains("Hello universe\r\n"));
@@ -669,7 +669,7 @@ mod tests {
         })
         .to_string();
 
-        let _ = execute_edit(&ToolContext::from_legacy_globals(), &args).unwrap();
+        let _ = execute_edit(&ToolContext::from_current_process(), &args).unwrap();
 
         let content = fs::read(&file_path).unwrap();
         assert_eq!(content, b"header\runrelated\r\nHello universe\r\n");
@@ -689,7 +689,7 @@ mod tests {
         })
         .to_string();
 
-        let _ = execute_edit(&ToolContext::from_legacy_globals(), &args).unwrap();
+        let _ = execute_edit(&ToolContext::from_current_process(), &args).unwrap();
 
         let content = fs::read(&file_path).unwrap();
         assert_eq!(content, b"lf only\ncrlf only\r\nreplaced\r\n");
@@ -715,7 +715,7 @@ mod tests {
         })
         .to_string();
 
-        let _ = execute_edit(&ToolContext::from_legacy_globals(), &args).unwrap();
+        let _ = execute_edit(&ToolContext::from_current_process(), &args).unwrap();
 
         let content = fs::read(&file_path).unwrap();
         assert!(
@@ -740,7 +740,7 @@ mod tests {
         })
         .to_string();
 
-        let _ = execute_edit(&ToolContext::from_legacy_globals(), &args).unwrap();
+        let _ = execute_edit(&ToolContext::from_current_process(), &args).unwrap();
 
         let content = fs::read(&file_path).unwrap();
         assert!(
@@ -767,7 +767,7 @@ mod tests {
         })
         .to_string();
 
-        let result = execute_edit(&ToolContext::from_legacy_globals(), &args).unwrap();
+        let result = execute_edit(&ToolContext::from_current_process(), &args).unwrap();
         assert!(result.output.contains("Applied 1 edit"));
 
         let content = fs::read_to_string(&file_path).unwrap();
@@ -788,7 +788,7 @@ mod tests {
         })
         .to_string();
 
-        let result = execute_edit(&ToolContext::from_legacy_globals(), &args);
+        let result = execute_edit(&ToolContext::from_current_process(), &args);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Could not find"));
     }
@@ -807,7 +807,7 @@ mod tests {
         })
         .to_string();
 
-        let result = execute_edit(&ToolContext::from_legacy_globals(), &args).unwrap();
+        let result = execute_edit(&ToolContext::from_current_process(), &args).unwrap();
         assert!(result.output.contains("Applied 1 edit"));
 
         let content = fs::read_to_string(&file_path).unwrap();
@@ -828,7 +828,7 @@ mod tests {
         })
         .to_string();
 
-        let result = execute_edit(&ToolContext::from_legacy_globals(), &args);
+        let result = execute_edit(&ToolContext::from_current_process(), &args);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("binary file"));
     }
@@ -843,7 +843,7 @@ mod tests {
         })
         .to_string();
 
-        let result = execute_edit(&ToolContext::from_legacy_globals(), &args);
+        let result = execute_edit(&ToolContext::from_current_process(), &args);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("not found"));
     }
@@ -860,7 +860,7 @@ mod tests {
         })
         .to_string();
 
-        let result = execute_edit(&ToolContext::from_legacy_globals(), &args);
+        let result = execute_edit(&ToolContext::from_current_process(), &args);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("not a file"));
     }
@@ -879,7 +879,7 @@ mod tests {
         })
         .to_string();
 
-        let result = execute_edit(&ToolContext::from_legacy_globals(), &args);
+        let result = execute_edit(&ToolContext::from_current_process(), &args);
         assert!(result.is_err());
         assert!(
             result
@@ -909,7 +909,7 @@ mod tests {
         })
         .to_string();
 
-        let _ = execute_edit(&ToolContext::from_legacy_globals(), &args).unwrap();
+        let _ = execute_edit(&ToolContext::from_current_process(), &args).unwrap();
 
         let content = fs::read_to_string(&file_path).unwrap();
         assert_eq!(content, "XXX BBB ZZZ");
@@ -931,7 +931,7 @@ mod tests {
         })
         .to_string();
 
-        let _ = execute_edit(&ToolContext::from_legacy_globals(), &args).unwrap();
+        let _ = execute_edit(&ToolContext::from_current_process(), &args).unwrap();
 
         let content = fs::read_to_string(&file_path).unwrap();
         assert_eq!(content, "s MEDIUM vl");
