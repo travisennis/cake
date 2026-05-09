@@ -15,3 +15,5 @@ This index follows `.agents/PLANS.md`. Active ExecPlans are checked-in plans tha
 - 2026-05-08 / Codex: Moved `split-agent-responsibilities.md` to completed after task 049 passed validation.
 - 2026-05-09 / Codex: Added the active ExecPlan for task 052, `Move Provider Quirks Behind Provider Strategy`.
 - 2026-05-09 / Codex: Moved `provider-strategy.md` to completed after task 052 passed validation.
+- 2026-05-09 / Codex: Added the active ExecPlan for task 054, `Refactor CodingAssistant Run Into Smaller Steps`.
+- 2026-05-09 / Codex: Moved `refactor-coding-assistant-run.md` to completed after task 054 passed validation.

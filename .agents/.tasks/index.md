@@ -4,8 +4,8 @@ This index summarizes the task files in this directory. Use it as the manually m
 
 ## Status Summary
 
-- Completed: 38
-- Pending: 63
+- Completed: 39
+- Pending: 62
 - Tracking: 1
 - Open: 1
 - Blocked: 12
@@ -24,9 +24,9 @@ These are the highest-priority tasks currently available from the task metadata:
 
 | Task | Title | Status | Priority | Effort | ExecPlan | Depends on |
 | --- | --- | --- | --- | --- | --- | --- |
-| [054](054.md) | Refactor CodingAssistant Run Into Smaller Steps | Pending | P1 | L | Required before implementation | - |
+| [055](055.md) | Replace Boolean Task Completion API with Outcome Enum | Pending | P1 | M | - | - |
 
-With [053](053.md) complete, [054](054.md) is the next P1 task without dependencies.
+With [054](054.md) complete, [055](055.md) is the next P1 task without dependencies.
 
 ## Parent Trackers
 
@@ -94,7 +94,7 @@ With [053](053.md) complete, [054](054.md) is the next P1 task without dependenc
 | [051](051.md) | Add Tool Abstraction and Registry | Completed | P1 | L | - | 048 (e2e test as safety net) |
 | [052](052.md) | Move Provider Quirks Behind Provider Strategy | Completed | P1 | L | `.agents/exec-plans/completed/provider-strategy.md` | 050 (Backend abstraction) |
 | [053](053.md) | Model Session Mode as a Typed Run Mode | Completed | P1 | M | - | - |
-| [054](054.md) | Refactor CodingAssistant Run Into Smaller Steps | Pending | P1 | L | Required before implementation | - |
+| [054](054.md) | Refactor CodingAssistant Run Into Smaller Steps | Completed | P1 | L | `.agents/exec-plans/completed/refactor-coding-assistant-run.md` | - |
 | [055](055.md) | Replace Boolean Task Completion API with Outcome Enum | Pending | P1 | M | - | - |
 | [056](056.md) | Remove Redundant StreamRecord Success Booleans | Pending | P1 | M | - | - |
 | [057](057.md) | Add Typed Reasoning Effort | Pending | P1 | M | - | - |

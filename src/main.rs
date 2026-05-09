@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 
 use crate::cli::CmdRunner;
 use crate::clients::{Agent, ConversationItem, ToolContext};
+use crate::config::settings::LoadedSettings;
 use crate::config::{
     AgentsFile, DataDir, DiagnosticLevel, HooksLoader, ModelConfig, ModelDefinition,
     ResolvedModelConfig, Session, SettingsLoader, SkillCatalog, discover_skills,
@@ -116,6 +117,26 @@ struct RunSession {
     agent: Agent,
     session: Session,
     storage: SessionStorage,
+}
+
+struct PreparedRun {
+    original_dir: PathBuf,
+    current_dir: PathBuf,
+    additional_dirs: Vec<PathBuf>,
+    worktree: Option<worktree::Worktree>,
+    content: String,
+}
+
+struct RunResources {
+    loaded: LoadedSettings,
+    agents_files: Vec<AgentsFile>,
+    skill_catalog: SkillCatalog,
+    tool_context: Arc<ToolContext>,
+}
+
+struct TurnResult {
+    result: anyhow::Result<Option<Message>>,
+    duration_ms: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -683,14 +704,11 @@ impl CodingAssistant {
             })
             .collect()
     }
-}
 
-impl CmdRunner for CodingAssistant {
-    #[allow(clippy::too_many_lines)]
-    async fn run(&self, data_dir: &DataDir) -> anyhow::Result<()> {
+    fn prepare_run(&self) -> anyhow::Result<PreparedRun> {
         let original_dir = std::env::current_dir()?;
         let additional_dirs = self.resolve_additional_dirs(&original_dir);
-        let wt = self.setup_worktree(&original_dir)?;
+        let worktree = self.setup_worktree(&original_dir)?;
 
         let stdin_content = Self::read_stdin_content();
         let content = Self::build_content(self.prompt.as_deref(), stdin_content)?;
@@ -698,16 +716,33 @@ impl CmdRunner for CodingAssistant {
         let current_dir = std::env::current_dir()
             .map_err(|e| anyhow::anyhow!("Failed to get current directory: {e}"))?;
 
-        // Load settings from TOML files
+        Ok(PreparedRun {
+            original_dir,
+            current_dir,
+            additional_dirs,
+            worktree,
+            content,
+        })
+    }
+
+    fn load_settings(&self, current_dir: &Path) -> anyhow::Result<LoadedSettings> {
         let loaded = if let Some(profile) = self.profile.as_deref() {
-            SettingsLoader::load_with_profile(Some(&current_dir), Some(profile))?
+            SettingsLoader::load_with_profile(Some(current_dir), Some(profile))?
         } else {
-            SettingsLoader::load(Some(&current_dir))?
+            SettingsLoader::load(Some(current_dir))?
         };
+        Ok(loaded)
+    }
 
-        let agents_files = data_dir.read_agents_files(&current_dir);
+    fn load_run_resources(
+        &self,
+        data_dir: &DataDir,
+        current_dir: &Path,
+        additional_dirs: Vec<PathBuf>,
+    ) -> anyhow::Result<RunResources> {
+        let loaded = self.load_settings(current_dir)?;
+        let agents_files = data_dir.read_agents_files(current_dir);
 
-        // Load skill settings and discover skills
         let skill_config = SettingsLoader::resolve_skill_config(
             self.no_skills,
             self.skills.as_deref(),
@@ -721,9 +756,9 @@ impl CmdRunner for CodingAssistant {
             .map(parse_skill_path_list)
             .unwrap_or_default();
         let mut skill_catalog = if configured_skill_dirs.is_empty() {
-            discover_skills(&current_dir)
+            discover_skills(current_dir)
         } else {
-            discover_skills_with_paths(&current_dir, &configured_skill_dirs)
+            discover_skills_with_paths(current_dir, &configured_skill_dirs)
         };
         skill_catalog = skill_config.apply(skill_catalog);
 
@@ -733,7 +768,26 @@ impl CmdRunner for CodingAssistant {
             .map(|s| s.base_directory.clone())
             .collect();
 
-        let settings_dirs: Vec<PathBuf> = loaded
+        let settings_dirs = Self::valid_settings_dirs(&loaded);
+        let tool_context = ToolContext::new(
+            current_dir.to_path_buf(),
+            additional_dirs,
+            skill_base_dirs,
+            settings_dirs,
+        );
+
+        Self::log_skill_diagnostics(&skill_catalog);
+
+        Ok(RunResources {
+            loaded,
+            agents_files,
+            skill_catalog,
+            tool_context: Arc::new(tool_context),
+        })
+    }
+
+    fn valid_settings_dirs(loaded: &LoadedSettings) -> Vec<PathBuf> {
+        loaded
             .directories
             .iter()
             .map(PathBuf::from)
@@ -748,17 +802,10 @@ impl CmdRunner for CodingAssistant {
                     false
                 }
             })
-            .collect();
+            .collect()
+    }
 
-        let tool_context = ToolContext::new(
-            current_dir.clone(),
-            additional_dirs,
-            skill_base_dirs,
-            settings_dirs,
-        );
-        let tool_context = Arc::new(tool_context);
-
-        // Log diagnostics for skills
+    fn log_skill_diagnostics(skill_catalog: &SkillCatalog) {
         for diagnostic in &skill_catalog.diagnostics {
             match diagnostic.level {
                 DiagnosticLevel::Warning => {
@@ -790,101 +837,109 @@ impl CmdRunner for CodingAssistant {
                     .join(", ")
             );
         }
+    }
 
-        let task_id = uuid::Uuid::new_v4();
-        let run_mode = RunMode::from_cli(self)?;
-        let run_session = self.build_client_and_session(
-            &run_mode,
-            data_dir,
-            current_dir.clone(),
-            &agents_files,
-            &loaded.models,
-            loaded.default_model.as_deref(),
-            &skill_catalog,
-            &tool_context,
-            task_id,
-        )?;
-        let mut client = run_session.agent;
-        let session = run_session.session;
-        let hooks = HooksLoader::load(&current_dir)?;
-        let session_start_source = run_mode.session_start_source();
-
-        if run_mode.persists_session() {
-            let mut file = match run_session.storage {
-                SessionStorage::New => {
-                    data_dir.create_session_file(&session, client.tool_names())?
-                },
-                SessionStorage::Append => data_dir.open_session_for_append(session.id)?,
-                SessionStorage::ForkSeed(records) => {
-                    let mut file = data_dir.create_session_file(&session, client.tool_names())?;
-                    crate::config::Session::append_records(&mut file, &records)?;
-                    file
-                },
-            };
-            client = client.with_persist_callback(move |record| {
-                crate::config::Session::append_record(&mut file, record)
-            });
+    fn attach_persistence(
+        mut client: Agent,
+        data_dir: &DataDir,
+        session: &Session,
+        storage: SessionStorage,
+        persists_session: bool,
+    ) -> anyhow::Result<Agent> {
+        if !persists_session {
+            return Ok(client);
         }
 
-        let hook_runner = if hooks.is_empty() {
-            None
-        } else {
-            let runner = Arc::new(HookRunner::new(
-                hooks,
-                HookContext {
-                    session_id: session.id,
-                    task_id,
-                    transcript_path: run_mode
-                        .persists_session()
-                        .then(|| data_dir.session_path(session.id)),
-                    cwd: current_dir.clone(),
-                    model: client.model_name().to_string(),
-                },
-            ));
-            client = client.with_hook_runner(Arc::clone(&runner));
-            Some(runner)
+        let mut file = match storage {
+            SessionStorage::New => data_dir.create_session_file(session, client.tool_names())?,
+            SessionStorage::Append => data_dir.open_session_for_append(session.id)?,
+            SessionStorage::ForkSeed(records) => {
+                let mut file = data_dir.create_session_file(session, client.tool_names())?;
+                crate::config::Session::append_records(&mut file, &records)?;
+                file
+            },
         };
+        client = client.with_persist_callback(move |record| {
+            crate::config::Session::append_record(&mut file, record)
+        });
+        Ok(client)
+    }
 
+    fn attach_hooks(
+        mut client: Agent,
+        data_dir: &DataDir,
+        current_dir: &Path,
+        session: &Session,
+        run_mode: &RunMode,
+        task_id: uuid::Uuid,
+    ) -> anyhow::Result<(Agent, Option<Arc<HookRunner>>)> {
+        let hooks = HooksLoader::load(current_dir)?;
+
+        if hooks.is_empty() {
+            return Ok((client, None));
+        }
+
+        let runner = Arc::new(HookRunner::new(
+            hooks,
+            HookContext {
+                session_id: session.id,
+                task_id,
+                transcript_path: run_mode
+                    .persists_session()
+                    .then(|| data_dir.session_path(session.id)),
+                cwd: current_dir.to_path_buf(),
+                model: client.model_name().to_string(),
+            },
+        ));
+        client = client.with_hook_runner(Arc::clone(&runner));
+        Ok((client, Some(runner)))
+    }
+
+    fn attach_output_callbacks(&self, mut client: Agent) -> (Agent, Option<ProgressBar>) {
         if self.output_format == OutputFormat::StreamJson {
             client = client.with_streaming_json(|json| {
                 println!("{json}");
             });
         }
 
-        let normal_spinner = match self.output_format {
+        match self.output_format {
             OutputFormat::Text => {
-                let (updated_client, spinner) = Self::with_text_progress(client);
-                client = updated_client;
-                Some(spinner)
+                let (client, spinner) = Self::with_text_progress(client);
+                (client, Some(spinner))
             },
-            OutputFormat::StreamJson | OutputFormat::Json => None,
-        };
+            OutputFormat::StreamJson | OutputFormat::Json => (client, None),
+        }
+    }
 
+    async fn execute_agent_turn(
+        client: &mut Agent,
+        hook_runner: Option<&Arc<HookRunner>>,
+        session_start_source: &str,
+        content: &str,
+    ) -> anyhow::Result<TurnResult> {
         let msg = Message {
             role: Role::User,
-            content: content.clone(),
+            content: content.to_string(),
         };
 
         let start = Instant::now();
 
-        if let Some(runner) = &hook_runner {
-            let contexts = runner.session_start(session_start_source, &content).await?;
+        if let Some(runner) = hook_runner {
+            let contexts = runner.session_start(session_start_source, content).await?;
             client.append_developer_context(contexts);
-            let contexts = runner.user_prompt_submit(&content).await?;
+            let contexts = runner.user_prompt_submit(content).await?;
             client.append_developer_context(contexts);
         }
         client.emit_prompt_context_records()?;
         client.emit_task_start_record()?;
 
-        let result: anyhow::Result<Option<Message>> = client.send(msg).await;
+        let result = client.send(msg).await;
+        let duration_ms = start.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
 
-        let duration_ms: u64 = start.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
-
-        // Emit and store the task completion record for both text and stream-json modes.
         match &result {
             Ok(response_msg) => {
                 let result_text = response_msg.as_ref().map(|m| m.content.clone());
-                if let Some(runner) = &hook_runner
+                if let Some(runner) = hook_runner
                     && let Some(context) = runner.stop(result_text.as_deref()).await?
                 {
                     tracing::info!(target: "cake::hooks", additional_context = %context, "Stop hook returned additional context");
@@ -892,17 +947,38 @@ impl CmdRunner for CodingAssistant {
                 client.emit_task_complete_record(true, duration_ms, result_text, None)?;
             },
             Err(e) => {
-                if let Some(runner) = &hook_runner {
+                if let Some(runner) = hook_runner {
                     runner.error_occurred(e).await?;
                 }
                 client.emit_task_complete_record(false, duration_ms, None, Some(e.to_string()))?;
             },
         }
 
-        if let Some(spinner) = normal_spinner {
-            let summary = format_done_summary(duration_ms, &client);
+        Ok(TurnResult {
+            result,
+            duration_ms,
+        })
+    }
+
+    fn finish_progress(spinner: Option<ProgressBar>, duration_ms: u64, client: &Agent) {
+        if let Some(spinner) = spinner {
+            let summary = format_done_summary(duration_ms, client);
             spinner.finish_with_message(format!("Done: {summary}"));
         }
+    }
+
+    fn render_output(
+        &self,
+        turn: TurnResult,
+        client: &Agent,
+        current_dir: &Path,
+        data_dir: &DataDir,
+        session: &Session,
+    ) -> anyhow::Result<()> {
+        let TurnResult {
+            result,
+            duration_ms,
+        } = turn;
 
         match self.output_format {
             OutputFormat::Text => {
@@ -943,7 +1019,6 @@ impl CmdRunner for CodingAssistant {
                     },
                 };
                 println!("{}", serde_json::to_string(&json)?);
-                // Propagate errors after emitting JSON to preserve exit code behavior.
                 if result.is_err() {
                     return result.map(|_| ());
                 }
@@ -951,8 +1026,59 @@ impl CmdRunner for CodingAssistant {
             OutputFormat::StreamJson => {},
         }
 
-        if let Some(ref wt) = wt {
-            Self::cleanup_worktree(wt, &original_dir);
+        Ok(())
+    }
+}
+
+impl CmdRunner for CodingAssistant {
+    async fn run(&self, data_dir: &DataDir) -> anyhow::Result<()> {
+        let prepared = self.prepare_run()?;
+        let resources =
+            self.load_run_resources(data_dir, &prepared.current_dir, prepared.additional_dirs)?;
+        let task_id = uuid::Uuid::new_v4();
+        let run_mode = RunMode::from_cli(self)?;
+        let run_session = self.build_client_and_session(
+            &run_mode,
+            data_dir,
+            prepared.current_dir.clone(),
+            &resources.agents_files,
+            &resources.loaded.models,
+            resources.loaded.default_model.as_deref(),
+            &resources.skill_catalog,
+            &resources.tool_context,
+            task_id,
+        )?;
+        let session_start_source = run_mode.session_start_source();
+        let session = run_session.session;
+        let client = Self::attach_persistence(
+            run_session.agent,
+            data_dir,
+            &session,
+            run_session.storage,
+            run_mode.persists_session(),
+        )?;
+        let (client, hook_runner) = Self::attach_hooks(
+            client,
+            data_dir,
+            &prepared.current_dir,
+            &session,
+            &run_mode,
+            task_id,
+        )?;
+        let (mut client, spinner) = self.attach_output_callbacks(client);
+
+        let turn = Self::execute_agent_turn(
+            &mut client,
+            hook_runner.as_ref(),
+            session_start_source,
+            &prepared.content,
+        )
+        .await?;
+        Self::finish_progress(spinner, turn.duration_ms, &client);
+        self.render_output(turn, &client, &prepared.current_dir, data_dir, &session)?;
+
+        if let Some(ref wt) = prepared.worktree {
+            Self::cleanup_worktree(wt, &prepared.original_dir);
         }
 
         Ok(())
