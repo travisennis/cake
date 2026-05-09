@@ -118,6 +118,64 @@ struct RunSession {
     storage: SessionStorage,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum RunMode {
+    NewSession,
+    Ephemeral,
+    ContinueLatest,
+    Resume { session_id: String },
+    ForkLatest,
+    Fork { session_id: String },
+}
+
+impl RunMode {
+    fn from_cli(args: &CodingAssistant) -> anyhow::Result<Self> {
+        if args.no_session {
+            return Ok(Self::Ephemeral);
+        }
+        if args.continue_session {
+            return Ok(Self::ContinueLatest);
+        }
+        if let Some(session_id) = args.resume.as_deref() {
+            if !looks_like_uuid(session_id) {
+                anyhow::bail!(
+                    "Invalid session reference '{session_id}': resume by file path is no longer supported. Provide a session UUID."
+                );
+            }
+            return Ok(Self::Resume {
+                session_id: session_id.to_string(),
+            });
+        }
+        if let Some(fork_id) = args.fork.as_deref() {
+            if fork_id.is_empty() {
+                return Ok(Self::ForkLatest);
+            }
+            if !looks_like_uuid(fork_id) {
+                anyhow::bail!(
+                    "Invalid session reference '{fork_id}': fork by file path is no longer supported. Provide a session UUID."
+                );
+            }
+            return Ok(Self::Fork {
+                session_id: fork_id.to_string(),
+            });
+        }
+
+        Ok(Self::NewSession)
+    }
+
+    const fn persists_session(&self) -> bool {
+        !matches!(self, Self::Ephemeral)
+    }
+
+    const fn session_start_source(&self) -> &'static str {
+        match self {
+            Self::ForkLatest | Self::Fork { .. } => "fork",
+            Self::ContinueLatest | Self::Resume { .. } => "resume",
+            Self::NewSession | Self::Ephemeral => "startup",
+        }
+    }
+}
+
 enum SessionStorage {
     New,
     Append,
@@ -416,6 +474,7 @@ impl CodingAssistant {
     #[allow(clippy::too_many_arguments)]
     fn build_client_and_session(
         &self,
+        run_mode: &RunMode,
         data_dir: &DataDir,
         current_dir: PathBuf,
         agents_files: &[AgentsFile],
@@ -429,89 +488,97 @@ impl CodingAssistant {
             build_initial_prompt_messages(&current_dir, agents_files, skill_catalog);
         let skill_locations = Self::skill_locations(skill_catalog);
 
-        if self.continue_session {
-            info!(target: "cake", "Continuing latest session for directory: {}", current_dir.display());
-            let Some(restored) = data_dir.load_latest_session(&current_dir)? else {
-                if let Some(latest) = data_dir.load_latest_session_any_directory()? {
-                    anyhow::bail!(
-                        "Cannot continue: latest session was created in '{}' but current directory is '{}'. Run from the original directory or start a new session.",
-                        latest.working_dir.display(),
-                        current_dir.display()
-                    );
-                }
-                anyhow::bail!("No previous session found for this directory");
-            };
-            info!(target: "cake", "Continuing session: {}", restored.id);
-            let resolved =
-                self.resolve_model_for_session(models, default_model, restored.model.as_deref())?;
-            Ok(Self::restored_client_and_session(
-                restored,
-                resolved,
-                &initial_messages,
-                &skill_locations,
-                Arc::clone(tool_context),
-                task_id,
-            ))
-        } else if let Some(ref arg) = self.resume {
-            if !looks_like_uuid(arg) {
-                anyhow::bail!(
-                    "Invalid session reference '{arg}': resume by file path is no longer supported. Provide a session UUID."
-                );
-            }
-            let restored = data_dir
-                .load_session(arg)?
-                .ok_or_else(|| anyhow::anyhow!("Session {arg} not found"))?;
-            info!(target: "cake", "Resumed session: {}", restored.id);
+        match run_mode {
+            RunMode::ContinueLatest => {
+                info!(target: "cake", "Continuing latest session for directory: {}", current_dir.display());
+                let Some(restored) = data_dir.load_latest_session(&current_dir)? else {
+                    if let Some(latest) = data_dir.load_latest_session_any_directory()? {
+                        anyhow::bail!(
+                            "Cannot continue: latest session was created in '{}' but current directory is '{}'. Run from the original directory or start a new session.",
+                            latest.working_dir.display(),
+                            current_dir.display()
+                        );
+                    }
+                    anyhow::bail!("No previous session found for this directory");
+                };
+                info!(target: "cake", "Continuing session: {}", restored.id);
+                let resolved = self.resolve_model_for_session(
+                    models,
+                    default_model,
+                    restored.model.as_deref(),
+                )?;
+                Ok(Self::restored_client_and_session(
+                    restored,
+                    resolved,
+                    &initial_messages,
+                    &skill_locations,
+                    Arc::clone(tool_context),
+                    task_id,
+                ))
+            },
+            RunMode::Resume { session_id } => {
+                let restored = data_dir
+                    .load_session(session_id)?
+                    .ok_or_else(|| anyhow::anyhow!("Session {session_id} not found"))?;
+                info!(target: "cake", "Resumed session: {}", restored.id);
 
-            let resolved =
-                self.resolve_model_for_session(models, default_model, restored.model.as_deref())?;
-            Ok(Self::restored_client_and_session(
-                restored,
-                resolved,
-                &initial_messages,
-                &skill_locations,
-                Arc::clone(tool_context),
-                task_id,
-            ))
-        } else if let Some(ref fork_id) = self.fork {
-            info!(target: "cake", "Forking session");
-            let restored = if fork_id.is_empty() {
-                data_dir.load_latest_session(&current_dir)?.ok_or_else(|| {
-                    anyhow::anyhow!("No previous session found for this directory")
-                })?
-            } else if looks_like_uuid(fork_id) {
-                data_dir
-                    .load_session(fork_id)?
-                    .ok_or_else(|| anyhow::anyhow!("Session {fork_id} not found"))?
-            } else {
-                anyhow::bail!(
-                    "Invalid session reference '{fork_id}': fork by file path is no longer supported. Provide a session UUID."
-                );
-            };
+                let resolved = self.resolve_model_for_session(
+                    models,
+                    default_model,
+                    restored.model.as_deref(),
+                )?;
+                Ok(Self::restored_client_and_session(
+                    restored,
+                    resolved,
+                    &initial_messages,
+                    &skill_locations,
+                    Arc::clone(tool_context),
+                    task_id,
+                ))
+            },
+            RunMode::ForkLatest | RunMode::Fork { .. } => {
+                info!(target: "cake", "Forking session");
+                let restored = match run_mode {
+                    RunMode::ForkLatest => {
+                        data_dir.load_latest_session(&current_dir)?.ok_or_else(|| {
+                            anyhow::anyhow!("No previous session found for this directory")
+                        })?
+                    },
+                    RunMode::Fork { session_id } => data_dir
+                        .load_session(session_id)?
+                        .ok_or_else(|| anyhow::anyhow!("Session {session_id} not found"))?,
+                    _ => unreachable!("fork arm only handles fork modes"),
+                };
 
-            info!(target: "cake", "Forking from session: {}", restored.id);
-            let resolved =
-                self.resolve_model_for_session(models, default_model, restored.model.as_deref())?;
-            Ok(Self::forked_client_and_session(
-                &restored,
-                resolved,
-                current_dir,
-                &initial_messages,
-                skill_locations,
-                Arc::clone(tool_context),
-                task_id,
-            ))
-        } else {
-            let resolved =
-                ResolvedModelConfig::resolve(self.resolve_model_config(models, default_model)?)?;
-            Ok(Self::new_client_and_session(
-                resolved,
-                current_dir,
-                &initial_messages,
-                skill_locations,
-                Arc::clone(tool_context),
-                task_id,
-            ))
+                info!(target: "cake", "Forking from session: {}", restored.id);
+                let resolved = self.resolve_model_for_session(
+                    models,
+                    default_model,
+                    restored.model.as_deref(),
+                )?;
+                Ok(Self::forked_client_and_session(
+                    &restored,
+                    resolved,
+                    current_dir,
+                    &initial_messages,
+                    skill_locations,
+                    Arc::clone(tool_context),
+                    task_id,
+                ))
+            },
+            RunMode::NewSession | RunMode::Ephemeral => {
+                let resolved = ResolvedModelConfig::resolve(
+                    self.resolve_model_config(models, default_model)?,
+                )?;
+                Ok(Self::new_client_and_session(
+                    resolved,
+                    current_dir,
+                    &initial_messages,
+                    skill_locations,
+                    Arc::clone(tool_context),
+                    task_id,
+                ))
+            },
         }
     }
 
@@ -725,7 +792,9 @@ impl CmdRunner for CodingAssistant {
         }
 
         let task_id = uuid::Uuid::new_v4();
+        let run_mode = RunMode::from_cli(self)?;
         let run_session = self.build_client_and_session(
+            &run_mode,
             data_dir,
             current_dir.clone(),
             &agents_files,
@@ -738,15 +807,9 @@ impl CmdRunner for CodingAssistant {
         let mut client = run_session.agent;
         let session = run_session.session;
         let hooks = HooksLoader::load(&current_dir)?;
-        let session_start_source = if self.fork.is_some() {
-            "fork"
-        } else if self.continue_session || self.resume.is_some() {
-            "resume"
-        } else {
-            "startup"
-        };
+        let session_start_source = run_mode.session_start_source();
 
-        if !self.no_session {
+        if run_mode.persists_session() {
             let mut file = match run_session.storage {
                 SessionStorage::New => {
                     data_dir.create_session_file(&session, client.tool_names())?
@@ -771,7 +834,9 @@ impl CmdRunner for CodingAssistant {
                 HookContext {
                     session_id: session.id,
                     task_id,
-                    transcript_path: (!self.no_session).then(|| data_dir.session_path(session.id)),
+                    transcript_path: run_mode
+                        .persists_session()
+                        .then(|| data_dir.session_path(session.id)),
                     cwd: current_dir.clone(),
                     model: client.model_name().to_string(),
                 },
@@ -1104,6 +1169,68 @@ mod tests {
     fn test_cli_parsing_no_session_defaults_false() {
         let args = CodingAssistant::parse_from(["cake", "test prompt"]);
         assert!(!args.no_session);
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn test_run_mode_defaults_to_new_session() {
+        let args = CodingAssistant::parse_from(["cake", "test prompt"]);
+        assert_eq!(RunMode::from_cli(&args).unwrap(), RunMode::NewSession);
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn test_run_mode_no_session_is_ephemeral() {
+        let args = CodingAssistant::parse_from(["cake", "--no-session", "test prompt"]);
+        assert_eq!(RunMode::from_cli(&args).unwrap(), RunMode::Ephemeral);
+        assert!(!RunMode::from_cli(&args).unwrap().persists_session());
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn test_run_mode_restore_flags() {
+        let resume_id = "550e8400-e29b-41d4-a716-446655440000";
+        let args = CodingAssistant::parse_from(["cake", "--continue", "test prompt"]);
+        assert_eq!(RunMode::from_cli(&args).unwrap(), RunMode::ContinueLatest);
+
+        let args = CodingAssistant::parse_from(["cake", "--resume", resume_id, "test prompt"]);
+        assert_eq!(
+            RunMode::from_cli(&args).unwrap(),
+            RunMode::Resume {
+                session_id: resume_id.to_string()
+            }
+        );
+
+        let args = CodingAssistant::parse_from(["cake", "--fork"]);
+        assert_eq!(RunMode::from_cli(&args).unwrap(), RunMode::ForkLatest);
+
+        let args = CodingAssistant::parse_from(["cake", "--fork", resume_id, "test prompt"]);
+        assert_eq!(
+            RunMode::from_cli(&args).unwrap(),
+            RunMode::Fork {
+                session_id: resume_id.to_string()
+            }
+        );
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn test_run_mode_rejects_non_uuid_session_references() {
+        let args = CodingAssistant::parse_from(["cake", "--resume", "not-a-uuid", "test prompt"]);
+        assert!(
+            RunMode::from_cli(&args)
+                .unwrap_err()
+                .to_string()
+                .contains("resume by file path is no longer supported")
+        );
+
+        let args = CodingAssistant::parse_from(["cake", "--fork", "not-a-uuid", "test prompt"]);
+        assert!(
+            RunMode::from_cli(&args)
+                .unwrap_err()
+                .to_string()
+                .contains("fork by file path is no longer supported")
+        );
     }
 
     #[test]
