@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::models::Role;
 
@@ -237,12 +237,123 @@ impl ConversationItem {
 // =============================================================================
 
 /// Subtype of a task completion record.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskCompleteSubtype {
     Success,
     ErrorDuringExecution,
     ErrorMaxTurns,
+}
+
+/// Outcome of a completed task.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TaskOutcome {
+    Success { result: Option<String> },
+    ErrorDuringExecution { error: String },
+    ErrorMaxTurns { error: String },
+}
+
+impl TaskOutcome {
+    pub const fn subtype(&self) -> TaskCompleteSubtype {
+        match self {
+            Self::Success { .. } => TaskCompleteSubtype::Success,
+            Self::ErrorDuringExecution { .. } => TaskCompleteSubtype::ErrorDuringExecution,
+            Self::ErrorMaxTurns { .. } => TaskCompleteSubtype::ErrorMaxTurns,
+        }
+    }
+
+    pub const fn success(&self) -> bool {
+        matches!(self, Self::Success { .. })
+    }
+
+    pub const fn is_error(&self) -> bool {
+        !self.success()
+    }
+}
+
+#[derive(Serialize)]
+struct TaskOutcomeFields<'a> {
+    subtype: TaskCompleteSubtype,
+    success: bool,
+    is_error: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    result: Option<&'a str>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    error: Option<&'a str>,
+}
+
+#[derive(Deserialize)]
+struct OwnedTaskOutcomeFields {
+    subtype: TaskCompleteSubtype,
+    success: bool,
+    is_error: bool,
+    #[serde(default)]
+    result: Option<String>,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+impl Serialize for TaskOutcome {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let fields = match self {
+            Self::Success { result } => TaskOutcomeFields {
+                subtype: self.subtype(),
+                success: self.success(),
+                is_error: self.is_error(),
+                result: result.as_deref(),
+                error: None,
+            },
+            Self::ErrorDuringExecution { error } | Self::ErrorMaxTurns { error } => {
+                TaskOutcomeFields {
+                    subtype: self.subtype(),
+                    success: self.success(),
+                    is_error: self.is_error(),
+                    result: None,
+                    error: Some(error),
+                }
+            },
+        };
+
+        fields.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for TaskOutcome {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let fields = OwnedTaskOutcomeFields::deserialize(deserializer)?;
+        let expected_success = matches!(fields.subtype, TaskCompleteSubtype::Success);
+        if fields.success != expected_success || fields.is_error == expected_success {
+            return Err(serde::de::Error::custom(
+                "task completion success/is_error fields do not match subtype",
+            ));
+        }
+
+        match fields.subtype {
+            TaskCompleteSubtype::Success => Ok(Self::Success {
+                result: fields.result,
+            }),
+            TaskCompleteSubtype::ErrorDuringExecution => Ok(Self::ErrorDuringExecution {
+                error: fields.error.ok_or_else(|| {
+                    serde::de::Error::custom(
+                        "task completion error_during_execution outcome requires error",
+                    )
+                })?,
+            }),
+            TaskCompleteSubtype::ErrorMaxTurns => Ok(Self::ErrorMaxTurns {
+                error: fields.error.ok_or_else(|| {
+                    serde::de::Error::custom(
+                        "task completion error_max_turns outcome requires error",
+                    )
+                })?,
+            }),
+        }
+    }
 }
 
 /// A single line in an append-only JSONL session file.
@@ -350,18 +461,13 @@ pub enum SessionRecord {
     },
 
     TaskComplete {
-        subtype: TaskCompleteSubtype,
-        success: bool,
-        is_error: bool,
+        #[serde(flatten)]
+        outcome: TaskOutcome,
         duration_ms: u64,
         turn_count: u32,
         num_turns: u32,
         session_id: String,
         task_id: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        result: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        error: Option<String>,
         usage: Usage,
         #[serde(skip_serializing_if = "Option::is_none")]
         permission_denials: Option<Vec<String>>,
@@ -420,18 +526,13 @@ pub enum StreamRecord {
     },
 
     TaskComplete {
-        subtype: TaskCompleteSubtype,
-        success: bool,
-        is_error: bool,
+        #[serde(flatten)]
+        outcome: TaskOutcome,
         duration_ms: u64,
         turn_count: u32,
         num_turns: u32,
         session_id: String,
         task_id: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        result: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        error: Option<String>,
         usage: Usage,
         #[serde(skip_serializing_if = "Option::is_none")]
         permission_denials: Option<Vec<String>>,
@@ -499,29 +600,21 @@ impl From<StreamRecord> for SessionRecord {
                 timestamp,
             },
             StreamRecord::TaskComplete {
-                subtype,
-                success,
-                is_error,
+                outcome,
                 duration_ms,
                 turn_count,
                 num_turns,
                 session_id,
                 task_id,
-                result,
-                error,
                 usage,
                 permission_denials,
             } => Self::TaskComplete {
-                subtype,
-                success,
-                is_error,
+                outcome,
                 duration_ms,
                 turn_count,
                 num_turns,
                 session_id,
                 task_id,
-                result,
-                error,
                 usage,
                 permission_denials,
             },
@@ -801,6 +894,52 @@ mod tests {
         assert_eq!(json["role"], "user");
         assert_eq!(json["content"][0]["type"], "input_text");
         assert_eq!(json["content"][0]["text"], "Hello");
+    }
+
+    #[test]
+    fn task_outcome_serializes_legacy_task_complete_fields() {
+        let record = StreamRecord::TaskComplete {
+            outcome: TaskOutcome::Success {
+                result: Some("done".to_string()),
+            },
+            duration_ms: 10,
+            turn_count: 1,
+            num_turns: 1,
+            session_id: "session-1".to_string(),
+            task_id: "task-1".to_string(),
+            usage: Usage::default(),
+            permission_denials: None,
+        };
+
+        let json = serde_json::to_value(&record).unwrap();
+        assert_eq!(json["type"], "task_complete");
+        assert_eq!(json["subtype"], "success");
+        assert_eq!(json["success"], true);
+        assert_eq!(json["is_error"], false);
+        assert_eq!(json["result"], "done");
+        assert!(json.get("error").is_none());
+    }
+
+    #[test]
+    fn task_outcome_rejects_inconsistent_task_complete_fields() {
+        let json = serde_json::json!({
+            "type": "task_complete",
+            "subtype": "success",
+            "success": false,
+            "is_error": true,
+            "duration_ms": 10,
+            "turn_count": 1,
+            "num_turns": 1,
+            "session_id": "session-1",
+            "task_id": "task-1",
+            "usage": Usage::default()
+        });
+
+        let err = serde_json::from_value::<StreamRecord>(json).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("success/is_error fields do not match subtype")
+        );
     }
 
     #[test]

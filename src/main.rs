@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::cli::CmdRunner;
-use crate::clients::{Agent, ConversationItem, ToolContext};
+use crate::clients::{Agent, ConversationItem, TaskOutcome, ToolContext};
 use crate::config::settings::LoadedSettings;
 use crate::config::{
     AgentsFile, DataDir, DiagnosticLevel, HooksLoader, ModelConfig, ModelDefinition,
@@ -944,13 +944,23 @@ impl CodingAssistant {
                 {
                     tracing::info!(target: "cake::hooks", additional_context = %context, "Stop hook returned additional context");
                 }
-                client.emit_task_complete_record(true, duration_ms, result_text, None)?;
+                client.emit_task_complete_record(
+                    TaskOutcome::Success {
+                        result: result_text,
+                    },
+                    duration_ms,
+                )?;
             },
             Err(e) => {
                 if let Some(runner) = hook_runner {
                     runner.error_occurred(e).await?;
                 }
-                client.emit_task_complete_record(false, duration_ms, None, Some(e.to_string()))?;
+                client.emit_task_complete_record(
+                    TaskOutcome::ErrorDuringExecution {
+                        error: e.to_string(),
+                    },
+                    duration_ms,
+                )?;
             },
         }
 

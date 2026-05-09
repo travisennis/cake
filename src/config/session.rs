@@ -272,7 +272,7 @@ fn lock_session_file(file: &File, path: &Path) -> anyhow::Result<()> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::clients::types::{ReasoningContent, TaskCompleteSubtype, Usage};
+    use crate::clients::types::{ReasoningContent, TaskOutcome, Usage};
     use crate::models::Role;
     use tempfile::TempDir;
 
@@ -312,16 +312,14 @@ mod tests {
 
     fn task_complete(session: &Session, task_id: &str) -> SessionRecord {
         SessionRecord::TaskComplete {
-            subtype: TaskCompleteSubtype::Success,
-            success: true,
-            is_error: false,
+            outcome: TaskOutcome::Success {
+                result: Some("Done".to_string()),
+            },
             duration_ms: 100,
             turn_count: 1,
             num_turns: 1,
             session_id: session.id.to_string(),
             task_id: task_id.to_string(),
-            result: Some("Done".to_string()),
-            error: None,
             usage: Usage::default(),
             permission_denials: None,
         }

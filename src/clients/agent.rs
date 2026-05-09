@@ -9,9 +9,7 @@ use crate::clients::agent_runner::AgentRunner;
 use crate::clients::agent_state::{ConversationState, accumulate_usage};
 use crate::clients::backend::Backend;
 use crate::clients::tools::{ToolContext, ToolRegistry, default_tool_registry};
-use crate::clients::types::{
-    ConversationItem, SessionRecord, StreamRecord, TaskCompleteSubtype, Usage,
-};
+use crate::clients::types::{ConversationItem, SessionRecord, StreamRecord, TaskOutcome, Usage};
 #[cfg(test)]
 use crate::config::model::ApiType;
 use crate::config::model::ResolvedModelConfig;
@@ -298,28 +296,16 @@ impl Agent {
     /// Emit the task completion record with success/error and usage stats.
     pub fn emit_task_complete_record(
         &mut self,
-        success: bool,
+        outcome: TaskOutcome,
         duration_ms: u64,
-        result_text: Option<String>,
-        error_message: Option<String>,
     ) -> anyhow::Result<()> {
-        let subtype = if success {
-            TaskCompleteSubtype::Success
-        } else {
-            TaskCompleteSubtype::ErrorDuringExecution
-        };
-
         let record = StreamRecord::TaskComplete {
-            subtype,
-            success,
-            is_error: !success,
+            outcome,
             duration_ms,
             turn_count: self.turn_count,
             num_turns: self.turn_count,
             session_id: self.session_id.to_string(),
             task_id: self.task_id.to_string(),
-            result: result_text,
-            error: error_message,
             usage: self.total_usage.clone(),
             permission_denials: None,
         };
@@ -748,7 +734,7 @@ mod tests {
             *captured_clone.lock().unwrap() = json.to_string();
         });
         agent
-            .emit_task_complete_record(true, 1000, None, None)
+            .emit_task_complete_record(TaskOutcome::Success { result: None }, 1000)
             .unwrap();
         drop(agent);
         let json: serde_json::Value = serde_json::from_str(&captured.lock().unwrap()).unwrap();
@@ -768,7 +754,12 @@ mod tests {
             *captured_clone.lock().unwrap() = json.to_string();
         });
         agent
-            .emit_task_complete_record(false, 500, None, Some("boom".to_string()))
+            .emit_task_complete_record(
+                TaskOutcome::ErrorDuringExecution {
+                    error: "boom".to_string(),
+                },
+                500,
+            )
             .unwrap();
         drop(agent);
         let json: serde_json::Value = serde_json::from_str(&captured.lock().unwrap()).unwrap();
@@ -781,7 +772,7 @@ mod tests {
     fn emit_task_complete_record_no_callback() {
         let mut agent = test_agent();
         agent
-            .emit_task_complete_record(true, 1000, None, None)
+            .emit_task_complete_record(TaskOutcome::Success { result: None }, 1000)
             .unwrap();
     }
 
@@ -818,7 +809,12 @@ mod tests {
 
         agent.emit_task_start_record().unwrap();
         agent
-            .emit_task_complete_record(true, 42, Some("ok".to_string()), None)
+            .emit_task_complete_record(
+                TaskOutcome::Success {
+                    result: Some("ok".to_string()),
+                },
+                42,
+            )
             .unwrap();
 
         let persisted = persisted.lock().unwrap();
