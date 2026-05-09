@@ -58,18 +58,40 @@ Tool hooks also receive `tool_name`, `tool_use_id`, `tool_input`, and `tool_inpu
 
 Exit code `0` means success. If stdout is non-empty, cake parses it as JSON. Exit code `2` blocks the action. Other exit codes are logged and ignored unless `fail_closed` is true.
 
-Supported stdout fields include:
+### Hook Decision Model
+
+Every hook invocation resolves to one of three decisions:
+
+| Decision   | JSON shape                                                                                            | Behavior                                                                                                      |
+| ---------- | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `Continue` | `{}`, `{"permission": "allow"}`, `{"decision": "allow"}`, or omit both fields                         | Action proceeds normally.                                                                                     |
+| `Deny`     | `{"permission": "deny"}`, `{"decision": "deny"}`, `{"permission": "block"}`, or `{"decision": "ask"}` | Blocks the action. On `PreToolUse` the tool is blocked; on other events the session terminates with an error. |
+| `Stop`     | `{"continue": false}`                                                                                 | Stops the session. On `PreToolUse` the tool is blocked; on other events the session terminates.               |
+
+`reason` (optional string) supplies the reason message for `Deny` and `Stop` decisions.
+
+`stop_reason` (optional string) supplies the reason for `Stop` decisions and takes priority over `reason` when both are present.
+
+`continue: false` takes priority over `permission`/`decision`. If a hook outputs `{"continue": false, "permission": "allow"}`, the result is `Stop`, not `Continue`.
+
+`permission` takes priority over `decision` when both are present.
+
+`ask` produces a `Deny` with the default reason "interactive ask is not supported yet".
+
+### Auxiliary Fields
+
+Supported stdout fields beyond the decision:
 
     {
-      "permission": "allow",
-      "reason": "optional explanation",
       "updated_input": { "command": "printf safe" },
       "additional_context": "context for the model"
     }
 
-`permission` and `decision` both accept `allow`, `deny`, `block`, and `ask`. `deny`, `block`, and `ask` block in the first implementation. `continue: false` also stops the current action.
+`PreToolUse` can return `updated_input`; it must be a JSON object and is passed through the target tool's normal validation. Only the first hook in load order that returns `updated_input` is honored; subsequent values are dropped with a warning.
 
-`PreToolUse` can return `updated_input`; it must be a JSON object and is passed through the target tool's normal validation. `SessionStart` and `UserPromptSubmit` can return `additional_context`, which cake adds as developer context before the next model request. `PostToolUse` and `PostToolUseFailure` append additional context to the tool result under `Additional hook context:`.
+All events can return `additional_context`, which cake adds as developer context before the next model request. For `PostToolUse` and `PostToolUseFailure` it appends under `Additional hook context:`. For `SessionStart` and `UserPromptSubmit` it is injected into the conversation. `additional_context` can accompany any decision type.
+
+`suppress_output` is accepted for backward compatibility but is currently ignored.
 
 ## Observability
 

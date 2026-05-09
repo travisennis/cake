@@ -42,10 +42,74 @@ pub enum ToolHookPlan {
     },
 }
 
+/// The decision communicated by a hook's stdout JSON.
+///
+/// Hooks return one of three outcomes:
+/// - [`HookDecision::Continue`]: proceed normally (the default when no
+///   stop/deny signal is present).
+/// - [`HookDecision::Deny`]: block the action (permission denied). On
+///   `PreToolUse` this produces a [`ToolHookPlan::Block`]; on other events it
+///   terminates with an error.
+/// - [`HookDecision::Stop`]: request the session to stop. On `PreToolUse` this
+///   also produces a [`ToolHookPlan::Block`]; on other events it terminates
+///   with an error.
+///
+/// This replaces the previous combination of optional `continue`,
+/// `stop_reason`, `decision`, `permission`, and `reason` fields with a
+/// single sum type so that every combination is explicit and documented.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum HookPermission {
-    Allow,
-    Deny,
+pub enum HookDecision {
+    Continue,
+    Deny { reason: String },
+    Stop { reason: String },
+}
+
+impl HookDecision {
+    /// Human-readable label used in hook transcript records.
+    pub const fn decision_label(&self) -> &'static str {
+        match self {
+            Self::Continue => "none",
+            Self::Deny { .. } => "deny",
+            Self::Stop { .. } => "stop",
+        }
+    }
+
+    /// Derive a decision from the raw JSON fields a hook produces.
+    ///
+    /// This preserves backward compatibility with every output shape that the
+    /// existing hook protocol supports.
+    fn from_raw(
+        r#continue: Option<bool>,
+        stop_reason: Option<&str>,
+        permission: Option<&str>,
+        decision_field: Option<&str>,
+        reason: Option<&str>,
+    ) -> Self {
+        if r#continue == Some(false) {
+            let reason = stop_reason
+                .or(reason)
+                .unwrap_or("hook requested stop")
+                .to_owned();
+            return Self::Stop { reason };
+        }
+
+        let permission = permission.or(decision_field);
+        if let Some("deny" | "block" | "ask") = permission {
+            let reason = reason.map_or_else(
+                || {
+                    if permission == Some("ask") {
+                        "interactive ask is not supported yet".to_owned()
+                    } else {
+                        "hook denied action".to_owned()
+                    }
+                },
+                ToOwned::to_owned,
+            );
+            return Self::Deny { reason };
+        }
+
+        Self::Continue
+    }
 }
 
 #[derive(Debug, Default)]
@@ -62,13 +126,22 @@ struct InvocationOutcome {
     duration: Duration,
     stdout: String,
     stderr: String,
-    decision: String,
-    parsed: Option<HookOutput>,
+    parsed: Option<ParsedHookOutput>,
     error: Option<String>,
 }
 
+/// Parsed hook stdout, carrying a decision plus optional auxiliary fields.
+#[derive(Debug)]
+struct ParsedHookOutput {
+    decision: HookDecision,
+    updated_input: Option<Value>,
+    additional_context: Option<String>,
+}
+
+/// Raw wire shape a hook script emits on stdout.  Private; callers work
+/// with [`ParsedHookOutput`] (and therefore [`HookDecision`]) instead.
 #[derive(Debug, Deserialize)]
-struct HookOutput {
+struct RawHookOutput {
     #[serde(default)]
     r#continue: Option<bool>,
     stop_reason: Option<String>,
@@ -79,6 +152,23 @@ struct HookOutput {
     additional_context: Option<String>,
     #[serde(rename = "suppress_output")]
     _suppress_output: Option<bool>,
+}
+
+impl From<RawHookOutput> for ParsedHookOutput {
+    fn from(raw: RawHookOutput) -> Self {
+        let decision = HookDecision::from_raw(
+            raw.r#continue,
+            raw.stop_reason.as_deref(),
+            raw.permission.as_deref(),
+            raw.decision.as_deref(),
+            raw.reason.as_deref(),
+        );
+        Self {
+            decision,
+            updated_input: raw.updated_input,
+            additional_context: raw.additional_context,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -305,42 +395,20 @@ impl HookRunner {
             let Some(parsed) = &outcome.parsed else {
                 continue;
             };
-            if parsed.r#continue == Some(false) {
-                let reason = parsed
-                    .stop_reason
-                    .clone()
-                    .or_else(|| parsed.reason.clone())
-                    .unwrap_or_else(|| "hook requested stop".to_string());
-                if event == HookEvent::PreToolUse {
-                    aggregated.deny_reasons.push(format!(
-                        "{}: {reason}",
-                        outcome.command.source_path.display()
-                    ));
-                } else {
-                    anyhow::bail!("Hook requested stop for {event}: {reason}");
-                }
-            }
 
-            let permission = parsed.permission.as_ref().or(parsed.decision.as_ref());
-            if let Some(permission) = permission {
-                let parsed_permission = parse_permission(permission);
-                if parsed_permission.permission == HookPermission::Deny {
-                    let reason = parsed.reason.clone().unwrap_or_else(|| {
-                        if permission == "ask" {
-                            "interactive ask is not supported yet".to_string()
-                        } else {
-                            "hook denied action".to_string()
-                        }
-                    });
+            match &parsed.decision {
+                HookDecision::Continue => {},
+                HookDecision::Deny { reason } | HookDecision::Stop { reason } => {
+                    let label = parsed.decision.decision_label();
                     if event == HookEvent::PreToolUse {
                         aggregated.deny_reasons.push(format!(
                             "{}: {reason}",
                             outcome.command.source_path.display()
                         ));
                     } else {
-                        anyhow::bail!("Hook denied {event}: {reason}");
+                        anyhow::bail!("Hook {label} {event}: {reason}");
                     }
-                }
+                },
             }
 
             if let Some(context) = parsed.additional_context.as_ref()
@@ -391,6 +459,10 @@ impl HookRunner {
         let stdout_bytes = outcome.stdout.len();
         let level_error = outcome.command.fail_closed && outcome.error.is_some();
         let source_str = source.as_display_str();
+        let decision = outcome
+            .parsed
+            .as_ref()
+            .map_or("error", |p| p.decision.decision_label());
         if level_error {
             tracing::error!(
                 target: "cake::hooks",
@@ -402,7 +474,7 @@ impl HookRunner {
                 duration_ms = duration_ms(outcome.duration),
                 stderr_bytes,
                 stdout_bytes,
-                decision = outcome.decision,
+                decision,
                 fail_closed = outcome.command.fail_closed,
                 "Hook invocation failed closed"
             );
@@ -417,7 +489,7 @@ impl HookRunner {
                 duration_ms = duration_ms(outcome.duration),
                 stderr_bytes,
                 stdout_bytes,
-                decision = outcome.decision,
+                decision,
                 fail_closed = outcome.command.fail_closed,
                 "Hook invocation completed with non-blocking error"
             );
@@ -432,7 +504,7 @@ impl HookRunner {
                 duration_ms = duration_ms(outcome.duration),
                 stderr_bytes,
                 stdout_bytes,
-                decision = outcome.decision,
+                decision,
                 fail_closed = outcome.command.fail_closed,
                 "Hook invocation completed"
             );
@@ -450,7 +522,7 @@ impl HookRunner {
             command: outcome.command.command.clone(),
             exit_code: outcome.exit_code,
             duration_ms: outcome.duration.as_millis().try_into().unwrap_or(u64::MAX),
-            decision: outcome.decision.clone(),
+            decision: decision.to_owned(),
             fail_closed: outcome.command.fail_closed,
             stdout: outcome.stdout.clone(),
             stderr: outcome.stderr.clone(),
@@ -499,7 +571,6 @@ async fn run_command_hook(command: HookCommand, payload: Value, cwd: PathBuf) ->
                 duration: start.elapsed(),
                 stdout: String::new(),
                 stderr: String::new(),
-                decision: "error".to_string(),
                 parsed: None,
                 error: Some(format!("failed to spawn hook command: {error}")),
             };
@@ -517,7 +588,6 @@ async fn run_command_hook(command: HookCommand, payload: Value, cwd: PathBuf) ->
                 duration: start.elapsed(),
                 stdout: String::new(),
                 stderr: String::new(),
-                decision: "error".to_string(),
                 parsed: None,
                 error: Some(format!("failed to write hook stdin: {error}")),
             };
@@ -534,7 +604,6 @@ async fn run_command_hook(command: HookCommand, payload: Value, cwd: PathBuf) ->
                 duration: start.elapsed(),
                 stdout: String::new(),
                 stderr: String::new(),
-                decision: "error".to_string(),
                 parsed: None,
                 error: Some(format!("failed to wait for hook command: {error}")),
             };
@@ -547,7 +616,6 @@ async fn run_command_hook(command: HookCommand, payload: Value, cwd: PathBuf) ->
                 duration: start.elapsed(),
                 stdout: String::new(),
                 stderr: String::new(),
-                decision: "timeout".to_string(),
                 parsed: None,
                 error: Some(format!("hook command timed out after {timeout_secs}s")),
             };
@@ -574,16 +642,10 @@ async fn run_command_hook(command: HookCommand, payload: Value, cwd: PathBuf) ->
             duration: start.elapsed(),
             stdout,
             stderr,
-            decision: "deny".to_string(),
-            parsed: Some(HookOutput {
-                r#continue: Some(false),
-                stop_reason: Some(reason),
-                decision: Some("deny".to_string()),
-                permission: None,
-                reason: None,
+            parsed: Some(ParsedHookOutput {
+                decision: HookDecision::Stop { reason },
                 updated_input: None,
                 additional_context: None,
-                _suppress_output: None,
             }),
             error: None,
         };
@@ -596,7 +658,6 @@ async fn run_command_hook(command: HookCommand, payload: Value, cwd: PathBuf) ->
             duration: start.elapsed(),
             stdout,
             stderr: stderr.clone(),
-            decision: "error".to_string(),
             parsed: None,
             error: Some(format!(
                 "hook exited with code {}{}",
@@ -611,28 +672,26 @@ async fn run_command_hook(command: HookCommand, payload: Value, cwd: PathBuf) ->
     }
 
     match parse_hook_output(&stdout) {
-        Ok(parsed) => {
-            let decision = parsed
-                .as_ref()
-                .and_then(|parsed| {
-                    parsed
-                        .permission
-                        .as_ref()
-                        .or(parsed.decision.as_ref())
-                        .map(|value| parse_permission(value).decision_label)
-                })
-                .unwrap_or("none")
-                .to_string();
+        Ok(Some(raw)) => {
+            let parsed: ParsedHookOutput = raw.into();
             InvocationOutcome {
                 command,
                 exit_code,
                 duration: start.elapsed(),
                 stdout,
                 stderr,
-                decision,
-                parsed,
+                parsed: Some(parsed),
                 error: None,
             }
+        },
+        Ok(None) => InvocationOutcome {
+            command,
+            exit_code,
+            duration: start.elapsed(),
+            stdout,
+            stderr,
+            parsed: None,
+            error: None,
         },
         Err(error) => InvocationOutcome {
             command,
@@ -640,7 +699,6 @@ async fn run_command_hook(command: HookCommand, payload: Value, cwd: PathBuf) ->
             duration: start.elapsed(),
             stdout,
             stderr,
-            decision: "error".to_string(),
             parsed: None,
             error: Some(error),
         },
@@ -663,35 +721,13 @@ fn shell_command(command: &str) -> Command {
     }
 }
 
-fn parse_hook_output(stdout: &str) -> Result<Option<HookOutput>, String> {
+fn parse_hook_output(stdout: &str) -> Result<Option<RawHookOutput>, String> {
     if stdout.trim().is_empty() {
         return Ok(None);
     }
     serde_json::from_str(stdout)
         .map(Some)
         .map_err(|error| format!("hook stdout was not valid JSON: {error}"))
-}
-
-struct ParsedPermission {
-    permission: HookPermission,
-    decision_label: &'static str,
-}
-
-fn parse_permission(value: &str) -> ParsedPermission {
-    match value {
-        "deny" | "block" | "ask" => ParsedPermission {
-            permission: HookPermission::Deny,
-            decision_label: "deny",
-        },
-        "allow" => ParsedPermission {
-            permission: HookPermission::Allow,
-            decision_label: "allow",
-        },
-        _ => ParsedPermission {
-            permission: HookPermission::Allow,
-            decision_label: "none",
-        },
-    }
 }
 
 fn parse_tool_input(arguments: &str) -> Value {
@@ -813,5 +849,238 @@ mod tests {
             .unwrap();
 
         assert!(matches!(plan, ToolHookPlan::Block { .. }));
+    }
+
+    // ── HookDecision::from_raw ──────────────────────────────────────
+
+    #[test]
+    fn decision_from_raw_continue_when_no_fields() {
+        let d = HookDecision::from_raw(None, None, None, None, None);
+        assert_eq!(d, HookDecision::Continue);
+    }
+
+    #[test]
+    fn decision_from_raw_continue_from_allow_permission() {
+        let d = HookDecision::from_raw(None, None, Some("allow"), None, None);
+        assert_eq!(d, HookDecision::Continue);
+    }
+
+    #[test]
+    fn decision_from_raw_continue_from_allow_decision_field() {
+        let d = HookDecision::from_raw(None, None, None, Some("allow"), None);
+        assert_eq!(d, HookDecision::Continue);
+    }
+
+    #[test]
+    fn decision_from_raw_continue_from_unknown_permission() {
+        // Unknown values are treated as allow (continue).
+        let d = HookDecision::from_raw(None, None, Some("xyz"), None, None);
+        assert_eq!(d, HookDecision::Continue);
+    }
+
+    #[test]
+    fn decision_from_raw_continue_true_is_same_as_none() {
+        let d = HookDecision::from_raw(Some(true), None, None, None, None);
+        assert_eq!(d, HookDecision::Continue);
+    }
+
+    #[test]
+    fn decision_from_raw_stop_from_continue_false() {
+        let d = HookDecision::from_raw(Some(false), None, None, None, None);
+        assert_eq!(
+            d,
+            HookDecision::Stop {
+                reason: "hook requested stop".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn decision_from_raw_stop_from_continue_false_with_stop_reason() {
+        let d = HookDecision::from_raw(Some(false), Some("done"), None, None, None);
+        assert_eq!(
+            d,
+            HookDecision::Stop {
+                reason: "done".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn decision_from_raw_stop_from_continue_false_with_reason() {
+        let d = HookDecision::from_raw(Some(false), None, None, None, Some("enough"));
+        assert_eq!(
+            d,
+            HookDecision::Stop {
+                reason: "enough".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn decision_from_raw_stop_from_continue_false_stop_reason_wins_over_reason() {
+        let d = HookDecision::from_raw(Some(false), Some("first"), None, None, Some("second"));
+        assert_eq!(
+            d,
+            HookDecision::Stop {
+                reason: "first".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn decision_from_raw_stop_continue_false_takes_priority_over_permission() {
+        // continue: false wins even if permission says allow.
+        let d = HookDecision::from_raw(Some(false), None, Some("allow"), None, None);
+        assert!(matches!(d, HookDecision::Stop { .. }));
+    }
+
+    #[test]
+    fn decision_from_raw_deny_from_permission_deny() {
+        let d = HookDecision::from_raw(None, None, Some("deny"), None, None);
+        assert_eq!(
+            d,
+            HookDecision::Deny {
+                reason: "hook denied action".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn decision_from_raw_deny_from_decision_field_block() {
+        let d = HookDecision::from_raw(None, None, None, Some("block"), None);
+        assert_eq!(
+            d,
+            HookDecision::Deny {
+                reason: "hook denied action".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn decision_from_raw_deny_from_ask_with_custom_default() {
+        let d = HookDecision::from_raw(None, None, Some("ask"), None, None);
+        assert_eq!(
+            d,
+            HookDecision::Deny {
+                reason: "interactive ask is not supported yet".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn decision_from_raw_deny_from_permission_deny_with_reason() {
+        let d = HookDecision::from_raw(None, None, Some("deny"), None, Some("not allowed"));
+        assert_eq!(
+            d,
+            HookDecision::Deny {
+                reason: "not allowed".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn decision_from_raw_permission_takes_priority_over_decision_field() {
+        // permission is checked first, so "deny" in permission wins over
+        // "allow" in decision.
+        let d = HookDecision::from_raw(None, None, Some("deny"), Some("allow"), None);
+        assert!(matches!(d, HookDecision::Deny { .. }));
+    }
+
+    // ── RawHookOutput deserialization ──────────────────────────────
+
+    #[test]
+    fn raw_deser_empty_object_is_continue() {
+        let raw: RawHookOutput = serde_json::from_str("{}").unwrap();
+        let parsed: ParsedHookOutput = raw.into();
+        assert_eq!(parsed.decision, HookDecision::Continue);
+        assert!(parsed.updated_input.is_none());
+        assert!(parsed.additional_context.is_none());
+    }
+
+    #[test]
+    fn raw_deser_permission_allow() {
+        let raw: RawHookOutput = serde_json::from_str(r#"{"permission": "allow"}"#).unwrap();
+        let parsed: ParsedHookOutput = raw.into();
+        assert_eq!(parsed.decision, HookDecision::Continue);
+    }
+
+    #[test]
+    fn raw_deser_continue_false_with_stop_reason() {
+        let raw: RawHookOutput =
+            serde_json::from_str(r#"{"continue": false, "stop_reason": "done"}"#).unwrap();
+        let parsed: ParsedHookOutput = raw.into();
+        assert_eq!(
+            parsed.decision,
+            HookDecision::Stop {
+                reason: "done".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn raw_deser_decision_deny_with_reason() {
+        let raw: RawHookOutput =
+            serde_json::from_str(r#"{"decision": "deny", "reason": "nope"}"#).unwrap();
+        let parsed: ParsedHookOutput = raw.into();
+        assert_eq!(
+            parsed.decision,
+            HookDecision::Deny {
+                reason: "nope".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn raw_deser_permission_block() {
+        let raw: RawHookOutput = serde_json::from_str(r#"{"permission": "block"}"#).unwrap();
+        let parsed: ParsedHookOutput = raw.into();
+        assert!(matches!(parsed.decision, HookDecision::Deny { .. }));
+    }
+
+    #[test]
+    fn raw_deser_updated_input_and_additional_context_with_allow() {
+        let raw: RawHookOutput = serde_json::from_str(
+            r#"{"permission": "allow", "updated_input": {"cmd": "safe"}, "additional_context": "be careful"}"#,
+        )
+        .unwrap();
+        let parsed: ParsedHookOutput = raw.into();
+        assert_eq!(parsed.decision, HookDecision::Continue);
+        assert_eq!(
+            parsed.updated_input,
+            Some(serde_json::json!({"cmd": "safe"}))
+        );
+        assert_eq!(parsed.additional_context, Some("be careful".to_string()));
+    }
+
+    #[test]
+    fn raw_deser_suppress_output_is_silently_ignored() {
+        // Backward compat: suppress_output is accepted but ignored.
+        let raw: RawHookOutput = serde_json::from_str(r#"{"suppress_output": true}"#).unwrap();
+        let parsed: ParsedHookOutput = raw.into();
+        assert_eq!(parsed.decision, HookDecision::Continue);
+    }
+
+    // ── HookDecision::decision_label ───────────────────────────────
+
+    #[test]
+    fn decision_label_continue_is_none() {
+        assert_eq!(HookDecision::Continue.decision_label(), "none");
+    }
+
+    #[test]
+    fn decision_label_deny_is_deny() {
+        let d = HookDecision::Deny {
+            reason: "x".to_string(),
+        };
+        assert_eq!(d.decision_label(), "deny");
+    }
+
+    #[test]
+    fn decision_label_stop_is_stop() {
+        let d = HookDecision::Stop {
+            reason: "x".to_string(),
+        };
+        assert_eq!(d.decision_label(), "stop");
     }
 }
