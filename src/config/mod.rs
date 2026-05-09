@@ -22,7 +22,7 @@ pub mod worktree;
 #[doc(inline)]
 pub use data_dir::{AgentsFile, DataDir, looks_like_uuid};
 #[doc(inline)]
-pub use hooks::HooksLoader;
+pub use hooks::{HookSource, HooksLoader};
 #[doc(inline)]
 pub use model::{ModelConfig, ReasoningEffort, ResolvedModelConfig};
 #[doc(inline)]

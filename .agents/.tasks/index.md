@@ -4,8 +4,8 @@ This index summarizes the task files in this directory. Use it as the manually m
 
 ## Status Summary
 
-- Completed: 44
-- Pending: 58
+- Completed: 45
+- Pending: 57
 - Tracking: 1
 - Open: 1
 - Blocked: 12
@@ -24,9 +24,9 @@ These are the highest-priority tasks currently available from the task metadata:
 
 | Task | Title | Status | Priority | Effort | ExecPlan | Depends on |
 | --- | --- | --- | --- | --- | --- | --- |
-| [060a](060a.md) | Type Hook Matcher Sources | Pending | P1 | S | - | - |
+| [060b](060b.md) | Model Hook Continue/Block as a Proper Enum | Pending | P1 | M | - | - |
 
-With [059](059.md) complete, [060a](060a.md) is the next P1 task without dependencies.
+With [060a](060a.md) complete, [060b](060b.md) is the next P1 task without dependencies.
 
 ## Parent Trackers
 
@@ -101,7 +101,7 @@ With [059](059.md) complete, [060a](060a.md) is the next P1 task without depende
 | [058](058.md) | Type Reasoning Content Kinds | Completed | P1 | M | - | - |
 | [059](059.md) | Add Structured Output Sink for CLI Output | Completed | P1 | M | - | - |
 | [060](060.md) | Make Hooks Observable in Typed Session Flow (Parent) | Tracking | P1 | L (split into 060a / 060b / 060c) | Use child tasks | - |
-| [060a](060a.md) | Type Hook Matcher Sources | Pending | P1 | S | - | - |
+| [060a](060a.md) | Type Hook Matcher Sources | Completed | P1 | S | - | - |
 | [060b](060b.md) | Model Hook Continue/Block as a Proper Enum | Pending | P1 | M | - | - |
 | [060c](060c.md) | Implement or Remove suppress_output Hook Field | Pending | P1 | S | - | - |
 | [061](061.md) | Consolidate Conversation Serialization Paths | Pending | P1 | XL | Required before implementation | - |

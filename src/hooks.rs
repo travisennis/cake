@@ -10,7 +10,7 @@ use tokio::time::timeout;
 
 use crate::clients::SessionRecord;
 use crate::config::Session;
-use crate::config::hooks::{HookCommand, HookEvent, LoadedHooks};
+use crate::config::hooks::{HookCommand, HookEvent, HookSource, LoadedHooks};
 
 const HOOK_OUTPUT_LIMIT: usize = 64 * 1024;
 
@@ -100,19 +100,18 @@ impl HookRunner {
 
     pub async fn session_start(
         &self,
-        source: &str,
+        source: &HookSource,
         initial_prompt: &str,
     ) -> anyhow::Result<Vec<String>> {
         let payload = self.payload(
             HookEvent::SessionStart,
-            Some(source),
             json!({
-                "source": source,
+                "source": source.as_display_str(),
                 "initial_prompt": initial_prompt,
             }),
         );
         let result = self
-            .run_and_aggregate(HookEvent::SessionStart, Some(source), payload)
+            .run_and_aggregate(HookEvent::SessionStart, source, payload)
             .await?;
         Ok(result.additional_context)
     }
@@ -120,13 +119,12 @@ impl HookRunner {
     pub async fn user_prompt_submit(&self, prompt: &str) -> anyhow::Result<Vec<String>> {
         let payload = self.payload(
             HookEvent::UserPromptSubmit,
-            None,
             json!({
                 "prompt": prompt,
             }),
         );
         let result = self
-            .run_and_aggregate(HookEvent::UserPromptSubmit, None, payload)
+            .run_and_aggregate(HookEvent::UserPromptSubmit, &HookSource::None, payload)
             .await?;
         Ok(result.additional_context)
     }
@@ -137,10 +135,10 @@ impl HookRunner {
         tool_use_id: &str,
         arguments: &str,
     ) -> anyhow::Result<ToolHookPlan> {
+        let source = HookSource::Tool(tool_name.to_owned());
         let tool_input = parse_tool_input(arguments);
         let payload = self.payload(
             HookEvent::PreToolUse,
-            Some(tool_name),
             json!({
                 "tool_name": tool_name,
                 "tool_use_id": tool_use_id,
@@ -149,7 +147,7 @@ impl HookRunner {
             }),
         );
         let result = self
-            .run_and_aggregate(HookEvent::PreToolUse, Some(tool_name), payload)
+            .run_and_aggregate(HookEvent::PreToolUse, &source, payload)
             .await?;
 
         if !result.deny_reasons.is_empty() {
@@ -208,9 +206,9 @@ impl HookRunner {
             Ok(output) => (HookEvent::PostToolUse, "success", output.as_str()),
             Err(error) => (HookEvent::PostToolUseFailure, "failure", error.as_str()),
         };
+        let source = HookSource::Tool(tool_name.to_owned());
         let payload = self.payload(
             event,
-            Some(tool_name),
             json!({
                 "tool_name": tool_name,
                 "tool_use_id": tool_use_id,
@@ -222,16 +220,14 @@ impl HookRunner {
                 }
             }),
         );
-        let result = self
-            .run_and_aggregate(event, Some(tool_name), payload)
-            .await?;
+        let result = self.run_and_aggregate(event, &source, payload).await?;
         Ok(join_context(&result.additional_context))
     }
 
     pub async fn stop(&self, result: Option<&str>) -> anyhow::Result<Option<String>> {
-        let payload = self.payload(HookEvent::Stop, None, json!({ "result": result }));
+        let payload = self.payload(HookEvent::Stop, json!({ "result": result }));
         let result = self
-            .run_and_aggregate(HookEvent::Stop, None, payload)
+            .run_and_aggregate(HookEvent::Stop, &HookSource::None, payload)
             .await?;
         Ok(join_context(&result.additional_context))
     }
@@ -239,7 +235,6 @@ impl HookRunner {
     pub async fn error_occurred(&self, error: &anyhow::Error) -> anyhow::Result<()> {
         let payload = self.payload(
             HookEvent::ErrorOccurred,
-            None,
             json!({
                 "error": {
                     "message": error.to_string(),
@@ -247,7 +242,7 @@ impl HookRunner {
                 }
             }),
         );
-        self.run_and_aggregate(HookEvent::ErrorOccurred, None, payload)
+        self.run_and_aggregate(HookEvent::ErrorOccurred, &HookSource::None, payload)
             .await?;
         Ok(())
     }
@@ -255,7 +250,7 @@ impl HookRunner {
     async fn run_and_aggregate(
         &self,
         event: HookEvent,
-        source: Option<&str>,
+        source: &HookSource,
         payload: Value,
     ) -> anyhow::Result<AggregatedHookResult> {
         let matched = self.loaded.matching_groups(event, source);
@@ -298,7 +293,7 @@ impl HookRunner {
                 tracing::warn!(
                     target: "cake::hooks",
                     event = event.as_str(),
-                    source = source,
+                    source = source.as_display_str(),
                     command = %outcome.command.command,
                     source_file = %outcome.command.source_path.display(),
                     error = %error,
@@ -366,7 +361,7 @@ impl HookRunner {
         Ok(aggregated)
     }
 
-    fn payload(&self, event: HookEvent, _source: Option<&str>, extra: Value) -> Value {
+    fn payload(&self, event: HookEvent, extra: Value) -> Value {
         let common = HookRecord {
             version: 1,
             session_id: self.context.session_id.to_string(),
@@ -391,15 +386,16 @@ impl HookRunner {
         value
     }
 
-    fn record_outcome(&self, event: HookEvent, source: Option<&str>, outcome: &InvocationOutcome) {
+    fn record_outcome(&self, event: HookEvent, source: &HookSource, outcome: &InvocationOutcome) {
         let stderr_bytes = outcome.stderr.len();
         let stdout_bytes = outcome.stdout.len();
         let level_error = outcome.command.fail_closed && outcome.error.is_some();
+        let source_str = source.as_display_str();
         if level_error {
             tracing::error!(
                 target: "cake::hooks",
                 event = event.as_str(),
-                source = source,
+                source = source_str,
                 command = %outcome.command.command,
                 source_file = %outcome.command.source_path.display(),
                 exit_code = ?outcome.exit_code,
@@ -414,7 +410,7 @@ impl HookRunner {
             tracing::warn!(
                 target: "cake::hooks",
                 event = event.as_str(),
-                source = source,
+                source = source_str,
                 command = %outcome.command.command,
                 source_file = %outcome.command.source_path.display(),
                 exit_code = ?outcome.exit_code,
@@ -429,7 +425,7 @@ impl HookRunner {
             tracing::info!(
                 target: "cake::hooks",
                 event = event.as_str(),
-                source = source,
+                source = source_str,
                 command = %outcome.command.command,
                 source_file = %outcome.command.source_path.display(),
                 exit_code = ?outcome.exit_code,
@@ -449,7 +445,7 @@ impl HookRunner {
             timestamp: chrono::Utc::now(),
             task_id: self.context.task_id.to_string(),
             event: event.as_str().to_string(),
-            source: source.map(ToOwned::to_owned),
+            source: source.as_display_str().map(ToOwned::to_owned),
             source_file: outcome.command.source_path.clone(),
             command: outcome.command.command.clone(),
             exit_code: outcome.exit_code,

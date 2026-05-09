@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 #[derive(Debug, Clone, Default)]
@@ -20,7 +20,7 @@ impl LoadedHooks {
     pub fn matching_groups<'a>(
         &'a self,
         event: HookEvent,
-        source: Option<&str>,
+        source: &HookSource,
     ) -> Vec<&'a HookGroup> {
         self.groups
             .iter()
@@ -93,14 +93,62 @@ impl std::str::FromStr for HookEvent {
     }
 }
 
+/// Typed source for hook matcher dispatch.
+///
+/// Replaces the previous free-form `Option<&str>` source so that callers and
+/// configuration files carry a strongly-typed discriminator. Implements
+/// [`Serialize`] and [`Deserialize`] so typed sources can round-trip through
+/// JSON in tests and future configuration formats.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum HookSource {
+    /// No source context (e.g. `Stop`, `UserPromptSubmit` events).
+    None,
+    /// A tool name for `PreToolUse`, `PostToolUse`, and
+    /// `PostToolUseFailure` events.
+    Tool(String),
+    /// A session-start reason for `SessionStart` events.
+    SessionStart(String),
+}
+
+impl HookSource {
+    /// Return the inner string value for logging and session records.
+    pub const fn as_display_str(&self) -> Option<&str> {
+        match self {
+            Self::None => None,
+            Self::Tool(name) => Some(name.as_str()),
+            Self::SessionStart(reason) => Some(reason.as_str()),
+        }
+    }
+
+    /// Parse a matcher component string into a `HookSource` based on the event
+    /// type. Returns `None` if the value does not parse as a valid source for
+    /// the given event.
+    fn parse_for_event(value: &str, event: HookEvent) -> Option<Self> {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        match event {
+            HookEvent::SessionStart => Some(Self::SessionStart(trimmed.to_owned())),
+            _ => Some(Self::Tool(trimmed.to_owned())),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HookMatcher {
     All,
-    Exact(Vec<String>),
+    Exact(Vec<HookSource>),
 }
 
 impl HookMatcher {
-    pub fn parse(value: Option<&str>) -> Self {
+    /// Parse a matcher value from hook configuration.
+    ///
+    /// `value` is the `"matcher"` field from the config (e.g. `"Bash|Write"`).
+    /// `event` provides the context needed to type each component as a
+    /// `HookSource` variant. Empty or `"*"` matchers return `All`.
+    pub fn parse(value: Option<&str>, event: HookEvent) -> Self {
         let Some(value) = value else {
             return Self::All;
         };
@@ -108,23 +156,23 @@ impl HookMatcher {
             return Self::All;
         }
 
-        let parts = value
+        let sources: Vec<HookSource> = value
             .split('|')
             .map(str::trim)
             .filter(|part| !part.is_empty())
-            .map(ToOwned::to_owned)
-            .collect::<Vec<_>>();
-        if parts.is_empty() {
+            .filter_map(|part| HookSource::parse_for_event(part, event))
+            .collect();
+        if sources.is_empty() {
             Self::All
         } else {
-            Self::Exact(parts)
+            Self::Exact(sources)
         }
     }
 
-    pub fn matches(&self, source: Option<&str>) -> bool {
+    pub fn matches(&self, source: &HookSource) -> bool {
         match self {
             Self::All => true,
-            Self::Exact(values) => source.is_some_and(|source| values.iter().any(|v| v == source)),
+            Self::Exact(values) => values.iter().any(|v| v == source),
         }
     }
 }
@@ -246,7 +294,7 @@ impl HooksLoader {
                     loaded.groups.push(HookGroup {
                         source_path: path.to_path_buf(),
                         event,
-                        matcher: HookMatcher::parse(entry.matcher.as_deref()),
+                        matcher: HookMatcher::parse(entry.matcher.as_deref(), event),
                         hooks,
                     });
                 }
@@ -330,11 +378,11 @@ mod tests {
 
     #[test]
     fn matcher_pipe_syntax_matches_exact_names() {
-        let matcher = HookMatcher::parse(Some("Bash| Write "));
+        let matcher = HookMatcher::parse(Some("Bash| Write "), HookEvent::PreToolUse);
 
-        assert!(matcher.matches(Some("Bash")));
-        assert!(matcher.matches(Some("Write")));
-        assert!(!matcher.matches(Some("Read")));
+        assert!(matcher.matches(&HookSource::Tool("Bash".to_owned())));
+        assert!(matcher.matches(&HookSource::Tool("Write".to_owned())));
+        assert!(!matcher.matches(&HookSource::Tool("Read".to_owned())));
     }
 
     #[test]
@@ -371,5 +419,62 @@ mod tests {
 
         let error = HooksLoader::load_from_paths([path.as_path()]).unwrap_err();
         assert!(matches!(error, HooksError::UnsupportedVersion { .. }));
+    }
+
+    #[test]
+    fn matcher_all_with_empty_and_edge_cases() {
+        // Empty value or "*" or whitespace-only all produce All.
+        assert!(matches!(
+            HookMatcher::parse(None, HookEvent::PreToolUse),
+            HookMatcher::All
+        ));
+        assert!(matches!(
+            HookMatcher::parse(Some("*"), HookEvent::SessionStart),
+            HookMatcher::All
+        ));
+        assert!(matches!(
+            HookMatcher::parse(Some("  |  "), HookEvent::PreToolUse),
+            HookMatcher::All
+        ));
+        assert!(matches!(
+            HookMatcher::parse(Some("||"), HookEvent::PreToolUse),
+            HookMatcher::All
+        ));
+    }
+
+    #[test]
+    fn matcher_session_start_sources_match_exact() {
+        let matcher = HookMatcher::parse(Some("fork|resume"), HookEvent::SessionStart);
+
+        assert!(matcher.matches(&HookSource::SessionStart("fork".to_owned())));
+        assert!(matcher.matches(&HookSource::SessionStart("resume".to_owned())));
+        assert!(!matcher.matches(&HookSource::SessionStart("startup".to_owned())));
+        // A Tool source should not match a SessionStart matcher.
+        assert!(!matcher.matches(&HookSource::Tool("fork".to_owned())));
+    }
+
+    #[test]
+    fn hook_source_serde_round_trips() {
+        let cases = vec![
+            HookSource::None,
+            HookSource::Tool("Bash".to_owned()),
+            HookSource::Tool("Read".to_owned()),
+            HookSource::SessionStart("fork".to_owned()),
+            HookSource::SessionStart("resume".to_owned()),
+        ];
+        for source in cases {
+            let json = serde_json::to_string(&source).unwrap();
+            let round_tripped: HookSource = serde_json::from_str(&json).unwrap();
+            assert_eq!(source, round_tripped, "round-trip failed for {json}");
+        }
+    }
+
+    #[test]
+    fn hook_source_none_separates_correctly() {
+        let source = HookSource::None;
+        assert_eq!(source.as_display_str(), None);
+        // None should not equal Tool("") or SessionStart("").
+        assert_ne!(source, HookSource::Tool(String::new()));
+        assert_ne!(source, HookSource::SessionStart(String::new()));
     }
 }

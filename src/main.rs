@@ -18,7 +18,7 @@ use crate::cli::CmdRunner;
 use crate::clients::{Agent, ConversationItem, TaskOutcome, ToolContext};
 use crate::config::settings::LoadedSettings;
 use crate::config::{
-    AgentsFile, DataDir, DiagnosticLevel, HooksLoader, ModelConfig, ModelDefinition,
+    AgentsFile, DataDir, DiagnosticLevel, HookSource, HooksLoader, ModelConfig, ModelDefinition,
     ReasoningEffort, ResolvedModelConfig, Session, SettingsLoader, SkillCatalog, discover_skills,
     discover_skills_with_paths, looks_like_uuid, parse_skill_path_list, worktree,
 };
@@ -1029,7 +1029,7 @@ impl CodingAssistant {
     async fn execute_agent_turn(
         client: &mut Agent,
         hook_runner: Option<&Arc<HookRunner>>,
-        session_start_source: &str,
+        session_start_source: HookSource,
         content: &str,
     ) -> anyhow::Result<TurnResult> {
         let msg = Message {
@@ -1040,7 +1040,7 @@ impl CodingAssistant {
         let start = Instant::now();
 
         if let Some(runner) = hook_runner {
-            let contexts = runner.session_start(session_start_source, content).await?;
+            let contexts = runner.session_start(&session_start_source, content).await?;
             client.append_developer_context(contexts);
             let contexts = runner.user_prompt_submit(content).await?;
             client.append_developer_context(contexts);
@@ -1104,7 +1104,8 @@ impl CmdRunner for CodingAssistant {
             &resources.tool_context,
             task_id,
         )?;
-        let session_start_source = run_mode.session_start_source();
+        let session_start_source =
+            HookSource::SessionStart(run_mode.session_start_source().to_owned());
         let session = run_session.session;
         let client = Self::attach_persistence(
             run_session.agent,
