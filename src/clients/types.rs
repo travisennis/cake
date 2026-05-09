@@ -23,9 +23,65 @@ pub struct GitState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReasoningContent {
     #[serde(rename = "type")]
-    pub content_type: String,
+    pub content_type: ReasoningContentKind,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+}
+
+/// Protocol-defined kind for reasoning content items.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReasoningContentKind {
+    ReasoningText,
+    SummaryText,
+    Unknown(String),
+}
+
+impl ReasoningContentKind {
+    pub const fn as_str(&self) -> &str {
+        match self {
+            Self::ReasoningText => "reasoning_text",
+            Self::SummaryText => "summary_text",
+            Self::Unknown(value) => value.as_str(),
+        }
+    }
+}
+
+impl From<&str> for ReasoningContentKind {
+    fn from(value: &str) -> Self {
+        match value {
+            "reasoning_text" => Self::ReasoningText,
+            "summary_text" => Self::SummaryText,
+            other => Self::Unknown(other.to_string()),
+        }
+    }
+}
+
+impl From<String> for ReasoningContentKind {
+    fn from(value: String) -> Self {
+        match value.as_str() {
+            "reasoning_text" => Self::ReasoningText,
+            "summary_text" => Self::SummaryText,
+            _ => Self::Unknown(value),
+        }
+    }
+}
+
+impl Serialize for ReasoningContentKind {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for ReasoningContentKind {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        String::deserialize(deserializer).map(Self::from)
+    }
 }
 
 // =============================================================================
@@ -889,6 +945,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn reasoning_content_kind_serializes_known_values() {
+        let json = serde_json::to_value(ReasoningContent {
+            content_type: ReasoningContentKind::ReasoningText,
+            text: Some("thinking".to_string()),
+        })
+        .unwrap();
+
+        assert_eq!(json["type"], "reasoning_text");
+        assert_eq!(json["text"], "thinking");
+    }
+
+    #[test]
+    fn reasoning_content_kind_preserves_unknown_values() {
+        let content: ReasoningContent = serde_json::from_value(serde_json::json!({
+            "type": "provider_specific_reasoning",
+            "text": "opaque"
+        }))
+        .unwrap();
+
+        assert_eq!(
+            content.content_type,
+            ReasoningContentKind::Unknown("provider_specific_reasoning".to_string())
+        );
+
+        let json = serde_json::to_value(content).unwrap();
+        assert_eq!(json["type"], "provider_specific_reasoning");
+        assert_eq!(json["text"], "opaque");
+    }
+
+    #[test]
     fn to_api_input_user_message() {
         let item = ConversationItem::Message {
             role: Role::User,
@@ -1138,7 +1224,7 @@ mod tests {
             encrypted_content: None,
             timestamp: None,
             content: Some(vec![ReasoningContent {
-                content_type: "reasoning_text".to_string(),
+                content_type: ReasoningContentKind::ReasoningText,
                 text: Some("deep thoughts".to_string()),
             }]),
         };
@@ -1416,7 +1502,7 @@ mod tests {
             summary: vec!["thinking...".to_string()],
             encrypted_content: None,
             content: Some(vec![ReasoningContent {
-                content_type: "reasoning_text".to_string(),
+                content_type: ReasoningContentKind::ReasoningText,
                 text: Some("deep analysis".to_string()),
             }]),
             timestamp: None,

@@ -13,7 +13,9 @@ use crate::clients::chat_types::{
 use crate::clients::provider_strategy::ProviderStrategy;
 use crate::clients::retry::RequestOverrides;
 use crate::clients::tools::Tool;
-use crate::clients::types::{ConversationItem, InputTokensDetails, OutputTokensDetails, Usage};
+use crate::clients::types::{
+    ConversationItem, InputTokensDetails, OutputTokensDetails, ReasoningContentKind, Usage,
+};
 
 // =============================================================================
 // Chat Completions API Backend
@@ -290,7 +292,7 @@ fn parse_choices(response: &ChatResponse) -> anyhow::Result<Vec<ConversationItem
             summary: vec!["Thinking...".to_string()],
             encrypted_content: None,
             content: Some(vec![super::types::ReasoningContent {
-                content_type: "reasoning_text".to_string(),
+                content_type: ReasoningContentKind::ReasoningText,
                 text: Some(reasoning_content.clone()),
             }]),
             timestamp: Some(timestamp.clone()),
@@ -360,7 +362,7 @@ mod tests {
         ChatChoice, ChatFunctionCall, ChatResponse, ChatResponseMessage, ChatToolCall, ChatUsage,
         PromptTokensDetails,
     };
-    use crate::clients::types::ReasoningContent;
+    use crate::clients::types::{ReasoningContent, ReasoningContentKind};
     use crate::config::model::{ApiType, ModelConfig};
 
     fn apply_test_strategy(model: &str, messages: &mut [ChatMessage<'_>]) {
@@ -525,7 +527,7 @@ mod tests {
                 summary: vec!["thinking...".to_string()],
                 encrypted_content: None,
                 content: Some(vec![ReasoningContent {
-                    content_type: "reasoning_text".to_string(),
+                    content_type: ReasoningContentKind::ReasoningText,
                     text: Some("internal reasoning".to_string()),
                 }]),
                 timestamp: None,
@@ -563,7 +565,7 @@ mod tests {
                 summary: vec!["thinking...".to_string()],
                 encrypted_content: None,
                 content: Some(vec![ReasoningContent {
-                    content_type: "reasoning_text".to_string(),
+                    content_type: ReasoningContentKind::ReasoningText,
                     text: Some("preserved reasoning".to_string()),
                 }]),
                 timestamp: None,
@@ -668,7 +670,7 @@ mod tests {
                 summary: vec!["thinking...".to_string()],
                 encrypted_content: None,
                 content: Some(vec![ReasoningContent {
-                    content_type: "reasoning_text".to_string(),
+                    content_type: ReasoningContentKind::ReasoningText,
                     text: Some("actual reasoning".to_string()),
                 }]),
                 timestamp: None,
@@ -1015,7 +1017,7 @@ mod tests {
                 summary: vec!["thinking...".to_string()],
                 encrypted_content: None,
                 content: Some(vec![ReasoningContent {
-                    content_type: "reasoning_text".to_string(),
+                    content_type: ReasoningContentKind::ReasoningText,
                     text: Some("internal reasoning".to_string()),
                 }]),
                 timestamp: None,
@@ -1047,7 +1049,7 @@ mod tests {
                 summary: vec!["thinking...".to_string()],
                 encrypted_content: None,
                 content: Some(vec![ReasoningContent {
-                    content_type: "reasoning_text".to_string(),
+                    content_type: ReasoningContentKind::ReasoningText,
                     text: Some("preserved reasoning".to_string()),
                 }]),
                 timestamp: None,

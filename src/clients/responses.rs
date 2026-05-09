@@ -9,7 +9,7 @@ use crate::clients::retry::RequestOverrides;
 use crate::clients::tools::Tool;
 use crate::clients::types::{
     ApiResponse, ApiUsage, ConversationItem, InputTokensDetails, OutputMessage,
-    OutputTokensDetails, ReasoningConfig, Request, Usage,
+    OutputTokensDetails, ReasoningConfig, ReasoningContentKind, Request, Usage,
 };
 
 // =============================================================================
@@ -182,7 +182,10 @@ fn parse_output_items(api_response: &ApiResponse) -> anyhow::Result<Vec<Conversa
                                 .as_ref()
                                 .map(|c| {
                                     c.iter()
-                                        .filter(|item| item.content_type == "reasoning_text")
+                                        .filter(|item| {
+                                            item.content_type
+                                                == ReasoningContentKind::ReasoningText.as_str()
+                                        })
                                         .filter_map(|item| item.text.clone())
                                         .collect()
                                 })
@@ -192,7 +195,7 @@ fn parse_output_items(api_response: &ApiResponse) -> anyhow::Result<Vec<Conversa
                     let content = output.content.as_ref().map(|c| {
                         c.iter()
                             .map(|item| super::types::ReasoningContent {
-                                content_type: item.content_type.clone(),
+                                content_type: item.content_type.clone().into(),
                                 text: item.text.clone(),
                             })
                             .collect()
@@ -617,6 +620,40 @@ mod tests {
         let api_input = items[0].to_api_input();
         assert_eq!(api_input["content"][0]["type"], "reasoning_text");
         assert_eq!(api_input["content"][0]["text"], "deep reasoning here");
+    }
+
+    #[test]
+    fn parse_output_items_reasoning_preserves_unknown_content_kind() {
+        let response = ApiResponse {
+            id: None,
+            output: vec![OutputMessage {
+                msg_type: "reasoning".to_string(),
+                id: Some("r-1".to_string()),
+                call_id: None,
+                name: None,
+                arguments: None,
+                role: None,
+                status: None,
+                content: Some(vec![OutputContent {
+                    content_type: "provider_specific_reasoning".to_string(),
+                    text: Some("opaque reasoning".to_string()),
+                }]),
+                encrypted_content: None,
+                summary: None,
+            }],
+            usage: None,
+            status: None,
+            error: None,
+        };
+
+        let items = parse_output_items(&response).unwrap();
+        let api_input = items[0].to_api_input();
+
+        assert_eq!(
+            api_input["content"][0]["type"],
+            "provider_specific_reasoning"
+        );
+        assert_eq!(api_input["content"][0]["text"], "opaque reasoning");
     }
 
     #[test]

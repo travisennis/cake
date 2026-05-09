@@ -272,7 +272,7 @@ fn lock_session_file(file: &File, path: &Path) -> anyhow::Result<()> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::clients::types::{ReasoningContent, TaskOutcome, Usage};
+    use crate::clients::types::{ReasoningContent, ReasoningContentKind, TaskOutcome, Usage};
     use crate::models::Role;
     use tempfile::TempDir;
 
@@ -615,7 +615,7 @@ mod tests {
                 summary: vec!["thinking...".to_string()],
                 encrypted_content: Some("gAAAAABencrypted...".to_string()),
                 content: Some(vec![ReasoningContent {
-                    content_type: "reasoning_text".to_string(),
+                    content_type: ReasoningContentKind::ReasoningText,
                     text: Some("deep thoughts".to_string()),
                 }]),
                 timestamp: None,
