@@ -512,7 +512,9 @@ async fn run_command_hook(command: HookCommand, payload: Value, cwd: PathBuf) ->
 
     if let Some(mut stdin) = child.stdin.take() {
         let input = serde_json::to_vec(&payload).unwrap_or_default();
-        if let Err(error) = stdin.write_all(&input).await {
+        if let Err(error) = stdin.write_all(&input).await
+            && error.kind() != std::io::ErrorKind::BrokenPipe
+        {
             return InvocationOutcome {
                 command,
                 exit_code: None,

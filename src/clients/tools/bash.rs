@@ -518,6 +518,7 @@ pub(super) fn truncate_output(output: &str, exit_code: i32, elapsed_ms: u128) ->
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "macos")]
     use crate::clients::tools::ToolContext;
 
     #[cfg(target_os = "macos")]

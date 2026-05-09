@@ -8,16 +8,13 @@
 
 use crate::clients::tools::sandbox::{SandboxConfig, SandboxStrategy};
 
-#[cfg(feature = "landlock")]
-use std::os::unix::process::CommandExt;
-
 /// Linux sandbox strategy using Landlock LSM
 #[derive(Debug, Clone, Copy)]
 pub struct LandlockSandbox;
 
 impl LandlockSandbox {
     #[cfg(feature = "landlock")]
-    fn enforce_full_ruleset(status: landlock::RulesetStatus) -> Result<(), std::io::Error> {
+    fn enforce_full_ruleset(status: &landlock::RulesetStatus) -> Result<(), std::io::Error> {
         match status {
             landlock::RulesetStatus::FullyEnforced => Ok(()),
             landlock::RulesetStatus::PartiallyEnforced => Err(std::io::Error::other(
@@ -97,7 +94,7 @@ impl LandlockSandbox {
             std::io::Error::other(format!("Failed to restrict process with Landlock: {e}"))
         })?;
 
-        Self::enforce_full_ruleset(status.ruleset)
+        Self::enforce_full_ruleset(&status.ruleset)
     }
 }
 
@@ -150,9 +147,9 @@ mod tests {
         let config = SandboxConfig::build(&context);
         let mut command = tokio::process::Command::new("bash");
 
-        let error = sandbox
-            .apply(&mut command, &config)
-            .expect_err("Linux sandboxing should fail closed without Landlock support");
+        let Err(error) = sandbox.apply(&mut command, &config) else {
+            panic!("Linux sandboxing should fail closed without Landlock support");
+        };
 
         assert!(error.contains("built without Landlock support"));
         assert!(error.contains("CAKE_SANDBOX=off"));
@@ -163,16 +160,20 @@ mod tests {
     fn landlock_status_must_be_fully_enforced() {
         use landlock::RulesetStatus;
 
-        assert!(LandlockSandbox::enforce_full_ruleset(RulesetStatus::FullyEnforced).is_ok());
+        assert!(LandlockSandbox::enforce_full_ruleset(&RulesetStatus::FullyEnforced).is_ok());
 
-        let partial = LandlockSandbox::enforce_full_ruleset(RulesetStatus::PartiallyEnforced)
-            .expect_err("partial enforcement must fail closed")
-            .to_string();
+        let Err(partial) = LandlockSandbox::enforce_full_ruleset(&RulesetStatus::PartiallyEnforced)
+        else {
+            panic!("partial enforcement must fail closed");
+        };
+        let partial = partial.to_string();
         assert!(partial.contains("partially enforced"));
 
-        let missing = LandlockSandbox::enforce_full_ruleset(RulesetStatus::NotEnforced)
-            .expect_err("missing enforcement must fail closed")
-            .to_string();
+        let Err(missing) = LandlockSandbox::enforce_full_ruleset(&RulesetStatus::NotEnforced)
+        else {
+            panic!("missing enforcement must fail closed");
+        };
+        let missing = missing.to_string();
         assert!(missing.contains("did not enforce"));
     }
 }
