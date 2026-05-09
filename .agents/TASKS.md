@@ -12,7 +12,7 @@ The file `.agents/.tasks/index.md` is the queue and summary. It lists status cou
 
 If the user names a task id or title, work from that task even if another task is higher in the queue. If the user asks for the next task, choose from `.agents/.tasks/index.md` using these rules:
 
-1. Prefer the lowest priority number first: `P0`, then `P1`, `P2`, and `P3`.
+1. Prefer the lowest priority number first: `P0`, then `P1`, `P2`, `P3` and `P4`.
 2. Skip tasks marked `Completed`, `Blocked`, or `Tracking`.
 3. Check dependencies before starting. If a dependency is incomplete, do the dependency first or tell the user why the requested task is blocked.
 4. Treat parent tracker tasks as planning references. Work their child tasks in the order stated by the parent tracker or the index.
@@ -32,8 +32,17 @@ A new task should include enough context for another agent to work it later with
 - Fix direction or implementation notes.
 - Acceptance notes describing how to know the task is complete.
 
+Use this priority scale:
+
+- `P0` (Critical/Blocker): Emergencies needing immediate "all hands on deck" action (e.g., system down, major revenue loss).
+- `P1` (High): Essential tasks that must be fixed before release or in the next immediate update.
+- `P2` (Medium): Important issues that should be resolved in the current or upcoming sprint.
+- `P3` (Low): Nice-to-have improvements or non-critical, small UI bugs that can wait.
+- `P4` (Wishlist): Deferred tasks or potential improvements for future releases.
+
 Use this effort scale:
 
+- `XS` means a small code fix or typo corrections.
 - `S` means a small, localized change.
 - `M` means a moderate change with limited cross-module impact.
 - `L` means a larger feature, refactor, or behavior change that needs an ExecPlan before implementation.
