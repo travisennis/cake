@@ -228,8 +228,8 @@ The `main()` function returns `std::process::ExitCode` directly (not `anyhow::Re
 When using `--output-format stream-json`, the task completion event reports success or failure. The process exit code is still returned by the shell and is not embedded in the JSON record:
 
 ```json
-{"type":"task_complete","success":true,...}
-{"type":"task_complete","success":false,"error":"...",...}
+{"type":"task_complete","subtype":"success","is_error":false,...}
+{"type":"task_complete","subtype":"error_during_execution","is_error":true,"error":"...",...}
 ```
 
 ### JSON Summary Output

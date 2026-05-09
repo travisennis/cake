@@ -47,10 +47,10 @@ jq 'select(.type == "message" and .role == "user") | .content' ~/.local/share/ca
 jq 'select(.role == "assistant") | .content' ~/.local/share/cake/sessions/{uuid}.jsonl
 
 # Check if the task completed (last record should usually be task_complete)
-tail -1 ~/.local/share/cake/sessions/{uuid}.jsonl | jq '{type, success, subtype, error}'
+tail -1 ~/.local/share/cake/sessions/{uuid}.jsonl | jq '{type, is_error, subtype, error}'
 
 # View task summaries
-jq 'select(.type == "task_complete") | {task_id, subtype, success, duration_ms, turn_count, result, error, usage}' ~/.local/share/cake/sessions/{uuid}.jsonl
+jq 'select(.type == "task_complete") | {task_id, subtype, is_error, duration_ms, turn_count, result, error, usage}' ~/.local/share/cake/sessions/{uuid}.jsonl
 
 # View all reasoning messages
 jq 'select(.type == "reasoning")' ~/.local/share/cake/sessions/{uuid}.jsonl
@@ -155,7 +155,7 @@ Current persisted sessions use append-only JSON Lines (`.jsonl`) format version 
   "role": "user",
   "content": "Hello"
 }
-{"type":"task_complete","subtype":"success","success":true,"is_error":false,"duration_ms":1000,"turn_count":1,"num_turns":1,"session_id":"uuid-v4","task_id":"task-uuid","result":"Hi","usage":{"input_tokens":0,"input_tokens_details":{"cached_tokens":0},"output_tokens":0,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":0}}
+{"type":"task_complete","subtype":"success","is_error":false,"duration_ms":1000,"turn_count":1,"num_turns":1,"session_id":"uuid-v4","task_id":"task-uuid","result":"Hi","usage":{"input_tokens":0,"input_tokens_details":{"cached_tokens":0},"output_tokens":0,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":0}}
 ```
 
 Each task starts with `task_start` and should end with `task_complete`. `prompt_context` records are audit entries for AGENTS.md, skills, environment, cwd, and date. Only conversation records (`message`, `function_call`, `function_call_output`, `reasoning`) are restored into model history.
@@ -183,7 +183,7 @@ Each task starts with `task_start` and should end with `task_complete`. `prompt_
 # If the file ends with task_start, reasoning, function_call, function_call_output,
 # or an assistant message without a following task_complete, the invocation may
 # have crashed, timed out, or been interrupted.
-tail -1 ~/.local/share/cake/sessions/{uuid}.jsonl | jq '{type, success, subtype, error}'
+tail -1 ~/.local/share/cake/sessions/{uuid}.jsonl | jq '{type, is_error, subtype, error}'
 ```
 
 **Example truncated response** (last line of `.jsonl` file):
@@ -262,7 +262,7 @@ LATEST=$(ls -t ~/.local/share/cake/sessions/*.jsonl 2>/dev/null | head -1)
 tail -5 "$LATEST" | jq '.'
 
 # Check if response was complete (last line)
-tail -1 "$LATEST" | jq '{type, success, subtype, error}'
+tail -1 "$LATEST" | jq '{type, is_error, subtype, error}'
 
 # View recent errors in logs (one-liner)
 tail -50 ~/.cache/cake/cake.$(date +%Y-%m-%d).log | grep -i error
@@ -280,7 +280,7 @@ When the user reports an issue:
    - Find the most recently modified `.jsonl` file
 
 2. **Check for truncation**
-   - `tail -1 session.jsonl | jq '{type, success, subtype, error}'` - should usually end with `task_complete`
+   - `tail -1 session.jsonl | jq '{type, is_error, subtype, error}'` - should usually end with `task_complete`
    - If it ends with a conversation record or `task_start`, the task likely ended abruptly
 
 3. **Review the conversation flow**
@@ -298,7 +298,7 @@ When the user reports an issue:
 
 ## Key Insight: Why "None" Happens
 
-The common failure pattern behind `None` or empty output is **no completed assistant result for the task**. When the model response is cut off, the process times out, or streaming is interrupted, the session may end without a `task_complete` success record or without final assistant text.
+The common failure pattern behind `None` or empty output is **no completed assistant result for the task**. When the model response is cut off, the process times out, or streaming is interrupted, the session may end without a successful `task_complete` record or without final assistant text.
 
 This typically happens when:
 - The model hits token limits

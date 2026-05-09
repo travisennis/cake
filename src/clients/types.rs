@@ -262,19 +262,14 @@ impl TaskOutcome {
         }
     }
 
-    pub const fn success(&self) -> bool {
-        matches!(self, Self::Success { .. })
-    }
-
     pub const fn is_error(&self) -> bool {
-        !self.success()
+        !matches!(self, Self::Success { .. })
     }
 }
 
 #[derive(Serialize)]
 struct TaskOutcomeFields<'a> {
     subtype: TaskCompleteSubtype,
-    success: bool,
     is_error: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     result: Option<&'a str>,
@@ -285,8 +280,10 @@ struct TaskOutcomeFields<'a> {
 #[derive(Deserialize)]
 struct OwnedTaskOutcomeFields {
     subtype: TaskCompleteSubtype,
-    success: bool,
-    is_error: bool,
+    #[serde(default)]
+    success: Option<bool>,
+    #[serde(default)]
+    is_error: Option<bool>,
     #[serde(default)]
     result: Option<String>,
     #[serde(default)]
@@ -301,7 +298,6 @@ impl Serialize for TaskOutcome {
         let fields = match self {
             Self::Success { result } => TaskOutcomeFields {
                 subtype: self.subtype(),
-                success: self.success(),
                 is_error: self.is_error(),
                 result: result.as_deref(),
                 error: None,
@@ -309,7 +305,6 @@ impl Serialize for TaskOutcome {
             Self::ErrorDuringExecution { error } | Self::ErrorMaxTurns { error } => {
                 TaskOutcomeFields {
                     subtype: self.subtype(),
-                    success: self.success(),
                     is_error: self.is_error(),
                     result: None,
                     error: Some(error),
@@ -328,9 +323,21 @@ impl<'de> Deserialize<'de> for TaskOutcome {
     {
         let fields = OwnedTaskOutcomeFields::deserialize(deserializer)?;
         let expected_success = matches!(fields.subtype, TaskCompleteSubtype::Success);
-        if fields.success != expected_success || fields.is_error == expected_success {
+        let expected_is_error = !expected_success;
+        if fields
+            .is_error
+            .is_some_and(|is_error| is_error != expected_is_error)
+            || fields
+                .success
+                .is_some_and(|success| success != expected_success)
+        {
             return Err(serde::de::Error::custom(
-                "task completion success/is_error fields do not match subtype",
+                "task completion outcome fields do not match subtype",
+            ));
+        }
+        if fields.is_error.is_none() && fields.success.is_none() {
+            return Err(serde::de::Error::custom(
+                "task completion outcome requires is_error",
             ));
         }
 
@@ -897,7 +904,7 @@ mod tests {
     }
 
     #[test]
-    fn task_outcome_serializes_legacy_task_complete_fields() {
+    fn task_outcome_serializes_canonical_task_complete_fields() {
         let record = StreamRecord::TaskComplete {
             outcome: TaskOutcome::Success {
                 result: Some("done".to_string()),
@@ -914,19 +921,68 @@ mod tests {
         let json = serde_json::to_value(&record).unwrap();
         assert_eq!(json["type"], "task_complete");
         assert_eq!(json["subtype"], "success");
-        assert_eq!(json["success"], true);
         assert_eq!(json["is_error"], false);
         assert_eq!(json["result"], "done");
+        assert!(json.get("success").is_none());
         assert!(json.get("error").is_none());
     }
 
     #[test]
-    fn task_outcome_rejects_inconsistent_task_complete_fields() {
+    fn task_outcome_deserializes_legacy_success_field() {
+        let json = serde_json::json!({
+            "type": "task_complete",
+            "subtype": "success",
+            "success": true,
+            "is_error": false,
+            "duration_ms": 10,
+            "turn_count": 1,
+            "num_turns": 1,
+            "session_id": "session-1",
+            "task_id": "task-1",
+            "usage": Usage::default()
+        });
+
+        let record = serde_json::from_value::<StreamRecord>(json).unwrap();
+        assert!(matches!(
+            record,
+            StreamRecord::TaskComplete {
+                outcome: TaskOutcome::Success { .. },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn task_outcome_deserializes_legacy_success_only_field() {
+        let json = serde_json::json!({
+            "type": "task_complete",
+            "subtype": "success",
+            "success": true,
+            "duration_ms": 10,
+            "turn_count": 1,
+            "num_turns": 1,
+            "session_id": "session-1",
+            "task_id": "task-1",
+            "usage": Usage::default()
+        });
+
+        let record = serde_json::from_value::<StreamRecord>(json).unwrap();
+        assert!(matches!(
+            record,
+            StreamRecord::TaskComplete {
+                outcome: TaskOutcome::Success { .. },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn task_outcome_rejects_inconsistent_legacy_success_field() {
         let json = serde_json::json!({
             "type": "task_complete",
             "subtype": "success",
             "success": false,
-            "is_error": true,
+            "is_error": false,
             "duration_ms": 10,
             "turn_count": 1,
             "num_turns": 1,
@@ -938,7 +994,7 @@ mod tests {
         let err = serde_json::from_value::<StreamRecord>(json).unwrap_err();
         assert!(
             err.to_string()
-                .contains("success/is_error fields do not match subtype")
+                .contains("outcome fields do not match subtype")
         );
     }
 

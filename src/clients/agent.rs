@@ -740,10 +740,10 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(&captured.lock().unwrap()).unwrap();
         assert_eq!(json["type"], "task_complete");
         assert_eq!(json["subtype"], "success");
-        assert_eq!(json["success"], true);
         assert_eq!(json["is_error"], false);
         assert_eq!(json["duration_ms"], 1000);
         assert_eq!(json["task_id"], "550e8400-e29b-41d4-a716-446655440001");
+        assert!(json.get("success").is_none());
     }
 
     #[test]

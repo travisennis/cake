@@ -104,7 +104,7 @@ Each `content` item has a required `type` string and an optional `text` string.
 ### Task Complete
 
 ```json
-{"type":"task_complete","subtype":"success","success":true,"is_error":false,"duration_ms":1523,"turn_count":2,"num_turns":2,"session_id":"550e8400-e29b-41d4-a716-446655440000","task_id":"2b15f29d-8c42-4c53-9bdf-35c8f2390d3e","result":"Done","usage":{"input_tokens":150,"input_tokens_details":{"cached_tokens":50},"output_tokens":320,"output_tokens_details":{"reasoning_tokens":120},"total_tokens":470}}
+{"type":"task_complete","subtype":"success","is_error":false,"duration_ms":1523,"turn_count":2,"num_turns":2,"session_id":"550e8400-e29b-41d4-a716-446655440000","task_id":"2b15f29d-8c42-4c53-9bdf-35c8f2390d3e","result":"Done","usage":{"input_tokens":150,"input_tokens_details":{"cached_tokens":50},"output_tokens":320,"output_tokens_details":{"reasoning_tokens":120},"total_tokens":470}}
 ```
 
 `subtype` is one of `success`, `error_during_execution`, or `error_max_turns`. On failure, `error` contains the error message and `result` is omitted.
@@ -113,8 +113,7 @@ Each `content` item has a required `type` string and an optional `text` string.
 |-------|------|----------|-------------|
 | `type` | string | yes | Always `task_complete` |
 | `subtype` | string | yes | One of `success`, `error_during_execution`, or `error_max_turns` |
-| `success` | boolean | yes | `true` for successful completion |
-| `is_error` | boolean | yes | Inverse of `success` in current code |
+| `is_error` | boolean | yes | `false` for successful completion |
 | `duration_ms` | number | yes | Wall-clock task duration in milliseconds |
 | `turn_count` | number | yes | Number of API turns with usage accumulated |
 | `num_turns` | number | yes | Alias of `turn_count` retained for consumer compatibility |
@@ -141,5 +140,5 @@ Do not use redirected stream-json output as a session archive. Persisted session
 {"type":"function_call","id":"fc_001","call_id":"call_001","name":"bash","arguments":"{\"command\":\"ls\"}"}
 {"type":"function_call_output","call_id":"call_001","output":"Cargo.toml\nsrc"}
 {"type":"message","role":"assistant","content":"The current directory contains Cargo.toml and src.","id":"msg_001","status":"completed"}
-{"type":"task_complete","subtype":"success","success":true,"is_error":false,"duration_ms":1523,"turn_count":2,"num_turns":2,"session_id":"550e8400-e29b-41d4-a716-446655440000","task_id":"2b15f29d-8c42-4c53-9bdf-35c8f2390d3e","result":"The current directory contains Cargo.toml and src.","usage":{"input_tokens":150,"input_tokens_details":{"cached_tokens":50},"output_tokens":320,"output_tokens_details":{"reasoning_tokens":120},"total_tokens":470}}
+{"type":"task_complete","subtype":"success","is_error":false,"duration_ms":1523,"turn_count":2,"num_turns":2,"session_id":"550e8400-e29b-41d4-a716-446655440000","task_id":"2b15f29d-8c42-4c53-9bdf-35c8f2390d3e","result":"The current directory contains Cargo.toml and src.","usage":{"input_tokens":150,"input_tokens_details":{"cached_tokens":50},"output_tokens":320,"output_tokens_details":{"reasoning_tokens":120},"total_tokens":470}}
 ```
