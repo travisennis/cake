@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use crate::config::ReasoningEffort;
 use crate::models::Role;
 
 /// Snapshot of git repository state captured when a session file is created.
@@ -770,7 +771,7 @@ pub(super) struct ProviderConfig {
 #[derive(Clone, Serialize)]
 pub(super) struct ReasoningConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) effort: Option<String>,
+    pub(super) effort: Option<ReasoningEffort>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) summary: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

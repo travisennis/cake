@@ -54,7 +54,7 @@ pub(super) async fn send_request(
         } else {
             Some("auto".to_string())
         },
-        reasoning_effort: config.config.reasoning_effort.clone(),
+        reasoning_effort: config.config.reasoning_effort,
     };
 
     let url = format!(
@@ -1168,7 +1168,7 @@ mod tests {
             max_completion_tokens: Some(1024),
             tools: Some(convert_tools(&tools)),
             tool_choice: Some("auto".to_string()),
-            reasoning_effort: Some("high".to_string()),
+            reasoning_effort: Some(crate::config::ReasoningEffort::High),
         };
 
         insta::assert_json_snapshot!(

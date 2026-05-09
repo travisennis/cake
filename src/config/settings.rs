@@ -3,7 +3,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::model::{ApiType, ModelConfig};
+use crate::config::model::{ApiType, ModelConfig, ReasoningEffort};
 use crate::config::skills::SkillConfig;
 
 /// Skill settings loaded from settings.toml.
@@ -163,7 +163,7 @@ pub struct ModelDefinition {
     pub max_output_tokens: Option<u32>,
     /// Reasoning effort level
     #[serde(default)]
-    pub reasoning_effort: Option<String>,
+    pub reasoning_effort: Option<ReasoningEffort>,
     /// Reasoning summary mode (Responses API only)
     #[serde(default)]
     pub reasoning_summary: Option<String>,
@@ -251,7 +251,7 @@ impl ModelDefinition {
             temperature: self.temperature,
             top_p: self.top_p,
             max_output_tokens: self.max_output_tokens,
-            reasoning_effort: self.reasoning_effort.clone(),
+            reasoning_effort: self.reasoning_effort,
             reasoning_summary: self.reasoning_summary.clone(),
             reasoning_max_tokens: self.reasoning_max_tokens,
             providers: self.providers.clone(),
@@ -844,7 +844,7 @@ api_key_env = "MY_KEY"
             temperature: Some(0.5),
             top_p: Some(0.9),
             max_output_tokens: Some(4000),
-            reasoning_effort: Some("high".to_string()),
+            reasoning_effort: Some(ReasoningEffort::High),
             reasoning_summary: Some("concise".to_string()),
             reasoning_max_tokens: Some(8000),
             providers: vec!["Provider1".to_string()],
@@ -859,7 +859,7 @@ api_key_env = "MY_KEY"
         assert_eq!(config.temperature, Some(0.5));
         assert_eq!(config.top_p, Some(0.9));
         assert_eq!(config.max_output_tokens, Some(4000));
-        assert_eq!(config.reasoning_effort, Some("high".to_string()));
+        assert_eq!(config.reasoning_effort, Some(ReasoningEffort::High));
         assert_eq!(config.reasoning_summary, Some("concise".to_string()));
         assert_eq!(config.reasoning_max_tokens, Some(8000));
         assert_eq!(config.providers, vec!["Provider1"]);

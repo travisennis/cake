@@ -1,3 +1,4 @@
+use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
 /// The type of API endpoint to use for model completions.
@@ -17,6 +18,22 @@ pub enum ApiType {
     ChatCompletions,
     /// `OpenRouter` Responses API - supports reasoning traces and structured outputs
     Responses,
+}
+
+/// Reasoning effort level requested for models that support configurable reasoning.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum ReasoningEffort {
+    /// Disable configurable reasoning effort where the provider supports it.
+    None,
+    /// Use a low reasoning effort.
+    Low,
+    /// Use a medium reasoning effort.
+    Medium,
+    /// Use a high reasoning effort.
+    High,
+    /// Use extra-high reasoning effort.
+    Xhigh,
 }
 
 /// Configuration for a model provider.
@@ -47,7 +64,7 @@ pub struct ModelConfig {
     pub max_output_tokens: Option<u32>,
     /// Reasoning effort level (none, low, medium, high, xhigh)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub reasoning_effort: Option<String>,
+    pub reasoning_effort: Option<ReasoningEffort>,
     /// Reasoning summary mode (concise, detailed, auto) - Responses API only
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_summary: Option<String>,
@@ -174,6 +191,21 @@ mod tests {
 
         let json = serde_json::to_string(&ApiType::ChatCompletions).unwrap();
         assert_eq!(json, r#""chat_completions""#);
+    }
+
+    #[test]
+    fn test_reasoning_effort_serialization() {
+        let json = serde_json::to_string(&ReasoningEffort::High).unwrap();
+        assert_eq!(json, r#""high""#);
+
+        let effort: ReasoningEffort = serde_json::from_str(r#""xhigh""#).unwrap();
+        assert_eq!(effort, ReasoningEffort::Xhigh);
+    }
+
+    #[test]
+    fn test_reasoning_effort_rejects_invalid_value() {
+        let result = serde_json::from_str::<ReasoningEffort>(r#""maximum""#);
+        assert!(result.is_err());
     }
 
     #[test]

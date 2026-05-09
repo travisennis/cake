@@ -19,7 +19,7 @@ use crate::clients::{Agent, ConversationItem, TaskOutcome, ToolContext};
 use crate::config::settings::LoadedSettings;
 use crate::config::{
     AgentsFile, DataDir, DiagnosticLevel, HooksLoader, ModelConfig, ModelDefinition,
-    ResolvedModelConfig, Session, SettingsLoader, SkillCatalog, discover_skills,
+    ReasoningEffort, ResolvedModelConfig, Session, SettingsLoader, SkillCatalog, discover_skills,
     discover_skills_with_paths, looks_like_uuid, parse_skill_path_list, worktree,
 };
 use crate::hooks::{HookContext, HookRunner};
@@ -94,7 +94,7 @@ struct CodingAssistant {
 
     /// Override reasoning effort level (none, low, medium, high, xhigh)
     #[arg(long, value_name = "EFFORT")]
-    pub reasoning_effort: Option<String>,
+    pub reasoning_effort: Option<ReasoningEffort>,
 
     /// Override reasoning token budget
     #[arg(long, value_name = "TOKENS")]
@@ -292,8 +292,8 @@ impl CodingAssistant {
         if let Some(max_tokens) = self.max_tokens {
             config.max_output_tokens = Some(max_tokens);
         }
-        if let Some(ref effort) = self.reasoning_effort {
-            config.reasoning_effort = Some(effort.clone());
+        if let Some(effort) = self.reasoning_effort {
+            config.reasoning_effort = Some(effort);
         }
         if let Some(budget) = self.reasoning_budget {
             config.reasoning_max_tokens = Some(budget);
@@ -367,12 +367,12 @@ impl CodingAssistant {
 
     /// Apply CLI overrides (`max_tokens`, `reasoning_effort`, `reasoning_budget`) to a
     /// resolved model config.
-    fn apply_cli_overrides(&self, mut resolved: ResolvedModelConfig) -> ResolvedModelConfig {
+    const fn apply_cli_overrides(&self, mut resolved: ResolvedModelConfig) -> ResolvedModelConfig {
         if let Some(max_tokens) = self.max_tokens {
             resolved.config.max_output_tokens = Some(max_tokens);
         }
-        if let Some(ref effort) = self.reasoning_effort {
-            resolved.config.reasoning_effort = Some(effort.clone());
+        if let Some(effort) = self.reasoning_effort {
+            resolved.config.reasoning_effort = Some(effort);
         }
         if let Some(budget) = self.reasoning_budget {
             resolved.config.reasoning_max_tokens = Some(budget);
@@ -1286,6 +1286,20 @@ mod tests {
     fn test_cli_parsing_no_model_flag() {
         let args = CodingAssistant::parse_from(["cake", "test prompt"]);
         assert_eq!(args.model, None);
+    }
+
+    #[test]
+    fn test_cli_parsing_reasoning_effort() {
+        let args =
+            CodingAssistant::parse_from(["cake", "--reasoning-effort", "xhigh", "test prompt"]);
+        assert_eq!(args.reasoning_effort, Some(ReasoningEffort::Xhigh));
+    }
+
+    #[test]
+    fn test_cli_rejects_invalid_reasoning_effort() {
+        let result =
+            CodingAssistant::try_parse_from(["cake", "--reasoning-effort", "maximum", "test"]);
+        assert!(result.is_err());
     }
 
     #[test]

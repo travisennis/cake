@@ -24,7 +24,7 @@ pub use data_dir::{AgentsFile, DataDir, looks_like_uuid};
 #[doc(inline)]
 pub use hooks::HooksLoader;
 #[doc(inline)]
-pub use model::{ModelConfig, ResolvedModelConfig};
+pub use model::{ModelConfig, ReasoningEffort, ResolvedModelConfig};
 #[doc(inline)]
 pub use session::Session;
 #[doc(inline)]

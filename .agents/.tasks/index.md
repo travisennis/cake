@@ -4,8 +4,8 @@ This index summarizes the task files in this directory. Use it as the manually m
 
 ## Status Summary
 
-- Completed: 41
-- Pending: 60
+- Completed: 42
+- Pending: 59
 - Tracking: 1
 - Open: 1
 - Blocked: 12
@@ -24,9 +24,9 @@ These are the highest-priority tasks currently available from the task metadata:
 
 | Task | Title | Status | Priority | Effort | ExecPlan | Depends on |
 | --- | --- | --- | --- | --- | --- | --- |
-| [057](057.md) | Add Typed Reasoning Effort | Pending | P1 | M | - | - |
+| [058](058.md) | Type Reasoning Content Kinds | Pending | P1 | M | - | - |
 
-With [056](056.md) complete, [057](057.md) is the next P1 task without dependencies.
+With [057](057.md) complete, [058](058.md) is the next P1 task without dependencies.
 
 ## Parent Trackers
 
@@ -97,7 +97,7 @@ With [056](056.md) complete, [057](057.md) is the next P1 task without dependenc
 | [054](054.md) | Refactor CodingAssistant Run Into Smaller Steps | Completed | P1 | L | `.agents/exec-plans/completed/refactor-coding-assistant-run.md` | - |
 | [055](055.md) | Replace Boolean Task Completion API with Outcome Enum | Completed | P1 | M | - | - |
 | [056](056.md) | Remove Redundant StreamRecord Success Booleans | Completed | P1 | M | - | - |
-| [057](057.md) | Add Typed Reasoning Effort | Pending | P1 | M | - | - |
+| [057](057.md) | Add Typed Reasoning Effort | Completed | P1 | M | - | - |
 | [058](058.md) | Type Reasoning Content Kinds | Pending | P1 | M | - | - |
 | [059](059.md) | Add Structured Output Sink for CLI Output | Pending | P1 | M | - | - |
 | [060](060.md) | Make Hooks Observable in Typed Session Flow (Parent) | Tracking | P1 | L (split into 060a / 060b / 060c) | Use child tasks | - |

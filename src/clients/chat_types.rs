@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 
+use crate::config::ReasoningEffort;
+
 // =============================================================================
 // Chat Completions API Request DTOs (serialization only - can borrow)
 // =============================================================================
@@ -20,7 +22,7 @@ pub(super) struct ChatRequest<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) tool_choice: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) reasoning_effort: Option<String>,
+    pub(super) reasoning_effort: Option<ReasoningEffort>,
 }
 
 /// Request message type that borrows strings from history to avoid cloning.

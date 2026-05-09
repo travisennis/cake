@@ -42,7 +42,7 @@ pub(super) async fn send_request(
         || config.config.reasoning_summary.is_some()
         || reasoning_max_tokens.is_some())
     .then(|| ReasoningConfig {
-        effort: config.config.reasoning_effort.clone(),
+        effort: config.config.reasoning_effort,
         summary: config.config.reasoning_summary.clone(),
         max_tokens: reasoning_max_tokens,
     });
@@ -856,7 +856,7 @@ mod tests {
                 only: vec!["OpenAI".to_string(), "Anthropic".to_string()],
             }),
             reasoning: Some(ReasoningConfig {
-                effort: Some("medium".to_string()),
+                effort: Some(crate::config::ReasoningEffort::Medium),
                 summary: Some("auto".to_string()),
                 max_tokens: Some(512),
             }),
