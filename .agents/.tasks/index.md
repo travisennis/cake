@@ -5,7 +5,7 @@ This index summarizes the task files in this directory. Use it as the manually m
 ## Status Summary
 
 - Completed: 44
-- Pending: 57
+- Pending: 58
 - Tracking: 1
 - Open: 1
 - Blocked: 12
@@ -153,3 +153,4 @@ With [059](059.md) complete, [060a](060a.md) is the next P1 task without depende
 | [107](107.md) | Reconsider Missing Docs Lint Policy | Pending | P3 | S | - | Resolve in the same PR as 089 (clippy allow policy) for consistency. |
 | [108](108.md) | Track Manual Review Findings Without Losing Original Numbers | Pending | P3 | S | - | - |
 | [109](109.md) | Edit tool: CRLF replacement text double-encoding | Open | - | - | - | - |
+| [110](110.md) | Apply Stricter Clippy Configuration from External Research | Pending | P2 | M | - | Research: clippy-stricter-config; related: 089, 107 |
