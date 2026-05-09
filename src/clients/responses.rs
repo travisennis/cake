@@ -4,11 +4,12 @@ use crate::config::model::ResolvedModelConfig;
 use crate::models::Role;
 
 use crate::clients::agent::TurnResult;
+use crate::clients::provider_strategy::ProviderStrategy;
 use crate::clients::retry::RequestOverrides;
 use crate::clients::tools::Tool;
 use crate::clients::types::{
     ApiResponse, ApiUsage, ConversationItem, InputTokensDetails, OutputMessage,
-    OutputTokensDetails, ProviderConfig, ReasoningConfig, Request, Usage,
+    OutputTokensDetails, ReasoningConfig, Request, Usage,
 };
 
 // =============================================================================
@@ -27,15 +28,8 @@ pub(super) async fn send_request(
     tools: &[Tool],
     overrides: &RequestOverrides,
 ) -> anyhow::Result<reqwest::Response> {
-    let provider_config = if config.config.providers.is_empty()
-        || (config.config.providers.len() == 1 && config.config.providers[0] == "all")
-    {
-        None
-    } else {
-        Some(ProviderConfig {
-            only: config.config.providers.clone(),
-        })
-    };
+    let strategy = ProviderStrategy::from_config(config);
+    let provider_config = strategy.responses_provider_config();
 
     let max_output_tokens = overrides
         .max_output_tokens
@@ -75,11 +69,8 @@ pub(super) async fn send_request(
         trace!(target: "cake", "{prompt_json}");
     }
 
-    let response = client
-        .post(&url)
-        .json(&prompt)
-        .header("HTTP-Referer", "https://github.com/travisennis/cake")
-        .header("X-Title", "cake")
+    let response = strategy
+        .apply_headers(client.post(&url).json(&prompt))
         .bearer_auth(&config.api_key)
         .send()
         .await?;
@@ -333,7 +324,7 @@ fn malformed_function_call_error(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::clients::types::{OutputContent, OutputMessage};
+    use crate::clients::types::{OutputContent, OutputMessage, ProviderConfig};
 
     #[test]
     fn extract_instructions_with_system_message() {

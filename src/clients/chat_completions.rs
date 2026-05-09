@@ -10,6 +10,7 @@ use crate::clients::chat_types::{
     ChatFunction, ChatFunctionCallRef, ChatMessage, ChatRequest, ChatResponse, ChatTool,
     ChatToolCallRef,
 };
+use crate::clients::provider_strategy::ProviderStrategy;
 use crate::clients::retry::RequestOverrides;
 use crate::clients::tools::Tool;
 use crate::clients::types::{ConversationItem, InputTokensDetails, OutputTokensDetails, Usage};
@@ -30,10 +31,9 @@ pub(super) async fn send_request(
     tools: &[Tool],
     overrides: &RequestOverrides,
 ) -> anyhow::Result<reqwest::Response> {
+    let strategy = ProviderStrategy::from_config(config);
     let mut messages = build_messages(history);
-    if requires_reasoning_content_tool_call_fallback(&config.config.model) {
-        inject_reasoning_placeholders(&mut messages);
-    }
+    strategy.transform_chat_messages(&mut messages);
     let chat_tools = convert_tools(tools);
 
     let request = ChatRequest {
@@ -67,11 +67,8 @@ pub(super) async fn send_request(
         trace!(target: "cake", "{request_json}");
     }
 
-    let response = client
-        .post(&url)
-        .json(&request)
-        .header("HTTP-Referer", "https://github.com/travisennis/cake")
-        .header("X-Title", "cake")
+    let response = strategy
+        .apply_headers(client.post(&url).json(&request))
         .bearer_auth(&config.api_key)
         .send()
         .await?;
@@ -235,23 +232,6 @@ fn build_messages(history: &[ConversationItem]) -> Vec<ChatMessage<'_>> {
     messages
 }
 
-const KIMI_REASONING_CONTENT_PLACEHOLDER: &str = " ";
-
-fn requires_reasoning_content_tool_call_fallback(model: &str) -> bool {
-    model.to_ascii_lowercase().contains("kimi")
-}
-
-/// Inject a placeholder `reasoning_content` into assistant messages that have
-/// `tool_calls` but no `reasoning_content`. Required by Kimi/Moonshot models
-/// which reject tool-call messages missing this field.
-fn inject_reasoning_placeholders(messages: &mut Vec<ChatMessage<'_>>) {
-    for msg in messages.iter_mut() {
-        if msg.role == "assistant" && msg.tool_calls.is_some() && msg.reasoning_content.is_none() {
-            msg.reasoning_content = Some(Cow::Borrowed(KIMI_REASONING_CONTENT_PLACEHOLDER));
-        }
-    }
-}
-
 fn extract_reasoning_content(
     content: Option<&Vec<super::types::ReasoningContent>>,
 ) -> Option<&str> {
@@ -381,6 +361,27 @@ mod tests {
         PromptTokensDetails,
     };
     use crate::clients::types::ReasoningContent;
+    use crate::config::model::{ApiType, ModelConfig};
+
+    fn apply_test_strategy(model: &str, messages: &mut [ChatMessage<'_>]) {
+        let config = ResolvedModelConfig {
+            config: ModelConfig {
+                model: model.to_string(),
+                api_type: ApiType::ChatCompletions,
+                base_url: "https://api.example.com/v1".to_string(),
+                api_key_env: "TEST_API_KEY".to_string(),
+                temperature: None,
+                top_p: None,
+                max_output_tokens: None,
+                reasoning_effort: None,
+                reasoning_summary: None,
+                reasoning_max_tokens: None,
+                providers: vec![],
+            },
+            api_key: "test-key".to_string(),
+        };
+        ProviderStrategy::from_config(&config).transform_chat_messages(messages);
+    }
 
     #[test]
     fn build_messages_simple_conversation() {
@@ -626,7 +627,7 @@ mod tests {
     }
 
     #[test]
-    fn inject_reasoning_placeholders_adds_placeholder_to_tool_call_messages() {
+    fn kimi_strategy_adds_reasoning_placeholder_to_tool_call_messages() {
         let history = vec![
             ConversationItem::Message {
                 role: Role::User,
@@ -645,7 +646,7 @@ mod tests {
         ];
 
         let mut msgs = build_messages(&history);
-        inject_reasoning_placeholders(&mut msgs);
+        apply_test_strategy("moonshot/kimi-k2.6", &mut msgs);
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[1].role, "assistant");
         assert_eq!(msgs[1].reasoning_content.as_deref(), Some(" "));
@@ -653,7 +654,7 @@ mod tests {
     }
 
     #[test]
-    fn inject_reasoning_placeholders_preserves_existing_reasoning_content() {
+    fn kimi_strategy_preserves_existing_reasoning_content() {
         let history = vec![
             ConversationItem::Message {
                 role: Role::User,
@@ -682,7 +683,7 @@ mod tests {
         ];
 
         let mut msgs = build_messages(&history);
-        inject_reasoning_placeholders(&mut msgs);
+        apply_test_strategy("moonshot/kimi-k2.6", &mut msgs);
         assert_eq!(
             msgs[1].reasoning_content.as_deref(),
             Some("actual reasoning")
@@ -690,7 +691,7 @@ mod tests {
     }
 
     #[test]
-    fn inject_reasoning_placeholders_does_not_affect_messages_without_tool_calls() {
+    fn kimi_strategy_does_not_affect_messages_without_tool_calls() {
         let history = vec![
             ConversationItem::Message {
                 role: Role::User,
@@ -709,18 +710,34 @@ mod tests {
         ];
 
         let mut msgs = build_messages(&history);
-        inject_reasoning_placeholders(&mut msgs);
+        apply_test_strategy("moonshot/kimi-k2.6", &mut msgs);
         assert_eq!(msgs.len(), 2);
         assert!(msgs[1].reasoning_content.is_none());
     }
 
     #[test]
-    fn requires_reasoning_content_tool_call_fallback_matches_kimi_models() {
-        assert!(requires_reasoning_content_tool_call_fallback("kimi-k2.6"));
-        assert!(requires_reasoning_content_tool_call_fallback(
-            "moonshot/kimi-k2.6"
-        ));
-        assert!(!requires_reasoning_content_tool_call_fallback("gpt-4.1"));
+    fn non_kimi_strategy_does_not_add_reasoning_placeholder() {
+        let history = vec![
+            ConversationItem::Message {
+                role: Role::User,
+                content: "do stuff".to_string(),
+                id: None,
+                status: None,
+                timestamp: None,
+            },
+            ConversationItem::FunctionCall {
+                id: "fc-1".to_string(),
+                call_id: "call-1".to_string(),
+                name: "bash".to_string(),
+                arguments: r#"{"cmd":"ls"}"#.to_string(),
+                timestamp: None,
+            },
+        ];
+
+        let mut msgs = build_messages(&history);
+        apply_test_strategy("gpt-4.1", &mut msgs);
+        assert_eq!(msgs.len(), 2);
+        assert!(msgs[1].reasoning_content.is_none());
     }
 
     #[test]
@@ -1107,7 +1124,7 @@ mod tests {
         ];
 
         let mut msgs = build_messages(&history);
-        inject_reasoning_placeholders(&mut msgs);
+        apply_test_strategy("moonshot/kimi-k2.6", &mut msgs);
         insta::assert_json_snapshot!("build_messages_with_reasoning_placeholder", msgs);
     }
 
@@ -1130,7 +1147,7 @@ mod tests {
             },
         ];
         let mut messages = build_messages(&history);
-        inject_reasoning_placeholders(&mut messages);
+        apply_test_strategy("moonshot/kimi-k2.6", &mut messages);
         let tools = vec![Tool {
             type_: "function".to_string(),
             name: "bash".to_string(),

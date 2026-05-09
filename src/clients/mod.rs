@@ -16,6 +16,7 @@ mod agent_state;
 mod backend;
 mod chat_completions;
 mod chat_types;
+mod provider_strategy;
 mod responses;
 pub mod retry;
 mod tools;

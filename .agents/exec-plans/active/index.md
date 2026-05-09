@@ -13,3 +13,5 @@ This index follows `.agents/PLANS.md`. Active ExecPlans are checked-in plans tha
 - 2026-05-07 / Codex: Created the active ExecPlan index while migrating plans from `.agents/.plans/` to `.agents/exec-plans/active/`.
 - 2026-05-08 / Codex: Added the active ExecPlan for task 049, `Split Agent Responsibilities`.
 - 2026-05-08 / Codex: Moved `split-agent-responsibilities.md` to completed after task 049 passed validation.
+- 2026-05-09 / Codex: Added the active ExecPlan for task 052, `Move Provider Quirks Behind Provider Strategy`.
+- 2026-05-09 / Codex: Moved `provider-strategy.md` to completed after task 052 passed validation.
