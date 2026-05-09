@@ -59,7 +59,7 @@ struct CodingAssistant {
     #[arg(long)]
     pub max_tokens: Option<u32>,
 
-    /// Output format for the response (text or stream-json)
+    /// Output format for the response (text, json, or stream-json)
     #[arg(long, value_enum, default_value = "text")]
     pub output_format: OutputFormat,
 
@@ -137,6 +137,133 @@ struct RunResources {
 struct TurnResult {
     result: anyhow::Result<Option<Message>>,
     duration_ms: u64,
+}
+
+#[derive(Clone, Copy)]
+struct CliOutputSink {
+    format: OutputFormat,
+}
+
+impl CliOutputSink {
+    const fn new(format: OutputFormat) -> Self {
+        Self { format }
+    }
+
+    fn attach_callbacks(self, mut client: Agent) -> (Agent, Option<ProgressBar>) {
+        if self.format == OutputFormat::StreamJson {
+            client = client.with_streaming_json(Self::write_stream_record);
+        }
+
+        match self.format {
+            OutputFormat::Text => {
+                let (client, spinner) = CodingAssistant::with_text_progress(client);
+                (client, Some(spinner))
+            },
+            OutputFormat::StreamJson | OutputFormat::Json => (client, None),
+        }
+    }
+
+    fn finish_progress(self, spinner: Option<ProgressBar>, duration_ms: u64, client: &Agent) {
+        if self.format == OutputFormat::Text
+            && let Some(spinner) = spinner
+        {
+            let summary = format_done_summary(duration_ms, client);
+            spinner.finish_with_message(format!("Done: {summary}"));
+        }
+    }
+
+    fn render_turn(
+        self,
+        turn: TurnResult,
+        client: &Agent,
+        current_dir: &Path,
+        data_dir: &DataDir,
+        session: &Session,
+    ) -> anyhow::Result<()> {
+        let TurnResult {
+            result,
+            duration_ms,
+        } = turn;
+
+        match self.format {
+            OutputFormat::Text => Self::render_text_result(result),
+            OutputFormat::Json => {
+                let json = Self::turn_result_json(
+                    &result,
+                    duration_ms,
+                    client,
+                    current_dir,
+                    data_dir,
+                    session,
+                );
+                Self::write_json_value(&json)?;
+                result.map(|_| ())
+            },
+            OutputFormat::StreamJson => Ok(()),
+        }
+    }
+
+    fn render_text_result(result: anyhow::Result<Option<Message>>) -> anyhow::Result<()> {
+        let response = result?;
+        if let Some(response_msg) = response {
+            Self::write_text_response(&response_msg.content);
+        } else {
+            Self::write_warning("No response received from the model. The task may be incomplete.");
+        }
+        Ok(())
+    }
+
+    fn turn_result_json(
+        result: &anyhow::Result<Option<Message>>,
+        duration_ms: u64,
+        client: &Agent,
+        current_dir: &Path,
+        data_dir: &DataDir,
+        session: &Session,
+    ) -> serde_json::Value {
+        let mut json = serde_json::json!({
+            "session_id": client.session_id.to_string(),
+            "usage": client.total_usage,
+            "cwd": current_dir.to_string_lossy(),
+            "session_file": data_dir.session_path(session.id).to_string_lossy(),
+            "turns": client.turn_count,
+            "elapsed_time": duration_ms,
+        });
+
+        match result {
+            Ok(response_msg) => {
+                let result_text = response_msg.as_ref().map_or("", |m| m.content.as_str());
+                json["result"] = serde_json::json!(result_text);
+            },
+            Err(e) => {
+                json["result"] = serde_json::Value::Null;
+                json["error"] = serde_json::json!(e.to_string());
+            },
+        }
+
+        json
+    }
+
+    fn write_stream_record(json: &str) {
+        println!("{json}");
+    }
+
+    fn write_text_response(content: &str) {
+        println!("{content}");
+    }
+
+    fn write_json_value(value: &serde_json::Value) -> anyhow::Result<()> {
+        println!("{}", serde_json::to_string(value)?);
+        Ok(())
+    }
+
+    fn write_warning(message: &str) {
+        eprintln!("Warning: {message}");
+    }
+
+    fn write_error(error: &anyhow::Error) {
+        eprintln!("Error: {error}");
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -895,20 +1022,8 @@ impl CodingAssistant {
         Ok((client, Some(runner)))
     }
 
-    fn attach_output_callbacks(&self, mut client: Agent) -> (Agent, Option<ProgressBar>) {
-        if self.output_format == OutputFormat::StreamJson {
-            client = client.with_streaming_json(|json| {
-                println!("{json}");
-            });
-        }
-
-        match self.output_format {
-            OutputFormat::Text => {
-                let (client, spinner) = Self::with_text_progress(client);
-                (client, Some(spinner))
-            },
-            OutputFormat::StreamJson | OutputFormat::Json => (client, None),
-        }
+    const fn output_sink(&self) -> CliOutputSink {
+        CliOutputSink::new(self.output_format)
     }
 
     async fn execute_agent_turn(
@@ -969,75 +1084,6 @@ impl CodingAssistant {
             duration_ms,
         })
     }
-
-    fn finish_progress(spinner: Option<ProgressBar>, duration_ms: u64, client: &Agent) {
-        if let Some(spinner) = spinner {
-            let summary = format_done_summary(duration_ms, client);
-            spinner.finish_with_message(format!("Done: {summary}"));
-        }
-    }
-
-    fn render_output(
-        &self,
-        turn: TurnResult,
-        client: &Agent,
-        current_dir: &Path,
-        data_dir: &DataDir,
-        session: &Session,
-    ) -> anyhow::Result<()> {
-        let TurnResult {
-            result,
-            duration_ms,
-        } = turn;
-
-        match self.output_format {
-            OutputFormat::Text => {
-                let response = result?;
-                if let Some(response_msg) = response {
-                    println!("{}", response_msg.content);
-                } else {
-                    eprintln!(
-                        "Warning: No response received from the model. The task may be incomplete."
-                    );
-                }
-            },
-            OutputFormat::Json => {
-                let json = match &result {
-                    Ok(response_msg) => {
-                        let result_text = response_msg.as_ref().map_or("", |m| m.content.as_str());
-                        serde_json::json!({
-                            "result": result_text,
-                            "session_id": client.session_id.to_string(),
-                            "usage": client.total_usage,
-                            "cwd": current_dir.to_string_lossy(),
-                            "session_file": data_dir.session_path(session.id).to_string_lossy(),
-                            "turns": client.turn_count,
-                            "elapsed_time": duration_ms,
-                        })
-                    },
-                    Err(e) => {
-                        serde_json::json!({
-                            "result": null,
-                            "error": e.to_string(),
-                            "session_id": client.session_id.to_string(),
-                            "usage": client.total_usage,
-                            "cwd": current_dir.to_string_lossy(),
-                            "session_file": data_dir.session_path(session.id).to_string_lossy(),
-                            "turns": client.turn_count,
-                            "elapsed_time": duration_ms,
-                        })
-                    },
-                };
-                println!("{}", serde_json::to_string(&json)?);
-                if result.is_err() {
-                    return result.map(|_| ());
-                }
-            },
-            OutputFormat::StreamJson => {},
-        }
-
-        Ok(())
-    }
 }
 
 impl CmdRunner for CodingAssistant {
@@ -1075,7 +1121,8 @@ impl CmdRunner for CodingAssistant {
             &run_mode,
             task_id,
         )?;
-        let (mut client, spinner) = self.attach_output_callbacks(client);
+        let output = self.output_sink();
+        let (mut client, spinner) = output.attach_callbacks(client);
 
         let turn = Self::execute_agent_turn(
             &mut client,
@@ -1084,8 +1131,8 @@ impl CmdRunner for CodingAssistant {
             &prepared.content,
         )
         .await?;
-        Self::finish_progress(spinner, turn.duration_ms, &client);
-        self.render_output(turn, &client, &prepared.current_dir, data_dir, &session)?;
+        output.finish_progress(spinner, turn.duration_ms, &client);
+        output.render_turn(turn, &client, &prepared.current_dir, data_dir, &session)?;
 
         if let Some(ref wt) = prepared.worktree {
             Self::cleanup_worktree(wt, &prepared.original_dir);
@@ -1157,7 +1204,7 @@ fn main() -> std::process::ExitCode {
     let data_dir = match DataDir::new() {
         Ok(d) => d,
         Err(e) => {
-            eprintln!("Error: {e}");
+            CliOutputSink::write_error(&e);
             return exit_code::classify(&e);
         },
     };
@@ -1188,7 +1235,7 @@ fn main() -> std::process::ExitCode {
         Ok(rt) => rt,
         Err(e) => {
             let err = anyhow::anyhow!("Failed to initialize Tokio runtime: {e}");
-            eprintln!("Error: {err}");
+            CliOutputSink::write_error(&err);
             return exit_code::classify(&err);
         },
     };
@@ -1198,7 +1245,7 @@ fn main() -> std::process::ExitCode {
     match result {
         Ok(()) => std::process::ExitCode::from(exit_code::code::SUCCESS),
         Err(e) => {
-            eprintln!("Error: {e}");
+            CliOutputSink::write_error(&e);
             exit_code::classify(&e)
         },
     }
@@ -1866,6 +1913,85 @@ mod tests {
             assert!(summary.contains("1000 input tokens"));
             assert!(summary.contains("250 cached reads"));
             assert!(summary.contains("500 output tokens"));
+        });
+    }
+
+    #[test]
+    fn output_sink_builds_success_json() {
+        temp_env::with_var("CAKE_TEST_VALID_KEY", Some("sk-test-123"), || {
+            let mut agent = Agent::new(
+                test_resolved_model_config(),
+                &[(Role::System, "test system prompt".to_string())],
+            );
+            agent.session_id = uuid::uuid!("550e8400-e29b-41d4-a716-446655440000");
+            agent.turn_count = 2;
+            agent.total_usage.input_tokens = 12;
+            agent.total_usage.output_tokens = 8;
+            let session = Session::new(agent.session_id, PathBuf::from("/work"));
+            let dir = match tempfile::tempdir() {
+                Ok(dir) => dir,
+                Err(err) => panic!("temp dir should be created: {err}"),
+            };
+            let data_dir = match temp_env::with_var("CAKE_DATA_DIR", Some(dir.path()), DataDir::new)
+            {
+                Ok(data_dir) => data_dir,
+                Err(err) => panic!("data dir should be created: {err}"),
+            };
+            let result = Ok(Some(Message {
+                role: Role::Assistant,
+                content: "done".to_string(),
+            }));
+
+            let json = CliOutputSink::turn_result_json(
+                &result,
+                1500,
+                &agent,
+                Path::new("/work"),
+                &data_dir,
+                &session,
+            );
+
+            assert_eq!(json["result"], "done");
+            assert_eq!(json["session_id"], agent.session_id.to_string());
+            assert_eq!(json["turns"], 2);
+            assert_eq!(json["elapsed_time"], 1500);
+            assert_eq!(json["usage"]["input_tokens"], 12);
+            assert!(json.get("error").is_none());
+        });
+    }
+
+    #[test]
+    fn output_sink_builds_error_json() {
+        temp_env::with_var("CAKE_TEST_VALID_KEY", Some("sk-test-123"), || {
+            let mut agent = Agent::new(
+                test_resolved_model_config(),
+                &[(Role::System, "test system prompt".to_string())],
+            );
+            agent.session_id = uuid::uuid!("550e8400-e29b-41d4-a716-446655440000");
+            let session = Session::new(agent.session_id, PathBuf::from("/work"));
+            let dir = match tempfile::tempdir() {
+                Ok(dir) => dir,
+                Err(err) => panic!("temp dir should be created: {err}"),
+            };
+            let data_dir = match temp_env::with_var("CAKE_DATA_DIR", Some(dir.path()), DataDir::new)
+            {
+                Ok(data_dir) => data_dir,
+                Err(err) => panic!("data dir should be created: {err}"),
+            };
+            let result = Err(anyhow::anyhow!("provider failed"));
+
+            let json = CliOutputSink::turn_result_json(
+                &result,
+                250,
+                &agent,
+                Path::new("/work"),
+                &data_dir,
+                &session,
+            );
+
+            assert_eq!(json["result"], serde_json::Value::Null);
+            assert_eq!(json["error"], "provider failed");
+            assert_eq!(json["elapsed_time"], 250);
         });
     }
 
