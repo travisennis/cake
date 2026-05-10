@@ -916,6 +916,7 @@ pub(super) struct ApiError {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::config::session::CURRENT_FORMAT_VERSION;
 
     fn stream_json_for(item: &ConversationItem) -> serde_json::Value {
         serde_json::to_value(StreamRecord::from_conversation_item(item)).unwrap()
@@ -925,6 +926,24 @@ mod tests {
         let stream_record = StreamRecord::from_conversation_item(item);
         let session_record = SessionRecord::from(stream_record);
         serde_json::to_value(session_record).unwrap()
+    }
+
+    fn fixed_timestamp() -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339("2026-05-10T12:34:56Z")
+            .unwrap()
+            .with_timezone(&Utc)
+    }
+
+    fn session_record_json(record: SessionRecord) -> serde_json::Value {
+        serde_json::to_value(record).unwrap()
+    }
+
+    fn fixed_session_id() -> String {
+        "550e8400-e29b-41d4-a716-446655440000".to_string()
+    }
+
+    fn fixed_task_id() -> String {
+        "550e8400-e29b-41d4-a716-446655440001".to_string()
     }
 
     fn assert_conversation_item_stream_session_roundtrip(item: &ConversationItem) {
@@ -1689,5 +1708,135 @@ mod tests {
             timestamp: Some("2026-05-10T00:00:00Z".to_string()),
         };
         insta::assert_json_snapshot!("session_json_function_call_output", session_json_for(&item));
+    }
+
+    #[test]
+    fn snapshot_session_json_session_meta() {
+        let record = SessionRecord::SessionMeta {
+            format_version: CURRENT_FORMAT_VERSION,
+            session_id: fixed_session_id(),
+            timestamp: fixed_timestamp(),
+            working_directory: PathBuf::from("/workspace/cake"),
+            model: Some("gpt-5.4".to_string()),
+            tools: vec!["bash".to_string(), "read".to_string(), "edit".to_string()],
+            cake_version: Some("1.2.3-test".to_string()),
+            system_prompt: Some("You are cake.".to_string()),
+            git: GitState {
+                repository_url: Some("https://example.com/cake.git".to_string()),
+                branch: Some("main".to_string()),
+                commit_hash: Some("abcdef1234567890".to_string()),
+            },
+        };
+
+        insta::assert_json_snapshot!("session_json_session_meta", session_record_json(record));
+    }
+
+    #[test]
+    fn snapshot_session_json_task_start() {
+        let record = SessionRecord::TaskStart {
+            session_id: fixed_session_id(),
+            task_id: fixed_task_id(),
+            timestamp: fixed_timestamp(),
+        };
+
+        insta::assert_json_snapshot!("session_json_task_start", session_record_json(record));
+    }
+
+    #[test]
+    fn snapshot_session_json_task_complete() {
+        let record = SessionRecord::TaskComplete {
+            outcome: TaskOutcome::ErrorDuringExecution {
+                error: "tool failed".to_string(),
+            },
+            duration_ms: 1_250,
+            turn_count: 3,
+            num_turns: 3,
+            session_id: fixed_session_id(),
+            task_id: fixed_task_id(),
+            usage: Usage {
+                input_tokens: 100,
+                input_tokens_details: InputTokensDetails { cached_tokens: 25 },
+                output_tokens: 50,
+                output_tokens_details: OutputTokensDetails {
+                    reasoning_tokens: 10,
+                },
+                total_tokens: 150,
+            },
+            permission_denials: Some(vec!["bash: rm -rf /".to_string()]),
+        };
+
+        insta::assert_json_snapshot!("session_json_task_complete", session_record_json(record));
+    }
+
+    #[test]
+    fn snapshot_session_json_prompt_context() {
+        let record = SessionRecord::PromptContext {
+            session_id: fixed_session_id(),
+            task_id: fixed_task_id(),
+            role: Role::Developer,
+            content: "Use the project instructions.".to_string(),
+            timestamp: fixed_timestamp(),
+        };
+
+        insta::assert_json_snapshot!("session_json_prompt_context", session_record_json(record));
+    }
+
+    #[test]
+    fn snapshot_session_json_skill_activated() {
+        let record = SessionRecord::SkillActivated {
+            session_id: fixed_session_id(),
+            task_id: fixed_task_id(),
+            timestamp: fixed_timestamp(),
+            name: "debugging-cake".to_string(),
+            path: PathBuf::from("/workspace/cake/.agents/skills/debugging-cake/SKILL.md"),
+        };
+
+        insta::assert_json_snapshot!("session_json_skill_activated", session_record_json(record));
+    }
+
+    #[test]
+    fn snapshot_session_json_hook_event_with_optional_fields() {
+        let record = SessionRecord::HookEvent {
+            timestamp: fixed_timestamp(),
+            task_id: fixed_task_id(),
+            event: "post_tool_use".to_string(),
+            source: Some("Bash".to_string()),
+            source_file: PathBuf::from("/workspace/cake/.cake/hooks/post-tool-use.sh"),
+            command: "./post-tool-use.sh".to_string(),
+            exit_code: Some(0),
+            duration_ms: 42,
+            decision: "allow".to_string(),
+            fail_closed: false,
+            stdout: "ok".to_string(),
+            stderr: String::new(),
+        };
+
+        insta::assert_json_snapshot!(
+            "session_json_hook_event_with_optional_fields",
+            session_record_json(record)
+        );
+    }
+
+    #[test]
+    fn snapshot_session_json_hook_event_without_optional_fields() {
+        let record = SessionRecord::HookEvent {
+            timestamp: fixed_timestamp(),
+            task_id: fixed_task_id(),
+            event: "session_start".to_string(),
+            source: None,
+            source_file: PathBuf::from("/workspace/cake/.cake/hooks/session-start.sh"),
+            command: "./session-start.sh".to_string(),
+            exit_code: None,
+            duration_ms: 17,
+            decision: "allow".to_string(),
+            fail_closed: true,
+            stdout: String::new(),
+            stderr: "no exit code".to_string(),
+        };
+
+        insta::assert_json_snapshot!(
+            "session_json_hook_event_without_optional_fields",
+            session_record_json(record)
+        );
     }
 }

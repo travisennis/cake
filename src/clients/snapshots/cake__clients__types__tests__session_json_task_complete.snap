@@ -1,0 +1,29 @@
+---
+source: src/clients/types.rs
+expression: session_record_json(record)
+---
+{
+  "duration_ms": 1250,
+  "error": "tool failed",
+  "is_error": true,
+  "num_turns": 3,
+  "permission_denials": [
+    "bash: rm -rf /"
+  ],
+  "session_id": "550e8400-e29b-41d4-a716-446655440000",
+  "subtype": "error_during_execution",
+  "task_id": "550e8400-e29b-41d4-a716-446655440001",
+  "turn_count": 3,
+  "type": "task_complete",
+  "usage": {
+    "input_tokens": 100,
+    "input_tokens_details": {
+      "cached_tokens": 25
+    },
+    "output_tokens": 50,
+    "output_tokens_details": {
+      "reasoning_tokens": 10
+    },
+    "total_tokens": 150
+  }
+}
