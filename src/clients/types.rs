@@ -20,7 +20,7 @@ pub struct GitState {
 
 /// A content item within a reasoning output, preserved verbatim for echoing
 /// back to the API in multi-turn conversations.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReasoningContent {
     #[serde(rename = "type")]
     pub content_type: ReasoningContentKind,
@@ -90,7 +90,7 @@ impl<'de> Deserialize<'de> for ReasoningContentKind {
 
 /// Represents a single item in the conversation history, mapping directly to
 /// the Responses API input/output array format.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ConversationItem {
     Message {
@@ -927,6 +927,13 @@ mod tests {
         serde_json::to_value(session_record).unwrap()
     }
 
+    fn assert_conversation_item_stream_session_roundtrip(item: &ConversationItem) {
+        let stream_record = StreamRecord::from_conversation_item(item);
+        let session_record = SessionRecord::from(stream_record);
+        let restored = session_record.to_conversation_item().unwrap();
+        assert_eq!(*item, restored);
+    }
+
     #[test]
     fn reasoning_content_kind_serializes_known_values() {
         let json = serde_json::to_value(ReasoningContent {
@@ -1320,6 +1327,84 @@ mod tests {
             let json = serde_json::to_string(&item).unwrap();
             let deserialized: ConversationItem = serde_json::from_str(&json).unwrap();
             assert_eq!(json, serde_json::to_string(&deserialized).unwrap());
+        }
+    }
+
+    #[test]
+    fn conversation_items_roundtrip_through_stream_and_session_records() {
+        let items = vec![
+            ConversationItem::Message {
+                role: Role::User,
+                content: "plain user message".to_string(),
+                id: None,
+                status: None,
+                timestamp: None,
+            },
+            ConversationItem::Message {
+                role: Role::Assistant,
+                content: "assistant response".to_string(),
+                id: Some("msg-assistant-1".to_string()),
+                status: Some("completed".to_string()),
+                timestamp: Some("2026-05-10T00:00:00Z".to_string()),
+            },
+            ConversationItem::Message {
+                role: Role::System,
+                content: "system instruction".to_string(),
+                id: Some("msg-system-1".to_string()),
+                status: Some("completed".to_string()),
+                timestamp: Some("2026-05-10T00:00:01Z".to_string()),
+            },
+            ConversationItem::FunctionCall {
+                id: "fc-1".to_string(),
+                call_id: "call-1".to_string(),
+                name: "bash".to_string(),
+                arguments: r#"{"cmd":"ls"}"#.to_string(),
+                timestamp: Some("2026-05-10T00:00:02Z".to_string()),
+            },
+            ConversationItem::FunctionCallOutput {
+                call_id: "call-1".to_string(),
+                output: "file.txt".to_string(),
+                timestamp: Some("2026-05-10T00:00:03Z".to_string()),
+            },
+            ConversationItem::Reasoning {
+                id: "reasoning-encrypted".to_string(),
+                summary: vec!["step 1".to_string()],
+                encrypted_content: Some("gAAAAABencrypted...".to_string()),
+                content: None,
+                timestamp: Some("2026-05-10T00:00:04Z".to_string()),
+            },
+            ConversationItem::Reasoning {
+                id: "reasoning-content".to_string(),
+                summary: vec!["step 1".to_string(), "step 2".to_string()],
+                encrypted_content: None,
+                content: Some(vec![ReasoningContent {
+                    content_type: ReasoningContentKind::ReasoningText,
+                    text: Some("deep analysis".to_string()),
+                }]),
+                timestamp: Some("2026-05-10T00:00:05Z".to_string()),
+            },
+            ConversationItem::Reasoning {
+                id: "reasoning-both".to_string(),
+                summary: vec!["step 1".to_string()],
+                encrypted_content: Some("gAAAAABencrypted...".to_string()),
+                content: Some(vec![
+                    ReasoningContent {
+                        content_type: ReasoningContentKind::SummaryText,
+                        text: Some("summary".to_string()),
+                    },
+                    ReasoningContent {
+                        content_type: ReasoningContentKind::Unknown(
+                            "provider_specific_reasoning".to_string(),
+                        ),
+                        text: Some("opaque".to_string()),
+                    },
+                ]),
+                timestamp: Some("2026-05-10T00:00:06Z".to_string()),
+            },
+        ];
+
+        for item in &items {
+            assert_conversation_item_stream_session_roundtrip(item);
         }
     }
 
