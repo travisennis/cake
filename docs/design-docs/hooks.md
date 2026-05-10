@@ -91,8 +91,6 @@ Supported stdout fields beyond the decision:
 
 All events can return `additional_context`, which cake adds as developer context before the next model request. For `PostToolUse` and `PostToolUseFailure` it appends under `Additional hook context:`. For `SessionStart` and `UserPromptSubmit` it is injected into the conversation. `additional_context` can accompany any decision type.
 
-`suppress_output` is accepted for backward compatibility but is currently ignored.
-
 ## Observability
 
 Hook activity is logged with the `cake::hooks` tracing target. When sessions are enabled, each hook invocation also appends a `hook_event` record to the session JSONL transcript with event name, source, command, exit code, duration, decision, stdout, and stderr. Stdout and stderr stored by hook records are capped at 64 KiB each.

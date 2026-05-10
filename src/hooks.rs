@@ -150,8 +150,6 @@ struct RawHookOutput {
     reason: Option<String>,
     updated_input: Option<Value>,
     additional_context: Option<String>,
-    #[serde(rename = "suppress_output")]
-    _suppress_output: Option<bool>,
 }
 
 impl From<RawHookOutput> for ParsedHookOutput {
@@ -1051,14 +1049,6 @@ mod tests {
             Some(serde_json::json!({"cmd": "safe"}))
         );
         assert_eq!(parsed.additional_context, Some("be careful".to_string()));
-    }
-
-    #[test]
-    fn raw_deser_suppress_output_is_silently_ignored() {
-        // Backward compat: suppress_output is accepted but ignored.
-        let raw: RawHookOutput = serde_json::from_str(r#"{"suppress_output": true}"#).unwrap();
-        let parsed: ParsedHookOutput = raw.into();
-        assert_eq!(parsed.decision, HookDecision::Continue);
     }
 
     // ── HookDecision::decision_label ───────────────────────────────

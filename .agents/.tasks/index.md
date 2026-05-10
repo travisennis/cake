@@ -4,9 +4,9 @@ This index summarizes the task files in this directory. Use it as the manually m
 
 ## Status Summary
 
-- Completed: 46
-- Pending: 56
-- Tracking: 1
+- Completed: 48
+- Pending: 54
+- Tracking: 0
 - Open: 1
 - Blocked: 12
 
@@ -22,17 +22,15 @@ This index summarizes the task files in this directory. Use it as the manually m
 
 These are the highest-priority tasks currently available from the task metadata:
 
-| Task            | Title                                          | Status  | Priority | Effort | ExecPlan | Depends on |
-| --------------- | ---------------------------------------------- | ------- | -------- | ------ | -------- | ---------- |
-| [060c](060c.md) | Implement or Remove suppress_output Hook Field | Pending | P1       | S      | -        | -          |
-
-With [060a](060a.md) and [060b](060b.md) complete, [060c](060c.md) is the next P1 task without dependencies.
+| Task          | Title                                        | Status  | Priority | Effort | ExecPlan                       | Depends on |
+| ------------- | -------------------------------------------- | ------- | -------- | ------ | ------------------------------ | ---------- |
+| [061](061.md) | Consolidate Conversation Serialization Paths | Pending | P1       | XL     | Required before implementation | -          |
 
 ## Parent Trackers
 
-| Task          | Title                                                | Status   | Priority | Action                                                      |
-| ------------- | ---------------------------------------------------- | -------- | -------- | ----------------------------------------------------------- |
-| [060](060.md) | Make Hooks Observable in Typed Session Flow (Parent) | Tracking | P1       | Work [060a](060a.md), [060b](060b.md), and [060c](060c.md). |
+| Task          | Title                                                | Status    | Priority | Action                    |
+| ------------- | ---------------------------------------------------- | --------- | -------- | ------------------------- |
+| [060](060.md) | Make Hooks Observable in Typed Session Flow (Parent) | Completed | P1       | All child tasks complete. |
 
 ## All Tasks
 
@@ -100,10 +98,10 @@ With [060a](060a.md) and [060b](060b.md) complete, [060c](060c.md) is the next P
 | [057](057.md)   | Add Typed Reasoning Effort                                          | Completed | P1       | M                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [058](058.md)   | Type Reasoning Content Kinds                                        | Completed | P1       | M                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [059](059.md)   | Add Structured Output Sink for CLI Output                           | Completed | P1       | M                                  | -                                                               | -                                                                                                                                                                                                                                             |
-| [060](060.md)   | Make Hooks Observable in Typed Session Flow (Parent)                | Tracking  | P1       | L (split into 060a / 060b / 060c)  | Use child tasks                                                 | -                                                                                                                                                                                                                                             |
+| [060](060.md)   | Make Hooks Observable in Typed Session Flow (Parent)                | Completed | P1       | L (split into 060a / 060b / 060c)  | Use child tasks                                                 | -                                                                                                                                                                                                                                             |
 | [060a](060a.md) | Type Hook Matcher Sources                                           | Completed | P1       | S                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [060b](060b.md) | Model Hook Continue/Block as a Proper Enum                          | Completed | P1       | M                                  | -                                                               | -                                                                                                                                                                                                                                             |
-| [060c](060c.md) | Implement or Remove suppress_output Hook Field                      | Pending   | P1       | S                                  | -                                                               | -                                                                                                                                                                                                                                             |
+| [060c](060c.md) | Implement or Remove suppress_output Hook Field                      | Completed | P1       | S                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [061](061.md)   | Consolidate Conversation Serialization Paths                        | Pending   | P1       | XL                                 | Required before implementation                                  | -                                                                                                                                                                                                                                             |
 | [062](062.md)   | Store Timestamps as DateTime Values Internally                      | Pending   | P1       | L                                  | Required before implementation                                  | -                                                                                                                                                                                                                                             |
 | [063](063.md)   | Normalize Optional Fields After Session Deserialization             | Pending   | P1       | L                                  | Required before implementation                                  | -                                                                                                                                                                                                                                             |
