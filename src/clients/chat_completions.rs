@@ -284,7 +284,7 @@ fn parse_choices(response: &ChatResponse) -> anyhow::Result<Vec<ConversationItem
     };
 
     let message = &choice.message;
-    let timestamp = chrono::Utc::now().to_rfc3339();
+    let timestamp = chrono::Utc::now();
 
     if let Some(reasoning_content) = &message.reasoning_content {
         items.push(ConversationItem::Reasoning {
@@ -295,7 +295,7 @@ fn parse_choices(response: &ChatResponse) -> anyhow::Result<Vec<ConversationItem
                 content_type: ReasoningContentKind::ReasoningText,
                 text: Some(reasoning_content.clone()),
             }]),
-            timestamp: Some(timestamp.clone()),
+            timestamp: Some(timestamp),
         });
     }
 
@@ -307,7 +307,7 @@ fn parse_choices(response: &ChatResponse) -> anyhow::Result<Vec<ConversationItem
                 call_id: tc.id.clone(),
                 name: tc.function.name.clone(),
                 arguments: tc.function.arguments.clone(),
-                timestamp: Some(timestamp.clone()),
+                timestamp: Some(timestamp),
             });
         }
     }
@@ -321,7 +321,7 @@ fn parse_choices(response: &ChatResponse) -> anyhow::Result<Vec<ConversationItem
             content: content.clone(),
             id: Some(response_id.clone()),
             status: Some("completed".to_string()),
-            timestamp: Some(timestamp.clone()),
+            timestamp: Some(timestamp),
         });
     }
 

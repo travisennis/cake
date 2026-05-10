@@ -8,7 +8,7 @@ pub(super) struct ConversationState {
 
 impl ConversationState {
     pub(super) fn new(initial_messages: &[(Role, String)]) -> Self {
-        let timestamp = chrono::Utc::now().to_rfc3339();
+        let timestamp = chrono::Utc::now();
         Self {
             history: initial_messages
                 .iter()
@@ -17,7 +17,7 @@ impl ConversationState {
                     content: content.clone(),
                     id: None,
                     status: None,
-                    timestamp: Some(timestamp.clone()),
+                    timestamp: Some(timestamp),
                 })
                 .collect(),
         }
@@ -28,7 +28,7 @@ impl ConversationState {
     }
 
     pub(super) fn append_developer_context(&mut self, contexts: Vec<String>) {
-        let timestamp = chrono::Utc::now().to_rfc3339();
+        let timestamp = chrono::Utc::now();
         for content in contexts {
             if content.is_empty() {
                 continue;
@@ -38,7 +38,7 @@ impl ConversationState {
                 content,
                 id: None,
                 status: None,
-                timestamp: Some(timestamp.clone()),
+                timestamp: Some(timestamp),
             });
         }
     }
@@ -70,7 +70,7 @@ impl ConversationState {
             content,
             id: None,
             status: None,
-            timestamp: Some(chrono::Utc::now().to_rfc3339()),
+            timestamp: Some(chrono::Utc::now()),
         };
         self.history.push(item.clone());
         item
@@ -84,7 +84,7 @@ impl ConversationState {
         let item = ConversationItem::FunctionCallOutput {
             call_id,
             output,
-            timestamp: Some(chrono::Utc::now().to_rfc3339()),
+            timestamp: Some(chrono::Utc::now()),
         };
         self.history.push(item.clone());
         item

@@ -205,7 +205,7 @@ fn parse_output_items(api_response: &ApiResponse) -> anyhow::Result<Vec<Conversa
                             .collect()
                     });
 
-                    let timestamp = chrono::Utc::now().to_rfc3339();
+                    let timestamp = chrono::Utc::now();
                     items.push(ConversationItem::Reasoning {
                         id: id.clone(),
                         summary,
@@ -226,7 +226,7 @@ fn parse_output_items(api_response: &ApiResponse) -> anyhow::Result<Vec<Conversa
                     .and_then(|item| item.text.clone())
                     .unwrap_or_default();
 
-                let timestamp = chrono::Utc::now().to_rfc3339();
+                let timestamp = chrono::Utc::now();
                 items.push(ConversationItem::Message {
                     role: Role::Assistant,
                     content: text,
@@ -292,7 +292,7 @@ fn parse_function_call_output(
         return Err(malformed_function_call_error(api_response, output, index));
     }
 
-    let timestamp = chrono::Utc::now().to_rfc3339();
+    let timestamp = chrono::Utc::now();
     Ok(ConversationItem::FunctionCall {
         id: id.clone(),
         call_id: call_id.clone(),

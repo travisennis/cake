@@ -13,6 +13,7 @@ This index follows `.agents/PLANS.md`. Completed ExecPlans are plans whose work 
 - `schema-unification-plan.md` - Historical v3 stream/session unification plan, closed as superseded by append-only v4 sessions.
 - `snapshot-testing-plan.md` - Add snapshot testing for prompts and provider request shapes.
 - `split-agent-responsibilities.md` - Split the Agent facade into smaller state, observer, and backend runner responsibilities.
+- `store-timestamps-as-datetime.md` - Store conversation timestamps as typed UTC DateTime values internally.
 
 ## Revision Notes
 
@@ -21,3 +22,4 @@ This index follows `.agents/PLANS.md`. Completed ExecPlans are plans whose work 
 - 2026-05-09 / Codex: Completed task 052 and moved `provider-strategy.md` into this index.
 - 2026-05-09 / Codex: Completed task 054 and moved `refactor-coding-assistant-run.md` into this index.
 - 2026-05-10 / Codex: Completed task 061 and moved `consolidate-conversation-serialization.md` into this index.
+- 2026-05-10 / Codex: Completed task 062 and moved `store-timestamps-as-datetime.md` into this index.

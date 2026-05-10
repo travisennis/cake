@@ -102,7 +102,7 @@ pub enum ConversationItem {
         status: Option<String>,
         /// Timestamp when this item was created
         #[serde(skip_serializing_if = "Option::is_none")]
-        timestamp: Option<String>,
+        timestamp: Option<DateTime<Utc>>,
     },
     FunctionCall {
         id: String,
@@ -111,14 +111,14 @@ pub enum ConversationItem {
         arguments: String,
         /// Timestamp when this item was created
         #[serde(skip_serializing_if = "Option::is_none")]
-        timestamp: Option<String>,
+        timestamp: Option<DateTime<Utc>>,
     },
     FunctionCallOutput {
         call_id: String,
         output: String,
         /// Timestamp when this item was created
         #[serde(skip_serializing_if = "Option::is_none")]
-        timestamp: Option<String>,
+        timestamp: Option<DateTime<Utc>>,
     },
     Reasoning {
         id: String,
@@ -134,7 +134,7 @@ pub enum ConversationItem {
         content: Option<Vec<ReasoningContent>>,
         /// Timestamp when this item was created
         #[serde(skip_serializing_if = "Option::is_none")]
-        timestamp: Option<String>,
+        timestamp: Option<DateTime<Utc>>,
     },
 }
 
@@ -451,7 +451,7 @@ pub enum SessionRecord {
         #[serde(skip_serializing_if = "Option::is_none")]
         status: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        timestamp: Option<String>,
+        timestamp: Option<DateTime<Utc>>,
     },
 
     FunctionCall {
@@ -460,14 +460,14 @@ pub enum SessionRecord {
         name: String,
         arguments: String,
         #[serde(skip_serializing_if = "Option::is_none")]
-        timestamp: Option<String>,
+        timestamp: Option<DateTime<Utc>>,
     },
 
     FunctionCallOutput {
         call_id: String,
         output: String,
         #[serde(skip_serializing_if = "Option::is_none")]
-        timestamp: Option<String>,
+        timestamp: Option<DateTime<Utc>>,
     },
 
     SkillActivated {
@@ -503,7 +503,7 @@ pub enum SessionRecord {
         #[serde(skip_serializing_if = "Option::is_none")]
         content: Option<Vec<ReasoningContent>>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        timestamp: Option<String>,
+        timestamp: Option<DateTime<Utc>>,
     },
 
     TaskComplete {
@@ -541,7 +541,7 @@ pub enum StreamRecord {
         #[serde(skip_serializing_if = "Option::is_none")]
         status: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        timestamp: Option<String>,
+        timestamp: Option<DateTime<Utc>>,
     },
 
     FunctionCall {
@@ -550,14 +550,14 @@ pub enum StreamRecord {
         name: String,
         arguments: String,
         #[serde(skip_serializing_if = "Option::is_none")]
-        timestamp: Option<String>,
+        timestamp: Option<DateTime<Utc>>,
     },
 
     FunctionCallOutput {
         call_id: String,
         output: String,
         #[serde(skip_serializing_if = "Option::is_none")]
-        timestamp: Option<String>,
+        timestamp: Option<DateTime<Utc>>,
     },
 
     Reasoning {
@@ -568,7 +568,7 @@ pub enum StreamRecord {
         #[serde(skip_serializing_if = "Option::is_none")]
         content: Option<Vec<ReasoningContent>>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        timestamp: Option<String>,
+        timestamp: Option<DateTime<Utc>>,
     },
 
     TaskComplete {
@@ -683,7 +683,7 @@ impl StreamRecord {
                 content: content.clone(),
                 id: id.clone(),
                 status: status.clone(),
-                timestamp: timestamp.clone(),
+                timestamp: *timestamp,
             },
             ConversationItem::FunctionCall {
                 id,
@@ -696,7 +696,7 @@ impl StreamRecord {
                 call_id: call_id.clone(),
                 name: name.clone(),
                 arguments: arguments.clone(),
-                timestamp: timestamp.clone(),
+                timestamp: *timestamp,
             },
             ConversationItem::FunctionCallOutput {
                 call_id,
@@ -705,7 +705,7 @@ impl StreamRecord {
             } => Self::FunctionCallOutput {
                 call_id: call_id.clone(),
                 output: output.clone(),
-                timestamp: timestamp.clone(),
+                timestamp: *timestamp,
             },
             ConversationItem::Reasoning {
                 id,
@@ -718,7 +718,7 @@ impl StreamRecord {
                 summary: summary.clone(),
                 encrypted_content: encrypted_content.clone(),
                 content: content.clone(),
-                timestamp: timestamp.clone(),
+                timestamp: *timestamp,
             },
         }
     }
@@ -741,7 +741,7 @@ impl SessionRecord {
                 content: content.clone(),
                 id: id.clone(),
                 status: status.clone(),
-                timestamp: timestamp.clone(),
+                timestamp: *timestamp,
             }),
             Self::FunctionCall {
                 id,
@@ -754,7 +754,7 @@ impl SessionRecord {
                 call_id: call_id.clone(),
                 name: name.clone(),
                 arguments: arguments.clone(),
-                timestamp: timestamp.clone(),
+                timestamp: *timestamp,
             }),
             Self::FunctionCallOutput {
                 call_id,
@@ -763,7 +763,7 @@ impl SessionRecord {
             } => Some(ConversationItem::FunctionCallOutput {
                 call_id: call_id.clone(),
                 output: output.clone(),
-                timestamp: timestamp.clone(),
+                timestamp: *timestamp,
             }),
             Self::Reasoning {
                 id,
@@ -776,7 +776,7 @@ impl SessionRecord {
                 summary: summary.clone(),
                 encrypted_content: encrypted_content.clone(),
                 content: content.clone(),
-                timestamp: timestamp.clone(),
+                timestamp: *timestamp,
             }),
             Self::SessionMeta { .. }
             | Self::TaskStart { .. }
@@ -930,6 +930,12 @@ mod tests {
 
     fn fixed_timestamp() -> DateTime<Utc> {
         DateTime::parse_from_rfc3339("2026-05-10T12:34:56Z")
+            .unwrap()
+            .with_timezone(&Utc)
+    }
+
+    fn timestamp_at(value: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(value)
             .unwrap()
             .with_timezone(&Utc)
     }
@@ -1364,33 +1370,33 @@ mod tests {
                 content: "assistant response".to_string(),
                 id: Some("msg-assistant-1".to_string()),
                 status: Some("completed".to_string()),
-                timestamp: Some("2026-05-10T00:00:00Z".to_string()),
+                timestamp: Some(timestamp_at("2026-05-10T00:00:00Z")),
             },
             ConversationItem::Message {
                 role: Role::System,
                 content: "system instruction".to_string(),
                 id: Some("msg-system-1".to_string()),
                 status: Some("completed".to_string()),
-                timestamp: Some("2026-05-10T00:00:01Z".to_string()),
+                timestamp: Some(timestamp_at("2026-05-10T00:00:01Z")),
             },
             ConversationItem::FunctionCall {
                 id: "fc-1".to_string(),
                 call_id: "call-1".to_string(),
                 name: "bash".to_string(),
                 arguments: r#"{"cmd":"ls"}"#.to_string(),
-                timestamp: Some("2026-05-10T00:00:02Z".to_string()),
+                timestamp: Some(timestamp_at("2026-05-10T00:00:02Z")),
             },
             ConversationItem::FunctionCallOutput {
                 call_id: "call-1".to_string(),
                 output: "file.txt".to_string(),
-                timestamp: Some("2026-05-10T00:00:03Z".to_string()),
+                timestamp: Some(timestamp_at("2026-05-10T00:00:03Z")),
             },
             ConversationItem::Reasoning {
                 id: "reasoning-encrypted".to_string(),
                 summary: vec!["step 1".to_string()],
                 encrypted_content: Some("gAAAAABencrypted...".to_string()),
                 content: None,
-                timestamp: Some("2026-05-10T00:00:04Z".to_string()),
+                timestamp: Some(timestamp_at("2026-05-10T00:00:04Z")),
             },
             ConversationItem::Reasoning {
                 id: "reasoning-content".to_string(),
@@ -1400,7 +1406,7 @@ mod tests {
                     content_type: ReasoningContentKind::ReasoningText,
                     text: Some("deep analysis".to_string()),
                 }]),
-                timestamp: Some("2026-05-10T00:00:05Z".to_string()),
+                timestamp: Some(timestamp_at("2026-05-10T00:00:05Z")),
             },
             ConversationItem::Reasoning {
                 id: "reasoning-both".to_string(),
@@ -1418,7 +1424,7 @@ mod tests {
                         text: Some("opaque".to_string()),
                     },
                 ]),
-                timestamp: Some("2026-05-10T00:00:06Z".to_string()),
+                timestamp: Some(timestamp_at("2026-05-10T00:00:06Z")),
             },
         ];
 
@@ -1662,7 +1668,7 @@ mod tests {
             content: "Response".to_string(),
             id: Some("msg-123".to_string()),
             status: Some("completed".to_string()),
-            timestamp: Some("2026-05-10T00:00:00Z".to_string()),
+            timestamp: Some(timestamp_at("2026-05-10T00:00:00Z")),
         };
         insta::assert_json_snapshot!(
             "session_json_message_with_id_and_status",
@@ -1680,7 +1686,7 @@ mod tests {
                 content_type: ReasoningContentKind::ReasoningText,
                 text: Some("deep analysis".to_string()),
             }]),
-            timestamp: Some("2026-05-10T00:00:00Z".to_string()),
+            timestamp: Some(timestamp_at("2026-05-10T00:00:00Z")),
         };
         insta::assert_json_snapshot!(
             "session_json_reasoning_with_content",
@@ -1695,7 +1701,7 @@ mod tests {
             call_id: "call-1".to_string(),
             name: "bash".to_string(),
             arguments: r#"{"cmd":"ls"}"#.to_string(),
-            timestamp: Some("2026-05-10T00:00:00Z".to_string()),
+            timestamp: Some(timestamp_at("2026-05-10T00:00:00Z")),
         };
         insta::assert_json_snapshot!("session_json_function_call", session_json_for(&item));
     }
@@ -1705,7 +1711,7 @@ mod tests {
         let item = ConversationItem::FunctionCallOutput {
             call_id: "call-1".to_string(),
             output: "result".to_string(),
-            timestamp: Some("2026-05-10T00:00:00Z".to_string()),
+            timestamp: Some(timestamp_at("2026-05-10T00:00:00Z")),
         };
         insta::assert_json_snapshot!("session_json_function_call_output", session_json_for(&item));
     }

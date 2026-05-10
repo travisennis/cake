@@ -4,8 +4,8 @@ This index summarizes the task files in this directory. Use it as the manually m
 
 ## Status Summary
 
-- Completed: 52
-- Pending: 55
+- Completed: 53
+- Pending: 54
 - Tracking: 0
 - Open: 1
 - Blocked: 12
@@ -24,7 +24,7 @@ These are the highest-priority tasks currently available from the task metadata:
 
 | Task          | Title                                                                  | Status  | Priority | Effort | ExecPlan                       | Depends on |
 | ------------- | ---------------------------------------------------------------------- | ------- | -------- | ------ | ------------------------------ | ---------- |
-| [062](062.md) | Store Timestamps as DateTime Values Internally                         | Pending | P1       | L      | Required before implementation | -          |
+| [063](063.md) | Normalize Optional Fields After Session Deserialization                | Pending | P1       | L      | Required before implementation | -          |
 
 ## Parent Trackers
 
@@ -101,7 +101,7 @@ _None active._
 | [060b](060b.md) | Model Hook Continue/Block as a Proper Enum                          | Completed | P1       | M                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [060c](060c.md) | Implement or Remove suppress_output Hook Field                      | Completed | P1       | S                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [061](061.md)   | Consolidate Conversation Serialization Paths                        | Completed | P1       | XL                                 | [completed](../exec-plans/completed/consolidate-conversation-serialization.md) | -                                                                                                                                                                                                                                             |
-| [062](062.md)   | Store Timestamps as DateTime Values Internally                      | Pending   | P1       | L                                  | Required before implementation                                  | -                                                                                                                                                                                                                                             |
+| [062](062.md)   | Store Timestamps as DateTime Values Internally                      | Completed | P1       | L                                  | [completed](../exec-plans/completed/store-timestamps-as-datetime.md) | -                                                                                                                                                                                                                                             |
 | [063](063.md)   | Normalize Optional Fields After Session Deserialization             | Pending   | P1       | L                                  | Required before implementation                                  | -                                                                                                                                                                                                                                             |
 | [064](064.md)   | Refactor Chat build_messages State Handling                         | Pending   | P2       | L                                  | Required before implementation                                  | 050 (Backend abstraction)                                                                                                                                                                                                                     |
 | [065](065.md)   | Reduce Cloning in Agent Tool Loop                                   | Pending   | P2       | M                                  | -                                                               | 048 (e2e test as safety net)                                                                                                                                                                                                                  |

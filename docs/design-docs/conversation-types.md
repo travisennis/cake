@@ -25,6 +25,10 @@ pub enum ConversationItem {
 }
 ```
 
+Timestamps are stored internally as `Option<DateTime<Utc>>`. When session files
+or stream-json records are serialized, serde writes those values as UTC RFC 3339
+strings.
+
 ### Message
 
 Represents a text message from any role:
@@ -35,7 +39,7 @@ ConversationItem::Message {
     content: String,      // The message text
     id: Option<String>,   // Required for assistant messages
     status: Option<String>, // "completed" or "incomplete"
-    timestamp: Option<String>, // RFC 3339 creation time
+    timestamp: Option<DateTime<Utc>>, // Item creation time
 }
 ```
 
@@ -53,7 +57,7 @@ ConversationItem::FunctionCall {
     call_id: String,    // Reference ID for output
     name: String,       // Tool name (Bash, Read, Edit, Write)
     arguments: String,  // JSON arguments for the tool
-    timestamp: Option<String>,
+    timestamp: Option<DateTime<Utc>>,
 }
 ```
 
@@ -65,7 +69,7 @@ Represents the result of a tool execution:
 ConversationItem::FunctionCallOutput {
     call_id: String,  // Matches the FunctionCall's call_id
     output: String,   // Tool result or error message
-    timestamp: Option<String>,
+    timestamp: Option<DateTime<Utc>>,
 }
 ```
 
@@ -79,7 +83,7 @@ ConversationItem::Reasoning {
     summary: Vec<String>,                    // Human-readable summary
     encrypted_content: Option<String>,       // Opaque encrypted content for round-tripping
     content: Option<Vec<ReasoningContent>>,  // Original content array for Chat Completions providers
-    timestamp: Option<String>,
+    timestamp: Option<DateTime<Utc>>,
 }
 ```
 

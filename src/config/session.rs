@@ -638,6 +638,34 @@ mod tests {
     }
 
     #[test]
+    fn test_session_loads_rfc3339_conversation_timestamp() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("session.jsonl");
+        fs::write(
+            &path,
+            concat!(
+                r#"{"type":"session_meta","format_version":4,"session_id":"550e8400-e29b-41d4-a716-446655440000","timestamp":"2026-04-04T15:51:54Z","working_directory":"/tmp/test","tools":[],"git":{"repository_url":null,"branch":null,"commit_hash":null}}"#,
+                "\n",
+                r#"{"type":"message","role":"user","content":"Hello","timestamp":"2026-05-10T00:00:00Z"}"#,
+                "\n"
+            ),
+        )
+        .unwrap();
+
+        let loaded = Session::load(&path).unwrap();
+
+        match &loaded.records[1] {
+            SessionRecord::Message { timestamp, .. } => {
+                let expected = chrono::DateTime::parse_from_rfc3339("2026-05-10T00:00:00Z")
+                    .unwrap()
+                    .with_timezone(&chrono::Utc);
+                assert_eq!(*timestamp, Some(expected));
+            },
+            _ => panic!("Expected Message record"),
+        }
+    }
+
+    #[test]
     fn test_session_create_writes_v4() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("session.jsonl");
