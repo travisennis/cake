@@ -208,6 +208,12 @@ Each `content` item has:
 
 Session files are append-only. Cake does not rewrite or normalize previous records when continuing or resuming. Conversation records are appended live as the agent emits them, so a crash can still leave a partial task on disk. Loading tolerates a trailing `task_start` without a matching `task_complete`.
 
+When loading a session, cake normalizes missing conversation-record timestamps
+in memory by using the `session_meta.timestamp` value as a compatibility
+fallback. This keeps older v4 files with omitted item timestamps resumable
+without rewriting the append-only JSONL file. Explicit conversation timestamps
+are preserved.
+
 Cake takes an advisory exclusive lock on the session file for the duration of an invocation. A second writer receives:
 
 ```text

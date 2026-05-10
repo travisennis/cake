@@ -112,6 +112,7 @@ impl Session {
         let model;
         let system_prompt;
         let git;
+        let session_timestamp;
         let mut records = Vec::new();
 
         if let Ok(value) = serde_json::from_str::<serde_json::Value>(first_line.trim())
@@ -134,6 +135,7 @@ impl Session {
             SessionRecord::SessionMeta {
                 format_version,
                 session_id,
+                timestamp,
                 working_directory,
                 model: m,
                 system_prompt: sp,
@@ -154,6 +156,7 @@ impl Session {
                 model = m.clone();
                 system_prompt = sp.clone();
                 git = Some(git_state.clone());
+                session_timestamp = *timestamp;
             },
             _ => {
                 return Err(anyhow::anyhow!(
@@ -170,7 +173,10 @@ impl Session {
                 continue;
             }
             match serde_json::from_str::<SessionRecord>(trimmed) {
-                Ok(record) => records.push(record),
+                Ok(mut record) => {
+                    record.normalize_legacy_fields(session_timestamp);
+                    records.push(record);
+                },
                 Err(error) if lines.peek().is_none() && !content.ends_with('\n') => {
                     tracing::warn!(
                         "Ignoring partial final session record in {}: {}",
@@ -662,6 +668,40 @@ mod tests {
                 assert_eq!(*timestamp, Some(expected));
             },
             _ => panic!("Expected Message record"),
+        }
+    }
+
+    #[test]
+    fn test_session_load_fills_missing_conversation_timestamp_from_meta() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("session.jsonl");
+        fs::write(
+            &path,
+            concat!(
+                r#"{"type":"session_meta","format_version":4,"session_id":"550e8400-e29b-41d4-a716-446655440000","timestamp":"2026-04-04T15:51:54Z","working_directory":"/tmp/test","tools":[],"git":{"repository_url":null,"branch":null,"commit_hash":null}}"#,
+                "\n",
+                r#"{"type":"message","role":"user","content":"Hello"}"#,
+                "\n"
+            ),
+        )
+        .unwrap();
+
+        let loaded = Session::load(&path).unwrap();
+        let expected = chrono::DateTime::parse_from_rfc3339("2026-04-04T15:51:54Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+
+        match &loaded.records[1] {
+            SessionRecord::Message { timestamp, .. } => {
+                assert_eq!(*timestamp, Some(expected));
+            },
+            _ => panic!("Expected Message record"),
+        }
+        match &loaded.messages()[0] {
+            ConversationItem::Message { timestamp, .. } => {
+                assert_eq!(*timestamp, Some(expected));
+            },
+            _ => panic!("Expected Message item"),
         }
     }
 

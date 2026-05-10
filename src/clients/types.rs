@@ -725,6 +725,24 @@ impl StreamRecord {
 }
 
 impl SessionRecord {
+    /// Fill legacy omissions that are no longer absent in newly written sessions.
+    pub(crate) fn normalize_legacy_fields(&mut self, fallback_timestamp: DateTime<Utc>) {
+        match self {
+            Self::Message { timestamp, .. }
+            | Self::FunctionCall { timestamp, .. }
+            | Self::FunctionCallOutput { timestamp, .. }
+            | Self::Reasoning { timestamp, .. } => {
+                timestamp.get_or_insert(fallback_timestamp);
+            },
+            Self::SessionMeta { .. }
+            | Self::TaskStart { .. }
+            | Self::PromptContext { .. }
+            | Self::SkillActivated { .. }
+            | Self::HookEvent { .. }
+            | Self::TaskComplete { .. } => {},
+        }
+    }
+
     /// Convert a `SessionRecord` back into a `ConversationItem`, if applicable.
     /// Returns `None` for session metadata and task boundary records, which have no
     /// `ConversationItem` equivalent.

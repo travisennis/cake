@@ -27,7 +27,9 @@ pub enum ConversationItem {
 
 Timestamps are stored internally as `Option<DateTime<Utc>>`. When session files
 or stream-json records are serialized, serde writes those values as UTC RFC 3339
-strings.
+strings. Loaded sessions normalize legacy missing conversation timestamps from
+the required `session_meta.timestamp`, so resumed conversation history has a
+timestamp even when an older JSONL record omitted the field.
 
 ### Message
 
