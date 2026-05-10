@@ -30,9 +30,7 @@ These are the highest-priority tasks currently available from the task metadata:
 
 ## Parent Trackers
 
-| Task          | Title                                                | Status    | Priority | Action                    |
-| ------------- | ---------------------------------------------------- | --------- | -------- | ------------------------- |
-| [060](060.md) | Make Hooks Observable in Typed Session Flow (Parent) | Completed | P1       | All child tasks complete. |
+_None active._
 
 ## All Tasks
 
