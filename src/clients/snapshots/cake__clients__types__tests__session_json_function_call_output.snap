@@ -1,9 +1,11 @@
 ---
 source: src/clients/types.rs
-expression: item.to_streaming_json()
+assertion_line: 1608
+expression: session_json_for(&item)
 ---
 {
   "call_id": "call-1",
   "output": "result",
+  "timestamp": "2026-05-10T00:00:00Z",
   "type": "function_call_output"
 }

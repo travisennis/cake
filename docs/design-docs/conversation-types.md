@@ -87,12 +87,12 @@ The `encrypted_content` field preserves reasoning tokens that must be echoed bac
 
 ## Serialization
 
-### to_api_input() — Responses API
+### ResponsesApiInputItem — Responses API
 
-Converts a `ConversationItem` to the format required by the Responses API backend:
+The Responses API backend converts each `ConversationItem` to a typed request DTO:
 
 ```rust
-pub fn to_api_input(&self) -> serde_json::Value
+ResponsesApiInputItem::from(item)
 ```
 
 Key transformations:
@@ -102,20 +102,21 @@ Key transformations:
 
 ### build_messages() — Chat Completions API
 
-The Chat Completions backend uses a separate `build_messages()` function in `chat_completions.rs` to translate `Vec<ConversationItem>` into the chat completions message format. Key differences from `to_api_input()`:
+The Chat Completions backend uses a separate `build_messages()` function in `chat_completions.rs` to translate `Vec<ConversationItem>` into the chat completions message format. Key differences from Responses API input:
 - Consecutive `FunctionCall` items are grouped into a single assistant message with multiple `tool_calls`
 - `System` role is mapped to the `"developer"` role
 - `Reasoning` items are skipped entirely (the chat completions format does not support them)
 
-### to_streaming_json()
+### StreamRecord Serialization
 
-Converts to a simplified format for `--output-format stream-json`:
+`--output-format stream-json` uses the production `StreamRecord` DTO:
 
 ```rust
-pub fn to_streaming_json(&self) -> serde_json::Value
+StreamRecord::from_conversation_item(item)
 ```
 
-Key differences from `to_api_input`:
+The resulting `StreamRecord` is serialized with serde. Key differences from
+Responses API input:
 - Message content is plain text (not wrapped in objects)
 - Reasoning summaries are plain strings (not objects)
 - More compact for human consumption
@@ -207,7 +208,7 @@ The module includes comprehensive tests for:
 
 - Serialization round-trips for all item types
 - API input format correctness
-- Streaming JSON format
+- StreamRecord and SessionRecord JSON formats
 - Role-specific content handling
 - Reasoning with/without encrypted content
 - Usage statistics defaults

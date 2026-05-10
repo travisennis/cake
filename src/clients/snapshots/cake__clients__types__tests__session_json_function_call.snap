@@ -1,0 +1,13 @@
+---
+source: src/clients/types.rs
+assertion_line: 1598
+expression: session_json_for(&item)
+---
+{
+  "arguments": "{\"cmd\":\"ls\"}",
+  "call_id": "call-1",
+  "id": "fc-1",
+  "name": "bash",
+  "timestamp": "2026-05-10T00:00:00Z",
+  "type": "function_call"
+}

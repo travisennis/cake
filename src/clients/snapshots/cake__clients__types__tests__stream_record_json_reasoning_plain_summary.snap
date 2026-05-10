@@ -1,6 +1,6 @@
 ---
 source: src/clients/types.rs
-expression: item.to_streaming_json()
+expression: stream_json_for(&item)
 ---
 {
   "id": "r-1",

@@ -17,3 +17,5 @@ This index follows `.agents/PLANS.md`. Active ExecPlans are checked-in plans tha
 - 2026-05-09 / Codex: Moved `provider-strategy.md` to completed after task 052 passed validation.
 - 2026-05-09 / Codex: Added the active ExecPlan for task 054, `Refactor CodingAssistant Run Into Smaller Steps`.
 - 2026-05-09 / Codex: Moved `refactor-coding-assistant-run.md` to completed after task 054 passed validation.
+- 2026-05-10 / Codex: Added the active ExecPlan for task 061, `Consolidate Conversation Serialization Paths`.
+- 2026-05-10 / Codex: Moved `consolidate-conversation-serialization.md` to completed after task 061 passed validation.

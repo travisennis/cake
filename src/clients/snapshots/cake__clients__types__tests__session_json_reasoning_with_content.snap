@@ -1,0 +1,20 @@
+---
+source: src/clients/types.rs
+assertion_line: 1586
+expression: session_json_for(&item)
+---
+{
+  "content": [
+    {
+      "text": "deep analysis",
+      "type": "reasoning_text"
+    }
+  ],
+  "encrypted_content": "gAAAAABencrypted...",
+  "id": "r-1",
+  "summary": [
+    "step 1"
+  ],
+  "timestamp": "2026-05-10T00:00:00Z",
+  "type": "reasoning"
+}

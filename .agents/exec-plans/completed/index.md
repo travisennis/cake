@@ -4,6 +4,7 @@ This index follows `.agents/PLANS.md`. Completed ExecPlans are plans whose work 
 
 - `agent-skills-implementation-plan.md` - Implement agent skills discovery, prompt disclosure, configuration, activation, and documentation.
 - `append-only-session-management.md` - Refactor session management to append-only task events.
+- `consolidate-conversation-serialization.md` - Consolidate conversation API, stream, and session serialization paths.
 - `hooks-implementation-plan.md` - Add command hooks to cake.
 - `provider-strategy.md` - Move provider-specific request quirks behind a shared strategy layer.
 - `refactor-coding-assistant-run.md` - Refactor `CodingAssistant::run` into named orchestration steps.
@@ -19,3 +20,4 @@ This index follows `.agents/PLANS.md`. Completed ExecPlans are plans whose work 
 - 2026-05-08 / Codex: Completed task 049 and moved `split-agent-responsibilities.md` into this index.
 - 2026-05-09 / Codex: Completed task 052 and moved `provider-strategy.md` into this index.
 - 2026-05-09 / Codex: Completed task 054 and moved `refactor-coding-assistant-run.md` into this index.
+- 2026-05-10 / Codex: Completed task 061 and moved `consolidate-conversation-serialization.md` into this index.

@@ -9,7 +9,8 @@ use crate::clients::retry::RequestOverrides;
 use crate::clients::tools::Tool;
 use crate::clients::types::{
     ApiResponse, ApiUsage, ConversationItem, InputTokensDetails, OutputMessage,
-    OutputTokensDetails, ReasoningConfig, ReasoningContentKind, Request, Usage,
+    OutputTokensDetails, ReasoningConfig, ReasoningContentKind, Request, ResponsesApiInputItem,
+    Usage,
 };
 
 // =============================================================================
@@ -155,8 +156,11 @@ fn extract_instructions(
 }
 
 /// Build the input array for the Responses API from conversation history.
-fn build_input(history: &[ConversationItem]) -> Vec<serde_json::Value> {
-    history.iter().map(ConversationItem::to_api_input).collect()
+fn build_input(history: &[ConversationItem]) -> Vec<ResponsesApiInputItem<'_>> {
+    history
+        .iter()
+        .map(ConversationItem::to_api_input_item)
+        .collect()
 }
 
 /// Parse the output items from an API response into `ConversationItem` values.
@@ -329,6 +333,13 @@ mod tests {
     use super::*;
     use crate::clients::types::{OutputContent, OutputMessage, ProviderConfig};
 
+    fn input_json(history: &[ConversationItem]) -> Vec<serde_json::Value> {
+        build_input(history)
+            .into_iter()
+            .map(|item| serde_json::to_value(item).unwrap())
+            .collect()
+    }
+
     #[test]
     fn extract_instructions_with_system_message() {
         let history = vec![
@@ -389,7 +400,7 @@ mod tests {
         assert_eq!(instructions, Some("You are cake."));
         assert_eq!(remaining.len(), 2);
 
-        let input = build_input(remaining);
+        let input = input_json(remaining);
         assert_eq!(input[0]["role"], "developer");
         assert_eq!(input[0]["content"][0]["text"], "Mutable context");
         assert_eq!(input[1]["role"], "user");
@@ -459,7 +470,7 @@ mod tests {
             status: None,
             timestamp: None,
         }];
-        let input = build_input(&history);
+        let input = input_json(&history);
         assert_eq!(input.len(), 1);
         assert_eq!(input[0]["type"], "message");
     }

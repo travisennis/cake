@@ -114,7 +114,7 @@ Expected hotspot categories for cake (hypothesized, to be validated by profiling
 
 | Category | Likely Location | Article Analog |
 |----------|----------------|----------------|
-| JSON serialization | `to_api_input()`, `to_streaming_json()`, request body construction | N/A (cake-specific) |
+| JSON serialization | `to_api_input()`, `StreamRecord`/`SessionRecord` serialization, request body construction | N/A (cake-specific) |
 | JSON deserialization | `parse_response()` in both backends | N/A |
 | String cloning | `.clone()` calls on conversation items in the agent loop | Heap allocation in inner loop |
 | Session I/O | JSONL read/write for session persistence | N/A |
@@ -149,9 +149,9 @@ These are small wins but essentially free to implement.
 
 ### 2.3 — JSON Construction Overhead
 
-`to_api_input()` and `to_streaming_json()` both build `serde_json::Value` trees dynamically with `serde_json::json!()`. If profiling shows these are hot:
+`to_api_input()` still exists as a test helper around the typed Responses API DTO, while production request, stream, and session output use typed serde DTOs. If profiling shows serialization is hot:
 - Consider direct serialization with `#[derive(Serialize)]` on purpose-built request structs instead of building `Value` trees
-- The `Request` struct in `types.rs` already uses derive, but `to_api_input()` and `to_streaming_json()` bypass it
+- The `Request`, `StreamRecord`, and `SessionRecord` structs in `types.rs` already use derive, so focus on measured allocation costs rather than replacing hand-built JSON paths that no longer exist
 
 > **Question:** Is there a reason `to_api_input()` builds `serde_json::Value` dynamically instead of using typed structs with `#[derive(Serialize)]`? If not, this is both a performance and maintainability improvement.
 

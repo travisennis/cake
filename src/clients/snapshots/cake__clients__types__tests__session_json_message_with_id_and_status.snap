@@ -1,11 +1,13 @@
 ---
 source: src/clients/types.rs
-expression: item.to_streaming_json()
+assertion_line: 1568
+expression: session_json_for(&item)
 ---
 {
   "content": "Response",
   "id": "msg-123",
   "role": "assistant",
   "status": "completed",
+  "timestamp": "2026-05-10T00:00:00Z",
   "type": "message"
 }

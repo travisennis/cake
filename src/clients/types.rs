@@ -138,154 +138,136 @@ pub enum ConversationItem {
     },
 }
 
-impl ConversationItem {
-    /// Convert this item to JSON format for API input
-    pub fn to_api_input(&self) -> serde_json::Value {
-        match self {
-            Self::Message {
+/// Typed Responses API input item serialized into the request `input` array.
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub(super) enum ResponsesApiInputItem<'a> {
+    Message {
+        role: &'a str,
+        content: Vec<ResponsesMessageContent<'a>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        id: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        status: Option<&'a str>,
+    },
+    FunctionCall {
+        id: &'a str,
+        call_id: &'a str,
+        name: &'a str,
+        arguments: &'a str,
+    },
+    FunctionCallOutput {
+        call_id: &'a str,
+        output: &'a str,
+    },
+    Reasoning {
+        id: &'a str,
+        summary: Vec<ResponsesReasoningSummary<'a>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        encrypted_content: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        content: Option<&'a [ReasoningContent]>,
+    },
+}
+
+/// Content block used by Responses API message input.
+#[derive(Debug, Serialize)]
+pub(super) struct ResponsesMessageContent<'a> {
+    #[serde(rename = "type")]
+    content_type: &'static str,
+    text: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    annotations: Option<Vec<serde_json::Value>>,
+}
+
+/// Summary block used by Responses API reasoning input.
+#[derive(Debug, Serialize)]
+pub(super) struct ResponsesReasoningSummary<'a> {
+    #[serde(rename = "type")]
+    summary_type: &'static str,
+    text: &'a str,
+}
+
+impl<'a> From<&'a ConversationItem> for ResponsesApiInputItem<'a> {
+    fn from(item: &'a ConversationItem) -> Self {
+        match item {
+            ConversationItem::Message {
                 role,
                 content,
                 id,
                 status,
                 ..
             } => {
-                let use_output_format = matches!(role, Role::Assistant);
-
-                let mut msg = serde_json::json!({
-                    "type": "message",
-                    "role": role.as_str(),
-                });
-
-                // Content format depends on role
-                if use_output_format {
-                    msg["content"] = serde_json::json!([{
-                        "type": "output_text",
-                        "text": content,
-                        "annotations": []
-                    }]);
+                let content_type = if matches!(role, Role::Assistant) {
+                    "output_text"
                 } else {
-                    msg["content"] = serde_json::json!([{
-                        "type": "input_text",
-                        "text": content
-                    }]);
-                }
+                    "input_text"
+                };
+                let annotations =
+                    matches!(role, Role::Assistant).then(Vec::<serde_json::Value>::new);
 
-                // Include id and status for assistant messages
-                if let Some(id) = id {
-                    msg["id"] = serde_json::json!(id);
+                Self::Message {
+                    role: role.as_str(),
+                    content: vec![ResponsesMessageContent {
+                        content_type,
+                        text: content,
+                        annotations,
+                    }],
+                    id: id.as_deref(),
+                    status: status.as_deref(),
                 }
-                if let Some(status) = status {
-                    msg["status"] = serde_json::json!(status);
-                }
-
-                msg
             },
-            Self::FunctionCall {
+            ConversationItem::FunctionCall {
                 id,
                 call_id,
                 name,
                 arguments,
                 ..
-            } => {
-                serde_json::json!({
-                    "type": "function_call",
-                    "id": id,
-                    "call_id": call_id,
-                    "name": name,
-                    "arguments": arguments
-                })
+            } => Self::FunctionCall {
+                id,
+                call_id,
+                name,
+                arguments,
             },
-            Self::FunctionCallOutput {
+            ConversationItem::FunctionCallOutput {
                 call_id, output, ..
-            } => {
-                serde_json::json!({
-                    "type": "function_call_output",
-                    "call_id": call_id,
-                    "output": output
-                })
-            },
-            Self::Reasoning {
+            } => Self::FunctionCallOutput { call_id, output },
+            ConversationItem::Reasoning {
                 id,
                 summary,
                 encrypted_content,
                 content,
                 ..
-            } => {
-                let mut obj = serde_json::json!({
-                    "type": "reasoning",
-                    "id": id,
-                    "summary": summary.iter().map(|s| {
-                        serde_json::json!({"type": "summary_text", "text": s})
-                    }).collect::<Vec<_>>()
-                });
-                if let Some(enc) = encrypted_content {
-                    obj["encrypted_content"] = serde_json::json!(enc);
-                }
-                if let Some(content) = content {
-                    obj["content"] = serde_json::json!(content);
-                }
-                obj
+            } => Self::Reasoning {
+                id,
+                summary: summary
+                    .iter()
+                    .map(|text| ResponsesReasoningSummary {
+                        summary_type: "summary_text",
+                        text,
+                    })
+                    .collect(),
+                encrypted_content: encrypted_content.as_deref(),
+                content: content.as_deref(),
             },
         }
     }
+}
 
-    /// Convert this item to JSON format for streaming output
-    #[allow(dead_code)]
-    pub fn to_streaming_json(&self) -> serde_json::Value {
-        match self {
-            Self::Message {
-                role,
-                content,
-                id,
-                status,
-                ..
-            } => {
-                let role_str = role.as_str();
-                let mut obj = serde_json::json!({
-                    "type": "message",
-                    "role": role_str,
-                });
-                obj["content"] = serde_json::json!(content);
-                if let Some(id) = id {
-                    obj["id"] = serde_json::json!(id);
-                }
-                if let Some(status) = status {
-                    obj["status"] = serde_json::json!(status);
-                }
-                obj
-            },
-            Self::FunctionCall {
-                id,
-                call_id,
-                name,
-                arguments,
-                ..
-            } => {
-                serde_json::json!({
-                    "type": "function_call",
-                    "id": id,
-                    "call_id": call_id,
-                    "name": name,
-                    "arguments": arguments
-                })
-            },
-            Self::FunctionCallOutput {
-                call_id, output, ..
-            } => {
-                serde_json::json!({
-                    "type": "function_call_output",
-                    "call_id": call_id,
-                    "output": output
-                })
-            },
-            Self::Reasoning { id, summary, .. } => {
-                serde_json::json!({
-                    "type": "reasoning",
-                    "id": id,
-                    "summary": summary
-                })
-            },
-        }
+impl ConversationItem {
+    pub(super) fn to_api_input_item(&self) -> ResponsesApiInputItem<'_> {
+        ResponsesApiInputItem::from(self)
+    }
+
+    /// Convert this item to JSON format for API input.
+    #[cfg(test)]
+    pub(super) fn to_api_input(&self) -> serde_json::Value {
+        serde_json::to_value(self.to_api_input_item()).unwrap_or_else(|error| {
+            serde_json::json!({
+                "type": "error",
+                "error": format!("failed to serialize Responses API input: {error}")
+            })
+        })
     }
 }
 
@@ -804,15 +786,6 @@ impl SessionRecord {
             | Self::TaskComplete { .. } => None,
         }
     }
-
-    /// Convert this record to a JSON value suitable for streaming output.
-    #[allow(dead_code)]
-    pub fn to_streaming_json(&self) -> serde_json::Value {
-        // We serialize the whole record; serde handles the tag.
-        serde_json::to_value(self).unwrap_or_else(
-            |_| serde_json::json!({"type": "error", "error": "serialization failed"}),
-        )
-    }
 }
 
 // =============================================================================
@@ -837,7 +810,7 @@ pub(super) struct ReasoningConfig {
 #[derive(Serialize)]
 pub(super) struct Request<'a> {
     pub(super) model: &'a str,
-    pub(super) input: Vec<serde_json::Value>,
+    pub(super) input: Vec<ResponsesApiInputItem<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) instructions: Option<&'a str>,
     pub(super) temperature: Option<f32>,
@@ -943,6 +916,16 @@ pub(super) struct ApiError {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    fn stream_json_for(item: &ConversationItem) -> serde_json::Value {
+        serde_json::to_value(StreamRecord::from_conversation_item(item)).unwrap()
+    }
+
+    fn session_json_for(item: &ConversationItem) -> serde_json::Value {
+        let stream_record = StreamRecord::from_conversation_item(item);
+        let session_record = SessionRecord::from(stream_record);
+        serde_json::to_value(session_record).unwrap()
+    }
 
     #[test]
     fn reasoning_content_kind_serializes_known_values() {
@@ -1234,7 +1217,7 @@ mod tests {
     }
 
     #[test]
-    fn to_streaming_json_message() {
+    fn stream_record_json_message() {
         let item = ConversationItem::Message {
             role: Role::User,
             content: "Hello".to_string(),
@@ -1242,13 +1225,13 @@ mod tests {
             status: None,
             timestamp: None,
         };
-        let json = item.to_streaming_json();
+        let json = stream_json_for(&item);
         assert_eq!(json["type"], "message");
         assert_eq!(json["content"], "Hello");
     }
 
     #[test]
-    fn to_streaming_json_message_with_id_and_status() {
+    fn stream_record_json_message_with_id_and_status() {
         let item = ConversationItem::Message {
             role: Role::Assistant,
             content: "Response".to_string(),
@@ -1256,13 +1239,13 @@ mod tests {
             status: Some("completed".to_string()),
             timestamp: None,
         };
-        let json = item.to_streaming_json();
+        let json = stream_json_for(&item);
         assert_eq!(json["id"], "msg-123");
         assert_eq!(json["status"], "completed");
     }
 
     #[test]
-    fn to_streaming_json_reasoning_uses_plain_summary() {
+    fn stream_record_json_reasoning_uses_plain_summary() {
         let item = ConversationItem::Reasoning {
             id: "r-1".to_string(),
             summary: vec!["step 1".to_string()],
@@ -1270,14 +1253,14 @@ mod tests {
             content: None,
             timestamp: None,
         };
-        let json = item.to_streaming_json();
+        let json = stream_json_for(&item);
         assert_eq!(json["type"], "reasoning");
         // Streaming format uses plain strings, not objects
         assert_eq!(json["summary"][0], "step 1");
     }
 
     #[test]
-    fn to_streaming_json_function_call() {
+    fn stream_record_json_function_call() {
         let item = ConversationItem::FunctionCall {
             id: "fc-1".to_string(),
             call_id: "call-1".to_string(),
@@ -1285,19 +1268,19 @@ mod tests {
             arguments: r#"{"cmd":"ls"}"#.to_string(),
             timestamp: None,
         };
-        let json = item.to_streaming_json();
+        let json = stream_json_for(&item);
         assert_eq!(json["type"], "function_call");
         assert_eq!(json["name"], "bash");
     }
 
     #[test]
-    fn to_streaming_json_function_call_output() {
+    fn stream_record_json_function_call_output() {
         let item = ConversationItem::FunctionCallOutput {
             call_id: "call-1".to_string(),
             output: "result".to_string(),
             timestamp: None,
         };
-        let json = item.to_streaming_json();
+        let json = stream_json_for(&item);
         assert_eq!(json["type"], "function_call_output");
         assert_eq!(json["output"], "result");
     }
@@ -1514,7 +1497,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_to_streaming_json_message_with_id_and_status() {
+    fn snapshot_stream_record_json_message_with_id_and_status() {
         let item = ConversationItem::Message {
             role: Role::Assistant,
             content: "Response".to_string(),
@@ -1523,13 +1506,13 @@ mod tests {
             timestamp: None,
         };
         insta::assert_json_snapshot!(
-            "to_streaming_json_message_with_id_and_status",
-            item.to_streaming_json()
+            "stream_record_json_message_with_id_and_status",
+            stream_json_for(&item)
         );
     }
 
     #[test]
-    fn snapshot_to_streaming_json_reasoning_plain_summary() {
+    fn snapshot_stream_record_json_reasoning_plain_summary() {
         let item = ConversationItem::Reasoning {
             id: "r-1".to_string(),
             summary: vec!["step 1".to_string(), "step 2".to_string()],
@@ -1538,13 +1521,13 @@ mod tests {
             timestamp: None,
         };
         insta::assert_json_snapshot!(
-            "to_streaming_json_reasoning_plain_summary",
-            item.to_streaming_json()
+            "stream_record_json_reasoning_plain_summary",
+            stream_json_for(&item)
         );
     }
 
     #[test]
-    fn snapshot_to_streaming_json_function_call() {
+    fn snapshot_stream_record_json_function_call() {
         let item = ConversationItem::FunctionCall {
             id: "fc-1".to_string(),
             call_id: "call-1".to_string(),
@@ -1552,19 +1535,74 @@ mod tests {
             arguments: r#"{"cmd":"ls"}"#.to_string(),
             timestamp: None,
         };
-        insta::assert_json_snapshot!("to_streaming_json_function_call", item.to_streaming_json());
+        insta::assert_json_snapshot!("stream_record_json_function_call", stream_json_for(&item));
     }
 
     #[test]
-    fn snapshot_to_streaming_json_function_call_output() {
+    fn snapshot_stream_record_json_function_call_output() {
         let item = ConversationItem::FunctionCallOutput {
             call_id: "call-1".to_string(),
             output: "result".to_string(),
             timestamp: None,
         };
         insta::assert_json_snapshot!(
-            "to_streaming_json_function_call_output",
-            item.to_streaming_json()
+            "stream_record_json_function_call_output",
+            stream_json_for(&item)
         );
+    }
+
+    #[test]
+    fn snapshot_session_json_message_with_id_and_status() {
+        let item = ConversationItem::Message {
+            role: Role::Assistant,
+            content: "Response".to_string(),
+            id: Some("msg-123".to_string()),
+            status: Some("completed".to_string()),
+            timestamp: Some("2026-05-10T00:00:00Z".to_string()),
+        };
+        insta::assert_json_snapshot!(
+            "session_json_message_with_id_and_status",
+            session_json_for(&item)
+        );
+    }
+
+    #[test]
+    fn snapshot_session_json_reasoning_with_content() {
+        let item = ConversationItem::Reasoning {
+            id: "r-1".to_string(),
+            summary: vec!["step 1".to_string()],
+            encrypted_content: Some("gAAAAABencrypted...".to_string()),
+            content: Some(vec![ReasoningContent {
+                content_type: ReasoningContentKind::ReasoningText,
+                text: Some("deep analysis".to_string()),
+            }]),
+            timestamp: Some("2026-05-10T00:00:00Z".to_string()),
+        };
+        insta::assert_json_snapshot!(
+            "session_json_reasoning_with_content",
+            session_json_for(&item)
+        );
+    }
+
+    #[test]
+    fn snapshot_session_json_function_call() {
+        let item = ConversationItem::FunctionCall {
+            id: "fc-1".to_string(),
+            call_id: "call-1".to_string(),
+            name: "bash".to_string(),
+            arguments: r#"{"cmd":"ls"}"#.to_string(),
+            timestamp: Some("2026-05-10T00:00:00Z".to_string()),
+        };
+        insta::assert_json_snapshot!("session_json_function_call", session_json_for(&item));
+    }
+
+    #[test]
+    fn snapshot_session_json_function_call_output() {
+        let item = ConversationItem::FunctionCallOutput {
+            call_id: "call-1".to_string(),
+            output: "result".to_string(),
+            timestamp: Some("2026-05-10T00:00:00Z".to_string()),
+        };
+        insta::assert_json_snapshot!("session_json_function_call_output", session_json_for(&item));
     }
 }
