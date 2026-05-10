@@ -5,7 +5,7 @@ This index summarizes the task files in this directory. Use it as the manually m
 ## Status Summary
 
 - Completed: 50
-- Pending: 52
+- Pending: 57
 - Tracking: 0
 - Open: 1
 - Blocked: 12
@@ -22,9 +22,11 @@ This index summarizes the task files in this directory. Use it as the manually m
 
 These are the highest-priority tasks currently available from the task metadata:
 
-| Task          | Title                                        | Status  | Priority | Effort | ExecPlan                       | Depends on |
-| ------------- | -------------------------------------------- | ------- | -------- | ------ | ------------------------------ | ---------- |
-| [062](062.md) | Store Timestamps as DateTime Values Internally | Pending | P1       | L      | Required before implementation | -          |
+| Task          | Title                                                                  | Status  | Priority | Effort | ExecPlan                       | Depends on |
+| ------------- | ---------------------------------------------------------------------- | ------- | -------- | ------ | ------------------------------ | ---------- |
+| [111](111.md) | Round-Trip Test ConversationItem → StreamRecord → SessionRecord        | Pending | P1       | S      | -                              | -          |
+| [112](112.md) | Snapshot Persistence-Only SessionRecord Variants                       | Pending | P1       | S      | -                              | -          |
+| [062](062.md) | Store Timestamps as DateTime Values Internally                         | Pending | P1       | L      | Required before implementation | -          |
 
 ## Parent Trackers
 
@@ -152,3 +154,8 @@ These are the highest-priority tasks currently available from the task metadata:
 | [108](108.md)   | Track Manual Review Findings Without Losing Original Numbers        | Pending   | P3       | S                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [109](109.md)   | Edit tool: CRLF replacement text double-encoding                    | Open      | -        | -                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [110](110.md)   | Apply Stricter Clippy Configuration from External Research          | Pending   | P2       | M                                  | -                                                               | Research: clippy-stricter-config; related: 089, 107                                                                                                                                                                                           |
+| [111](111.md)   | Round-Trip Test ConversationItem → StreamRecord → SessionRecord     | Pending   | P1       | S                                  | -                                                               | Follows 061                                                                                                                                                                                                                                   |
+| [112](112.md)   | Snapshot Persistence-Only SessionRecord Variants                    | Pending   | P1       | S                                  | -                                                               | Follows 061                                                                                                                                                                                                                                   |
+| [113](113.md)   | Document ResponsesApiInputItem Construction Boundary                | Pending   | P3       | XS                                 | -                                                               | Follows 061                                                                                                                                                                                                                                   |
+| [114](114.md)   | Update conversation-types.md After to_api_input Refactor            | Pending   | P3       | XS                                 | -                                                               | Follows 061                                                                                                                                                                                                                                   |
+| [115](115.md)   | Comment annotations:[] Provider Quirk in ResponsesApiInputItem      | Pending   | P3       | XS                                 | -                                                               | Follows 061                                                                                                                                                                                                                                   |
