@@ -39,13 +39,13 @@ pub(super) async fn send_request(
     let chat_tools = convert_tools(tools);
 
     let request = ChatRequest {
-        model: &config.config.model,
+        model: &config.model_config.model,
         messages,
-        temperature: config.config.temperature,
-        top_p: config.config.top_p,
+        temperature: config.model_config.temperature,
+        top_p: config.model_config.top_p,
         max_completion_tokens: overrides
             .max_output_tokens
-            .or(config.config.max_output_tokens),
+            .or(config.model_config.max_output_tokens),
         tools: if chat_tools.is_empty() {
             None
         } else {
@@ -56,12 +56,12 @@ pub(super) async fn send_request(
         } else {
             Some("auto".to_string())
         },
-        reasoning_effort: config.config.reasoning_effort,
+        reasoning_effort: config.model_config.reasoning_effort,
     };
 
     let url = format!(
         "{}/chat/completions",
-        config.config.base_url.trim_end_matches('/')
+        config.model_config.base_url.trim_end_matches('/')
     );
     debug!(target: "cake", "{url}");
     if tracing::enabled!(tracing::Level::TRACE) {
@@ -400,7 +400,7 @@ mod tests {
 
     fn apply_test_strategy(model: &str, messages: &mut [ChatMessage<'_>]) {
         let config = ResolvedModelConfig {
-            config: ModelConfig {
+            model_config: ModelConfig {
                 model: model.to_string(),
                 api_type: ApiType::ChatCompletions,
                 base_url: "https://api.example.com/v1".to_string(),

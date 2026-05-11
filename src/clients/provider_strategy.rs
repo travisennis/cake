@@ -23,7 +23,7 @@ impl<'a> ProviderStrategy<'a> {
     pub(super) fn from_config(config: &'a ResolvedModelConfig) -> Self {
         Self {
             config,
-            kind: provider_kind(&config.config.base_url),
+            kind: provider_kind(&config.model_config.base_url),
         }
     }
 
@@ -44,11 +44,11 @@ impl<'a> ProviderStrategy<'a> {
             return None;
         }
 
-        provider_routing_config(&self.config.config.providers)
+        provider_routing_config(&self.config.model_config.providers)
     }
 
     pub(super) fn transform_chat_messages(&self, messages: &mut [ChatMessage<'_>]) {
-        if !requires_reasoning_content_tool_call_fallback(&self.config.config.model) {
+        if !requires_reasoning_content_tool_call_fallback(&self.config.model_config.model) {
             return;
         }
 
@@ -106,7 +106,7 @@ mod tests {
         providers: impl IntoIterator<Item = &'static str>,
     ) -> ResolvedModelConfig {
         ResolvedModelConfig {
-            config: ModelConfig {
+            model_config: ModelConfig {
                 model: model.to_string(),
                 api_type: ApiType::ChatCompletions,
                 base_url: base_url.to_string(),

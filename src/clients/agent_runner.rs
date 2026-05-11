@@ -47,8 +47,8 @@ impl AgentRunner {
     ) -> anyhow::Result<TurnResult> {
         let mut attempt = 1;
         let mut request_overrides = RequestOverrides {
-            max_output_tokens: config.config.max_output_tokens,
-            reasoning_max_tokens: config.config.reasoning_max_tokens,
+            max_output_tokens: config.model_config.max_output_tokens,
+            reasoning_max_tokens: config.model_config.reasoning_max_tokens,
             context_overflow_retry_used: false,
         };
         let mut disable_connection_reuse = false;
@@ -91,9 +91,11 @@ impl AgentRunner {
                             attempt += 1;
                         },
                         retry::RetryDecision::DoNotRetry => {
-                            return Err(
-                                api_error_from_failure(&config.config.model, &failure).into()
-                            );
+                            return Err(api_error_from_failure(
+                                &config.model_config.model,
+                                &failure,
+                            )
+                            .into());
                         },
                     }
                 },

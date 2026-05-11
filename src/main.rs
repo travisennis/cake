@@ -452,7 +452,7 @@ impl CodingAssistant {
             // User explicitly passed --model. Resolve it and check against session.
             let config = self.resolve_model_config(models, default_model)?;
             let resolved = ResolvedModelConfig::resolve(config)?;
-            let resolved_model = &resolved.config.model;
+            let resolved_model = &resolved.model_config.model;
 
             if let Some(sm) = session_model
                 && sm != resolved_model
@@ -496,13 +496,13 @@ impl CodingAssistant {
     /// resolved model config.
     const fn apply_cli_overrides(&self, mut resolved: ResolvedModelConfig) -> ResolvedModelConfig {
         if let Some(max_tokens) = self.max_tokens {
-            resolved.config.max_output_tokens = Some(max_tokens);
+            resolved.model_config.max_output_tokens = Some(max_tokens);
         }
         if let Some(effort) = self.reasoning_effort {
-            resolved.config.reasoning_effort = Some(effort);
+            resolved.model_config.reasoning_effort = Some(effort);
         }
         if let Some(budget) = self.reasoning_budget {
-            resolved.config.reasoning_max_tokens = Some(budget);
+            resolved.model_config.reasoning_max_tokens = Some(budget);
         }
         resolved
     }
@@ -536,7 +536,7 @@ impl CodingAssistant {
             .with_skill_locations(skill_locations.clone())
             .with_activated_skills(prior_skills);
         let mut session = Session::new(restored.id, restored.working_dir);
-        session.model = Some(resolved.config.model);
+        session.model = Some(resolved.model_config.model);
         Ok(RunSession {
             agent,
             session,
@@ -561,7 +561,7 @@ impl CodingAssistant {
         let new_id = agent.session_id();
         info!(target: "cake", "New session: {new_id}");
         let mut session = Session::new(new_id, current_dir);
-        session.model = Some(resolved.config.model);
+        session.model = Some(resolved.model_config.model);
         session.system_prompt = initial_messages.first().map(|(_, content)| content.clone());
         RunSession {
             agent,
@@ -612,7 +612,7 @@ impl CodingAssistant {
             .collect();
         info!(target: "cake", "New forked session: {new_id}");
         let mut session = Session::new(new_id, current_dir);
-        session.model = Some(resolved.config.model);
+        session.model = Some(resolved.model_config.model);
         session.system_prompt = initial_messages.first().map(|(_, content)| content.clone());
         Ok(RunSession {
             agent,
@@ -1269,7 +1269,7 @@ mod tests {
 
     fn test_resolved_model_config() -> ResolvedModelConfig {
         ResolvedModelConfig {
-            config: ModelConfig {
+            model_config: ModelConfig {
                 model: "test-model".to_string(),
                 api_type: ApiType::ChatCompletions,
                 base_url: "https://api.example.com".to_string(),
@@ -2050,7 +2050,7 @@ mod tests {
             let resolved = args
                 .resolve_model_for_session(&models, None, Some("deepseek-v4-pro"))
                 .unwrap();
-            assert_eq!(resolved.config.model, "deepseek-v4-pro");
+            assert_eq!(resolved.model_config.model, "deepseek-v4-pro");
         });
     }
 }

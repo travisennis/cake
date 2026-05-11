@@ -125,7 +125,7 @@ impl Agent {
     /// A new session ID is generated automatically.
     pub fn new(config: ResolvedModelConfig, initial_messages: &[(Role, String)]) -> Self {
         Self {
-            runner: AgentRunner::new(Backend::from_api_type(config.config.api_type)),
+            runner: AgentRunner::new(Backend::from_api_type(config.model_config.api_type)),
             config,
             observer: AgentObserver::default(),
             conversation: ConversationState::new(initial_messages),
@@ -164,7 +164,7 @@ impl Agent {
 
     /// Returns the resolved provider model identifier.
     pub fn model_name(&self) -> &str {
-        &self.config.config.model
+        &self.config.model_config.model
     }
 
     /// Returns the session ID.
@@ -742,7 +742,7 @@ async fn execute_tool_with_skill_dedup(
 #[cfg(test)]
 fn test_resolved_model_config(api_type: ApiType, base_url: &str) -> ResolvedModelConfig {
     ResolvedModelConfig {
-        config: crate::config::model::ModelConfig {
+        model_config: crate::config::model::ModelConfig {
             model: "test-model".to_string(),
             api_type,
             base_url: base_url.to_string(),
@@ -2172,8 +2172,8 @@ mod error_tests {
             .await;
 
         let mut agent = test_agent_with_url(&mock_server.uri());
-        agent.config.config.max_output_tokens = Some(5000);
-        agent.config.config.reasoning_max_tokens = Some(4000);
+        agent.config.model_config.max_output_tokens = Some(5000);
+        agent.config.model_config.reasoning_max_tokens = Some(4000);
         agent.history_mut().push(ConversationItem::Message {
             role: Role::User,
             content: "test".to_string(),

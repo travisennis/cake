@@ -104,7 +104,7 @@ pub struct ModelConfig {
 #[derive(Debug, Clone)]
 pub struct ResolvedModelConfig {
     /// The underlying model configuration
-    pub config: ModelConfig,
+    pub model_config: ModelConfig,
     /// The resolved API key value
     pub api_key: String,
 }
@@ -134,7 +134,7 @@ impl ResolvedModelConfig {
     ///     providers: vec![],
     /// };
     /// let resolved = ResolvedModelConfig::resolve(config)?;
-    /// println!("Using API key from: {}", resolved.config.api_key_env);
+    /// println!("Using API key from: {}", resolved.model_config.api_key_env);
     /// # Ok::<(), anyhow::Error>(())
     /// ```
     ///
@@ -156,7 +156,10 @@ impl ResolvedModelConfig {
             config.api_key_env
         );
 
-        Ok(Self { config, api_key })
+        Ok(Self {
+            model_config: config,
+            api_key,
+        })
     }
 }
 
@@ -255,7 +258,7 @@ mod tests {
 
             let resolved = ResolvedModelConfig::resolve(config).unwrap();
             assert_eq!(resolved.api_key, "sk-test-123");
-            assert_eq!(resolved.config.api_key_env, "CAKE_TEST_VALID_KEY");
+            assert_eq!(resolved.model_config.api_key_env, "CAKE_TEST_VALID_KEY");
         });
     }
 }

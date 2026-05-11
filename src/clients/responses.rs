@@ -34,28 +34,28 @@ pub(super) async fn send_request(
 
     let max_output_tokens = overrides
         .max_output_tokens
-        .or(config.config.max_output_tokens);
+        .or(config.model_config.max_output_tokens);
     let reasoning_max_tokens = overrides
         .reasoning_max_tokens
-        .or(config.config.reasoning_max_tokens);
+        .or(config.model_config.reasoning_max_tokens);
 
-    let reasoning = (config.config.reasoning_effort.is_some()
-        || config.config.reasoning_summary.is_some()
+    let reasoning = (config.model_config.reasoning_effort.is_some()
+        || config.model_config.reasoning_summary.is_some()
         || reasoning_max_tokens.is_some())
     .then(|| ReasoningConfig {
-        effort: config.config.reasoning_effort,
-        summary: config.config.reasoning_summary.clone(),
+        effort: config.model_config.reasoning_effort,
+        summary: config.model_config.reasoning_summary.clone(),
         max_tokens: reasoning_max_tokens,
     });
 
     let (instructions, non_system_history) = extract_instructions(history)?;
 
     let prompt = Request {
-        model: &config.config.model,
+        model: &config.model_config.model,
         input: build_input(non_system_history),
         instructions,
-        temperature: config.config.temperature,
-        top_p: config.config.top_p,
+        temperature: config.model_config.temperature,
+        top_p: config.model_config.top_p,
         max_output_tokens,
         tools: Some(tools.to_vec()),
         tool_choice: Some("auto".to_string()),
@@ -63,7 +63,10 @@ pub(super) async fn send_request(
         reasoning,
     };
 
-    let url = format!("{}/responses", config.config.base_url.trim_end_matches('/'));
+    let url = format!(
+        "{}/responses",
+        config.model_config.base_url.trim_end_matches('/')
+    );
     debug!(target: "cake", "{url}");
     if tracing::enabled!(tracing::Level::TRACE) {
         let prompt_json = serde_json::to_string(&prompt)?;
