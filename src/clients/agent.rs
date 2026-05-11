@@ -35,6 +35,49 @@ struct ToolExecutionOutput {
     skill_activation: Option<SkillActivation>,
 }
 
+#[derive(Debug, Default)]
+struct SkillActivations {
+    active: HashSet<String>,
+    pending: HashSet<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SkillReservation {
+    Reserved,
+    AlreadyActive,
+    AlreadyPending,
+}
+
+impl SkillActivations {
+    fn replace_active(&mut self, skills: HashSet<String>) {
+        self.active = skills;
+        self.pending.clear();
+    }
+
+    fn active(&self) -> HashSet<String> {
+        self.active.clone()
+    }
+
+    fn reserve(&mut self, name: &str) -> SkillReservation {
+        if self.active.contains(name) {
+            return SkillReservation::AlreadyActive;
+        }
+        if !self.pending.insert(name.to_string()) {
+            return SkillReservation::AlreadyPending;
+        }
+        SkillReservation::Reserved
+    }
+
+    fn complete(&mut self, name: &str) {
+        self.pending.remove(name);
+        self.active.insert(name.to_string());
+    }
+
+    fn fail(&mut self, name: &str) {
+        self.pending.remove(name);
+    }
+}
+
 // =============================================================================
 // Agent (shared loop over any backend)
 // =============================================================================
@@ -64,9 +107,9 @@ pub struct Agent {
     /// When the Read tool targets one of these paths, the agent checks if the
     /// skill has already been activated and returns a lightweight message instead.
     skill_locations: Arc<HashMap<PathBuf, String>>,
-    /// Names of skills that have been activated (read) in this session.
+    /// Names of active and in-progress skill activations.
     /// Shared between tool executions for concurrent access.
-    activated_skills: Arc<Mutex<HashSet<String>>>,
+    skill_activations: Arc<Mutex<SkillActivations>>,
     /// Optional user-configured command hook runner.
     hook_runner: Option<Arc<HookRunner>>,
 }
@@ -89,7 +132,7 @@ impl Agent {
             total_usage: Usage::default(),
             turn_count: 0,
             skill_locations: Arc::new(HashMap::new()),
-            activated_skills: Arc::new(Mutex::new(HashSet::new())),
+            skill_activations: Arc::new(Mutex::new(SkillActivations::default())),
             hook_runner: None,
         }
     }
@@ -193,11 +236,11 @@ impl Agent {
     /// re-read during the resumed session.
     pub fn with_activated_skills(self, skills: HashSet<String>) -> Self {
         {
-            let mut guard = self.activated_skills.lock().unwrap_or_else(|e| {
-                tracing::error!("activated_skills mutex poisoned, recovering: {e}");
+            let mut guard = self.skill_activations.lock().unwrap_or_else(|e| {
+                tracing::error!("skill_activations mutex poisoned, recovering: {e}");
                 e.into_inner()
             });
-            *guard = skills;
+            guard.replace_active(skills);
         }
         self
     }
@@ -216,13 +259,13 @@ impl Agent {
     /// Returns the names of skills that have been activated in this session.
     #[allow(dead_code)]
     pub fn activated_skills(&self) -> HashSet<String> {
-        self.activated_skills
+        self.skill_activations
             .lock()
             .unwrap_or_else(|e| {
-                tracing::error!("activated_skills mutex poisoned, recovering: {e}");
+                tracing::error!("skill_activations mutex poisoned, recovering: {e}");
                 e.into_inner()
             })
-            .clone()
+            .active()
     }
 
     /// Enables streaming JSON output for each message.
@@ -455,12 +498,12 @@ impl Agent {
             }
 
             let skill_locations = Arc::clone(&self.skill_locations);
-            let activated_skills = Arc::clone(&self.activated_skills);
+            let skill_activations = Arc::clone(&self.skill_activations);
             let tools = &self.tools;
             let tool_context = Arc::clone(&self.tool_context);
             let futures = tool_plans.into_iter().map(|(call_id, name, plan)| {
                 let skill_locations = Arc::clone(&skill_locations);
-                let activated_skills = Arc::clone(&activated_skills);
+                let skill_activations = Arc::clone(&skill_activations);
                 let tool_context = Arc::clone(&tool_context);
                 let hook_runner = self.hook_runner.clone();
                 match plan {
@@ -484,7 +527,7 @@ impl Agent {
                             &name,
                             &arguments,
                             skill_locations.as_ref(),
-                            &activated_skills,
+                            &skill_activations,
                         )
                         .await;
                         let hook_result = result
@@ -593,7 +636,7 @@ async fn execute_tool_with_skill_dedup(
     name: &str,
     arguments: &str,
     skill_locations: &HashMap<PathBuf, String>,
-    activated_skills: &Arc<Mutex<HashSet<String>>>,
+    skill_activations: &Arc<Mutex<SkillActivations>>,
 ) -> Result<ToolExecutionOutput, String> {
     if name != "Read" {
         return execute_tool_output(tools, context, name, arguments)
@@ -631,32 +674,57 @@ async fn execute_tool_with_skill_dedup(
             });
     };
 
-    let already_active = activated_skills
+    let reservation = skill_activations
         .lock()
         .unwrap_or_else(|e| {
-            tracing::error!("activated_skills mutex poisoned, recovering: {e}");
+            tracing::error!("skill_activations mutex poisoned, recovering: {e}");
             e.into_inner()
         })
-        .contains(skill_name);
-    if already_active {
-        tracing::info!("Skill '{skill_name}' already activated, skipping re-read");
-        return Ok(ToolExecutionOutput {
-            output: format!(
-                "Skill '{skill_name}' is already active in this session. \
-                 Its instructions are already in the conversation context."
-            ),
-            skill_activation: None,
-        });
+        .reserve(skill_name);
+    match reservation {
+        SkillReservation::Reserved => {},
+        SkillReservation::AlreadyActive => {
+            tracing::info!("Skill '{skill_name}' already activated, skipping re-read");
+            return Ok(ToolExecutionOutput {
+                output: format!(
+                    "Skill '{skill_name}' is already active in this session. \
+                     Its instructions are already in the conversation context."
+                ),
+                skill_activation: None,
+            });
+        },
+        SkillReservation::AlreadyPending => {
+            tracing::info!("Skill '{skill_name}' activation already in progress, skipping re-read");
+            return Ok(ToolExecutionOutput {
+                output: format!(
+                    "Skill '{skill_name}' activation is already in progress in this tool batch. \
+                     Its instructions will be included when that read completes."
+                ),
+                skill_activation: None,
+            });
+        },
     }
 
-    let output = execute_tool_output(tools, context, name, arguments).await?;
-    activated_skills
+    let output = match execute_tool_output(tools, context, name, arguments).await {
+        Ok(output) => output,
+        Err(error) => {
+            skill_activations
+                .lock()
+                .unwrap_or_else(|e| {
+                    tracing::error!("skill_activations mutex poisoned, recovering: {e}");
+                    e.into_inner()
+                })
+                .fail(skill_name);
+            return Err(error);
+        },
+    };
+    skill_activations
         .lock()
         .unwrap_or_else(|e| {
-            tracing::error!("activated_skills mutex poisoned, recovering: {e}");
+            tracing::error!("skill_activations mutex poisoned, recovering: {e}");
             e.into_inner()
         })
-        .insert(skill_name.clone());
+        .complete(skill_name);
     tracing::info!("Skill '{}' activated", skill_name);
     Ok(ToolExecutionOutput {
         output,
@@ -959,7 +1027,7 @@ mod tests {
         std::fs::write(&skill_path, "skill instructions").unwrap();
         let skill_path = skill_path.canonicalize().unwrap();
         let skill_locations = HashMap::from([(skill_path.clone(), "test-skill".to_string())]);
-        let activated_skills = Arc::new(Mutex::new(HashSet::new()));
+        let skill_activations = Arc::new(Mutex::new(SkillActivations::default()));
         let arguments = serde_json::json!({ "path": skill_path }).to_string();
 
         let result = execute_tool_with_skill_dedup(
@@ -968,7 +1036,7 @@ mod tests {
             "Read",
             &arguments,
             &skill_locations,
-            &activated_skills,
+            &skill_activations,
         )
         .await
         .unwrap();
@@ -978,7 +1046,75 @@ mod tests {
             result.skill_activation,
             Some(SkillActivation { name, path }) if name == "test-skill" && path == skill_path
         ));
-        assert!(activated_skills.lock().unwrap().contains("test-skill"));
+        assert!(
+            skill_activations
+                .lock()
+                .unwrap()
+                .active
+                .contains("test-skill")
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_duplicate_skill_reads_only_activate_once() {
+        let dir = TempDir::new().unwrap();
+        let skill_path = dir.path().join("SKILL.md");
+        std::fs::write(&skill_path, "skill instructions").unwrap();
+        let skill_path = skill_path.canonicalize().unwrap();
+        let skill_locations = HashMap::from([(skill_path.clone(), "test-skill".to_string())]);
+        let skill_activations = Arc::new(Mutex::new(SkillActivations::default()));
+        let arguments = serde_json::json!({ "path": skill_path }).to_string();
+        let registry = default_tool_registry();
+        let context = Arc::new(ToolContext::from_current_process());
+
+        let (first, second) = tokio::join!(
+            execute_tool_with_skill_dedup(
+                &registry,
+                Arc::clone(&context),
+                "Read",
+                &arguments,
+                &skill_locations,
+                &skill_activations,
+            ),
+            execute_tool_with_skill_dedup(
+                &registry,
+                Arc::clone(&context),
+                "Read",
+                &arguments,
+                &skill_locations,
+                &skill_activations,
+            )
+        );
+
+        let results = [first.unwrap(), second.unwrap()];
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| result.output.contains("skill instructions"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| result.output.contains("activation is already in progress"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| result.skill_activation.is_some())
+                .count(),
+            1
+        );
+        assert!(
+            skill_activations
+                .lock()
+                .unwrap()
+                .active
+                .contains("test-skill")
+        );
     }
 
     #[tokio::test]
@@ -988,7 +1124,7 @@ mod tests {
         std::fs::write(&skill_path, b"\0binary").unwrap();
         let skill_path = skill_path.canonicalize().unwrap();
         let skill_locations = HashMap::from([(skill_path.clone(), "binary-skill".to_string())]);
-        let activated_skills = Arc::new(Mutex::new(HashSet::new()));
+        let skill_activations = Arc::new(Mutex::new(SkillActivations::default()));
         let arguments = serde_json::json!({ "path": skill_path }).to_string();
 
         let error = execute_tool_with_skill_dedup(
@@ -997,13 +1133,26 @@ mod tests {
             "Read",
             &arguments,
             &skill_locations,
-            &activated_skills,
+            &skill_activations,
         )
         .await
         .unwrap_err();
 
         assert!(error.contains("Cannot read binary file"));
-        assert!(!activated_skills.lock().unwrap().contains("binary-skill"));
+        assert!(
+            !skill_activations
+                .lock()
+                .unwrap()
+                .active
+                .contains("binary-skill")
+        );
+        assert!(
+            !skill_activations
+                .lock()
+                .unwrap()
+                .pending
+                .contains("binary-skill")
+        );
     }
 
     #[test]

@@ -4,8 +4,8 @@ This index summarizes the task files in this directory. Use it as the manually m
 
 ## Status Summary
 
-- Completed: 58
-- Pending: 49
+- Completed: 59
+- Pending: 48
 - Tracking: 0
 - Open: 1
 - Blocked: 12
@@ -24,7 +24,6 @@ These are the highest-priority tasks currently available from the task metadata:
 
 | Task          | Title                                                                  | Status  | Priority | Effort | ExecPlan                       | Depends on |
 | ------------- | ---------------------------------------------------------------------- | ------- | -------- | ------ | ------------------------------ | ---------- |
-| [018](018.md) | Fix Concurrent Skill Activation Race                                   | Pending | -        | -      | -                              | -          |
 | [026](026.md) | Fix Double INIT and Stream Ordering for Continued Sessions             | Pending | -        | -      | -                              | -          |
 
 ## Parent Trackers
@@ -52,7 +51,7 @@ _None active._
 | [015](015.md)   | Consolidate Per-Function unwrap_used Allow to Module-Level in Tests | Blocked   | -        | -                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [016](016.md)   | Refactor send() and execute_bash() into Smaller Functions           | Blocked   | -        | -                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [017](017.md)   | Extract Tool Execution Helpers from Agent send()                    | Completed | -        | -                                  | -                                                               | -                                                                                                                                                                                                                                             |
-| [018](018.md)   | Fix Concurrent Skill Activation Race                                | Pending   | -        | -                                  | -                                                               | -                                                                                                                                                                                                                                             |
+| [018](018.md)   | Fix Concurrent Skill Activation Race                                | Completed | -        | -                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [019](019.md)   | Remove Write-Only prior_skill_activations State                     | Completed | -        | -                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [020](020.md)   | Simplify with_activated_skills()                                    | Completed | -        | -                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [021](021.md)   | Deduplicate Session Streaming Helpers                               | Completed | -        | -                                  | -                                                               | -                                                                                                                                                                                                                                             |
