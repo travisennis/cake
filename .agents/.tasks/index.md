@@ -4,8 +4,8 @@ This index summarizes the task files in this directory. Use it as the manually m
 
 ## Status Summary
 
-- Completed: 60
-- Pending: 48
+- Completed: 61
+- Pending: 47
 - Tracking: 0
 - Open: 1
 - Blocked: 12
@@ -24,7 +24,7 @@ These are the highest-priority tasks currently available from the task metadata:
 
 | Task          | Title                                                                  | Status  | Priority | Effort | ExecPlan                       | Depends on |
 | ------------- | ---------------------------------------------------------------------- | ------- | -------- | ------ | ------------------------------ | ---------- |
-| [027](027.md) | Clean Up Pre-Existing Dead Code                                        | Pending | -        | -      | -                              | -          |
+| [028](028.md) | Warn (Don't Silently Swallow) StreamRecord Serialization Failures      | Pending | -        | -      | -                              | -          |
 
 ## Parent Trackers
 
@@ -60,7 +60,7 @@ _None active._
 | [024](024.md)   | Revisit Retryable HTTP Status Codes                                 | Completed | -        | -                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [025](025.md)   | Centralize Agent Test Construction                                  | Completed | -        | -                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [026](026.md)   | Fix Double INIT and Stream Ordering for Continued Sessions          | Completed | -        | -                                  | -                                                               | Closed as obsolete: v4 session persistence writes one first-line `session_meta`, appends continue/resume tasks without new metadata, and fork seeding excludes parent metadata.                                                                 |
-| [027](027.md)   | Clean Up Pre-Existing Dead Code                                     | Pending   | -        | -                                  | -                                                               | -                                                                                                                                                                                                                                             |
+| [027](027.md)   | Clean Up Pre-Existing Dead Code                                     | Completed | -        | -                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [028](028.md)   | Warn (Don't Silently Swallow) StreamRecord Serialization Failures   | Pending   | -        | -                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [029](029.md)   | Reduce SessionRecord / StreamRecord Boilerplate                     | Pending   | -        | -                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [030](030.md)   | Investigate Session-Level Hook Observability                        | Pending   | -        | -                                  | -                                                               | -                                                                                                                                                                                                                                             |

@@ -281,7 +281,6 @@ impl ConversationItem {
 pub enum TaskCompleteSubtype {
     Success,
     ErrorDuringExecution,
-    ErrorMaxTurns,
 }
 
 /// Outcome of a completed task.
@@ -289,7 +288,6 @@ pub enum TaskCompleteSubtype {
 pub enum TaskOutcome {
     Success { result: Option<String> },
     ErrorDuringExecution { error: String },
-    ErrorMaxTurns { error: String },
 }
 
 impl TaskOutcome {
@@ -297,7 +295,6 @@ impl TaskOutcome {
         match self {
             Self::Success { .. } => TaskCompleteSubtype::Success,
             Self::ErrorDuringExecution { .. } => TaskCompleteSubtype::ErrorDuringExecution,
-            Self::ErrorMaxTurns { .. } => TaskCompleteSubtype::ErrorMaxTurns,
         }
     }
 
@@ -341,13 +338,11 @@ impl Serialize for TaskOutcome {
                 result: result.as_deref(),
                 error: None,
             },
-            Self::ErrorDuringExecution { error } | Self::ErrorMaxTurns { error } => {
-                TaskOutcomeFields {
-                    subtype: self.subtype(),
-                    is_error: self.is_error(),
-                    result: None,
-                    error: Some(error),
-                }
+            Self::ErrorDuringExecution { error } => TaskOutcomeFields {
+                subtype: self.subtype(),
+                is_error: self.is_error(),
+                result: None,
+                error: Some(error),
             },
         };
 
@@ -388,13 +383,6 @@ impl<'de> Deserialize<'de> for TaskOutcome {
                 error: fields.error.ok_or_else(|| {
                     serde::de::Error::custom(
                         "task completion error_during_execution outcome requires error",
-                    )
-                })?,
-            }),
-            TaskCompleteSubtype::ErrorMaxTurns => Ok(Self::ErrorMaxTurns {
-                error: fields.error.ok_or_else(|| {
-                    serde::de::Error::custom(
-                        "task completion error_max_turns outcome requires error",
                     )
                 })?,
             }),

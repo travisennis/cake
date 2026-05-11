@@ -54,6 +54,7 @@ impl SkillActivations {
         self.pending.clear();
     }
 
+    #[allow(dead_code)]
     fn active(&self) -> HashSet<String> {
         self.active.clone()
     }

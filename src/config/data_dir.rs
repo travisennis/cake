@@ -365,8 +365,6 @@ pub fn looks_like_uuid(s: &str) -> bool {
 /// loading the entire conversation history.
 #[derive(Deserialize)]
 struct SessionFileHeader {
-    #[allow(dead_code)]
-    session_id: String,
     format_version: u32,
     working_directory: PathBuf,
 }
