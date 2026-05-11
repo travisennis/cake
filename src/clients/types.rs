@@ -390,6 +390,83 @@ impl<'de> Deserialize<'de> for TaskOutcome {
     }
 }
 
+// =============================================================================
+// Shared inner structs for SessionRecord / StreamRecord variant data
+// =============================================================================
+
+/// Shared data for `TaskStart` records in both `StreamRecord` and `SessionRecord`.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct TaskStartData {
+    pub session_id: String,
+    pub task_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+/// Shared data for `Message` records in both `StreamRecord` and `SessionRecord`.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct MessageData {
+    pub role: Role,
+    pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<DateTime<Utc>>,
+}
+
+/// Shared data for `FunctionCall` records in both `StreamRecord` and `SessionRecord`.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct FunctionCallData {
+    pub id: String,
+    pub call_id: String,
+    pub name: String,
+    pub arguments: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<DateTime<Utc>>,
+}
+
+/// Shared data for `FunctionCallOutput` records in both `StreamRecord` and `SessionRecord`.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct FunctionCallOutputData {
+    pub call_id: String,
+    pub output: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<DateTime<Utc>>,
+}
+
+/// Shared data for `Reasoning` records in both `StreamRecord` and `SessionRecord`.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ReasoningData {
+    pub id: String,
+    pub summary: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encrypted_content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<Vec<ReasoningContent>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<DateTime<Utc>>,
+}
+
+/// Shared data for `TaskComplete` records in both `StreamRecord` and `SessionRecord`.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct TaskCompleteData {
+    #[serde(flatten)]
+    pub outcome: TaskOutcome,
+    pub duration_ms: u64,
+    pub turn_count: u32,
+    pub num_turns: u32,
+    pub session_id: String,
+    pub task_id: String,
+    pub usage: Usage,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permission_denials: Option<Vec<String>>,
+}
+
+// =============================================================================
+// Session Record Enum (for unified JSONL schema)
+// =============================================================================
+
 /// A single line in an append-only JSONL session file.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -412,11 +489,7 @@ pub enum SessionRecord {
         git: GitState,
     },
 
-    TaskStart {
-        session_id: String,
-        task_id: String,
-        timestamp: DateTime<Utc>,
-    },
+    TaskStart(TaskStartData),
 
     /// Initial prompt context used for one invocation.
     ///
@@ -431,32 +504,11 @@ pub enum SessionRecord {
         timestamp: DateTime<Utc>,
     },
 
-    Message {
-        role: Role,
-        content: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        id: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        status: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        timestamp: Option<DateTime<Utc>>,
-    },
+    Message(MessageData),
 
-    FunctionCall {
-        id: String,
-        call_id: String,
-        name: String,
-        arguments: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        timestamp: Option<DateTime<Utc>>,
-    },
+    FunctionCall(FunctionCallData),
 
-    FunctionCallOutput {
-        call_id: String,
-        output: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        timestamp: Option<DateTime<Utc>>,
-    },
+    FunctionCallOutput(FunctionCallOutputData),
 
     SkillActivated {
         session_id: String,
@@ -483,29 +535,9 @@ pub enum SessionRecord {
         stderr: String,
     },
 
-    Reasoning {
-        id: String,
-        summary: Vec<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        encrypted_content: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        content: Option<Vec<ReasoningContent>>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        timestamp: Option<DateTime<Utc>>,
-    },
+    Reasoning(ReasoningData),
 
-    TaskComplete {
-        #[serde(flatten)]
-        outcome: TaskOutcome,
-        duration_ms: u64,
-        turn_count: u32,
-        num_turns: u32,
-        session_id: String,
-        task_id: String,
-        usage: Usage,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        permission_denials: Option<Vec<String>>,
-    },
+    TaskComplete(TaskCompleteData),
 }
 
 /// A single line in `--output-format stream-json` output for the current task.
@@ -515,143 +547,28 @@ pub enum SessionRecord {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StreamRecord {
-    TaskStart {
-        session_id: String,
-        task_id: String,
-        timestamp: DateTime<Utc>,
-    },
+    TaskStart(TaskStartData),
 
-    Message {
-        role: Role,
-        content: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        id: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        status: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        timestamp: Option<DateTime<Utc>>,
-    },
+    Message(MessageData),
 
-    FunctionCall {
-        id: String,
-        call_id: String,
-        name: String,
-        arguments: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        timestamp: Option<DateTime<Utc>>,
-    },
+    FunctionCall(FunctionCallData),
 
-    FunctionCallOutput {
-        call_id: String,
-        output: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        timestamp: Option<DateTime<Utc>>,
-    },
+    FunctionCallOutput(FunctionCallOutputData),
 
-    Reasoning {
-        id: String,
-        summary: Vec<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        encrypted_content: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        content: Option<Vec<ReasoningContent>>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        timestamp: Option<DateTime<Utc>>,
-    },
+    Reasoning(ReasoningData),
 
-    TaskComplete {
-        #[serde(flatten)]
-        outcome: TaskOutcome,
-        duration_ms: u64,
-        turn_count: u32,
-        num_turns: u32,
-        session_id: String,
-        task_id: String,
-        usage: Usage,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        permission_denials: Option<Vec<String>>,
-    },
+    TaskComplete(TaskCompleteData),
 }
 
 impl From<StreamRecord> for SessionRecord {
     fn from(record: StreamRecord) -> Self {
         match record {
-            StreamRecord::TaskStart {
-                session_id,
-                task_id,
-                timestamp,
-            } => Self::TaskStart {
-                session_id,
-                task_id,
-                timestamp,
-            },
-            StreamRecord::Message {
-                role,
-                content,
-                id,
-                status,
-                timestamp,
-            } => Self::Message {
-                role,
-                content,
-                id,
-                status,
-                timestamp,
-            },
-            StreamRecord::FunctionCall {
-                id,
-                call_id,
-                name,
-                arguments,
-                timestamp,
-            } => Self::FunctionCall {
-                id,
-                call_id,
-                name,
-                arguments,
-                timestamp,
-            },
-            StreamRecord::FunctionCallOutput {
-                call_id,
-                output,
-                timestamp,
-            } => Self::FunctionCallOutput {
-                call_id,
-                output,
-                timestamp,
-            },
-            StreamRecord::Reasoning {
-                id,
-                summary,
-                encrypted_content,
-                content,
-                timestamp,
-            } => Self::Reasoning {
-                id,
-                summary,
-                encrypted_content,
-                content,
-                timestamp,
-            },
-            StreamRecord::TaskComplete {
-                outcome,
-                duration_ms,
-                turn_count,
-                num_turns,
-                session_id,
-                task_id,
-                usage,
-                permission_denials,
-            } => Self::TaskComplete {
-                outcome,
-                duration_ms,
-                turn_count,
-                num_turns,
-                session_id,
-                task_id,
-                usage,
-                permission_denials,
-            },
+            StreamRecord::TaskStart(d) => Self::TaskStart(d),
+            StreamRecord::Message(d) => Self::Message(d),
+            StreamRecord::FunctionCall(d) => Self::FunctionCall(d),
+            StreamRecord::FunctionCallOutput(d) => Self::FunctionCallOutput(d),
+            StreamRecord::Reasoning(d) => Self::Reasoning(d),
+            StreamRecord::TaskComplete(d) => Self::TaskComplete(d),
         }
     }
 }
@@ -666,48 +583,48 @@ impl StreamRecord {
                 id,
                 status,
                 timestamp,
-            } => Self::Message {
+            } => Self::Message(MessageData {
                 role: *role,
                 content: content.clone(),
                 id: id.clone(),
                 status: status.clone(),
                 timestamp: *timestamp,
-            },
+            }),
             ConversationItem::FunctionCall {
                 id,
                 call_id,
                 name,
                 arguments,
                 timestamp,
-            } => Self::FunctionCall {
+            } => Self::FunctionCall(FunctionCallData {
                 id: id.clone(),
                 call_id: call_id.clone(),
                 name: name.clone(),
                 arguments: arguments.clone(),
                 timestamp: *timestamp,
-            },
+            }),
             ConversationItem::FunctionCallOutput {
                 call_id,
                 output,
                 timestamp,
-            } => Self::FunctionCallOutput {
+            } => Self::FunctionCallOutput(FunctionCallOutputData {
                 call_id: call_id.clone(),
                 output: output.clone(),
                 timestamp: *timestamp,
-            },
+            }),
             ConversationItem::Reasoning {
                 id,
                 summary,
                 encrypted_content,
                 content,
                 timestamp,
-            } => Self::Reasoning {
+            } => Self::Reasoning(ReasoningData {
                 id: id.clone(),
                 summary: summary.clone(),
                 encrypted_content: encrypted_content.clone(),
                 content: content.clone(),
                 timestamp: *timestamp,
-            },
+            }),
         }
     }
 }
@@ -716,18 +633,18 @@ impl SessionRecord {
     /// Fill legacy omissions that are no longer absent in newly written sessions.
     pub(crate) fn normalize_legacy_fields(&mut self, fallback_timestamp: DateTime<Utc>) {
         match self {
-            Self::Message { timestamp, .. }
-            | Self::FunctionCall { timestamp, .. }
-            | Self::FunctionCallOutput { timestamp, .. }
-            | Self::Reasoning { timestamp, .. } => {
+            Self::Message(MessageData { timestamp, .. })
+            | Self::FunctionCall(FunctionCallData { timestamp, .. })
+            | Self::FunctionCallOutput(FunctionCallOutputData { timestamp, .. })
+            | Self::Reasoning(ReasoningData { timestamp, .. }) => {
                 timestamp.get_or_insert(fallback_timestamp);
             },
             Self::SessionMeta { .. }
-            | Self::TaskStart { .. }
+            | Self::TaskStart(_)
             | Self::PromptContext { .. }
             | Self::SkillActivated { .. }
             | Self::HookEvent { .. }
-            | Self::TaskComplete { .. } => {},
+            | Self::TaskComplete(_) => {},
         }
     }
 
@@ -736,48 +653,48 @@ impl SessionRecord {
     /// `ConversationItem` equivalent.
     pub fn to_conversation_item(&self) -> Option<ConversationItem> {
         match self {
-            Self::Message {
+            Self::Message(MessageData {
                 role,
                 content,
                 id,
                 status,
                 timestamp,
-            } => Some(ConversationItem::Message {
+            }) => Some(ConversationItem::Message {
                 role: *role,
                 content: content.clone(),
                 id: id.clone(),
                 status: status.clone(),
                 timestamp: *timestamp,
             }),
-            Self::FunctionCall {
+            Self::FunctionCall(FunctionCallData {
                 id,
                 call_id,
                 name,
                 arguments,
                 timestamp,
-            } => Some(ConversationItem::FunctionCall {
+            }) => Some(ConversationItem::FunctionCall {
                 id: id.clone(),
                 call_id: call_id.clone(),
                 name: name.clone(),
                 arguments: arguments.clone(),
                 timestamp: *timestamp,
             }),
-            Self::FunctionCallOutput {
+            Self::FunctionCallOutput(FunctionCallOutputData {
                 call_id,
                 output,
                 timestamp,
-            } => Some(ConversationItem::FunctionCallOutput {
+            }) => Some(ConversationItem::FunctionCallOutput {
                 call_id: call_id.clone(),
                 output: output.clone(),
                 timestamp: *timestamp,
             }),
-            Self::Reasoning {
+            Self::Reasoning(ReasoningData {
                 id,
                 summary,
                 encrypted_content,
                 content,
                 timestamp,
-            } => Some(ConversationItem::Reasoning {
+            }) => Some(ConversationItem::Reasoning {
                 id: id.clone(),
                 summary: summary.clone(),
                 encrypted_content: encrypted_content.clone(),
@@ -785,11 +702,11 @@ impl SessionRecord {
                 timestamp: *timestamp,
             }),
             Self::SessionMeta { .. }
-            | Self::TaskStart { .. }
+            | Self::TaskStart(_)
             | Self::PromptContext { .. }
             | Self::SkillActivated { .. }
             | Self::HookEvent { .. }
-            | Self::TaskComplete { .. } => None,
+            | Self::TaskComplete(_) => None,
         }
     }
 }
@@ -1013,7 +930,7 @@ mod tests {
 
     #[test]
     fn task_outcome_serializes_canonical_task_complete_fields() {
-        let record = StreamRecord::TaskComplete {
+        let record = StreamRecord::TaskComplete(TaskCompleteData {
             outcome: TaskOutcome::Success {
                 result: Some("done".to_string()),
             },
@@ -1024,7 +941,7 @@ mod tests {
             task_id: "task-1".to_string(),
             usage: Usage::default(),
             permission_denials: None,
-        };
+        });
 
         let json = serde_json::to_value(&record).unwrap();
         assert_eq!(json["type"], "task_complete");
@@ -1053,10 +970,10 @@ mod tests {
         let record = serde_json::from_value::<StreamRecord>(json).unwrap();
         assert!(matches!(
             record,
-            StreamRecord::TaskComplete {
+            StreamRecord::TaskComplete(TaskCompleteData {
                 outcome: TaskOutcome::Success { .. },
                 ..
-            }
+            })
         ));
     }
 
@@ -1077,10 +994,10 @@ mod tests {
         let record = serde_json::from_value::<StreamRecord>(json).unwrap();
         assert!(matches!(
             record,
-            StreamRecord::TaskComplete {
+            StreamRecord::TaskComplete(TaskCompleteData {
                 outcome: TaskOutcome::Success { .. },
                 ..
-            }
+            })
         ));
     }
 
@@ -1745,18 +1662,18 @@ mod tests {
 
     #[test]
     fn snapshot_session_json_task_start() {
-        let record = SessionRecord::TaskStart {
+        let record = SessionRecord::TaskStart(TaskStartData {
             session_id: fixed_session_id(),
             task_id: fixed_task_id(),
             timestamp: fixed_timestamp(),
-        };
+        });
 
         insta::assert_json_snapshot!("session_json_task_start", session_record_json(record));
     }
 
     #[test]
     fn snapshot_session_json_task_complete() {
-        let record = SessionRecord::TaskComplete {
+        let record = SessionRecord::TaskComplete(TaskCompleteData {
             outcome: TaskOutcome::ErrorDuringExecution {
                 error: "tool failed".to_string(),
             },
@@ -1775,7 +1692,7 @@ mod tests {
                 total_tokens: 150,
             },
             permission_denials: Some(vec!["bash: rm -rf /".to_string()]),
-        };
+        });
 
         insta::assert_json_snapshot!("session_json_task_complete", session_record_json(record));
     }

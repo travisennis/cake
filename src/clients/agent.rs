@@ -9,7 +9,10 @@ use crate::clients::agent_runner::AgentRunner;
 use crate::clients::agent_state::{ConversationState, accumulate_usage};
 use crate::clients::backend::Backend;
 use crate::clients::tools::{ToolContext, ToolRegistry, default_tool_registry};
-use crate::clients::types::{ConversationItem, SessionRecord, StreamRecord, TaskOutcome, Usage};
+use crate::clients::types::{
+    ConversationItem, SessionRecord, StreamRecord, TaskCompleteData, TaskOutcome, TaskStartData,
+    Usage,
+};
 #[cfg(test)]
 use crate::config::model::ApiType;
 use crate::config::model::ResolvedModelConfig;
@@ -330,11 +333,11 @@ impl Agent {
 
     /// Emit the task start record.
     pub fn emit_task_start_record(&mut self) -> anyhow::Result<()> {
-        let record = StreamRecord::TaskStart {
+        let record = StreamRecord::TaskStart(TaskStartData {
             session_id: self.session_id.to_string(),
             task_id: self.task_id.to_string(),
             timestamp: chrono::Utc::now(),
-        };
+        });
 
         self.stream_record(record)
     }
@@ -386,7 +389,7 @@ impl Agent {
         outcome: TaskOutcome,
         duration_ms: u64,
     ) -> anyhow::Result<()> {
-        let record = StreamRecord::TaskComplete {
+        let record = StreamRecord::TaskComplete(TaskCompleteData {
             outcome,
             duration_ms,
             turn_count: self.turn_count,
@@ -395,7 +398,7 @@ impl Agent {
             task_id: self.task_id.to_string(),
             usage: self.total_usage.clone(),
             permission_denials: None,
-        };
+        });
 
         self.stream_record(record)
     }

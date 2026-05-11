@@ -4,8 +4,8 @@ This index summarizes the task files in this directory. Use it as the manually m
 
 ## Status Summary
 
-- Completed: 62
-- Pending: 46
+- Completed: 63
+- Pending: 45
 - Tracking: 0
 - Open: 1
 - Blocked: 12
@@ -24,7 +24,7 @@ These are the highest-priority tasks currently available from the task metadata:
 
 | Task          | Title                                                                  | Status  | Priority | Effort | ExecPlan                       | Depends on |
 | ------------- | ---------------------------------------------------------------------- | ------- | -------- | ------ | ------------------------------ | ---------- |
-| [029](029.md) | Reduce SessionRecord / StreamRecord Boilerplate                     | Pending   | -        | -                                  | -                                                               | -                                                                                                                                                                                                                                             |
+| [068](068.md) | Replace with_history Debug Assertion with Real Invariant            | Pending   | P2       | M                                  | -                                                               | -                                                                                                                                                                                                                                             |
 
 ## Parent Trackers
 
@@ -62,7 +62,7 @@ _None active._
 | [026](026.md)   | Fix Double INIT and Stream Ordering for Continued Sessions          | Completed | -        | -                                  | -                                                               | Closed as obsolete: v4 session persistence writes one first-line `session_meta`, appends continue/resume tasks without new metadata, and fork seeding excludes parent metadata.                                                                 |
 | [027](027.md)   | Clean Up Pre-Existing Dead Code                                     | Completed | -        | -                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [028](028.md)   | Warn (Don't Silently Swallow) StreamRecord Serialization Failures   | Completed | -        | -                                  | -                                                               | -                                                                                                                                                                                                                                             |
-| [029](029.md)   | Reduce SessionRecord / StreamRecord Boilerplate                     | Pending   | -        | -                                  | -                                                               | -                                                                                                                                                                                                                                             |
+| [029](029.md)   | Reduce SessionRecord / StreamRecord Boilerplate                     | Completed | -        | -                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [030](030.md)   | Investigate Session-Level Hook Observability                        | Pending   | -        | -                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [031](031.md)   | Fix rm -rf Safety Checks for Multiple Targets                       | Completed | P0       | M                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [032](032.md)   | Stop Treating Literal TMPDIR as Safe rm Target                      | Completed | P0       | S                                  | -                                                               | -                                                                                                                                                                                                                                             |

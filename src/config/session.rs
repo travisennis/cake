@@ -278,7 +278,10 @@ fn lock_session_file(file: &File, path: &Path) -> anyhow::Result<()> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::clients::types::{ReasoningContent, ReasoningContentKind, TaskOutcome, Usage};
+    use crate::clients::types::{
+        FunctionCallData, FunctionCallOutputData, MessageData, ReasoningContent,
+        ReasoningContentKind, ReasoningData, TaskCompleteData, TaskOutcome, TaskStartData, Usage,
+    };
     use crate::models::Role;
     use tempfile::TempDir;
 
@@ -309,15 +312,15 @@ mod tests {
     }
 
     fn task_start(session: &Session, task_id: &str) -> SessionRecord {
-        SessionRecord::TaskStart {
+        SessionRecord::TaskStart(TaskStartData {
             session_id: session.id.to_string(),
             task_id: task_id.to_string(),
             timestamp: chrono::Utc::now(),
-        }
+        })
     }
 
     fn task_complete(session: &Session, task_id: &str) -> SessionRecord {
-        SessionRecord::TaskComplete {
+        SessionRecord::TaskComplete(TaskCompleteData {
             outcome: TaskOutcome::Success {
                 result: Some("Done".to_string()),
             },
@@ -328,7 +331,7 @@ mod tests {
             task_id: task_id.to_string(),
             usage: Usage::default(),
             permission_denials: None,
-        }
+        })
     }
 
     #[test]
@@ -351,24 +354,24 @@ mod tests {
         Session::append_record(&mut file, &task_start(&session, "task-1")).unwrap();
         Session::append_record(
             &mut file,
-            &SessionRecord::Message {
+            &SessionRecord::Message(MessageData {
                 role: Role::User,
                 content: "Hello".to_string(),
                 id: None,
                 status: None,
                 timestamp: None,
-            },
+            }),
         )
         .unwrap();
         Session::append_record(
             &mut file,
-            &SessionRecord::Message {
+            &SessionRecord::Message(MessageData {
                 role: Role::Assistant,
                 content: "Hi".to_string(),
                 id: Some("msg-1".to_string()),
                 status: Some("completed".to_string()),
                 timestamp: None,
-            },
+            }),
         )
         .unwrap();
         Session::append_record(&mut file, &task_complete(&session, "task-1")).unwrap();
@@ -392,13 +395,13 @@ mod tests {
         let mut file = Session::create_on_disk(&path, &meta_record(&session)).unwrap();
         Session::append_record(
             &mut file,
-            &SessionRecord::Message {
+            &SessionRecord::Message(MessageData {
                 role: Role::User,
                 content: "Hello".to_string(),
                 id: None,
                 status: None,
                 timestamp: None,
-            },
+            }),
         )
         .unwrap();
 
@@ -429,32 +432,32 @@ mod tests {
         let session = make_test_session();
         let mut file = Session::create_on_disk(&path, &meta_record(&session)).unwrap();
         let records = vec![
-            SessionRecord::Message {
+            SessionRecord::Message(MessageData {
                 role: Role::User,
                 content: "list files".to_string(),
                 id: None,
                 status: None,
                 timestamp: None,
-            },
-            SessionRecord::FunctionCall {
+            }),
+            SessionRecord::FunctionCall(FunctionCallData {
                 id: "fc-1".to_string(),
                 call_id: "call-1".to_string(),
                 name: "bash".to_string(),
                 arguments: r#"{"cmd":"ls"}"#.to_string(),
                 timestamp: None,
-            },
-            SessionRecord::FunctionCallOutput {
+            }),
+            SessionRecord::FunctionCallOutput(FunctionCallOutputData {
                 call_id: "call-1".to_string(),
                 output: "file.txt".to_string(),
                 timestamp: None,
-            },
-            SessionRecord::Reasoning {
+            }),
+            SessionRecord::Reasoning(ReasoningData {
                 id: "r-1".to_string(),
                 summary: vec!["thinking...".to_string()],
                 encrypted_content: None,
                 content: None,
                 timestamp: None,
-            },
+            }),
         ];
 
         Session::append_records(&mut file, &records).unwrap();
@@ -475,11 +478,11 @@ mod tests {
         Session::append_records(
             &mut file,
             &[
-                SessionRecord::FunctionCallOutput {
+                SessionRecord::FunctionCallOutput(FunctionCallOutputData {
                     call_id: "call-1".to_string(),
                     output: "echoed text: Skill 'not-real' activated".to_string(),
                     timestamp: None,
-                },
+                }),
                 SessionRecord::SkillActivated {
                     session_id: session.id.to_string(),
                     task_id: "task-1".to_string(),
@@ -544,13 +547,13 @@ mod tests {
         let mut file = Session::create_on_disk(&path, &meta_record(&session)).unwrap();
         Session::append_record(
             &mut file,
-            &SessionRecord::Message {
+            &SessionRecord::Message(MessageData {
                 role: Role::User,
                 content: "Hello".to_string(),
                 id: None,
                 status: None,
                 timestamp: None,
-            },
+            }),
         )
         .unwrap();
 
@@ -603,7 +606,7 @@ mod tests {
         let loaded = Session::load(&path).unwrap();
         assert!(matches!(
             loaded.records.last(),
-            Some(SessionRecord::TaskStart { .. })
+            Some(SessionRecord::TaskStart(TaskStartData { .. }))
         ));
     }
 
@@ -616,7 +619,7 @@ mod tests {
         let mut file = Session::create_on_disk(&path, &meta_record(&session)).unwrap();
         Session::append_record(
             &mut file,
-            &SessionRecord::Reasoning {
+            &SessionRecord::Reasoning(ReasoningData {
                 id: "r-1".to_string(),
                 summary: vec!["thinking...".to_string()],
                 encrypted_content: Some("gAAAAABencrypted...".to_string()),
@@ -625,7 +628,7 @@ mod tests {
                     text: Some("deep thoughts".to_string()),
                 }]),
                 timestamp: None,
-            },
+            }),
         )
         .unwrap();
         drop(file);
@@ -634,9 +637,9 @@ mod tests {
 
         assert_eq!(loaded.records.len(), 2);
         match &loaded.records[1] {
-            SessionRecord::Reasoning {
+            SessionRecord::Reasoning(ReasoningData {
                 encrypted_content, ..
-            } => {
+            }) => {
                 assert_eq!(encrypted_content.as_deref(), Some("gAAAAABencrypted..."));
             },
             _ => panic!("Expected Reasoning record"),
@@ -661,7 +664,7 @@ mod tests {
         let loaded = Session::load(&path).unwrap();
 
         match &loaded.records[1] {
-            SessionRecord::Message { timestamp, .. } => {
+            SessionRecord::Message(MessageData { timestamp, .. }) => {
                 let expected = chrono::DateTime::parse_from_rfc3339("2026-05-10T00:00:00Z")
                     .unwrap()
                     .with_timezone(&chrono::Utc);
@@ -692,7 +695,7 @@ mod tests {
             .with_timezone(&chrono::Utc);
 
         match &loaded.records[1] {
-            SessionRecord::Message { timestamp, .. } => {
+            SessionRecord::Message(MessageData { timestamp, .. }) => {
                 assert_eq!(*timestamp, Some(expected));
             },
             _ => panic!("Expected Message record"),

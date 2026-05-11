@@ -1256,6 +1256,7 @@ fn main() -> std::process::ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::clients::types::FunctionCallOutputData;
     use crate::config::model::ApiType;
 
     fn test_resolved_model_config() -> ResolvedModelConfig {
@@ -1283,11 +1284,11 @@ mod tests {
             PathBuf::from("/work"),
         );
         session.records = vec![
-            crate::clients::SessionRecord::FunctionCallOutput {
+            crate::clients::SessionRecord::FunctionCallOutput(FunctionCallOutputData {
                 call_id: "call-1".to_string(),
                 output: "echoed text: Skill 'fake-skill' activated".to_string(),
                 timestamp: None,
-            },
+            }),
             crate::clients::SessionRecord::SkillActivated {
                 session_id: session.id.to_string(),
                 task_id: "task-1".to_string(),
