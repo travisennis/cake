@@ -2,11 +2,11 @@
 
 This index follows `.agents/PLANS.md`. Active ExecPlans are checked-in plans that still describe unfinished or not-yet-started work.
 
-- `edit-tool-lean.md` - Strengthen Edit tool semantics with a Lean-assisted test pass.
-- `performance-improvements.md` - Profile and optimize cake based on measured bottlenecks.
-- `per-session-telemetry-plan.md` - Add per-session telemetry sidecar logs.
-- `progress-bar-plan.md` - Add OSC 9;4 terminal progress indication.
-- `toolboxes-plan.md` - Add user-defined toolbox tools.
+- `edit-tool-lean.md` - Task 117: Strengthen Edit tool semantics with a Lean-assisted test pass.
+- `performance-improvements.md` - Task 118: Profile and optimize cake based on measured bottlenecks.
+- `per-session-telemetry-plan.md` - Task 119: Add per-session telemetry sidecar logs.
+- `progress-bar-plan.md` - Task 120: Add OSC 9;4 terminal progress indication.
+- `toolboxes-plan.md` - Task 121: Add user-defined toolbox tools.
 
 ## Revision Notes
 
@@ -24,4 +24,4 @@ This index follows `.agents/PLANS.md`. Active ExecPlans are checked-in plans tha
 - 2026-05-10 / Codex: Added the active ExecPlan for task 063, `Normalize Optional Fields After Session Deserialization`.
 - 2026-05-10 / Codex: Moved `normalize-session-optional-fields.md` to completed after task 063 passed validation.
 - 2026-05-10 / Codex: Added the active ExecPlan for task 064, `Refactor Chat build_messages State Handling`.
-- 2026-05-11 / Codex: Moved `refactor-chat-build-messages.md` to completed after task 064 passed targeted validation and deslop.
+- 2026-05-11 / Codex: Created tasks 117-121 in `.agents/.tasks/` for all five active ExecPlans to close the plan-to-task gap.
