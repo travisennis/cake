@@ -23,3 +23,5 @@ This index follows `.agents/PLANS.md`. Active ExecPlans are checked-in plans tha
 - 2026-05-10 / Codex: Moved `store-timestamps-as-datetime.md` to completed after task 062 passed validation.
 - 2026-05-10 / Codex: Added the active ExecPlan for task 063, `Normalize Optional Fields After Session Deserialization`.
 - 2026-05-10 / Codex: Moved `normalize-session-optional-fields.md` to completed after task 063 passed validation.
+- 2026-05-10 / Codex: Added the active ExecPlan for task 064, `Refactor Chat build_messages State Handling`.
+- 2026-05-11 / Codex: Moved `refactor-chat-build-messages.md` to completed after task 064 passed targeted validation and deslop.

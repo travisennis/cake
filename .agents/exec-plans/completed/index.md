@@ -9,6 +9,7 @@ This index follows `.agents/PLANS.md`. Completed ExecPlans are plans whose work 
 - `normalize-session-optional-fields.md` - Normalize legacy missing conversation timestamps when sessions are loaded.
 - `provider-strategy.md` - Move provider-specific request quirks behind a shared strategy layer.
 - `refactor-coding-assistant-run.md` - Refactor `CodingAssistant::run` into named orchestration steps.
+- `refactor-chat-build-messages.md` - Refactor Chat Completions message construction state handling.
 - `reasoning-plan.md` - Add reasoning effort and budget configuration.
 - `retry-strategy-plan.md` - Retry transient API failures intelligently.
 - `schema-unification-plan.md` - Historical v3 stream/session unification plan, closed as superseded by append-only v4 sessions.
@@ -25,3 +26,4 @@ This index follows `.agents/PLANS.md`. Completed ExecPlans are plans whose work 
 - 2026-05-10 / Codex: Completed task 061 and moved `consolidate-conversation-serialization.md` into this index.
 - 2026-05-10 / Codex: Completed task 062 and moved `store-timestamps-as-datetime.md` into this index.
 - 2026-05-10 / Codex: Completed task 063 and moved `normalize-session-optional-fields.md` into this index.
+- 2026-05-11 / Codex: Completed task 064 and moved `refactor-chat-build-messages.md` into this index.

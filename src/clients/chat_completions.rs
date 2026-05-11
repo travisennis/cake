@@ -124,65 +124,34 @@ pub(super) async fn parse_response(response: reqwest::Response) -> anyhow::Resul
 /// When a `FunctionCall` is followed by an `Assistant` message, the tool calls
 /// are merged into that assistant message rather than emitted separately.
 fn build_messages(history: &[ConversationItem]) -> Vec<ChatMessage<'_>> {
-    let mut messages: Vec<ChatMessage<'_>> = Vec::new();
-    let mut pending_tool_calls: Vec<ChatToolCallRef<'_>> = Vec::new();
-    let mut pending_reasoning_content: Option<Cow<'_, str>> = None;
-    let mut pending_developer_context: Vec<&str> = Vec::new();
-
+    let mut builder = ChatMessageBuilder::new();
     for item in history {
+        builder.push_item(item);
+    }
+    builder.finish()
+}
+
+struct ChatMessageBuilder<'a> {
+    messages: Vec<ChatMessage<'a>>,
+    pending_tool_calls: Vec<ChatToolCallRef<'a>>,
+    pending_reasoning_content: Option<Cow<'a, str>>,
+    pending_developer_context: Vec<&'a str>,
+}
+
+impl<'a> ChatMessageBuilder<'a> {
+    const fn new() -> Self {
+        Self {
+            messages: Vec::new(),
+            pending_tool_calls: Vec::new(),
+            pending_reasoning_content: None,
+            pending_developer_context: Vec::new(),
+        }
+    }
+
+    fn push_item(&mut self, item: &'a ConversationItem) {
         match item {
             ConversationItem::Message { role, content, .. } => {
-                let role_str = match role {
-                    Role::System => "system",
-                    Role::Developer => {
-                        pending_developer_context.push(content);
-                        continue;
-                    },
-                    Role::Assistant => "assistant",
-                    Role::User => "user",
-                    Role::Tool => "tool",
-                };
-                let content = if matches!(role, Role::User) && !pending_developer_context.is_empty()
-                {
-                    Cow::Owned(format!(
-                        "{}\n\nUser message:\n{}",
-                        pending_developer_context.join("\n\n"),
-                        content
-                    ))
-                } else {
-                    Cow::Borrowed(content.as_str())
-                };
-                if matches!(role, Role::User) {
-                    pending_developer_context.clear();
-                }
-
-                if matches!(role, Role::Assistant) && !pending_tool_calls.is_empty() {
-                    messages.push(ChatMessage {
-                        role: Cow::Borrowed(role_str),
-                        content: Some(content),
-                        reasoning_content: pending_reasoning_content.take(),
-                        tool_calls: Some(std::mem::take(&mut pending_tool_calls)),
-                        tool_call_id: None,
-                    });
-                    continue;
-                }
-
-                // Flush any pending tool calls as an assistant message
-                flush_tool_calls(
-                    &mut messages,
-                    &mut pending_tool_calls,
-                    &mut pending_reasoning_content,
-                );
-
-                messages.push(ChatMessage {
-                    role: Cow::Borrowed(role_str),
-                    content: Some(content),
-                    reasoning_content: matches!(role, Role::Assistant)
-                        .then(|| pending_reasoning_content.take())
-                        .flatten(),
-                    tool_calls: None,
-                    tool_call_id: None,
-                });
+                self.push_message(*role, content);
             },
             ConversationItem::FunctionCall {
                 call_id,
@@ -190,73 +159,137 @@ fn build_messages(history: &[ConversationItem]) -> Vec<ChatMessage<'_>> {
                 arguments,
                 ..
             } => {
-                pending_tool_calls.push(ChatToolCallRef {
-                    id: Cow::Borrowed(call_id),
-                    type_: Cow::Borrowed("function"),
-                    function: ChatFunctionCallRef {
-                        name: Cow::Borrowed(name),
-                        arguments: Cow::Borrowed(arguments),
-                    },
-                });
+                self.push_function_call(call_id, name, arguments);
             },
             ConversationItem::FunctionCallOutput {
                 call_id, output, ..
             } => {
-                // Flush any pending tool calls first
-                flush_tool_calls(
-                    &mut messages,
-                    &mut pending_tool_calls,
-                    &mut pending_reasoning_content,
-                );
-
-                messages.push(ChatMessage {
-                    role: Cow::Borrowed("tool"),
-                    content: Some(Cow::Borrowed(output)),
-                    reasoning_content: None,
-                    tool_calls: None,
-                    tool_call_id: Some(Cow::Borrowed(call_id)),
-                });
+                self.push_function_call_output(call_id, output);
             },
             ConversationItem::Reasoning { content, .. } => {
-                pending_reasoning_content =
-                    extract_reasoning_content(content.as_ref()).map(Cow::Borrowed);
+                self.remember_reasoning(content.as_deref());
             },
         }
     }
 
-    // Flush any remaining tool calls
-    flush_tool_calls(
-        &mut messages,
-        &mut pending_tool_calls,
-        &mut pending_reasoning_content,
-    );
+    fn push_message(&mut self, role: Role, content: &'a str) {
+        let Some(role_str) = chat_role_name(role) else {
+            self.pending_developer_context.push(content);
+            return;
+        };
 
-    messages
-}
+        let content = self.content_with_developer_context(role, content);
 
-fn extract_reasoning_content(
-    content: Option<&Vec<super::types::ReasoningContent>>,
-) -> Option<&str> {
-    content.and_then(|items| items.iter().find_map(|item| item.text.as_deref()))
-}
+        if matches!(role, Role::Assistant) && !self.pending_tool_calls.is_empty() {
+            let tool_calls = self.take_pending_tool_calls();
+            self.push_assistant_message(Some(content), Some(tool_calls));
+            return;
+        }
 
-/// Flush accumulated tool calls into an assistant message.
-fn flush_tool_calls<'a>(
-    messages: &mut Vec<ChatMessage<'a>>,
-    tool_calls: &mut Vec<ChatToolCallRef<'a>>,
-    reasoning_content: &mut Option<Cow<'a, str>>,
-) {
-    if tool_calls.is_empty() {
-        return;
+        self.flush_pending_tool_calls();
+
+        let reasoning_content = matches!(role, Role::Assistant)
+            .then(|| self.pending_reasoning_content.take())
+            .flatten();
+        self.messages.push(ChatMessage {
+            role: Cow::Borrowed(role_str),
+            content: Some(content),
+            reasoning_content,
+            tool_calls: None,
+            tool_call_id: None,
+        });
     }
 
-    messages.push(ChatMessage {
-        role: Cow::Borrowed("assistant"),
-        content: None,
-        reasoning_content: reasoning_content.take(),
-        tool_calls: Some(std::mem::take(tool_calls)),
-        tool_call_id: None,
-    });
+    fn push_function_call(&mut self, call_id: &'a str, name: &'a str, arguments: &'a str) {
+        self.pending_tool_calls.push(ChatToolCallRef {
+            id: Cow::Borrowed(call_id),
+            type_: Cow::Borrowed("function"),
+            function: ChatFunctionCallRef {
+                name: Cow::Borrowed(name),
+                arguments: Cow::Borrowed(arguments),
+            },
+        });
+    }
+
+    fn push_function_call_output(&mut self, call_id: &'a str, output: &'a str) {
+        self.flush_pending_tool_calls();
+
+        self.messages.push(ChatMessage {
+            role: Cow::Borrowed("tool"),
+            content: Some(Cow::Borrowed(output)),
+            reasoning_content: None,
+            tool_calls: None,
+            tool_call_id: Some(Cow::Borrowed(call_id)),
+        });
+    }
+
+    fn remember_reasoning(&mut self, content: Option<&'a [super::types::ReasoningContent]>) {
+        self.pending_reasoning_content = extract_reasoning_content(content).map(Cow::Borrowed);
+    }
+
+    fn content_with_developer_context(&mut self, role: Role, content: &'a str) -> Cow<'a, str> {
+        if !matches!(role, Role::User) {
+            return Cow::Borrowed(content);
+        }
+
+        if self.pending_developer_context.is_empty() {
+            return Cow::Borrowed(content);
+        }
+
+        let content = Cow::Owned(format!(
+            "{}\n\nUser message:\n{}",
+            self.pending_developer_context.join("\n\n"),
+            content
+        ));
+        self.pending_developer_context.clear();
+        content
+    }
+
+    fn flush_pending_tool_calls(&mut self) {
+        if self.pending_tool_calls.is_empty() {
+            return;
+        }
+
+        let tool_calls = self.take_pending_tool_calls();
+        self.push_assistant_message(None, Some(tool_calls));
+    }
+
+    fn push_assistant_message(
+        &mut self,
+        content: Option<Cow<'a, str>>,
+        tool_calls: Option<Vec<ChatToolCallRef<'a>>>,
+    ) {
+        self.messages.push(ChatMessage {
+            role: Cow::Borrowed("assistant"),
+            content,
+            reasoning_content: self.pending_reasoning_content.take(),
+            tool_calls,
+            tool_call_id: None,
+        });
+    }
+
+    fn take_pending_tool_calls(&mut self) -> Vec<ChatToolCallRef<'a>> {
+        std::mem::take(&mut self.pending_tool_calls)
+    }
+
+    fn finish(mut self) -> Vec<ChatMessage<'a>> {
+        self.flush_pending_tool_calls();
+        self.messages
+    }
+}
+
+const fn chat_role_name(role: Role) -> Option<&'static str> {
+    match role {
+        Role::System => Some("system"),
+        Role::Developer => None,
+        Role::Assistant => Some("assistant"),
+        Role::User => Some("user"),
+        Role::Tool => Some("tool"),
+    }
+}
+
+fn extract_reasoning_content(content: Option<&[super::types::ReasoningContent]>) -> Option<&str> {
+    content.and_then(|items| items.iter().find_map(|item| item.text.as_deref()))
 }
 
 /// Convert internal tool definitions to Chat Completions format.
@@ -452,6 +485,79 @@ mod tests {
             msgs[1].content.as_deref(),
             Some("AGENTS.md context\n\nEnvironment context\n\nUser message:\nHello")
         );
+    }
+
+    #[test]
+    fn build_messages_keeps_developer_context_until_next_user_message() {
+        let history = vec![
+            ConversationItem::Message {
+                role: Role::Developer,
+                content: "Project context".to_string(),
+                id: None,
+                status: None,
+                timestamp: None,
+            },
+            ConversationItem::Message {
+                role: Role::Assistant,
+                content: "Ready.".to_string(),
+                id: None,
+                status: None,
+                timestamp: None,
+            },
+            ConversationItem::Message {
+                role: Role::User,
+                content: "Start now".to_string(),
+                id: None,
+                status: None,
+                timestamp: None,
+            },
+        ];
+
+        let msgs = build_messages(&history);
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].role, "assistant");
+        assert_eq!(msgs[0].content.as_deref(), Some("Ready."));
+        assert_eq!(msgs[1].role, "user");
+        assert_eq!(
+            msgs[1].content.as_deref(),
+            Some("Project context\n\nUser message:\nStart now")
+        );
+    }
+
+    #[test]
+    fn build_messages_flushes_pending_tool_calls_before_user_message() {
+        let history = vec![
+            ConversationItem::Message {
+                role: Role::User,
+                content: "inspect".to_string(),
+                id: None,
+                status: None,
+                timestamp: None,
+            },
+            ConversationItem::FunctionCall {
+                id: "fc-1".to_string(),
+                call_id: "call-1".to_string(),
+                name: "bash".to_string(),
+                arguments: r#"{"cmd":"ls"}"#.to_string(),
+                timestamp: None,
+            },
+            ConversationItem::Message {
+                role: Role::User,
+                content: "Actually stop".to_string(),
+                id: None,
+                status: None,
+                timestamp: None,
+            },
+        ];
+
+        let msgs = build_messages(&history);
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[0].role, "user");
+        assert_eq!(msgs[1].role, "assistant");
+        assert!(msgs[1].content.is_none());
+        assert_eq!(msgs[1].tool_calls.as_ref().unwrap().len(), 1);
+        assert_eq!(msgs[2].role, "user");
+        assert_eq!(msgs[2].content.as_deref(), Some("Actually stop"));
     }
 
     #[test]
