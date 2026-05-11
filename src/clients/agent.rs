@@ -53,13 +53,13 @@ pub struct Agent {
     tools: ToolRegistry,
     tool_context: Arc<ToolContext>,
     /// Session ID for tracking
-    pub session_id: uuid::Uuid,
+    session_id: uuid::Uuid,
     /// Task ID for the current CLI invocation.
-    pub task_id: uuid::Uuid,
+    task_id: uuid::Uuid,
     /// Accumulated usage across all API calls
-    pub total_usage: Usage,
+    total_usage: Usage,
     /// Number of API calls made
-    pub turn_count: u32,
+    turn_count: u32,
     /// Maps SKILL.md paths to skill names for activation deduplication.
     /// When the Read tool targets one of these paths, the agent checks if the
     /// skill has already been activated and returns a lightweight message instead.
@@ -120,6 +120,27 @@ impl Agent {
         &self.config.config.model
     }
 
+    /// Returns the session ID.
+    pub const fn session_id(&self) -> uuid::Uuid {
+        self.session_id
+    }
+
+    /// Returns the task ID for the current invocation.
+    #[allow(dead_code)]
+    pub const fn task_id(&self) -> uuid::Uuid {
+        self.task_id
+    }
+
+    /// Returns accumulated usage across all API calls.
+    pub const fn total_usage(&self) -> &Usage {
+        &self.total_usage
+    }
+
+    /// Returns the number of API calls made.
+    pub const fn turn_count(&self) -> u32 {
+        self.turn_count
+    }
+
     /// Sets the session ID for a restored session.
     ///
     /// Use this when continuing a previous session to preserve the session ID.
@@ -131,6 +152,20 @@ impl Agent {
     /// Sets the task ID for the current invocation.
     pub const fn with_task_id(mut self, id: uuid::Uuid) -> Self {
         self.task_id = id;
+        self
+    }
+
+    /// Sets accumulated usage (for test fixtures).
+    #[allow(dead_code)]
+    pub const fn with_total_usage(mut self, usage: Usage) -> Self {
+        self.total_usage = usage;
+        self
+    }
+
+    /// Sets the turn count (for test fixtures).
+    #[allow(dead_code)]
+    pub const fn with_turn_count(mut self, count: u32) -> Self {
+        self.turn_count = count;
         self
     }
 

@@ -4,8 +4,8 @@ This index summarizes the task files in this directory. Use it as the manually m
 
 ## Status Summary
 
-- Completed: 56
-- Pending: 51
+- Completed: 57
+- Pending: 50
 - Tracking: 0
 - Open: 1
 - Blocked: 12
@@ -24,7 +24,7 @@ These are the highest-priority tasks currently available from the task metadata:
 
 | Task          | Title                                                                  | Status  | Priority | Effort | ExecPlan                       | Depends on |
 | ------------- | ---------------------------------------------------------------------- | ------- | -------- | ------ | ------------------------------ | ---------- |
-| [066](066.md) | Encapsulate Agent Public Mutable Fields                                | Pending | P2       | M      | -                              | 048 (e2e test as safety net) |
+| [067](067.md) | Handle Activated Skills Mutex Poisoning Explicitly                     | Pending | P2       | S      | -                              | - |
 
 ## Parent Trackers
 
@@ -105,7 +105,7 @@ _None active._
 | [063](063.md)   | Normalize Optional Fields After Session Deserialization             | Completed | P1       | L                                  | [completed](../exec-plans/completed/normalize-session-optional-fields.md) | -                                                                                                                                                                                                                                             |
 | [064](064.md)   | Refactor Chat build_messages State Handling                         | Completed | P2       | L                                  | [completed](../exec-plans/completed/refactor-chat-build-messages.md) | 050 (Backend abstraction)                                                                                                                                                                                                                     |
 | [065](065.md)   | Reduce Cloning in Agent Tool Loop                                   | Completed | P2       | M                                  | -                                                               | 048 (e2e test as safety net)                                                                                                                                                                                                                  |
-| [066](066.md)   | Encapsulate Agent Public Mutable Fields                             | Pending   | P2       | M                                  | -                                                               | 048 (e2e test as safety net)                                                                                                                                                                                                                  |
+| [066](066.md)   | Encapsulate Agent Public Mutable Fields                             | Completed | P2       | M                                  | -                                                               | 048 (e2e test as safety net)                                                                                                                                                                                                                  |
 | [067](067.md)   | Handle Activated Skills Mutex Poisoning Explicitly                  | Pending   | P2       | S                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [068](068.md)   | Replace with_history Debug Assertion with Real Invariant            | Pending   | P2       | M                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [069](069.md)   | Rework Fork Session Storage Path                                    | Pending   | P2       | M                                  | -                                                               | -                                                                                                                                                                                                                                             |

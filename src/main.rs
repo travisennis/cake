@@ -222,11 +222,11 @@ impl CliOutputSink {
         session: &Session,
     ) -> serde_json::Value {
         let mut json = serde_json::json!({
-            "session_id": client.session_id.to_string(),
-            "usage": client.total_usage,
+            "session_id": client.session_id().to_string(),
+            "usage": client.total_usage(),
             "cwd": current_dir.to_string_lossy(),
             "session_file": data_dir.session_path(session.id).to_string_lossy(),
-            "turns": client.turn_count,
+            "turns": client.turn_count(),
             "elapsed_time": duration_ms,
         });
 
@@ -557,7 +557,7 @@ impl CodingAssistant {
             .with_task_id(task_id)
             .with_tool_context(tool_context)
             .with_skill_locations(skill_locations);
-        let new_id = agent.session_id;
+        let new_id = agent.session_id();
         info!(target: "cake", "New session: {new_id}");
         let mut session = Session::new(new_id, current_dir);
         session.model = Some(resolved.config.model);
@@ -586,7 +586,7 @@ impl CodingAssistant {
             .with_history(restored.messages())
             .with_skill_locations(skill_locations)
             .with_activated_skills(prior_skills);
-        let new_id = agent.session_id;
+        let new_id = agent.session_id();
         let seed_records: Vec<_> = restored
             .records
             .iter()
@@ -1157,13 +1157,14 @@ fn format_duration_tenths(duration: Duration) -> String {
 /// Format a completion summary with elapsed time, turns, and token usage.
 fn format_done_summary(duration_ms: u64, client: &Agent) -> String {
     let secs = format_seconds_tenths(duration_ms);
-    let turns = client.turn_count;
-    let input_tokens = client.total_usage.input_tokens;
-    let output_tokens = client.total_usage.output_tokens;
-    let cached_reads_tokens = client.total_usage.input_tokens_details.cached_tokens;
+    let turns = client.turn_count();
+    let usage = client.total_usage();
+    let input_tokens = usage.input_tokens;
+    let output_tokens = usage.output_tokens;
+    let cached_reads_tokens = usage.input_tokens_details.cached_tokens;
     format!(
         "session {}, {secs}s, {turns} turns, {input_tokens} input tokens, {cached_reads_tokens} cached reads, {output_tokens} output tokens",
-        client.session_id
+        client.session_id()
     )
 }
 
@@ -1897,15 +1898,20 @@ mod tests {
                 Ok(resolved) => resolved,
                 Err(err) => panic!("test config should resolve: {err}"),
             };
-            let mut agent = Agent::new(
+            let agent = Agent::new(
                 resolved,
                 &[(Role::System, "test system prompt".to_string())],
-            );
-            agent.session_id = uuid::uuid!("550e8400-e29b-41d4-a716-446655440000");
-            agent.turn_count = 3;
-            agent.total_usage.input_tokens = 1000;
-            agent.total_usage.input_tokens_details.cached_tokens = 250;
-            agent.total_usage.output_tokens = 500;
+            )
+            .with_session_id(uuid::uuid!("550e8400-e29b-41d4-a716-446655440000"))
+            .with_turn_count(3)
+            .with_total_usage(crate::clients::types::Usage {
+                input_tokens: 1000,
+                input_tokens_details: crate::clients::types::InputTokensDetails {
+                    cached_tokens: 250,
+                },
+                output_tokens: 500,
+                ..Default::default()
+            });
 
             let summary = format_done_summary(1500, &agent);
             assert!(summary.contains("session 550e8400-e29b-41d4-a716-446655440000"));
@@ -1920,15 +1926,18 @@ mod tests {
     #[test]
     fn output_sink_builds_success_json() {
         temp_env::with_var("CAKE_TEST_VALID_KEY", Some("sk-test-123"), || {
-            let mut agent = Agent::new(
+            let agent = Agent::new(
                 test_resolved_model_config(),
                 &[(Role::System, "test system prompt".to_string())],
-            );
-            agent.session_id = uuid::uuid!("550e8400-e29b-41d4-a716-446655440000");
-            agent.turn_count = 2;
-            agent.total_usage.input_tokens = 12;
-            agent.total_usage.output_tokens = 8;
-            let session = Session::new(agent.session_id, PathBuf::from("/work"));
+            )
+            .with_session_id(uuid::uuid!("550e8400-e29b-41d4-a716-446655440000"))
+            .with_turn_count(2)
+            .with_total_usage(crate::clients::types::Usage {
+                input_tokens: 12,
+                output_tokens: 8,
+                ..Default::default()
+            });
+            let session = Session::new(agent.session_id(), PathBuf::from("/work"));
             let dir = match tempfile::tempdir() {
                 Ok(dir) => dir,
                 Err(err) => panic!("temp dir should be created: {err}"),
@@ -1953,7 +1962,7 @@ mod tests {
             );
 
             assert_eq!(json["result"], "done");
-            assert_eq!(json["session_id"], agent.session_id.to_string());
+            assert_eq!(json["session_id"], agent.session_id().to_string());
             assert_eq!(json["turns"], 2);
             assert_eq!(json["elapsed_time"], 1500);
             assert_eq!(json["usage"]["input_tokens"], 12);
@@ -1964,12 +1973,12 @@ mod tests {
     #[test]
     fn output_sink_builds_error_json() {
         temp_env::with_var("CAKE_TEST_VALID_KEY", Some("sk-test-123"), || {
-            let mut agent = Agent::new(
+            let agent = Agent::new(
                 test_resolved_model_config(),
                 &[(Role::System, "test system prompt".to_string())],
-            );
-            agent.session_id = uuid::uuid!("550e8400-e29b-41d4-a716-446655440000");
-            let session = Session::new(agent.session_id, PathBuf::from("/work"));
+            )
+            .with_session_id(uuid::uuid!("550e8400-e29b-41d4-a716-446655440000"));
+            let session = Session::new(agent.session_id(), PathBuf::from("/work"));
             let dir = match tempfile::tempdir() {
                 Ok(dir) => dir,
                 Err(err) => panic!("temp dir should be created: {err}"),
