@@ -63,7 +63,7 @@ pub struct Agent {
     /// Maps SKILL.md paths to skill names for activation deduplication.
     /// When the Read tool targets one of these paths, the agent checks if the
     /// skill has already been activated and returns a lightweight message instead.
-    skill_locations: HashMap<PathBuf, String>,
+    skill_locations: Arc<HashMap<PathBuf, String>>,
     /// Names of skills that have been activated (read) in this session.
     /// Shared between tool executions for concurrent access.
     activated_skills: Arc<Mutex<HashSet<String>>>,
@@ -88,7 +88,7 @@ impl Agent {
             task_id: uuid::Uuid::new_v4(),
             total_usage: Usage::default(),
             turn_count: 0,
-            skill_locations: HashMap::new(),
+            skill_locations: Arc::new(HashMap::new()),
             activated_skills: Arc::new(Mutex::new(HashSet::new())),
             hook_runner: None,
         }
@@ -148,7 +148,7 @@ impl Agent {
     /// a SKILL.md file that was already read in this session, a lightweight
     /// "already activated" message is returned instead of the full content.
     pub fn with_skill_locations(mut self, locations: HashMap<PathBuf, String>) -> Self {
-        self.skill_locations = locations;
+        self.skill_locations = Arc::new(locations);
         self
     }
 
@@ -329,40 +329,22 @@ impl Agent {
 
         // Agent loop: continue until model stops making tool calls
         loop {
-            let turn_result = self.complete_turn().await?;
+            let TurnResult { items, usage } = self.complete_turn().await?;
 
             // Accumulate usage
-            self.accumulate_usage(turn_result.usage.as_ref());
-
-            // Collect function calls from the items
-            let function_calls: Vec<_> = turn_result
-                .items
+            self.accumulate_usage(usage.as_ref());
+            let has_tool_calls = items
                 .iter()
-                .filter_map(|item| {
-                    if let ConversationItem::FunctionCall {
-                        id,
-                        call_id,
-                        name,
-                        arguments,
-                        ..
-                    } = item
-                    {
-                        Some((id.clone(), call_id.clone(), name.clone(), arguments.clone()))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
+                .any(|item| matches!(item, ConversationItem::FunctionCall { .. }));
 
             // Stream each item as JSON if callback is set
-            for item in &turn_result.items {
+            for item in &items {
                 self.stream_item(item)?;
             }
 
             // Report progress for items, but skip assistant messages on the final turn
             // (they're already printed to stdout, so we'd duplicate)
-            let has_tool_calls = !function_calls.is_empty();
-            for item in &turn_result.items {
+            for item in &items {
                 // Skip assistant messages on the final turn (no tool calls)
                 if !has_tool_calls
                     && matches!(
@@ -379,7 +361,25 @@ impl Agent {
             }
 
             // Move items into history
-            self.conversation.extend_turn_items(turn_result.items);
+            let turn_start = self.conversation.history().len();
+            self.conversation.extend_turn_items(items);
+
+            let function_calls: Vec<_> = self.conversation.history()[turn_start..]
+                .iter()
+                .filter_map(|item| {
+                    if let ConversationItem::FunctionCall {
+                        call_id,
+                        name,
+                        arguments,
+                        ..
+                    } = item
+                    {
+                        Some((call_id.as_str(), name.as_str(), arguments.as_str()))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
 
             // If no function calls, resolve and return the message
             if function_calls.is_empty() {
@@ -389,23 +389,20 @@ impl Agent {
             // Run pre-tool hooks concurrently, then execute allowed tool calls concurrently.
             let hook_runner = self.hook_runner.clone();
             let pre_futures = function_calls
-                .iter()
-                .map(|(_id, call_id, name, arguments)| {
+                .into_iter()
+                .map(|(call_id, name, arguments)| {
                     let hook_runner = hook_runner.clone();
-                    let call_id = call_id.clone();
-                    let name = name.clone();
-                    let arguments = arguments.clone();
                     async move {
                         let plan = if let Some(runner) = hook_runner {
-                            runner.pre_tool_use(&name, &call_id, &arguments).await?
+                            runner.pre_tool_use(name, call_id, arguments).await?
                         } else {
                             ToolHookPlan::Execute {
-                                arguments: arguments.clone(),
+                                arguments: arguments.to_owned(),
                                 prefix_notice: None,
                                 additional_context: Vec::new(),
                             }
                         };
-                        anyhow::Ok((call_id, name, arguments, plan))
+                        anyhow::Ok((call_id.to_owned(), name.to_owned(), plan))
                     }
                 });
             let pre_results = futures::future::join_all(pre_futures).await;
@@ -414,88 +411,74 @@ impl Agent {
                 tool_plans.push(result?);
             }
 
-            let skill_locations = self.skill_locations.clone();
+            let skill_locations = Arc::clone(&self.skill_locations);
             let activated_skills = Arc::clone(&self.activated_skills);
-            let tools = self.tools.clone();
+            let tools = &self.tools;
             let tool_context = Arc::clone(&self.tool_context);
-            let futures = tool_plans
-                .iter()
-                .map(|(call_id, name, _original_arguments, plan)| {
-                    let call_id = call_id.clone();
-                    let name = name.clone();
-                    let skill_locations = skill_locations.clone();
-                    let activated_skills = Arc::clone(&activated_skills);
-                    let tools = tools.clone();
-                    let tool_context = Arc::clone(&tool_context);
-                    let hook_runner = self.hook_runner.clone();
-                    match plan {
-                        ToolHookPlan::Block {
-                            reason,
-                            additional_context,
-                        } => {
-                            let reason = reason.clone();
-                            let additional_context = additional_context.clone();
-                            async move {
-                                let output = format!("Hook blocked tool execution: {reason}");
-                                let output = append_hook_context(output, &additional_context);
-                                (call_id, output, None)
-                            }
-                            .boxed()
-                        },
-                        ToolHookPlan::Execute {
-                            arguments,
-                            prefix_notice,
-                            additional_context,
-                        } => {
-                            let arguments = arguments.clone();
-                            let prefix_notice = prefix_notice.clone();
-                            let pre_context = additional_context.clone();
-                            async move {
-                                let result = execute_tool_with_skill_dedup(
-                                    &tools,
-                                    Arc::clone(&tool_context),
-                                    &name,
-                                    &arguments,
-                                    &skill_locations,
-                                    &activated_skills,
-                                )
-                                .await;
-                                let hook_result = result
-                                    .as_ref()
-                                    .map(|result| result.output.clone())
-                                    .map_err(std::clone::Clone::clone);
-
-                                let post_context = if let Some(runner) = hook_runner {
-                                    runner
-                                        .post_tool_use(&name, &call_id, &arguments, &hook_result)
-                                        .await
-                                        .ok()
-                                        .flatten()
-                                } else {
-                                    None
-                                };
-
-                                let (mut output, skill_activation) = match result {
-                                    Ok(result) => (result.output, result.skill_activation),
-                                    Err(error) => (format!("Error: {error}"), None),
-                                };
-                                if let Some(notice) = prefix_notice {
-                                    output = format!("{notice}{output}");
-                                }
-                                if let Some(context) = post_context
-                                    && !context.is_empty()
-                                {
-                                    output.push_str("\n\nAdditional hook context:\n");
-                                    output.push_str(&context);
-                                }
-                                output = append_hook_context(output, &pre_context);
-
-                                (call_id, output, skill_activation)
-                            }
-                            .boxed()
-                        },
+            let futures = tool_plans.into_iter().map(|(call_id, name, plan)| {
+                let skill_locations = Arc::clone(&skill_locations);
+                let activated_skills = Arc::clone(&activated_skills);
+                let tool_context = Arc::clone(&tool_context);
+                let hook_runner = self.hook_runner.clone();
+                match plan {
+                    ToolHookPlan::Block {
+                        reason,
+                        additional_context,
+                    } => async move {
+                        let output = format!("Hook blocked tool execution: {reason}");
+                        let output = append_hook_context(output, &additional_context);
+                        (call_id, output, None)
                     }
-                });
+                    .boxed(),
+                    ToolHookPlan::Execute {
+                        arguments,
+                        prefix_notice,
+                        additional_context,
+                    } => async move {
+                        let result = execute_tool_with_skill_dedup(
+                            tools,
+                            Arc::clone(&tool_context),
+                            &name,
+                            &arguments,
+                            skill_locations.as_ref(),
+                            &activated_skills,
+                        )
+                        .await;
+                        let hook_result = result
+                            .as_ref()
+                            .map(|result| result.output.clone())
+                            .map_err(std::clone::Clone::clone);
+
+                        let post_context = if let Some(runner) = hook_runner {
+                            runner
+                                .post_tool_use(&name, &call_id, &arguments, &hook_result)
+                                .await
+                                .ok()
+                                .flatten()
+                        } else {
+                            None
+                        };
+
+                        let (mut output, skill_activation) = match result {
+                            Ok(result) => (result.output, result.skill_activation),
+                            Err(error) => (format!("Error: {error}"), None),
+                        };
+                        if let Some(notice) = prefix_notice {
+                            output = format!("{notice}{output}");
+                        }
+                        if let Some(context) = post_context
+                            && !context.is_empty()
+                        {
+                            output.push_str("\n\nAdditional hook context:\n");
+                            output.push_str(&context);
+                        }
+                        output = append_hook_context(output, &additional_context);
+
+                        (call_id, output, skill_activation)
+                    }
+                    .boxed(),
+                }
+            });
 
             let results = futures::future::join_all(futures).await;
 
