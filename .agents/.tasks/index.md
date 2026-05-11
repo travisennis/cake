@@ -4,8 +4,8 @@ This index summarizes the task files in this directory. Use it as the manually m
 
 ## Status Summary
 
-- Completed: 63
-- Pending: 45
+- Completed: 64
+- Pending: 44
 - Tracking: 0
 - Open: 1
 - Blocked: 12
@@ -24,7 +24,7 @@ These are the highest-priority tasks currently available from the task metadata:
 
 | Task          | Title                                                                  | Status  | Priority | Effort | ExecPlan                       | Depends on |
 | ------------- | ---------------------------------------------------------------------- | ------- | -------- | ------ | ------------------------------ | ---------- |
-| [068](068.md) | Replace with_history Debug Assertion with Real Invariant            | Pending   | P2       | M                                  | -                                                               | -                                                                                                                                                                                                                                             |
+| [069](069.md)   | Rework Fork Session Storage Path                                    | Pending   | P2       | M                                  | -                                                               | -                                                                                                                                                                                                                                             |
 
 ## Parent Trackers
 
@@ -107,7 +107,7 @@ _None active._
 | [065](065.md)   | Reduce Cloning in Agent Tool Loop                                   | Completed | P2       | M                                  | -                                                               | 048 (e2e test as safety net)                                                                                                                                                                                                                  |
 | [066](066.md)   | Encapsulate Agent Public Mutable Fields                             | Completed | P2       | M                                  | -                                                               | 048 (e2e test as safety net)                                                                                                                                                                                                                  |
 | [067](067.md)   | Handle Activated Skills Mutex Poisoning Explicitly                  | Completed | P2       | S                                  | -                                                               | -                                                                                                                                                                                                                                             |
-| [068](068.md)   | Replace with_history Debug Assertion with Real Invariant            | Pending   | P2       | M                                  | -                                                               | -                                                                                                                                                                                                                                             |
+| [068](068.md)   | Replace with_history Debug Assertion with Real Invariant            | Completed | P2       | M                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [069](069.md)   | Rework Fork Session Storage Path                                    | Pending   | P2       | M                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [070](070.md)   | Simplify Resolved Model Configuration Naming                        | Pending   | P2       | M                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [071](071.md)   | Replace looks_like_uuid with Parser-Based Validation                | Pending   | P2       | S                                  | -                                                               | -                                                                                                                                                                                                                                             |

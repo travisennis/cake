@@ -524,7 +524,7 @@ impl CodingAssistant {
         skill_locations: &HashMap<PathBuf, String>,
         tool_context: Arc<ToolContext>,
         task_id: uuid::Uuid,
-    ) -> RunSession {
+    ) -> anyhow::Result<RunSession> {
         let messages = restored.messages();
         let prior_skills = restored.activated_skills();
 
@@ -532,16 +532,16 @@ impl CodingAssistant {
             .with_session_id(restored.id)
             .with_task_id(task_id)
             .with_tool_context(tool_context)
-            .with_history(messages)
+            .with_history(messages)?
             .with_skill_locations(skill_locations.clone())
             .with_activated_skills(prior_skills);
         let mut session = Session::new(restored.id, restored.working_dir);
         session.model = Some(resolved.config.model);
-        RunSession {
+        Ok(RunSession {
             agent,
             session,
             storage: SessionStorage::Append,
-        }
+        })
     }
 
     /// Build the agent/session pair for a new run using the agent-generated session id.
@@ -578,12 +578,12 @@ impl CodingAssistant {
         skill_locations: HashMap<PathBuf, String>,
         tool_context: Arc<ToolContext>,
         task_id: uuid::Uuid,
-    ) -> RunSession {
+    ) -> anyhow::Result<RunSession> {
         let prior_skills = restored.activated_skills();
         let agent = Agent::new(resolved.clone(), initial_messages)
             .with_task_id(task_id)
             .with_tool_context(tool_context)
-            .with_history(restored.messages())
+            .with_history(restored.messages())?
             .with_skill_locations(skill_locations)
             .with_activated_skills(prior_skills);
         let new_id = agent.session_id();
@@ -612,11 +612,11 @@ impl CodingAssistant {
         let mut session = Session::new(new_id, current_dir);
         session.model = Some(resolved.config.model);
         session.system_prompt = initial_messages.first().map(|(_, content)| content.clone());
-        RunSession {
+        Ok(RunSession {
             agent,
             session,
             storage: SessionStorage::ForkSeed(seed_records),
-        }
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -655,14 +655,14 @@ impl CodingAssistant {
                     default_model,
                     restored.model.as_deref(),
                 )?;
-                Ok(Self::restored_client_and_session(
+                Self::restored_client_and_session(
                     restored,
                     resolved,
                     &initial_messages,
                     &skill_locations,
                     Arc::clone(tool_context),
                     task_id,
-                ))
+                )
             },
             RunMode::Resume { session_id } => {
                 let restored = data_dir
@@ -675,14 +675,14 @@ impl CodingAssistant {
                     default_model,
                     restored.model.as_deref(),
                 )?;
-                Ok(Self::restored_client_and_session(
+                Self::restored_client_and_session(
                     restored,
                     resolved,
                     &initial_messages,
                     &skill_locations,
                     Arc::clone(tool_context),
                     task_id,
-                ))
+                )
             },
             RunMode::ForkLatest | RunMode::Fork { .. } => {
                 info!(target: "cake", "Forking session");
@@ -704,7 +704,7 @@ impl CodingAssistant {
                     default_model,
                     restored.model.as_deref(),
                 )?;
-                Ok(Self::forked_client_and_session(
+                Self::forked_client_and_session(
                     &restored,
                     resolved,
                     current_dir,
@@ -712,7 +712,7 @@ impl CodingAssistant {
                     skill_locations,
                     Arc::clone(tool_context),
                     task_id,
-                ))
+                )
             },
             RunMode::NewSession | RunMode::Ephemeral => {
                 let resolved = ResolvedModelConfig::resolve(
@@ -1666,6 +1666,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::unwrap_used)]
     fn restored_session_seeds_skills_from_structured_records_only() {
         let run_session = CodingAssistant::restored_client_and_session(
             session_with_skill_records(),
@@ -1674,7 +1675,8 @@ mod tests {
             &HashMap::new(),
             Arc::new(ToolContext::from_current_process()),
             uuid::uuid!("550e8400-e29b-41d4-a716-446655440001"),
-        );
+        )
+        .unwrap();
 
         let activated = run_session.agent.activated_skills();
         assert!(activated.contains("real-skill"));
@@ -1682,6 +1684,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::unwrap_used)]
     fn forked_session_seeds_skills_from_structured_records() {
         let restored = session_with_skill_records();
         let run_session = CodingAssistant::forked_client_and_session(
@@ -1692,7 +1695,8 @@ mod tests {
             HashMap::new(),
             Arc::new(ToolContext::from_current_process()),
             uuid::uuid!("550e8400-e29b-41d4-a716-446655440001"),
-        );
+        )
+        .unwrap();
 
         assert!(run_session.agent.activated_skills().contains("real-skill"));
         assert!(matches!(

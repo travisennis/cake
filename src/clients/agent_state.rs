@@ -43,8 +43,11 @@ impl ConversationState {
         }
     }
 
-    pub(super) fn with_restored_history(&mut self, messages: Vec<ConversationItem>) {
-        debug_assert!(
+    pub(super) fn with_restored_history(
+        &mut self,
+        messages: Vec<ConversationItem>,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
             !self.history.is_empty(),
             "with_history requires Agent::new() to have set initial prompt messages"
         );
@@ -62,6 +65,7 @@ impl ConversationState {
             .unwrap_or(messages.len());
         self.history
             .extend(messages.into_iter().skip(first_non_prompt));
+        Ok(())
     }
 
     pub(super) fn push_user_message(&mut self, content: String) -> ConversationItem {

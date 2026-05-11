@@ -219,9 +219,9 @@ impl Agent {
     /// Sets the conversation history for a restored session.
     ///
     /// Use this when continuing a previous session to restore the conversation context.
-    pub fn with_history(mut self, messages: Vec<ConversationItem>) -> Self {
-        self.conversation.with_restored_history(messages);
-        self
+    pub fn with_history(mut self, messages: Vec<ConversationItem>) -> anyhow::Result<Self> {
+        self.conversation.with_restored_history(messages)?;
+        Ok(self)
     }
 
     /// Set the skill locations for deduplication.
@@ -1167,6 +1167,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::unwrap_used)]
     fn builder_with_history() {
         let history = vec![ConversationItem::Message {
             role: Role::User,
@@ -1175,7 +1176,7 @@ mod tests {
             status: None,
             timestamp: None,
         }];
-        let agent = test_agent().with_history(history);
+        let agent = test_agent().with_history(history).unwrap();
         // 1 system message (from test_agent) + 1 user message from with_history
         assert_eq!(agent.history().len(), 2);
         assert!(matches!(
