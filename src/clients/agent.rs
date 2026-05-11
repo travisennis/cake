@@ -192,7 +192,11 @@ impl Agent {
     /// These skills are pre-seeded into the activated set so they are not
     /// re-read during the resumed session.
     pub fn with_activated_skills(self, skills: HashSet<String>) -> Self {
-        if let Ok(mut guard) = self.activated_skills.lock() {
+        {
+            let mut guard = self.activated_skills.lock().unwrap_or_else(|e| {
+                tracing::error!("activated_skills mutex poisoned, recovering: {e}");
+                e.into_inner()
+            });
             *guard = skills;
         }
         self
@@ -214,7 +218,11 @@ impl Agent {
     pub fn activated_skills(&self) -> HashSet<String> {
         self.activated_skills
             .lock()
-            .map_or_else(|_| HashSet::new(), |guard| guard.clone())
+            .unwrap_or_else(|e| {
+                tracing::error!("activated_skills mutex poisoned, recovering: {e}");
+                e.into_inner()
+            })
+            .clone()
     }
 
     /// Enables streaming JSON output for each message.
@@ -625,7 +633,11 @@ async fn execute_tool_with_skill_dedup(
 
     let already_active = activated_skills
         .lock()
-        .is_ok_and(|guard| guard.contains(skill_name));
+        .unwrap_or_else(|e| {
+            tracing::error!("activated_skills mutex poisoned, recovering: {e}");
+            e.into_inner()
+        })
+        .contains(skill_name);
     if already_active {
         tracing::info!("Skill '{skill_name}' already activated, skipping re-read");
         return Ok(ToolExecutionOutput {
@@ -638,9 +650,13 @@ async fn execute_tool_with_skill_dedup(
     }
 
     let output = execute_tool_output(tools, context, name, arguments).await?;
-    if let Ok(mut guard) = activated_skills.lock() {
-        guard.insert(skill_name.clone());
-    }
+    activated_skills
+        .lock()
+        .unwrap_or_else(|e| {
+            tracing::error!("activated_skills mutex poisoned, recovering: {e}");
+            e.into_inner()
+        })
+        .insert(skill_name.clone());
     tracing::info!("Skill '{}' activated", skill_name);
     Ok(ToolExecutionOutput {
         output,
