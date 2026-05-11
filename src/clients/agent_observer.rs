@@ -53,10 +53,11 @@ impl AgentObserver {
     }
 
     pub(super) fn stream_record(&mut self, record: StreamRecord) -> anyhow::Result<()> {
-        let stream_json = self
-            .streaming
-            .as_ref()
-            .and_then(|_| serde_json::to_string(&record).ok());
+        let stream_json = self.streaming.as_ref().and_then(|_| {
+            serde_json::to_string(&record)
+                .inspect_err(|e| tracing::warn!("Stream serialization failed: {e}"))
+                .ok()
+        });
         let session_record = SessionRecord::from(record);
         if let Some(ref mut callback) = self.persist {
             callback(&session_record)?;
