@@ -20,7 +20,7 @@ pub mod skills;
 pub mod worktree;
 
 #[doc(inline)]
-pub use data_dir::{AgentsFile, DataDir, looks_like_uuid};
+pub use data_dir::{AgentsFile, DataDir};
 #[doc(inline)]
 pub use hooks::{HookSource, HooksLoader};
 #[doc(inline)]

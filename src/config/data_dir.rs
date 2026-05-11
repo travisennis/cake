@@ -266,18 +266,14 @@ impl DataDir {
     ///
     /// let data_dir = DataDir::new()?;
     /// let session = data_dir.load_session(
-    ///     "550e8400-e29b-41d4-a716-446655440000"
+    ///     uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap()
     /// )?;
     /// ```
     ///
     /// # Errors
     ///
-    /// Returns an error if the session ID is not a valid UUID, or if the
-    /// session file exists but cannot be loaded.
-    pub fn load_session(&self, id: &str) -> anyhow::Result<Option<Session>> {
-        let id =
-            uuid::Uuid::parse_str(id).map_err(|e| anyhow!("Invalid session UUID '{id}': {e}"))?;
-
+    /// Returns an error if the session file exists but cannot be loaded.
+    pub fn load_session(&self, id: uuid::Uuid) -> anyhow::Result<Option<Session>> {
         let session_path = self.session_path(id);
 
         tracing::info!(target: "cake", "Loading session {id} from {}", session_path.display());
@@ -353,12 +349,6 @@ impl DataDir {
 
         files
     }
-}
-
-/// Check whether a string looks like a UUID (8-4-4-4-12 hex format).
-/// Used to validate UUID-only `--resume` and `--fork` arguments.
-pub fn looks_like_uuid(s: &str) -> bool {
-    uuid::Uuid::parse_str(s).is_ok()
 }
 
 /// Minimal header struct for quickly inspecting a session file without
@@ -463,7 +453,7 @@ mod tests {
             commit_hash: Some("abc123".to_string()),
         });
         dd.save_session(&session).unwrap();
-        let loaded = dd.load_session(&session.id.to_string()).unwrap().unwrap();
+        let loaded = dd.load_session(session.id).unwrap().unwrap();
         assert_eq!(loaded.id, session.id);
         assert_eq!(loaded.working_dir, session.working_dir);
 
@@ -559,7 +549,7 @@ mod tests {
     #[test]
     fn load_session_missing_returns_none() {
         let (dd, _tmp) = test_data_dir();
-        let result = dd.load_session(&uuid::Uuid::new_v4().to_string()).unwrap();
+        let result = dd.load_session(uuid::Uuid::new_v4()).unwrap();
         assert!(result.is_none());
     }
 
@@ -570,33 +560,6 @@ mod tests {
             .load_latest_session(&PathBuf::from("/nonexistent"))
             .unwrap();
         assert!(result.is_none());
-    }
-
-    #[test]
-    fn load_session_invalid_uuid_errors() {
-        let (dd, _tmp) = test_data_dir();
-        let result = dd.load_session("not-a-uuid");
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("Invalid session UUID")
-        );
-    }
-
-    #[test]
-    fn load_session_accepts_uppercase_uuid() {
-        let (dd, _tmp) = test_data_dir();
-        let id = uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
-        let session = Session::new(id, PathBuf::from("/work"));
-        dd.save_session(&session).unwrap();
-
-        let loaded = dd
-            .load_session("550E8400-E29B-41D4-A716-446655440000")
-            .unwrap()
-            .unwrap();
-        assert_eq!(loaded.id, id);
     }
 
     #[test]
@@ -618,8 +581,8 @@ mod tests {
         dd.save_session(&session2).unwrap();
 
         // Both sessions should be loadable
-        let loaded1 = dd.load_session(&session1.id.to_string()).unwrap().unwrap();
-        let loaded2 = dd.load_session(&session2.id.to_string()).unwrap().unwrap();
+        let loaded1 = dd.load_session(session1.id).unwrap().unwrap();
+        let loaded2 = dd.load_session(session2.id).unwrap().unwrap();
 
         assert_eq!(loaded1.id, session1.id);
         assert_eq!(loaded2.id, session2.id);

@@ -4,8 +4,8 @@ This index summarizes the task files in this directory. Use it as the manually m
 
 ## Status Summary
 
-- Completed: 66
-- Pending: 42
+- Completed: 67
+- Pending: 41
 - Tracking: 0
 - Open: 1
 - Blocked: 12
@@ -24,7 +24,7 @@ These are the highest-priority tasks currently available from the task metadata:
 
 | Task          | Title                                                                  | Status  | Priority | Effort | ExecPlan                       | Depends on |
 | ------------- | ---------------------------------------------------------------------- | ------- | -------- | ------ | ------------------------------ | ---------- |
-| [071](071.md)   | Replace looks_like_uuid with Parser-Based Validation                | Pending   | P2       | S                                  | -                                                               | -                                                                                                                                                                                                                                             |
+| [072](072.md)   | Add Size Limit or Streaming Plan for Stdin Input                    | Pending   | P2       | M                                  | -                                                               | -                                                                                                                                                                                                                                             |
 
 ## Parent Trackers
 
@@ -110,7 +110,7 @@ _None active._
 | [068](068.md)   | Replace with_history Debug Assertion with Real Invariant            | Completed | P2       | M                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [069](069.md)   | Rework Fork Session Storage Path                                    | Completed | P2       | M                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [070](070.md)   | Simplify Resolved Model Configuration Naming                        | Completed | P2       | M                                  | -                                                               | -                                                                                                                                                                                                                                             |
-| [071](071.md)   | Replace looks_like_uuid with Parser-Based Validation                | Pending   | P2       | S                                  | -                                                               | -                                                                                                                                                                                                                                             |
+| [071](071.md)   | Replace looks_like_uuid with Parser-Based Validation                | Completed | P2       | S                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [072](072.md)   | Add Size Limit or Streaming Plan for Stdin Input                    | Pending   | P2       | M                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [073](073.md)   | Add Structured Prompt and Stdin Combination                         | Pending   | P2       | S                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [074](074.md)   | Replace Hand-Rolled Binary Magic Detection                          | Pending   | P2       | M                                  | -                                                               | -                                                                                                                                                                                                                                             |

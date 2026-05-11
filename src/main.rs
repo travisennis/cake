@@ -20,7 +20,7 @@ use crate::config::settings::LoadedSettings;
 use crate::config::{
     AgentsFile, DataDir, DiagnosticLevel, HookSource, HooksLoader, ModelConfig, ModelDefinition,
     ReasoningEffort, ResolvedModelConfig, Session, SettingsLoader, SkillCatalog, discover_skills,
-    discover_skills_with_paths, looks_like_uuid, parse_skill_path_list, worktree,
+    discover_skills_with_paths, parse_skill_path_list, worktree,
 };
 use crate::hooks::{HookContext, HookRunner};
 use crate::models::{Message, Role};
@@ -272,9 +272,9 @@ enum RunMode {
     NewSession,
     Ephemeral,
     ContinueLatest,
-    Resume { session_id: String },
+    Resume { session_id: uuid::Uuid },
     ForkLatest,
-    Fork { session_id: String },
+    Fork { session_id: uuid::Uuid },
 }
 
 impl RunMode {
@@ -286,27 +286,23 @@ impl RunMode {
             return Ok(Self::ContinueLatest);
         }
         if let Some(session_id) = args.resume.as_deref() {
-            if !looks_like_uuid(session_id) {
-                anyhow::bail!(
-                    "Invalid session reference '{session_id}': resume by file path is no longer supported. Provide a session UUID."
-                );
-            }
-            return Ok(Self::Resume {
-                session_id: session_id.to_string(),
-            });
+            let id = uuid::Uuid::parse_str(session_id).map_err(|_e| {
+                anyhow::anyhow!(
+                    "Invalid session UUID '{session_id}'. Expected format: e.g., 550e8400-e29b-41d4-a716-446655440000"
+                )
+            })?;
+            return Ok(Self::Resume { session_id: id });
         }
         if let Some(fork_id) = args.fork.as_deref() {
             if fork_id.is_empty() {
                 return Ok(Self::ForkLatest);
             }
-            if !looks_like_uuid(fork_id) {
-                anyhow::bail!(
-                    "Invalid session reference '{fork_id}': fork by file path is no longer supported. Provide a session UUID."
-                );
-            }
-            return Ok(Self::Fork {
-                session_id: fork_id.to_string(),
-            });
+            let id = uuid::Uuid::parse_str(fork_id).map_err(|_e| {
+                anyhow::anyhow!(
+                    "Invalid session UUID '{fork_id}'. Expected format: e.g., 550e8400-e29b-41d4-a716-446655440000"
+                )
+            })?;
+            return Ok(Self::Fork { session_id: id });
         }
 
         Ok(Self::NewSession)
@@ -669,7 +665,7 @@ impl CodingAssistant {
             },
             RunMode::Resume { session_id } => {
                 let restored = data_dir
-                    .load_session(session_id)?
+                    .load_session(*session_id)?
                     .ok_or_else(|| anyhow::anyhow!("Session {session_id} not found"))?;
                 info!(target: "cake", "Resumed session: {}", restored.id);
 
@@ -696,7 +692,7 @@ impl CodingAssistant {
                         })?
                     },
                     RunMode::Fork { session_id } => data_dir
-                        .load_session(session_id)?
+                        .load_session(*session_id)?
                         .ok_or_else(|| anyhow::anyhow!("Session {session_id} not found"))?,
                     _ => unreachable!("fork arm only handles fork modes"),
                 };
@@ -1397,26 +1393,36 @@ mod tests {
     #[test]
     #[allow(clippy::unwrap_used)]
     fn test_run_mode_restore_flags() {
-        let resume_id = "550e8400-e29b-41d4-a716-446655440000";
+        let resume_id = uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
         let args = CodingAssistant::parse_from(["cake", "--continue", "test prompt"]);
         assert_eq!(RunMode::from_cli(&args).unwrap(), RunMode::ContinueLatest);
 
-        let args = CodingAssistant::parse_from(["cake", "--resume", resume_id, "test prompt"]);
+        let args = CodingAssistant::parse_from([
+            "cake",
+            "--resume",
+            "550e8400-e29b-41d4-a716-446655440000",
+            "test prompt",
+        ]);
         assert_eq!(
             RunMode::from_cli(&args).unwrap(),
             RunMode::Resume {
-                session_id: resume_id.to_string()
+                session_id: resume_id
             }
         );
 
         let args = CodingAssistant::parse_from(["cake", "--fork"]);
         assert_eq!(RunMode::from_cli(&args).unwrap(), RunMode::ForkLatest);
 
-        let args = CodingAssistant::parse_from(["cake", "--fork", resume_id, "test prompt"]);
+        let args = CodingAssistant::parse_from([
+            "cake",
+            "--fork",
+            "550e8400-e29b-41d4-a716-446655440000",
+            "test prompt",
+        ]);
         assert_eq!(
             RunMode::from_cli(&args).unwrap(),
             RunMode::Fork {
-                session_id: resume_id.to_string()
+                session_id: resume_id
             }
         );
     }
@@ -1429,7 +1435,7 @@ mod tests {
             RunMode::from_cli(&args)
                 .unwrap_err()
                 .to_string()
-                .contains("resume by file path is no longer supported")
+                .contains("Invalid session UUID")
         );
 
         let args = CodingAssistant::parse_from(["cake", "--fork", "not-a-uuid", "test prompt"]);
@@ -1437,7 +1443,7 @@ mod tests {
             RunMode::from_cli(&args)
                 .unwrap_err()
                 .to_string()
-                .contains("fork by file path is no longer supported")
+                .contains("Invalid session UUID")
         );
     }
 
