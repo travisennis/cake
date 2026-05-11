@@ -117,6 +117,7 @@ struct RunSession {
     agent: Agent,
     session: Session,
     storage: SessionStorage,
+    seed_records: Option<Vec<crate::clients::SessionRecord>>,
 }
 
 struct PreparedRun {
@@ -327,7 +328,6 @@ impl RunMode {
 enum SessionStorage {
     New,
     Append,
-    ForkSeed(Vec<crate::clients::SessionRecord>),
 }
 
 impl CodingAssistant {
@@ -541,6 +541,7 @@ impl CodingAssistant {
             agent,
             session,
             storage: SessionStorage::Append,
+            seed_records: None,
         })
     }
 
@@ -566,6 +567,7 @@ impl CodingAssistant {
             agent,
             session,
             storage: SessionStorage::New,
+            seed_records: None,
         }
     }
 
@@ -615,7 +617,8 @@ impl CodingAssistant {
         Ok(RunSession {
             agent,
             session,
-            storage: SessionStorage::ForkSeed(seed_records),
+            storage: SessionStorage::New,
+            seed_records: Some(seed_records),
         })
     }
 
@@ -970,7 +973,7 @@ impl CodingAssistant {
         mut client: Agent,
         data_dir: &DataDir,
         session: &Session,
-        storage: SessionStorage,
+        storage: &SessionStorage,
         persists_session: bool,
     ) -> anyhow::Result<Agent> {
         if !persists_session {
@@ -980,11 +983,6 @@ impl CodingAssistant {
         let mut file = match storage {
             SessionStorage::New => data_dir.create_session_file(session, client.tool_names())?,
             SessionStorage::Append => data_dir.open_session_for_append(session.id)?,
-            SessionStorage::ForkSeed(records) => {
-                let mut file = data_dir.create_session_file(session, client.tool_names())?;
-                crate::config::Session::append_records(&mut file, &records)?;
-                file
-            },
         };
         client = client.with_persist_callback(move |record| {
             crate::config::Session::append_record(&mut file, record)
@@ -1093,7 +1091,7 @@ impl CmdRunner for CodingAssistant {
             self.load_run_resources(data_dir, &prepared.current_dir, prepared.additional_dirs)?;
         let task_id = uuid::Uuid::new_v4();
         let run_mode = RunMode::from_cli(self)?;
-        let run_session = self.build_client_and_session(
+        let mut run_session = self.build_client_and_session(
             &run_mode,
             data_dir,
             prepared.current_dir.clone(),
@@ -1104,6 +1102,16 @@ impl CmdRunner for CodingAssistant {
             &resources.tool_context,
             task_id,
         )?;
+
+        // For fork mode: create the session file and write seed records
+        // upfront, converting the fork into a normal append scenario.
+        if let Some(seed_records) = run_session.seed_records.take() {
+            let mut file = data_dir
+                .create_session_file(&run_session.session, run_session.agent.tool_names())?;
+            crate::config::Session::append_records(&mut file, &seed_records)?;
+            run_session.storage = SessionStorage::Append;
+        }
+
         let session_start_source =
             HookSource::SessionStart(run_mode.session_start_source().to_owned());
         let session = run_session.session;
@@ -1111,7 +1119,7 @@ impl CmdRunner for CodingAssistant {
             run_session.agent,
             data_dir,
             &session,
-            run_session.storage,
+            &run_session.storage,
             run_mode.persists_session(),
         )?;
         let (client, hook_runner) = Self::attach_hooks(
@@ -1684,7 +1692,7 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::unwrap_used)]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
     fn forked_session_seeds_skills_from_structured_records() {
         let restored = session_with_skill_records();
         let run_session = CodingAssistant::forked_client_and_session(
@@ -1699,15 +1707,16 @@ mod tests {
         .unwrap();
 
         assert!(run_session.agent.activated_skills().contains("real-skill"));
-        assert!(matches!(
-            run_session.storage,
-            SessionStorage::ForkSeed(records)
-                if records.iter().any(|record| matches!(
-                    record,
-                    crate::clients::SessionRecord::SkillActivated { name, .. }
-                        if name == "real-skill"
-                ))
-        ));
+        assert!(matches!(run_session.storage, SessionStorage::New));
+        let seed_records = run_session
+            .seed_records
+            .as_ref()
+            .expect("fork should produce seed records");
+        assert!(seed_records.iter().any(|record| matches!(
+            record,
+            crate::clients::SessionRecord::SkillActivated { name, .. }
+                if name == "real-skill"
+        )));
     }
 
     #[test]
