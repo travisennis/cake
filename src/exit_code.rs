@@ -128,6 +128,9 @@ fn is_input_error(msg: &str) -> bool {
     if msg.contains("No input provided via stdin") {
         return true;
     }
+    if msg.contains("stdin input exceeds") {
+        return true;
+    }
 
     // Invalid model name
     if msg.contains("Invalid model name") {
@@ -265,6 +268,15 @@ mod tests {
     #[test]
     fn classify_no_stdin() {
         let err = anyhow::anyhow!("No input provided via stdin");
+        assert_eq!(classify_to_u8(&err), code::INPUT_ERROR);
+    }
+
+    #[test]
+    fn classify_stdin_exceeds_size_limit() {
+        let err = anyhow::anyhow!(
+            "stdin input exceeds the maximum allowed size (10 MB). \
+             Pipe the content to a file first and reference the file path instead."
+        );
         assert_eq!(classify_to_u8(&err), code::INPUT_ERROR);
     }
 

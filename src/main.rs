@@ -327,21 +327,39 @@ enum SessionStorage {
 }
 
 impl CodingAssistant {
+    /// Maximum size in bytes for stdin input before it is rejected.
+    const MAX_STDIN_SIZE: u64 = 10 * 1024 * 1024; // 10 MB
+
     /// Read content from stdin if available (non-terminal).
     ///
     /// If stdin is a pipe or redirected file, the user explicitly connected
     /// input to cake, so read until EOF and let Ctrl-C handle stuck producers.
-    fn read_stdin_content() -> Option<String> {
-        use std::io::IsTerminal;
+    ///
+    /// Returns an error if stdin content exceeds [`Self::MAX_STDIN_SIZE`] to
+    /// prevent unbounded memory consumption on large inputs.
+    fn read_stdin_content() -> anyhow::Result<Option<String>> {
+        use std::io::{IsTerminal, Read};
 
         if std::io::stdin().is_terminal() {
-            return None;
+            return Ok(None);
         }
 
-        let stdin = std::io::stdin();
-        match std::io::read_to_string(stdin) {
-            Ok(s) if !s.is_empty() => Some(s),
-            _ => None,
+        let mut stdin = std::io::stdin().take(Self::MAX_STDIN_SIZE + 1);
+        let mut buf = String::new();
+        stdin.read_to_string(&mut buf)?;
+
+        if buf.len() as u64 > Self::MAX_STDIN_SIZE {
+            anyhow::bail!(
+                "stdin input exceeds the maximum allowed size ({} MB). \
+                 Pipe the content to a file first and reference the file path instead.",
+                Self::MAX_STDIN_SIZE / (1024 * 1024)
+            );
+        }
+
+        if buf.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(buf))
         }
     }
 
@@ -836,7 +854,7 @@ impl CodingAssistant {
         let additional_dirs = self.resolve_additional_dirs(&original_dir);
         let worktree = self.setup_worktree(&original_dir)?;
 
-        let stdin_content = Self::read_stdin_content();
+        let stdin_content = Self::read_stdin_content()?;
         let content = Self::build_content(self.prompt.as_deref(), stdin_content)?;
 
         let current_dir = std::env::current_dir()

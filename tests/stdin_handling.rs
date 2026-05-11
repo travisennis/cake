@@ -208,6 +208,112 @@ fn test_no_session_flag_in_help() {
     );
 }
 
+/// Verify that stdin content under the 10 MB limit is accepted.
+#[test]
+fn test_stdin_under_size_limit_is_accepted() {
+    let env = cake_env();
+    env.write_project_settings(
+        r#"
+default_model = "test"
+
+[[models]]
+name = "test"
+model = "glm-5.1"
+base_url = "not-a-url"
+api_key_env = "STDIN_SIZE_TEST_KEY"
+"#,
+    );
+
+    let mut child = env
+        .command()
+        .arg("--no-session")
+        .arg("-")
+        .env("STDIN_SIZE_TEST_KEY", "test-token")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("Failed to spawn command");
+
+    let mut stdin = child.stdin.take().expect("stdin should be piped");
+
+    // Write a small amount of data (well under 10 MB) via a thread to avoid
+    // blocking the child while it runs.
+    let writer = thread::spawn(move || {
+        stdin
+            .write_all(b"small stdin payload")
+            .expect("failed to write stdin");
+    });
+
+    let output = child
+        .wait_with_output()
+        .expect("Failed to wait for command");
+    writer.join().expect("stdin writer should complete");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        !stderr.contains("stdin input exceeds"),
+        "Small stdin should not trigger the size limit. Stderr: {stderr}"
+    );
+}
+
+/// Verify that stdin content exceeding the 10 MB limit produces a clear error.
+#[test]
+fn test_stdin_exceeds_size_limit_error() {
+    const MB: usize = 1024 * 1024;
+
+    let env = cake_env();
+    env.write_project_settings(
+        r#"
+default_model = "test"
+
+[[models]]
+name = "test"
+model = "glm-5.1"
+base_url = "not-a-url"
+api_key_env = "STDIN_OVERSIZE_TEST_KEY"
+"#,
+    );
+
+    let mut child = env
+        .command()
+        .arg("--no-session")
+        .arg("-")
+        .env("STDIN_OVERSIZE_TEST_KEY", "test-token")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("Failed to spawn command");
+
+    let mut stdin = child.stdin.take().expect("stdin should be piped");
+
+    // Write in 1 MB chunks to avoid a single large allocation.
+    let writer = thread::spawn(move || {
+        let chunk = vec![b'a'; MB];
+        for _ in 0..10 {
+            stdin.write_all(&chunk).expect("failed to write 1 MB chunk");
+        }
+        // The +1 byte that pushes it over the limit.
+        stdin.write_all(b"a").expect("failed to write final byte");
+    });
+
+    let output = child
+        .wait_with_output()
+        .expect("Failed to wait for command");
+    writer.join().expect("stdin writer should complete");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        stderr.contains("stdin input exceeds"),
+        "Oversized stdin should produce a size-limit error. Stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("10 MB"),
+        "Error message should mention the limit. Stderr: {stderr}"
+    );
+}
+
 #[test]
 fn test_no_session_prevents_session_save() {
     let env = cake_env();
