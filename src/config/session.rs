@@ -326,7 +326,7 @@ mod tests {
             },
             duration_ms: 100,
             turn_count: 1,
-            num_turns: 1,
+            tool_call_count: 0,
             session_id: session.id.to_string(),
             task_id: task_id.to_string(),
             usage: Usage::default(),

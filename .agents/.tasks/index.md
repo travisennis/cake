@@ -4,10 +4,10 @@ This index summarizes the task files in this directory. Use it as the manually m
 
 ## Status Summary
 
-- Completed: 68
+- Completed: 69
 - Pending: 40
 - Tracking: 0
-- Open: 2
+- Open: 1
 - Blocked: 12
 
 ## How to Choose Next Work
@@ -155,4 +155,4 @@ _None active._
 | [113](113.md)   | Document ResponsesApiInputItem Construction Boundary                | Pending   | P3       | XS                                 | -                                                               | Follows 061                                                                                                                                                                                                                                   |
 | [114](114.md)   | Update conversation-types.md After to_api_input Refactor            | Pending   | P3       | XS                                 | -                                                               | Follows 061                                                                                                                                                                                                                                   |
 | [115](115.md)   | Comment annotations:[] Provider Quirk in ResponsesApiInputItem      | Pending   | P3       | XS                                 | -                                                               | Follows 061                                                                                                                                                                                                                                   |
-| [116](116.md)   | Eliminate Redundant num_turns/turn_count; Add Tool-Call Counter     | Open      | P3       | M                                  | -                                                               | -                                                                                                                                                                                                                                             |
+| [116](116.md)   | Eliminate Redundant num_turns/turn_count; Add Tool-Call Counter     | Completed | P3       | M                                  | -                                                               | -                                                                                                                                                                                                                                             |

@@ -107,6 +107,8 @@ pub struct Agent {
     total_usage: Usage,
     /// Number of API calls made
     turn_count: u32,
+    /// Number of tool calls executed
+    tool_call_count: u32,
     /// Maps SKILL.md paths to skill names for activation deduplication.
     /// When the Read tool targets one of these paths, the agent checks if the
     /// skill has already been activated and returns a lightweight message instead.
@@ -135,6 +137,7 @@ impl Agent {
             task_id: uuid::Uuid::new_v4(),
             total_usage: Usage::default(),
             turn_count: 0,
+            tool_call_count: 0,
             skill_locations: Arc::new(HashMap::new()),
             skill_activations: Arc::new(Mutex::new(SkillActivations::default())),
             hook_runner: None,
@@ -393,7 +396,7 @@ impl Agent {
             outcome,
             duration_ms,
             turn_count: self.turn_count,
-            num_turns: self.turn_count,
+            tool_call_count: self.tool_call_count,
             session_id: self.session_id.to_string(),
             task_id: self.task_id.to_string(),
             usage: self.total_usage.clone(),
@@ -475,6 +478,8 @@ impl Agent {
             if function_calls.is_empty() {
                 return Ok(Some(self.conversation.resolve_assistant_message()));
             }
+
+            self.tool_call_count += u32::try_from(function_calls.len()).unwrap_or(u32::MAX);
 
             // Run pre-tool hooks concurrently, then execute allowed tool calls concurrently.
             let hook_runner = self.hook_runner.clone();

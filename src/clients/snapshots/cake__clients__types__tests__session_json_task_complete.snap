@@ -6,13 +6,13 @@ expression: session_record_json(record)
   "duration_ms": 1250,
   "error": "tool failed",
   "is_error": true,
-  "num_turns": 3,
   "permission_denials": [
     "bash: rm -rf /"
   ],
   "session_id": "550e8400-e29b-41d4-a716-446655440000",
   "subtype": "error_during_execution",
   "task_id": "550e8400-e29b-41d4-a716-446655440001",
+  "tool_call_count": 5,
   "turn_count": 3,
   "type": "task_complete",
   "usage": {

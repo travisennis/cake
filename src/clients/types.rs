@@ -455,7 +455,7 @@ pub struct TaskCompleteData {
     pub outcome: TaskOutcome,
     pub duration_ms: u64,
     pub turn_count: u32,
-    pub num_turns: u32,
+    pub tool_call_count: u32,
     pub session_id: String,
     pub task_id: String,
     pub usage: Usage,
@@ -936,7 +936,7 @@ mod tests {
             },
             duration_ms: 10,
             turn_count: 1,
-            num_turns: 1,
+            tool_call_count: 2,
             session_id: "session-1".to_string(),
             task_id: "task-1".to_string(),
             usage: Usage::default(),
@@ -961,7 +961,7 @@ mod tests {
             "is_error": false,
             "duration_ms": 10,
             "turn_count": 1,
-            "num_turns": 1,
+            "tool_call_count": 0,
             "session_id": "session-1",
             "task_id": "task-1",
             "usage": Usage::default()
@@ -985,7 +985,7 @@ mod tests {
             "success": true,
             "duration_ms": 10,
             "turn_count": 1,
-            "num_turns": 1,
+            "tool_call_count": 0,
             "session_id": "session-1",
             "task_id": "task-1",
             "usage": Usage::default()
@@ -1010,7 +1010,7 @@ mod tests {
             "is_error": false,
             "duration_ms": 10,
             "turn_count": 1,
-            "num_turns": 1,
+            "tool_call_count": 0,
             "session_id": "session-1",
             "task_id": "task-1",
             "usage": Usage::default()
@@ -1679,7 +1679,7 @@ mod tests {
             },
             duration_ms: 1_250,
             turn_count: 3,
-            num_turns: 3,
+            tool_call_count: 5,
             session_id: fixed_session_id(),
             task_id: fixed_task_id(),
             usage: Usage {
