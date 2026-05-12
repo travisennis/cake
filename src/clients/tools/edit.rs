@@ -283,12 +283,7 @@ fn apply_edits_reverse_order(content: &str, matched_edits: &[MatchedEdit]) -> St
 
     // Process highest index first
     for edit in matched_edits.iter().rev() {
-        result = format!(
-            "{}{}{}",
-            &result[..edit.index],
-            edit.new_text,
-            &result[edit.index + edit.match_length..]
-        );
+        result.replace_range(edit.index..edit.index + edit.match_length, &edit.new_text);
     }
 
     result
