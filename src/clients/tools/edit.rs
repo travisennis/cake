@@ -70,9 +70,15 @@ struct EditArgs {
     edits: Vec<Edit>,
 }
 
+/// Path-only arguments for edit summaries.
+#[derive(Debug, Deserialize)]
+struct EditSummaryArgs {
+    path: String,
+}
+
 /// Summarize edit arguments for display
 pub fn summarize_args(arguments: &str) -> String {
-    serde_json::from_str::<EditArgs>(arguments)
+    serde_json::from_str::<EditSummaryArgs>(arguments)
         .map(|args| args.path)
         .unwrap_or_default()
 }
@@ -432,6 +438,19 @@ mod tests {
     // =========================================================================
     // Multiple Edits Tests
     // =========================================================================
+
+    #[test]
+    fn summarize_args_only_requires_path() {
+        let args = serde_json::json!({
+            "path": "src/main.rs",
+            "edits": [
+                { "old_text": 123, "new_text": ["not", "summary", "data"] }
+            ]
+        })
+        .to_string();
+
+        assert_eq!(summarize_args(&args), "src/main.rs");
+    }
 
     #[test]
     fn multiple_edits_in_single_call() {
