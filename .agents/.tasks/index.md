@@ -4,8 +4,8 @@ This index summarizes the task files in this directory. Use it as the manually m
 
 ## Status Summary
 
-- Completed: 79
-- Pending: 35
+- Completed: 80
+- Pending: 34
 - Tracking: 0
 - Open: 1
 - Blocked: 12
@@ -121,7 +121,7 @@ _None active._
 | [081](081.md)   | Replace Retry Signal Body Substring Matching Where Possible         | Completed | P2       | M                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [082](082.md)   | Make Stream JSON Conversion Live or Delete It                       | Completed | P2       | S                                  | -                                                               | Completed by 061.                                                                                                                                                                                                                            |
 | [083](083.md)   | Fix serde_json to_value Error Policy                                | Completed | P2       | S                                  | -                                                               | -                                                                                                                                                                                                                                             |
-| [084](084.md)   | Use a Shared Duration Formatting Helper                             | Pending   | P3       | S                                  | -                                                               | -                                                                                                                                                                                                                                             |
+| [084](084.md)   | Use a Shared Duration Formatting Helper                             | Completed | P3       | S                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [085](085.md)   | Make Human-Readable Size Formatting Less Clever                     | Pending   | P3       | S                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [086](086.md)   | Flatten format_api_error_body                                       | Pending   | P3       | S                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [087](087.md)   | Simplify Responses Reasoning Config Construction                    | Pending   | P3       | S                                  | -                                                               | -                                                                                                                                                                                                                                             |

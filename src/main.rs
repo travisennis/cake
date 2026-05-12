@@ -8,6 +8,7 @@ mod hooks;
 mod logger;
 mod models;
 mod prompts;
+mod time_format;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -25,6 +26,7 @@ use crate::config::{
 use crate::hooks::{HookContext, HookRunner};
 use crate::models::{Message, Role};
 use crate::prompts::build_initial_prompt_messages;
+use crate::time_format::{format_duration_tenths, format_seconds_tenths};
 use clap::{ArgGroup, Parser, ValueEnum};
 use indicatif::{ProgressBar, ProgressStyle};
 use tracing::info;
@@ -1167,20 +1169,9 @@ impl CmdRunner for CodingAssistant {
     }
 }
 
-/// Format milliseconds as seconds with one decimal place using integer rounding.
-fn format_seconds_tenths(duration_ms: u64) -> String {
-    let tenths = (duration_ms + 50) / 100;
-    format!("{}.{:01}", tenths / 10, tenths % 10)
-}
-
-fn format_duration_tenths(duration: Duration) -> String {
-    let duration_ms = duration.as_millis().try_into().unwrap_or(u64::MAX);
-    format_seconds_tenths(duration_ms)
-}
-
 /// Format a completion summary with elapsed time, turns, and token usage.
 fn format_done_summary(duration_ms: u64, client: &Agent) -> String {
-    let secs = format_seconds_tenths(duration_ms);
+    let secs = format_seconds_tenths(u128::from(duration_ms));
     let turns = client.turn_count();
     let usage = client.total_usage();
     let input_tokens = usage.input_tokens;
@@ -1876,17 +1867,6 @@ mod tests {
             timestamp: None,
         };
         assert!(format_spinner_message(&item).is_none());
-    }
-
-    #[test]
-    fn test_format_seconds_tenths() {
-        assert_eq!(format_seconds_tenths(0), "0.0");
-        assert_eq!(format_seconds_tenths(49), "0.0");
-        assert_eq!(format_seconds_tenths(50), "0.1");
-        assert_eq!(format_seconds_tenths(1049), "1.0");
-        assert_eq!(format_seconds_tenths(1050), "1.1");
-        assert_eq!(format_seconds_tenths(1499), "1.5");
-        assert_eq!(format_seconds_tenths(1500), "1.5");
     }
 
     #[test]

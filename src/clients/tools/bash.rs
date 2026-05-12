@@ -6,6 +6,8 @@ use tokio::process::Command;
 use tokio::time::{Duration, timeout};
 use tracing::debug;
 
+use crate::time_format::format_seconds_tenths;
+
 /// Maximum number of null bytes or control characters (excluding common whitespace)
 /// allowed before considering output as binary.
 const BINARY_NULL_BYTE_THRESHOLD: usize = 8;
@@ -158,12 +160,6 @@ fn is_binary_data(data: &[u8]) -> bool {
 /// Format bytes as KiB with one decimal place using integer rounding.
 fn format_kib_tenths(size_bytes: usize) -> String {
     let tenths = (size_bytes * 10 + 512) / 1024;
-    format!("{}.{:01}", tenths / 10, tenths % 10)
-}
-
-/// Format milliseconds as seconds with one decimal place using integer rounding.
-fn format_seconds_tenths(elapsed_ms: u128) -> String {
-    let tenths = (elapsed_ms + 50) / 100;
     format!("{}.{:01}", tenths / 10, tenths % 10)
 }
 
@@ -586,15 +582,6 @@ mod tests {
         // 60000ms = 60.0s
         let footer = format_metadata_footer(0, 60000);
         assert_eq!(footer, "[exit:0 | 60.0s]");
-    }
-
-    #[test]
-    fn format_seconds_tenths_rounds_to_nearest_tenth() {
-        assert_eq!(format_seconds_tenths(1000), "1.0");
-        assert_eq!(format_seconds_tenths(1049), "1.0");
-        assert_eq!(format_seconds_tenths(1050), "1.1");
-        assert_eq!(format_seconds_tenths(1234), "1.2");
-        assert_eq!(format_seconds_tenths(1499), "1.5");
     }
 
     #[test]
