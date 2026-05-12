@@ -191,7 +191,7 @@ fn handle_binary_output(data: &[u8], exit_code: i32, elapsed_ms: u128) -> String
                  The command produced binary output which cannot be displayed as text.\n\
                  You can inspect the file with appropriate tools (e.g., `file`, `hexdump`, `xxd`).\n\
                  {}",
-                mime_type.as_deref().unwrap_or("unknown"),
+                mime_type.unwrap_or("unknown"),
                 tmp_path.display(),
                 footer
             )
@@ -204,7 +204,7 @@ fn handle_binary_output(data: &[u8], exit_code: i32, elapsed_ms: u128) -> String
                  Failed to save binary data to temp file: {e}\n\
                  The command produced binary output which cannot be displayed as text.\n\
                  {}",
-                mime_type.as_deref().unwrap_or("unknown"),
+                mime_type.unwrap_or("unknown"),
                 footer
             )
         },
@@ -213,58 +213,8 @@ fn handle_binary_output(data: &[u8], exit_code: i32, elapsed_ms: u128) -> String
 
 /// Attempt to detect the MIME type of binary data using content-based detection.
 /// Returns None if the type cannot be determined.
-fn detect_mime_type(data: &[u8]) -> Option<String> {
-    // Check for common binary file signatures (magic numbers)
-    if data.len() < 4 {
-        return None;
-    }
-
-    // PNG
-    if data.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
-        return Some("image/png".to_string());
-    }
-    // JPEG
-    if data.starts_with(&[0xFF, 0xD8, 0xFF]) {
-        return Some("image/jpeg".to_string());
-    }
-    // GIF
-    if data.starts_with(b"GIF8") {
-        return Some("image/gif".to_string());
-    }
-    // PDF
-    if data.starts_with(b"%PDF") {
-        return Some("application/pdf".to_string());
-    }
-    // ZIP (also covers JAR, Office Open XML, etc.)
-    if data.starts_with(&[0x50, 0x4B, 0x03, 0x04]) {
-        return Some("application/zip".to_string());
-    }
-    // ELF executable
-    if data.starts_with(&[0x7F, 0x45, 0x4C, 0x46]) {
-        return Some("application/x-executable".to_string());
-    }
-    // Mach-O (macOS executable)
-    if data.starts_with(&[0xFE, 0xED, 0xFA, 0xCF]) || data.starts_with(&[0xCF, 0xFA, 0xED, 0xFE]) {
-        return Some("application/x-mach-binary".to_string());
-    }
-    // SQLite
-    if data.starts_with(b"SQLite format 3") {
-        return Some("application/x-sqlite3".to_string());
-    }
-    // Gzip
-    if data.starts_with(&[0x1F, 0x8B]) {
-        return Some("application/gzip".to_string());
-    }
-    // BZip2
-    if data.starts_with(b"BZ") {
-        return Some("application/x-bzip2".to_string());
-    }
-    // TAR (ustar format)
-    if data.len() > 261 && &data[257..262] == b"ustar" {
-        return Some("application/x-tar".to_string());
-    }
-
-    None
+fn detect_mime_type(data: &[u8]) -> Option<&'static str> {
+    infer::get(data).map(|kind| kind.mime_type())
 }
 
 /// Format metadata footer with exit code and elapsed time
@@ -902,43 +852,31 @@ mod tests {
     #[test]
     fn test_detect_mime_type_png() {
         let png_header = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
-        assert_eq!(detect_mime_type(&png_header), Some("image/png".to_string()));
+        assert_eq!(detect_mime_type(&png_header), Some("image/png"));
     }
 
     #[test]
     fn test_detect_mime_type_jpeg() {
         let jpeg_header = [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10];
-        assert_eq!(
-            detect_mime_type(&jpeg_header),
-            Some("image/jpeg".to_string())
-        );
+        assert_eq!(detect_mime_type(&jpeg_header), Some("image/jpeg"));
     }
 
     #[test]
     fn test_detect_mime_type_pdf() {
         let pdf_header = b"%PDF-1.4";
-        assert_eq!(
-            detect_mime_type(pdf_header),
-            Some("application/pdf".to_string())
-        );
+        assert_eq!(detect_mime_type(pdf_header), Some("application/pdf"));
     }
 
     #[test]
     fn test_detect_mime_type_zip() {
         let zip_header = [0x50, 0x4B, 0x03, 0x04, 0x00, 0x00, 0x00];
-        assert_eq!(
-            detect_mime_type(&zip_header),
-            Some("application/zip".to_string())
-        );
+        assert_eq!(detect_mime_type(&zip_header), Some("application/zip"));
     }
 
     #[test]
     fn test_detect_mime_type_gzip() {
         let gzip_header = [0x1F, 0x8B, 0x08, 0x00];
-        assert_eq!(
-            detect_mime_type(&gzip_header),
-            Some("application/gzip".to_string())
-        );
+        assert_eq!(detect_mime_type(&gzip_header), Some("application/gzip"));
     }
 
     #[test]

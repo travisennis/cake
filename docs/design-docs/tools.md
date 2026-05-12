@@ -174,12 +174,7 @@ The Bash tool automatically detects binary output and prevents returning corrupt
 
 When binary output is detected:
 1. The data is saved to a temp file in `/tmp/cake/bash_binary_<uuid>`
-2. MIME type is detected via magic numbers for common formats:
-   - Images: PNG, JPEG, GIF
-   - Documents: PDF
-   - Archives: ZIP, Gzip, BZip2, TAR
-   - Executables: ELF, Mach-O
-   - Databases: SQLite
+2. MIME type is detected with the maintained `infer` content-signature database when the format is recognized
 3. A user-friendly message is returned with the file path and suggested tools for inspection (`file`, `hexdump`, `xxd`)
 
 Example binary output message:
