@@ -261,13 +261,10 @@ impl ConversationItem {
 
     /// Convert this item to JSON format for API input.
     #[cfg(test)]
+    #[allow(clippy::expect_used)]
     pub(super) fn to_api_input(&self) -> serde_json::Value {
-        serde_json::to_value(self.to_api_input_item()).unwrap_or_else(|error| {
-            serde_json::json!({
-                "type": "error",
-                "error": format!("failed to serialize Responses API input: {error}")
-            })
-        })
+        serde_json::to_value(self.to_api_input_item())
+            .expect("Responses API input DTO serialization should be infallible")
     }
 }
 
