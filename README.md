@@ -94,6 +94,7 @@ cake --max-tokens 4000 "Your prompt here"
 ### Shell Pipelines
 
 cake reads from stdin, so it composes naturally with other Unix tools:
+When a prompt argument and stdin are both present, cake sends them as separate labeled sections so the prompt stays distinct from the piped content.
 
 ```bash
 # Code review from git diff

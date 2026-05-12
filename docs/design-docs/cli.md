@@ -165,7 +165,7 @@ The CLI accepts input from multiple sources:
 1. **`[PROMPT]`**: Positional argument for the prompt (use `-` to read from stdin)
 2. **stdin**: Pipe input or use heredocs for multi-line prompts
 
-The prompt and stdin can be combined—the prompt is used as instructions with stdin content appended.
+The prompt and stdin can be combined. When both are present, cake sends them as labeled sections so the prompt remains the user request and stdin remains supplied input.
 
 ### Examples
 

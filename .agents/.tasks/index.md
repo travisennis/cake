@@ -4,8 +4,8 @@ This index summarizes the task files in this directory. Use it as the manually m
 
 ## Status Summary
 
-- Completed: 69
-- Pending: 45
+- Completed: 70
+- Pending: 44
 - Tracking: 0
 - Open: 1
 - Blocked: 12
@@ -22,9 +22,7 @@ This index summarizes the task files in this directory. Use it as the manually m
 
 These are the highest-priority tasks currently available from the task metadata:
 
-| Task          | Title                                                                  | Status  | Priority | Effort | ExecPlan                       | Depends on |
-| ------------- | ---------------------------------------------------------------------- | ------- | -------- | ------ | ------------------------------ | ---------- |
-| [073](073.md)   | Add Structured Prompt and Stdin Combination                         | Pending   | P2       | S                                  | -                                                               | -                                                                                                                                                                                                                                             |
+_None._
 
 ## Parent Trackers
 
@@ -112,7 +110,7 @@ _None active._
 | [070](070.md)   | Simplify Resolved Model Configuration Naming                        | Completed | P2       | M                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [071](071.md)   | Replace looks_like_uuid with Parser-Based Validation                | Completed | P2       | S                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [072](072.md)   | Add Size Limit or Streaming Plan for Stdin Input                    | Completed | P2       | M                                  | -                                                               | -                                                                                                                                                                                                                                             |
-| [073](073.md)   | Add Structured Prompt and Stdin Combination                         | Pending   | P2       | S                                  | -                                                               | -                                                                                                                                                                                                                                             |
+| [073](073.md)   | Add Structured Prompt and Stdin Combination                         | Completed | P2       | S                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [074](074.md)   | Replace Hand-Rolled Binary Magic Detection                          | Pending   | P2       | M                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [075](075.md)   | Check Whole File or Trust UTF-8 for Edit Binary Detection           | Pending   | P2       | S                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [076](076.md)   | Optimize Edit Application Allocation                                | Pending   | P2       | M                                  | -                                                               | -                                                                                                                                                                                                                                             |

@@ -363,7 +363,7 @@ impl CodingAssistant {
         }
     }
 
-    /// Build the final content from prompt and stdin according to codex-style rules
+    /// Build the final content from prompt and stdin according to codex-style rules.
     fn build_content(
         prompt: Option<&str>,
         stdin_content: Option<String>,
@@ -373,7 +373,9 @@ impl CodingAssistant {
         match (prompt, stdin_content) {
             (Some("-"), None) => Err(anyhow::anyhow!("No input provided via stdin")),
             (Some("-") | None, Some(stdin)) => Ok(stdin),
-            (Some(prompt), Some(stdin)) => Ok(format!("{prompt}\n\n{stdin}")),
+            (Some(prompt), Some(stdin)) => {
+                Ok(format!("User request:\n{prompt}\n\nStdin:\n{stdin}"))
+            },
             (Some(prompt), None) => Ok(prompt.to_string()),
             (None, None) => Err(anyhow::anyhow!(
                 "No input provided. Provide a prompt as an argument, use 'cake -' for stdin, or pipe input to cake."
@@ -1694,7 +1696,10 @@ mod tests {
     fn test_build_content_prompt_and_stdin() {
         let result =
             CodingAssistant::build_content(Some("instructions"), Some("file content".to_string()));
-        assert_eq!(result.unwrap(), "instructions\n\nfile content");
+        assert_eq!(
+            result.unwrap(),
+            "User request:\ninstructions\n\nStdin:\nfile content"
+        );
     }
 
     #[test]
@@ -1804,7 +1809,7 @@ mod tests {
         );
         assert_eq!(
             result.unwrap(),
-            "prompt line 1\nprompt line 2\n\nstdin line 1\nstdin line 2"
+            "User request:\nprompt line 1\nprompt line 2\n\nStdin:\nstdin line 1\nstdin line 2"
         );
     }
 
