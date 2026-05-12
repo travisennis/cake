@@ -4,8 +4,8 @@ This index summarizes the task files in this directory. Use it as the manually m
 
 ## Status Summary
 
-- Completed: 75
-- Pending: 39
+- Completed: 76
+- Pending: 38
 - Tracking: 0
 - Open: 1
 - Blocked: 12
@@ -116,7 +116,7 @@ _None active._
 | [076](076.md)   | Optimize Edit Application Allocation                                | Completed | P2       | M                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [077](077.md)   | Parse Only Needed Fields in Edit Argument Summaries                 | Completed | P2       | S                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [078](078.md)   | Delete Dead Diff Header Construction                                | Completed | P2       | S                                  | -                                                               | -                                                                                                                                                                                                                                             |
-| [079](079.md)   | Introduce RetryPolicy Configuration Type                            | Pending   | P2       | M                                  | -                                                               | -                                                                                                                                                                                                                                             |
+| [079](079.md)   | Introduce RetryPolicy Configuration Type                            | Completed | P2       | M                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [080](080.md)   | Simplify Overloaded Retry Classification                            | Pending   | P2       | S                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [081](081.md)   | Replace Retry Signal Body Substring Matching Where Possible         | Pending   | P2       | M                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [082](082.md)   | Make Stream JSON Conversion Live or Delete It                       | Completed | P2       | S                                  | -                                                               | Completed by 061.                                                                                                                                                                                                                            |

@@ -5,7 +5,7 @@ use tracing::debug;
 
 use crate::clients::agent::TurnResult;
 use crate::clients::backend::Backend;
-use crate::clients::retry::{self, HttpFailure, RequestOverrides, RetryStatus};
+use crate::clients::retry::{self, HttpFailure, RequestOverrides, RetryPolicy, RetryStatus};
 use crate::clients::tools::Tool;
 use crate::clients::types::ConversationItem;
 use crate::config::model::ResolvedModelConfig;
@@ -27,6 +27,7 @@ pub(super) fn build_http_client(disable_connection_reuse: bool) -> reqwest::Clie
 pub(super) struct AgentRunner {
     backend: Backend,
     client: reqwest::Client,
+    retry_policy: RetryPolicy,
 }
 
 impl AgentRunner {
@@ -34,6 +35,7 @@ impl AgentRunner {
         Self {
             backend,
             client: build_http_client(false),
+            retry_policy: RetryPolicy::default(),
         }
     }
 
@@ -76,6 +78,7 @@ impl AgentRunner {
                     };
 
                     match retry::classify_http_failure(
+                        &self.retry_policy,
                         &failure,
                         attempt,
                         session_id,
@@ -99,7 +102,12 @@ impl AgentRunner {
                         },
                     }
                 },
-                Err(error) => match retry::classify_transport_error(&error, attempt, session_id) {
+                Err(error) => match retry::classify_transport_error(
+                    &self.retry_policy,
+                    &error,
+                    attempt,
+                    session_id,
+                ) {
                     retry::RetryDecision::Retry { status } => {
                         if retry::should_disable_connection_reuse(&error)
                             && !disable_connection_reuse

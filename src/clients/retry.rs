@@ -5,14 +5,32 @@ use chrono::{DateTime, Utc};
 use reqwest::header::{HeaderMap, RETRY_AFTER};
 use sha2::{Digest, Sha256};
 
-pub const MAX_RETRIES: u32 = 5;
-pub const BASE_DELAY_MS: u64 = 500;
-pub const MAX_BACKOFF_MS: u64 = 30_000;
-
+const DEFAULT_MAX_RETRIES: u32 = 5;
+const DEFAULT_BASE_DELAY_MS: u64 = 500;
+const DEFAULT_MAX_BACKOFF_MS: u64 = 30_000;
+const DEFAULT_JITTER_DIVISOR: u64 = 5;
 const CONTEXT_OVERFLOW_SAFETY_BUFFER_TOKENS: u32 = 1024;
 const MIN_CONTEXT_OVERFLOW_OUTPUT_TOKENS: u32 = 256;
-const JITTER_DIVISOR: u64 = 5;
 const X_SHOULD_RETRY: &str = "x-should-retry";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RetryPolicy {
+    pub max_retries: u32,
+    pub base_delay: Duration,
+    pub max_backoff: Duration,
+    pub jitter_divisor: u64,
+}
+
+impl Default for RetryPolicy {
+    fn default() -> Self {
+        Self {
+            max_retries: DEFAULT_MAX_RETRIES,
+            base_delay: Duration::from_millis(DEFAULT_BASE_DELAY_MS),
+            max_backoff: Duration::from_millis(DEFAULT_MAX_BACKOFF_MS),
+            jitter_divisor: DEFAULT_JITTER_DIVISOR,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RequestOverrides {
@@ -68,16 +86,18 @@ struct ContextOverflow {
 }
 
 pub fn classify_http_failure(
+    policy: &RetryPolicy,
     failure: &HttpFailure,
     attempt: u32,
     session_id: uuid::Uuid,
     current_overrides: &RequestOverrides,
 ) -> RetryDecision {
-    if attempt >= MAX_RETRIES {
+    if attempt >= policy.max_retries {
         return RetryDecision::DoNotRetry;
     }
 
-    if let Some(status) = context_overflow_retry_status(failure, attempt, current_overrides) {
+    if let Some(status) = context_overflow_retry_status(policy, failure, attempt, current_overrides)
+    {
         return RetryDecision::RetryWithOverrides {
             status,
             overrides: apply_context_overflow_override(failure, current_overrides),
@@ -91,9 +111,28 @@ pub fn classify_http_failure(
 
     let is_overloaded = has_overloaded_marker(&failure.body);
 
+    classify_retryable_status(
+        policy,
+        failure,
+        attempt,
+        session_id,
+        x_should_retry,
+        is_overloaded,
+    )
+}
+
+fn classify_retryable_status(
+    policy: &RetryPolicy,
+    failure: &HttpFailure,
+    attempt: u32,
+    session_id: uuid::Uuid,
+    x_should_retry: Option<bool>,
+    is_overloaded: bool,
+) -> RetryDecision {
     match failure.status {
         408 => RetryDecision::Retry {
             status: retry_status(
+                policy,
                 attempt,
                 session_id,
                 RetryReason::RequestTimeout,
@@ -103,6 +142,7 @@ pub fn classify_http_failure(
         },
         409 => RetryDecision::Retry {
             status: retry_status(
+                policy,
                 attempt,
                 session_id,
                 RetryReason::LockTimeout,
@@ -112,6 +152,7 @@ pub fn classify_http_failure(
         },
         429 => RetryDecision::Retry {
             status: retry_status(
+                policy,
                 attempt,
                 session_id,
                 RetryReason::RateLimit,
@@ -121,6 +162,7 @@ pub fn classify_http_failure(
         },
         529 => RetryDecision::Retry {
             status: retry_status(
+                policy,
                 attempt,
                 session_id,
                 RetryReason::Overloaded,
@@ -141,11 +183,19 @@ pub fn classify_http_failure(
             };
 
             RetryDecision::Retry {
-                status: retry_status(attempt, session_id, reason, detail, &failure.headers),
+                status: retry_status(
+                    policy,
+                    attempt,
+                    session_id,
+                    reason,
+                    detail,
+                    &failure.headers,
+                ),
             }
         },
         status if is_overloaded => RetryDecision::Retry {
             status: retry_status(
+                policy,
                 attempt,
                 session_id,
                 RetryReason::Overloaded,
@@ -160,6 +210,7 @@ pub fn classify_http_failure(
         status if x_should_retry == Some(true) && (500..600).contains(&status) => {
             RetryDecision::Retry {
                 status: retry_status(
+                    policy,
                     attempt,
                     session_id,
                     RetryReason::ServerError,
@@ -173,11 +224,12 @@ pub fn classify_http_failure(
 }
 
 pub fn classify_transport_error(
+    policy: &RetryPolicy,
     error: &Error,
     attempt: u32,
     session_id: uuid::Uuid,
 ) -> RetryDecision {
-    if attempt >= MAX_RETRIES {
+    if attempt >= policy.max_retries {
         return RetryDecision::DoNotRetry;
     }
 
@@ -188,8 +240,8 @@ pub fn classify_transport_error(
     RetryDecision::Retry {
         status: RetryStatus {
             attempt: attempt + 1,
-            max_retries: MAX_RETRIES,
-            delay: fallback_delay(attempt, session_id),
+            max_retries: policy.max_retries,
+            delay: fallback_delay(policy, attempt, session_id),
             reason: RetryReason::Network,
             detail,
         },
@@ -201,6 +253,7 @@ pub fn should_disable_connection_reuse(error: &Error) -> bool {
 }
 
 fn context_overflow_retry_status(
+    policy: &RetryPolicy,
     failure: &HttpFailure,
     attempt: u32,
     current_overrides: &RequestOverrides,
@@ -223,7 +276,7 @@ fn context_overflow_retry_status(
 
     Some(RetryStatus {
         attempt: attempt + 1,
-        max_retries: MAX_RETRIES,
+        max_retries: policy.max_retries,
         delay: Duration::ZERO,
         reason: RetryReason::ContextOverflow,
         detail: format!("max_output_tokens={max_output_tokens}"),
@@ -254,6 +307,7 @@ fn apply_context_overflow_override(
 }
 
 fn retry_status(
+    policy: &RetryPolicy,
     attempt: u32,
     session_id: uuid::Uuid,
     reason: RetryReason,
@@ -262,29 +316,35 @@ fn retry_status(
 ) -> RetryStatus {
     RetryStatus {
         attempt: attempt + 1,
-        max_retries: MAX_RETRIES,
-        delay: parse_retry_after(headers).unwrap_or_else(|| fallback_delay(attempt, session_id)),
+        max_retries: policy.max_retries,
+        delay: parse_retry_after(headers)
+            .unwrap_or_else(|| fallback_delay(policy, attempt, session_id)),
         reason,
         detail,
     }
 }
 
-fn fallback_delay(attempt: u32, session_id: uuid::Uuid) -> Duration {
-    let base_delay_ms = capped_backoff_ms(attempt);
-    let jitter_bound_ms = if base_delay_ms >= MAX_BACKOFF_MS {
+fn fallback_delay(policy: &RetryPolicy, attempt: u32, session_id: uuid::Uuid) -> Duration {
+    let base_delay_ms = capped_backoff_ms(policy, attempt);
+    let max_backoff_ms = millis_u64(policy.max_backoff);
+    let jitter_bound_ms = if base_delay_ms >= max_backoff_ms || policy.jitter_divisor == 0 {
         0
     } else {
-        (base_delay_ms / JITTER_DIVISOR).max(1)
+        (base_delay_ms / policy.jitter_divisor).max(1)
     };
     let jitter_ms = deterministic_jitter_ms(session_id, attempt, jitter_bound_ms);
     Duration::from_millis(base_delay_ms.saturating_add(jitter_ms))
 }
 
-fn capped_backoff_ms(attempt: u32) -> u64 {
+fn capped_backoff_ms(policy: &RetryPolicy, attempt: u32) -> u64 {
     let exponent = attempt.saturating_sub(1).min(31);
-    BASE_DELAY_MS
+    millis_u64(policy.base_delay)
         .saturating_mul(1_u64 << exponent)
-        .min(MAX_BACKOFF_MS)
+        .min(millis_u64(policy.max_backoff))
+}
+
+fn millis_u64(duration: Duration) -> u64 {
+    duration.as_millis().try_into().unwrap_or(u64::MAX)
 }
 
 fn deterministic_jitter_ms(session_id: uuid::Uuid, attempt: u32, max_jitter_ms: u64) -> u64 {
@@ -453,6 +513,18 @@ mod tests {
         uuid::uuid!("550e8400-e29b-41d4-a716-446655440000")
     }
 
+    fn retry_policy() -> RetryPolicy {
+        RetryPolicy::default()
+    }
+
+    fn http_failure(status: u16) -> HttpFailure {
+        HttpFailure {
+            status,
+            headers: HeaderMap::new(),
+            body: String::new(),
+        }
+    }
+
     #[test]
     fn parse_retry_after_delta_seconds() {
         let mut headers = HeaderMap::new();
@@ -490,7 +562,13 @@ mod tests {
         };
 
         assert_eq!(
-            classify_http_failure(&failure, 1, session_id(), &RequestOverrides::default()),
+            classify_http_failure(
+                &retry_policy(),
+                &failure,
+                1,
+                session_id(),
+                &RequestOverrides::default()
+            ),
             RetryDecision::DoNotRetry
         );
     }
@@ -507,7 +585,13 @@ mod tests {
         };
 
         assert_eq!(
-            classify_http_failure(&failure, 1, session_id(), &RequestOverrides::default()),
+            classify_http_failure(
+                &retry_policy(),
+                &failure,
+                1,
+                session_id(),
+                &RequestOverrides::default()
+            ),
             RetryDecision::DoNotRetry
         );
     }
@@ -520,6 +604,7 @@ mod tests {
             body: r#"{"error":{"message":"input length and max_tokens exceed context limit: 12000 + 5000 > 16384"}}"#.to_string(),
         };
         let decision = classify_http_failure(
+            &retry_policy(),
             &failure,
             1,
             session_id(),
@@ -551,6 +636,7 @@ mod tests {
         };
 
         match classify_http_failure(
+            &retry_policy(),
             &failure,
             1,
             session_id(),
@@ -570,12 +656,52 @@ mod tests {
 
     #[test]
     fn fallback_delay_caps_and_jitters() {
-        let capped = fallback_delay(10, session_id());
-        assert_eq!(capped, Duration::from_millis(MAX_BACKOFF_MS));
+        let policy = retry_policy();
+        let capped = fallback_delay(&policy, 10, session_id());
+        assert_eq!(capped, policy.max_backoff);
 
-        let jittered = fallback_delay(3, session_id());
+        let jittered = fallback_delay(&policy, 3, session_id());
         assert!(jittered >= Duration::from_secs(2));
         assert!(jittered <= Duration::from_millis(2_400));
+    }
+
+    #[test]
+    fn retry_policy_controls_retry_budget_and_backoff() {
+        let policy = RetryPolicy {
+            max_retries: 2,
+            base_delay: Duration::from_millis(25),
+            max_backoff: Duration::from_millis(25),
+            jitter_divisor: 0,
+        };
+
+        assert_eq!(
+            classify_http_failure(
+                &policy,
+                &http_failure(429),
+                1,
+                session_id(),
+                &RequestOverrides::default()
+            ),
+            RetryDecision::Retry {
+                status: RetryStatus {
+                    attempt: 2,
+                    max_retries: 2,
+                    delay: Duration::from_millis(25),
+                    reason: RetryReason::RateLimit,
+                    detail: "429 rate limit".to_string(),
+                },
+            }
+        );
+        assert_eq!(
+            classify_http_failure(
+                &policy,
+                &http_failure(429),
+                2,
+                session_id(),
+                &RequestOverrides::default()
+            ),
+            RetryDecision::DoNotRetry
+        );
     }
 
     #[test]
@@ -583,7 +709,7 @@ mod tests {
         let error = anyhow::anyhow!("connection reset by peer");
 
         assert!(should_disable_connection_reuse(&error));
-        match classify_transport_error(&error, 1, session_id()) {
+        match classify_transport_error(&retry_policy(), &error, 1, session_id()) {
             RetryDecision::Retry { status } => {
                 assert_eq!(status.reason, RetryReason::Network);
                 assert_eq!(status.detail, "stale connection reset");
