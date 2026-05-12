@@ -4,8 +4,8 @@ This index summarizes the task files in this directory. Use it as the manually m
 
 ## Status Summary
 
-- Completed: 77
-- Pending: 37
+- Completed: 78
+- Pending: 36
 - Tracking: 0
 - Open: 1
 - Blocked: 12
@@ -118,7 +118,7 @@ _None active._
 | [078](078.md)   | Delete Dead Diff Header Construction                                | Completed | P2       | S                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [079](079.md)   | Introduce RetryPolicy Configuration Type                            | Completed | P2       | M                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [080](080.md)   | Simplify Overloaded Retry Classification                            | Completed | P2       | S                                  | -                                                               | -                                                                                                                                                                                                                                             |
-| [081](081.md)   | Replace Retry Signal Body Substring Matching Where Possible         | Pending   | P2       | M                                  | -                                                               | -                                                                                                                                                                                                                                             |
+| [081](081.md)   | Replace Retry Signal Body Substring Matching Where Possible         | Completed | P2       | M                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [082](082.md)   | Make Stream JSON Conversion Live or Delete It                       | Completed | P2       | S                                  | -                                                               | Completed by 061.                                                                                                                                                                                                                            |
 | [083](083.md)   | Fix serde_json to_value Error Policy                                | Pending   | P2       | S                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [084](084.md)   | Use a Shared Duration Formatting Helper                             | Pending   | P3       | S                                  | -                                                               | -                                                                                                                                                                                                                                             |

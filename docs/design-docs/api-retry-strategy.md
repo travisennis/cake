@@ -17,11 +17,11 @@ The retry classifier applies decisions in this order:
 2. For a parseable context-window overflow `400`, retry once with a lower output-token budget.
 3. Stop when `x-should-retry: false` is present.
 4. Retry portable transient HTTP statuses: `408`, `409`, `429`, `500`, `502`, `503`, and `504`.
-5. Retry recognized provider-specific transient signals when no explicit no-retry header is present, including vendor `529` and `overloaded_error` bodies.
+5. Retry recognized provider-specific transient signals when no explicit no-retry header is present, including vendor `529` and structured `overloaded_error` `type`/`code` fields. Plain-text body matching is retained only as an unstructured fallback.
 6. Treat `x-should-retry: true` as an extra retry signal for otherwise borderline `5xx` responses.
 7. Stop for everything else, including ordinary `400`, `401`, `403`, and `404`.
 
-An explicit `x-should-retry: false` header is authoritative. If it conflicts with a provider-specific body marker such as `overloaded_error`, cake honors the header and does not retry. This is the safer default for a generic compatible-provider client because the header is a direct provider decision while body markers may come from one provider family.
+An explicit `x-should-retry: false` header is authoritative. If it conflicts with a provider-specific signal such as `overloaded_error`, cake honors the header and does not retry. This is the safer default for a generic compatible-provider client because the header is a direct provider decision while provider-specific signals may come from one provider family.
 
 ## Delay Selection
 
@@ -59,8 +59,8 @@ Important matrix cases:
 | `400` | parseable context overflow | retry once with lower token budget |
 | `429` | `Retry-After` | retry using the header delay |
 | `503` | `x-should-retry: false` | no retry |
-| `503` | `overloaded_error` + `x-should-retry: false` | no retry |
-| `503` | `overloaded_error` | retry |
+| `503` | structured `overloaded_error` + `x-should-retry: false` | no retry |
+| `503` | structured `overloaded_error` | retry |
 | `529` | no no-retry header | retry |
 | `500` | `x-should-retry: true` | retry |
 | `404` | `x-should-retry: true` | no retry |

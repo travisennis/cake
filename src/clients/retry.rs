@@ -3,7 +3,9 @@ use std::time::Duration;
 use anyhow::Error;
 use chrono::{DateTime, Utc};
 use reqwest::header::{HeaderMap, RETRY_AFTER};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
+use tracing::debug;
 
 const DEFAULT_MAX_RETRIES: u32 = 5;
 const DEFAULT_BASE_DELAY_MS: u64 = 500;
@@ -375,7 +377,28 @@ fn parse_x_should_retry(headers: &HeaderMap) -> Option<bool> {
 }
 
 fn has_overloaded_marker(body: &str) -> bool {
-    body.to_ascii_lowercase().contains("overloaded_error")
+    match serde_json::from_str::<Value>(body) {
+        Ok(parsed) => has_structured_overloaded_signal(&parsed),
+        Err(error) => {
+            let has_marker = body.to_ascii_lowercase().contains("overloaded_error");
+            if has_marker {
+                debug!(
+                    target: "cake",
+                    %error,
+                    "Classified overloaded retry from unstructured response body fallback"
+                );
+            }
+            has_marker
+        },
+    }
+}
+
+fn has_structured_overloaded_signal(value: &Value) -> bool {
+    ["/error/type", "/error/code", "/type", "/code"]
+        .into_iter()
+        .filter_map(|pointer| value.pointer(pointer))
+        .filter_map(Value::as_str)
+        .any(|field| field.eq_ignore_ascii_case("overloaded_error"))
 }
 
 fn parse_context_overflow(body: &str) -> Option<ContextOverflow> {
@@ -602,6 +625,78 @@ mod tests {
                 },
                 other => panic!("expected overloaded retry, got {other:?}"),
             }
+        }
+    }
+
+    #[test]
+    fn overloaded_retry_uses_structured_error_fields() {
+        for body in [
+            r#"{"error":{"message":"provider overloaded","code":"overloaded_error"}}"#,
+            r#"{"code":"overloaded_error","message":"provider overloaded"}"#,
+            r#"{"type":"overloaded_error","message":"provider overloaded"}"#,
+        ] {
+            let failure = HttpFailure {
+                status: 500,
+                headers: HeaderMap::new(),
+                body: body.to_string(),
+            };
+
+            match classify_http_failure(
+                &retry_policy(),
+                &failure,
+                1,
+                session_id(),
+                &RequestOverrides::default(),
+            ) {
+                RetryDecision::Retry { status } => {
+                    assert_eq!(status.reason, RetryReason::Overloaded);
+                    assert_eq!(status.detail, "overloaded provider");
+                },
+                other => panic!("expected overloaded retry, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn valid_json_does_not_overload_from_message_substring() {
+        let failure = HttpFailure {
+            status: 400,
+            headers: HeaderMap::new(),
+            body: r#"{"error":{"message":"plain text mentions overloaded_error","type":"invalid_request_error"}}"#.to_string(),
+        };
+
+        assert_eq!(
+            classify_http_failure(
+                &retry_policy(),
+                &failure,
+                1,
+                session_id(),
+                &RequestOverrides::default(),
+            ),
+            RetryDecision::DoNotRetry
+        );
+    }
+
+    #[test]
+    fn malformed_body_keeps_isolated_overloaded_fallback() {
+        let failure = HttpFailure {
+            status: 500,
+            headers: HeaderMap::new(),
+            body: "provider failed with overloaded_error".to_string(),
+        };
+
+        match classify_http_failure(
+            &retry_policy(),
+            &failure,
+            1,
+            session_id(),
+            &RequestOverrides::default(),
+        ) {
+            RetryDecision::Retry { status } => {
+                assert_eq!(status.reason, RetryReason::Overloaded);
+                assert_eq!(status.detail, "overloaded provider");
+            },
+            other => panic!("expected overloaded retry, got {other:?}"),
         }
     }
 
