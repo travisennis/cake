@@ -4,8 +4,8 @@ This index summarizes the task files in this directory. Use it as the manually m
 
 ## Status Summary
 
-- Completed: 71
-- Pending: 43
+- Completed: 72
+- Pending: 42
 - Tracking: 0
 - Open: 1
 - Blocked: 12
@@ -112,7 +112,7 @@ _None active._
 | [072](072.md)   | Add Size Limit or Streaming Plan for Stdin Input                    | Completed | P2       | M                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [073](073.md)   | Add Structured Prompt and Stdin Combination                         | Completed | P2       | S                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [074](074.md)   | Replace Hand-Rolled Binary Magic Detection                          | Completed | P2       | M                                  | -                                                               | -                                                                                                                                                                                                                                             |
-| [075](075.md)   | Check Whole File or Trust UTF-8 for Edit Binary Detection           | Pending   | P2       | S                                  | -                                                               | -                                                                                                                                                                                                                                             |
+| [075](075.md)   | Check Whole File or Trust UTF-8 for Edit Binary Detection           | Completed | P2       | S                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [076](076.md)   | Optimize Edit Application Allocation                                | Pending   | P2       | M                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [077](077.md)   | Parse Only Needed Fields in Edit Argument Summaries                 | Pending   | P2       | S                                  | -                                                               | -                                                                                                                                                                                                                                             |
 | [078](078.md)   | Delete Dead Diff Header Construction                                | Pending   | P2       | S                                  | -                                                               | -                                                                                                                                                                                                                                             |

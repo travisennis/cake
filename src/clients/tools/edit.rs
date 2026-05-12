@@ -153,11 +153,10 @@ pub(super) fn execute_edit(
         return Err(format!("Path is not a file: {}", path.display()));
     }
 
-    // Refuse binary files (check for null bytes in first 8KB)
+    // Refuse binary files before treating the bytes as editable UTF-8 text.
     let file_bytes = std::fs::read(&path)
         .map_err(|e| format!("Failed to read file '{}': {e}", path.display()))?;
-    let check_len = file_bytes.len().min(8192);
-    if file_bytes[..check_len].contains(&0) {
+    if file_bytes.contains(&0) {
         return Err(format!(
             "Cannot edit binary file: {} (detected null bytes)",
             path.display()
@@ -831,6 +830,54 @@ mod tests {
         let result = execute_edit(&ToolContext::from_current_process(), &args);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("binary file"));
+    }
+
+    #[test]
+    fn error_on_null_byte_after_initial_8k() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+        let mut content = vec![b'a'; 8192];
+        content.extend_from_slice(b"\0tail");
+        fs::write(&file_path, content).unwrap();
+
+        let args = serde_json::json!({
+            "path": file_path.to_str().unwrap(),
+            "edits": [
+                { "old_text": "tail", "new_text": "replacement" }
+            ]
+        })
+        .to_string();
+
+        let result = execute_edit(&ToolContext::from_current_process(), &args);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("detected null bytes"),
+            "Error should mention null bytes: {err}"
+        );
+    }
+
+    #[test]
+    fn error_on_invalid_utf8_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+        fs::write(&file_path, b"valid text \xFF more text").unwrap();
+
+        let args = serde_json::json!({
+            "path": file_path.to_str().unwrap(),
+            "edits": [
+                { "old_text": "valid", "new_text": "changed" }
+            ]
+        })
+        .to_string();
+
+        let result = execute_edit(&ToolContext::from_current_process(), &args);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("File contains invalid UTF-8"),
+            "Error should mention invalid UTF-8: {err}"
+        );
     }
 
     #[test]
