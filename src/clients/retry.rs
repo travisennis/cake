@@ -85,6 +85,11 @@ struct ContextOverflow {
     context_limit: u32,
 }
 
+struct RetryClassification {
+    reason: RetryReason,
+    detail: String,
+}
+
 pub fn classify_http_failure(
     policy: &RetryPolicy,
     failure: &HttpFailure,
@@ -129,97 +134,69 @@ fn classify_retryable_status(
     x_should_retry: Option<bool>,
     is_overloaded: bool,
 ) -> RetryDecision {
-    match failure.status {
-        408 => RetryDecision::Retry {
-            status: retry_status(
-                policy,
-                attempt,
-                session_id,
-                RetryReason::RequestTimeout,
-                "408 request timeout".to_string(),
-                &failure.headers,
-            ),
-        },
-        409 => RetryDecision::Retry {
-            status: retry_status(
-                policy,
-                attempt,
-                session_id,
-                RetryReason::LockTimeout,
-                "409 lock timeout".to_string(),
-                &failure.headers,
-            ),
-        },
-        429 => RetryDecision::Retry {
-            status: retry_status(
-                policy,
-                attempt,
-                session_id,
-                RetryReason::RateLimit,
-                "429 rate limit".to_string(),
-                &failure.headers,
-            ),
-        },
-        529 => RetryDecision::Retry {
-            status: retry_status(
-                policy,
-                attempt,
-                session_id,
-                RetryReason::Overloaded,
-                "529 overloaded provider".to_string(),
-                &failure.headers,
-            ),
-        },
-        500 | 502 | 503 | 504 => {
-            let reason = if is_overloaded {
-                RetryReason::Overloaded
-            } else {
-                RetryReason::ServerError
-            };
-            let detail = if reason == RetryReason::Overloaded {
-                "overloaded provider".to_string()
-            } else {
-                format!("{} server error", failure.status)
-            };
+    let Some(classification) = retry_classification(failure.status, x_should_retry, is_overloaded)
+    else {
+        return RetryDecision::DoNotRetry;
+    };
 
-            RetryDecision::Retry {
-                status: retry_status(
-                    policy,
-                    attempt,
-                    session_id,
-                    reason,
-                    detail,
-                    &failure.headers,
-                ),
-            }
+    RetryDecision::Retry {
+        status: retry_status(
+            policy,
+            attempt,
+            session_id,
+            classification.reason,
+            classification.detail,
+            &failure.headers,
+        ),
+    }
+}
+
+fn retry_classification(
+    status: u16,
+    x_should_retry: Option<bool>,
+    is_overloaded: bool,
+) -> Option<RetryClassification> {
+    let classification = match status {
+        408 => fixed_retry_classification(RetryReason::RequestTimeout, "408 request timeout"),
+        409 => fixed_retry_classification(RetryReason::LockTimeout, "409 lock timeout"),
+        429 => fixed_retry_classification(RetryReason::RateLimit, "429 rate limit"),
+        529 => overloaded_retry_classification(status),
+        500 | 502 | 503 | 504 if is_overloaded => overloaded_retry_classification(status),
+        500 | 502 | 503 | 504 => server_error_retry_classification(status),
+        _ if is_overloaded => overloaded_retry_classification(status),
+        _ if x_should_retry == Some(true) && (500..600).contains(&status) => {
+            server_error_retry_classification(status)
         },
-        status if is_overloaded => RetryDecision::Retry {
-            status: retry_status(
-                policy,
-                attempt,
-                session_id,
-                RetryReason::Overloaded,
-                if status == 400 {
-                    "overloaded provider".to_string()
-                } else {
-                    format!("{status} overloaded provider")
-                },
-                &failure.headers,
-            ),
-        },
-        status if x_should_retry == Some(true) && (500..600).contains(&status) => {
-            RetryDecision::Retry {
-                status: retry_status(
-                    policy,
-                    attempt,
-                    session_id,
-                    RetryReason::ServerError,
-                    format!("{status} server error"),
-                    &failure.headers,
-                ),
-            }
-        },
-        _ => RetryDecision::DoNotRetry,
+        _ => return None,
+    };
+
+    Some(classification)
+}
+
+fn fixed_retry_classification(reason: RetryReason, detail: &str) -> RetryClassification {
+    RetryClassification {
+        reason,
+        detail: detail.to_string(),
+    }
+}
+
+fn overloaded_retry_classification(status: u16) -> RetryClassification {
+    let detail = if matches!(status, 400 | 500 | 502 | 503 | 504) {
+        "overloaded provider".to_string()
+    } else {
+        format!("{status} overloaded provider")
+    };
+
+    RetryClassification {
+        reason: RetryReason::Overloaded,
+        detail,
+    }
+}
+
+fn server_error_retry_classification(status: u16) -> RetryClassification {
+    RetryClassification {
+        reason: RetryReason::ServerError,
+        detail: format!("{status} server error"),
     }
 }
 
@@ -594,6 +571,38 @@ mod tests {
             ),
             RetryDecision::DoNotRetry
         );
+    }
+
+    #[test]
+    fn overloaded_retry_detail_is_classified_once() {
+        let marker_body =
+            r#"{"error":{"message":"provider overloaded","type":"overloaded_error"}}"#;
+
+        for (status, expected_detail) in [
+            (400, "overloaded provider"),
+            (503, "overloaded provider"),
+            (529, "529 overloaded provider"),
+        ] {
+            let failure = HttpFailure {
+                status,
+                headers: HeaderMap::new(),
+                body: marker_body.to_string(),
+            };
+
+            match classify_http_failure(
+                &retry_policy(),
+                &failure,
+                1,
+                session_id(),
+                &RequestOverrides::default(),
+            ) {
+                RetryDecision::Retry { status } => {
+                    assert_eq!(status.reason, RetryReason::Overloaded);
+                    assert_eq!(status.detail, expected_detail);
+                },
+                other => panic!("expected overloaded retry, got {other:?}"),
+            }
+        }
     }
 
     #[test]
