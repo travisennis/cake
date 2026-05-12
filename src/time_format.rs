@@ -2,10 +2,18 @@
 
 use std::time::Duration;
 
+const MILLIS_PER_TENTH_SECOND: u128 = 100;
+const TENTHS_PER_SECOND: u128 = 10;
+
 /// Format milliseconds as seconds with one decimal place using integer rounding.
 pub fn format_seconds_tenths(elapsed_ms: u128) -> String {
-    let tenths = (elapsed_ms + 50) / 100;
-    format!("{}.{:01}", tenths / 10, tenths % 10)
+    let rounded_tenths =
+        elapsed_ms.saturating_add(MILLIS_PER_TENTH_SECOND / 2) / MILLIS_PER_TENTH_SECOND;
+    format!(
+        "{}.{:01}",
+        rounded_tenths / TENTHS_PER_SECOND,
+        rounded_tenths % TENTHS_PER_SECOND
+    )
 }
 
 /// Format a duration as seconds with one decimal place using integer rounding.
@@ -33,5 +41,12 @@ mod tests {
     #[test]
     fn duration_tenths_formats_milliseconds_as_seconds() {
         assert_eq!(format_duration_tenths(Duration::from_millis(1_250)), "1.3");
+    }
+
+    #[test]
+    fn seconds_tenths_handles_max_milliseconds_without_overflowing() {
+        let formatted = format_seconds_tenths(u128::MAX);
+
+        assert!(formatted.contains('.'));
     }
 }

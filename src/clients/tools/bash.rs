@@ -15,6 +15,8 @@ const BINARY_NULL_BYTE_THRESHOLD: usize = 8;
 /// Ratio of non-printable characters that indicates binary data (0.3 = 30%)
 const BINARY_RATIO_THRESHOLD_NUMERATOR: usize = 3;
 const BINARY_RATIO_THRESHOLD_DENOMINATOR: usize = 10;
+const BYTES_PER_KIB: u128 = 1024;
+const TENTHS_PER_KIB: u128 = 10;
 
 /// Maximum number of bytes the Bash tool will return inline.
 /// Output exceeding this limit is written to a temporary file and the agent
@@ -159,8 +161,15 @@ fn is_binary_data(data: &[u8]) -> bool {
 
 /// Format bytes as KiB with one decimal place using integer rounding.
 fn format_kib_tenths(size_bytes: usize) -> String {
-    let tenths = (size_bytes * 10 + 512) / 1024;
-    format!("{}.{:01}", tenths / 10, tenths % 10)
+    let rounded_tenths = (size_bytes as u128)
+        .saturating_mul(TENTHS_PER_KIB)
+        .saturating_add(BYTES_PER_KIB / 2)
+        / BYTES_PER_KIB;
+    format!(
+        "{}.{:01}",
+        rounded_tenths / TENTHS_PER_KIB,
+        rounded_tenths % TENTHS_PER_KIB
+    )
 }
 
 /// Create a result message for binary output, saving the data to a temp file.
@@ -181,7 +190,7 @@ fn handle_binary_output(data: &[u8], exit_code: i32, elapsed_ms: u128) -> String
         Ok(()) => {
             let footer = format_metadata_footer(exit_code, elapsed_ms);
             format!(
-                "[Binary output detected - {size_bytes} bytes ({size_kb:.1} KB)]\n\
+                "[Binary output detected - {size_bytes} bytes ({size_kb} KB)]\n\
                  Detected type: {}\n\
                  Binary data saved to: {}\n\
                  The command produced binary output which cannot be displayed as text.\n\
@@ -195,7 +204,7 @@ fn handle_binary_output(data: &[u8], exit_code: i32, elapsed_ms: u128) -> String
         Err(e) => {
             let footer = format_metadata_footer(exit_code, elapsed_ms);
             format!(
-                "[Binary output detected - {size_bytes} bytes ({size_kb:.1} KB)]\n\
+                "[Binary output detected - {size_bytes} bytes ({size_kb} KB)]\n\
                  Detected type: {}\n\
                  Failed to save binary data to temp file: {e}\n\
                  The command produced binary output which cannot be displayed as text.\n\
@@ -591,6 +600,13 @@ mod tests {
         assert_eq!(format_kib_tenths(52), "0.1");
         assert_eq!(format_kib_tenths(1024), "1.0");
         assert_eq!(format_kib_tenths(1536), "1.5");
+    }
+
+    #[test]
+    fn format_kib_tenths_handles_max_size_without_overflowing() {
+        let formatted = format_kib_tenths(usize::MAX);
+
+        assert!(formatted.contains('.'));
     }
 
     // ===========================================================================
