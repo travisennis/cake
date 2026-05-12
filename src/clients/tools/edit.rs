@@ -398,30 +398,15 @@ fn restore_bom(content: String, bom: Option<&str>) -> String {
 /// Generate a unified diff showing the changes
 fn generate_unified_diff(original: &str, modified: &str, path: &Path) -> String {
     use similar::TextDiff;
-    use std::fmt::Write;
 
     let diff = TextDiff::from_lines(original, modified);
-
-    let mut diff_output = String::new();
-    let _ = writeln!(diff_output, "--- {}", path.display());
-    let _ = writeln!(diff_output, "+++ {}", path.display());
-
-    // Use the unified_diff method from similar crate
-    let unified = diff
-        .unified_diff()
+    diff.unified_diff()
         .context_radius(3)
         .header(
             &format!("--- {}", path.display()),
             &format!("+++ {}", path.display()),
         )
-        .to_string();
-
-    // The unified_diff includes its own header, so we need to remove the duplicate
-    // or just use the unified output directly
-    diff_output.clear();
-    diff_output.push_str(&unified);
-
-    diff_output
+        .to_string()
 }
 
 // =============================================================================
