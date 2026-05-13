@@ -388,7 +388,6 @@ fn required_response_id(response: &ChatResponse) -> anyhow::Result<String> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::clients::chat_types::{
@@ -1468,7 +1467,6 @@ mod tests {
 
 /// Tests for parsing raw HTTP responses
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod response_parsing_tests {
     use super::*;
     use wiremock::matchers::method;

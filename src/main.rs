@@ -51,7 +51,6 @@ pub enum OutputFormat {
         .args(["continue_session", "resume", "fork", "no_session"])
         .multiple(false)
 ))]
-#[allow(clippy::struct_excessive_bools)]
 struct CodingAssistant {
     /// The prompt to send to the AI (use `-` to read from stdin)
     #[arg(value_name = "PROMPT")]
@@ -640,7 +639,10 @@ impl CodingAssistant {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "session construction naturally requires many parameters"
+    )]
     fn build_client_and_session(
         &self,
         run_mode: &RunMode,
@@ -754,7 +756,6 @@ impl CodingAssistant {
     /// Attach text-mode progress reporting to the agent and return its spinner.
     fn with_text_progress(client: Agent) -> (Agent, ProgressBar) {
         let spinner = ProgressBar::new_spinner();
-        #[allow(clippy::literal_string_with_formatting_args)]
         let style = ProgressStyle::with_template("{spinner:.cyan} {msg}")
             .unwrap_or_else(|_| ProgressStyle::default_spinner());
         spinner.set_style(style);
@@ -1226,7 +1227,7 @@ fn main() -> std::process::ExitCode {
         },
     };
 
-    let _ = logger::configure(&data_dir.get_cache_dir());
+    _ = logger::configure(&data_dir.get_cache_dir());
 
     info!("data dir: {}", data_dir.get_cache_dir().display());
 
@@ -1237,7 +1238,7 @@ fn main() -> std::process::ExitCode {
             // For --help/--version, clap returns exit_code() == 0 and the
             // formatted output goes to stdout. For actual errors (bad flags,
             // missing required args), it goes to stderr with exit_code() != 0.
-            e.print().ok();
+            _ = e.print();
             let exit = if e.exit_code() == 0 {
                 std::process::ExitCode::from(exit_code::code::SUCCESS)
             } else {
@@ -1387,14 +1388,12 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::unwrap_used)]
     fn test_run_mode_defaults_to_new_session() {
         let args = CodingAssistant::parse_from(["cake", "test prompt"]);
         assert_eq!(RunMode::from_cli(&args).unwrap(), RunMode::NewSession);
     }
 
     #[test]
-    #[allow(clippy::unwrap_used)]
     fn test_run_mode_no_session_is_ephemeral() {
         let args = CodingAssistant::parse_from(["cake", "--no-session", "test prompt"]);
         assert_eq!(RunMode::from_cli(&args).unwrap(), RunMode::Ephemeral);
@@ -1402,7 +1401,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::unwrap_used)]
     fn test_run_mode_restore_flags() {
         let resume_id = uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
         let args = CodingAssistant::parse_from(["cake", "--continue", "test prompt"]);
@@ -1439,7 +1437,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::unwrap_used)]
     fn test_run_mode_rejects_non_uuid_session_references() {
         let args = CodingAssistant::parse_from(["cake", "--resume", "not-a-uuid", "test prompt"]);
         assert!(
@@ -1508,7 +1505,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::unwrap_used)]
     fn test_resolve_model_config_no_model_configured() {
         let args = CodingAssistant::parse_from(["cake", "test prompt"]);
         let models = HashMap::new();
@@ -1520,7 +1516,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::unwrap_used)]
     fn test_resolve_model_config_default_model() {
         let args = CodingAssistant::parse_from(["cake", "test prompt"]);
         let mut models = HashMap::new();
@@ -1547,7 +1542,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::unwrap_used)]
     fn test_resolve_model_config_unknown_model() {
         let mut args = CodingAssistant::parse_from(["cake", "test prompt"]);
         args.model = Some("nonexistent".to_string());
@@ -1560,7 +1554,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::unwrap_used)]
     fn test_resolve_model_config_invalid_name_format() {
         let mut args = CodingAssistant::parse_from(["cake", "test prompt"]);
         args.model = Some("Invalid Name!".to_string());
@@ -1573,7 +1566,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::unwrap_used)]
     fn test_resolve_model_config_from_settings() {
         let args = CodingAssistant::parse_from(["cake", "--model", "claude", "test"]);
 
@@ -1604,7 +1596,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::unwrap_used)]
     fn test_resolve_model_config_model_flag_overrides_default_model() {
         let args = CodingAssistant::parse_from(["cake", "--model", "claude", "test"]);
 
@@ -1649,28 +1640,24 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::unwrap_used)]
     fn test_build_content_prompt_only() {
         let result = CodingAssistant::build_content(Some("hello"), None);
         assert_eq!(result.unwrap(), "hello");
     }
 
     #[test]
-    #[allow(clippy::unwrap_used)]
     fn test_build_content_stdin_only() {
         let result = CodingAssistant::build_content(None, Some("stdin content".to_string()));
         assert_eq!(result.unwrap(), "stdin content");
     }
 
     #[test]
-    #[allow(clippy::unwrap_used)]
     fn test_build_content_dash_with_stdin() {
         let result = CodingAssistant::build_content(Some("-"), Some("stdin content".to_string()));
         assert_eq!(result.unwrap(), "stdin content");
     }
 
     #[test]
-    #[allow(clippy::unwrap_used)]
     fn test_build_content_dash_without_stdin() {
         let result = CodingAssistant::build_content(Some("-"), None);
         assert!(result.is_err());
@@ -1683,7 +1670,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::unwrap_used)]
     fn test_build_content_prompt_and_stdin() {
         let result =
             CodingAssistant::build_content(Some("instructions"), Some("file content".to_string()));
@@ -1694,7 +1680,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::unwrap_used)]
     fn restored_session_seeds_skills_from_structured_records_only() {
         let run_session = CodingAssistant::restored_client_and_session(
             session_with_skill_records(),
@@ -1712,7 +1697,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::unwrap_used, clippy::expect_used)]
     fn forked_session_seeds_skills_from_structured_records() {
         let restored = session_with_skill_records();
         let run_session = CodingAssistant::forked_client_and_session(
@@ -1740,7 +1724,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::unwrap_used)]
     fn test_build_content_no_input() {
         let result = CodingAssistant::build_content(None, None);
         assert!(result.is_err());
@@ -1750,14 +1733,12 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::unwrap_used)]
     fn test_build_content_empty_prompt() {
         let result = CodingAssistant::build_content(Some(""), None);
         assert_eq!(result.unwrap(), "");
     }
 
     #[test]
-    #[allow(clippy::unwrap_used)]
     fn test_build_content_empty_stdin() {
         let result = CodingAssistant::build_content(None, Some(String::new()));
         assert!(result.is_err());
@@ -1770,21 +1751,18 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::unwrap_used)]
     fn test_build_content_prompt_with_empty_stdin() {
         let result = CodingAssistant::build_content(Some("my prompt"), Some(String::new()));
         assert_eq!(result.unwrap(), "my prompt");
     }
 
     #[test]
-    #[allow(clippy::unwrap_used)]
     fn test_build_content_multiline_prompt() {
         let result = CodingAssistant::build_content(Some("line 1\nline 2"), None);
         assert_eq!(result.unwrap(), "line 1\nline 2");
     }
 
     #[test]
-    #[allow(clippy::unwrap_used)]
     fn test_build_content_multiline_stdin() {
         let result =
             CodingAssistant::build_content(None, Some("stdin line 1\nstdin line 2".to_string()));
@@ -1792,7 +1770,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::unwrap_used)]
     fn test_build_content_multiline_both() {
         let result = CodingAssistant::build_content(
             Some("prompt line 1\nprompt line 2"),
@@ -2029,7 +2006,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::unwrap_used)]
     fn test_resolve_model_for_session_by_model_field() {
         // Session stores the API model identifier, not the config name.
         // This test verifies that --continue works when the session model

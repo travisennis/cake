@@ -40,7 +40,6 @@ pub(super) fn write_tool() -> super::Tool {
 #[derive(Deserialize)]
 struct WriteArgs {
     path: String,
-    #[allow(dead_code)]
     content: String,
 }
 
@@ -183,7 +182,6 @@ fn validate_path_for_write(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use std::fs;

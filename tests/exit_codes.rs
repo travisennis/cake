@@ -8,7 +8,7 @@
 //! - 2 — API error (rate limit, auth failure, network error)
 //! - 3 — input error (no prompt, invalid flags, missing API key)
 
-#![allow(clippy::expect_used)]
+#![expect(clippy::expect_used, reason = "test code uses expect for assertions")]
 
 mod support;
 

@@ -34,6 +34,10 @@ pub fn generate_name() -> String {
 
     let adj = ADJECTIVES[bytes[0] as usize % ADJECTIVES.len()];
     let noun = NOUNS[bytes[1] as usize % NOUNS.len()];
+    #[expect(
+        clippy::string_slice,
+        reason = "hex encoding always produces ASCII output"
+    )]
     let suffix = &hex::encode(&bytes[2..4])[..4];
 
     format!("{adj}-{noun}-{suffix}")
@@ -237,7 +241,6 @@ pub fn remove(from: &Path, name: &str, force: bool) -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use tempfile::TempDir;

@@ -94,7 +94,6 @@ fn requires_reasoning_content_tool_call_fallback(model: &str) -> bool {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::clients::chat_types::{ChatFunctionCallRef, ChatToolCallRef};

@@ -8,7 +8,7 @@
 //! can run inside a parent cake session without filesystem collisions on
 //! `~/.cache/cake/`.
 
-#![allow(clippy::expect_used)]
+#![expect(clippy::expect_used, reason = "test code uses expect for assertions")]
 
 mod support;
 
@@ -339,7 +339,7 @@ api_key_env = "NO_SESSION_TEST_KEY"
         .output()
         .expect("Failed to execute command");
 
-    let sessions_dir = env.data_dir().join("sessions");
+    let sessions_dir = env.data_dir.join("sessions");
 
     let no_sessions = if sessions_dir.exists() {
         std::fs::read_dir(&sessions_dir).map_or(true, |mut d| d.next().is_none())

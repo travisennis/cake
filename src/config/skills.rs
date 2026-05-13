@@ -7,6 +7,11 @@
 //! Each skill is defined by a `SKILL.md` file with YAML frontmatter containing
 //! metadata (name, description) and markdown body content.
 
+#![expect(
+    clippy::string_slice,
+    reason = "all string indexing is on ASCII code points from find() results or known offsets"
+)]
+
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -243,7 +248,7 @@ impl Skill {
     /// Load the full body content of the skill (markdown after frontmatter).
     ///
     /// This is lazy-loaded at activation time, not during discovery.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn load_body(&self) -> Result<String, std::io::Error> {
         let content = std::fs::read_to_string(&self.location)?;
 
@@ -279,7 +284,7 @@ impl SkillCatalog {
     }
 
     /// Check if a path corresponds to a known skill location.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn get_skill_by_location(&self, path: &Path) -> Option<&Skill> {
         self.skills.iter().find(|s| s.location == path)
     }
@@ -310,13 +315,13 @@ impl SkillCatalog {
         for skill in &self.skills {
             use std::fmt::Write;
             xml.push_str("  <skill>\n");
-            let _ = writeln!(xml, "    <name>{}</name>", xml_escape(&skill.name));
-            let _ = writeln!(
+            _ = writeln!(xml, "    <name>{}</name>", xml_escape(&skill.name));
+            _ = writeln!(
                 xml,
                 "    <description>{}</description>",
                 xml_escape(&skill.description)
             );
-            let _ = writeln!(xml, "    <location>{}</location>", skill.location.display());
+            _ = writeln!(xml, "    <location>{}</location>", skill.location.display());
             xml.push_str("  </skill>\n");
         }
         xml.push_str("</available_skills>");
@@ -608,7 +613,6 @@ impl SkillConfig {
 // =============================================================================
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use tempfile::TempDir;

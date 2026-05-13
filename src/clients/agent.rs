@@ -57,7 +57,7 @@ impl SkillActivations {
         self.pending.clear();
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     fn active(&self) -> HashSet<String> {
         self.active.clone()
     }
@@ -176,7 +176,7 @@ impl Agent {
     }
 
     /// Returns the task ID for the current invocation.
-    #[allow(dead_code)]
+    #[expect(dead_code, reason = "used in integration tests")]
     pub const fn task_id(&self) -> uuid::Uuid {
         self.task_id
     }
@@ -206,14 +206,14 @@ impl Agent {
     }
 
     /// Sets accumulated usage (for test fixtures).
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub const fn with_total_usage(mut self, usage: Usage) -> Self {
         self.total_usage = usage;
         self
     }
 
     /// Sets the turn count (for test fixtures).
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub const fn with_turn_count(mut self, count: u32) -> Self {
         self.turn_count = count;
         self
@@ -264,7 +264,7 @@ impl Agent {
     }
 
     /// Returns the names of skills that have been activated in this session.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn activated_skills(&self) -> HashSet<String> {
         self.skill_activations
             .lock()
@@ -415,7 +415,10 @@ impl Agent {
     ///
     /// Returns an error if the API request fails, the response cannot be parsed,
     /// or a tool execution fails critically.
-    #[allow(clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "agent send loop orchestrates tool execution and retry logic"
+    )]
     pub async fn send(&mut self, message: Message) -> anyhow::Result<Option<Message>> {
         let user_item = self.conversation.push_user_message(message.content.clone());
         self.stream_item(&user_item)?;
@@ -777,7 +780,6 @@ fn test_agent_for(api_type: ApiType, base_url: &str) -> Agent {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::clients::types::{InputTokensDetails, OutputTokensDetails};
@@ -1172,7 +1174,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::unwrap_used)]
     fn builder_with_history() {
         let history = vec![ConversationItem::Message {
             role: Role::User,
@@ -1234,7 +1235,6 @@ mod tests {
 
 /// Error handling tests using wiremock for HTTP mocking
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod error_tests {
     use super::*;
     use crate::config::hooks::{HookCommand, HookEvent, HookGroup, HookMatcher, LoadedHooks};

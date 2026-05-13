@@ -103,7 +103,6 @@ fn format_agents_context(agents_files: &[AgentsFile]) -> String {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::config::skills::{Skill, SkillScope};

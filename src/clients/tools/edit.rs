@@ -66,7 +66,6 @@ struct Edit {
 #[derive(Debug, Deserialize)]
 struct EditArgs {
     path: String,
-    #[allow(dead_code)]
     edits: Vec<Edit>,
 }
 
@@ -414,7 +413,6 @@ fn generate_unified_diff(original: &str, modified: &str, path: &Path) -> String 
 // =============================================================================
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use std::fs;

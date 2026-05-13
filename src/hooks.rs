@@ -540,7 +540,10 @@ impl HookRunner {
     }
 }
 
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "hook command execution has many branches for error handling"
+)]
 async fn run_command_hook(command: HookCommand, payload: Value, cwd: PathBuf) -> InvocationOutcome {
     let start = Instant::now();
     if let Some(status) = &command.status_message {
@@ -756,7 +759,6 @@ fn capped_text(bytes: &[u8]) -> String {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::config::hooks::{HookGroup, HookMatcher};

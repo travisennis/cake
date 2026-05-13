@@ -93,7 +93,10 @@ impl Session {
     ///
     /// Returns an error if the file cannot be opened, or if any line
     /// cannot be parsed as valid JSON.
-    #[allow(clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "session deserialization requires many field mappings"
+    )]
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let content = fs::read_to_string(path)
             .with_context(|| format!("Failed to open session file: {}", path.display()))?;
@@ -275,7 +278,6 @@ fn lock_session_file(file: &File, path: &Path) -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::clients::types::{

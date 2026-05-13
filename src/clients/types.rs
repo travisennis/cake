@@ -261,7 +261,6 @@ impl ConversationItem {
 
     /// Convert this item to JSON format for API input.
     #[cfg(test)]
-    #[allow(clippy::expect_used)]
     pub(super) fn to_api_input(&self) -> serde_json::Value {
         serde_json::to_value(self.to_api_input_item())
             .expect("Responses API input DTO serialization should be infallible")
@@ -749,9 +748,9 @@ pub(super) struct ApiResponse {
     pub(super) id: Option<String>,
     pub(super) output: Vec<OutputMessage>,
     pub(super) usage: Option<ApiUsage>,
-    #[expect(dead_code)]
+    #[expect(dead_code, reason = "API response field preserved for completeness")]
     pub(super) status: Option<String>,
-    #[expect(dead_code)]
+    #[expect(dead_code, reason = "API response field preserved for completeness")]
     pub(super) error: Option<ApiError>,
 }
 
@@ -763,7 +762,7 @@ pub(super) struct OutputMessage {
     pub(super) call_id: Option<String>,
     pub(super) name: Option<String>,
     pub(super) arguments: Option<String>,
-    #[expect(dead_code)]
+    #[expect(dead_code, reason = "API response field preserved for completeness")]
     pub(super) role: Option<String>,
     pub(super) status: Option<String>,
     pub(super) content: Option<Vec<OutputContent>>,
@@ -824,7 +823,7 @@ pub(super) struct ApiOutputTokensDetails {
     pub(super) reasoning_tokens: Option<u64>,
 }
 
-#[expect(dead_code)]
+#[expect(dead_code, reason = "API response struct defined for completeness")]
 #[derive(Deserialize, Debug)]
 pub(super) struct ApiError {
     pub(super) code: Option<String>,
@@ -833,7 +832,6 @@ pub(super) struct ApiError {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::config::session::CURRENT_FORMAT_VERSION;

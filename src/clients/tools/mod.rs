@@ -459,7 +459,14 @@ fn truncate_display(s: &str, max: usize) -> String {
     if s.len() <= max {
         s.to_string()
     } else {
-        format!("{}...", &s[..max])
+        #[expect(
+            clippy::string_slice,
+            reason = "boundary is computed via floor_char_boundary which guarantees a UTF-8 character boundary"
+        )]
+        {
+            let boundary = s.floor_char_boundary(max);
+            format!("{}...", &s[..boundary])
+        }
     }
 }
 
@@ -498,7 +505,6 @@ pub(super) fn read_tool_registry() -> ToolRegistry {
 // =============================================================================
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use std::fs;

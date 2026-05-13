@@ -138,7 +138,7 @@ impl DataDir {
     /// # Errors
     ///
     /// Returns an error if the session file cannot be written.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn save_session(&self, session: &Session) -> anyhow::Result<PathBuf> {
         let session_path = self.session_path(session.id);
 
@@ -428,7 +428,6 @@ fn git_output(working_dir: &Path, args: &[&str]) -> Option<String> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
@@ -621,12 +620,14 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let custom_path = tmp.path().join("custom_cake");
 
-        // SAFETY: test is single-threaded for this env var; no other test
+        // SAFETY: This test runs in a single-threaded context and no other code
         // reads CAKE_DATA_DIR concurrently.
         unsafe {
             std::env::set_var("CAKE_DATA_DIR", &custom_path);
         }
         let dd = DataDir::new().unwrap();
+        // SAFETY: Restoring the environment for subsequent tests. Same safety
+        // assumptions as the set_var call above.
         unsafe {
             std::env::remove_var("CAKE_DATA_DIR");
         }

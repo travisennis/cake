@@ -50,9 +50,7 @@ pub(super) fn read_tool() -> super::Tool {
 #[derive(Deserialize)]
 struct ReadArgs {
     path: String,
-    #[allow(dead_code)]
     start_line: Option<usize>,
-    #[allow(dead_code)]
     end_line: Option<usize>,
 }
 
@@ -203,7 +201,7 @@ fn read_file(
         use std::fmt::Write;
         let truncate_at = MAX_OUTPUT_BYTES - 100; // Leave room for truncation message
         let mut truncated = output.chars().take(truncate_at).collect::<String>();
-        let _ = write!(
+        _ = write!(
             truncated,
             "\n[... output truncated at {MAX_OUTPUT_BYTES} bytes ...]"
         );
@@ -214,14 +212,13 @@ fn read_file(
     if end < total_lines.saturating_sub(1) {
         use std::fmt::Write;
         let remaining = total_lines - end - 1;
-        let _ = write!(output, "\n[... {remaining} more lines ...]");
+        _ = write!(output, "\n[... {remaining} more lines ...]");
     }
 
     Ok(super::ToolResult { output })
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use std::fs;

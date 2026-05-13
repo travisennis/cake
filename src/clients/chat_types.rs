@@ -81,16 +81,16 @@ pub(super) struct ChatResponse {
 
 #[derive(Deserialize, Debug)]
 pub(super) struct ChatChoice {
-    #[expect(dead_code)]
+    #[expect(dead_code, reason = "API response field preserved for completeness")]
     pub(super) index: u32,
     pub(super) message: ChatResponseMessage,
-    #[expect(dead_code)]
+    #[expect(dead_code, reason = "API response field preserved for completeness")]
     pub(super) finish_reason: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]
 pub(super) struct ChatResponseMessage {
-    #[expect(dead_code)]
+    #[expect(dead_code, reason = "API response field preserved for completeness")]
     pub(super) role: Option<String>,
     pub(super) content: Option<String>,
     pub(super) reasoning_content: Option<String>,
@@ -102,7 +102,7 @@ pub(super) struct ChatResponseMessage {
 pub(super) struct ChatToolCall {
     pub(super) id: String,
     #[serde(rename = "type")]
-    #[expect(dead_code)]
+    #[expect(dead_code, reason = "API response field preserved for completeness")]
     pub(super) type_: String,
     pub(super) function: ChatFunctionCall,
 }
@@ -125,7 +125,6 @@ pub(super) struct PromptTokensDetails {
 }
 
 #[derive(Deserialize, Debug)]
-#[allow(clippy::struct_field_names)]
 pub(super) struct ChatUsage {
     pub(super) prompt_tokens: Option<u64>,
     pub(super) completion_tokens: Option<u64>,

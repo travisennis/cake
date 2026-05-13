@@ -1,3 +1,8 @@
+#![expect(
+    clippy::string_slice,
+    reason = "all string indexing in context overflow detection uses indices from .find() which return char boundaries"
+)]
+
 use std::time::Duration;
 
 use anyhow::Error;
@@ -503,7 +508,6 @@ fn transport_retry_detail(error: &Error) -> Option<String> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use chrono::TimeZone;

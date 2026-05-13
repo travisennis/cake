@@ -31,7 +31,7 @@ impl LoadedHooks {
 
 #[derive(Debug, Clone)]
 pub struct HookGroup {
-    #[allow(dead_code)]
+    #[expect(dead_code, reason = "used in test assertions")]
     pub source_path: PathBuf,
     pub event: HookEvent,
     pub matcher: HookMatcher,
@@ -328,7 +328,6 @@ struct HookCommandConfig {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
 

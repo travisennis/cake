@@ -33,7 +33,10 @@ pub(super) use linux::LandlockSandbox;
 // =============================================================================
 
 #[derive(Clone, Debug)]
-#[allow(clippy::struct_field_names, dead_code)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "field names mirror the struct name for clarity"
+)]
 pub(super) struct SandboxConfig {
     /// Directories with read-write access (cwd, temp dirs)
     pub read_write: Vec<PathBuf>,
@@ -45,7 +48,6 @@ pub(super) struct SandboxConfig {
 
 impl SandboxConfig {
     /// Build a sandbox configuration for the current context
-    #[allow(dead_code)]
     pub fn build(context: &ToolContext) -> Self {
         Self::build_with_additional_dirs(
             &context.cwd,
@@ -108,7 +110,10 @@ impl SandboxConfig {
     /// work across the languages, package managers, and runtime managers a
     /// coding agent typically encounters, without users having to add per-tool
     /// `--add-dir` flags.
-    #[allow(clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "toolchain path discovery covers many language ecosystems"
+    )]
     fn extend_with_toolchain_paths(read_write: &mut Vec<PathBuf>, home: &Path) {
         // Rust: cargo + rustup (env var overrides honored).
         let cargo_home =
@@ -500,7 +505,6 @@ pub(super) trait SandboxStrategy: Send + Sync {
 /// If sandboxing is expected on a supported platform but cannot be enforced,
 /// return an error instead of silently falling back to unsandboxed execution.
 // Linux detection is infallible, but macOS detection can fail closed.
-#[allow(clippy::unnecessary_wraps)]
 pub(super) fn detect_platform() -> Result<Option<Box<dyn SandboxStrategy>>, String> {
     #[cfg(target_os = "macos")]
     {

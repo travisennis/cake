@@ -1,10 +1,4 @@
-#![allow(clippy::expect_used)]
-
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    process::Command,
-};
+use std::{fs, path::PathBuf, process::Command};
 
 use tempfile::TempDir;
 
@@ -16,7 +10,7 @@ pub struct TestEnv {
     _root: TempDir,
     workspace_dir: PathBuf,
     home_dir: PathBuf,
-    data_dir: PathBuf,
+    pub data_dir: PathBuf,
 }
 
 impl TestEnv {
@@ -54,10 +48,5 @@ impl TestEnv {
         fs::create_dir_all(&settings_dir).expect("failed to create .cake directory");
         fs::write(settings_dir.join("settings.toml"), content)
             .expect("failed to write project settings.toml");
-    }
-
-    #[allow(dead_code)]
-    pub fn data_dir(&self) -> &Path {
-        &self.data_dir
     }
 }

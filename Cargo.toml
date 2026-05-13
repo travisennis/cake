@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
- 
+
 [profile.release]
 lto = true
 codegen-units = 1
@@ -20,7 +20,11 @@ codegen-units = 16
 anyhow = "1.0.102"
 clap = { version = "4.6.1", features = ["derive"] }
 dirs = "6.0"
-futures = { version = "0.3", default-features = false, features = ["std", "async-await", "executor"] }
+futures = { version = "0.3", default-features = false, features = [
+  "std",
+  "async-await",
+  "executor",
+] }
 fs4 = "1.1"
 hex = "0.4"
 indicatif = "0.18"
@@ -56,8 +60,8 @@ wiremock = "0.6"
 
 # Enforce code quality standards across the workspace
 [lints.rust]
-# Require documentation on public APIs
-missing_docs = "warn"
+# Binary crate - missing_docs produces noise without producing useful public API docs.
+missing_docs = "allow"
 
 # Catch common mistakes
 rust_2018_idioms = { level = "warn", priority = -1 }
@@ -75,6 +79,22 @@ nursery = { level = "warn", priority = -1 }
 # Allow some noisy ones
 missing_docs_in_private_items = "allow"
 missing_errors_doc = "deny"
+
+# Coding-agent guardrails: require #[expect(..., reason = "...")] instead of #[allow]
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
+
+# Panic prevention (restriction category, high-value)
+string_slice = "warn"
+
+# Silent failure prevention
+let_underscore_must_use = "warn"
+
+# Error handling
+unused_result_ok = "warn"
+
+# Unsafe hygiene
+undocumented_unsafe_blocks = "warn"
 
 # Additional quality checks
 enum_glob_use = "deny"

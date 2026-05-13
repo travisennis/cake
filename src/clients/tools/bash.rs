@@ -1,3 +1,8 @@
+#![expect(
+    clippy::string_slice,
+    reason = "string indexing is on ASCII byte boundaries derived from UTF-8 aware helpers"
+)]
+
 use serde::Deserialize;
 use std::process::Stdio;
 use std::time::Instant;
@@ -182,7 +187,7 @@ fn handle_binary_output(data: &[u8], exit_code: i32, elapsed_ms: u128) -> String
 
     // Save binary data to a temp file
     let tmp_dir = std::env::temp_dir().join("cake");
-    let _ = std::fs::create_dir_all(&tmp_dir);
+    _ = std::fs::create_dir_all(&tmp_dir);
     let file_name = format!("bash_binary_{}", uuid::Uuid::new_v4());
     let tmp_path = tmp_dir.join(&file_name);
 
@@ -251,7 +256,6 @@ pub fn summarize_args(arguments: &str) -> String {
 }
 
 /// Execute a bash command
-#[allow(clippy::too_many_lines)]
 pub(super) async fn execute_bash(
     context: &super::ToolContext,
     arguments: &str,
@@ -260,7 +264,10 @@ pub(super) async fn execute_bash(
     Box::pin(execute_bash_with_args(context, args)).await
 }
 
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "bash execution spans safety checks, sandbox setup, and output handling"
+)]
 async fn execute_bash_with_args(
     context: &super::ToolContext,
     args: BashExecutionArgs,
@@ -351,7 +358,7 @@ async fn execute_bash_with_args(
 
     // If we hit the cap, kill the child explicitly
     if hit_cap {
-        let _ = child.kill().await;
+        _ = child.kill().await;
     }
     let status = child.wait().await.ok();
     let elapsed_ms = start_time.elapsed().as_millis();
@@ -428,7 +435,7 @@ pub(super) fn truncate_output(output: &str, exit_code: i32, elapsed_ms: u128) ->
 
     // Try to write the full output to a temp file so the agent can search it.
     let tmp_dir = std::env::temp_dir().join("cake");
-    let _ = std::fs::create_dir_all(&tmp_dir);
+    _ = std::fs::create_dir_all(&tmp_dir);
     let file_name = format!("bash_output_{}.txt", uuid::Uuid::new_v4());
     let tmp_path = tmp_dir.join(&file_name);
 
@@ -470,7 +477,6 @@ pub(super) fn truncate_output(output: &str, exit_code: i32, elapsed_ms: u128) ->
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     #[cfg(target_os = "macos")]
@@ -533,7 +539,7 @@ mod tests {
         assert!(result.contains("[Output too long"));
         assert!(result.contains("[exit:1 | 2.0s]"));
         // Verify the result is valid UTF-8 (would panic if not)
-        let _ = result.as_bytes();
+        _ = result.as_bytes();
     }
 
     #[test]

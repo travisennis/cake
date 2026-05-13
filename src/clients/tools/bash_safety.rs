@@ -6,6 +6,11 @@
 // boundary or shell policy engine. The OS-level sandbox remains the primary
 // filesystem enforcement layer.
 
+#![expect(
+    clippy::string_slice,
+    reason = "all string indexing operates on ASCII byte boundaries derived from prior byte-level iteration"
+)]
+
 // =============================================================================
 // Public API
 // =============================================================================

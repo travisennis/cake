@@ -331,7 +331,6 @@ fn malformed_function_call_error(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::clients::types::{OutputContent, OutputMessage, ProviderConfig};
@@ -1124,7 +1123,6 @@ mod tests {
 
 /// Tests for parsing raw HTTP responses
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod response_parsing_tests {
     use super::*;
     use wiremock::matchers::method;
