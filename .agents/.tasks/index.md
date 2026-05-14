@@ -5,8 +5,8 @@ This index summarizes the task files in this directory. Use it as the manually m
 ## Status Summary
 
 - Completed: 84
-- Pending: 30
-- Tracking: 0
+- Pending: 41
+- Tracking: 1
 - Open: 1
 - Blocked: 12
 
@@ -22,11 +22,16 @@ This index summarizes the task files in this directory. Use it as the manually m
 
 These are the highest-priority tasks currently available from the task metadata:
 
-_None._
+1. [122](122.md) — Fix `#[expect(unused_variables)]` on `LandlockSandbox::apply` (P0, XS)
+2. [123](123.md) — Delete unused `Agent::task_id` method (P0, XS)
+3. [124](124.md) — Replace module-wide `#![expect(clippy::string_slice)]` (P1, M, parent of 124a-d)
+4. [125](125.md) — Implement lazy skill body loading (P1, L, ExecPlan required)
+5. [126](126.md) — Remove test-only `Agent::activated_skills` accessor (P1, S)
+6. [127](127.md) — Document and enforce dead-code suppression policy (P1, S)
 
 ## Parent Trackers
 
-_None active._
+- [124](124.md) — Replace module-wide `#![expect(clippy::string_slice)]` (children: 124a, 124b, 124c, 124d)
 
 ## All Tasks
 
@@ -159,3 +164,17 @@ _None active._
 | [119](119.md)   | Add Per-Session Telemetry Sidecar                                   | Pending   | P2       | XL                                 | `.agents/exec-plans/active/per-session-telemetry-plan.md`                      | -                                                                                                                                                                                                                                             |
 | [120](120.md)   | Add OSC 9;4 Terminal Progress Indicator                             | Pending   | P3       | S                                  | `.agents/exec-plans/active/progress-bar-plan.md`                               | -                                                                                                                                                                                                                                             |
 | [121](121.md)   | Implement User-Defined Toolbox Tools                                | Pending   | P2       | XL                                 | `.agents/exec-plans/active/toolboxes-plan.md`                                  | 050 (Backend abstraction, completed), 051 (Tool abstraction, completed)                                                                                                                                                                       |
+| [122](122.md)   | Fix `#[expect(unused_variables)]` on `LandlockSandbox::apply`       | Pending   | P0       | XS                                 | -                                                                              | From code review of 110/3cc2e73                                                                                                                                                                                                               |
+| [123](123.md)   | Delete Unused `Agent::task_id` Method                               | Pending   | P0       | XS                                 | -                                                                              | From code review of 110/3cc2e73                                                                                                                                                                                                               |
+| [124](124.md)   | Replace Module-Wide `string_slice` Suppression (Parent)             | Tracking  | P1       | M (split into 124a / 124b / 124c / 124d) | Use child tasks                                                          | From code review of 110/3cc2e73                                                                                                                                                                                                               |
+| [124a](124a.md) | Replace Module-Wide `string_slice` Suppression in retry.rs          | Pending   | P1       | S                                  | -                                                                              | -                                                                                                                                                                                                                                             |
+| [124b](124b.md) | Replace Module-Wide `string_slice` Suppression in bash.rs           | Pending   | P1       | S                                  | -                                                                              | -                                                                                                                                                                                                                                             |
+| [124c](124c.md) | Replace Module-Wide `string_slice` Suppression in bash_safety.rs    | Pending   | P1       | S                                  | -                                                                              | -                                                                                                                                                                                                                                             |
+| [124d](124d.md) | Replace Module-Wide `string_slice` Suppression in skills.rs         | Pending   | P1       | S                                  | -                                                                              | -                                                                                                                                                                                                                                             |
+| [125](125.md)   | Implement Lazy Skill Body Loading at Activation Time                | Pending   | P1       | L                                  | Required before implementation                                                 | From code review of 110/3cc2e73                                                                                                                                                                                                               |
+| [126](126.md)   | Remove Test-Only `Agent::activated_skills` Accessor                 | Pending   | P1       | S                                  | -                                                                              | From code review of 110/3cc2e73                                                                                                                                                                                                               |
+| [127](127.md)   | Document and Enforce Dead-Code Suppression Policy                   | Pending   | P1       | S                                  | -                                                                              | From code review of 110/3cc2e73; interacts with 123, 125, 126, 130                                                                                                                                                                            |
+| [128](128.md)   | Remove No-Op `_ = result.as_bytes()` In bash.rs Test                | Pending   | P3       | XS                                 | -                                                                              | From code review of 110/3cc2e73                                                                                                                                                                                                               |
+| [129](129.md)   | Restore `e.print().ok()` With Localized `unused_result_ok` Expect   | Pending   | P3       | XS                                 | -                                                                              | From code review of 110/3cc2e73                                                                                                                                                                                                               |
+| [130](130.md)   | Delete Unused Serde Response Fields                                 | Pending   | P2       | S                                  | -                                                                              | From code review of 110/3cc2e73                                                                                                                                                                                                               |
+| [131](131.md)   | Fix `SandboxConfig` `struct_field_names` Reason and Verify `dead_code` | Pending | P2     | S                                  | -                                                                              | From code review of 110/3cc2e73                                                                                                                                                                                                               |
