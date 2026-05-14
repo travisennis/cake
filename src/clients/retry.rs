@@ -1,8 +1,3 @@
-#![expect(
-    clippy::string_slice,
-    reason = "all string indexing in context overflow detection uses indices from .find() which return char boundaries"
-)]
-
 use std::time::Duration;
 
 use anyhow::Error;
@@ -415,14 +410,13 @@ fn parse_context_overflow(body: &str) -> Option<ContextOverflow> {
         return None;
     }
 
-    let marker = message_lower.find("context limit")?;
-    let expression = &message[marker + "context limit".len()..];
-    let plus = expression.find('+')?;
-    let greater_than = plus + 1 + expression[plus + 1..].find('>')?;
+    let (_, expression) = message_lower.split_once("context limit")?;
+    let (input_expression, remainder) = expression.split_once('+')?;
+    let (requested_expression, context_limit_expression) = remainder.split_once('>')?;
 
-    let input_tokens = parse_last_u32(&expression[..plus])?;
-    let requested_tokens = parse_first_u32(&expression[plus + 1..greater_than])?;
-    let context_limit = parse_first_u32(&expression[greater_than + 1..])?;
+    let input_tokens = parse_last_u32(input_expression)?;
+    let requested_tokens = parse_first_u32(requested_expression)?;
+    let context_limit = parse_first_u32(context_limit_expression)?;
 
     Some(ContextOverflow {
         input_tokens,
@@ -760,6 +754,22 @@ mod tests {
             },
             other => panic!("expected overflow retry override, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parse_context_overflow_handles_unicode_before_marker() {
+        let overflow = parse_context_overflow(
+            "préfix input length and max_tokens exceed context limit: 12000 + 5000 > 16384",
+        );
+
+        assert_eq!(
+            overflow,
+            Some(ContextOverflow {
+                input_tokens: 12000,
+                requested_tokens: 5000,
+                context_limit: 16384,
+            })
+        );
     }
 
     #[test]

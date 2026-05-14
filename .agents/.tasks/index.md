@@ -4,8 +4,8 @@ This index summarizes the task files in this directory. Use it as the manually m
 
 ## Status Summary
 
-- Completed: 86
-- Pending: 39
+- Completed: 87
+- Pending: 38
 - Tracking: 1
 - Open: 1
 - Blocked: 12
@@ -22,7 +22,7 @@ This index summarizes the task files in this directory. Use it as the manually m
 
 These are the highest-priority tasks currently available from the task metadata:
 
-1. [124](124.md) — Replace module-wide `#![expect(clippy::string_slice)]` (P1, M, parent of 124a-d)
+1. [124b](124b.md) — Replace module-wide `#![expect(clippy::string_slice)]` in bash.rs (P1, S, parent: 124)
 2. [125](125.md) — Implement lazy skill body loading (P1, L, ExecPlan required)
 3. [126](126.md) — Remove test-only `Agent::activated_skills` accessor (P1, S)
 4. [127](127.md) — Document and enforce dead-code suppression policy (P1, S)
@@ -165,7 +165,7 @@ These are the highest-priority tasks currently available from the task metadata:
 | [122](122.md)   | Fix `#[expect(unused_variables)]` on `LandlockSandbox::apply`          | Completed | P0       | XS                                       | -                                                                              | From code review of 110/3cc2e73                                                                                                                                                                                                               |
 | [123](123.md)   | Delete Unused `Agent::task_id` Method                                  | Completed | P0       | XS                                       | -                                                                              | From code review of 110/3cc2e73                                                                                                                                                                                                               |
 | [124](124.md)   | Replace Module-Wide `string_slice` Suppression (Parent)                | Tracking  | P1       | M (split into 124a / 124b / 124c / 124d) | Use child tasks                                                                | From code review of 110/3cc2e73                                                                                                                                                                                                               |
-| [124a](124a.md) | Replace Module-Wide `string_slice` Suppression in retry.rs             | Pending   | P1       | S                                        | -                                                                              | -                                                                                                                                                                                                                                             |
+| [124a](124a.md) | Replace Module-Wide `string_slice` Suppression in retry.rs             | Completed | P1       | S                                        | -                                                                              | -                                                                                                                                                                                                                                             |
 | [124b](124b.md) | Replace Module-Wide `string_slice` Suppression in bash.rs              | Pending   | P1       | S                                        | -                                                                              | -                                                                                                                                                                                                                                             |
 | [124c](124c.md) | Replace Module-Wide `string_slice` Suppression in bash_safety.rs       | Pending   | P1       | S                                        | -                                                                              | -                                                                                                                                                                                                                                             |
 | [124d](124d.md) | Replace Module-Wide `string_slice` Suppression in skills.rs            | Pending   | P1       | S                                        | -                                                                              | -                                                                                                                                                                                                                                             |
