@@ -6,11 +6,6 @@
 // boundary or shell policy engine. The OS-level sandbox remains the primary
 // filesystem enforcement layer.
 
-#![expect(
-    clippy::string_slice,
-    reason = "all string indexing operates on ASCII byte boundaries derived from prior byte-level iteration"
-)]
-
 // =============================================================================
 // Public API
 // =============================================================================
@@ -107,26 +102,34 @@ fn split_segments(command: &str) -> Vec<&str> {
         // Only split when outside quotes
         if !in_single_quote && !in_double_quote {
             if bytes[i] == b'\n' || bytes[i] == b';' {
-                segments.push(&command[start..i]);
+                if let Some(segment) = command.get(start..i) {
+                    segments.push(segment);
+                }
                 start = i + 1;
                 i += 1;
                 continue;
             }
             if i + 1 < len && bytes[i] == b'&' && bytes[i + 1] == b'&' {
-                segments.push(&command[start..i]);
+                if let Some(segment) = command.get(start..i) {
+                    segments.push(segment);
+                }
                 start = i + 2;
                 i += 2;
                 continue;
             }
             if i + 1 < len && bytes[i] == b'|' && bytes[i + 1] == b'|' {
-                segments.push(&command[start..i]);
+                if let Some(segment) = command.get(start..i) {
+                    segments.push(segment);
+                }
                 start = i + 2;
                 i += 2;
                 continue;
             }
             // Single pipe — also a command boundary
             if bytes[i] == b'|' {
-                segments.push(&command[start..i]);
+                if let Some(segment) = command.get(start..i) {
+                    segments.push(segment);
+                }
                 start = i + 1;
                 i += 1;
                 continue;
@@ -136,8 +139,10 @@ fn split_segments(command: &str) -> Vec<&str> {
         i += 1;
     }
 
-    if start < len {
-        segments.push(&command[start..]);
+    if start < len
+        && let Some(segment) = command.get(start..)
+    {
+        segments.push(segment);
     }
 
     segments
@@ -172,7 +177,7 @@ fn extract_inline_script(command: &str) -> Option<String> {
     if (first == b'"' || first == b'\'') && trimmed.len() > 1 {
         let quote = first;
         // Find matching closing quote (not escaped)
-        let inner = &trimmed[1..];
+        let inner = trimmed.get(1..)?;
         let mut end = None;
         let bytes = inner.as_bytes();
         let mut j = 0;
@@ -188,7 +193,7 @@ fn extract_inline_script(command: &str) -> Option<String> {
             j += 1;
         }
         if let Some(e) = end {
-            return Some(inner[..e].to_string());
+            return inner.get(..e).map(str::to_string);
         }
     }
 
@@ -205,7 +210,7 @@ fn find_inline_shell_invocation(normalized_lower: &str) -> Option<(usize, usize)
 fn find_shell_token(normalized_lower: &str, needle: &str) -> Option<usize> {
     let mut offset = 0;
 
-    while let Some(relative_idx) = normalized_lower[offset..].find(needle) {
+    while let Some(relative_idx) = normalized_lower.get(offset..)?.find(needle) {
         let idx = offset + relative_idx;
         if is_shell_token_boundary(normalized_lower.as_bytes(), idx) {
             return Some(idx);
@@ -225,7 +230,7 @@ fn is_shell_token_boundary(bytes: &[u8], idx: usize) -> bool {
 fn skip_to_after_flag(original: &str, norm_pos: usize, shell_len: usize) -> Option<&str> {
     // Count how many non-whitespace characters precede norm_pos in the normalized string
     let normalized = normalize_whitespace(original);
-    let prefix = &normalized[..norm_pos + shell_len];
+    let prefix = normalized.get(..norm_pos + shell_len)?;
     let token_count = prefix.split_whitespace().count();
 
     // Walk the original string, skipping that many whitespace-separated tokens
@@ -244,7 +249,7 @@ fn skip_to_after_flag(original: &str, norm_pos: usize, shell_len: usize) -> Opti
         seen += 1;
     }
 
-    (i <= original.len()).then(|| &original[i..])
+    original.get(i..)
 }
 
 /// Extract executable command substitutions from a shell segment.
@@ -384,7 +389,9 @@ fn extract_dollar_paren(command: &str, start: usize) -> Option<(String, usize)> 
             b')' if !in_single_quote => {
                 depth -= 1;
                 if depth == 0 {
-                    return Some((command[start..i].to_string(), i + 1));
+                    return command
+                        .get(start..i)
+                        .map(|inner| (inner.to_string(), i + 1));
                 }
                 i += 1;
             },
@@ -402,7 +409,11 @@ fn extract_backticks(command: &str, start: usize) -> Option<(String, usize)> {
     while i < bytes.len() {
         match bytes[i] {
             b'\\' => i += 2,
-            b'`' => return Some((command[start..i].to_string(), i + 1)),
+            b'`' => {
+                return command
+                    .get(start..i)
+                    .map(|inner| (inner.to_string(), i + 1));
+            },
             _ => i += 1,
         }
     }
@@ -431,7 +442,10 @@ fn check_git_checkout(lower: &str, original: &str) -> Result<(), String> {
     if lower.contains("git checkout --") {
         // Verify there's a path after `--`
         if let Some(pos) = lower.find("git checkout --") {
-            let after = lower[pos + 15..].trim(); // len("git checkout --")
+            let Some(after) = lower.get(pos + "git checkout --".len()..) else {
+                return Ok(());
+            };
+            let after = after.trim();
             if !after.is_empty() && !after.starts_with('-') {
                 return Err(blocked(
                     "git checkout -- <file> discards uncommitted file changes",
@@ -467,7 +481,10 @@ fn check_git_restore(lower: &str, original: &str) -> Result<(), String> {
 
     // Find what comes after `git restore`
     if let Some(pos) = lower.find("git restore") {
-        let after = lower[pos + 11..].trim(); // len("git restore")
+        let Some(after) = lower.get(pos + "git restore".len()..) else {
+            return Ok(());
+        };
+        let after = after.trim();
         // -b creates a branch, not destructive
         if after.is_empty() || after.starts_with("-b") || after.starts_with("-b ") {
             return Ok(());
@@ -501,7 +518,10 @@ fn check_git_clean(lower: &str, original: &str) -> Result<(), String> {
 
     // Check for combined flags containing 'f', e.g. `-fd`, `-xfd`, `-fdx`
     if let Some(pos) = lower.find("git clean") {
-        let after = lower[pos + 9..].trim(); // len("git clean")
+        let Some(after) = lower.get(pos + "git clean".len()..) else {
+            return Ok(());
+        };
+        let after = after.trim();
         // Look for a dash-flag group containing 'f'
         for token in after.split_whitespace() {
             if token.starts_with('-') && !token.starts_with("--") && token.contains('f') {
@@ -538,7 +558,10 @@ fn check_git_push(lower: &str, original: &str) -> Result<(), String> {
 
     // Check for short flag -f (but not part of a longer flag group that isn't force)
     if let Some(pos) = lower.find("git push") {
-        let after = lower[pos + 8..].trim(); // len("git push")
+        let Some(after) = lower.get(pos + "git push".len()..) else {
+            return Ok(());
+        };
+        let after = after.trim();
         for token in after.split_whitespace() {
             if token == "-f" {
                 return Err(blocked(
@@ -568,35 +591,33 @@ fn check_git_push(lower: &str, original: &str) -> Result<(), String> {
 /// `git branch -D` — uppercase D only (force delete without merge check).
 /// Uses the original (case-preserved, whitespace-normalized) string.
 fn check_git_branch_delete(normalized: &str, original: &str) -> Result<(), String> {
-    // We need case-insensitive match for "git branch" but case-sensitive for the flag.
-    let lower = normalized.to_lowercase();
-    if !lower.contains("git branch") {
-        return Ok(());
-    }
-
-    // Find "git branch" case-insensitively, then inspect the flag in the original
-    let search = "git branch";
-    let lower_bytes = lower.as_bytes();
-    let mut i = 0;
-    while i + search.len() <= lower_bytes.len() {
-        if &lower[i..i + search.len()] == search {
-            let after = normalized[i + search.len()..].trim_start();
-            // Check the first token for a flag containing uppercase D
-            if let Some(token) = after.split_whitespace().next()
-                && token.starts_with('-')
-                && !token.starts_with("--")
-            {
-                let flags = &token[1..];
-                if flags.chars().any(|c| c == 'D') {
-                    return Err(blocked(
-                        "git branch -D force-deletes branches without checking merge status",
-                        original,
-                        "Use 'git branch -d' (lowercase) to safely delete only merged branches.",
-                    ));
-                }
-            }
+    // Match "git branch" case-insensitively, then inspect the original flag
+    // spelling so lowercase `-d` remains allowed while uppercase `-D` blocks.
+    let mut tokens = normalized.split_whitespace();
+    while let Some(token) = tokens.next() {
+        if !token.eq_ignore_ascii_case("git") {
+            continue;
         }
-        i += 1;
+
+        if !tokens
+            .next()
+            .is_some_and(|token| token.eq_ignore_ascii_case("branch"))
+        {
+            continue;
+        }
+
+        if let Some(flags) = tokens
+            .next()
+            .and_then(|token| token.strip_prefix('-'))
+            .filter(|flags| !flags.starts_with('-'))
+            && flags.chars().any(|c| c == 'D')
+        {
+            return Err(blocked(
+                "git branch -D force-deletes branches without checking merge status",
+                original,
+                "Use 'git branch -d' (lowercase) to safely delete only merged branches.",
+            ));
+        }
     }
 
     Ok(())
@@ -650,8 +671,7 @@ fn check_dangerous_rm(normalized: &str, original: &str) -> Result<(), String> {
                     continue;
                 }
 
-                if !options_ended && arg.starts_with('-') {
-                    let flags = &arg[1..];
+                if !options_ended && let Some(flags) = arg.strip_prefix('-') {
                     if flags.contains('r') || flags.contains('R') {
                         has_r = true;
                     }
@@ -1027,6 +1047,12 @@ mod tests {
     fn handles_extra_whitespace() {
         assert_blocked("git  reset  --hard");
         assert_blocked("git\treset\t--hard");
+    }
+
+    #[test]
+    fn handles_unicode_text_before_destructive_segments() {
+        assert_blocked("echo préfix ; git reset --hard");
+        assert_blocked("echo préfix && git branch -D feature-branch");
     }
 
     // =========================================================================
