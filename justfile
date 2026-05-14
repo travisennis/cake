@@ -31,6 +31,14 @@ clippy-strict:
 rust-version-check:
     sh scripts/check-rust-toolchain.sh
 
+# Regenerate task indexes from task file metadata
+task-index:
+    python3 .agents/scripts/generate-task-indexes.py
+
+# Verify generated task indexes are current
+task-index-check:
+    python3 .agents/scripts/generate-task-indexes.py --check
+
 # Clippy against the Linux target so local macOS checks cover CI-only cfg paths
 clippy-linux:
     @rustup target list --installed | grep -qx 'x86_64-unknown-linux-gnu' || { echo "ERROR: missing Rust target x86_64-unknown-linux-gnu. Run: rustup target add x86_64-unknown-linux-gnu"; exit 1; }
@@ -52,11 +60,11 @@ lint-imports:
     @echo "Import lint passed!"
 
 # Run all checks (use in CI)
-ci: rust-version-check fmt-check clippy-strict test lint-imports
+ci: task-index-check rust-version-check fmt-check clippy-strict test lint-imports
     echo "All checks passed!"
 
 # Recreate full CI pipeline locally (matches GitHub Actions)
-ci-full: fmt-check clippy-strict test lint-imports deny doc build
+ci-full: task-index-check fmt-check clippy-strict test lint-imports deny doc build
     echo "Full CI pipeline passed!"
 
 # Check for denied/advisory dependencies (requires cargo-deny)
