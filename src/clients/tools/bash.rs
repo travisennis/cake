@@ -1,8 +1,3 @@
-#![expect(
-    clippy::string_slice,
-    reason = "string indexing is on ASCII byte boundaries derived from UTF-8 aware helpers"
-)]
-
 use serde::Deserialize;
 use std::process::Stdio;
 use std::time::Instant;
@@ -449,20 +444,22 @@ pub(super) fn truncate_output(output: &str, exit_code: i32, elapsed_ms: u128) ->
         let half = BASH_OUTPUT_MAX_BYTES / 2;
         let head_end = output.floor_char_boundary(half);
         let tail_start = output.ceil_char_boundary(total_bytes - half);
+        let (head, _) = output.split_at(head_end);
+        let (_, tail) = output.split_at(tail_start);
         return format!(
             "[Output too long — {total_bytes} bytes, {total_lines} lines. \
              The command was too verbose; reformulate with less output \
              (e.g. pipe through `head`, `tail`, or `grep`).]\n\n\
              --- first ~{half} bytes ---\n{head}\n\n\
              --- last ~{half} bytes ---\n{tail}\n{footer}",
-            head = &output[..head_end],
-            tail = &output[tail_start..],
         );
     }
 
     let preview = BASH_OUTPUT_MAX_BYTES / 4;
     let head_end = output.floor_char_boundary(preview);
     let tail_start = output.ceil_char_boundary(total_bytes - preview);
+    let (head, _) = output.split_at(head_end);
+    let (_, tail) = output.split_at(tail_start);
     format!(
         "[Output too long — {total_bytes} bytes, {total_lines} lines.]\n\
          Full output saved to: {path}\n\
@@ -471,8 +468,6 @@ pub(super) fn truncate_output(output: &str, exit_code: i32, elapsed_ms: u128) ->
          --- first ~{preview} bytes ---\n{head}\n\n\
          --- last ~{preview} bytes ---\n{tail}\n{footer}",
         path = tmp_path.display(),
-        head = &output[..head_end],
-        tail = &output[tail_start..],
     )
 }
 
