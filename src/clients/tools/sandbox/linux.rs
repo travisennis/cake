@@ -107,24 +107,30 @@ impl SandboxStrategy for LandlockSandbox {
         #[cfg(feature = "landlock")]
         {
             let config = config.clone();
+            // SAFETY: `pre_exec` runs in the child process immediately before
+            // `exec`; this closure only installs Landlock rules for that child.
             unsafe {
                 command.pre_exec(move || Self::apply_landlock_rules(&config));
             }
+
+            Ok(())
         }
 
         #[cfg(not(feature = "landlock"))]
         {
-            let _ = config;
+            let _ = (
+                &config.read_write,
+                &config.read_only_exec,
+                &config.read_only,
+            );
             let _ = command;
-            return Err(
+            Err(
                 "Linux sandbox unavailable: cake was built without Landlock support. Rebuild \
                  with --features landlock, or set CAKE_SANDBOX=off to run Bash commands without \
                  filesystem sandboxing."
                     .to_string(),
-            );
+            )
         }
-
-        Ok(())
     }
 }
 

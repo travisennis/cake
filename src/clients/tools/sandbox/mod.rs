@@ -505,6 +505,13 @@ pub(super) trait SandboxStrategy: Send + Sync {
 /// If sandboxing is expected on a supported platform but cannot be enforced,
 /// return an error instead of silently falling back to unsandboxed execution.
 // Linux detection is infallible, but macOS detection can fail closed.
+#[cfg_attr(
+    target_os = "linux",
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "shared cross-platform API also represents macOS detection failures"
+    )
+)]
 pub(super) fn detect_platform() -> Result<Option<Box<dyn SandboxStrategy>>, String> {
     #[cfg(target_os = "macos")]
     {
