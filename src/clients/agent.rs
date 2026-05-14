@@ -58,11 +58,6 @@ impl SkillActivations {
         self.pending.clear();
     }
 
-    #[cfg(test)]
-    fn active(&self) -> HashSet<String> {
-        self.active.clone()
-    }
-
     fn reserve(&mut self, name: &str) -> SkillReservation {
         if self.active.contains(name) {
             return SkillReservation::AlreadyActive;
@@ -260,14 +255,15 @@ impl Agent {
 
     /// Returns the names of skills that have been activated in this session.
     #[cfg(test)]
-    pub fn activated_skills(&self) -> HashSet<String> {
+    pub(crate) fn test_active_skills(&self) -> HashSet<String> {
         self.skill_activations
             .lock()
             .unwrap_or_else(|e| {
                 tracing::error!("skill_activations mutex poisoned, recovering: {e}");
                 e.into_inner()
             })
-            .active()
+            .active
+            .clone()
     }
 
     /// Enables streaming JSON output for each message.

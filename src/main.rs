@@ -1701,7 +1701,7 @@ mod tests {
         )
         .unwrap();
 
-        let activated = run_session.agent.activated_skills();
+        let activated = run_session.agent.test_active_skills();
         assert!(activated.contains("real-skill"));
         assert!(!activated.contains("fake-skill"));
     }
@@ -1720,7 +1720,12 @@ mod tests {
         )
         .unwrap();
 
-        assert!(run_session.agent.activated_skills().contains("real-skill"));
+        assert!(
+            run_session
+                .agent
+                .test_active_skills()
+                .contains("real-skill")
+        );
         assert!(matches!(run_session.storage, SessionStorage::New));
         let seed_records = run_session
             .seed_records
