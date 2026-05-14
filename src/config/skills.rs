@@ -7,11 +7,6 @@
 //! Each skill is defined by a `SKILL.md` file with YAML frontmatter containing
 //! metadata (name, description) and markdown body content.
 
-#![expect(
-    clippy::string_slice,
-    reason = "all string indexing is on ASCII code points from find() results or known offsets"
-)]
-
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -127,28 +122,20 @@ impl Skill {
     fn parse_frontmatter(content: &str, path: &Path) -> Result<(String, String), SkillDiagnostic> {
         let trimmed = content.trim_start();
 
-        // Check for opening ---
-        if !trimmed.starts_with("---") {
+        let Some(after_open) = trimmed.strip_prefix("---") else {
             return Err(SkillDiagnostic {
                 level: DiagnosticLevel::Error,
                 message: "SKILL.md missing YAML frontmatter (expected '---' at start)".to_string(),
                 file: path.to_path_buf(),
             });
-        }
+        };
 
-        // Find closing ---
-        let after_open = &trimmed[3..]; // skip "---"
-        let close_idx = after_open.find("\n---");
-
-        let yaml_text = match close_idx {
-            Some(idx) => &after_open[..idx],
-            None => {
-                return Err(SkillDiagnostic {
-                    level: DiagnosticLevel::Error,
-                    message: "SKILL.md frontmatter not closed (expected closing '---')".to_string(),
-                    file: path.to_path_buf(),
-                });
-            },
+        let Some((yaml_text, _body)) = after_open.split_once("\n---") else {
+            return Err(SkillDiagnostic {
+                level: DiagnosticLevel::Error,
+                message: "SKILL.md frontmatter not closed (expected closing '---')".to_string(),
+                file: path.to_path_buf(),
+            });
         };
 
         // Try parsing with serde_yaml first
@@ -207,9 +194,9 @@ impl Skill {
                 }
 
                 // Parse new key
-                if let Some(colon_idx) = trimmed.find(':') {
-                    let key = trimmed[..colon_idx].trim().to_string();
-                    let value_after = trimmed[colon_idx + 1..].trim().to_string();
+                if let Some((key, value_after)) = trimmed.split_once(':') {
+                    let key = key.trim().to_string();
+                    let value_after = value_after.trim().to_string();
                     current_key = Some(key);
                     current_value = value_after;
                 }
@@ -254,14 +241,11 @@ impl Skill {
 
         // Strip frontmatter
         let trimmed = content.trim_start();
-        if !trimmed.starts_with("---") {
+        let Some(after_open) = trimmed.strip_prefix("---") else {
             return Ok(content);
-        }
+        };
 
-        let after_open = &trimmed[3..];
-        if let Some(close_idx) = after_open.find("\n---") {
-            let body_start = close_idx + 4; // skip past "\n---"
-            let body = &after_open[body_start..];
+        if let Some((_yaml_text, body)) = after_open.split_once("\n---") {
             return Ok(body.trim_start().to_string());
         }
 
