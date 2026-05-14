@@ -25,3 +25,5 @@ This index follows `.agents/PLANS.md`. Active ExecPlans are checked-in plans tha
 - 2026-05-10 / Codex: Moved `normalize-session-optional-fields.md` to completed after task 063 passed validation.
 - 2026-05-10 / Codex: Added the active ExecPlan for task 064, `Refactor Chat build_messages State Handling`.
 - 2026-05-11 / Codex: Created tasks 117-121 in `.agents/.tasks/` for all five active ExecPlans to close the plan-to-task gap.
+- 2026-05-14 / Codex: Added the active ExecPlan for task 125, `Implement Lazy Skill Body Loading at Activation Time`.
+- 2026-05-14 / Codex: Moved `lazy-skill-body-loading.md` to completed after task 125 passed focused validation.

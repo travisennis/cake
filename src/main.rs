@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 use crate::cli::CmdRunner;
 use crate::clients::{Agent, ConversationItem, TaskOutcome, ToolContext};
 use crate::config::settings::LoadedSettings;
+use crate::config::skills::Skill;
 use crate::config::{
     AgentsFile, DataDir, DiagnosticLevel, HookSource, HooksLoader, ModelConfig, ModelDefinition,
     ReasoningEffort, ResolvedModelConfig, Session, SettingsLoader, SkillCatalog, discover_skills,
@@ -524,12 +525,21 @@ impl CodingAssistant {
         resolved
     }
 
-    /// Build a map of skill file paths to skill names for activation deduplication.
-    fn skill_locations(skill_catalog: &SkillCatalog) -> HashMap<PathBuf, String> {
+    /// Build a map of skill file paths to skills for activation deduplication.
+    fn skill_locations(skill_catalog: &SkillCatalog) -> HashMap<PathBuf, Skill> {
         skill_catalog
             .skills
             .iter()
-            .map(|s| (s.location.clone(), s.name.clone()))
+            .map(|s| {
+                let skill = skill_catalog
+                    .get_skill_by_location(&s.location)
+                    .unwrap_or(s);
+                let location = s
+                    .location
+                    .canonicalize()
+                    .unwrap_or_else(|_| s.location.clone());
+                (location, skill.clone())
+            })
             .collect()
     }
 
@@ -538,7 +548,7 @@ impl CodingAssistant {
         restored: Session,
         resolved: ResolvedModelConfig,
         initial_messages: &[(Role, String)],
-        skill_locations: &HashMap<PathBuf, String>,
+        skill_locations: &HashMap<PathBuf, Skill>,
         tool_context: Arc<ToolContext>,
         task_id: uuid::Uuid,
     ) -> anyhow::Result<RunSession> {
@@ -567,7 +577,7 @@ impl CodingAssistant {
         resolved: ResolvedModelConfig,
         current_dir: PathBuf,
         initial_messages: &[(Role, String)],
-        skill_locations: HashMap<PathBuf, String>,
+        skill_locations: HashMap<PathBuf, Skill>,
         tool_context: Arc<ToolContext>,
         task_id: uuid::Uuid,
     ) -> RunSession {
@@ -594,7 +604,7 @@ impl CodingAssistant {
         resolved: ResolvedModelConfig,
         current_dir: PathBuf,
         initial_messages: &[(Role, String)],
-        skill_locations: HashMap<PathBuf, String>,
+        skill_locations: HashMap<PathBuf, Skill>,
         tool_context: Arc<ToolContext>,
         task_id: uuid::Uuid,
     ) -> anyhow::Result<RunSession> {

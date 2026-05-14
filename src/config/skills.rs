@@ -8,6 +8,7 @@
 //! metadata (name, description) and markdown body content.
 
 use std::collections::HashSet;
+use std::io::BufRead;
 use std::path::{Path, PathBuf};
 
 // =============================================================================
@@ -96,14 +97,8 @@ impl Skill {
     /// Returns a diagnostic if the file cannot be read, has invalid frontmatter,
     /// or is missing required fields.
     pub fn parse(path: &Path, scope: SkillScope) -> Result<Self, SkillDiagnostic> {
-        let content = std::fs::read_to_string(path).map_err(|e| SkillDiagnostic {
-            level: DiagnosticLevel::Error,
-            message: format!("Failed to read SKILL.md: {e}"),
-            file: path.to_path_buf(),
-        })?;
-
-        // Extract YAML frontmatter between --- delimiters
-        let (name, description) = Self::parse_frontmatter(&content, path)?;
+        let yaml_text = Self::read_frontmatter(path)?;
+        let (name, description) = Self::parse_frontmatter_yaml(&yaml_text, path)?;
 
         let base_directory = path
             .parent()
@@ -118,26 +113,71 @@ impl Skill {
         })
     }
 
-    /// Extract YAML frontmatter from skill content.
-    fn parse_frontmatter(content: &str, path: &Path) -> Result<(String, String), SkillDiagnostic> {
-        let trimmed = content.trim_start();
+    /// Read only the YAML frontmatter from a skill file.
+    fn read_frontmatter(path: &Path) -> Result<String, SkillDiagnostic> {
+        let file = std::fs::File::open(path).map_err(|e| SkillDiagnostic {
+            level: DiagnosticLevel::Error,
+            message: format!("Failed to read SKILL.md: {e}"),
+            file: path.to_path_buf(),
+        })?;
+        let reader = std::io::BufReader::new(file);
+        let mut yaml_text = String::new();
+        let mut saw_open = false;
 
-        let Some(after_open) = trimmed.strip_prefix("---") else {
+        for line_result in reader.lines() {
+            let line = line_result.map_err(|e| SkillDiagnostic {
+                level: DiagnosticLevel::Error,
+                message: format!("Failed to read SKILL.md: {e}"),
+                file: path.to_path_buf(),
+            })?;
+            let trimmed = line.trim();
+
+            if !saw_open {
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if trimmed == "---" {
+                    saw_open = true;
+                    continue;
+                }
+                return Err(SkillDiagnostic {
+                    level: DiagnosticLevel::Error,
+                    message: "SKILL.md missing YAML frontmatter (expected '---' at start)"
+                        .to_string(),
+                    file: path.to_path_buf(),
+                });
+            }
+
+            if line.trim_end() == "---" {
+                if yaml_text.ends_with('\n') {
+                    yaml_text.pop();
+                }
+                return Ok(yaml_text);
+            }
+            yaml_text.push_str(&line);
+            yaml_text.push('\n');
+        }
+
+        if !saw_open {
             return Err(SkillDiagnostic {
                 level: DiagnosticLevel::Error,
                 message: "SKILL.md missing YAML frontmatter (expected '---' at start)".to_string(),
                 file: path.to_path_buf(),
             });
-        };
+        }
 
-        let Some((yaml_text, _body)) = after_open.split_once("\n---") else {
-            return Err(SkillDiagnostic {
-                level: DiagnosticLevel::Error,
-                message: "SKILL.md frontmatter not closed (expected closing '---')".to_string(),
-                file: path.to_path_buf(),
-            });
-        };
+        Err(SkillDiagnostic {
+            level: DiagnosticLevel::Error,
+            message: "SKILL.md frontmatter not closed (expected closing '---')".to_string(),
+            file: path.to_path_buf(),
+        })
+    }
 
+    /// Parse YAML frontmatter from a skill file.
+    fn parse_frontmatter_yaml(
+        yaml_text: &str,
+        path: &Path,
+    ) -> Result<(String, String), SkillDiagnostic> {
         // Try parsing with serde_yaml first
         let frontmatter: SkillFrontmatter = match serde_yaml::from_str(yaml_text) {
             Ok(fm) => fm,
@@ -234,8 +274,8 @@ impl Skill {
 
     /// Load the full body content of the skill (markdown after frontmatter).
     ///
-    /// This is lazy-loaded at activation time, not during discovery.
-    #[cfg(test)]
+    /// This reads from disk at activation time, not during discovery. Per-session
+    /// deduplication is handled by the agent, so this method does not cache.
     pub fn load_body(&self) -> Result<String, std::io::Error> {
         let content = std::fs::read_to_string(&self.location)?;
 
@@ -268,7 +308,6 @@ impl SkillCatalog {
     }
 
     /// Check if a path corresponds to a known skill location.
-    #[cfg(test)]
     pub fn get_skill_by_location(&self, path: &Path) -> Option<&Skill> {
         self.skills.iter().find(|s| s.location == path)
     }
@@ -626,6 +665,24 @@ mod tests {
     }
 
     #[test]
+    fn skill_parse_does_not_decode_body() {
+        let tmp = TempDir::new().unwrap();
+        let skill_dir = tmp.path().join("lazy-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        let path = skill_dir.join("SKILL.md");
+        std::fs::write(
+            &path,
+            b"---\nname: lazy-skill\ndescription: Metadata only\n---\n\n\xFF",
+        )
+        .unwrap();
+
+        let skill = Skill::parse(&path, SkillScope::Project).unwrap();
+
+        assert_eq!(skill.name, "lazy-skill");
+        assert_eq!(skill.description, "Metadata only");
+    }
+
+    #[test]
     fn skill_parse_multiline_description() {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path().join("my-skill");
@@ -646,6 +703,30 @@ description: |
         assert_eq!(skill.name, "my-skill");
         assert!(skill.description.contains("First line"));
         assert!(skill.description.contains("Second line"));
+    }
+
+    #[test]
+    fn skill_parse_multiline_description_with_indented_separator_text() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("separator-skill");
+        std::fs::create_dir_all(&dir).unwrap();
+        let content = r"---
+name: separator-skill
+description: |
+  First line
+  ---
+  Last line
+---
+
+# Separator Skill
+";
+        let path = dir.join("SKILL.md");
+        std::fs::write(&path, content).unwrap();
+
+        let skill = Skill::parse(&path, SkillScope::Project).unwrap();
+
+        assert!(skill.description.contains("---"));
+        assert!(skill.description.contains("Last line"));
     }
 
     #[test]

@@ -16,6 +16,7 @@ use crate::clients::types::{
 #[cfg(test)]
 use crate::config::model::ApiType;
 use crate::config::model::ResolvedModelConfig;
+use crate::config::skills::Skill;
 use crate::hooks::{HookRunner, ToolHookPlan};
 use crate::models::{Message, Role};
 
@@ -109,10 +110,10 @@ pub struct Agent {
     turn_count: u32,
     /// Number of tool calls executed
     tool_call_count: u32,
-    /// Maps SKILL.md paths to skill names for activation deduplication.
+    /// Maps SKILL.md paths to skills for activation deduplication.
     /// When the Read tool targets one of these paths, the agent checks if the
     /// skill has already been activated and returns a lightweight message instead.
-    skill_locations: Arc<HashMap<PathBuf, String>>,
+    skill_locations: Arc<HashMap<PathBuf, Skill>>,
     /// Names of active and in-progress skill activations.
     /// Shared between tool executions for concurrent access.
     skill_activations: Arc<Mutex<SkillActivations>>,
@@ -226,7 +227,7 @@ impl Agent {
     /// These paths are checked when the Read tool is used. If the model reads
     /// a SKILL.md file that was already read in this session, a lightweight
     /// "already activated" message is returned instead of the full content.
-    pub fn with_skill_locations(mut self, locations: HashMap<PathBuf, String>) -> Self {
+    pub fn with_skill_locations(mut self, locations: HashMap<PathBuf, Skill>) -> Self {
         self.skill_locations = Arc::new(locations);
         self
     }
@@ -641,7 +642,7 @@ async fn execute_tool_with_skill_dedup(
     context: Arc<ToolContext>,
     name: &str,
     arguments: &str,
-    skill_locations: &HashMap<PathBuf, String>,
+    skill_locations: &HashMap<PathBuf, Skill>,
     skill_activations: &Arc<Mutex<SkillActivations>>,
 ) -> Result<ToolExecutionOutput, String> {
     if name != "Read" {
@@ -671,7 +672,7 @@ async fn execute_tool_with_skill_dedup(
             });
     };
 
-    let Some(skill_name) = skill_locations.get(&path) else {
+    let Some(skill) = skill_locations.get(&path) else {
         return execute_tool_output(tools, context, name, arguments)
             .await
             .map(|output| ToolExecutionOutput {
@@ -679,6 +680,7 @@ async fn execute_tool_with_skill_dedup(
                 skill_activation: None,
             });
     };
+    let skill_name = &skill.name;
 
     let reservation = skill_activations
         .lock()
@@ -711,7 +713,7 @@ async fn execute_tool_with_skill_dedup(
         },
     }
 
-    let output = match execute_tool_output(tools, context, name, arguments).await {
+    let output = match skill.load_body() {
         Ok(output) => output,
         Err(error) => {
             skill_activations
@@ -721,7 +723,10 @@ async fn execute_tool_with_skill_dedup(
                     e.into_inner()
                 })
                 .fail(skill_name);
-            return Err(error);
+            return Err(format!(
+                "Failed to load skill '{}': {error}",
+                skill.location.display()
+            ));
         },
     };
     skill_activations
@@ -778,10 +783,21 @@ mod tests {
     use super::*;
     use crate::clients::types::{InputTokensDetails, OutputTokensDetails};
     use crate::config::model::ApiType;
+    use crate::config::skills::SkillScope;
     use tempfile::TempDir;
 
     fn test_agent() -> Agent {
         test_agent_for(ApiType::ChatCompletions, "https://api.example.com")
+    }
+
+    fn test_skill(name: &str, location: PathBuf) -> Skill {
+        Skill {
+            name: name.to_string(),
+            description: "Test skill".to_string(),
+            base_directory: location.parent().unwrap().to_path_buf(),
+            location,
+            scope: SkillScope::Project,
+        }
     }
 
     #[test]
@@ -1029,9 +1045,16 @@ mod tests {
     async fn skill_read_success_marks_active_and_reports_activation() {
         let dir = TempDir::new().unwrap();
         let skill_path = dir.path().join("SKILL.md");
-        std::fs::write(&skill_path, "skill instructions").unwrap();
+        std::fs::write(
+            &skill_path,
+            "---\nname: test-skill\ndescription: Test skill\n---\n\nskill instructions",
+        )
+        .unwrap();
         let skill_path = skill_path.canonicalize().unwrap();
-        let skill_locations = HashMap::from([(skill_path.clone(), "test-skill".to_string())]);
+        let skill_locations = HashMap::from([(
+            skill_path.clone(),
+            test_skill("test-skill", skill_path.clone()),
+        )]);
         let skill_activations = Arc::new(Mutex::new(SkillActivations::default()));
         let arguments = serde_json::json!({ "path": skill_path }).to_string();
 
@@ -1047,6 +1070,7 @@ mod tests {
         .unwrap();
 
         assert!(result.output.contains("skill instructions"));
+        assert!(!result.output.contains("name: test-skill"));
         assert!(matches!(
             result.skill_activation,
             Some(SkillActivation { name, path }) if name == "test-skill" && path == skill_path
@@ -1064,9 +1088,16 @@ mod tests {
     async fn concurrent_duplicate_skill_reads_only_activate_once() {
         let dir = TempDir::new().unwrap();
         let skill_path = dir.path().join("SKILL.md");
-        std::fs::write(&skill_path, "skill instructions").unwrap();
+        std::fs::write(
+            &skill_path,
+            "---\nname: test-skill\ndescription: Test skill\n---\n\nskill instructions",
+        )
+        .unwrap();
         let skill_path = skill_path.canonicalize().unwrap();
-        let skill_locations = HashMap::from([(skill_path.clone(), "test-skill".to_string())]);
+        let skill_locations = HashMap::from([(
+            skill_path.clone(),
+            test_skill("test-skill", skill_path.clone()),
+        )]);
         let skill_activations = Arc::new(Mutex::new(SkillActivations::default()));
         let arguments = serde_json::json!({ "path": skill_path }).to_string();
         let registry = default_tool_registry();
@@ -1102,7 +1133,10 @@ mod tests {
         assert_eq!(
             results
                 .iter()
-                .filter(|result| result.output.contains("activation is already in progress"))
+                .filter(|result| {
+                    result.output.contains("activation is already in progress")
+                        || result.output.contains("already active in this session")
+                })
                 .count(),
             1
         );
@@ -1123,12 +1157,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn active_skill_read_does_not_reload_body() {
+        let dir = TempDir::new().unwrap();
+        let skill_path = dir.path().join("SKILL.md");
+        std::fs::write(
+            &skill_path,
+            "---\nname: test-skill\ndescription: Test skill\n---\n\nskill instructions",
+        )
+        .unwrap();
+        let skill_path = skill_path.canonicalize().unwrap();
+        let skill_locations = HashMap::from([(
+            skill_path.clone(),
+            test_skill("test-skill", skill_path.clone()),
+        )]);
+        let skill_activations = Arc::new(Mutex::new(SkillActivations::default()));
+        let arguments = serde_json::json!({ "path": skill_path }).to_string();
+        let registry = default_tool_registry();
+        let context = Arc::new(ToolContext::from_current_process());
+
+        let first = execute_tool_with_skill_dedup(
+            &registry,
+            Arc::clone(&context),
+            "Read",
+            &arguments,
+            &skill_locations,
+            &skill_activations,
+        )
+        .await
+        .unwrap();
+        std::fs::write(&skill_path, b"\xFF").unwrap();
+
+        let second = execute_tool_with_skill_dedup(
+            &registry,
+            context,
+            "Read",
+            &arguments,
+            &skill_locations,
+            &skill_activations,
+        )
+        .await
+        .unwrap();
+
+        assert!(first.output.contains("skill instructions"));
+        assert!(second.output.contains("already active in this session"));
+        assert!(second.skill_activation.is_none());
+    }
+
+    #[tokio::test]
     async fn failed_skill_read_does_not_mark_active() {
         let dir = TempDir::new().unwrap();
         let skill_path = dir.path().join("SKILL.md");
-        std::fs::write(&skill_path, b"\0binary").unwrap();
+        std::fs::write(
+            &skill_path,
+            b"---\nname: binary-skill\ndescription: Binary skill\n---\n\n\xFF",
+        )
+        .unwrap();
         let skill_path = skill_path.canonicalize().unwrap();
-        let skill_locations = HashMap::from([(skill_path.clone(), "binary-skill".to_string())]);
+        let skill_locations = HashMap::from([(
+            skill_path.clone(),
+            test_skill("binary-skill", skill_path.clone()),
+        )]);
         let skill_activations = Arc::new(Mutex::new(SkillActivations::default()));
         let arguments = serde_json::json!({ "path": skill_path }).to_string();
 
@@ -1143,7 +1231,7 @@ mod tests {
         .await
         .unwrap_err();
 
-        assert!(error.contains("Cannot read binary file"));
+        assert!(error.contains("Failed to load skill"));
         assert!(
             !skill_activations
                 .lock()

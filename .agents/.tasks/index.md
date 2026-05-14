@@ -4,8 +4,8 @@ This index summarizes the task files in this directory. Use it as the manually m
 
 ## Status Summary
 
-- Completed: 91
-- Pending: 35
+- Completed: 92
+- Pending: 34
 - Tracking: 0
 - Open: 1
 - Blocked: 12
@@ -22,9 +22,9 @@ This index summarizes the task files in this directory. Use it as the manually m
 
 These are the highest-priority tasks currently available from the task metadata:
 
-1. [125](125.md) — Implement lazy skill body loading (P1, L, ExecPlan required)
-2. [126](126.md) — Remove test-only `Agent::activated_skills` accessor (P1, S)
-3. [127](127.md) — Document and enforce dead-code suppression policy (P1, S)
+1. [126](126.md) — Remove test-only `Agent::activated_skills` accessor (P1, S)
+2. [127](127.md) — Document and enforce dead-code suppression policy (P1, S)
+3. [130](130.md) — Delete Unused Serde Response Fields (P2, S)
 
 ## Parent Trackers
 
@@ -168,7 +168,7 @@ None.
 | [124b](124b.md) | Replace Module-Wide `string_slice` Suppression in bash.rs              | Completed | P1       | S                                        | -                                                                              | -                                                                                                                                                                                                                                             |
 | [124c](124c.md) | Replace Module-Wide `string_slice` Suppression in bash_safety.rs       | Completed | P1       | S                                        | -                                                                              | -                                                                                                                                                                                                                                             |
 | [124d](124d.md) | Replace Module-Wide `string_slice` Suppression in skills.rs            | Completed | P1       | S                                        | -                                                                              | -                                                                                                                                                                                                                                             |
-| [125](125.md)   | Implement Lazy Skill Body Loading at Activation Time                   | Pending   | P1       | L                                        | Required before implementation                                                 | From code review of 110/3cc2e73                                                                                                                                                                                                               |
+| [125](125.md)   | Implement Lazy Skill Body Loading at Activation Time                   | Completed | P1       | L                                        | `.agents/exec-plans/completed/lazy-skill-body-loading.md`                      | From code review of 110/3cc2e73                                                                                                                                                                                                               |
 | [126](126.md)   | Remove Test-Only `Agent::activated_skills` Accessor                    | Pending   | P1       | S                                        | -                                                                              | From code review of 110/3cc2e73                                                                                                                                                                                                               |
 | [127](127.md)   | Document and Enforce Dead-Code Suppression Policy                      | Pending   | P1       | S                                        | -                                                                              | From code review of 110/3cc2e73; interacts with 123, 125, 126, 130                                                                                                                                                                            |
 | [128](128.md)   | Remove No-Op `_ = result.as_bytes()` In bash.rs Test                   | Pending   | P3       | XS                                       | -                                                                              | From code review of 110/3cc2e73                                                                                                                                                                                                               |

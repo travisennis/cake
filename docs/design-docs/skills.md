@@ -122,7 +122,7 @@ When the model determines a skill is relevant, it calls the `Read` tool with the
 }
 ```
 
-The Read tool returns the full file content (frontmatter + body), which the model then uses to guide its behavior.
+For known skill locations, cake intercepts the Read call and returns the markdown body after frontmatter. The frontmatter metadata is already present in the catalog, so activation gives the model the instruction body it needs without duplicating metadata.
 
 ### Deduplication
 
