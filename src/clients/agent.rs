@@ -175,12 +175,6 @@ impl Agent {
         self.session_id
     }
 
-    /// Returns the task ID for the current invocation.
-    #[expect(dead_code, reason = "used in integration tests")]
-    pub const fn task_id(&self) -> uuid::Uuid {
-        self.task_id
-    }
-
     /// Returns accumulated usage across all API calls.
     pub const fn total_usage(&self) -> &Usage {
         &self.total_usage
