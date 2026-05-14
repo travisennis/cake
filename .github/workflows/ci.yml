@@ -49,9 +49,17 @@ jobs:
       - run: cargo fmt -- --check
 
   clippy:
-    name: Clippy
+    name: Clippy (${{ matrix.features.name }})
     needs: check
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        features:
+          - name: all-features
+            args: --all-features
+          - name: no-default-features
+            args: --no-default-features
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -59,7 +67,7 @@ jobs:
           toolchain: 1.95.0
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --all-targets --all-features --message-format=short -- -D warnings
+      - run: cargo clippy --all-targets ${{ matrix.features.args }} --message-format=short -- -D warnings
 
   test:
     name: Test

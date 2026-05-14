@@ -4,8 +4,8 @@ This index summarizes the task files in this directory. Use it as the manually m
 
 ## Status Summary
 
-- Completed: 84
-- Pending: 41
+- Completed: 85
+- Pending: 40
 - Tracking: 1
 - Open: 1
 - Blocked: 12
@@ -22,12 +22,11 @@ This index summarizes the task files in this directory. Use it as the manually m
 
 These are the highest-priority tasks currently available from the task metadata:
 
-1. [122](122.md) — Fix `#[expect(unused_variables)]` on `LandlockSandbox::apply` (P0, XS)
-2. [123](123.md) — Delete unused `Agent::task_id` method (P0, XS)
-3. [124](124.md) — Replace module-wide `#![expect(clippy::string_slice)]` (P1, M, parent of 124a-d)
-4. [125](125.md) — Implement lazy skill body loading (P1, L, ExecPlan required)
-5. [126](126.md) — Remove test-only `Agent::activated_skills` accessor (P1, S)
-6. [127](127.md) — Document and enforce dead-code suppression policy (P1, S)
+1. [123](123.md) — Delete unused `Agent::task_id` method (P0, XS)
+2. [124](124.md) — Replace module-wide `#![expect(clippy::string_slice)]` (P1, M, parent of 124a-d)
+3. [125](125.md) — Implement lazy skill body loading (P1, L, ExecPlan required)
+4. [126](126.md) — Remove test-only `Agent::activated_skills` accessor (P1, S)
+5. [127](127.md) — Document and enforce dead-code suppression policy (P1, S)
 
 ## Parent Trackers
 
@@ -164,7 +163,7 @@ These are the highest-priority tasks currently available from the task metadata:
 | [119](119.md)   | Add Per-Session Telemetry Sidecar                                   | Pending   | P2       | XL                                 | `.agents/exec-plans/active/per-session-telemetry-plan.md`                      | -                                                                                                                                                                                                                                             |
 | [120](120.md)   | Add OSC 9;4 Terminal Progress Indicator                             | Pending   | P3       | S                                  | `.agents/exec-plans/active/progress-bar-plan.md`                               | -                                                                                                                                                                                                                                             |
 | [121](121.md)   | Implement User-Defined Toolbox Tools                                | Pending   | P2       | XL                                 | `.agents/exec-plans/active/toolboxes-plan.md`                                  | 050 (Backend abstraction, completed), 051 (Tool abstraction, completed)                                                                                                                                                                       |
-| [122](122.md)   | Fix `#[expect(unused_variables)]` on `LandlockSandbox::apply`       | Pending   | P0       | XS                                 | -                                                                              | From code review of 110/3cc2e73                                                                                                                                                                                                               |
+| [122](122.md)   | Fix `#[expect(unused_variables)]` on `LandlockSandbox::apply`       | Completed | P0       | XS                                 | -                                                                              | From code review of 110/3cc2e73                                                                                                                                                                                                               |
 | [123](123.md)   | Delete Unused `Agent::task_id` Method                               | Pending   | P0       | XS                                 | -                                                                              | From code review of 110/3cc2e73                                                                                                                                                                                                               |
 | [124](124.md)   | Replace Module-Wide `string_slice` Suppression (Parent)             | Tracking  | P1       | M (split into 124a / 124b / 124c / 124d) | Use child tasks                                                          | From code review of 110/3cc2e73                                                                                                                                                                                                               |
 | [124a](124a.md) | Replace Module-Wide `string_slice` Suppression in retry.rs          | Pending   | P1       | S                                  | -                                                                              | -                                                                                                                                                                                                                                             |

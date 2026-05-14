@@ -99,10 +99,6 @@ impl LandlockSandbox {
 }
 
 impl SandboxStrategy for LandlockSandbox {
-    #[expect(
-        unused_variables,
-        reason = "parameter required by trait, unused when landlock feature is disabled"
-    )]
     fn apply(
         &self,
         command: &mut tokio::process::Command,
