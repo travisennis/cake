@@ -7,7 +7,7 @@ Active tasks include open, pending, blocked, and tracking work.
 ## Status Summary
 
 - Open: 1
-- Pending: 37
+- Pending: 36
 - Blocked: 12
 - Tracking: 0
 - Completed: 0
@@ -64,5 +64,4 @@ Active tasks include open, pending, blocked, and tracking work.
 | [130](130.md) | Delete Unused Serde Response Fields | Pending | P2 | S | - | From code review of 110/3cc2e73 |
 | [131](131.md) | Fix `SandboxConfig` `struct_field_names` Reason and Verify `dead_code` | Pending | P2 | S | - | From code review of 110/3cc2e73 |
 | [133](133.md) | Fix Hook Transcript Appends During Active Sessions | Pending | P1 | M | - | - |
-| [134](134.md) | Clarify Edit Multi-Edit Failure Recovery | Pending | P2 | S | - | - |
 | [135](135.md) | Prefer Focused Checks Before Final CI in Deslop Guidance | Pending | P3 | XS | - | - |

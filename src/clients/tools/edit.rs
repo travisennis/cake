@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use std::fmt::Write as _;
 use std::path::Path;
 
 use crate::clients::tools::{ToolContext, validate_path_for_write};
@@ -19,7 +20,7 @@ pub(super) fn edit_tool() -> super::Tool {
     super::Tool {
         type_: "function".to_string(),
         name: "Edit".to_string(),
-        description: "Edit text in files using literal search-and-replace.".to_string(),
+        description: "Edit text in files using literal search-and-replace. The set of edits is atomic: all edits in a single call succeed together, or none are applied.".to_string(),
         parameters: serde_json::json!({
             "type": "object",
             "properties": {
@@ -219,7 +220,8 @@ fn preflight_edits(
     line_ending: LineEnding,
     path: &Path,
 ) -> Result<Vec<MatchedEdit>, String> {
-    let mut matched_edits = Vec::with_capacity(edits.len());
+    let total = edits.len();
+    let mut matched_edits = Vec::with_capacity(total);
 
     for (i, edit) in edits.iter().enumerate() {
         let edit_index = i + 1; // 1-based for error messages
@@ -232,18 +234,31 @@ fn preflight_edits(
             .collect();
 
         if occurrences.is_empty() {
-            return Err(format!(
-                "Edit {}: Could not find the exact text in {}. The old_text must match exactly including all whitespace and newlines.",
+            let mut message = format!(
+                "Edit {} of {} failed in {}: could not find the exact text to replace. The old_text must match exactly, including all whitespace and newlines.",
                 edit_index,
-                path.display()
-            ));
+                total,
+                path.display(),
+            );
+            if let Some(hint) = nearest_match_hint(&normalized_content.content, &edit.old_text) {
+                _ = write!(message, "\nNearest matching context in file:\n{hint}");
+            }
+            _ = write!(
+                message,
+                "\n{}\nRetry by re-reading the target range and providing a narrower old_text, or split the request into smaller edits.",
+                atomic_rollback_notice(total),
+            );
+            return Err(message);
         }
 
         if occurrences.len() > 1 {
             return Err(format!(
-                "Edit {}: old_text matches {} locations but should match only 1. Please provide a more specific old_text that includes more surrounding context.",
+                "Edit {} of {} failed in {}: old_text matches {} locations but must match exactly 1.\n{}\nProvide a more specific old_text that includes more surrounding context.",
                 edit_index,
-                occurrences.len()
+                total,
+                path.display(),
+                occurrences.len(),
+                atomic_rollback_notice(total),
             ));
         }
 
@@ -269,13 +284,95 @@ fn preflight_edits(
 
         if first_end > second.index {
             return Err(format!(
-                "Edits {} and {} overlap in the file. Each edit must target a distinct region. Please combine overlapping edits into a single edit.",
-                first.edit_index, second.edit_index
+                "Edits {} and {} (of {}) overlap in {}; each edit must target a distinct region.\n{}\nCombine overlapping edits into a single edit.",
+                first.edit_index,
+                second.edit_index,
+                total,
+                path.display(),
+                atomic_rollback_notice(total),
             ));
         }
     }
 
     Ok(matched_edits)
+}
+
+/// Sentence describing the atomic, all-or-nothing semantics so callers know
+/// whether earlier edits were applied or rolled back when a later edit fails.
+const fn atomic_rollback_notice(total: usize) -> &'static str {
+    if total > 1 {
+        "No edits were applied; the file is unchanged. Edit is atomic: all edits in a single call succeed together, or none are applied."
+    } else {
+        "No edits were applied; the file is unchanged."
+    }
+}
+
+/// Best-effort: pick the line in `content` whose token overlap with the first
+/// non-empty line of `needle` is highest. Returns the surrounding lines as a
+/// compact hint. Returns `None` if no useful match is found.
+fn nearest_match_hint(content: &str, needle: &str) -> Option<String> {
+    const HINT_RADIUS: usize = 1;
+    const MAX_LINE_LEN: usize = 200;
+
+    let needle_line = needle.lines().find(|line| !line.trim().is_empty())?;
+    let needle_trimmed = needle_line.trim();
+    if needle_trimmed.len() < 4 {
+        return None;
+    }
+
+    let lines: Vec<&str> = content.lines().collect();
+    if lines.is_empty() {
+        return None;
+    }
+
+    let mut best_idx: Option<usize> = None;
+    let mut best_score: usize = 0;
+    for (idx, line) in lines.iter().enumerate() {
+        let score = common_prefix_len(line.trim_start(), needle_trimmed);
+        if score > best_score {
+            best_score = score;
+            best_idx = Some(idx);
+        }
+    }
+
+    // Require a meaningful overlap so we don't show noise.
+    let min_score = needle_trimmed.len().min(8);
+    if best_score < min_score {
+        return None;
+    }
+
+    let center = best_idx?;
+    let start = center.saturating_sub(HINT_RADIUS);
+    let end = (center + HINT_RADIUS + 1).min(lines.len());
+
+    let mut out = String::new();
+    for (offset, line) in lines[start..end].iter().enumerate() {
+        let line_no = start + offset + 1;
+        let marker = if start + offset == center { ">" } else { " " };
+        let truncated = truncate_to_chars(line, MAX_LINE_LEN);
+        _ = writeln!(out, "{marker} {line_no:>5} | {truncated}");
+    }
+    Some(out.trim_end_matches('\n').to_string())
+}
+
+/// Return `line` truncated to at most `max_chars` characters, appending an
+/// ellipsis if it was shortened. Avoids slicing bytes inside a UTF-8 sequence.
+fn truncate_to_chars(line: &str, max_chars: usize) -> String {
+    if line.chars().count() <= max_chars {
+        return line.to_string();
+    }
+    let mut out: String = line.chars().take(max_chars).collect();
+    out.push('…');
+    out
+}
+
+/// Length of the longest common byte prefix between `a` and `b`.
+fn common_prefix_len(a: &str, b: &str) -> usize {
+    a.as_bytes()
+        .iter()
+        .zip(b.as_bytes().iter())
+        .take_while(|(x, y)| x == y)
+        .count()
 }
 
 // =============================================================================
@@ -529,11 +626,11 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
-            err.contains("Edit 2:"),
-            "Error should mention edit number: {err}"
+            err.contains("Edit 2 of 2"),
+            "Error should mention edit number and total: {err}"
         );
         assert!(
-            err.contains("Could not find"),
+            err.contains("could not find"),
             "Error should mention not found: {err}"
         );
     }
@@ -556,8 +653,8 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
-            err.contains("Edit 1:"),
-            "Error should mention edit number: {err}"
+            err.contains("Edit 1 of 1"),
+            "Error should mention edit number and total: {err}"
         );
         assert!(
             err.contains("matches 2 locations"),
@@ -786,7 +883,7 @@ mod tests {
 
         let result = execute_edit(&ToolContext::from_current_process(), &args);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Could not find"));
+        assert!(result.unwrap_err().contains("could not find"));
     }
 
     #[test]
@@ -957,6 +1054,188 @@ mod tests {
 
         let content = fs::read_to_string(&file_path).unwrap();
         assert_eq!(content, "XXX BBB ZZZ");
+    }
+
+    // =========================================================================
+    // Multi-Edit Failure Recovery Tests
+    // =========================================================================
+
+    #[test]
+    fn multi_edit_failure_reports_atomic_rollback() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+        let original = "alpha\nbeta\ngamma\n";
+        fs::write(&file_path, original).unwrap();
+
+        let args = serde_json::json!({
+            "path": file_path.to_str().unwrap(),
+            "edits": [
+                { "old_text": "alpha", "new_text": "ALPHA" },
+                { "old_text": "beta", "new_text": "BETA" },
+                { "old_text": "delta", "new_text": "DELTA" }
+            ]
+        })
+        .to_string();
+
+        let err = execute_edit(&ToolContext::from_current_process(), &args).unwrap_err();
+
+        // Failed edit number and total are visible
+        assert!(
+            err.contains("Edit 3 of 3"),
+            "Error should identify failing edit number and total: {err}"
+        );
+        // Path is visible
+        assert!(
+            err.contains(file_path.to_str().unwrap()),
+            "Error should include the file path: {err}"
+        );
+        // Atomicity is explicit
+        assert!(
+            err.contains("No edits were applied"),
+            "Error should state that no edits were applied: {err}"
+        );
+        assert!(
+            err.contains("atomic"),
+            "Error should state that the operation is atomic: {err}"
+        );
+        // Recovery hint
+        assert!(
+            err.contains("Retry"),
+            "Error should suggest a retry strategy: {err}"
+        );
+
+        // File is unchanged on disk (proving rollback)
+        let content = fs::read_to_string(&file_path).unwrap();
+        assert_eq!(content, original, "File should be unchanged after failure");
+    }
+
+    #[test]
+    fn multi_edit_ambiguous_match_reports_atomic_rollback() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+        let original = "foo\nbar\nfoo\n";
+        fs::write(&file_path, original).unwrap();
+
+        let args = serde_json::json!({
+            "path": file_path.to_str().unwrap(),
+            "edits": [
+                { "old_text": "bar", "new_text": "BAR" },
+                { "old_text": "foo", "new_text": "FOO" }
+            ]
+        })
+        .to_string();
+
+        let err = execute_edit(&ToolContext::from_current_process(), &args).unwrap_err();
+        assert!(
+            err.contains("Edit 2 of 2"),
+            "Error should identify failing edit number and total: {err}"
+        );
+        assert!(
+            err.contains("matches 2 locations"),
+            "Error should describe the ambiguity: {err}"
+        );
+        assert!(
+            err.contains("No edits were applied"),
+            "Error should state that no edits were applied: {err}"
+        );
+        assert!(
+            err.contains("atomic"),
+            "Error should state atomic semantics for multi-edit: {err}"
+        );
+
+        let content = fs::read_to_string(&file_path).unwrap();
+        assert_eq!(content, original, "File should be unchanged after failure");
+    }
+
+    #[test]
+    fn multi_edit_overlap_reports_atomic_rollback_with_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+        let original = "Hello world";
+        fs::write(&file_path, original).unwrap();
+
+        let args = serde_json::json!({
+            "path": file_path.to_str().unwrap(),
+            "edits": [
+                { "old_text": "Hello", "new_text": "Hi" },
+                { "old_text": "lo wor", "new_text": "xx" }
+            ]
+        })
+        .to_string();
+
+        let err = execute_edit(&ToolContext::from_current_process(), &args).unwrap_err();
+        assert!(
+            err.contains("overlap"),
+            "Error should mention overlap: {err}"
+        );
+        assert!(
+            err.contains(file_path.to_str().unwrap()),
+            "Error should include the file path: {err}"
+        );
+        assert!(
+            err.contains("No edits were applied"),
+            "Error should state that no edits were applied: {err}"
+        );
+        assert!(
+            err.contains("atomic"),
+            "Error should state atomic semantics for multi-edit: {err}"
+        );
+
+        let content = fs::read_to_string(&file_path).unwrap();
+        assert_eq!(content, original, "File should be unchanged after failure");
+    }
+
+    #[test]
+    fn single_edit_failure_omits_atomic_phrasing() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+        fs::write(&file_path, "Hello world").unwrap();
+
+        let args = serde_json::json!({
+            "path": file_path.to_str().unwrap(),
+            "edits": [
+                { "old_text": "missing", "new_text": "x" }
+            ]
+        })
+        .to_string();
+
+        let err = execute_edit(&ToolContext::from_current_process(), &args).unwrap_err();
+        assert!(
+            err.contains("No edits were applied"),
+            "Single-edit failure should still note no edits were applied: {err}"
+        );
+        assert!(
+            !err.contains("atomic"),
+            "Single-edit failure should not include the atomic-rollback phrasing: {err}"
+        );
+    }
+
+    #[test]
+    fn multi_edit_failure_includes_nearest_match_hint() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+        let original =
+            "fn alpha(x: i32) -> i32 {\n    x + 1\n}\n\nfn beta(y: i32) -> i32 {\n    y * 2\n}\n";
+        fs::write(&file_path, original).unwrap();
+
+        // Search text close to a real line so the hint kicks in.
+        let args = serde_json::json!({
+            "path": file_path.to_str().unwrap(),
+            "edits": [
+                { "old_text": "fn alpha(x: u32) -> i32 {", "new_text": "fn alpha(x: i64) -> i64 {" }
+            ]
+        })
+        .to_string();
+
+        let err = execute_edit(&ToolContext::from_current_process(), &args).unwrap_err();
+        assert!(
+            err.contains("Nearest matching context"),
+            "Error should include a nearest-match hint: {err}"
+        );
+        assert!(
+            err.contains("fn alpha"),
+            "Hint should reference the closest line: {err}"
+        );
     }
 
     #[test]
