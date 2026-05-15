@@ -7,7 +7,7 @@ Active tasks include open, pending, blocked, and tracking work.
 ## Status Summary
 
 - Open: 1
-- Pending: 35
+- Pending: 34
 - Blocked: 12
 - Tracking: 0
 - Completed: 0
@@ -61,6 +61,5 @@ Active tasks include open, pending, blocked, and tracking work.
 | [121](121.md) | Implement User-Defined Toolbox Tools | Pending | P2 | XL | `.agents/exec-plans/active/toolboxes-plan.md` | 050 (Backend abstraction, completed), 051 (Tool abstraction, completed) |
 | [128](128.md) | Remove No-Op `_ = result.as_bytes()` In bash.rs Test | Pending | P3 | XS | - | From code review of 110/3cc2e73 |
 | [129](129.md) | Restore `e.print().ok()` With Localized `unused_result_ok` Expect | Pending | P3 | XS | - | From code review of 110/3cc2e73 |
-| [130](130.md) | Delete Unused Serde Response Fields | Pending | P2 | S | - | From code review of 110/3cc2e73 |
 | [131](131.md) | Fix `SandboxConfig` `struct_field_names` Reason and Verify `dead_code` | Pending | P2 | S | - | From code review of 110/3cc2e73 |
 | [135](135.md) | Prefer Focused Checks Before Final CI in Deslop Guidance | Pending | P3 | XS | - | - |

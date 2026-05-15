@@ -867,14 +867,11 @@ mod tests {
         let response = ChatResponse {
             id: Some("chatcmpl-123".to_string()),
             choices: vec![ChatChoice {
-                index: 0,
                 message: ChatResponseMessage {
-                    role: Some("assistant".to_string()),
                     content: Some("Hello!".to_string()),
                     reasoning_content: None,
                     tool_calls: None,
                 },
-                finish_reason: Some("stop".to_string()),
             }],
             usage: None,
         };
@@ -892,21 +889,17 @@ mod tests {
         let response = ChatResponse {
             id: Some("chatcmpl-456".to_string()),
             choices: vec![ChatChoice {
-                index: 0,
                 message: ChatResponseMessage {
-                    role: Some("assistant".to_string()),
                     content: None,
                     reasoning_content: None,
                     tool_calls: Some(vec![ChatToolCall {
                         id: "call-abc".to_string(),
-                        type_: "function".to_string(),
                         function: ChatFunctionCall {
                             name: "bash".to_string(),
                             arguments: r#"{"cmd":"ls"}"#.to_string(),
                         },
                     }]),
                 },
-                finish_reason: Some("tool_calls".to_string()),
             }],
             usage: None,
         };
@@ -922,21 +915,17 @@ mod tests {
         let response = ChatResponse {
             id: Some("chatcmpl-456".to_string()),
             choices: vec![ChatChoice {
-                index: 0,
                 message: ChatResponseMessage {
-                    role: Some("assistant".to_string()),
                     content: None,
                     reasoning_content: Some("preserved reasoning".to_string()),
                     tool_calls: Some(vec![ChatToolCall {
                         id: "call-abc".to_string(),
-                        type_: "function".to_string(),
                         function: ChatFunctionCall {
                             name: "bash".to_string(),
                             arguments: r#"{"cmd":"ls"}"#.to_string(),
                         },
                     }]),
                 },
-                finish_reason: Some("tool_calls".to_string()),
             }],
             usage: None,
         };
@@ -967,14 +956,11 @@ mod tests {
         let response = ChatResponse {
             id: Some("chatcmpl-usage".to_string()),
             choices: vec![ChatChoice {
-                index: 0,
                 message: ChatResponseMessage {
-                    role: Some("assistant".to_string()),
                     content: Some("Hi".to_string()),
                     reasoning_content: None,
                     tool_calls: None,
                 },
-                finish_reason: Some("stop".to_string()),
             }],
             usage: Some(ChatUsage {
                 prompt_tokens: Some(100),
@@ -1293,14 +1279,11 @@ mod tests {
         let response = ChatResponse {
             id: Some("chatcmpl-123".to_string()),
             choices: vec![ChatChoice {
-                index: 0,
                 message: ChatResponseMessage {
-                    role: Some("assistant".to_string()),
                     content: Some(String::new()), // Empty content
                     reasoning_content: None,
                     tool_calls: None,
                 },
-                finish_reason: Some("stop".to_string()),
             }],
             usage: None,
         };
@@ -1320,14 +1303,11 @@ mod tests {
         let response = ChatResponse {
             id: Some("chatcmpl-123".to_string()),
             choices: vec![ChatChoice {
-                index: 0,
                 message: ChatResponseMessage {
-                    role: Some("assistant".to_string()),
                     content: None, // No content
                     reasoning_content: None,
                     tool_calls: None,
                 },
-                finish_reason: Some("stop".to_string()),
             }],
             usage: None,
         };
@@ -1346,15 +1326,12 @@ mod tests {
         let response = ChatResponse {
             id: Some("chatcmpl-456".to_string()),
             choices: vec![ChatChoice {
-                index: 0,
                 message: ChatResponseMessage {
-                    role: Some("assistant".to_string()),
                     content: None,
                     reasoning_content: None,
                     tool_calls: Some(vec![
                         ChatToolCall {
                             id: "call-1".to_string(),
-                            type_: "function".to_string(),
                             function: ChatFunctionCall {
                                 name: "bash".to_string(),
                                 arguments: r#"{"cmd":"ls"}"#.to_string(),
@@ -1362,7 +1339,6 @@ mod tests {
                         },
                         ChatToolCall {
                             id: "call-2".to_string(),
-                            type_: "function".to_string(),
                             function: ChatFunctionCall {
                                 name: "read".to_string(),
                                 arguments: r#"{"path":"file.txt"}"#.to_string(),
@@ -1370,7 +1346,6 @@ mod tests {
                         },
                     ]),
                 },
-                finish_reason: Some("tool_calls".to_string()),
             }],
             usage: None,
         };
@@ -1390,21 +1365,17 @@ mod tests {
         let response = ChatResponse {
             id: Some("chatcmpl-789".to_string()),
             choices: vec![ChatChoice {
-                index: 0,
                 message: ChatResponseMessage {
-                    role: Some("assistant".to_string()),
                     content: Some("Let me help you with that.".to_string()),
                     reasoning_content: None,
                     tool_calls: Some(vec![ChatToolCall {
                         id: "call-1".to_string(),
-                        type_: "function".to_string(),
                         function: ChatFunctionCall {
                             name: "bash".to_string(),
                             arguments: "{}".to_string(),
                         },
                     }]),
                 },
-                finish_reason: Some("tool_calls".to_string()),
             }],
             usage: None,
         };
@@ -1425,14 +1396,11 @@ mod tests {
         let response = ChatResponse {
             id: None, // Missing id
             choices: vec![ChatChoice {
-                index: 0,
                 message: ChatResponseMessage {
-                    role: Some("assistant".to_string()),
                     content: Some("Hello".to_string()),
                     reasoning_content: None,
                     tool_calls: None,
                 },
-                finish_reason: Some("stop".to_string()),
             }],
             usage: None,
         };
@@ -1444,24 +1412,23 @@ mod tests {
     }
 
     #[test]
-    fn parse_choices_missing_role_defaults_to_none() {
+    fn parse_choices_message_with_content_only() {
         let response = ChatResponse {
             id: Some("chatcmpl-123".to_string()),
             choices: vec![ChatChoice {
-                index: 0,
                 message: ChatResponseMessage {
-                    role: None, // Missing role
                     content: Some("Hello".to_string()),
                     reasoning_content: None,
                     tool_calls: None,
                 },
-                finish_reason: Some("stop".to_string()),
             }],
             usage: None,
         };
         let items = parse_choices(&response).unwrap();
-        // Should still create a message item
         assert_eq!(items.len(), 1);
+        assert!(matches!(&items[0], ConversationItem::Message {
+            content, ..
+        } if content == "Hello"));
     }
 }
 

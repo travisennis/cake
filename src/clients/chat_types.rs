@@ -81,17 +81,11 @@ pub(super) struct ChatResponse {
 
 #[derive(Deserialize, Debug)]
 pub(super) struct ChatChoice {
-    #[expect(dead_code, reason = "API response field preserved for completeness")]
-    pub(super) index: u32,
     pub(super) message: ChatResponseMessage,
-    #[expect(dead_code, reason = "API response field preserved for completeness")]
-    pub(super) finish_reason: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]
 pub(super) struct ChatResponseMessage {
-    #[expect(dead_code, reason = "API response field preserved for completeness")]
-    pub(super) role: Option<String>,
     pub(super) content: Option<String>,
     pub(super) reasoning_content: Option<String>,
     pub(super) tool_calls: Option<Vec<ChatToolCall>>,
@@ -101,9 +95,6 @@ pub(super) struct ChatResponseMessage {
 #[derive(Deserialize, Clone, Debug)]
 pub(super) struct ChatToolCall {
     pub(super) id: String,
-    #[serde(rename = "type")]
-    #[expect(dead_code, reason = "API response field preserved for completeness")]
-    pub(super) type_: String,
     pub(super) function: ChatFunctionCall,
 }
 

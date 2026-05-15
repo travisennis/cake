@@ -748,10 +748,6 @@ pub(super) struct ApiResponse {
     pub(super) id: Option<String>,
     pub(super) output: Vec<OutputMessage>,
     pub(super) usage: Option<ApiUsage>,
-    #[expect(dead_code, reason = "API response field preserved for completeness")]
-    pub(super) status: Option<String>,
-    #[expect(dead_code, reason = "API response field preserved for completeness")]
-    pub(super) error: Option<ApiError>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -762,8 +758,6 @@ pub(super) struct OutputMessage {
     pub(super) call_id: Option<String>,
     pub(super) name: Option<String>,
     pub(super) arguments: Option<String>,
-    #[expect(dead_code, reason = "API response field preserved for completeness")]
-    pub(super) role: Option<String>,
     pub(super) status: Option<String>,
     pub(super) content: Option<Vec<OutputContent>>,
     /// Opaque encrypted reasoning content returned by reasoning models.
@@ -821,14 +815,6 @@ pub(super) struct ApiInputTokensDetails {
 #[derive(Deserialize, Debug, Clone, Default)]
 pub(super) struct ApiOutputTokensDetails {
     pub(super) reasoning_tokens: Option<u64>,
-}
-
-#[expect(dead_code, reason = "API response struct defined for completeness")]
-#[derive(Deserialize, Debug)]
-pub(super) struct ApiError {
-    pub(super) code: Option<String>,
-    pub(super) message: String,
-    pub(super) metadata: Option<serde_json::Value>,
 }
 
 #[cfg(test)]

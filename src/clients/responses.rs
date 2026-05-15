@@ -494,7 +494,6 @@ mod tests {
                 call_id: None,
                 name: None,
                 arguments: None,
-                role: Some("assistant".to_string()),
                 status: Some("completed".to_string()),
                 content: Some(vec![OutputContent {
                     content_type: "output_text".to_string(),
@@ -504,8 +503,6 @@ mod tests {
                 summary: None,
             }],
             usage: None,
-            status: None,
-            error: None,
         };
         let items = parse_output_items(&response).unwrap();
         assert_eq!(items.len(), 1);
@@ -524,15 +521,12 @@ mod tests {
                 call_id: Some("call-1".to_string()),
                 name: Some("bash".to_string()),
                 arguments: Some(r#"{"cmd":"ls"}"#.to_string()),
-                role: None,
                 status: None,
                 content: None,
                 encrypted_content: None,
                 summary: None,
             }],
             usage: None,
-            status: None,
-            error: None,
         };
         let items = parse_output_items(&response).unwrap();
         assert_eq!(items.len(), 1);
@@ -551,7 +545,6 @@ mod tests {
                 call_id: None,
                 name: None,
                 arguments: None,
-                role: None,
                 status: None,
                 content: Some(vec![OutputContent {
                     content_type: "reasoning_text".to_string(),
@@ -561,8 +554,6 @@ mod tests {
                 summary: None,
             }],
             usage: None,
-            status: None,
-            error: None,
         };
         let items = parse_output_items(&response).unwrap();
         assert_eq!(items.len(), 1);
@@ -579,15 +570,12 @@ mod tests {
                 call_id: None,
                 name: None,
                 arguments: None,
-                role: None,
                 status: None,
                 content: None,
                 encrypted_content: Some("gAAAAABencrypted...".to_string()),
                 summary: Some(vec!["step 1".to_string(), "step 2".to_string()]),
             }],
             usage: None,
-            status: None,
-            error: None,
         };
         let items = parse_output_items(&response).unwrap();
         assert_eq!(items.len(), 1);
@@ -615,7 +603,6 @@ mod tests {
                 call_id: None,
                 name: None,
                 arguments: None,
-                role: None,
                 status: None,
                 content: Some(vec![OutputContent {
                     content_type: "reasoning_text".to_string(),
@@ -625,8 +612,6 @@ mod tests {
                 summary: None,
             }],
             usage: None,
-            status: None,
-            error: None,
         };
         let items = parse_output_items(&response).unwrap();
         assert_eq!(items.len(), 1);
@@ -645,7 +630,6 @@ mod tests {
                 call_id: None,
                 name: None,
                 arguments: None,
-                role: None,
                 status: None,
                 content: Some(vec![OutputContent {
                     content_type: "provider_specific_reasoning".to_string(),
@@ -655,8 +639,6 @@ mod tests {
                 summary: None,
             }],
             usage: None,
-            status: None,
-            error: None,
         };
 
         let items = parse_output_items(&response).unwrap();
@@ -679,15 +661,12 @@ mod tests {
                 call_id: None,
                 name: None,
                 arguments: None,
-                role: None,
                 status: None,
                 content: None,
                 encrypted_content: None,
                 summary: None,
             }],
             usage: None,
-            status: None,
-            error: None,
         };
         let error = parse_output_items(&response).unwrap_err();
         let message = error.to_string();
@@ -707,7 +686,6 @@ mod tests {
                     call_id: None,
                     name: None,
                     arguments: None,
-                    role: None,
                     status: None,
                     content: None,
                     encrypted_content: None,
@@ -719,7 +697,6 @@ mod tests {
                     call_id: None,
                     name: None,
                     arguments: None,
-                    role: Some("assistant".to_string()),
                     status: Some("completed".to_string()),
                     content: Some(vec![OutputContent {
                         content_type: "output_text".to_string(),
@@ -730,8 +707,6 @@ mod tests {
                 },
             ],
             usage: None,
-            status: None,
-            error: None,
         };
         let items = parse_output_items(&response).unwrap();
         assert_eq!(items.len(), 1);
@@ -751,7 +726,6 @@ mod tests {
                     call_id: None,
                     name: None,
                     arguments: None,
-                    role: None,
                     status: None,
                     content: Some(vec![OutputContent {
                         content_type: "reasoning_text".to_string(),
@@ -766,7 +740,6 @@ mod tests {
                     call_id: None,
                     name: None,
                     arguments: None,
-                    role: None,
                     status: None,
                     content: Some(vec![OutputContent {
                         content_type: "output_text".to_string(),
@@ -777,8 +750,6 @@ mod tests {
                 },
             ],
             usage: None,
-            status: None,
-            error: None,
         };
         let items = parse_output_items(&response).unwrap();
         assert_eq!(items.len(), 2);
@@ -794,15 +765,12 @@ mod tests {
                 call_id: None,
                 name: None,
                 arguments: None,
-                role: None,
                 status: None,
                 content: None,
                 encrypted_content: None,
                 summary: None,
             }],
             usage: None,
-            status: None,
-            error: None,
         };
         let items = parse_output_items(&response).unwrap();
         assert_eq!(items.len(), 1);
@@ -928,8 +896,6 @@ mod tests {
             id: None,
             output: vec![],
             usage: None,
-            status: None,
-            error: None,
         };
         let items = parse_output_items(&response).unwrap();
         assert!(items.is_empty());
@@ -946,7 +912,6 @@ mod tests {
                 call_id: None,
                 name: None,
                 arguments: None,
-                role: None,
                 status: None,
                 content: Some(vec![OutputContent {
                     content_type: "reasoning_text".to_string(),
@@ -956,8 +921,6 @@ mod tests {
                 summary: None,
             }],
             usage: None,
-            status: None,
-            error: None,
         };
         let items = parse_output_items(&response).unwrap();
         // Reasoning without id is skipped
@@ -974,15 +937,12 @@ mod tests {
                 call_id: None,
                 name: None,
                 arguments: None,
-                role: None,
                 status: None,
                 content: None,
                 encrypted_content: None,
                 summary: None,
             }],
             usage: None,
-            status: None,
-            error: None,
         };
         let error = parse_output_items(&response).unwrap_err();
         let message = error.to_string();
@@ -1002,15 +962,12 @@ mod tests {
                 call_id: None,
                 name: None,
                 arguments: None,
-                role: None,
                 status: Some("completed".to_string()),
                 content: Some(vec![]), // Empty content array
                 encrypted_content: None,
                 summary: None,
             }],
             usage: None,
-            status: None,
-            error: None,
         };
         let items = parse_output_items(&response).unwrap();
         assert_eq!(items.len(), 1);
@@ -1032,7 +989,6 @@ mod tests {
                 call_id: None,
                 name: None,
                 arguments: None,
-                role: None,
                 status: Some("completed".to_string()),
                 content: Some(vec![OutputContent {
                     content_type: "image".to_string(), // Not output_text
@@ -1042,8 +998,6 @@ mod tests {
                 summary: None,
             }],
             usage: None,
-            status: None,
-            error: None,
         };
         let items = parse_output_items(&response).unwrap();
         assert_eq!(items.len(), 1);
@@ -1065,15 +1019,12 @@ mod tests {
                 call_id: None,
                 name: None,
                 arguments: None,
-                role: None,
                 status: None,
                 content: None,
                 encrypted_content: None,
                 summary: Some(vec!["step 1".to_string(), "step 2".to_string()]),
             }],
             usage: None,
-            status: None,
-            error: None,
         };
         let items = parse_output_items(&response).unwrap();
         assert_eq!(items.len(), 1);
@@ -1096,7 +1047,6 @@ mod tests {
                 call_id: None,
                 name: None,
                 arguments: None,
-                role: None,
                 status: None,
                 content: Some(vec![OutputContent {
                     content_type: "reasoning_text".to_string(),
@@ -1106,8 +1056,6 @@ mod tests {
                 summary: None, // No summary, should derive from content
             }],
             usage: None,
-            status: None,
-            error: None,
         };
         let items = parse_output_items(&response).unwrap();
         assert_eq!(items.len(), 1);
