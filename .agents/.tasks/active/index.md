@@ -7,7 +7,7 @@ Active tasks include open, pending, blocked, and tracking work.
 ## Status Summary
 
 - Open: 1
-- Pending: 42
+- Pending: 41
 - Blocked: 12
 - Tracking: 0
 - Completed: 0
@@ -29,7 +29,6 @@ Active tasks include open, pending, blocked, and tracking work.
 | [015](015.md) | Consolidate Per-Function unwrap_used Allow to Module-Level in Tests | Blocked | - | - | - | - |
 | [016](016.md) | Refactor send() and execute_bash() into Smaller Functions | Blocked | - | - | - | - |
 | [030](030.md) | Investigate Session-Level Hook Observability | Pending | - | - | - | - |
-| [086](086.md) | Flatten format_api_error_body | Pending | P3 | S | - | - |
 | [087](087.md) | Simplify Responses Reasoning Config Construction | Pending | P3 | S | - | - |
 | [088](088.md) | Clean Up Dead Code Allows | Pending | P3 | S | - | - |
 | [090](090.md) | Decide on Tokio Runtime Entry Style | Pending | P3 | S | - | - |

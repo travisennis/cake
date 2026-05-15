@@ -161,13 +161,10 @@ fn api_error_from_failure(model: &str, failure: &HttpFailure) -> crate::exit_cod
 }
 
 fn format_api_error_body(model: &str, error_text: &str) -> String {
-    serde_json::from_str::<serde_json::Value>(error_text).map_or_else(
-        |_err| format!("{model}\n\n{error_text}"),
-        |resp_json| {
-            serde_json::to_string_pretty(&resp_json).map_or_else(
-                |_| format!("{model}\n\n{error_text}"),
-                |formatted| format!("{model}\n\n{formatted}"),
-            )
-        },
-    )
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(error_text)
+        && let Ok(formatted) = serde_json::to_string_pretty(&value)
+    {
+        return format!("{model}\n\n{formatted}");
+    }
+    format!("{model}\n\n{error_text}")
 }
