@@ -111,8 +111,14 @@ fn is_sandbox_violation(sandboxed: bool, success: bool, output: &str) -> bool {
 }
 
 /// Detect when the sandbox engine itself failed before the requested command ran.
-fn is_sandbox_initialization_failure(output: &str) -> bool {
-    output.contains("sandbox-exec: sandbox_apply")
+///
+/// Must be called with **stderr only**, not combined stdout+stderr. The
+/// `sandbox-exec` wrapper writes its initialization errors to stderr, so
+/// checking only stderr avoids false positives when a user command prints
+/// or searches for the literal string `sandbox-exec: sandbox_apply` in its
+/// normal output.
+fn is_sandbox_initialization_failure(stderr: &str) -> bool {
+    stderr.contains("sandbox-exec: sandbox_apply")
 }
 
 /// Check if raw bytes appear to be binary data rather than text.
@@ -302,11 +308,15 @@ async fn execute_bash_with_args(
     let mut stderr = child.stderr.take().ok_or("Failed to capture stderr")?;
 
     let mut buf = Vec::with_capacity(BASH_OUTPUT_MAX_BYTES);
+    let mut stderr_buf = Vec::new();
     let mut tmp_stdout = [0u8; 8192];
     let mut tmp_stderr = [0u8; 8192];
     let mut hit_cap = false;
 
     // Read both streams concurrently, interleaved, with a timeout.
+    // stderr is also captured separately so sandbox-init errors can be
+    // detected from stderr alone, avoiding false positives when a user
+    // command prints the literal string `sandbox-exec: sandbox_apply`.
     let read_result = timeout(Duration::from_secs(args.timeout), async {
         loop {
             tokio::select! {
@@ -319,6 +329,7 @@ async fn execute_bash_with_args(
                                 .map_err(|e| format!("stderr read error: {e}"))?;
                             if n == 0 { return Ok::<_, String>(()); }
                             buf.extend_from_slice(&tmp_stderr[..n]);
+                            stderr_buf.extend_from_slice(&tmp_stderr[..n]);
                             if buf.len() >= BASH_READ_CAP { hit_cap = true; return Ok(()); }
                         }
                     }
@@ -338,6 +349,7 @@ async fn execute_bash_with_args(
                         }
                     }
                     buf.extend_from_slice(&tmp_stderr[..n]);
+                    stderr_buf.extend_from_slice(&tmp_stderr[..n]);
                     if buf.len() >= BASH_READ_CAP { hit_cap = true; return Ok(()); }
                 }
             }
@@ -367,12 +379,13 @@ async fn execute_bash_with_args(
     }
 
     let output_str = String::from_utf8_lossy(&buf);
+    let stderr_str = String::from_utf8_lossy(&stderr_buf);
     let success = status
         .as_ref()
         .is_some_and(std::process::ExitStatus::success);
     let exit_code = status.and_then(|s| s.code()).unwrap_or(-1);
 
-    if args.use_sandbox && is_sandbox_initialization_failure(&output_str) {
+    if args.use_sandbox && is_sandbox_initialization_failure(&stderr_str) {
         return Err(format!(
             "{}\n\n\
             macOS sandbox unavailable: sandbox-exec could not apply a sandbox profile, \
@@ -677,6 +690,36 @@ mod tests {
         );
     }
 
+    /// When the macOS sandbox is available, a sandboxed command that prints
+    /// `sandbox-exec: sandbox_apply` to stdout must return normal output,
+    /// not a sandbox-initialization-failure error. This is the exact scenario
+    /// from the original bug: `rg -n "sandbox" src/clients/tools/bash.rs`
+    /// matched lines containing that literal string.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn test_sandboxed_command_stdout_does_not_trigger_init_failure() {
+        if skip_if_sandbox_unavailable() {
+            return;
+        }
+
+        let args =
+            r#"{"command": "printf 'sandbox-exec: sandbox_apply file-write* /tmp/test\\n'"}"#;
+        let result = Box::pin(execute_bash(&ToolContext::from_current_process(), args))
+            .await
+            .unwrap();
+
+        assert!(
+            result.output.contains("sandbox-exec: sandbox_apply"),
+            "sandboxed command should return its stdout: {}",
+            result.output
+        );
+        assert!(
+            !result.output.contains("macOS sandbox unavailable"),
+            "stdout pattern must not trigger sandbox initialization failure: {}",
+            result.output
+        );
+    }
+
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn test_sandbox_blocks_write_outside_cwd() {
@@ -816,6 +859,40 @@ mod tests {
         let output = "sandbox-exec: sandbox_apply: Operation not permitted";
         assert!(is_sandbox_initialization_failure(output));
         assert!(!is_sandbox_violation(true, false, output));
+    }
+
+    #[test]
+    fn sandbox_initialization_failure_checks_stderr_only() {
+        // The pattern must appear in the stderr string to be detected.
+        // An empty stderr means no initialization failure, even if stdout
+        // contains the literal string.
+        assert!(!is_sandbox_initialization_failure(""));
+        assert!(!is_sandbox_initialization_failure(
+            "some normal stderr output"
+        ));
+        assert!(is_sandbox_initialization_failure(
+            "sandbox-exec: sandbox_apply: Operation not permitted"
+        ));
+    }
+
+    /// Regression test: a command that prints `sandbox-exec: sandbox_apply`
+    /// to stdout must NOT be treated as a sandbox initialization failure.
+    /// The check should only inspect stderr, so stdout content is irrelevant.
+    #[tokio::test]
+    async fn command_stdout_containing_sandbox_apply_pattern_is_not_false_positive() {
+        let args = r#"{"command": "printf 'sandbox-exec: sandbox_apply file-write* /tmp/test\n'"}"#;
+        let result = Box::pin(execute_bash_unsandboxed(args)).await.unwrap();
+
+        assert!(
+            result.output.contains("sandbox-exec: sandbox_apply"),
+            "command output should contain the printed pattern: {}",
+            result.output
+        );
+        assert!(
+            !result.output.contains("macOS sandbox unavailable"),
+            "stdout pattern should not trigger sandbox initialization failure: {}",
+            result.output
+        );
     }
 
     #[test]
