@@ -1004,19 +1004,20 @@ impl CodingAssistant {
         session: &Session,
         storage: &SessionStorage,
         persists_session: bool,
-    ) -> anyhow::Result<Agent> {
+    ) -> anyhow::Result<(Agent, Option<crate::config::SessionWriter>)> {
         if !persists_session {
-            return Ok(client);
+            return Ok((client, None));
         }
 
-        let mut file = match storage {
+        let file = match storage {
             SessionStorage::New => data_dir.create_session_file(session, client.tool_names())?,
             SessionStorage::Append => data_dir.open_session_for_append(session.id)?,
         };
-        client = client.with_persist_callback(move |record| {
-            crate::config::Session::append_record(&mut file, record)
-        });
-        Ok(client)
+        let writer = crate::config::SessionWriter::new(file);
+        let writer_for_callback = writer.clone();
+        client =
+            client.with_persist_callback(move |record| writer_for_callback.append_record(record));
+        Ok((client, Some(writer)))
     }
 
     fn attach_hooks(
@@ -1026,6 +1027,7 @@ impl CodingAssistant {
         session: &Session,
         run_mode: &RunMode,
         task_id: uuid::Uuid,
+        session_writer: Option<crate::config::SessionWriter>,
     ) -> anyhow::Result<(Agent, Option<Arc<HookRunner>>)> {
         let hooks = HooksLoader::load(current_dir)?;
 
@@ -1041,6 +1043,7 @@ impl CodingAssistant {
                 transcript_path: run_mode
                     .persists_session()
                     .then(|| data_dir.session_path(session.id)),
+                session_writer,
                 cwd: current_dir.to_path_buf(),
                 model: client.model_name().to_string(),
             },
@@ -1144,7 +1147,7 @@ impl CmdRunner for CodingAssistant {
         let session_start_source =
             HookSource::SessionStart(run_mode.session_start_source().to_owned());
         let session = run_session.session;
-        let client = Self::attach_persistence(
+        let (client, session_writer) = Self::attach_persistence(
             run_session.agent,
             data_dir,
             &session,
@@ -1158,6 +1161,7 @@ impl CmdRunner for CodingAssistant {
             &session,
             &run_mode,
             task_id,
+            session_writer,
         )?;
         let output = self.output_sink();
         let (mut client, spinner) = output.attach_callbacks(client);

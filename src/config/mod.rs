@@ -26,7 +26,7 @@ pub use hooks::{HookSource, HooksLoader};
 #[doc(inline)]
 pub use model::{ModelConfig, ReasoningEffort, ResolvedModelConfig};
 #[doc(inline)]
-pub use session::Session;
+pub use session::{Session, SessionWriter};
 #[doc(inline)]
 pub use settings::{ModelDefinition, SettingsLoader};
 #[doc(inline)]

@@ -10,7 +10,7 @@ Completed tasks are retained for history and stable task-id lookup.
 - Pending: 0
 - Blocked: 0
 - Tracking: 0
-- Completed: 96
+- Completed: 97
 
 ## Tasks
 
@@ -111,4 +111,5 @@ Completed tasks are retained for history and stable task-id lookup.
 | [126](126.md) | Remove Test-Only `Agent::activated_skills` Accessor | Completed | P1 | S | - | From code review of 110/3cc2e73 |
 | [127](127.md) | Document and Enforce Dead-Code Suppression Policy | Completed | P1 | S | - | From code review of 110/3cc2e73; interacts with 123, 125, 126, 130 |
 | [132](132.md) | Only Attach Rust Failure Guidance on Failed Commands | Completed | P1 | S | - | - |
+| [133](133.md) | Fix Hook Transcript Appends During Active Sessions | Completed | P1 | M | - | - |
 | [134](134.md) | Clarify Edit Multi-Edit Failure Recovery | Completed | P2 | S | - | - |

@@ -1686,6 +1686,7 @@ mod error_tests {
                 session_id: uuid::Uuid::new_v4(),
                 task_id: uuid::Uuid::new_v4(),
                 transcript_path: None,
+                session_writer: None,
                 cwd: tmp.path().to_path_buf(),
                 model: "test-model".to_string(),
             },

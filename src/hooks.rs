@@ -9,7 +9,7 @@ use tokio::process::Command;
 use tokio::time::timeout;
 
 use crate::clients::SessionRecord;
-use crate::config::Session;
+use crate::config::SessionWriter;
 use crate::config::hooks::{HookCommand, HookEvent, HookSource, LoadedHooks};
 
 const HOOK_OUTPUT_LIMIT: usize = 64 * 1024;
@@ -25,6 +25,7 @@ pub struct HookContext {
     pub session_id: uuid::Uuid,
     pub task_id: uuid::Uuid,
     pub transcript_path: Option<PathBuf>,
+    pub session_writer: Option<SessionWriter>,
     pub cwd: PathBuf,
     pub model: String,
 }
@@ -508,7 +509,7 @@ impl HookRunner {
             );
         }
 
-        let Some(path) = &self.context.transcript_path else {
+        let Some(writer) = &self.context.session_writer else {
             return;
         };
         let record = SessionRecord::HookEvent {
@@ -526,16 +527,12 @@ impl HookRunner {
             stderr: outcome.stderr.clone(),
         };
 
-        match Session::open_for_append(path)
-            .and_then(|mut file| Session::append_record(&mut file, &record))
-        {
-            Ok(()) => {},
-            Err(error) => tracing::warn!(
+        if let Err(error) = writer.append_record(&record) {
+            tracing::warn!(
                 target: "cake::hooks",
-                path = %path.display(),
                 error = %error,
                 "Failed to append hook transcript record"
-            ),
+            );
         }
     }
 }
@@ -787,6 +784,7 @@ mod tests {
                 session_id: uuid::Uuid::new_v4(),
                 task_id: uuid::Uuid::new_v4(),
                 transcript_path: None,
+                session_writer: None,
                 cwd,
                 model: "test-model".to_string(),
             },
@@ -836,6 +834,85 @@ mod tests {
             .unwrap();
 
         assert!(matches!(plan, ToolHookPlan::Execute { .. }));
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn post_tool_use_persists_hook_record_while_session_locked() {
+        use crate::clients::GitState;
+        use crate::clients::types::SessionRecord;
+        use crate::config::session::CURRENT_FORMAT_VERSION;
+        use crate::config::{Session, SessionWriter};
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let session_path = dir.path().join("session.jsonl");
+
+        let session_id = uuid::Uuid::new_v4();
+        let meta = SessionRecord::SessionMeta {
+            format_version: CURRENT_FORMAT_VERSION,
+            session_id: session_id.to_string(),
+            timestamp: chrono::Utc::now(),
+            working_directory: dir.path().to_path_buf(),
+            model: Some("test-model".to_string()),
+            tools: Vec::new(),
+            cake_version: Some("test".to_string()),
+            system_prompt: None,
+            git: GitState {
+                repository_url: None,
+                branch: None,
+                commit_hash: None,
+            },
+        };
+        let file = Session::create_on_disk(&session_path, &meta).unwrap();
+        let writer = SessionWriter::new(file);
+
+        let source_path = dir.path().join("hooks.json");
+        let command = HookCommand {
+            command: r#"printf '{"permission":"allow"}'"#.to_string(),
+            timeout: Duration::from_secs(2),
+            fail_closed: false,
+            status_message: None,
+            source_path: source_path.clone(),
+        };
+        let loaded = LoadedHooks {
+            groups: vec![HookGroup {
+                source_path,
+                event: HookEvent::PostToolUse,
+                matcher: HookMatcher::All,
+                hooks: vec![command],
+            }],
+        };
+        let runner = HookRunner::new(
+            loaded,
+            HookContext {
+                session_id,
+                task_id: uuid::Uuid::new_v4(),
+                transcript_path: Some(session_path.clone()),
+                session_writer: Some(writer.clone()),
+                cwd: dir.path().to_path_buf(),
+                model: "test-model".to_string(),
+            },
+        );
+
+        runner
+            .post_tool_use(
+                "Bash",
+                "call-1",
+                r#"{"command":"printf ok"}"#,
+                &Ok("ok".to_string()),
+            )
+            .await
+            .unwrap();
+
+        // SessionWriter still holds the lock; reads via fs are unaffected by
+        // advisory locks on macOS/Linux.
+        let content = std::fs::read_to_string(&session_path).unwrap();
+        assert!(
+            content.contains(r#""type":"hook_event""#),
+            "expected hook_event record in {content}"
+        );
+        assert!(content.contains(r#""event":"PostToolUse""#));
+        drop(writer);
     }
 
     #[tokio::test]

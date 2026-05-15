@@ -3,12 +3,41 @@ use std::{
     fs::{self, File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
 };
 
 use anyhow::Context;
 use fs4::{FileExt, TryLockError};
 
 use crate::clients::{ConversationItem, GitState, SessionRecord};
+
+/// Shared writer that holds the locked append handle for a session JSONL file.
+///
+/// Both the agent persistence callback and `HookRunner` clone a `SessionWriter`
+/// so all writers append through the same file handle and advisory lock,
+/// avoiding lock contention between hook records and conversation records.
+#[derive(Clone)]
+pub struct SessionWriter {
+    file: Arc<Mutex<File>>,
+}
+
+impl SessionWriter {
+    /// Create a writer that owns the locked append handle.
+    pub fn new(file: File) -> Self {
+        Self {
+            file: Arc::new(Mutex::new(file)),
+        }
+    }
+
+    /// Append a single record using the shared file handle.
+    pub fn append_record(&self, record: &SessionRecord) -> anyhow::Result<()> {
+        let mut guard = self
+            .file
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Session::append_record(&mut guard, record)
+    }
+}
 
 /// Session format version for append-only task event logs.
 pub const CURRENT_FORMAT_VERSION: u32 = 4;
