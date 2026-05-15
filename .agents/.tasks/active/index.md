@@ -7,7 +7,7 @@ Active tasks include open, pending, blocked, and tracking work.
 ## Status Summary
 
 - Open: 1
-- Pending: 34
+- Pending: 39
 - Blocked: 12
 - Tracking: 0
 - Completed: 0
@@ -63,3 +63,8 @@ Active tasks include open, pending, blocked, and tracking work.
 | [129](129.md) | Restore `e.print().ok()` With Localized `unused_result_ok` Expect | Pending | P3 | XS | - | From code review of 110/3cc2e73 |
 | [131](131.md) | Fix `SandboxConfig` `struct_field_names` Reason and Verify `dead_code` | Pending | P2 | S | - | From code review of 110/3cc2e73 |
 | [135](135.md) | Prefer Focused Checks Before Final CI in Deslop Guidance | Pending | P3 | XS | - | - |
+| [136](136.md) | Show Candidate Contexts for Ambiguous Edit Matches | Pending | P2 | S | - | - |
+| [137](137.md) | Report Per-Edit Preflight Results on Multi-Edit Failure | Pending | P2 | S | - | - |
+| [138](138.md) | Improve Edit No-Op Handling | Pending | P2 | S | - | - |
+| [139](139.md) | Add Structured Bulk Edit Support for Mechanical Transformations | Pending | P2 | M | - | - |
+| [140](140.md) | Harden Edit Schema Guidance Against Malformed Arguments | Pending | P2 | S | - | - |
