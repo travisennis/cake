@@ -15,7 +15,9 @@ Preserve behavior while improving readability, type safety, and alignment with c
 
 ## Required context
 
-Before reviewing, read:
+Before reviewing, gather the context below. Read each item when it is relevant
+to the changed surface. If an item is not relevant, explicitly mark it not
+applicable in the compliance notes with a short reason.
 
 - repo root `AGENTS.md`
 - nested `AGENTS.md` files for the changed areas
@@ -28,6 +30,34 @@ Before reviewing, read:
 - the changed files and enough nearby context to review them properly
 
 If you're working on an ExecPlan, also inspect `.agents/exec-plans/active/`. When a plan clearly matches the current task, study it before reviewing as it often contains relevant context, constraints, and acceptance criteria not captured in the ticket or design docs.
+
+## Compliance notes
+
+Before claiming the deslop pass is complete, write a brief compliance note in
+the working response, task notes, or review synthesis. Keep it concise, but make
+each required context item auditable.
+
+Use this shape:
+
+```markdown
+### Deslop compliance
+
+- Root AGENTS.md: read
+- Nested AGENTS.md: none found under changed paths
+- Task context: read `.agents/TASKS.md`, `.agents/.tasks/index.md`, and task `NNN`
+- Plans: not applicable because this was an S/M task with no ExecPlan
+- Design docs: not applicable because this was a docs-only policy change with no matching design-doc area
+- ADRs: not applicable because no ADR covers the changed area
+- ExecPlan: not applicable because no active plan exists for this task
+- Changed files and diff: reviewed `git diff --stat` and targeted changed-file diffs
+- Validation: ran `just task-index-check`; full CI not required because only skill/docs files changed
+```
+
+Do not write blanket statements such as "no design docs to check" unless you
+looked for a relevant design doc or can explain why the changed area has no
+design-doc surface. Prefer targeted discovery such as `rg --files -g AGENTS.md`,
+`rg --files docs/design-docs docs/adr`, and targeted `git diff -- <paths>` over
+large file dumps.
 
 ## Review protocol
 
@@ -65,6 +95,7 @@ After all three passes, synthesize findings into one balanced report with these 
 - "Feedback to keep"
 - "Feedback to ignore"
 - "Plan of attack"
+- "Deslop compliance"
 
 ## Between-pass hygiene
 
@@ -93,13 +124,13 @@ If feedback is speculative, conflicts across passes, or would widen scope materi
 
 ## Steps
 
-1. Gather the context (read everything listed in Required Context).
+1. Gather the context from Required Context, reading relevant items and recording non-applicable items with reasons.
 2. Run Pass 1 (rules and docs conformance) and record findings.
 3. Run a narrow evidence check such as `git diff --stat`, a focused `cargo test`, or `cargo fmt --check`.
 4. Run Pass 2 (type safety) and record findings.
 5. Run the next narrow evidence check that fits the risks found so far.
 6. Run Pass 3 (overengineering/simplification) and record findings.
-7. Synthesize all findings into the balanced report.
+7. Synthesize all findings into the balanced report, including Deslop compliance.
 8. Apply the worthwhile feedback that is clearly in scope.
 9. Rerun the narrowest affected validation immediately, then run `just ci` when the finished work changed code, config, or dependencies.
 10. Update task notes, ExecPlan notes, commit text, PR-facing text, or final response so they describe the final post-deslop state rather than the earlier draft state.
