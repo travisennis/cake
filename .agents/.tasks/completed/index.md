@@ -10,7 +10,7 @@ Completed tasks are retained for history and stable task-id lookup.
 - Pending: 0
 - Blocked: 0
 - Tracking: 0
-- Completed: 99
+- Completed: 100
 
 ## Tasks
 
@@ -115,3 +115,4 @@ Completed tasks are retained for history and stable task-id lookup.
 | [133](133.md) | Fix Hook Transcript Appends During Active Sessions | Completed | P1 | M | - | - |
 | [134](134.md) | Clarify Edit Multi-Edit Failure Recovery | Completed | P2 | S | - | - |
 | [136](136.md) | Show Candidate Contexts for Ambiguous Edit Matches | Completed | P2 | S | - | - |
+| [137](137.md) | Report Per-Edit Preflight Results on Multi-Edit Failure | Completed | P2 | S | - | - |

@@ -10,6 +10,8 @@ use crate::clients::tools::{ToolContext, validate_path_for_write};
 
 /// Maximum number of edits allowed in a single call
 const MAX_EDITS_PER_CALL: usize = 10;
+/// Maximum per-edit status lines included in a failed multi-edit preflight.
+const MAX_PREFLIGHT_STATUS_LINES: usize = 6;
 
 // =============================================================================
 // Edit Tool Definition
@@ -234,6 +236,12 @@ fn preflight_edits(
             .collect();
 
         if occurrences.is_empty() {
+            let preflight_summary = preflight_failure_summary(
+                total,
+                &matched_edits,
+                edit_index,
+                "failed: could not find the exact text to replace",
+            );
             let mut message = format!(
                 "Edit {} of {} failed in {}: could not find the exact text to replace. The old_text must match exactly, including all whitespace and newlines.",
                 edit_index,
@@ -245,7 +253,8 @@ fn preflight_edits(
             }
             _ = write!(
                 message,
-                "\n{}\nRetry by re-reading the target range and providing a narrower old_text, or split the request into smaller edits.",
+                "{}\n{}\nRetry by re-reading the target range and providing a narrower old_text, or split the request into smaller edits.",
+                preflight_summary,
                 atomic_rollback_notice(total),
             );
             return Err(message);
@@ -253,13 +262,18 @@ fn preflight_edits(
 
         if occurrences.len() > 1 {
             let contexts = ambiguous_match_contexts(&normalized_content.content, &occurrences);
+            let failure_status =
+                format!("failed: old_text matched {} locations", occurrences.len());
+            let preflight_summary =
+                preflight_failure_summary(total, &matched_edits, edit_index, &failure_status);
             return Err(format!(
-                "Edit {} of {} failed in {}: old_text matches {} locations but must match exactly 1.\nCandidate match contexts:\n{}\n{}\nProvide a more specific old_text that includes more surrounding context.",
+                "Edit {} of {} failed in {}: old_text matches {} locations but must match exactly 1.\nCandidate match contexts:\n{}{}\n{}\nProvide a more specific old_text that includes more surrounding context.",
                 edit_index,
                 total,
                 path.display(),
                 occurrences.len(),
                 contexts,
+                preflight_summary,
                 atomic_rollback_notice(total),
             ));
         }
@@ -285,18 +299,97 @@ fn preflight_edits(
         let first_end = first.index + first.match_length;
 
         if first_end > second.index {
+            let failure_status = format!(
+                "failed: overlaps with edit {} after both matched uniquely",
+                first.edit_index
+            );
+            let preflight_summary = preflight_failure_summary(
+                total,
+                &matched_edits,
+                second.edit_index,
+                &failure_status,
+            );
             return Err(format!(
-                "Edits {} and {} (of {}) overlap in {}; each edit must target a distinct region.\n{}\nCombine overlapping edits into a single edit.",
+                "Edits {} and {} (of {}) overlap in {}; each edit must target a distinct region.{}\n{}\nCombine overlapping edits into a single edit.",
                 first.edit_index,
                 second.edit_index,
                 total,
                 path.display(),
+                preflight_summary,
                 atomic_rollback_notice(total),
             ));
         }
     }
 
     Ok(matched_edits)
+}
+
+/// Render a compact per-edit status block for failed multi-edit preflights.
+fn preflight_failure_summary(
+    total: usize,
+    matched_edits: &[MatchedEdit],
+    failed_edit_index: usize,
+    failed_status: &str,
+) -> String {
+    if total == 1 {
+        return String::new();
+    }
+
+    let mut matched_indexes: Vec<usize> = matched_edits
+        .iter()
+        .map(|matched| matched.edit_index)
+        .collect();
+    matched_indexes.sort_unstable();
+
+    let reserved_status_lines = 1 + usize::from(failed_edit_index < total);
+    let available_matched_lines = MAX_PREFLIGHT_STATUS_LINES.saturating_sub(reserved_status_lines);
+    let mut out = String::from("\nPreflight summary:");
+
+    let shown_matched = if matched_indexes.len() > available_matched_lines {
+        available_matched_lines.saturating_sub(1)
+    } else {
+        matched_indexes.len()
+    };
+    for edit_index in matched_indexes.iter().take(shown_matched) {
+        _ = write!(
+            out,
+            "\n- Edit {edit_index} of {total}: matched exactly once."
+        );
+    }
+
+    if matched_indexes.len() > shown_matched {
+        _ = write!(
+            out,
+            "\n- ... {} matched edit{} omitted.",
+            matched_indexes.len() - shown_matched,
+            plural_suffix(matched_indexes.len() - shown_matched)
+        );
+    }
+
+    _ = write!(
+        out,
+        "\n- Edit {failed_edit_index} of {total}: {failed_status}."
+    );
+
+    if failed_edit_index < total {
+        let skipped = total - failed_edit_index;
+        let skipped_status = format!(
+            "\n- Edit{} {} of {total}: not evaluated after the failure.",
+            if skipped == 1 { "" } else { "s" },
+            if skipped == 1 {
+                (failed_edit_index + 1).to_string()
+            } else {
+                format!("{}-{}", failed_edit_index + 1, total)
+            }
+        );
+        out.push_str(&skipped_status);
+    }
+
+    out
+}
+
+const fn plural_suffix(count: usize) -> &'static str {
+    if count == 1 { "" } else { "s" }
 }
 
 /// Sentence describing the atomic, all-or-nothing semantics so callers know
@@ -1214,6 +1307,79 @@ mod tests {
         // File is unchanged on disk (proving rollback)
         let content = fs::read_to_string(&file_path).unwrap();
         assert_eq!(content, original, "File should be unchanged after failure");
+    }
+
+    #[test]
+    fn multi_edit_failure_reports_per_edit_preflight_statuses() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+        let original = "alpha\nbeta\ngamma\n";
+        fs::write(&file_path, original).unwrap();
+
+        let args = serde_json::json!({
+            "path": file_path.to_str().unwrap(),
+            "edits": [
+                { "old_text": "alpha", "new_text": "ALPHA" },
+                { "old_text": "delta", "new_text": "DELTA" },
+                { "old_text": "gamma", "new_text": "GAMMA" }
+            ]
+        })
+        .to_string();
+
+        let err = execute_edit(&ToolContext::from_current_process(), &args).unwrap_err();
+        assert!(
+            err.contains("Preflight summary:"),
+            "Error should include a preflight summary: {err}"
+        );
+        assert!(
+            err.contains("Edit 1 of 3: matched exactly once."),
+            "Error should report the prior successful match: {err}"
+        );
+        assert!(
+            err.contains("Edit 2 of 3: failed: could not find the exact text to replace."),
+            "Error should report the failed edit status: {err}"
+        );
+        assert!(
+            err.contains("Edit 3 of 3: not evaluated after the failure."),
+            "Error should report that later edits were skipped: {err}"
+        );
+        assert!(
+            err.contains("No edits were applied"),
+            "Error should state that no edits were applied: {err}"
+        );
+
+        let content = fs::read_to_string(&file_path).unwrap();
+        assert_eq!(content, original, "File should be unchanged after failure");
+    }
+
+    #[test]
+    fn multi_edit_preflight_summary_is_bounded() {
+        let matched_edits: Vec<_> = (1..=9)
+            .map(|edit_index| MatchedEdit {
+                new_text: String::new(),
+                index: edit_index * 10,
+                match_length: 1,
+                edit_index,
+            })
+            .collect();
+
+        let summary = preflight_failure_summary(10, &matched_edits, 10, "failed: missing");
+        assert!(
+            summary.contains("Edit 1 of 10: matched exactly once."),
+            "Summary should include early matched edits: {summary}"
+        );
+        assert!(
+            summary.contains("5 matched edits omitted."),
+            "Summary should cap matched status lines: {summary}"
+        );
+        assert!(
+            summary.contains("Edit 10 of 10: failed: missing."),
+            "Summary should always include the failed edit: {summary}"
+        );
+        assert!(
+            !summary.contains("Edit 7 of 10: matched exactly once."),
+            "Summary should omit excess matched status lines: {summary}"
+        );
     }
 
     #[test]
