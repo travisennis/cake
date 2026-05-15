@@ -36,13 +36,13 @@ rust_workflow = re.search(
     command,
 )
 rust_error = re.search(
-    r"(error\[E[0-9]{4}\]|panicked at|test result: FAILED|clippy|rustfmt|could not compile|failed to run custom build command)",
+    r"(error\[E[0-9]{4}\]|panicked at|test result: FAILED|could not compile|failed to run custom build command)",
     output,
     re.IGNORECASE,
 )
 nonzero_exit = re.search(r"\[exit:(?!0\b)[0-9]+", output)
 
-if not ((rust_workflow and nonzero_exit) or rust_error):
+if not (nonzero_exit and (rust_workflow or rust_error)):
     sys.exit(0)
 
 context = (
