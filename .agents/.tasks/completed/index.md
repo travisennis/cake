@@ -10,7 +10,7 @@ Completed tasks are retained for history and stable task-id lookup.
 - Pending: 0
 - Blocked: 0
 - Tracking: 0
-- Completed: 104
+- Completed: 105
 
 ## Tasks
 
@@ -95,6 +95,7 @@ Completed tasks are retained for history and stable task-id lookup.
 | [084](084.md) | Use a Shared Duration Formatting Helper | Completed | P3 | S | - | - |
 | [085](085.md) | Make Human-Readable Size Formatting Less Clever | Completed | P3 | S | - | - |
 | [086](086.md) | Flatten format_api_error_body | Completed | P3 | S | - | - |
+| [088](088.md) | Clean Up Dead Code Allows | Completed | P3 | S | - | - |
 | [089](089.md) | Rationalize Clippy Allow Policy | Completed | P3 | M | - | Resolved in same PR as 110 with 107. |
 | [107](107.md) | Reconsider Missing Docs Lint Policy | Completed | P3 | S | - | Resolved in same PR as 110 with 089. |
 | [110](110.md) | Apply Stricter Clippy Configuration from External Research | Completed | P2 | M | - | Research: clippy-stricter-config; related: 089, 107 (both completed together) |

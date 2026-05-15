@@ -1667,7 +1667,6 @@ mod error_tests {
         let source_path = tmp.path().join("hooks.json");
         let loaded = LoadedHooks {
             groups: vec![HookGroup {
-                source_path: source_path.clone(),
                 event: HookEvent::PreToolUse,
                 matcher: HookMatcher::All,
                 hooks: vec![HookCommand {

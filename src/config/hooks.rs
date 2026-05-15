@@ -31,8 +31,6 @@ impl LoadedHooks {
 
 #[derive(Debug, Clone)]
 pub struct HookGroup {
-    #[expect(dead_code, reason = "used in test assertions")]
-    pub source_path: PathBuf,
     pub event: HookEvent,
     pub matcher: HookMatcher,
     pub hooks: Vec<HookCommand>,
@@ -292,7 +290,6 @@ impl HooksLoader {
                         .collect::<Result<Vec<_>, _>>()?;
 
                     loaded.groups.push(HookGroup {
-                        source_path: path.to_path_buf(),
                         event,
                         matcher: HookMatcher::parse(entry.matcher.as_deref(), event),
                         hooks,

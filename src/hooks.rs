@@ -768,11 +768,10 @@ mod tests {
             timeout: Duration::from_secs(2),
             fail_closed,
             status_message: None,
-            source_path: source_path.clone(),
+            source_path,
         };
         let loaded = LoadedHooks {
             groups: vec![HookGroup {
-                source_path,
                 event: HookEvent::PreToolUse,
                 matcher: HookMatcher::All,
                 hooks: vec![command],
@@ -872,11 +871,10 @@ mod tests {
             timeout: Duration::from_secs(2),
             fail_closed: false,
             status_message: None,
-            source_path: source_path.clone(),
+            source_path,
         };
         let loaded = LoadedHooks {
             groups: vec![HookGroup {
-                source_path,
                 event: HookEvent::PostToolUse,
                 matcher: HookMatcher::All,
                 hooks: vec![command],
