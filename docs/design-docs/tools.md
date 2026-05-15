@@ -272,13 +272,14 @@ Lines 1-100/500
 - Line ending preservation (LF/CRLF)
 - UTF-8 BOM handling
 - Exact match validation (including whitespace)
+- Ambiguous-match diagnostics with capped, line-numbered candidate contexts
 - Delete support (empty `newText`)
 - Binary file detection
 - Unified diff output showing changes
 
 **Error Cases**:
 - `old_text` not found (with edit number)
-- Multiple matches for `old_text` (must be unique)
+- Multiple matches for `old_text` (must be unique; includes candidate contexts)
 - `old_text` == `new_text` (no-op)
 - Overlapping edits (with edit numbers)
 - Too many edits (> 10)
@@ -354,7 +355,7 @@ Error messages are designed to be:
 
 Examples:
 - `"Path '/etc/passwd' is outside the working directory"`
-- `"old_text matches 3 locations in file: add more context or set replace_all"`
+- `"old_text matches 3 locations but must match exactly 1"` with capped, line-numbered candidate contexts
 - `"Binary file detected: cannot edit"`
 
 ## Testing

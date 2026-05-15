@@ -252,12 +252,14 @@ fn preflight_edits(
         }
 
         if occurrences.len() > 1 {
+            let contexts = ambiguous_match_contexts(&normalized_content.content, &occurrences);
             return Err(format!(
-                "Edit {} of {} failed in {}: old_text matches {} locations but must match exactly 1.\n{}\nProvide a more specific old_text that includes more surrounding context.",
+                "Edit {} of {} failed in {}: old_text matches {} locations but must match exactly 1.\nCandidate match contexts:\n{}\n{}\nProvide a more specific old_text that includes more surrounding context.",
                 edit_index,
                 total,
                 path.display(),
                 occurrences.len(),
+                contexts,
                 atomic_rollback_notice(total),
             ));
         }
@@ -305,6 +307,66 @@ const fn atomic_rollback_notice(total: usize) -> &'static str {
     } else {
         "No edits were applied; the file is unchanged."
     }
+}
+
+/// Render compact, capped snippets for ambiguous matches so callers can make
+/// the next `old_text` more specific without re-reading the whole file.
+fn ambiguous_match_contexts(content: &str, occurrences: &[usize]) -> String {
+    const CONTEXT_RADIUS: usize = 1;
+    const MAX_CANDIDATES: usize = 5;
+    const MAX_LINE_LEN: usize = 160;
+
+    let lines: Vec<&str> = content.lines().collect();
+    if lines.is_empty() {
+        return "  (no line context available)".to_string();
+    }
+
+    let mut out = String::new();
+    for (candidate_index, occurrence) in occurrences.iter().take(MAX_CANDIDATES).enumerate() {
+        let line_index = line_index_for_offset(content, *occurrence).min(lines.len() - 1);
+        let start = line_index.saturating_sub(CONTEXT_RADIUS);
+        let end = (line_index + CONTEXT_RADIUS + 1).min(lines.len());
+
+        if candidate_index > 0 {
+            out.push('\n');
+        }
+        _ = writeln!(
+            out,
+            "Match {} at line {}:",
+            candidate_index + 1,
+            line_index + 1
+        );
+
+        for (offset, line) in lines[start..end].iter().enumerate() {
+            let current_index = start + offset;
+            let marker = if current_index == line_index {
+                ">"
+            } else {
+                " "
+            };
+            let truncated = truncate_to_chars(line, MAX_LINE_LEN);
+            _ = writeln!(out, "{marker} {:>5} | {truncated}", current_index + 1);
+        }
+    }
+
+    if occurrences.len() > MAX_CANDIDATES {
+        _ = writeln!(
+            out,
+            "\nShowing first {MAX_CANDIDATES} of {} matches.",
+            occurrences.len()
+        );
+    }
+
+    out.trim_end_matches('\n').to_string()
+}
+
+fn line_index_for_offset(content: &str, offset: usize) -> usize {
+    content
+        .as_bytes()
+        .iter()
+        .take(offset)
+        .filter(|byte| **byte == b'\n')
+        .count()
 }
 
 /// Best-effort: pick the line in `content` whose token overlap with the first
@@ -660,6 +722,51 @@ mod tests {
             err.contains("matches 2 locations"),
             "Error should mention multiple matches: {err}"
         );
+        assert!(
+            err.contains("Candidate match contexts"),
+            "Error should include candidate contexts: {err}"
+        );
+        assert!(
+            err.contains("Match 1 at line 1") && err.contains("Match 2 at line 2"),
+            "Error should identify candidate line numbers: {err}"
+        );
+        assert!(
+            err.contains(">     1 | Hello world") && err.contains(">     2 | Goodbye world"),
+            "Error should include line-numbered matching snippets: {err}"
+        );
+    }
+
+    #[test]
+    fn ambiguous_match_contexts_are_capped() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+        let original = "target 1\ntarget 2\ntarget 3\ntarget 4\ntarget 5\ntarget 6\n";
+        fs::write(&file_path, original).unwrap();
+
+        let args = serde_json::json!({
+            "path": file_path.to_str().unwrap(),
+            "edits": [
+                { "old_text": "target", "new_text": "replacement" }
+            ]
+        })
+        .to_string();
+
+        let err = execute_edit(&ToolContext::from_current_process(), &args).unwrap_err();
+        assert!(
+            err.contains("matches 6 locations"),
+            "Error should report the full match count: {err}"
+        );
+        assert!(
+            err.contains("Showing first 5 of 6 matches."),
+            "Error should explain the candidate cap: {err}"
+        );
+        assert!(
+            err.contains("Match 5 at line 5") && !err.contains("Match 6 at line 6"),
+            "Error should include only the capped candidate list: {err}"
+        );
+
+        let content = fs::read_to_string(&file_path).unwrap();
+        assert_eq!(content, original, "File should be unchanged after failure");
     }
 
     #[test]
