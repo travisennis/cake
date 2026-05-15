@@ -32,6 +32,9 @@ cargo test
 # Run tests for a specific module
 cargo test <module_name>
 
+# Check test code without running tests
+cargo check --tests
+
 # Run tests with coverage
 just coverage
 
@@ -58,7 +61,14 @@ just rust-version-check
 
 ## Agent Instructions
 
-- Run the `Full CI check` command when you complete a task that invovles code, config or dependecy changes to make sure the code is correct.
+- Run the `Full CI check` command when you complete a task that involves code, config, or dependency changes to make sure the code is correct.
+- This is a binary-only crate. Do not run `cargo test --lib`; there is no library target. Use `cargo test <module_or_test_name>` for targeted tests, or `cargo test` for the full test suite.
+- When changing test fixtures, test-only code, struct literals used in tests, or `#[cfg(test)]` modules, run `cargo check --tests` before relying on `cargo build` or `cargo check`. Plain `cargo build` and `cargo check` do not validate this project's test code.
+- For Rust code changes, use this verification sequence:
+  1. Run the narrowest useful check first, such as `cargo check --tests`, `cargo test <module_or_test_name>`, or `cargo test`.
+  2. Run `cargo fmt` after code edits.
+  3. Run `just ci` before final handoff or commit.
+- When a task includes committing and task-status updates, commit the intended code/task changes together unless the user asks for separate commits. After committing and moving or regenerating task files, run `git status --short` before the final response and report any remaining uncommitted or untracked files.
 - When asked to create, choose, update, or work on a task, first read `.agents/TASKS.md`, then use `.agents/.tasks/index.md` as the task queue and open the specific task file before acting.
 - When asked to create, update, organize, or use research, first read `.agents/RESEARCH.md`, then use `.agents/.research/index.md` as the research map and open the relevant research file before acting.
 - Do not commit or push code unless explicitly asked to.
