@@ -3,6 +3,7 @@
 ## Project Overview
 
 cake is an AI coding assistant CLI that:
+
 - Written with Rust 2024 edition with Tokio async runtime
 - Binary-only CLI. Not a library.
 - Uses clap for CLI parsing, anyhow/thiserror for error, tracing for logging
@@ -52,6 +53,7 @@ just ci
 # Verify Rust toolchain pins are synchronized
 just rust-version-check
 ```
+
 ---
 
 ## Agent Instructions
@@ -73,19 +75,19 @@ This project uses [Conventional Commits](https://www.conventionalcommits.org/). 
 
 **Recommended Scopes** (aligned with architecture):
 
-| Scope | Description |
-|-------|-------------|
-| `cli` | Command-line interface and argument parsing |
-| `agent` | Agent orchestration, conversation loop, tool execution |
-| `responses` | Responses API backend |
-| `chat` | Chat Completions API backend |
-| `tools` | Tool definitions (Bash, Read, Edit, Write, etc.) |
-| `sandbox` | Sandbox implementations (Seatbelt, Landlock) |
-| `config` | Configuration, sessions, data directory |
-| `session` | Session persistence and management |
-| `model` | Model configuration and API types |
-| `prompts` | System prompt construction, AGENTS.md integration |
-| `logger` | Logging configuration |
+| Scope       | Description                                            |
+| ----------- | ------------------------------------------------------ |
+| `cli`       | Command-line interface and argument parsing            |
+| `agent`     | Agent orchestration, conversation loop, tool execution |
+| `responses` | Responses API backend                                  |
+| `chat`      | Chat Completions API backend                           |
+| `tools`     | Tool definitions (Bash, Read, Edit, Write, etc.)       |
+| `sandbox`   | Sandbox implementations (Seatbelt, Landlock)           |
+| `config`    | Configuration, sessions, data directory                |
+| `session`   | Session persistence and management                     |
+| `model`     | Model configuration and API types                      |
+| `prompts`   | System prompt construction, AGENTS.md integration      |
+| `logger`    | Logging configuration                                  |
 
 ---
 
@@ -93,6 +95,11 @@ This project uses [Conventional Commits](https://www.conventionalcommits.org/). 
 
 - **Error Handling**: Use `thiserror` for custom errors, `anyhow` for application errors
 - **Async**: Prefer `async fn` with Tokio; use `?` for error propagation
+- **Dead Code Suppression**: Follow this ordered policy for suppressing dead-code warnings:
+  1. **Default**: Delete dead code. If a function, method, field, or type is unused, remove it.
+  2. **Acceptable**: `#[cfg(test)]` for items that are only useful from `#[cfg(test)]` callers (test fixtures, test-only constructors). Do not use `#[cfg(test)]` on `pub fn` items on public types; use `pub(crate)` for test-only accessors instead.
+  3. **Last resort**: `#[expect(dead_code, reason = "...")]` only for serde struct fields that must exist for deserialization to succeed but are not read by application logic. The reason must state this explicitly: `reason = "field required for serde deserialization; not read by application code"`. Do not use `#[expect(dead_code, ...)]` for any other purpose.
+  - `#[allow(dead_code)]` is forbidden project-wide. The `allow_attributes` and `allow_attributes_without_reason` lints in `Cargo.toml` enforce this at compile time.
 
 ---
 

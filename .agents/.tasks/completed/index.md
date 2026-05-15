@@ -10,7 +10,7 @@ Completed tasks are retained for history and stable task-id lookup.
 - Pending: 0
 - Blocked: 0
 - Tracking: 0
-- Completed: 93
+- Completed: 94
 
 ## Tasks
 
@@ -109,3 +109,4 @@ Completed tasks are retained for history and stable task-id lookup.
 | [124d](124d.md) | Replace Module-Wide `string_slice` Suppression in skills.rs | Completed | P1 | S | - | - |
 | [125](125.md) | Implement Lazy Skill Body Loading at Activation Time | Completed | P1 | L | `.agents/exec-plans/completed/lazy-skill-body-loading.md` | From code review of 110/3cc2e73 |
 | [126](126.md) | Remove Test-Only `Agent::activated_skills` Accessor | Completed | P1 | S | - | From code review of 110/3cc2e73 |
+| [127](127.md) | Document and Enforce Dead-Code Suppression Policy | Completed | P1 | S | - | From code review of 110/3cc2e73; interacts with 123, 125, 126, 130 |
