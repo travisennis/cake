@@ -7,7 +7,7 @@ Active tasks include open, pending, blocked, and tracking work.
 ## Status Summary
 
 - Open: 1
-- Pending: 35
+- Pending: 43
 - Blocked: 12
 - Tracking: 0
 - Completed: 0
@@ -64,3 +64,11 @@ Active tasks include open, pending, blocked, and tracking work.
 | [135](135.md) | Prefer Focused Checks Before Final CI in Deslop Guidance | Pending | P3 | XS | - | - |
 | [139](139.md) | Add Structured Bulk Edit Support for Mechanical Transformations | Pending | P2 | M | - | - |
 | [140](140.md) | Harden Edit Schema Guidance Against Malformed Arguments | Pending | P2 | S | - | - |
+| [141](141.md) | Prevent Bash Sandbox False Positives from Command Output | Pending | P1 | M | - | - |
+| [142](142.md) | Add Bash Command Lint Hints for Common Agent Footguns | Pending | P2 | M | - | - |
+| [143](143.md) | Improve Read Tool Range Defaults When start_line Is Provided | Pending | P2 | S | - | - |
+| [144](144.md) | Require Final Dirty Worktree Reporting After Commits | Pending | P2 | S | - | - |
+| [145](145.md) | Add Platform Verification Guidance for cfg-Sensitive Changes | Pending | P2 | M | - | - |
+| [146](146.md) | Compact Large Tool Outputs Before Adding to Model Context | Pending | P2 | L | - | - |
+| [147](147.md) | Clarify Hook Event Decision Semantics in Session Records | Pending | P3 | S | - | - |
+| [148](148.md) | Make Deslop Passes Produce Evidence-Backed Results | Pending | P3 | S | - | 135 |
