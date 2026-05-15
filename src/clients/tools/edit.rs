@@ -22,7 +22,7 @@ pub(super) fn edit_tool() -> super::Tool {
     super::Tool {
         type_: "function".to_string(),
         name: "Edit".to_string(),
-        description: "Edit text in files using literal search-and-replace. The set of edits is atomic: all edits in a single call succeed together, or none are applied.".to_string(),
+        description: "Edit text in files using literal search-and-replace. The set of meaningful edits is atomic: all non-no-op edits in a single call succeed together, or none are applied. Edits with identical old_text and new_text are skipped and reported as no-ops.".to_string(),
         parameters: serde_json::json!({
             "type": "object",
             "properties": {
@@ -32,7 +32,7 @@ pub(super) fn edit_tool() -> super::Tool {
                 },
                 "edits": {
                     "type": "array",
-                    "description": "The edits to make to the file.",
+                    "description": "The edits to make to the file. Edits with identical old_text and new_text are no-ops; they are skipped and reported without changing the file.",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -98,6 +98,13 @@ struct MatchedEdit {
     edit_index: usize,
 }
 
+/// Preflight result containing meaningful matches and explicitly skipped no-ops.
+#[derive(Debug)]
+struct PreflightedEdits {
+    matched_edits: Vec<MatchedEdit>,
+    skipped_noop_indexes: Vec<usize>,
+}
+
 /// Normalized content with byte offsets back to the original string.
 #[derive(Debug)]
 struct NormalizedContent {
@@ -141,16 +148,6 @@ pub(super) fn execute_edit(
         ));
     }
 
-    // Check for no-op edits
-    for (i, edit) in args.edits.iter().enumerate() {
-        if edit.old_text == edit.new_text {
-            return Err(format!(
-                "Edit {}: old_text and new_text are identical — no changes needed",
-                i + 1
-            ));
-        }
-    }
-
     // Validate and canonicalize the path (ensures it's not read-only)
     let path = validate_path_for_write(tool_context, &args.path)?;
 
@@ -185,7 +182,18 @@ pub(super) fn execute_edit(
     let normalized_content = normalize_crlf_line_endings(content);
 
     // Preflight validation: find all match positions
-    let matched_edits = preflight_edits(&args.edits, &normalized_content, line_ending, &path)?;
+    let preflighted_edits = preflight_edits(&args.edits, &normalized_content, line_ending, &path)?;
+    let matched_edits = preflighted_edits.matched_edits;
+    let skipped_noop_indexes = preflighted_edits.skipped_noop_indexes;
+
+    if matched_edits.is_empty() {
+        let result = format!(
+            "{}\nNo changes made to: {}",
+            skipped_noop_summary(&skipped_noop_indexes, args.edits.len()),
+            path.display()
+        );
+        return Ok(super::ToolResult { output: result });
+    }
 
     // Apply edits in reverse order (highest position first)
     let new_content = apply_edits_reverse_order(content, &matched_edits);
@@ -200,11 +208,20 @@ pub(super) fn execute_edit(
     // Generate diff output
     let diff = generate_unified_diff(&restore_bom(content.to_string(), bom), &new_content, &path);
 
+    let skipped_noop_message = if skipped_noop_indexes.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n{}",
+            skipped_noop_summary(&skipped_noop_indexes, args.edits.len())
+        )
+    };
     let result = format!(
-        "Applied {} edit{} to: {}\n{}",
+        "Applied {} edit{} to: {}{}\n{}",
         matched_edits.len(),
         if matched_edits.len() == 1 { "" } else { "s" },
         path.display(),
+        skipped_noop_message,
         diff
     );
 
@@ -221,12 +238,18 @@ fn preflight_edits(
     normalized_content: &NormalizedContent,
     line_ending: LineEnding,
     path: &Path,
-) -> Result<Vec<MatchedEdit>, String> {
+) -> Result<PreflightedEdits, String> {
     let total = edits.len();
     let mut matched_edits = Vec::with_capacity(total);
+    let mut skipped_noop_indexes = Vec::new();
 
     for (i, edit) in edits.iter().enumerate() {
         let edit_index = i + 1; // 1-based for error messages
+
+        if edit.old_text == edit.new_text {
+            skipped_noop_indexes.push(edit_index);
+            continue;
+        }
 
         // Count occurrences
         let occurrences: Vec<usize> = normalized_content
@@ -239,6 +262,7 @@ fn preflight_edits(
             let preflight_summary = preflight_failure_summary(
                 total,
                 &matched_edits,
+                &skipped_noop_indexes,
                 edit_index,
                 "failed: could not find the exact text to replace",
             );
@@ -264,8 +288,13 @@ fn preflight_edits(
             let contexts = ambiguous_match_contexts(&normalized_content.content, &occurrences);
             let failure_status =
                 format!("failed: old_text matched {} locations", occurrences.len());
-            let preflight_summary =
-                preflight_failure_summary(total, &matched_edits, edit_index, &failure_status);
+            let preflight_summary = preflight_failure_summary(
+                total,
+                &matched_edits,
+                &skipped_noop_indexes,
+                edit_index,
+                &failure_status,
+            );
             return Err(format!(
                 "Edit {} of {} failed in {}: old_text matches {} locations but must match exactly 1.\nCandidate match contexts:\n{}{}\n{}\nProvide a more specific old_text that includes more surrounding context.",
                 edit_index,
@@ -291,8 +320,20 @@ fn preflight_edits(
 
     // Sort by position for overlap detection
     matched_edits.sort_by_key(|e| e.index);
+    reject_overlapping_edits(total, &matched_edits, &skipped_noop_indexes, path)?;
 
-    // Check for overlapping edits
+    Ok(PreflightedEdits {
+        matched_edits,
+        skipped_noop_indexes,
+    })
+}
+
+fn reject_overlapping_edits(
+    total: usize,
+    matched_edits: &[MatchedEdit],
+    skipped_noop_indexes: &[usize],
+    path: &Path,
+) -> Result<(), String> {
     for window in matched_edits.windows(2) {
         let first = &window[0];
         let second = &window[1];
@@ -305,7 +346,8 @@ fn preflight_edits(
             );
             let preflight_summary = preflight_failure_summary(
                 total,
-                &matched_edits,
+                matched_edits,
+                skipped_noop_indexes,
                 second.edit_index,
                 &failure_status,
             );
@@ -321,13 +363,14 @@ fn preflight_edits(
         }
     }
 
-    Ok(matched_edits)
+    Ok(())
 }
 
 /// Render a compact per-edit status block for failed multi-edit preflights.
 fn preflight_failure_summary(
     total: usize,
     matched_edits: &[MatchedEdit],
+    skipped_noop_indexes: &[usize],
     failed_edit_index: usize,
     failed_status: &str,
 ) -> String {
@@ -341,9 +384,18 @@ fn preflight_failure_summary(
         .collect();
     matched_indexes.sort_unstable();
 
-    let reserved_status_lines = 1 + usize::from(failed_edit_index < total);
+    let reserved_status_lines =
+        1 + usize::from(failed_edit_index < total) + usize::from(!skipped_noop_indexes.is_empty());
     let available_matched_lines = MAX_PREFLIGHT_STATUS_LINES.saturating_sub(reserved_status_lines);
     let mut out = String::from("\nPreflight summary:");
+
+    if !skipped_noop_indexes.is_empty() {
+        _ = write!(
+            out,
+            "\n- {}",
+            skipped_noop_status(skipped_noop_indexes, total)
+        );
+    }
 
     let shown_matched = if matched_indexes.len() > available_matched_lines {
         available_matched_lines.saturating_sub(1)
@@ -390,6 +442,38 @@ fn preflight_failure_summary(
 
 const fn plural_suffix(count: usize) -> &'static str {
     if count == 1 { "" } else { "s" }
+}
+
+fn skipped_noop_summary(skipped_noop_indexes: &[usize], total: usize) -> String {
+    format!(
+        "Skipped {} no-op edit{}: {}",
+        skipped_noop_indexes.len(),
+        plural_suffix(skipped_noop_indexes.len()),
+        skipped_noop_status(skipped_noop_indexes, total)
+    )
+}
+
+fn skipped_noop_status(skipped_noop_indexes: &[usize], total: usize) -> String {
+    format!(
+        "Edit{} {} of {total}: old_text and new_text were identical.",
+        plural_suffix(skipped_noop_indexes.len()),
+        format_edit_index_list(skipped_noop_indexes)
+    )
+}
+
+fn format_edit_index_list(edit_indexes: &[usize]) -> String {
+    let mut out = String::new();
+    for (i, edit_index) in edit_indexes.iter().enumerate() {
+        if i > 0 {
+            if i == edit_indexes.len() - 1 {
+                out.push_str(" and ");
+            } else {
+                out.push_str(", ");
+            }
+        }
+        _ = write!(out, "{edit_index}");
+    }
+    out
 }
 
 /// Sentence describing the atomic, all-or-nothing semantics so callers know
@@ -880,10 +964,11 @@ mod tests {
     }
 
     #[test]
-    fn error_on_identical_old_and_new_text() {
+    fn single_noop_edit_is_skipped_without_changing_file() {
         let temp_dir = TempDir::new().unwrap();
         let file_path = temp_dir.path().join("test.txt");
-        fs::write(&file_path, "Hello world").unwrap();
+        let original = "Hello world";
+        fs::write(&file_path, original).unwrap();
 
         let args = serde_json::json!({
             "path": file_path.to_str().unwrap(),
@@ -893,13 +978,84 @@ mod tests {
         })
         .to_string();
 
-        let result = execute_edit(&ToolContext::from_current_process(), &args);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
+        let result = execute_edit(&ToolContext::from_current_process(), &args).unwrap();
         assert!(
-            err.contains("identical"),
-            "Error should mention identical: {err}"
+            result.output.contains("Skipped 1 no-op edit"),
+            "Result should report the skipped no-op: {}",
+            result.output
         );
+        assert!(
+            result.output.contains("No changes made"),
+            "Result should state that no changes were made: {}",
+            result.output
+        );
+        assert_eq!(fs::read_to_string(&file_path).unwrap(), original);
+    }
+
+    #[test]
+    fn mixed_noop_and_meaningful_batch_applies_meaningful_edit() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+        fs::write(&file_path, "alpha\nbeta\ngamma\n").unwrap();
+
+        let args = serde_json::json!({
+            "path": file_path.to_str().unwrap(),
+            "edits": [
+                { "old_text": "alpha", "new_text": "ALPHA" },
+                { "old_text": "beta", "new_text": "beta" }
+            ]
+        })
+        .to_string();
+
+        let result = execute_edit(&ToolContext::from_current_process(), &args).unwrap();
+        assert!(
+            result.output.contains("Applied 1 edit"),
+            "Result should report the meaningful edit: {}",
+            result.output
+        );
+        assert!(
+            result.output.contains("Skipped 1 no-op edit"),
+            "Result should report the skipped no-op: {}",
+            result.output
+        );
+
+        let content = fs::read_to_string(&file_path).unwrap();
+        assert_eq!(content, "ALPHA\nbeta\ngamma\n");
+    }
+
+    #[test]
+    fn mixed_noop_and_failed_meaningful_batch_leaves_file_unchanged() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+        let original = "alpha\nbeta\ngamma\n";
+        fs::write(&file_path, original).unwrap();
+
+        let args = serde_json::json!({
+            "path": file_path.to_str().unwrap(),
+            "edits": [
+                { "old_text": "alpha", "new_text": "ALPHA" },
+                { "old_text": "beta", "new_text": "beta" },
+                { "old_text": "delta", "new_text": "DELTA" }
+            ]
+        })
+        .to_string();
+
+        let err = execute_edit(&ToolContext::from_current_process(), &args).unwrap_err();
+        assert!(
+            err.contains("Edit 3 of 3"),
+            "Error should identify the failing meaningful edit: {err}"
+        );
+        assert!(
+            err.contains("Edit 2 of 3: old_text and new_text were identical."),
+            "Error should report the skipped no-op: {err}"
+        );
+        assert!(
+            err.contains("No edits were applied"),
+            "Error should state that meaningful edits were rolled back: {err}"
+        );
+
+        let content = fs::read_to_string(&file_path).unwrap();
+        assert_eq!(content, original, "File should be unchanged after failure");
     }
 
     // =========================================================================
@@ -1363,7 +1519,7 @@ mod tests {
             })
             .collect();
 
-        let summary = preflight_failure_summary(10, &matched_edits, 10, "failed: missing");
+        let summary = preflight_failure_summary(10, &matched_edits, &[], 10, "failed: missing");
         assert!(
             summary.contains("Edit 1 of 10: matched exactly once."),
             "Summary should include early matched edits: {summary}"
