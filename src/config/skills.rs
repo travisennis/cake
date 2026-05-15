@@ -919,39 +919,45 @@ name: something
 
     #[test]
     fn discover_skills_finds_configured_skills() {
-        let tmp = TempDir::new().unwrap();
-        let configured_dir = TempDir::new().unwrap();
-        create_skill_file(configured_dir.path(), "team-skill", "Team skill");
+        let home = TempDir::new().unwrap();
+        temp_env::with_var("HOME", Some(home.path()), || {
+            let tmp = TempDir::new().unwrap();
+            let configured_dir = TempDir::new().unwrap();
+            create_skill_file(configured_dir.path(), "team-skill", "Team skill");
 
-        let catalog =
-            discover_skills_with_paths(tmp.path(), &[configured_dir.path().to_path_buf()]);
+            let catalog =
+                discover_skills_with_paths(tmp.path(), &[configured_dir.path().to_path_buf()]);
 
-        assert_eq!(catalog.skills.len(), 1);
-        assert_eq!(catalog.skills[0].name, "team-skill");
-        assert_eq!(catalog.skills[0].scope, SkillScope::Configured);
+            assert_eq!(catalog.skills.len(), 1);
+            assert_eq!(catalog.skills[0].name, "team-skill");
+            assert_eq!(catalog.skills[0].scope, SkillScope::Configured);
+        });
     }
 
     #[test]
     fn discover_skills_project_shadows_configured_skills() {
-        let tmp = TempDir::new().unwrap();
-        let agents_dir = tmp.path().join(".agents").join("skills");
-        std::fs::create_dir_all(&agents_dir).unwrap();
-        create_skill_file(&agents_dir, "shared-skill", "Project skill");
+        let home = TempDir::new().unwrap();
+        temp_env::with_var("HOME", Some(home.path()), || {
+            let tmp = TempDir::new().unwrap();
+            let agents_dir = tmp.path().join(".agents").join("skills");
+            std::fs::create_dir_all(&agents_dir).unwrap();
+            create_skill_file(&agents_dir, "shared-skill", "Project skill");
 
-        let configured_dir = TempDir::new().unwrap();
-        create_skill_file(configured_dir.path(), "shared-skill", "Configured skill");
+            let configured_dir = TempDir::new().unwrap();
+            create_skill_file(configured_dir.path(), "shared-skill", "Configured skill");
 
-        let catalog =
-            discover_skills_with_paths(tmp.path(), &[configured_dir.path().to_path_buf()]);
+            let catalog =
+                discover_skills_with_paths(tmp.path(), &[configured_dir.path().to_path_buf()]);
 
-        assert_eq!(catalog.skills.len(), 1);
-        assert_eq!(catalog.skills[0].scope, SkillScope::Project);
-        assert!(
-            catalog
-                .diagnostics
-                .iter()
-                .any(|d| d.message.contains("shadowed by project skill"))
-        );
+            assert_eq!(catalog.skills.len(), 1);
+            assert_eq!(catalog.skills[0].scope, SkillScope::Project);
+            assert!(
+                catalog
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.message.contains("shadowed by project skill"))
+            );
+        });
     }
 
     #[test]
