@@ -219,10 +219,10 @@ impl MacOsSandbox {
         profile.comment("Allow reading ancestor directories of allowed paths");
         let mut ancestor_set = std::collections::BTreeSet::new();
         for path in config
-            .read_write
+            .writable
             .iter()
-            .chain(&config.read_only_exec)
-            .chain(&config.read_only)
+            .chain(&config.system_paths)
+            .chain(&config.readable)
         {
             let mut ancestor = path.as_path();
             while let Some(parent) = ancestor.parent() {
@@ -238,27 +238,27 @@ impl MacOsSandbox {
         profile.blank();
 
         // Read-write access for working directory and temp dirs
-        if !config.read_write.is_empty() {
+        if !config.writable.is_empty() {
             profile.comment("Read-write access: working directory, temp dirs, and toolchains");
-            for path in &config.read_write {
+            for path in &config.writable {
                 profile.allow_subpath("file-read* file-write*", path);
             }
             profile.blank();
         }
 
         // Read + execute access for system paths
-        if !config.read_only_exec.is_empty() {
+        if !config.system_paths.is_empty() {
             profile.comment("Read + execute access: system paths");
-            for path in &config.read_only_exec {
+            for path in &config.system_paths {
                 profile.allow_subpath("file-read*", path);
             }
             profile.blank();
         }
 
         // Read-only access for config/device paths
-        if !config.read_only.is_empty() {
+        if !config.readable.is_empty() {
             profile.comment("Read-only access: config and device paths");
-            for path in &config.read_only {
+            for path in &config.readable {
                 profile.allow_subpath("file-read*", path);
             }
             profile.blank();
@@ -435,9 +435,9 @@ mod tests {
 
     fn test_config() -> SandboxConfig {
         SandboxConfig {
-            read_write: vec![PathBuf::from("/workspace")],
-            read_only_exec: vec![PathBuf::from("/usr"), PathBuf::from("/bin")],
-            read_only: vec![PathBuf::from("/etc")],
+            writable: vec![PathBuf::from("/workspace")],
+            system_paths: vec![PathBuf::from("/usr"), PathBuf::from("/bin")],
+            readable: vec![PathBuf::from("/etc")],
         }
     }
 
@@ -460,9 +460,9 @@ mod tests {
     #[test]
     fn test_profile_allows_read_write_paths() {
         let config = SandboxConfig {
-            read_write: vec![PathBuf::from("/workspace"), PathBuf::from("/tmp")],
-            read_only_exec: vec![],
-            read_only: vec![],
+            writable: vec![PathBuf::from("/workspace"), PathBuf::from("/tmp")],
+            system_paths: vec![],
+            readable: vec![],
         };
 
         let profile = MacOsSandbox::generate_profile(&config);
@@ -472,11 +472,11 @@ mod tests {
     }
 
     #[test]
-    fn test_profile_allows_read_only_exec_paths() {
+    fn test_profile_allows_system_paths_with_read_and_exec() {
         let config = SandboxConfig {
-            read_write: vec![],
-            read_only_exec: vec![PathBuf::from("/usr"), PathBuf::from("/bin")],
-            read_only: vec![],
+            writable: vec![],
+            system_paths: vec![PathBuf::from("/usr"), PathBuf::from("/bin")],
+            readable: vec![],
         };
 
         let profile = MacOsSandbox::generate_profile(&config);
@@ -488,9 +488,9 @@ mod tests {
     #[test]
     fn test_profile_allows_read_only_paths() {
         let config = SandboxConfig {
-            read_write: vec![],
-            read_only_exec: vec![],
-            read_only: vec![PathBuf::from("/etc")],
+            writable: vec![],
+            system_paths: vec![],
+            readable: vec![PathBuf::from("/etc")],
         };
 
         let profile = MacOsSandbox::generate_profile(&config);
@@ -685,12 +685,12 @@ mod tests {
     #[test]
     fn test_profile_includes_ancestor_literals_for_all_read_write_paths() {
         let config = SandboxConfig {
-            read_write: vec![
+            writable: vec![
                 PathBuf::from("/workspace/project"),
                 PathBuf::from("/private/var/folders"),
             ],
-            read_only_exec: vec![PathBuf::from("/usr")],
-            read_only: vec![PathBuf::from("/private/etc")],
+            system_paths: vec![PathBuf::from("/usr")],
+            readable: vec![PathBuf::from("/private/etc")],
         };
 
         let profile = MacOsSandbox::generate_profile(&config);

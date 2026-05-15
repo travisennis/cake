@@ -47,7 +47,7 @@ impl LandlockSandbox {
 
         // Add read-write rules for cwd and temp dirs
         let rw_access = AccessFs::from_all(abi);
-        for path in &config.read_write {
+        for path in &config.writable {
             if path.exists() {
                 ruleset = ruleset
                     .add_rules(landlock::path_beneath_rules(&[path], rw_access))
@@ -62,7 +62,7 @@ impl LandlockSandbox {
 
         // Add read-only + exec rules for system paths
         let ro_exec_access = AccessFs::ReadFile | AccessFs::ReadDir | AccessFs::Execute;
-        for path in &config.read_only_exec {
+        for path in &config.system_paths {
             if path.exists() {
                 ruleset = ruleset
                     .add_rules(landlock::path_beneath_rules(&[path], ro_exec_access))
@@ -77,7 +77,7 @@ impl LandlockSandbox {
 
         // Add read-only rules
         let read_access = AccessFs::ReadFile | AccessFs::ReadDir;
-        for path in &config.read_only {
+        for path in &config.readable {
             if path.exists() {
                 ruleset = ruleset
                     .add_rules(landlock::path_beneath_rules(&[path], read_access))
@@ -118,11 +118,7 @@ impl SandboxStrategy for LandlockSandbox {
 
         #[cfg(not(feature = "landlock"))]
         {
-            let _ = (
-                &config.read_write,
-                &config.read_only_exec,
-                &config.read_only,
-            );
+            let _ = (&config.writable, &config.system_paths, &config.readable);
             let _ = command;
             Err(
                 "Linux sandbox unavailable: cake was built without Landlock support. Rebuild \

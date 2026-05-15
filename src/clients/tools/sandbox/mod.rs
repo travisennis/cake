@@ -33,17 +33,13 @@ pub(super) use linux::LandlockSandbox;
 // =============================================================================
 
 #[derive(Clone, Debug)]
-#[expect(
-    clippy::struct_field_names,
-    reason = "field names mirror the struct name for clarity"
-)]
 pub(super) struct SandboxConfig {
     /// Directories with read-write access (cwd, temp dirs)
-    pub read_write: Vec<PathBuf>,
+    pub writable: Vec<PathBuf>,
     /// Directories with read-only + execute access (system paths)
-    pub read_only_exec: Vec<PathBuf>,
+    pub system_paths: Vec<PathBuf>,
     /// Directories with read-only access
-    pub read_only: Vec<PathBuf>,
+    pub readable: Vec<PathBuf>,
 }
 
 impl SandboxConfig {
@@ -70,40 +66,53 @@ impl SandboxConfig {
         settings_dirs: &[std::path::PathBuf],
         skill_dirs: &[std::path::PathBuf],
     ) -> Self {
-        let mut read_write = vec![cwd.to_path_buf()];
+        let mut writable = vec![cwd.to_path_buf()];
 
         // Add temp directories
-        read_write.extend(temp_dirs.iter().cloned());
+        writable.extend(temp_dirs.iter().cloned());
 
         // Add user home toolchain and integration paths
         if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
-            Self::extend_with_toolchain_paths(&mut read_write, &home);
+            Self::extend_with_toolchain_paths(&mut writable, &home);
         }
 
         // Add settings directories from settings.toml as read-write
-        push_dirs_with_canonical(&mut read_write, settings_dirs);
+        push_dirs_with_canonical(&mut writable, settings_dirs);
 
         // Include both original and canonical paths to handle symlinks
         // (e.g., /tmp → /private/tmp on macOS)
-        let read_write = deduplicated_with_canonical(&read_write);
+        let writable = deduplicated_with_canonical(&writable);
 
-        let read_only_exec = Self::get_system_paths();
-        let mut read_only = Self::get_read_only_paths();
+        let system_paths = Self::get_system_paths();
+        let mut readable = Self::get_read_only_paths();
 
         // Add additional directories from --add-dir flag as read-only
-        push_dirs_with_canonical(&mut read_only, additional_dirs);
+        push_dirs_with_canonical(&mut readable, additional_dirs);
 
         // Add skill directories as read-only (so scripts like x-fetch.js can execute)
-        push_dirs_with_canonical(&mut read_only, skill_dirs);
+        push_dirs_with_canonical(&mut readable, skill_dirs);
 
-        Self {
-            read_write,
-            read_only_exec,
-            read_only,
+        let config = Self {
+            writable,
+            system_paths,
+            readable,
+        };
+
+        // On unsupported platforms, no sandbox strategy reads the config
+        // fields. Explicit reads prevent dead_code warnings without relying
+        // on #[expect(dead_code)], which is reserved for serde fields.
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        {
+            let _ = &config.writable;
+            let _ = &config.system_paths;
+            let _ = &config.readable;
         }
+
+        config
     }
 
-    /// Extend `read_write` with paths needed by common toolchains and CLIs.
+    /// Extend the writable paths with directories needed by common toolchains
+    /// and CLIs.
     ///
     /// Patterned after the Safehouse macOS profile (see
     /// `examples/safehouse.custom.generated.sb`). The goal is for cake to
@@ -114,25 +123,25 @@ impl SandboxConfig {
         clippy::too_many_lines,
         reason = "toolchain path discovery covers many language ecosystems"
     )]
-    fn extend_with_toolchain_paths(read_write: &mut Vec<PathBuf>, home: &Path) {
+    fn extend_with_toolchain_paths(writable: &mut Vec<PathBuf>, home: &Path) {
         // Rust: cargo + rustup (env var overrides honored).
         let cargo_home =
             std::env::var_os("CARGO_HOME").map_or_else(|| home.join(".cargo"), PathBuf::from);
         let rustup_home =
             std::env::var_os("RUSTUP_HOME").map_or_else(|| home.join(".rustup"), PathBuf::from);
-        read_write.push(cargo_home);
-        read_write.push(rustup_home);
-        read_write.extend([
+        writable.push(cargo_home);
+        writable.push(rustup_home);
+        writable.extend([
             home.join(".config/cargo"),
             home.join(".cache/cargo"),
             home.join(".cache/sccache"),
         ]);
 
         // Pre-commit hook caches.
-        read_write.push(home.join(".cache/prek"));
+        writable.push(home.join(".cache/prek"));
 
         // SCM CLIs: gh and glab.
-        read_write.extend([
+        writable.extend([
             home.join(".config/gh"),
             home.join(".cache/gh"),
             home.join(".local/share/gh"),
@@ -144,7 +153,7 @@ impl SandboxConfig {
         ]);
 
         // Cross-language runtime managers.
-        read_write.extend([
+        writable.extend([
             // mise
             home.join(".config/mise"),
             home.join(".local/share/mise"),
@@ -171,7 +180,7 @@ impl SandboxConfig {
         ]);
 
         // Node.js ecosystem.
-        read_write.extend([
+        writable.extend([
             // version managers
             home.join(".nvm"),
             home.join(".fnm"),
@@ -212,7 +221,7 @@ impl SandboxConfig {
         ]);
 
         // Bun.
-        read_write.extend([
+        writable.extend([
             home.join(".bun"),
             home.join(".cache/bun"),
             home.join(".local/state/bun"),
@@ -222,20 +231,20 @@ impl SandboxConfig {
         ]);
 
         // Deno.
-        read_write.extend([home.join(".deno"), home.join(".cache/deno")]);
+        writable.extend([home.join(".deno"), home.join(".cache/deno")]);
 
         // Go (env var overrides honored).
         let gopath = std::env::var_os("GOPATH").map_or_else(|| home.join("go"), PathBuf::from);
-        read_write.push(gopath);
+        writable.push(gopath);
         let gomodcache = std::env::var_os("GOMODCACHE").map(PathBuf::from);
         if let Some(p) = gomodcache {
-            read_write.push(p);
+            writable.push(p);
         }
         let gocache = std::env::var_os("GOCACHE").map(PathBuf::from);
         if let Some(p) = gocache {
-            read_write.push(p);
+            writable.push(p);
         }
-        read_write.extend([
+        writable.extend([
             home.join(".cache/go-build"),
             home.join(".config/go"),
             home.join(".cache/golangci-lint"),
@@ -246,7 +255,7 @@ impl SandboxConfig {
         ]);
 
         // Java / JVM toolchains (Maven, Gradle, SBT, Coursier, jenv, sdkman).
-        read_write.extend([
+        writable.extend([
             home.join(".m2"),
             home.join(".gradle"),
             home.join(".ivy2"),
@@ -260,7 +269,7 @@ impl SandboxConfig {
         ]);
 
         // Python: uv, pip, pipx, poetry, pdm, conda, hatch, ruff, mypy, jupyter, pyenv, etc.
-        read_write.extend([
+        writable.extend([
             home.join(".local/bin/uv"),
             home.join(".local/bin/uvx"),
             home.join(".local/share/uv"),
@@ -297,7 +306,7 @@ impl SandboxConfig {
         ]);
 
         // Ruby: rbenv, rvm, gem, bundler, etc.
-        read_write.extend([
+        writable.extend([
             home.join(".rbenv"),
             home.join(".rvm"),
             home.join(".rubies"),
@@ -313,7 +322,7 @@ impl SandboxConfig {
         ]);
 
         // Perl: perlbrew, plenv, cpan(m), local::lib.
-        read_write.extend([
+        writable.extend([
             home.join(".perlbrew"),
             home.join(".plenv"),
             home.join(".cpan"),
@@ -325,7 +334,7 @@ impl SandboxConfig {
         ]);
 
         // PHP / Composer.
-        read_write.extend([
+        writable.extend([
             home.join(".composer"),
             home.join(".config/composer"),
             home.join(".cache/composer"),
@@ -338,7 +347,7 @@ impl SandboxConfig {
 
         // macOS-specific cache and application-support locations under ~/Library.
         #[cfg(target_os = "macos")]
-        read_write.extend([
+        writable.extend([
             // Rust
             home.join("Library/Caches/cargo"),
             home.join("Library/Caches/sccache"),
@@ -605,7 +614,7 @@ mod tests {
                 home.join(".cache/fnm"),
             ] {
                 assert!(
-                    config.read_write.contains(&expected),
+                    config.writable.contains(&expected),
                     "expected read-write sandbox access for {}",
                     expected.display()
                 );
@@ -617,7 +626,7 @@ mod tests {
                 home.join("Library/Application Support/fnm"),
             ] {
                 assert!(
-                    config.read_write.contains(&expected),
+                    config.writable.contains(&expected),
                     "expected read-write sandbox access for {}",
                     expected.display()
                 );
@@ -689,7 +698,7 @@ mod tests {
 
             for expected in cross_platform_expected {
                 assert!(
-                    config.read_write.contains(&expected),
+                    config.writable.contains(&expected),
                     "expected read-write sandbox access for {}",
                     expected.display()
                 );
@@ -710,7 +719,7 @@ mod tests {
                 home.join("Library/Caches/composer"),
             ] {
                 assert!(
-                    config.read_write.contains(&expected),
+                    config.writable.contains(&expected),
                     "expected read-write sandbox access for {}",
                     expected.display()
                 );
