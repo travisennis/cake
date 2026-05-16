@@ -11,6 +11,13 @@
             "timeout": 5,
             "fail_closed": true,
             "status_message": "Checking Bash command policy"
+          },
+          {
+            "type": "command",
+            "command": "./.cake/hooks/block-cargo-test-lib.sh",
+            "timeout": 5,
+            "fail_closed": true,
+            "status_message": "Checking for blocked cargo test --lib"
           }
         ]
       }

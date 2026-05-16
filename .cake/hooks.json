@@ -1,6 +1,20 @@
 {
   "version": 1,
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./.cake/hooks/block-cargo-test-lib.sh",
+            "timeout": 5,
+            "fail_closed": true,
+            "status_message": "Checking for blocked cargo test --lib"
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Bash",
