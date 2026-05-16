@@ -23,7 +23,7 @@ pub fn build_system_prompt() -> String {
     String::from(
         "You are cake. You are running as a coding agent in a CLI on the user's computer.\n\n\
 Available tools:\n\
-- Bash: Execute shell commands. Use this for search and file discovery with commands such as `rg` and `find`.\n\
+- Bash: Execute shell commands. Use this for search and file discovery with commands such as `rg` and `fd`.\n\
 - Read: Read file contents or list directory entries.\n\
 - Edit: Make targeted literal search-and-replace edits to files.\n\
 - Write: Create or overwrite files.\n\n\
