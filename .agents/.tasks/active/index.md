@@ -14,57 +14,57 @@ Active tasks include open, pending, blocked, and tracking work.
 
 ## Tasks
 
-| Task | Title | Status | Priority | Effort | ExecPlan | Depends on |
-| ---- | ----- | ------ | -------- | ------ | -------- | ---------- |
-| [004](004.md) | Fix mtime-Based Newest Session Resolution Fragility | Blocked | - | - | - | - |
-| [005](005.md) | Add CLI Introspection Subcommands | Blocked | - | - | - | - |
-| [006](006.md) | Add Lightweight Spinner/Status Line on stderr by Default | Blocked | - | - | - | - |
-| [007](007.md) | Support --prompt-file for Reading Prompts from Files | Blocked | - | - | - | - |
-| [008](008.md) | Add --output-file Flag with Metadata | Blocked | - | - | - | - |
-| [009](009.md) | Add Session Browsing Commands | Blocked | - | - | - | - |
-| [010](010.md) | Add --dry-run Flag for Cost Estimation | Blocked | - | - | - | - |
-| [011](011.md) | Add --add-file for Injecting Single Files into Context | Blocked | - | - | - | - |
-| [012](012.md) | Add Template Prompts from .cake/prompts/ | Blocked | - | - | - | - |
-| [014](014.md) | Add Task Chaining with --then Flag | Blocked | - | - | - | - |
-| [015](015.md) | Consolidate Per-Function unwrap_used Allow to Module-Level in Tests | Blocked | - | - | - | - |
-| [016](016.md) | Refactor send() and execute_bash() into Smaller Functions | Blocked | - | - | - | - |
-| [030](030.md) | Investigate Session-Level Hook Observability | Pending | - | - | - | - |
-| [090](090.md) | Decide on Tokio Runtime Entry Style | Pending | P3 | S | - | - |
-| [091](091.md) | Clean Up macOS Sandbox String Construction Style | Pending | P3 | M | - | 040 (Seatbelt profile builder) |
-| [092](092.md) | Simplify Binary Ratio Threshold Constants | Pending | P3 | S | - | - |
-| [093](093.md) | Rename with_text_progress to Avoid Builder Semantics | Pending | P3 | S | - | - |
-| [094](094.md) | Simplify Test-Only Bash Sandbox Constructor | Pending | P3 | S | - | - |
-| [095](095.md) | Fix Dead Code in is_allowed_rm_target | Pending | P3 | S | - | - |
-| [096](096.md) | Make Git Branch Delete Detection Parser Safe | Pending | P3 | M | - | - |
-| [097](097.md) | Revisit macOS Sandbox Probe Caching and Cleanup | Pending | P3 | M | - | - |
-| [098](098.md) | Reorganize Type Modules | Pending | P3 | XL | Required before implementation | 049 (Split Agent), 050 (Backend abstraction), 051 (Tool abstraction), 058 (Typed reasoning content), 061 (Consolidate serialization), 062 (DateTime types), 063 (Optional field normalization). Do this last. |
-| [099](099.md) | Remove Library-Style Doctests From Binary-Only Crate | Pending | P3 | S | - | - |
-| [100](100.md) | Decide Linux Landlock Default Feature Policy | Pending | P3 | M | - | - |
-| [101](101.md) | Review Module Size and Ownership Boundaries | Pending | P3 | XL | Required before implementation | 047 (ToolContext), 049 (Split Agent), 050 (Backend abstraction), 051 (Tool abstraction), 052 (Provider strategy), 053 (Typed SessionMode), 054 (Refactor run), 064 (build_messages refactor). Do this after behavior-oriented refactors land. |
-| [102](102.md) | Validate Stream Hook Record Contract | Pending | P3 | M | - | 030 (existing - see notes), 059 (Output sink). Confirm not superseded by 059 once that lands. |
-| [103](103.md) | Add Builder or Fixture Infrastructure for Agent Tests | Pending | P3 | M | - | 066 (Encapsulate Agent fields) |
-| [104](104.md) | Add Structured Provider Header Configuration | Pending | P3 | M | - | 050 (Backend abstraction), 052 (Provider strategy) |
-| [105](105.md) | Improve Unknown or Missing API Field Diagnostics | Pending | P3 | M | - | - |
-| [106](106.md) | Audit Public Module Visibility in Tools | Pending | P3 | S | - | 051 (Tool abstraction) |
-| [108](108.md) | Track Manual Review Findings Without Losing Original Numbers | Pending | P3 | S | - | - |
-| [109](109.md) | Edit tool: CRLF replacement text double-encoding | Open | - | - | - | - |
-| [113](113.md) | Document ResponsesApiInputItem Construction Boundary | Pending | P3 | XS | - | Follows 061 |
-| [114](114.md) | Update conversation-types.md After to_api_input Refactor | Pending | P3 | XS | - | Follows 061 |
-| [115](115.md) | Comment annotations:[] Provider Quirk in ResponsesApiInputItem | Pending | P3 | XS | - | Follows 061 |
-| [117](117.md) | Strengthen Edit Tool Semantics via Lean-Assisted Testing | Pending | P2 | XL | `.agents/exec-plans/active/edit-tool-lean.md` | - |
-| [118](118.md) | Profile and Optimize Cake Performance | Pending | P2 | L | `.agents/exec-plans/active/performance-improvements.md` | - |
-| [119](119.md) | Add Per-Session Telemetry Sidecar | Pending | P2 | XL | `.agents/exec-plans/active/per-session-telemetry-plan.md` | - |
-| [120](120.md) | Add OSC 9;4 Terminal Progress Indicator | Pending | P3 | S | `.agents/exec-plans/active/progress-bar-plan.md` | - |
-| [121](121.md) | Implement User-Defined Toolbox Tools | Pending | P2 | XL | `.agents/exec-plans/active/toolboxes-plan.md` | 050 (Backend abstraction, completed), 051 (Tool abstraction, completed) |
-| [128](128.md) | Remove No-Op `_ = result.as_bytes()` In bash.rs Test | Pending | P3 | XS | - | From code review of 110/3cc2e73 |
-| [129](129.md) | Restore `e.print().ok()` With Localized `unused_result_ok` Expect | Pending | P3 | XS | - | From code review of 110/3cc2e73 |
-| [135](135.md) | Prefer Focused Checks Before Final CI in Deslop Guidance | Pending | P3 | XS | - | - |
-| [139](139.md) | Add Structured Bulk Edit Support for Mechanical Transformations | Pending | P2 | M | - | - |
-| [140](140.md) | Harden Edit Schema Guidance Against Malformed Arguments | Pending | P2 | S | - | - |
-| [142](142.md) | Add Bash Command Lint Hints for Common Agent Footguns | Pending | P2 | M | - | - |
-| [144](144.md) | Require Final Dirty Worktree Reporting After Commits | Pending | P2 | S | - | - |
-| [145](145.md) | Add Platform Verification Guidance for cfg-Sensitive Changes | Pending | P2 | M | - | - |
-| [146](146.md) | Compact Large Tool Outputs Before Adding to Model Context | Pending | P2 | L | - | - |
-| [147](147.md) | Clarify Hook Event Decision Semantics in Session Records | Pending | P3 | S | - | - |
-| [148](148.md) | Make Deslop Passes Produce Evidence-Backed Results | Pending | P3 | S | - | 135 |
-| [150](150.md) | Move Built-In System Prompt to Markdown With Runtime Overrides | Pending | P2 | M | - | - |
+| Task | Title | Status | Priority | Effort | Labels | ExecPlan | Depends on |
+| ---- | ----- | ------ | -------- | ------ | ------ | -------- | ---------- |
+| [004](004.md) | Fix mtime-Based Newest Session Resolution Fragility | Blocked | - | - | - | - | - |
+| [005](005.md) | Add CLI Introspection Subcommands | Blocked | - | - | - | - | - |
+| [006](006.md) | Add Lightweight Spinner/Status Line on stderr by Default | Blocked | - | - | - | - | - |
+| [007](007.md) | Support --prompt-file for Reading Prompts from Files | Blocked | - | - | - | - | - |
+| [008](008.md) | Add --output-file Flag with Metadata | Blocked | - | - | - | - | - |
+| [009](009.md) | Add Session Browsing Commands | Blocked | - | - | - | - | - |
+| [010](010.md) | Add --dry-run Flag for Cost Estimation | Blocked | - | - | - | - | - |
+| [011](011.md) | Add --add-file for Injecting Single Files into Context | Blocked | - | - | - | - | - |
+| [012](012.md) | Add Template Prompts from .cake/prompts/ | Blocked | - | - | - | - | - |
+| [014](014.md) | Add Task Chaining with --then Flag | Blocked | - | - | - | - | - |
+| [015](015.md) | Consolidate Per-Function unwrap_used Allow to Module-Level in Tests | Blocked | - | - | - | - | - |
+| [016](016.md) | Refactor send() and execute_bash() into Smaller Functions | Blocked | - | - | - | - | - |
+| [030](030.md) | Investigate Session-Level Hook Observability | Pending | - | - | - | - | - |
+| [090](090.md) | Decide on Tokio Runtime Entry Style | Pending | P3 | S | - | - | - |
+| [091](091.md) | Clean Up macOS Sandbox String Construction Style | Pending | P3 | M | - | - | 040 (Seatbelt profile builder) |
+| [092](092.md) | Simplify Binary Ratio Threshold Constants | Pending | P3 | S | - | - | - |
+| [093](093.md) | Rename with_text_progress to Avoid Builder Semantics | Pending | P3 | S | - | - | - |
+| [094](094.md) | Simplify Test-Only Bash Sandbox Constructor | Pending | P3 | S | - | - | - |
+| [095](095.md) | Fix Dead Code in is_allowed_rm_target | Pending | P3 | S | - | - | - |
+| [096](096.md) | Make Git Branch Delete Detection Parser Safe | Pending | P3 | M | - | - | - |
+| [097](097.md) | Revisit macOS Sandbox Probe Caching and Cleanup | Pending | P3 | M | - | - | - |
+| [098](098.md) | Reorganize Type Modules | Pending | P3 | XL | - | Required before implementation | 049 (Split Agent), 050 (Backend abstraction), 051 (Tool abstraction), 058 (Typed reasoning content), 061 (Consolidate serialization), 062 (DateTime types), 063 (Optional field normalization). Do this last. |
+| [099](099.md) | Remove Library-Style Doctests From Binary-Only Crate | Pending | P3 | S | - | - | - |
+| [100](100.md) | Decide Linux Landlock Default Feature Policy | Pending | P3 | M | - | - | - |
+| [101](101.md) | Review Module Size and Ownership Boundaries | Pending | P3 | XL | - | Required before implementation | 047 (ToolContext), 049 (Split Agent), 050 (Backend abstraction), 051 (Tool abstraction), 052 (Provider strategy), 053 (Typed SessionMode), 054 (Refactor run), 064 (build_messages refactor). Do this after behavior-oriented refactors land. |
+| [102](102.md) | Validate Stream Hook Record Contract | Pending | P3 | M | - | - | 030 (existing - see notes), 059 (Output sink). Confirm not superseded by 059 once that lands. |
+| [103](103.md) | Add Builder or Fixture Infrastructure for Agent Tests | Pending | P3 | M | - | - | 066 (Encapsulate Agent fields) |
+| [104](104.md) | Add Structured Provider Header Configuration | Pending | P3 | M | - | - | 050 (Backend abstraction), 052 (Provider strategy) |
+| [105](105.md) | Improve Unknown or Missing API Field Diagnostics | Pending | P3 | M | - | - | - |
+| [106](106.md) | Audit Public Module Visibility in Tools | Pending | P3 | S | - | - | 051 (Tool abstraction) |
+| [108](108.md) | Track Manual Review Findings Without Losing Original Numbers | Pending | P3 | S | - | - | - |
+| [109](109.md) | Edit tool: CRLF replacement text double-encoding | Open | - | - | - | - | - |
+| [113](113.md) | Document ResponsesApiInputItem Construction Boundary | Pending | P3 | XS | - | - | Follows 061 |
+| [114](114.md) | Update conversation-types.md After to_api_input Refactor | Pending | P3 | XS | - | - | Follows 061 |
+| [115](115.md) | Comment annotations:[] Provider Quirk in ResponsesApiInputItem | Pending | P3 | XS | - | - | Follows 061 |
+| [117](117.md) | Strengthen Edit Tool Semantics via Lean-Assisted Testing | Pending | P2 | XL | - | `.agents/exec-plans/active/edit-tool-lean.md` | - |
+| [118](118.md) | Profile and Optimize Cake Performance | Pending | P2 | L | - | `.agents/exec-plans/active/performance-improvements.md` | - |
+| [119](119.md) | Add Per-Session Telemetry Sidecar | Pending | P2 | XL | - | `.agents/exec-plans/active/per-session-telemetry-plan.md` | - |
+| [120](120.md) | Add OSC 9;4 Terminal Progress Indicator | Pending | P3 | S | - | `.agents/exec-plans/active/progress-bar-plan.md` | - |
+| [121](121.md) | Implement User-Defined Toolbox Tools | Pending | P2 | XL | - | `.agents/exec-plans/active/toolboxes-plan.md` | 050 (Backend abstraction, completed), 051 (Tool abstraction, completed) |
+| [128](128.md) | Remove No-Op `_ = result.as_bytes()` In bash.rs Test | Pending | P3 | XS | - | - | From code review of 110/3cc2e73 |
+| [129](129.md) | Restore `e.print().ok()` With Localized `unused_result_ok` Expect | Pending | P3 | XS | - | - | From code review of 110/3cc2e73 |
+| [135](135.md) | Prefer Focused Checks Before Final CI in Deslop Guidance | Pending | P3 | XS | - | - | - |
+| [139](139.md) | Add Structured Bulk Edit Support for Mechanical Transformations | Pending | P2 | M | - | - | - |
+| [140](140.md) | Harden Edit Schema Guidance Against Malformed Arguments | Pending | P2 | S | - | - | - |
+| [142](142.md) | Add Bash Command Lint Hints for Common Agent Footguns | Pending | P2 | M | - | - | - |
+| [144](144.md) | Require Final Dirty Worktree Reporting After Commits | Pending | P2 | S | - | - | - |
+| [145](145.md) | Add Platform Verification Guidance for cfg-Sensitive Changes | Pending | P2 | M | - | - | - |
+| [146](146.md) | Compact Large Tool Outputs Before Adding to Model Context | Pending | P2 | L | - | - | - |
+| [147](147.md) | Clarify Hook Event Decision Semantics in Session Records | Pending | P3 | S | - | - | - |
+| [148](148.md) | Make Deslop Passes Produce Evidence-Backed Results | Pending | P3 | S | - | - | 135 |
+| [150](150.md) | Move Built-In System Prompt to Markdown With Runtime Overrides | Pending | P2 | M | - | - | - |

@@ -14,113 +14,113 @@ Completed tasks are retained for history and stable task-id lookup.
 
 ## Tasks
 
-| Task | Title | Status | Priority | Effort | ExecPlan | Depends on |
-| ---- | ----- | ------ | -------- | ------ | -------- | ---------- |
-| [001](001.md) | Fix README Default Model Mismatch | Completed | - | - | - | - |
-| [002](002.md) | Fix Stdin 100ms Timeout Silently Dropping Slow Input | Completed | - | - | - | - |
-| [003](003.md) | Fix Session Save Requiring Valid UUID at Runtime | Completed | - | - | - | - |
-| [013](013.md) | Document Meaningful Exit Codes | Completed | - | - | - | - |
-| [017](017.md) | Extract Tool Execution Helpers from Agent send() | Completed | - | - | - | - |
-| [018](018.md) | Fix Concurrent Skill Activation Race | Completed | - | - | - | - |
-| [019](019.md) | Remove Write-Only prior_skill_activations State | Completed | - | - | - | - |
-| [020](020.md) | Simplify with_activated_skills() | Completed | - | - | - | - |
-| [021](021.md) | Deduplicate Session Streaming Helpers | Completed | - | - | - | - |
-| [022](022.md) | Avoid Duplicate User Message Construction | Completed | - | - | - | - |
-| [023](023.md) | Reduce Retry Logic Duplication in complete_turn() | Completed | - | - | - | - |
-| [024](024.md) | Revisit Retryable HTTP Status Codes | Completed | - | - | - | - |
-| [025](025.md) | Centralize Agent Test Construction | Completed | - | - | - | - |
-| [026](026.md) | Fix Double INIT and Stream Ordering for Continued Sessions | Completed | - | - | - | Closed as obsolete: v4 session persistence writes one first-line `session_meta`, appends continue/resume tasks without new metadata, and fork seeding excludes parent metadata. |
-| [027](027.md) | Clean Up Pre-Existing Dead Code | Completed | - | - | - | - |
-| [028](028.md) | Warn (Don't Silently Swallow) StreamRecord Serialization Failures | Completed | - | - | - | - |
-| [029](029.md) | Reduce SessionRecord / StreamRecord Boilerplate | Completed | - | - | - | - |
-| [031](031.md) | Fix rm -rf Safety Checks for Multiple Targets | Completed | P0 | M | - | - |
-| [032](032.md) | Stop Treating Literal TMPDIR as Safe rm Target | Completed | P0 | S | - | - |
-| [033](033.md) | Remove Bypass-Prone Bash Data Context Skips | Completed | P0 | M | - | - |
-| [034](034.md) | Clarify Bash Safety Boundary | Completed | P0 | M | - | - |
-| [035](035.md) | Retire Bash Shell Parser Expansion | Completed | P0 | S | - | 033 (already complete), 034 |
-| [036](036.md) | Preserve Edit Tool Line Endings Without Rewriting Bytes | Completed | P0 | M | - | - |
-| [037](037.md) | Fail on Missing Function Call Fields in Responses API | Completed | P0 | S | - | - |
-| [038](038.md) | Fail on Missing Chat Completion Response IDs | Completed | P0 | S | - | - |
-| [039](039.md) | Escape Home Paths in macOS Sandbox Profiles | Completed | P0 | M | - | - |
-| [040](040.md) | Introduce a Seatbelt Profile Builder | Completed | P0 | L | - | - |
-| [041](041.md) | Replace Sandbox Violation Detection by Output Substrings | Completed | P0 | M | - | - |
-| [042](042.md) | Stop Silently Truncating Responses History | Completed | P0 | S | - | - |
-| [043](043.md) | Report Unknown Responses Output Types | Completed | P0 | S | - | - |
-| [044](044.md) | Add Clap Exclusivity for Session Mode Flags | Completed | P0 | S | - | - |
-| [045](045.md) | Fix HTTP Client Build Error Handling | Completed | P1 | S | - | - |
-| [046](046.md) | Persist Activated Skills as Structured Session Metadata | Completed | P1 | L | - | - |
-| [047](047.md) | Plumb ToolContext Through Tool Execution (Parent) | Completed | P1 | XL (split into 047a / 047b / 047c) | - | 048 (e2e test as safety net) |
-| [047a](047a.md) | Introduce ToolContext (no plumbing yet) | Completed | P1 | S | - | 048 (e2e test as safety net) |
-| [047b](047b.md) | Plumb &ToolContext Through Tool Execution | Completed | P1 | L | - | 047a (ToolContext exists), 051 (Tool abstraction so the trait can carry the context) |
-| [047c](047c.md) | Delete the Tool OnceLocks | Completed | P1 | S | - | 047b (no callers reach into globals anymore) |
-| [048](048.md) | Add End-to-End Agent Loop Test with Stub Backend | Completed | P1 | L | - | - |
-| [049](049.md) | Split Agent Responsibilities | Completed | P1 | XL | `.agents/exec-plans/completed/split-agent-responsibilities.md` | 048 (e2e test as safety net), 050 (Backend abstraction), 051 (Tool abstraction), 047 (ToolContext) |
-| [050](050.md) | Add Backend Abstraction for API Providers | Completed | P1 | L | - | 048 (e2e test as safety net) |
-| [051](051.md) | Add Tool Abstraction and Registry | Completed | P1 | L | - | 048 (e2e test as safety net) |
-| [052](052.md) | Move Provider Quirks Behind Provider Strategy | Completed | P1 | L | `.agents/exec-plans/completed/provider-strategy.md` | 050 (Backend abstraction) |
-| [053](053.md) | Model Session Mode as a Typed Run Mode | Completed | P1 | M | - | - |
-| [054](054.md) | Refactor CodingAssistant Run Into Smaller Steps | Completed | P1 | L | `.agents/exec-plans/completed/refactor-coding-assistant-run.md` | - |
-| [055](055.md) | Replace Boolean Task Completion API with Outcome Enum | Completed | P1 | M | - | - |
-| [056](056.md) | Remove Redundant StreamRecord Success Booleans | Completed | P1 | M | - | - |
-| [057](057.md) | Add Typed Reasoning Effort | Completed | P1 | M | - | - |
-| [058](058.md) | Type Reasoning Content Kinds | Completed | P1 | M | - | - |
-| [059](059.md) | Add Structured Output Sink for CLI Output | Completed | P1 | M | - | - |
-| [060](060.md) | Make Hooks Observable in Typed Session Flow (Parent) | Completed | P1 | L (split into 060a / 060b / 060c) | Use child tasks | - |
-| [060a](060a.md) | Type Hook Matcher Sources | Completed | P1 | S | - | - |
-| [060b](060b.md) | Model Hook Continue/Block as a Proper Enum | Completed | P1 | M | - | - |
-| [060c](060c.md) | Implement or Remove suppress_output Hook Field | Completed | P1 | S | - | - |
-| [061](061.md) | Consolidate Conversation Serialization Paths | Completed | P1 | XL | [completed](../exec-plans/completed/consolidate-conversation-serialization.md) | - |
-| [062](062.md) | Store Timestamps as DateTime Values Internally | Completed | P1 | L | [completed](../exec-plans/completed/store-timestamps-as-datetime.md) | - |
-| [063](063.md) | Normalize Optional Fields After Session Deserialization | Completed | P1 | L | [completed](../exec-plans/completed/normalize-session-optional-fields.md) | - |
-| [064](064.md) | Refactor Chat build_messages State Handling | Completed | P2 | L | [completed](../exec-plans/completed/refactor-chat-build-messages.md) | 050 (Backend abstraction) |
-| [065](065.md) | Reduce Cloning in Agent Tool Loop | Completed | P2 | M | - | 048 (e2e test as safety net) |
-| [066](066.md) | Encapsulate Agent Public Mutable Fields | Completed | P2 | M | - | 048 (e2e test as safety net) |
-| [067](067.md) | Handle Activated Skills Mutex Poisoning Explicitly | Completed | P2 | S | - | - |
-| [068](068.md) | Replace with_history Debug Assertion with Real Invariant | Completed | P2 | M | - | - |
-| [069](069.md) | Rework Fork Session Storage Path | Completed | P2 | M | - | - |
-| [070](070.md) | Simplify Resolved Model Configuration Naming | Completed | P2 | M | - | - |
-| [071](071.md) | Replace looks_like_uuid with Parser-Based Validation | Completed | P2 | S | - | - |
-| [072](072.md) | Add Size Limit or Streaming Plan for Stdin Input | Completed | P2 | M | - | - |
-| [073](073.md) | Add Structured Prompt and Stdin Combination | Completed | P2 | S | - | - |
-| [074](074.md) | Replace Hand-Rolled Binary Magic Detection | Completed | P2 | M | - | - |
-| [075](075.md) | Check Whole File or Trust UTF-8 for Edit Binary Detection | Completed | P2 | S | - | - |
-| [076](076.md) | Optimize Edit Application Allocation | Completed | P2 | M | - | - |
-| [077](077.md) | Parse Only Needed Fields in Edit Argument Summaries | Completed | P2 | S | - | - |
-| [078](078.md) | Delete Dead Diff Header Construction | Completed | P2 | S | - | - |
-| [079](079.md) | Introduce RetryPolicy Configuration Type | Completed | P2 | M | - | - |
-| [080](080.md) | Simplify Overloaded Retry Classification | Completed | P2 | S | - | - |
-| [081](081.md) | Replace Retry Signal Body Substring Matching Where Possible | Completed | P2 | M | - | - |
-| [082](082.md) | Make Stream JSON Conversion Live or Delete It | Completed | P2 | S | - | Completed by 061. |
-| [083](083.md) | Fix serde_json to_value Error Policy | Completed | P2 | S | - | - |
-| [084](084.md) | Use a Shared Duration Formatting Helper | Completed | P3 | S | - | - |
-| [085](085.md) | Make Human-Readable Size Formatting Less Clever | Completed | P3 | S | - | - |
-| [086](086.md) | Flatten format_api_error_body | Completed | P3 | S | - | - |
-| [087](087.md) | Simplify Responses Reasoning Config Construction | Completed | P3 | S | - | - |
-| [088](088.md) | Clean Up Dead Code Allows | Completed | P3 | S | - | - |
-| [089](089.md) | Rationalize Clippy Allow Policy | Completed | P3 | M | - | Resolved in same PR as 110 with 107. |
-| [107](107.md) | Reconsider Missing Docs Lint Policy | Completed | P3 | S | - | Resolved in same PR as 110 with 089. |
-| [110](110.md) | Apply Stricter Clippy Configuration from External Research | Completed | P2 | M | - | Research: clippy-stricter-config; related: 089, 107 (both completed together) |
-| [111](111.md) | Round-Trip Test ConversationItem → StreamRecord → SessionRecord | Completed | P1 | S | - | Follows 061 |
-| [112](112.md) | Snapshot Persistence-Only SessionRecord Variants | Completed | P1 | S | - | Follows 061 |
-| [116](116.md) | Eliminate Redundant num_turns/turn_count; Add Tool-Call Counter | Completed | P3 | M | - | - |
-| [122](122.md) | Fix `#[expect(unused_variables)]` on `LandlockSandbox::apply` | Completed | P0 | XS | - | From code review of 110/3cc2e73 |
-| [123](123.md) | Delete Unused `Agent::task_id` Method | Completed | P0 | XS | - | From code review of 110/3cc2e73 |
-| [124](124.md) | Replace Module-Wide `string_slice` Suppression (Parent) | Completed | P1 | M (split into 124a / 124b / 124c / 124d) | Use child tasks | From code review of 110/3cc2e73 |
-| [124a](124a.md) | Replace Module-Wide `string_slice` Suppression in retry.rs | Completed | P1 | S | - | - |
-| [124b](124b.md) | Replace Module-Wide `string_slice` Suppression in bash.rs | Completed | P1 | S | - | - |
-| [124c](124c.md) | Replace Module-Wide `string_slice` Suppression in bash_safety.rs | Completed | P1 | S | - | - |
-| [124d](124d.md) | Replace Module-Wide `string_slice` Suppression in skills.rs | Completed | P1 | S | - | - |
-| [125](125.md) | Implement Lazy Skill Body Loading at Activation Time | Completed | P1 | L | `.agents/exec-plans/completed/lazy-skill-body-loading.md` | From code review of 110/3cc2e73 |
-| [126](126.md) | Remove Test-Only `Agent::activated_skills` Accessor | Completed | P1 | S | - | From code review of 110/3cc2e73 |
-| [127](127.md) | Document and Enforce Dead-Code Suppression Policy | Completed | P1 | S | - | From code review of 110/3cc2e73; interacts with 123, 125, 126, 130 |
-| [130](130.md) | Delete Unused Serde Response Fields | Completed | P2 | S | - | - |
-| [131](131.md) | Fix `SandboxConfig` `struct_field_names` Reason and Verify `dead_code` | Completed | P2 | S | - | From code review of 110/3cc2e73 |
-| [132](132.md) | Only Attach Rust Failure Guidance on Failed Commands | Completed | P1 | S | - | - |
-| [133](133.md) | Fix Hook Transcript Appends During Active Sessions | Completed | P1 | M | - | - |
-| [134](134.md) | Clarify Edit Multi-Edit Failure Recovery | Completed | P2 | S | - | - |
-| [136](136.md) | Show Candidate Contexts for Ambiguous Edit Matches | Completed | P2 | S | - | - |
-| [137](137.md) | Report Per-Edit Preflight Results on Multi-Edit Failure | Completed | P2 | S | - | - |
-| [138](138.md) | Improve Edit No-Op Handling | Completed | P2 | S | - | - |
-| [141](141.md) | Prevent Bash Sandbox False Positives from Command Output | Completed | P1 | M | - | - |
-| [143](143.md) | Improve Read Tool Range Defaults When start_line Is Provided | Completed | P2 | S | - | - |
-| [149](149.md) | Record No-Op Hook Outcomes as Decision None | Completed | P2 | S | - | - |
+| Task | Title | Status | Priority | Effort | Labels | ExecPlan | Depends on |
+| ---- | ----- | ------ | -------- | ------ | ------ | -------- | ---------- |
+| [001](001.md) | Fix README Default Model Mismatch | Completed | - | - | - | - | - |
+| [002](002.md) | Fix Stdin 100ms Timeout Silently Dropping Slow Input | Completed | - | - | - | - | - |
+| [003](003.md) | Fix Session Save Requiring Valid UUID at Runtime | Completed | - | - | - | - | - |
+| [013](013.md) | Document Meaningful Exit Codes | Completed | - | - | - | - | - |
+| [017](017.md) | Extract Tool Execution Helpers from Agent send() | Completed | - | - | - | - | - |
+| [018](018.md) | Fix Concurrent Skill Activation Race | Completed | - | - | - | - | - |
+| [019](019.md) | Remove Write-Only prior_skill_activations State | Completed | - | - | - | - | - |
+| [020](020.md) | Simplify with_activated_skills() | Completed | - | - | - | - | - |
+| [021](021.md) | Deduplicate Session Streaming Helpers | Completed | - | - | - | - | - |
+| [022](022.md) | Avoid Duplicate User Message Construction | Completed | - | - | - | - | - |
+| [023](023.md) | Reduce Retry Logic Duplication in complete_turn() | Completed | - | - | - | - | - |
+| [024](024.md) | Revisit Retryable HTTP Status Codes | Completed | - | - | - | - | - |
+| [025](025.md) | Centralize Agent Test Construction | Completed | - | - | - | - | - |
+| [026](026.md) | Fix Double INIT and Stream Ordering for Continued Sessions | Completed | - | - | - | - | Closed as obsolete: v4 session persistence writes one first-line `session_meta`, appends continue/resume tasks without new metadata, and fork seeding excludes parent metadata. |
+| [027](027.md) | Clean Up Pre-Existing Dead Code | Completed | - | - | - | - | - |
+| [028](028.md) | Warn (Don't Silently Swallow) StreamRecord Serialization Failures | Completed | - | - | - | - | - |
+| [029](029.md) | Reduce SessionRecord / StreamRecord Boilerplate | Completed | - | - | - | - | - |
+| [031](031.md) | Fix rm -rf Safety Checks for Multiple Targets | Completed | P0 | M | - | - | - |
+| [032](032.md) | Stop Treating Literal TMPDIR as Safe rm Target | Completed | P0 | S | - | - | - |
+| [033](033.md) | Remove Bypass-Prone Bash Data Context Skips | Completed | P0 | M | - | - | - |
+| [034](034.md) | Clarify Bash Safety Boundary | Completed | P0 | M | - | - | - |
+| [035](035.md) | Retire Bash Shell Parser Expansion | Completed | P0 | S | - | - | 033 (already complete), 034 |
+| [036](036.md) | Preserve Edit Tool Line Endings Without Rewriting Bytes | Completed | P0 | M | - | - | - |
+| [037](037.md) | Fail on Missing Function Call Fields in Responses API | Completed | P0 | S | - | - | - |
+| [038](038.md) | Fail on Missing Chat Completion Response IDs | Completed | P0 | S | - | - | - |
+| [039](039.md) | Escape Home Paths in macOS Sandbox Profiles | Completed | P0 | M | - | - | - |
+| [040](040.md) | Introduce a Seatbelt Profile Builder | Completed | P0 | L | - | - | - |
+| [041](041.md) | Replace Sandbox Violation Detection by Output Substrings | Completed | P0 | M | - | - | - |
+| [042](042.md) | Stop Silently Truncating Responses History | Completed | P0 | S | - | - | - |
+| [043](043.md) | Report Unknown Responses Output Types | Completed | P0 | S | - | - | - |
+| [044](044.md) | Add Clap Exclusivity for Session Mode Flags | Completed | P0 | S | - | - | - |
+| [045](045.md) | Fix HTTP Client Build Error Handling | Completed | P1 | S | - | - | - |
+| [046](046.md) | Persist Activated Skills as Structured Session Metadata | Completed | P1 | L | - | - | - |
+| [047](047.md) | Plumb ToolContext Through Tool Execution (Parent) | Completed | P1 | XL (split into 047a / 047b / 047c) | - | - | 048 (e2e test as safety net) |
+| [047a](047a.md) | Introduce ToolContext (no plumbing yet) | Completed | P1 | S | - | - | 048 (e2e test as safety net) |
+| [047b](047b.md) | Plumb &ToolContext Through Tool Execution | Completed | P1 | L | - | - | 047a (ToolContext exists), 051 (Tool abstraction so the trait can carry the context) |
+| [047c](047c.md) | Delete the Tool OnceLocks | Completed | P1 | S | - | - | 047b (no callers reach into globals anymore) |
+| [048](048.md) | Add End-to-End Agent Loop Test with Stub Backend | Completed | P1 | L | - | - | - |
+| [049](049.md) | Split Agent Responsibilities | Completed | P1 | XL | - | `.agents/exec-plans/completed/split-agent-responsibilities.md` | 048 (e2e test as safety net), 050 (Backend abstraction), 051 (Tool abstraction), 047 (ToolContext) |
+| [050](050.md) | Add Backend Abstraction for API Providers | Completed | P1 | L | - | - | 048 (e2e test as safety net) |
+| [051](051.md) | Add Tool Abstraction and Registry | Completed | P1 | L | - | - | 048 (e2e test as safety net) |
+| [052](052.md) | Move Provider Quirks Behind Provider Strategy | Completed | P1 | L | - | `.agents/exec-plans/completed/provider-strategy.md` | 050 (Backend abstraction) |
+| [053](053.md) | Model Session Mode as a Typed Run Mode | Completed | P1 | M | - | - | - |
+| [054](054.md) | Refactor CodingAssistant Run Into Smaller Steps | Completed | P1 | L | - | `.agents/exec-plans/completed/refactor-coding-assistant-run.md` | - |
+| [055](055.md) | Replace Boolean Task Completion API with Outcome Enum | Completed | P1 | M | - | - | - |
+| [056](056.md) | Remove Redundant StreamRecord Success Booleans | Completed | P1 | M | - | - | - |
+| [057](057.md) | Add Typed Reasoning Effort | Completed | P1 | M | - | - | - |
+| [058](058.md) | Type Reasoning Content Kinds | Completed | P1 | M | - | - | - |
+| [059](059.md) | Add Structured Output Sink for CLI Output | Completed | P1 | M | - | - | - |
+| [060](060.md) | Make Hooks Observable in Typed Session Flow (Parent) | Completed | P1 | L (split into 060a / 060b / 060c) | - | Use child tasks | - |
+| [060a](060a.md) | Type Hook Matcher Sources | Completed | P1 | S | - | - | - |
+| [060b](060b.md) | Model Hook Continue/Block as a Proper Enum | Completed | P1 | M | - | - | - |
+| [060c](060c.md) | Implement or Remove suppress_output Hook Field | Completed | P1 | S | - | - | - |
+| [061](061.md) | Consolidate Conversation Serialization Paths | Completed | P1 | XL | - | [completed](../exec-plans/completed/consolidate-conversation-serialization.md) | - |
+| [062](062.md) | Store Timestamps as DateTime Values Internally | Completed | P1 | L | - | [completed](../exec-plans/completed/store-timestamps-as-datetime.md) | - |
+| [063](063.md) | Normalize Optional Fields After Session Deserialization | Completed | P1 | L | - | [completed](../exec-plans/completed/normalize-session-optional-fields.md) | - |
+| [064](064.md) | Refactor Chat build_messages State Handling | Completed | P2 | L | - | [completed](../exec-plans/completed/refactor-chat-build-messages.md) | 050 (Backend abstraction) |
+| [065](065.md) | Reduce Cloning in Agent Tool Loop | Completed | P2 | M | - | - | 048 (e2e test as safety net) |
+| [066](066.md) | Encapsulate Agent Public Mutable Fields | Completed | P2 | M | - | - | 048 (e2e test as safety net) |
+| [067](067.md) | Handle Activated Skills Mutex Poisoning Explicitly | Completed | P2 | S | - | - | - |
+| [068](068.md) | Replace with_history Debug Assertion with Real Invariant | Completed | P2 | M | - | - | - |
+| [069](069.md) | Rework Fork Session Storage Path | Completed | P2 | M | - | - | - |
+| [070](070.md) | Simplify Resolved Model Configuration Naming | Completed | P2 | M | - | - | - |
+| [071](071.md) | Replace looks_like_uuid with Parser-Based Validation | Completed | P2 | S | - | - | - |
+| [072](072.md) | Add Size Limit or Streaming Plan for Stdin Input | Completed | P2 | M | - | - | - |
+| [073](073.md) | Add Structured Prompt and Stdin Combination | Completed | P2 | S | - | - | - |
+| [074](074.md) | Replace Hand-Rolled Binary Magic Detection | Completed | P2 | M | - | - | - |
+| [075](075.md) | Check Whole File or Trust UTF-8 for Edit Binary Detection | Completed | P2 | S | - | - | - |
+| [076](076.md) | Optimize Edit Application Allocation | Completed | P2 | M | - | - | - |
+| [077](077.md) | Parse Only Needed Fields in Edit Argument Summaries | Completed | P2 | S | - | - | - |
+| [078](078.md) | Delete Dead Diff Header Construction | Completed | P2 | S | - | - | - |
+| [079](079.md) | Introduce RetryPolicy Configuration Type | Completed | P2 | M | - | - | - |
+| [080](080.md) | Simplify Overloaded Retry Classification | Completed | P2 | S | - | - | - |
+| [081](081.md) | Replace Retry Signal Body Substring Matching Where Possible | Completed | P2 | M | - | - | - |
+| [082](082.md) | Make Stream JSON Conversion Live or Delete It | Completed | P2 | S | - | - | Completed by 061. |
+| [083](083.md) | Fix serde_json to_value Error Policy | Completed | P2 | S | - | - | - |
+| [084](084.md) | Use a Shared Duration Formatting Helper | Completed | P3 | S | - | - | - |
+| [085](085.md) | Make Human-Readable Size Formatting Less Clever | Completed | P3 | S | - | - | - |
+| [086](086.md) | Flatten format_api_error_body | Completed | P3 | S | - | - | - |
+| [087](087.md) | Simplify Responses Reasoning Config Construction | Completed | P3 | S | - | - | - |
+| [088](088.md) | Clean Up Dead Code Allows | Completed | P3 | S | - | - | - |
+| [089](089.md) | Rationalize Clippy Allow Policy | Completed | P3 | M | - | - | Resolved in same PR as 110 with 107. |
+| [107](107.md) | Reconsider Missing Docs Lint Policy | Completed | P3 | S | - | - | Resolved in same PR as 110 with 089. |
+| [110](110.md) | Apply Stricter Clippy Configuration from External Research | Completed | P2 | M | - | - | Research: clippy-stricter-config; related: 089, 107 (both completed together) |
+| [111](111.md) | Round-Trip Test ConversationItem → StreamRecord → SessionRecord | Completed | P1 | S | - | - | Follows 061 |
+| [112](112.md) | Snapshot Persistence-Only SessionRecord Variants | Completed | P1 | S | - | - | Follows 061 |
+| [116](116.md) | Eliminate Redundant num_turns/turn_count; Add Tool-Call Counter | Completed | P3 | M | - | - | - |
+| [122](122.md) | Fix `#[expect(unused_variables)]` on `LandlockSandbox::apply` | Completed | P0 | XS | - | - | From code review of 110/3cc2e73 |
+| [123](123.md) | Delete Unused `Agent::task_id` Method | Completed | P0 | XS | - | - | From code review of 110/3cc2e73 |
+| [124](124.md) | Replace Module-Wide `string_slice` Suppression (Parent) | Completed | P1 | M (split into 124a / 124b / 124c / 124d) | - | Use child tasks | From code review of 110/3cc2e73 |
+| [124a](124a.md) | Replace Module-Wide `string_slice` Suppression in retry.rs | Completed | P1 | S | - | - | - |
+| [124b](124b.md) | Replace Module-Wide `string_slice` Suppression in bash.rs | Completed | P1 | S | - | - | - |
+| [124c](124c.md) | Replace Module-Wide `string_slice` Suppression in bash_safety.rs | Completed | P1 | S | - | - | - |
+| [124d](124d.md) | Replace Module-Wide `string_slice` Suppression in skills.rs | Completed | P1 | S | - | - | - |
+| [125](125.md) | Implement Lazy Skill Body Loading at Activation Time | Completed | P1 | L | - | `.agents/exec-plans/completed/lazy-skill-body-loading.md` | From code review of 110/3cc2e73 |
+| [126](126.md) | Remove Test-Only `Agent::activated_skills` Accessor | Completed | P1 | S | - | - | From code review of 110/3cc2e73 |
+| [127](127.md) | Document and Enforce Dead-Code Suppression Policy | Completed | P1 | S | - | - | From code review of 110/3cc2e73; interacts with 123, 125, 126, 130 |
+| [130](130.md) | Delete Unused Serde Response Fields | Completed | P2 | S | - | - | - |
+| [131](131.md) | Fix `SandboxConfig` `struct_field_names` Reason and Verify `dead_code` | Completed | P2 | S | - | - | From code review of 110/3cc2e73 |
+| [132](132.md) | Only Attach Rust Failure Guidance on Failed Commands | Completed | P1 | S | - | - | - |
+| [133](133.md) | Fix Hook Transcript Appends During Active Sessions | Completed | P1 | M | - | - | - |
+| [134](134.md) | Clarify Edit Multi-Edit Failure Recovery | Completed | P2 | S | - | - | - |
+| [136](136.md) | Show Candidate Contexts for Ambiguous Edit Matches | Completed | P2 | S | - | - | - |
+| [137](137.md) | Report Per-Edit Preflight Results on Multi-Edit Failure | Completed | P2 | S | - | - | - |
+| [138](138.md) | Improve Edit No-Op Handling | Completed | P2 | S | - | - | - |
+| [141](141.md) | Prevent Bash Sandbox False Positives from Command Output | Completed | P1 | M | - | - | - |
+| [143](143.md) | Improve Read Tool Range Defaults When start_line Is Provided | Completed | P2 | S | - | - | - |
+| [149](149.md) | Record No-Op Hook Outcomes as Decision None | Completed | P2 | S | - | - | - |

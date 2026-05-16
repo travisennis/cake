@@ -34,6 +34,7 @@ If the user names a task id or title, work from that task even if another task i
 2. Skip tasks marked `Completed`, `Blocked`, `Open`, or `Tracking`.
 3. Check dependencies before starting. If a dependency is incomplete, do the dependency first or tell the user why the requested task is blocked.
 4. Treat parent tracker tasks as planning references. Work their child tasks in the order stated by the parent tracker or the index.
+5. Use task labels to filter work by type, area, and risk when the user asks for focused work.
 
 Before editing code, read the full task file and inspect the relevant source files. If the task is vague, stale, or conflicts with the current code, update the task with the discovery or ask the user for the missing product decision.
 
@@ -60,6 +61,7 @@ title: Short Imperative Task Title
 status: Pending
 priority: P2
 effort: S
+labels: type:task, area:cli
 exec_plan: -
 depends_on: -
 ---
@@ -72,6 +74,14 @@ Use this priority scale:
 - `P2` (Medium): Important issues that should be resolved in the current or upcoming sprint.
 - `P3` (Low): Nice-to-have improvements or non-critical, small UI bugs that can wait.
 - `P4` (Wishlist): Deferred tasks or potential improvements for future releases.
+
+Use labels to make work easier to filter and route. Prefer a small set of stable labels over one-off tags:
+
+- Type labels: `type:bug`, `type:feature`, `type:task`, `type:docs`, `type:maintenance`, `type:refactor`, `type:test`, `type:security`.
+- Area labels: `area:cli`, `area:agent`, `area:responses`, `area:chat`, `area:tools`, `area:sandbox`, `area:config`, `area:session`, `area:model`, `area:prompts`, `area:logger`, `area:ci`, `area:deps`, `area:dev-env`.
+- Risk labels: `risk:breaking-change`, `risk:security-sensitive`, `risk:external-service`, `risk:migration`, `risk:release`.
+
+Every task should have at least one `type:*` label and one `area:*` label. Add `risk:*` labels only when they help reviewers or agents choose validation depth.
 
 Use this effort scale:
 

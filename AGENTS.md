@@ -70,6 +70,8 @@ just rust-version-check
   3. Run `just ci` before final handoff or commit.
 - When a task includes committing and task-status updates, commit the intended code/task changes together unless the user asks for separate commits. After committing and moving or regenerating task files, run `git status --short` before the final response and report any remaining uncommitted or untracked files.
 - When asked to create, choose, update, or work on a task, first read `.agents/TASKS.md`, then use `.agents/.tasks/index.md` as the task queue and open the specific task file before acting.
+- Use task labels to filter work by type, area, and risk when the user asks for focused work.
+- Do not edit generated task indexes by hand; update task files and run the task index generator.
 - When asked to create, update, organize, or use research, first read `.agents/RESEARCH.md`, then use `.agents/.research/index.md` as the research map and open the relevant research file before acting.
 - Do not commit or push code unless explicitly asked to.
 
@@ -116,6 +118,8 @@ This project uses [Conventional Commits](https://www.conventionalcommits.org/). 
 ## ExecPlans
 
 When writing complex features or significant refactors (e.g. L or XL tasks), use an ExecPlan (as described in .agents/PLANS.md) from design to implementation.
+
+Keep `.agents/exec-plans/active/index.md` current when creating, completing, or moving plans.
 
 ---
 
