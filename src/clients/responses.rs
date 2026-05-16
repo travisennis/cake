@@ -39,12 +39,14 @@ pub(super) async fn send_request(
         .reasoning_max_tokens
         .or(config.model_config.reasoning_max_tokens);
 
-    let reasoning = (config.model_config.reasoning_effort.is_some()
-        || config.model_config.reasoning_summary.is_some()
+    let reasoning_effort = config.model_config.reasoning_effort;
+    let reasoning_summary = config.model_config.reasoning_summary.clone();
+    let reasoning = (reasoning_effort.is_some()
+        || reasoning_summary.is_some()
         || reasoning_max_tokens.is_some())
-    .then(|| ReasoningConfig {
-        effort: config.model_config.reasoning_effort,
-        summary: config.model_config.reasoning_summary.clone(),
+    .then_some(ReasoningConfig {
+        effort: reasoning_effort,
+        summary: reasoning_summary,
         max_tokens: reasoning_max_tokens,
     });
 
