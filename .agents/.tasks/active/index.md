@@ -7,7 +7,7 @@ Active tasks include open, pending, blocked, and tracking work.
 ## Status Summary
 
 - Open: 1
-- Pending: 39
+- Pending: 40
 - Blocked: 12
 - Tracking: 0
 - Completed: 0
@@ -68,3 +68,4 @@ Active tasks include open, pending, blocked, and tracking work.
 | [146](146.md) | Compact Large Tool Outputs Before Adding to Model Context | Pending | P2 | L | - | - |
 | [147](147.md) | Clarify Hook Event Decision Semantics in Session Records | Pending | P3 | S | - | - |
 | [148](148.md) | Make Deslop Passes Produce Evidence-Backed Results | Pending | P3 | S | - | 135 |
+| [149](149.md) | Record No-Op Hook Outcomes as Decision None | Pending | P2 | S | - | - |
