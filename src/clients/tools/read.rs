@@ -34,7 +34,7 @@ pub(super) fn read_tool() -> super::Tool {
                 },
                 "end_line": {
                     "type": "integer",
-                    "description": "Last line to read (1-indexed, inclusive). Defaults to 500. Use to limit output for large files."
+                    "description": "Last line to read (1-indexed, inclusive). Defaults to 500 when start_line is not provided, or start_line+499 when start_line is provided but end_line is not. Use to limit output for large files."
                 }
             },
             "required": ["path"]
@@ -67,9 +67,13 @@ pub fn extract_path(arguments: &str) -> Option<String> {
 pub fn summarize_args(arguments: &str) -> String {
     serde_json::from_str::<ReadArgs>(arguments)
         .map(|args| {
-            let start = args.start_line.unwrap_or(1);
-            let end = args.end_line.unwrap_or(DEFAULT_END_LINE);
-            format!("{} [{}-{}]", args.path, start, end)
+            let effective_start = args.start_line.unwrap_or(1);
+            let end = match args.end_line {
+                Some(e) => e,
+                None if args.start_line.is_some() => effective_start + DEFAULT_END_LINE - 1,
+                None => DEFAULT_END_LINE,
+            };
+            format!("{} [{}-{}]", args.path, effective_start, end)
         })
         .unwrap_or_default()
 }
@@ -149,8 +153,17 @@ fn read_file(
     }
 
     // Default line range (1-indexed from caller, convert to 0-indexed)
+    // When start_line is provided without end_line, expand the window from start_line
+    // instead of keeping the absolute default of 500.
     let start = start_line.unwrap_or(1).saturating_sub(1);
-    let end_requested = end_line.unwrap_or(DEFAULT_END_LINE).saturating_sub(1);
+    let end_requested = match end_line {
+        Some(end) => end.saturating_sub(1),
+        None if start_line.is_some() => {
+            // Window of DEFAULT_END_LINE lines starting from start_line
+            start.saturating_add(DEFAULT_END_LINE - 1)
+        },
+        None => DEFAULT_END_LINE.saturating_sub(1),
+    };
 
     // Read only the lines we need using a buffered reader
     let file = std::fs::File::open(path)
@@ -296,7 +309,8 @@ mod tests {
     }
 
     #[test]
-    fn default_end_line_caps_at_500() {
+    fn default_read_still_1_to_500() {
+        // Neither start_line nor end_line should still default to 1-500.
         let temp_dir = TempDir::new().unwrap();
         let file_path = temp_dir.path().join("test.txt");
         let lines: Vec<String> = (1..=600).map(|i| format!("Line {i}")).collect();
@@ -309,6 +323,7 @@ mod tests {
 
         let result = execute_read(&ToolContext::from_current_process(), &args).unwrap();
         assert!(result.output.contains("Lines 1-500/600"));
+        assert!(result.output.contains("Line 500"));
         assert!(result.output.contains("[... 100 more lines ...]"));
     }
 
@@ -341,5 +356,88 @@ mod tests {
 
         let result = execute_read(&ToolContext::from_current_process(), &args).unwrap();
         assert!(result.output.contains("(empty)"));
+    }
+
+    #[test]
+    fn start_line_without_end_line_returns_window() {
+        // When start_line is provided without end_line, the window should be
+        // start_line..start_line+499, not the absolute 1-500 default.
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+        let lines: Vec<String> = (1..=720).map(|i| format!("Line {i}")).collect();
+        fs::write(&file_path, lines.join("\n")).unwrap();
+
+        let args = serde_json::json!({
+            "path": file_path.to_str().unwrap(),
+            "start_line": 500
+        })
+        .to_string();
+
+        let result = execute_read(&ToolContext::from_current_process(), &args).unwrap();
+        // Should read lines 500-720 (file ends before start_line+499)
+        assert!(result.output.contains("Lines 500-720/720"));
+        assert!(result.output.contains("   500: Line 500"));
+        assert!(result.output.contains("   720: Line 720"));
+        assert!(!result.output.contains("Line 499"));
+    }
+
+    #[test]
+    fn start_line_without_end_line_window_in_middle() {
+        // When the file is long enough, start_line+499 should be the end.
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+        let lines: Vec<String> = (1..=1000).map(|i| format!("Line {i}")).collect();
+        fs::write(&file_path, lines.join("\n")).unwrap();
+
+        let args = serde_json::json!({
+            "path": file_path.to_str().unwrap(),
+            "start_line": 300
+        })
+        .to_string();
+
+        let result = execute_read(&ToolContext::from_current_process(), &args).unwrap();
+        assert!(result.output.contains("Lines 300-799/1000"));
+        assert!(result.output.contains("   300: Line 300"));
+        assert!(result.output.contains("   799: Line 799"));
+        assert!(!result.output.contains("Line 299"));
+        assert!(!result.output.contains("Line 800"));
+        assert!(result.output.contains("[... 201 more lines ...]"));
+    }
+
+    #[test]
+    fn start_line_at_end_of_file() {
+        // start_line beyond the file should show the "no content" message.
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+        let lines: Vec<String> = (1..=10).map(|i| format!("Line {i}")).collect();
+        fs::write(&file_path, lines.join("\n")).unwrap();
+
+        let args = serde_json::json!({
+            "path": file_path.to_str().unwrap(),
+            "start_line": 20
+        })
+        .to_string();
+
+        let result = execute_read(&ToolContext::from_current_process(), &args).unwrap();
+        assert!(result.output.contains("no content to show"));
+    }
+
+    #[test]
+    fn start_line_one_without_end_line_matches_default() {
+        // Explicit start_line=1 without end_line should behave same as default.
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+        let lines: Vec<String> = (1..=600).map(|i| format!("Line {i}")).collect();
+        fs::write(&file_path, lines.join("\n")).unwrap();
+
+        let args = serde_json::json!({
+            "path": file_path.to_str().unwrap(),
+            "start_line": 1
+        })
+        .to_string();
+
+        let result = execute_read(&ToolContext::from_current_process(), &args).unwrap();
+        assert!(result.output.contains("Lines 1-500/600"));
+        assert!(result.output.contains("[... 100 more lines ...]"));
     }
 }

@@ -10,7 +10,7 @@ Completed tasks are retained for history and stable task-id lookup.
 - Pending: 0
 - Blocked: 0
 - Tracking: 0
-- Completed: 106
+- Completed: 107
 
 ## Tasks
 
@@ -122,3 +122,4 @@ Completed tasks are retained for history and stable task-id lookup.
 | [137](137.md) | Report Per-Edit Preflight Results on Multi-Edit Failure | Completed | P2 | S | - | - |
 | [138](138.md) | Improve Edit No-Op Handling | Completed | P2 | S | - | - |
 | [141](141.md) | Prevent Bash Sandbox False Positives from Command Output | Completed | P1 | M | - | - |
+| [143](143.md) | Improve Read Tool Range Defaults When start_line Is Provided | Completed | P2 | S | - | - |

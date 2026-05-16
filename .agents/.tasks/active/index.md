@@ -7,7 +7,7 @@ Active tasks include open, pending, blocked, and tracking work.
 ## Status Summary
 
 - Open: 1
-- Pending: 40
+- Pending: 39
 - Blocked: 12
 - Tracking: 0
 - Completed: 0
@@ -62,7 +62,6 @@ Active tasks include open, pending, blocked, and tracking work.
 | [139](139.md) | Add Structured Bulk Edit Support for Mechanical Transformations | Pending | P2 | M | - | - |
 | [140](140.md) | Harden Edit Schema Guidance Against Malformed Arguments | Pending | P2 | S | - | - |
 | [142](142.md) | Add Bash Command Lint Hints for Common Agent Footguns | Pending | P2 | M | - | - |
-| [143](143.md) | Improve Read Tool Range Defaults When start_line Is Provided | Pending | P2 | S | - | - |
 | [144](144.md) | Require Final Dirty Worktree Reporting After Commits | Pending | P2 | S | - | - |
 | [145](145.md) | Add Platform Verification Guidance for cfg-Sensitive Changes | Pending | P2 | M | - | - |
 | [146](146.md) | Compact Large Tool Outputs Before Adding to Model Context | Pending | P2 | L | - | - |
