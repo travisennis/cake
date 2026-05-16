@@ -10,7 +10,7 @@ Completed tasks are retained for history and stable task-id lookup.
 - Pending: 0
 - Blocked: 0
 - Tracking: 0
-- Completed: 107
+- Completed: 108
 
 ## Tasks
 
@@ -123,3 +123,4 @@ Completed tasks are retained for history and stable task-id lookup.
 | [138](138.md) | Improve Edit No-Op Handling | Completed | P2 | S | - | - |
 | [141](141.md) | Prevent Bash Sandbox False Positives from Command Output | Completed | P1 | M | - | - |
 | [143](143.md) | Improve Read Tool Range Defaults When start_line Is Provided | Completed | P2 | S | - | - |
+| [149](149.md) | Record No-Op Hook Outcomes as Decision None | Completed | P2 | S | - | - |

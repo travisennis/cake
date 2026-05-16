@@ -4,7 +4,7 @@ expression: session_record_json(record)
 ---
 {
   "command": "./session-start.sh",
-  "decision": "allow",
+  "decision": "none",
   "duration_ms": 17,
   "event": "session_start",
   "fail_closed": true,

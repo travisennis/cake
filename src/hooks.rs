@@ -458,10 +458,7 @@ impl HookRunner {
         let stdout_bytes = outcome.stdout.len();
         let level_error = outcome.command.fail_closed && outcome.error.is_some();
         let source_str = source.as_display_str();
-        let decision = outcome
-            .parsed
-            .as_ref()
-            .map_or("error", |p| p.decision.decision_label());
+        let decision = outcome_decision_label(outcome.parsed.as_ref(), outcome.error.as_ref());
         if level_error {
             tracing::error!(
                 target: "cake::hooks",
@@ -726,6 +723,17 @@ fn parse_hook_output(stdout: &str) -> Result<Option<RawHookOutput>, String> {
     serde_json::from_str(stdout)
         .map(Some)
         .map_err(|error| format!("hook stdout was not valid JSON: {error}"))
+}
+
+const fn outcome_decision_label(
+    parsed: Option<&ParsedHookOutput>,
+    error: Option<&String>,
+) -> &'static str {
+    match (parsed, error) {
+        (Some(parsed), _) => parsed.decision.decision_label(),
+        (None, Some(_)) => "error",
+        (None, None) => "none",
+    }
 }
 
 fn parse_tool_input(arguments: &str) -> Value {
@@ -1149,5 +1157,110 @@ mod tests {
             reason: "x".to_string(),
         };
         assert_eq!(d.decision_label(), "stop");
+    }
+
+    // ── record_outcome decision label ──────────────────────────────
+
+    #[test]
+    fn decision_label_no_op_hook_is_none() {
+        // Exit-0 hook with empty stdout: parsed is None, error is None
+        // → should record decision "none", not "error"
+        let outcome = InvocationOutcome {
+            command: HookCommand {
+                command: "true".to_string(),
+                timeout: Duration::from_secs(2),
+                fail_closed: false,
+                status_message: None,
+                source_path: PathBuf::from("/tmp/hooks.json"),
+            },
+            exit_code: Some(0),
+            duration: Duration::from_millis(10),
+            stdout: String::new(),
+            stderr: String::new(),
+            parsed: None,
+            error: None,
+        };
+
+        let decision = outcome_decision_label(outcome.parsed.as_ref(), outcome.error.as_ref());
+        assert_eq!(decision, "none");
+    }
+
+    #[test]
+    fn decision_label_hook_error_is_error() {
+        // Hook that failed to start or had execution error:
+        // parsed is None, error is Some → should record "error"
+        let outcome = InvocationOutcome {
+            command: HookCommand {
+                command: "bad-command".to_string(),
+                timeout: Duration::from_secs(2),
+                fail_closed: false,
+                status_message: None,
+                source_path: PathBuf::from("/tmp/hooks.json"),
+            },
+            exit_code: Some(1),
+            duration: Duration::from_millis(5),
+            stdout: String::new(),
+            stderr: "command not found".to_string(),
+            parsed: None,
+            error: Some("hook exited with code 1: command not found".to_string()),
+        };
+
+        let decision = outcome_decision_label(outcome.parsed.as_ref(), outcome.error.as_ref());
+        assert_eq!(decision, "error");
+    }
+
+    #[test]
+    fn decision_label_parsed_continue_is_none() {
+        // Parsed Continue decision should still label as "none"
+        let outcome = InvocationOutcome {
+            command: HookCommand {
+                command: "hook.sh".to_string(),
+                timeout: Duration::from_secs(2),
+                fail_closed: false,
+                status_message: None,
+                source_path: PathBuf::from("/tmp/hooks.json"),
+            },
+            exit_code: Some(0),
+            duration: Duration::from_millis(10),
+            stdout: "{\"permission\":\"allow\"}".to_string(),
+            stderr: String::new(),
+            parsed: Some(ParsedHookOutput {
+                decision: HookDecision::Continue,
+                updated_input: None,
+                additional_context: None,
+            }),
+            error: None,
+        };
+
+        let decision = outcome_decision_label(outcome.parsed.as_ref(), outcome.error.as_ref());
+        assert_eq!(decision, "none");
+    }
+
+    #[test]
+    fn decision_label_parsed_deny_is_deny() {
+        let outcome = InvocationOutcome {
+            command: HookCommand {
+                command: "hook.sh".to_string(),
+                timeout: Duration::from_secs(2),
+                fail_closed: false,
+                status_message: None,
+                source_path: PathBuf::from("/tmp/hooks.json"),
+            },
+            exit_code: Some(0),
+            duration: Duration::from_millis(10),
+            stdout: "{\"permission\":\"deny\"}".to_string(),
+            stderr: String::new(),
+            parsed: Some(ParsedHookOutput {
+                decision: HookDecision::Deny {
+                    reason: "not allowed".to_string(),
+                },
+                updated_input: None,
+                additional_context: None,
+            }),
+            error: None,
+        };
+
+        let decision = outcome_decision_label(outcome.parsed.as_ref(), outcome.error.as_ref());
+        assert_eq!(decision, "deny");
     }
 }

@@ -4,7 +4,7 @@ expression: session_record_json(record)
 ---
 {
   "command": "./post-tool-use.sh",
-  "decision": "allow",
+  "decision": "none",
   "duration_ms": 42,
   "event": "post_tool_use",
   "exit_code": 0,
