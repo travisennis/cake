@@ -11,8 +11,16 @@ Cancelled tasks are retained for history and stable task-id lookup. They are not
 - Blocked: 0
 - Tracking: 0
 - Completed: 0
-- Cancelled: 0
+- Cancelled: 7
 
 ## Tasks
 
-None.
+| Task | Title | Status | Priority | Effort | Labels | ExecPlan | Depends on |
+| ---- | ----- | ------ | -------- | ------ | ------ | -------- | ---------- |
+| [006](006.md) | Add Lightweight Spinner/Status Line on stderr by Default | Cancelled | - | - | - | - | - |
+| [007](007.md) | Support --prompt-file for Reading Prompts from Files | Cancelled | - | - | - | - | - |
+| [008](008.md) | Add --output-file Flag with Metadata | Cancelled | - | - | - | - | - |
+| [010](010.md) | Add --dry-run Flag for Cost Estimation | Cancelled | - | - | - | - | - |
+| [011](011.md) | Add --add-file for Injecting Single Files into Context | Cancelled | - | - | - | - | - |
+| [014](014.md) | Add Task Chaining with --then Flag | Cancelled | - | - | - | - | - |
+| [015](015.md) | Consolidate Per-Function unwrap_used Allow to Module-Level in Tests | Cancelled | - | - | - | - | - |

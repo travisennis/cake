@@ -8,7 +8,7 @@ Active tasks include open, pending, blocked, and tracking work.
 
 - Open: 2
 - Pending: 40
-- Blocked: 12
+- Blocked: 5
 - Tracking: 0
 - Completed: 0
 - Cancelled: 0
@@ -19,15 +19,8 @@ Active tasks include open, pending, blocked, and tracking work.
 | ---- | ----- | ------ | -------- | ------ | ------ | -------- | ---------- |
 | [004](004.md) | Fix mtime-Based Newest Session Resolution Fragility | Blocked | - | - | - | - | - |
 | [005](005.md) | Add CLI Introspection Subcommands | Blocked | - | - | - | - | - |
-| [006](006.md) | Add Lightweight Spinner/Status Line on stderr by Default | Blocked | - | - | - | - | - |
-| [007](007.md) | Support --prompt-file for Reading Prompts from Files | Blocked | - | - | - | - | - |
-| [008](008.md) | Add --output-file Flag with Metadata | Blocked | - | - | - | - | - |
 | [009](009.md) | Add Session Browsing Commands | Blocked | - | - | - | - | - |
-| [010](010.md) | Add --dry-run Flag for Cost Estimation | Blocked | - | - | - | - | - |
-| [011](011.md) | Add --add-file for Injecting Single Files into Context | Blocked | - | - | - | - | - |
 | [012](012.md) | Add Template Prompts from .cake/prompts/ | Blocked | - | - | - | - | - |
-| [014](014.md) | Add Task Chaining with --then Flag | Blocked | - | - | - | - | - |
-| [015](015.md) | Consolidate Per-Function unwrap_used Allow to Module-Level in Tests | Blocked | - | - | - | - | - |
 | [016](016.md) | Refactor send() and execute_bash() into Smaller Functions | Blocked | - | - | - | - | - |
 | [030](030.md) | Investigate Session-Level Hook Observability | Pending | - | - | - | - | - |
 | [091](091.md) | Clean Up macOS Sandbox String Construction Style | Pending | P3 | M | - | - | 040 (Seatbelt profile builder) |
