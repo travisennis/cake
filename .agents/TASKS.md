@@ -123,12 +123,19 @@ If a generated index is stale, do not patch the index directly. Fix the task fil
 
 When implementing a task, keep the change scoped to the task's problem statement and acceptance notes. Preserve unrelated worktree changes, and do not commit unless the user explicitly asks.
 
-Before implementing any task, check its `Effort` field.
+Before implementing any task, check its labels, effort, and risk.
 
 - `Effort: L` and `Effort: XL` tasks must have an ExecPlan before code changes begin.
 - If no ExecPlan exists for an `L` or `XL` task, create one under `.agents/exec-plans/active/` using `.agents/PLANS.md` before implementation.
 - Update the task file to point to the ExecPlan and record whether the task is blocked on, tracked by, or completed by that plan.
 - Update `.agents/exec-plans/active/index.md` when creating, completing, or moving an ExecPlan.
 - For `Effort: S` or `Effort: M`, an ExecPlan is optional unless the task is a significant refactor, cross-cutting behavior change, or has substantial unknowns.
+
+Tasks that introduce or change an architectural decision must have an Architecture Decision Record before implementation. ADRs live under `docs/adr/`; use `docs/adr/README.md` for the numbering, naming, and template rules.
+
+- `type:feature` tasks require an ADR when they introduce or change user-visible behavior, persisted state, tool behavior, model-provider behavior, sandbox behavior, configuration shape, or another durable architectural contract.
+- ADRs are also required for security-sensitive changes, breaking changes, migrations, major runtime dependencies, cross-platform behavior changes, and substantial changes in `area:sandbox`, `area:session`, `area:model`, `area:responses`, `area:chat`, `area:tools`, `area:prompts`, or `area:config`.
+- ADRs are optional for localized fixes, tests, docs, small refactors, and implementation-only follow-through that does not create a new durable decision.
+- When an ADR is required, create or update it before code changes begin, then reference it from the task body or implementation notes. If the task also requires an ExecPlan, the ExecPlan should cite the ADR and implement the accepted decision.
 
 After finishing a task that changes code, config, or dependencies, run the project's Full CI check as instructed in `AGENTS.md`. For docs-only task updates, verify the Markdown and links; full CI is not required unless code, config, or dependency files changed.

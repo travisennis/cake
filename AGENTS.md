@@ -123,6 +123,10 @@ When writing complex features or significant refactors (e.g. L or XL tasks), use
 
 Keep `.agents/exec-plans/active/index.md` current when creating, completing, or moving plans.
 
+## Architecture Decision Records
+
+When a task introduces or changes a durable architectural decision, write or update an ADR under `docs/adr/` before implementation. Follow `docs/adr/README.md` for ADR triggers, numbering, naming, and template rules.
+
 ---
 
 ## Additional Notes
