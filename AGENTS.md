@@ -4,16 +4,40 @@
 
 cake is an AI coding assistant CLI that:
 
-- Written with Rust 2024 edition with Tokio async runtime
+- Is written with Rust 2024 edition with the Tokio async runtime
 - Binary-only CLI. Not a library.
 - Uses clap for CLI parsing, anyhow/thiserror for error, tracing for logging
-- Use reqwest + serde/serde_json for HTTP/JSON
-- Integrates with LLMs via an API compatible for with OpenAI Chat Completions or the Responses API.
+- Uses reqwest + serde/serde_json for HTTP/JSON
+- Integrates with LLMs through OpenAI-compatible Chat Completions and Responses API backends.
 - Executes tools (Bash, Read, Edit, Write) in a sandboxed environment
 - Manages conversation sessions with continue/resume/fork capabilities
 - Uses OS-level sandboxing (macOS Seatbelt, Linux Landlock)
 
 **Core mechanism**: The agent loop lets the model execute tools, receive results, and continue until it returns a final response.
+
+---
+
+## Start Here
+
+1. Read this file fully before making changes.
+2. For task work, read `.agents/TASKS.md`, then `.agents/.tasks/index.md`, then the specific task file.
+3. Prefer narrow checks first, then `cargo fmt`, then `just ci` before final handoff.
+4. Do not commit or push unless explicitly asked.
+5. Never edit generated task indexes by hand.
+
+---
+
+## Required Workflow
+
+- Before final handoff for any code, test, config, fixture, or dependency change, run `just ci`.
+- If `just ci` cannot be run, state the exact reason and list the narrower checks that were run instead.
+- For Rust code changes, use this verification sequence:
+  1. Run the narrowest useful check first, such as `cargo check --tests`, `cargo test <module_or_test_name>`, or `cargo test`.
+  2. Run `cargo fmt` after code edits.
+  3. Run `just ci` before final handoff or commit.
+- When changing test fixtures, test-only code, struct literals used in tests, or `#[cfg(test)]` modules, run `cargo check --tests` before relying on `cargo build` or `cargo check`. Plain `cargo build` and `cargo check` do not validate this project's test code.
+- This is a binary-only crate. Do not run `cargo test --lib`; there is no library target. Use `cargo test <module_or_test_name>` for targeted tests, or `cargo test` for the full test suite.
+- Do not commit or push code unless explicitly asked to.
 
 ---
 
@@ -59,23 +83,55 @@ just rust-version-check
 
 ---
 
-## Agent Instructions
+## Targeted Test Examples
 
-- Run the `Full CI check` command when you complete a task that involves code, config, or dependency changes to make sure the code is correct.
-- This is a binary-only crate. Do not run `cargo test --lib`; there is no library target. Use `cargo test <module_or_test_name>` for targeted tests, or `cargo test` for the full test suite.
-- When changing test fixtures, test-only code, struct literals used in tests, or `#[cfg(test)]` modules, run `cargo check --tests` before relying on `cargo build` or `cargo check`. Plain `cargo build` and `cargo check` do not validate this project's test code.
-- For Rust code changes, use this verification sequence:
-  1. Run the narrowest useful check first, such as `cargo check --tests`, `cargo test <module_or_test_name>`, or `cargo test`.
-  2. Run `cargo fmt` after code edits.
-  3. Run `just ci` before final handoff or commit.
+```bash
+# Good targeted test commands
+cargo test responses
+cargo test session::tests
+cargo test test_name
+
+# Do not use; this crate has no library target
+cargo test --lib
+```
+
+---
+
+## Task Queue Rules
+
 - When a task includes committing and task-status updates, commit the intended code/task changes together unless the user asks for separate commits. After committing and moving or regenerating task files, run `git status --short` before the final response and report any remaining uncommitted or untracked files.
 - When asked to create, choose, update, or work on a task, first read `.agents/TASKS.md`, then use `.agents/.tasks/index.md` as the task queue and open the specific task file before acting.
 - Use task labels to filter work by type, area, and risk when the user asks for focused work.
 - Do not edit generated task indexes by hand; update task files and run `just task-index` (never invoke the underlying Python script directly).
 - When marking a task as Completed, use `just task-complete <id>`. It updates the task front matter, moves the file from `.agents/.tasks/active/` to `.agents/.tasks/completed/`, and regenerates the indexes in one step. Do not leave Completed tasks in `active/`.
 - When marking a task as Cancelled, use `just task-cancel <id>`. It updates the task front matter, moves the file from `.agents/.tasks/active/` to `.agents/.tasks/cancelled/`, and regenerates the indexes in one step. Do not leave Cancelled tasks in `active/`.
+
+---
+
+## Research Rules
+
 - When asked to create, update, organize, or use research, first read `.agents/RESEARCH.md`, then use `.agents/.research/index.md` as the research map and open the relevant research file before acting.
-- Do not commit or push code unless explicitly asked to.
+
+---
+
+## Git Worktree Safety
+
+- Assume uncommitted changes may belong to the user.
+- Do not revert, overwrite, or clean files you did not intentionally change.
+- Before broad edits, inspect `git status --short`.
+- Before final handoff, report remaining uncommitted or untracked files when relevant.
+
+---
+
+## Commit Handoff Requirements
+
+After any commit:
+
+- Run `git status --short` before the final response.
+- Include the commit hash in the final response.
+- State whether the worktree is clean.
+- If the worktree is not clean, list the remaining modified, deleted, or untracked files.
+- Distinguish files changed by the agent from unrelated or pre-existing worktree changes when that context is known.
 
 ---
 
@@ -121,11 +177,30 @@ This project uses [Conventional Commits](https://www.conventionalcommits.org/). 
 
 When writing complex features or significant refactors (e.g. L or XL tasks), use an ExecPlan (as described in .agents/PLANS.md) from design to implementation.
 
+Use an ExecPlan for:
+
+- L or XL tasks
+- Multi-module refactors
+- Changes that alter agent loop behavior
+- Changes to tool execution, sandboxing, sessions, or API backends
+
 Keep `.agents/exec-plans/active/index.md` current when creating, completing, or moving plans.
+
+---
 
 ## Architecture Decision Records
 
 When a task introduces or changes a durable architectural decision, write or update an ADR under `docs/adr/` before implementation. Follow `docs/adr/README.md` for ADR triggers, numbering, naming, and template rules.
+
+---
+
+## Common Pitfalls
+
+- `cargo build` does not validate test-only code.
+- Do not edit `.agents/.tasks/index.md` directly.
+- Completed and Cancelled tasks must be moved with `just task-complete` or `just task-cancel`.
+- This crate has no library target.
+- Do not introduce `#[allow(dead_code)]`.
 
 ---
 
