@@ -159,11 +159,35 @@ impl CliOutputSink {
 
         match self.format {
             OutputFormat::Text => {
-                let (client, spinner) = CodingAssistant::with_text_progress(client);
+                let (client, spinner) = Self::attach_text_progress(client);
                 (client, Some(spinner))
             },
             OutputFormat::StreamJson | OutputFormat::Json => (client, None),
         }
+    }
+
+    /// Attach text-mode progress reporting to the agent and return its spinner.
+    fn attach_text_progress(client: Agent) -> (Agent, ProgressBar) {
+        let spinner = ProgressBar::new_spinner();
+        let style = ProgressStyle::with_template("{spinner:.cyan} {msg}")
+            .unwrap_or_else(|_| ProgressStyle::default_spinner());
+        spinner.set_style(style);
+        spinner.enable_steady_tick(Duration::from_millis(80));
+        spinner.set_message("Thinking...");
+
+        let spinner_clone = spinner.clone();
+        let retry_spinner = spinner.clone();
+        let client = client.with_progress_callback(move |item| {
+            let msg = format_spinner_message(item);
+            if let Some(msg) = msg {
+                spinner_clone.set_message(msg);
+            }
+        });
+        let client = client.with_retry_callback(move |status| {
+            retry_spinner.set_message(format_retry_message(status));
+        });
+
+        (client, spinner)
     }
 
     fn finish_progress(self, spinner: Option<ProgressBar>, duration_ms: u64, client: &Agent) {
@@ -762,30 +786,6 @@ impl CodingAssistant {
                 ))
             },
         }
-    }
-
-    /// Attach text-mode progress reporting to the agent and return its spinner.
-    fn with_text_progress(client: Agent) -> (Agent, ProgressBar) {
-        let spinner = ProgressBar::new_spinner();
-        let style = ProgressStyle::with_template("{spinner:.cyan} {msg}")
-            .unwrap_or_else(|_| ProgressStyle::default_spinner());
-        spinner.set_style(style);
-        spinner.enable_steady_tick(Duration::from_millis(80));
-        spinner.set_message("Thinking...");
-
-        let spinner_clone = spinner.clone();
-        let retry_spinner = spinner.clone();
-        let client = client.with_progress_callback(move |item| {
-            let msg = format_spinner_message(item);
-            if let Some(msg) = msg {
-                spinner_clone.set_message(msg);
-            }
-        });
-        let client = client.with_retry_callback(move |status| {
-            retry_spinner.set_message(format_retry_message(status));
-        });
-
-        (client, spinner)
     }
 
     /// Set up a worktree if `--worktree` was provided.
