@@ -22,7 +22,7 @@ Entry point for user interaction. Parses command-line arguments using clap, vali
 
 Key types: `CmdRunner` trait (the interface all commands implement), `instruct::Cmd` (the main command).
 
-The CLI layer is intentionally thin—it delegates all business logic to lower layers.
+The CLI layer is intentionally thin---it delegates all business logic to lower layers.
 
 ### Layer 3: Clients (`clients` module)
 
@@ -63,7 +63,7 @@ Sessions are stored as flat `{uuid}.jsonl` files under `~/.local/share/cake/sess
 - `Message`: Simple role+content struct for high-level API
 - `Role`: Enum of System, Assistant, User, Tool
 
-These types are intentionally simple—most of the system uses `ConversationItem` directly.
+These types are intentionally simple---most of the system uses `ConversationItem` directly.
 
 **`prompts`**: System prompt construction with AGENTS.md and skill catalog integration. Reads user-level (`~/.cake/AGENTS.md`), XDG config (`~/.config/AGENTS.md`), and project-level (`./AGENTS.md`) instruction files, plus discovered skills from `.agents/skills/`, and injects them into the system prompt.
 

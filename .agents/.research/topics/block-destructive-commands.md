@@ -653,6 +653,7 @@ let heredoc = fancy_regex::Regex::new(
 Heredocs are often used for data (commit messages, config files) rather than executable scripts. Only block heredocs that are explicitly executed:
 
 **Blocked** (executed by shell):
+
 ```bash
 bash <<EOF
 git reset --hard
@@ -664,6 +665,7 @@ EOF
 ```
 
 **Allowed** (used as data):
+
 ```bash
 git commit -m "$(cat <<'EOF'
 fix: handle git branch -D correctly
@@ -741,34 +743,36 @@ function isInsideQuotes(command: string, position: number): boolean {
 ```
 
 **Blocked** (actual command):
+
 ```bash
 git branch -D feature
 ```
 
 **Allowed** (text inside commit message):
+
 ```bash
 git commit -m "fix: handle git branch -D correctly"
 ```
 
 ## Summary Table
 
-| Pattern | Blocked | Allowed Alternative |
-|---------|---------|---------------------|
-| `git reset --hard` | Yes | `git reset --soft`, `git stash` |
-| `git reset --merge` | Yes | `git stash` |
-| `git checkout -- <file>` | Yes | `git restore --staged <file>` |
-| `git restore <file>` | Yes | `git restore --staged <file>` |
-| `git restore -b <branch>` | No | N/A (creates branch) |
-| `git clean -f` | Yes | `git clean -n` (preview) |
-| `git push --force` | Yes | `git push --force-with-lease` |
-| `git branch -D` | Yes | `git branch -d` |
-| `git stash drop` | Yes | `git stash pop` |
-| `git stash clear` | Yes | `git stash pop` |
-| `rm -rf /tmp/*` | No | N/A (allowed) |
-| `rm -rf /var/tmp/*` | No | N/A (allowed) |
-| `rm -rf $TMPDIR/*` | No | N/A (allowed) |
-| `rm -rf <other>` | Yes | N/A |
-| Inline script with above | Yes | N/A |
-| Heredoc executed by shell | Yes | N/A |
-| Heredoc used as data | No | N/A (commit messages, config files) |
-| Command in quoted string | No | N/A (text, not executed) |
+  | Pattern                   | Blocked | Allowed Alternative                 |
+  | ------------------------- | ------- | ----------------------------------- |
+  | `git reset --hard`        | Yes     | `git reset --soft`, `git stash`     |
+  | `git reset --merge`       | Yes     | `git stash`                         |
+  | `git checkout -- <file>`  | Yes     | `git restore --staged <file>`       |
+  | `git restore <file>`      | Yes     | `git restore --staged <file>`       |
+  | `git restore -b <branch>` | No      | N/A (creates branch)                |
+  | `git clean -f`            | Yes     | `git clean -n` (preview)            |
+  | `git push --force`        | Yes     | `git push --force-with-lease`       |
+  | `git branch -D`           | Yes     | `git branch -d`                     |
+  | `git stash drop`          | Yes     | `git stash pop`                     |
+  | `git stash clear`         | Yes     | `git stash pop`                     |
+  | `rm -rf /tmp/*`           | No      | N/A (allowed)                       |
+  | `rm -rf /var/tmp/*`       | No      | N/A (allowed)                       |
+  | `rm -rf $TMPDIR/*`        | No      | N/A (allowed)                       |
+  | `rm -rf <other>`          | Yes     | N/A                                 |
+  | Inline script with above  | Yes     | N/A                                 |
+  | Heredoc executed by shell | Yes     | N/A                                 |
+  | Heredoc used as data      | No      | N/A (commit messages, config files) |
+  | Command in quoted string  | No      | N/A (text, not executed)            |

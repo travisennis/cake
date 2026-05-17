@@ -38,16 +38,19 @@ One thread emphasizes that tests, type-checkers, and formal specs provide "empir
 ## Specific Applications for Your Stack
 
 ### Rust CLI Agent
+
 - **Protocol handling:** If your CLI talks to any service, formalize the protocol state machine
 - **File system operations:** Lean can verify sequences of operations are safe
 - **Use Aeneas:** There is a Lean-based tool specifically for verifying Rust (mentioned in comments)
 
 ### TypeScript TUI Agent
+
 - **State management:** Formal specs for UI state transitions (especially if using something like XState)
 - **Property-based testing:** Comments note this is more accessible than full proofs - generate test cases from specs
 - **Event handling:** Verify event handlers maintain invariants
 
 ### React/Spring Boot Webapp
+
 - **API contracts:** Formalize request/response contracts
 - **Auth flows:** Authentication/authorization are classic formal methods use cases
 - **Database transactions:** Verify transaction isolation properties

@@ -6,7 +6,7 @@ Hooks is a feature we are considering adding to cake. We are currently in the re
 
 This document summarizes hooks implementations across four major AI coding assistants: Claude Code, OpenAI Codex, Cursor, and GitHub Copilot. Each system takes a slightly different approach, but there are common patterns that can inform cake's implementation.
 
----
+--------------------------------------------------------------------------------
 
 ## Executive Summary
 
@@ -20,87 +20,87 @@ All four systems share a common architecture:
 
 Claude Code has the most comprehensive implementation with 22+ hook events, 4 hook types (command, HTTP, prompt, agent), and rich decision control. GitHub Copilot has a focused implementation with cross-platform support (bash + PowerShell) and a unique `errorOccurred` hook. Cursor and Codex have simpler implementations focused on core use cases.
 
----
+--------------------------------------------------------------------------------
 
 ## Comparison Matrix
 
 ### Hook Events Supported
 
-| Event | Claude Code | Codex | Cursor | GitHub Copilot |
-|-------|:-----------:|:-----:|:------:|:--------------:|
-| SessionStart | ✅ | ✅ | ✅ | ✅ |
-| SessionEnd | ✅ | - | ✅ | ✅ |
-| UserPromptSubmit | ✅ | ✅ | ✅ (beforeSubmitPrompt) | ✅ |
-| PreToolUse | ✅ | ✅ | ✅ (preToolUse) | ✅ |
-| PostToolUse | ✅ | ✅ | ✅ | ✅ |
-| PostToolUseFailure | ✅ | - | ✅ | - |
-| PermissionRequest | ✅ | - | - | - |
-| Notification | ✅ | - | - | - |
-| SubagentStart | ✅ | - | ✅ | - |
-| SubagentStop | ✅ | - | ✅ | ✅ |
-| Stop | ✅ | ✅ | ✅ | ✅ (agentStop) |
-| StopFailure | ✅ | - | - | - |
-| PreCompact | ✅ | - | ✅ | - |
-| PostCompact | ✅ | - | - | - |
-| ConfigChange | ✅ | - | - | - |
-| CwdChanged | ✅ | - | - | - |
-| FileChanged | ✅ | - | - | - |
-| InstructionsLoaded | ✅ | - | - | - |
-| TaskCreated | ✅ | - | - | - |
-| TaskCompleted | ✅ | - | - | - |
-| TeammateIdle | ✅ | - | - | - |
-| Elicitation | ✅ | - | - | - |
-| ElicitationResult | ✅ | - | - | - |
-| WorktreeCreate | ✅ | - | - | - |
-| WorktreeRemove | ✅ | - | - | - |
-| ErrorOccurred | - | - | - | ✅ |
-| beforeShellExecution | - | - | ✅ | - |
-| afterShellExecution | - | - | ✅ | - |
-| beforeMCPExecution | - | - | ✅ | - |
-| afterMCPExecution | - | - | ✅ | - |
-| beforeReadFile | - | - | ✅ | - |
-| afterFileEdit | - | - | ✅ | - |
-| afterAgentResponse | - | - | ✅ | - |
-| afterAgentThought | - | - | ✅ | - |
-| beforeTabFileRead | - | - | ✅ | - |
-| afterTabFileEdit | - | - | ✅ | - |
+  | Event                | Claude Code | Codex | Cursor                  | GitHub Copilot |
+  | -------------------- | :---------: | :---: | :---------------------: | :------------: |
+  | SessionStart         |     ✅      |  ✅   |           ✅            |       ✅       |
+  | SessionEnd           |     ✅      |   -   |           ✅            |       ✅       |
+  | UserPromptSubmit     |     ✅      |  ✅   | ✅ (beforeSubmitPrompt) |       ✅       |
+  | PreToolUse           |     ✅      |  ✅   |     ✅ (preToolUse)     |       ✅       |
+  | PostToolUse          |     ✅      |  ✅   |           ✅            |       ✅       |
+  | PostToolUseFailure   |     ✅      |   -   |           ✅            |       -        |
+  | PermissionRequest    |     ✅      |   -   |            -            |       -        |
+  | Notification         |     ✅      |   -   |            -            |       -        |
+  | SubagentStart        |     ✅      |   -   |           ✅            |       -        |
+  | SubagentStop         |     ✅      |   -   |           ✅            |       ✅       |
+  | Stop                 |     ✅      |  ✅   |           ✅            | ✅ (agentStop) |
+  | StopFailure          |     ✅      |   -   |            -            |       -        |
+  | PreCompact           |     ✅      |   -   |           ✅            |       -        |
+  | PostCompact          |     ✅      |   -   |            -            |       -        |
+  | ConfigChange         |     ✅      |   -   |            -            |       -        |
+  | CwdChanged           |     ✅      |   -   |            -            |       -        |
+  | FileChanged          |     ✅      |   -   |            -            |       -        |
+  | InstructionsLoaded   |     ✅      |   -   |            -            |       -        |
+  | TaskCreated          |     ✅      |   -   |            -            |       -        |
+  | TaskCompleted        |     ✅      |   -   |            -            |       -        |
+  | TeammateIdle         |     ✅      |   -   |            -            |       -        |
+  | Elicitation          |     ✅      |   -   |            -            |       -        |
+  | ElicitationResult    |     ✅      |   -   |            -            |       -        |
+  | WorktreeCreate       |     ✅      |   -   |            -            |       -        |
+  | WorktreeRemove       |     ✅      |   -   |            -            |       -        |
+  | ErrorOccurred        |      -      |   -   |            -            |       ✅       |
+  | beforeShellExecution |      -      |   -   |           ✅            |       -        |
+  | afterShellExecution  |      -      |   -   |           ✅            |       -        |
+  | beforeMCPExecution   |      -      |   -   |           ✅            |       -        |
+  | afterMCPExecution    |      -      |   -   |           ✅            |       -        |
+  | beforeReadFile       |      -      |   -   |           ✅            |       -        |
+  | afterFileEdit        |      -      |   -   |           ✅            |       -        |
+  | afterAgentResponse   |      -      |   -   |           ✅            |       -        |
+  | afterAgentThought    |      -      |   -   |           ✅            |       -        |
+  | beforeTabFileRead    |      -      |   -   |           ✅            |       -        |
+  | afterTabFileEdit     |      -      |   -   |           ✅            |       -        |
 
 ### Hook Types Supported
 
-| Type | Claude Code | Codex | Cursor | GitHub Copilot |
-|------|:-----------:|:-----:|:------:|:--------------:|
-| Command | ✅ | ✅ | ✅ | ✅ |
-| HTTP | ✅ | - | - | - |
-| Prompt (LLM-evaluated) | ✅ | - | ✅ | - |
-| Agent (multi-turn with tools) | ✅ | - | - | - |
+  | Type                          | Claude Code | Codex | Cursor | GitHub Copilot |
+  | ----------------------------- | :---------: | :---: | :----: | :------------: |
+  | Command                       |     ✅      |  ✅   |   ✅   |       ✅       |
+  | HTTP                          |     ✅      |   -   |   -    |       -        |
+  | Prompt (LLM-evaluated)        |     ✅      |   -   |   ✅   |       -        |
+  | Agent (multi-turn with tools) |     ✅      |   -   |   -    |       -        |
 
 ### Configuration Locations
 
-| Location | Claude Code | Codex | Cursor | GitHub Copilot |
-|----------|:-----------:|:-----:|:------:|:--------------:|
-| User-level | `~/.claude/settings.json` | `~/.codex/hooks.json` | `~/.cursor/hooks.json` | - |
-| Project-level | `.claude/settings.json` | `<repo>/.codex/hooks.json` | `<project>/.cursor/hooks.json` | `.github/hooks/*.json` |
-| Local (gitignored) | `.claude/settings.local.json` | - | - | - |
-| Enterprise/MDM | Managed policy settings | - | ✅ (system paths) | - |
-| Team cloud sync | - | - | ✅ (Enterprise) | - |
-| Plugin-based | `hooks/hooks.json` in plugins | - | - | - |
-| Skill/Agent frontmatter | YAML frontmatter | - | - | - |
+  | Location                | Claude Code                   | Codex                      | Cursor                         | GitHub Copilot         |
+  | ----------------------- | :---------------------------: | :------------------------: | :----------------------------: | :--------------------: |
+  | User-level              |   `~/.claude/settings.json`   |   `~/.codex/hooks.json`    |     `~/.cursor/hooks.json`     |           -            |
+  | Project-level           |    `.claude/settings.json`    | `<repo>/.codex/hooks.json` | `<project>/.cursor/hooks.json` | `.github/hooks/*.json` |
+  | Local (gitignored)      | `.claude/settings.local.json` |             -              |               -                |           -            |
+  | Enterprise/MDM          |    Managed policy settings    |             -              |       ✅ (system paths)        |           -            |
+  | Team cloud sync         |               -               |             -              |        ✅ (Enterprise)         |           -            |
+  | Plugin-based            | `hooks/hooks.json` in plugins |             -              |               -                |           -            |
+  | Skill/Agent frontmatter |       YAML frontmatter        |             -              |               -                |           -            |
 
 ### Decision Control Capabilities
 
-| Capability | Claude Code | Codex | Cursor | GitHub Copilot |
-|------------|:-----------:|:-----:|:------:|:--------------:|
-| Allow tool execution | ✅ | ✅ | ✅ | ✅ |
-| Deny/block tool execution | ✅ | ✅ | ✅ | ✅ |
-| Ask user for confirmation | ✅ | - | ✅ | ✅ (parsed but not processed) |
-| Modify tool input before execution | ✅ | Parsed but unsupported | ✅ | - |
-| Inject additional context | ✅ | ✅ | ✅ | - |
-| Modify tool output | ✅ (MCP tools) | Parsed but unsupported | ✅ | - |
-| Stop session entirely | ✅ | ✅ | - | - |
-| Auto-continue with follow-up | ✅ (Stop hook) | ✅ (Stop hook) | ✅ (stop hook) | - |
-| Modify permissions/rules | ✅ | - | - | - |
+  | Capability                         | Claude Code    | Codex                  | Cursor         | GitHub Copilot                |
+  | ---------------------------------- | :------------: | :--------------------: | :------------: | :---------------------------: |
+  | Allow tool execution               |       ✅       |           ✅           |       ✅       |              ✅               |
+  | Deny/block tool execution          |       ✅       |           ✅           |       ✅       |              ✅               |
+  | Ask user for confirmation          |       ✅       |           -            |       ✅       | ✅ (parsed but not processed) |
+  | Modify tool input before execution |       ✅       | Parsed but unsupported |       ✅       |               -               |
+  | Inject additional context          |       ✅       |           ✅           |       ✅       |               -               |
+  | Modify tool output                 | ✅ (MCP tools) | Parsed but unsupported |       ✅       |               -               |
+  | Stop session entirely              |       ✅       |           ✅           |       -        |               -               |
+  | Auto-continue with follow-up       | ✅ (Stop hook) |     ✅ (Stop hook)     | ✅ (stop hook) |               -               |
+  | Modify permissions/rules           |       ✅       |           -            |       -        |               -               |
 
----
+--------------------------------------------------------------------------------
 
 ## Detailed Source Analysis
 
@@ -164,6 +164,7 @@ Claude Code has the most mature and feature-rich hooks implementation.
 - Other = non-blocking error, execution continues
 
 **JSON output fields:**
+
 ```json
 {
   "continue": true,
@@ -222,7 +223,7 @@ Claude Code has the most mature and feature-rich hooks implementation.
 5. Return structured JSON for fine-grained control (vs exit codes)
 6. HTTP hooks are non-blocking by default (fail-open)
 
----
+--------------------------------------------------------------------------------
 
 ### 2. OpenAI Codex Hooks
 
@@ -314,7 +315,7 @@ Codex has a simpler, experimental hooks implementation.
 2. Codex may start from subdirectory, so avoid relative paths
 3. Default timeout is 600 seconds
 
----
+--------------------------------------------------------------------------------
 
 ### 3. Cursor Hooks
 
@@ -355,6 +356,7 @@ Cursor has a focused implementation with unique features for Tab (inline complet
 #### Hook Types
 
 **Command hooks:**
+
 ```json
 {
   "command": "./script.sh",
@@ -365,6 +367,7 @@ Cursor has a focused implementation with unique features for Tab (inline complet
 ```
 
 **Prompt hooks (LLM-evaluated):**
+
 ```json
 {
   "type": "prompt",
@@ -419,6 +422,7 @@ Cursor has a focused implementation with unique features for Tab (inline complet
 - Example: `"matcher": "curl|wget|nc"` matches network commands
 
 **Session environment:**
+
 ```json
 {
   "env": { "KEY": "value" },
@@ -434,7 +438,7 @@ Cursor has a focused implementation with unique features for Tab (inline complet
 4. Use `loop_limit` to prevent infinite stop hook loops
 5. Prompt hooks are good for policy enforcement without custom scripts
 
----
+--------------------------------------------------------------------------------
 
 ### 4. GitHub Copilot Hooks
 
@@ -489,6 +493,7 @@ GitHub Copilot has a focused, cross-platform hooks implementation with unique er
 #### Event-Specific Input
 
 **sessionStart:**
+
 ```json
 {
   "source": "new|resume|startup",
@@ -497,6 +502,7 @@ GitHub Copilot has a focused, cross-platform hooks implementation with unique er
 ```
 
 **sessionEnd:**
+
 ```json
 {
   "reason": "complete|error|abort|timeout|user_exit"
@@ -504,6 +510,7 @@ GitHub Copilot has a focused, cross-platform hooks implementation with unique er
 ```
 
 **userPromptSubmitted:**
+
 ```json
 {
   "prompt": "the user's prompt text"
@@ -511,6 +518,7 @@ GitHub Copilot has a focused, cross-platform hooks implementation with unique er
 ```
 
 **preToolUse:**
+
 ```json
 {
   "toolName": "bash|edit|view|create",
@@ -519,6 +527,7 @@ GitHub Copilot has a focused, cross-platform hooks implementation with unique er
 ```
 
 **postToolUse:**
+
 ```json
 {
   "toolName": "bash",
@@ -531,6 +540,7 @@ GitHub Copilot has a focused, cross-platform hooks implementation with unique er
 ```
 
 **errorOccurred:**
+
 ```json
 {
   "error": {
@@ -557,6 +567,7 @@ Note: Only `"deny"` is currently processed. `"allow"` and `"ask"` are parsed but
 #### Unique Features
 
 **Cross-platform scripts:**
+
 ```json
 {
   "type": "command",
@@ -571,6 +582,7 @@ Note: Only `"deny"` is currently processed. `"allow"` and `"ask"` are parsed but
 - Useful for logging, alerting, and error tracking
 
 **Multiple hooks per event:**
+
 ```json
 {
   "preToolUse": [
@@ -599,7 +611,7 @@ Note: Only `"deny"` is currently processed. `"allow"` and `"ask"` are parsed but
 5. Set appropriate timeouts to prevent resource exhaustion
 6. Use `jq` in bash or `ConvertFrom-Json` in PowerShell for JSON parsing
 
----
+--------------------------------------------------------------------------------
 
 ## Recommendations for cake
 
@@ -693,11 +705,11 @@ Exit 1 (or other) = Non-blocking error, continue execution
 
 ### 7. Configuration Locations
 
-| Location | Path | Priority |
-|----------|------|----------|
-| User | `~/.config/cake/hooks.json` | Lowest |
-| Project | `.cake/hooks.json` | Medium |
-| Local (gitignored) | `.cake/hooks.local.json` | Highest |
+  | Location           | Path                        | Priority |
+  | ------------------ | --------------------------- | -------- |
+  | User               | `~/.config/cake/hooks.json` | Lowest   |
+  | Project            | `.cake/hooks.json`          | Medium   |
+  | Local (gitignored) | `.cake/hooks.local.json`    | Highest  |
 
 ### 8. Rust Implementation Considerations
 
@@ -784,23 +796,26 @@ Since cake uses OS-level sandboxing (macOS Seatbelt, Linux Landlock), hooks shou
 - `cwd` and `env` fields in hook configuration
 - `timestamp` in all hook inputs (Unix milliseconds)
 
----
+--------------------------------------------------------------------------------
 
 ## Implementation Phases
 
 ### Phase 1: Core Hooks
+
 - PreToolUse, PostToolUse, PostToolUseFailure
 - Command hook type only
 - JSON stdio communication
 - Exit code semantics
 
 ### Phase 2: Lifecycle Hooks
+
 - SessionStart, SessionEnd, Stop
 - UserPromptSubmit
 - ErrorOccurred (for error handling/alerting)
 - Matcher/filter system
 
 ### Phase 3: Advanced Features
+
 - HTTP hooks
 - Prompt hooks (LLM-evaluated)
 - `if` conditions
@@ -808,11 +823,12 @@ Since cake uses OS-level sandboxing (macOS Seatbelt, Linux Landlock), hooks shou
 - Async hooks
 
 ### Phase 4: Enterprise Features
+
 - Multiple configuration layers
 - Hook validation and testing
 - Telemetry and debugging
 
----
+--------------------------------------------------------------------------------
 
 ## References
 

@@ -121,33 +121,43 @@ Run all commands from the repository root, `/Users/travisennis/Projects/cake`.
 
 Start by confirming the current baseline behavior before editing:
 
-    cargo test test_429_too_many_requests_retries_and_succeeds
-    cargo test test_401_unauthorized_returns_error
+```
+cargo test test_429_too_many_requests_retries_and_succeeds
+cargo test test_401_unauthorized_returns_error
+```
 
 After adding `src/clients/retry.rs`, add focused unit tests and run them during development:
 
-    cargo test parse_retry_after_delta_seconds
-    cargo test parse_retry_after_http_date
-    cargo test x_should_retry_false_blocks_retry
-    cargo test parse_context_overflow_reduces_output_budget
+```
+cargo test parse_retry_after_delta_seconds
+cargo test parse_retry_after_http_date
+cargo test x_should_retry_false_blocks_retry
+cargo test parse_context_overflow_reduces_output_budget
+```
 
 After replacing the retry loop and threading request overrides through both backends, run the higher-level tests:
 
-    cargo test test_429_retry_after_header_is_honored
-    cargo test test_529_overloaded_retries_and_succeeds
-    cargo test test_overloaded_error_body_retries_and_succeeds
-    cargo test test_context_overflow_reduces_max_output_tokens_once
-    cargo test test_401_unauthorized_returns_error
+```
+cargo test test_429_retry_after_header_is_honored
+cargo test test_529_overloaded_retries_and_succeeds
+cargo test test_overloaded_error_body_retries_and_succeeds
+cargo test test_context_overflow_reduces_max_output_tokens_once
+cargo test test_401_unauthorized_returns_error
+```
 
 Finish with the project-wide verification required by this repository:
 
-    just ci
+```
+just ci
+```
 
 The expected short transcript for the focused tests is ordinary Rust success output such as:
 
-    test ...::parse_retry_after_delta_seconds ... ok
-    test ...::test_529_overloaded_retries_and_succeeds ... ok
-    test result: ok. N passed; 0 failed
+```
+test ...::parse_retry_after_delta_seconds ... ok
+test ...::test_529_overloaded_retries_and_succeeds ... ok
+test result: ok. N passed; 0 failed
+```
 
 The expected result of `just ci` is that formatting, linting, and the full test suite complete without errors.
 
@@ -175,20 +185,24 @@ If a partial implementation causes real sleeps in tests to become slow or flaky,
 
 The current code path that will be replaced is concise, which makes the gap easy to demonstrate:
 
-    const MAX_RETRIES: u32 = 3;
-    const INITIAL_DELAY_SECS: u64 = 1;
+```
+const MAX_RETRIES: u32 = 3;
+const INITIAL_DELAY_SECS: u64 = 1;
 
-    const fn is_retryable_status(status: reqwest::StatusCode) -> bool {
-        matches!(status.as_u16(), 429 | 500 | 502 | 503 | 504)
-    }
+const fn is_retryable_status(status: reqwest::StatusCode) -> bool {
+    matches!(status.as_u16(), 429 | 500 | 502 | 503 | 504)
+}
+```
 
 That helper set is the reason cake currently misses `529`, `Retry-After`, `x-should-retry`, and context-overflow recovery.
 
 The desired spinner message shape is equally small and concrete:
 
-    Retrying in 1.2s after 429 rate limit (attempt 2/5)
-    Retrying in 0.6s after stale connection reset (attempt 1/5)
-    Retrying once with max_output_tokens=3584 after context overflow
+```
+Retrying in 1.2s after 429 rate limit (attempt 2/5)
+Retrying in 0.6s after stale connection reset (attempt 1/5)
+Retrying once with max_output_tokens=3584 after context overflow
+```
 
 Those messages are runtime-only. They should not be saved into session history.
 
@@ -196,75 +210,79 @@ Those messages are runtime-only. They should not be saved into session history.
 
 In `src/clients/retry.rs`, define the retry-specific types and helpers that the rest of the implementation depends on:
 
-    pub(super) const MAX_RETRIES: u32 = 5;
-    pub(super) const BASE_DELAY_MS: u64 = 500;
-    pub(super) const MAX_BACKOFF_MS: u64 = 30_000;
+```
+pub(super) const MAX_RETRIES: u32 = 5;
+pub(super) const BASE_DELAY_MS: u64 = 500;
+pub(super) const MAX_BACKOFF_MS: u64 = 30_000;
 
-    #[derive(Debug, Clone, Default, PartialEq, Eq)]
-    pub(super) struct RequestOverrides {
-        pub max_output_tokens: Option<u32>,
-        pub reasoning_max_tokens: Option<u32>,
-        pub context_overflow_retry_used: bool,
-    }
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct RequestOverrides {
+    pub max_output_tokens: Option<u32>,
+    pub reasoning_max_tokens: Option<u32>,
+    pub context_overflow_retry_used: bool,
+}
 
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub(super) enum RetryReason {
-        RateLimit,
-        Overloaded,
-        ServerError,
-        RequestTimeout,
-        LockTimeout,
-        Network,
-        ContextOverflow,
-    }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum RetryReason {
+    RateLimit,
+    Overloaded,
+    ServerError,
+    RequestTimeout,
+    LockTimeout,
+    Network,
+    ContextOverflow,
+}
 
-    #[derive(Debug, Clone)]
-    pub(super) struct RetryStatus {
-        pub attempt: u32,
-        pub max_retries: u32,
-        pub delay: std::time::Duration,
-        pub reason: RetryReason,
-        pub detail: String,
-    }
+#[derive(Debug, Clone)]
+pub(super) struct RetryStatus {
+    pub attempt: u32,
+    pub max_retries: u32,
+    pub delay: std::time::Duration,
+    pub reason: RetryReason,
+    pub detail: String,
+}
 
-    #[derive(Debug, Clone)]
-    pub(super) struct HttpFailure {
-        pub status: u16,
-        pub headers: reqwest::header::HeaderMap,
-        pub body: String,
-    }
+#[derive(Debug, Clone)]
+pub(super) struct HttpFailure {
+    pub status: u16,
+    pub headers: reqwest::header::HeaderMap,
+    pub body: String,
+}
 
-    #[derive(Debug, Clone)]
-    pub(super) enum RetryDecision {
-        Retry { status: RetryStatus },
-        RetryWithOverrides {
-            status: RetryStatus,
-            overrides: RequestOverrides,
-        },
-        DoNotRetry,
-    }
+#[derive(Debug, Clone)]
+pub(super) enum RetryDecision {
+    Retry { status: RetryStatus },
+    RetryWithOverrides {
+        status: RetryStatus,
+        overrides: RequestOverrides,
+    },
+    DoNotRetry,
+}
 
-    pub(super) fn classify_http_failure(
-        failure: &HttpFailure,
-        attempt: u32,
-        session_id: uuid::Uuid,
-        current_overrides: &RequestOverrides,
-    ) -> RetryDecision;
+pub(super) fn classify_http_failure(
+    failure: &HttpFailure,
+    attempt: u32,
+    session_id: uuid::Uuid,
+    current_overrides: &RequestOverrides,
+) -> RetryDecision;
 
-    pub(super) fn classify_transport_error(
-        error: &anyhow::Error,
-        attempt: u32,
-        session_id: uuid::Uuid,
-    ) -> RetryDecision;
+pub(super) fn classify_transport_error(
+    error: &anyhow::Error,
+    attempt: u32,
+    session_id: uuid::Uuid,
+) -> RetryDecision;
 
-    pub(super) fn should_disable_connection_reuse(error: &anyhow::Error) -> bool;
+pub(super) fn should_disable_connection_reuse(error: &anyhow::Error) -> bool;
+```
 
 In `src/clients/agent.rs`, change `async fn complete_turn(&self)` to `async fn complete_turn(&mut self)` and add a retry-status callback alongside the existing progress callback:
 
-    pub fn with_retry_callback(
-        mut self,
-        callback: impl Fn(&crate::clients::retry::RetryStatus) + Send + Sync + 'static,
-    ) -> Self;
+```
+pub fn with_retry_callback(
+    mut self,
+    callback: impl Fn(&crate::clients::retry::RetryStatus) + Send + Sync + 'static,
+) -> Self;
+```
 
 Also add a small helper for client creation so default and no-reuse clients use the same timeout configuration.
 

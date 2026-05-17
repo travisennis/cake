@@ -36,7 +36,7 @@ This performance plan is still open. At completion, update this section with the
 
 Systematic plan for profiling and optimizing cake, adapted from the [seqpacker profiling article](https://alphakhaw.com/blog/seqpacker-profiling-rust-flamegraph-pgo-bolt).
 
----
+--------------------------------------------------------------------------------
 
 ## Context
 
@@ -48,7 +48,7 @@ Current state:
 - No benchmarks exist
 - `[profile.release]` already has LTO and single codegen unit, but uses `lto = true` (thin) rather than `lto = "fat"`
 
----
+--------------------------------------------------------------------------------
 
 ## Phase 0: Establish Baselines
 
@@ -95,7 +95,7 @@ Define 2-3 reproducible workloads for profiling. Candidates:
 
 > **Question:** Which of these workloads matters most to you? The profiling results will differ significantly. Session load/save is likely the most measurable locally since network latency dominates the agent loop.
 
----
+--------------------------------------------------------------------------------
 
 ## Phase 1: Profile with Flamegraph
 
@@ -112,15 +112,15 @@ Run `just profile` against each workload. The Firefox Profiler UI will show:
 
 Expected hotspot categories for cake (hypothesized, to be validated by profiling):
 
-| Category | Likely Location | Article Analog |
-|----------|----------------|----------------|
-| JSON serialization | `to_api_input()`, `StreamRecord`/`SessionRecord` serialization, request body construction | N/A (cake-specific) |
-| JSON deserialization | `parse_response()` in both backends | N/A |
-| String cloning | `.clone()` calls on conversation items in the agent loop | Heap allocation in inner loop |
-| Session I/O | JSONL read/write for session persistence | N/A |
-| HTTP overhead | reqwest connection setup, TLS | N/A (external) |
+  | Category             | Likely Location                                                                           | Article Analog                |
+  | -------------------- | ----------------------------------------------------------------------------------------- | ----------------------------- |
+  | JSON serialization   | `to_api_input()`, `StreamRecord`/`SessionRecord` serialization, request body construction | N/A (cake-specific)           |
+  | JSON deserialization | `parse_response()` in both backends                                                       | N/A                           |
+  | String cloning       | `.clone()` calls on conversation items in the agent loop                                  | Heap allocation in inner loop |
+  | Session I/O          | JSONL read/write for session persistence                                                  | N/A                           |
+  | HTTP overhead        | reqwest connection setup, TLS                                                             | N/A (external)                |
 
----
+--------------------------------------------------------------------------------
 
 ## Phase 2: Code-Level Fixes (Informed by Profiling)
 
@@ -142,8 +142,8 @@ If profiling shows string cloning is significant, consider:
 ### 2.2 — Pre-allocate Vectors (Article Pattern #1)
 
 The agent loop builds vectors without capacity hints:
-- `function_calls` in `send()` — could use `with_capacity` based on `turn_result.items.len()`
-- `results` from tool execution — size is known from `function_calls.len()`
+- `function_calls` in `send()` --- could use `with_capacity` based on `turn_result.items.len()`
+- `results` from tool execution --- size is known from `function_calls.len()`
 
 These are small wins but essentially free to implement.
 
@@ -171,7 +171,7 @@ Mark error-handling and rare-path functions with `#[cold]`:
 
 This tells LLVM to optimize the common path at the expense of cold paths.
 
----
+--------------------------------------------------------------------------------
 
 ## Phase 3: Compiler-Level Experiments
 
@@ -198,7 +198,7 @@ The article found this neutral-to-harmful for non-SIMD workloads. cake has no ve
 
 The article found no improvement for small, cache-friendly binaries. cake at 6.6 MB is small. The critical path is I/O-bound. Skip this.
 
----
+--------------------------------------------------------------------------------
 
 ## Phase 4: Benchmark Infrastructure
 
@@ -214,7 +214,7 @@ Add benchmarks for the operations most likely to be hot:
 
 Add `--timing` or use the existing `duration_ms` in result messages to track full turn latency. Log per-phase timing (request build, API call, response parse, tool execution) behind a debug flag.
 
----
+--------------------------------------------------------------------------------
 
 ## Decisions Made
 
@@ -224,7 +224,7 @@ Add `--timing` or use the existing `duration_ms` in result messages to track ful
 4. **`to_api_input()` dynamic JSON** — No reason for the current approach. Open to replacing with typed structs (perf + maintainability win).
 5. **Binary size** — 5.8 MB is acceptable. Further reductions welcome if they don't sacrifice other wins.
 
----
+--------------------------------------------------------------------------------
 
 ## What NOT to Do (Lessons from the Article)
 

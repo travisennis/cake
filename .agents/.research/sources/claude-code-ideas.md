@@ -2,7 +2,7 @@
 
 A collection of insights and findings from analyzing Claude Code's source code and behavior.
 
----
+--------------------------------------------------------------------------------
 
 ## How Claude Code Handles Memory: The 8 Phases
 
@@ -49,7 +49,7 @@ Background extractor and model writes are mutually exclusive to prevent race con
 ### Phase 5: Post-Response Processing
 
 After every response, three background agents fire simultaneously:
-- `extractMemories` — a forked agent running in parallel, capped at 200 lines / 25kb
+- `extractMemories` --- a forked agent running in parallel, capped at 200 lines / 25kb
 - `sessionMemory`
 - `autoDream`
 
@@ -93,7 +93,7 @@ Memory is touched at these key moments:
 - Shutdown
 - Next session
 
----
+--------------------------------------------------------------------------------
 
 ## The Technical Recipe Behind Claude Code's Memory Architecture
 
@@ -110,11 +110,11 @@ Claude Code's memory system is not a "store everything" approach. It uses constr
 
 #### 3-Layer Design (Bandwidth Aware)
 
-| Layer | Behavior |
-|-------|----------|
-| Index | Always loaded |
-| Topic files | On-demand |
-| Transcripts | Never read directly, only searched via grep |
+  | Layer       | Behavior                                    |
+  | ----------- | ------------------------------------------- |
+  | Index       | Always loaded                               |
+  | Topic files | On-demand                                   |
+  | Transcripts | Never read directly, only searched via grep |
 
 #### Strict Write Discipline
 
@@ -157,7 +157,7 @@ Notable exclusions from Claude Code's memory:
 
 **Rule**: If something is derivable, don't persist it.
 
----
+--------------------------------------------------------------------------------
 
 ## Reading Leaked Claude Code Source Code
 
@@ -235,7 +235,7 @@ Separate files handle destructive command warnings (`rm -rf`, `git reset --hard`
 
 Permission modes: `default`, `acceptEdits`, `dontAsk`, `bypassPermissions`, `auto`.
 
-The `auto` mode uses `yoloClassifier.ts` (1,495 lines) — an ML classifier that performs two-stage evaluation (fast initial decision, then extended reasoning if needed). The classifier tracks cache metrics, token usage, and override decisions.
+The `auto` mode uses `yoloClassifier.ts` (1,495 lines) --- an ML classifier that performs two-stage evaluation (fast initial decision, then extended reasoning if needed). The classifier tracks cache metrics, token usage, and override decisions.
 
 The fact that they built a thoughtful safety system and named it "yolo" is telling.
 
@@ -265,7 +265,7 @@ Rules:
 2. A thinking block may not be the last message in a block
 3. Thinking blocks must be preserved for the duration of an assistant trajectory
 
-The line directly below this comment is `const MAX_OUTPUT_TOKENS_RECOVERY_LIMIT = 3` — irony noted.
+The line directly below this comment is `const MAX_OUTPUT_TOKENS_RECOVERY_LIMIT = 3` --- irony noted.
 
 ### Buddy: The Companion Pet System
 
@@ -275,13 +275,13 @@ The line directly below this comment is `const MAX_OUTPUT_TOKENS_RECOVERY_LIMIT 
 
 **Rarity tiers**: common 60%, uncommon 25%, rare 10%, epic 4%, legendary 1%
 
-**Stats**: DEBUGGING, PATIENCE, CHAOS, WISDOM, SNARK — one peak stat, one dump stat (D&D-style character generation). Legendary has a floor of 50 in all stats.
+**Stats**: DEBUGGING, PATIENCE, CHAOS, WISDOM, SNARK --- one peak stat, one dump stat (D&D-style character generation). Legendary has a floor of 50 in all stats.
 
-**Hats**: crown, tophat, propeller, halo, wizard hat, beanie, tinyduck — only uncommon+ rarity can roll hats, and "none" is in the array too.
+**Hats**: crown, tophat, propeller, halo, wizard hat, beanie, tinyduck --- only uncommon+ rarity can roll hats, and "none" is in the array too.
 
 **Architecture**:
-- **Bones** (species, rarity, stats, eyes, hat, shininess) — deterministic from user ID hash, cannot be faked
-- **Soul** (name, personality) — generated once by the model and stored
+- **Bones** (species, rarity, stats, eyes, hat, shininess) --- deterministic from user ID hash, cannot be faked
+- **Soul** (name, personality) --- generated once by the model and stored
 
 **Shiny companion**: 1% chance, like shiny Pokemon.
 
@@ -304,11 +304,11 @@ The whole system is behind the `BUDDY` feature flag.
 
 **Stickers command**: opens browser to `stickermule.com/claudecode`. That's the entire implementation.
 
-**Team memory sync conflict resolution**: described as "the lesser evil" — local edits overwrite server version, but silently discarding local work is worse.
+**Team memory sync conflict resolution**: described as "the lesser evil" --- local edits overwrite server version, but silently discarding local work is worse.
 
 **Keyboard parser**: handles both Kitty and XTerm extended key protocols, with special code paths for SSH tunnels where `TERM_PROGRAM` isn't forwarded.
 
----
+--------------------------------------------------------------------------------
 
 ## The Claude Code Source Leak: Fake Tools, Frustration Regexes, Undercover Mode
 
@@ -322,7 +322,7 @@ In `claude.ts`, a flag called `ANTI_DISTILLATION_CC` sends `anti_distillation: [
 
 **Purpose**: If someone records Claude Code's API traffic to train a competing model, the fake tools pollute that training data.
 
-**Gating**: Requires all four conditions — the `ANTI_DISTILLATION_CC` compile-time flag, the `cli` entrypoint, a first-party API provider, and the `tengu_anti_distill_fake_tool_injection` GrowthBook flag.
+**Gating**: Requires all four conditions --- the `ANTI_DISTILLATION_CC` compile-time flag, the `cli` entrypoint, a first-party API provider, and the `tengu_anti_distill_fake_tool_injection` GrowthBook flag.
 
 **Second mechanism**: Server-side connector-text summarization buffers assistant text between tool calls, summarizes it, and returns it with a cryptographic signature. Subsequent turns can restore original text from the signature.
 
@@ -411,7 +411,7 @@ Anthropic acquired Bun at the end of last year, and Claude Code is built on top 
 
 As one Twitter reply put it: "accidentally shipping your source map to npm is the kind of mistake that sounds impossible until you remember that a significant portion of the codebase was probably written by the AI you are shipping."
 
----
+--------------------------------------------------------------------------------
 
 ## Feature Idea: Background/Headless Agent Mode
 
@@ -454,7 +454,7 @@ cake could implement:
 - Webhook integration for event-driven workflows
 - Persistent connection that survives terminal closes
 
----
+--------------------------------------------------------------------------------
 
 ## Feature Idea: Session Persistence & Multi-Session Awareness
 
@@ -462,7 +462,7 @@ _Sourced from Claude Code source analysis and HN thread discussion, April 2026_
 
 ### Multi-Clauding Detection
 
-Claude Code tracks "Multi-Clauding" — when users have multiple agent sessions running simultaneously.
+Claude Code tracks "Multi-Clauding" --- when users have multiple agent sessions running simultaneously.
 
 **Implementation** (`detectMultiClauding()`):
 - Uses a sliding window algorithm
@@ -500,7 +500,7 @@ cake could implement:
 - Notify when background work completes
 - Resume interrupted work with full context
 
----
+--------------------------------------------------------------------------------
 
 ## Deep Dive: Compaction Architecture
 
@@ -534,11 +534,11 @@ One of the most interesting aspects of Claude Code's compaction is that the full
 
 Claude Code implements three distinct compaction strategies:
 
-| Type | Description | Cost |
-|------|-------------|------|
-| **Full compaction** | API summarizes all old messages | Expensive |
-| **Session memory compaction** | Uses extracted session memory as summary | Cheaper |
-| **Microcompaction** | Clears old tool result content when cache is cold (>1h idle) | Moderate |
+  | Type                          | Description                                                  | Cost      |
+  | ----------------------------- | ------------------------------------------------------------ | --------- |
+  | **Full compaction**           | API summarizes all old messages                              | Expensive |
+  | **Session memory compaction** | Uses extracted session memory as summary                     | Cheaper   |
+  | **Microcompaction**           | Clears old tool result content when cache is cold (>1h idle) | Moderate  |
 
 ### Microcompaction Economics
 
@@ -554,9 +554,9 @@ So if you have 150K tokens of old Grep/Read/Bash outputs sitting in the conversa
 **Microcompaction says**: "Since we're paying full price anyway, let's shrink the bill by clearing the bulky stuff."
 
 **What's preserved vs lost**:
-- The tool_use blocks (what tool was called, with what arguments) — kept
-- The tool_result content (the actual output) — replaced with `[Old tool result content cleared]`
-- The most recent 5 tool results — kept
+- The tool_use blocks (what tool was called, with what arguments) --- kept
+- The tool_result content (the actual output) --- replaced with `[Old tool result content cleared]`
+- The most recent 5 tool results --- kept
 
 So Claude can still see "I ran Grep for foo in src/" but not the 500-line grep output from 2 hours ago.
 
@@ -580,6 +580,6 @@ This means **idle time has real cost implications**. When you step away for lunc
 
 **Opportunity for cake**: Track context cache health and warn users about cost implications of long idle times. Consider proactive microcompaction before returning to a session after extended idle.
 
----
+--------------------------------------------------------------------------------
 
 _If you have insights to add, submit a PR with your findings._

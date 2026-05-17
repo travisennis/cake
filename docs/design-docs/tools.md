@@ -200,26 +200,26 @@ You can inspect the file with appropriate tools (e.g., `file`, `hexdump`, `xxd`)
 
 **Destructive Command Blocking**:
 
-The Bash tool includes a narrow, best-effort pre-execution destructive command guard that blocks known-destructive commands before they reach the sandbox or process spawn. This complements the OS-level sandbox by catching destructive operations that are allowed within the sandbox's permitted zones — for example, destructive git operations inside the repo or remote-affecting operations like force-push. It is not a shell security policy engine; the OS sandbox is the filesystem enforcement boundary.
+The Bash tool includes a narrow, best-effort pre-execution destructive command guard that blocks known-destructive commands before they reach the sandbox or process spawn. This complements the OS-level sandbox by catching destructive operations that are allowed within the sandbox's permitted zones --- for example, destructive git operations inside the repo or remote-affecting operations like force-push. It is not a shell security policy engine; the OS sandbox is the filesystem enforcement boundary.
 
 Blocked git commands:
 
-| Blocked Command                                                                  | Reason                                                                               | Allowed Alternative                                               |
-| -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ | ----------------------------------------------------------------- |
-| `git reset --hard` / `--merge`                                                   | Discards uncommitted changes                                                         | `git stash` or `git reset --soft`                                 |
-| `git checkout -- <file>`                                                         | Discards working tree changes                                                        | `git restore --staged`                                            |
-| `git restore <file>` (without `--staged`), `git restore --worktree`              | Discards working tree changes                                                        | `git restore --staged`                                            |
-| `git clean -f` / `--force` (including combined flags like `-fd`, `-fdx`)         | Permanently deletes untracked files                                                  | `git clean -n` (dry run)                                          |
-| `git push --force` / `-f`                                                        | Rewrites remote history                                                              | `--force-with-lease` (allowed)                                    |
-| `git branch -D` (uppercase)                                                      | Force-deletes unmerged branch                                                        | `git branch -d` (lowercase, allowed)                              |
-| `git stash drop` / `clear`                                                       | Permanently deletes stashed changes                                                  | `git stash pop` or `git stash list`                               |
-| `git commit -m` / `--message` with backticks or `$()` inside double-quoted value | Shell interprets backticks and `$()` as command substitution, corrupting the message | Use `git commit -F -` with a heredoc, or single-quote the message |
+  | Blocked Command                                                                  | Reason                                                                               | Allowed Alternative                                               |
+  | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ | ----------------------------------------------------------------- |
+  | `git reset --hard` / `--merge`                                                   | Discards uncommitted changes                                                         | `git stash` or `git reset --soft`                                 |
+  | `git checkout -- <file>`                                                         | Discards working tree changes                                                        | `git restore --staged`                                            |
+  | `git restore <file>` (without `--staged`), `git restore --worktree`              | Discards working tree changes                                                        | `git restore --staged`                                            |
+  | `git clean -f` / `--force` (including combined flags like `-fd`, `-fdx`)         | Permanently deletes untracked files                                                  | `git clean -n` (dry run)                                          |
+  | `git push --force` / `-f`                                                        | Rewrites remote history                                                              | `--force-with-lease` (allowed)                                    |
+  | `git branch -D` (uppercase)                                                      | Force-deletes unmerged branch                                                        | `git branch -d` (lowercase, allowed)                              |
+  | `git stash drop` / `clear`                                                       | Permanently deletes stashed changes                                                  | `git stash pop` or `git stash list`                               |
+  | `git commit -m` / `--message` with backticks or `$()` inside double-quoted value | Shell interprets backticks and `$()` as command substitution, corrupting the message | Use `git commit -F -` with a heredoc, or single-quote the message |
 
 Blocked filesystem commands:
 
-| Blocked Command                                       | Reason                          |
-| ----------------------------------------------------- | ------------------------------- |
-| `rm -rf` outside literal `/tmp` or `/var/tmp` targets | Irreversible recursive deletion |
+  | Blocked Command                                       | Reason                          |
+  | ----------------------------------------------------- | ------------------------------- |
+  | `rm -rf` outside literal `/tmp` or `/var/tmp` targets | Irreversible recursive deletion |
 
 Additional protections:
 

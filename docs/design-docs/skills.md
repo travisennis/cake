@@ -45,10 +45,10 @@ description: |
 
 ### Required Frontmatter Fields
 
-| Field | Description |
-|-------|-------------|
-| `name` | Unique identifier for the skill (used for filtering and deduplication) |
-| `description` | When and why to use this skill. This is shown in the catalog and guides the model's activation decision. |
+  | Field         | Description                                                                                              |
+  | ------------- | -------------------------------------------------------------------------------------------------------- |
+  | `name`        | Unique identifier for the skill (used for filtering and deduplication)                                   |
+  | `description` | When and why to use this skill. This is shown in the catalog and guides the model's activation decision. |
 
 ### Body Content
 
@@ -147,10 +147,10 @@ Deduplication works by:
 
 ### CLI Flags
 
-| Flag | Description |
-|------|-------------|
-| `--no-skills` | Disable all skills for this session |
-| `--skills name1,name2` | Only load specific skills (comma-separated) |
+  | Flag                   | Description                                 |
+  | ---------------------- | ------------------------------------------- |
+  | `--no-skills`          | Disable all skills for this session         |
+  | `--skills name1,name2` | Only load specific skills (comma-separated) |
 
 ### Settings TOML
 
@@ -166,11 +166,11 @@ only = ["debugging-cake", "evaluating-cake"]
 path = "~/my-skills:/shared/team-skills"
 ```
 
-| Field | Description |
-|-------|-------------|
-| `disabled` | If `true`, disable all skills by default |
-| `only` | List of skill names to load (empty = all) |
-| `path` | Additional directories containing skills. Use colon-separated paths, semicolon on Windows, and `~` for the home directory |
+  | Field      | Description                                                                                                               |
+  | ---------- | ------------------------------------------------------------------------------------------------------------------------- |
+  | `disabled` | If `true`, disable all skills by default                                                                                  |
+  | `only`     | List of skill names to load (empty = all)                                                                                 |
+  | `path`     | Additional directories containing skills. Use colon-separated paths, semicolon on Windows, and `~` for the home directory |
 
 ### Precedence
 

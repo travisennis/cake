@@ -26,13 +26,13 @@ Evidence:
 - User explicitly required `npm test` before and after refactor, and `npm run check` after refactor. User request at line 6.
 - The agent ran only `node --no-warnings --test test/html-renderer.test.ts` at lines 68, 80, 87, 98/101.
 - The agent ran only file-scoped Biome checks after refactor: `./node_modules/.bin/biome check source/commands/share/html-renderer.ts` at lines 88/91 and 97/100.
-- Final response at lines 136-137 says “All tests pass.”
+- Final response at lines 136-137 says "All tests pass."
 
 Impact:
-The final status overstates verification. The changed code may pass the focused test file and file-level Biome check, but the workflow’s requested repo-level validation was not completed.
+The final status overstates verification. The changed code may pass the focused test file and file-level Biome check, but the workflow's requested repo-level validation was not completed.
 
 Recommendation:
-Cake should add a final-answer verification guard: when the user asks for exact commands, compare executed Bash commands against requested commands before allowing “passes” claims. At minimum, prompt the model to say “focused tests passed; full `npm test` was not run.”
+Cake should add a final-answer verification guard: when the user asks for exact commands, compare executed Bash commands against requested commands before allowing "passes" claims. At minimum, prompt the model to say "focused tests passed; full `npm test` was not run."
 
 Medium: `tool_result_error`
 
@@ -61,14 +61,14 @@ Promote common shell preferences into tool-level guidance or lint Bash commands 
 Low: `instruction_following_issue` / scope creep
 
 Evidence:
-- User’s workflow said fix exactly one method, verify, commit, present results.
+- User's workflow said fix exactly one method, verify, commit, present results.
 - Agent also modified `ARCHITECTURE.md` at lines 103-124 and committed it at lines 128-134.
 
 Impact:
 Probably benign, but it added an unrelated documentation change to a tightly scoped workflow.
 
 Recommendation:
-Prompt should distinguish “files required for the fix” from opportunistic docs hygiene. When a workflow says “exactly one method,” avoid adjacent documentation unless explicitly requested or required by repo policy.
+Prompt should distinguish "files required for the fix" from opportunistic docs hygiene. When a workflow says "exactly one method," avoid adjacent documentation unless explicitly requested or required by repo policy.
 
 **Task Timeline**
 - Started at `2026-05-03T20:59:34Z`.
@@ -91,6 +91,6 @@ Prompt should distinguish “files required for the fix” from opportunistic do
 **Recommended Cake Improvements**
 1. Add command-verification awareness for explicit user workflows, especially required test/check commands.
 2. Improve Bash nonzero-result diagnostics when output is empty or nearly empty.
-3. Add a final-answer honesty rule: report exact commands run, and avoid “all tests pass” unless the full requested suite ran.
+3. Add a final-answer honesty rule: report exact commands run, and avoid "all tests pass" unless the full requested suite ran.
 4. Add Bash command linting for prompt-context shell preferences like `rg` over `grep`.
 5. Encourage targeted reads for large files after the first broad orientation pass.

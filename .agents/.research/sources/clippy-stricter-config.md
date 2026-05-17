@@ -100,27 +100,27 @@ The project partially follows Levin's approach (enables `pedantic` and `nursery`
 
 From highest to lowest relevance for this project:
 
-| Category | Lint | Rationale |
-|----------|------|-----------|
-| Panic prevention | `string_slice` | UTF-8 boundary panics in CLI output/processing |
-| Panic prevention | `indexing_slicing` | Out-of-bounds panics in data handling |
-| Silent failure | `let_underscore_must_use` | Swallowed errors from fallible operations |
-| Silent failure | `let_underscore_future` | Dropped futures silently canceling work |
-| Async safety | `await_holding_lock` | Deadlock from holding locks across .await |
-| Async safety | `await_holding_refcell_ref` | Same for RefCell |
-| Async safety | `large_futures` | Stack overflow from oversized futures |
-| Panic prevention | `unwrap_in_result` | .unwrap() in functions already returning Result |
-| Panic prevention | `panic_in_result_fn` | panic!/assert! in Result-returning functions |
-| Coding-agent guardrail | `allow_attributes` | Force #[expect(..., reason = "...")] |
-| Coding-agent guardrail | `allow_attributes_without_reason` | Require justification on every suppression |
-| Debug hygiene | `dbg_macro` | Stray dbg!() in committed code |
-| Error handling | `unused_result_ok` | result.ok() discarding Err variant |
-| Error handling | `map_err_ignore` | Already enabled as warn |
-| Unsafe hygiene | `undocumented_unsafe_blocks` | Require SAFETY comments |
-| Unsafe hygiene | `multiple_unsafe_ops_per_block` | One unsafe op per block |
-| Numeric safety | `cast_sign_loss` | Sign-loss casts producing large unsigned values |
-| Numeric safety | `float_cmp` | Direct float equality comparisons |
-| Test config | `clippy.toml` allowances | Allow unwrap/expect/dbg in tests |
+  | Category               | Lint                              | Rationale                                       |
+  | ---------------------- | --------------------------------- | ----------------------------------------------- |
+  | Panic prevention       | `string_slice`                    | UTF-8 boundary panics in CLI output/processing  |
+  | Panic prevention       | `indexing_slicing`                | Out-of-bounds panics in data handling           |
+  | Silent failure         | `let_underscore_must_use`         | Swallowed errors from fallible operations       |
+  | Silent failure         | `let_underscore_future`           | Dropped futures silently canceling work         |
+  | Async safety           | `await_holding_lock`              | Deadlock from holding locks across .await       |
+  | Async safety           | `await_holding_refcell_ref`       | Same for RefCell                                |
+  | Async safety           | `large_futures`                   | Stack overflow from oversized futures           |
+  | Panic prevention       | `unwrap_in_result`                | .unwrap() in functions already returning Result |
+  | Panic prevention       | `panic_in_result_fn`              | panic!/assert! in Result-returning functions    |
+  | Coding-agent guardrail | `allow_attributes`                | Force #[expect(..., reason = "...")]            |
+  | Coding-agent guardrail | `allow_attributes_without_reason` | Require justification on every suppression      |
+  | Debug hygiene          | `dbg_macro`                       | Stray dbg!() in committed code                  |
+  | Error handling         | `unused_result_ok`                | result.ok() discarding Err variant              |
+  | Error handling         | `map_err_ignore`                  | Already enabled as warn                         |
+  | Unsafe hygiene         | `undocumented_unsafe_blocks`      | Require SAFETY comments                         |
+  | Unsafe hygiene         | `multiple_unsafe_ops_per_block`   | One unsafe op per block                         |
+  | Numeric safety         | `cast_sign_loss`                  | Sign-loss casts producing large unsigned values |
+  | Numeric safety         | `float_cmp`                       | Direct float equality comparisons               |
+  | Test config            | `clippy.toml` allowances          | Allow unwrap/expect/dbg in tests                |
 
 ## Follow-ups
 

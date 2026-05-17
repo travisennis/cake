@@ -156,11 +156,11 @@ export OPENROUTER_API_KEY=your_key_here
 
 ## Configuration Options
 
-| Option            | Default            | Description                                      |
-| ----------------- | ------------------ | ------------------------------------------------ |
-| `--model`         | (from ModelConfig) | AI model to use                                  |
-| `--max-tokens`    | `8000`             | Maximum output tokens                            |
-| `--output-format` | `text`             | Output format (`text`, `stream-json`, or `json`) |
+  | Option            | Default            | Description                                      |
+  | ----------------- | ------------------ | ------------------------------------------------ |
+  | `--model`         | (from ModelConfig) | AI model to use                                  |
+  | `--max-tokens`    | `8000`             | Maximum output tokens                            |
+  | `--output-format` | `text`             | Output format (`text`, `stream-json`, or `json`) |
 
 > **Note:** Model, temperature, top-p, api_type, and base URL are configured per-model in `ModelConfig` (`src/config/model.rs`), not via CLI flags.
 

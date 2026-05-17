@@ -116,11 +116,13 @@ Plan of Work: Introduce a private pure function that accepts normalized content 
 
 The intended function shape is:
 
-    fn apply_literal_edits_to_normalized_content(
-        content: &str,
-        edits: &[Edit],
-        path: &Path,
-    ) -> Result<(String, usize), String>
+```
+fn apply_literal_edits_to_normalized_content(
+    content: &str,
+    edits: &[Edit],
+    path: &Path,
+) -> Result<(String, usize), String>
+```
 
 The function may return the modified content and the number of applied edits. If implementation reveals a cleaner name or return type, update this plan's Decision Log before changing it.
 
@@ -132,16 +134,22 @@ Working directory: `/Users/travisennis/Projects/cake`
 
 Run the focused existing tests before editing:
 
-    cargo test clients::tools::edit
+```
+cargo test clients::tools::edit
+```
 
 Expected outcome: existing edit tests pass. If the exact module path does not match Rust's test filter behavior, use:
 
-    cargo test edit
+```
+cargo test edit
+```
 
 Refactor `src/clients/tools/edit.rs` so `execute_edit` calls the new pure function after normalizing content and before restoring line endings. Run:
 
-    cargo fmt
-    cargo test edit
+```
+cargo fmt
+cargo test edit
+```
 
 Validation and Acceptance: Existing behavior is preserved if all current edit tests pass and no expected output changes except internal function organization. The new pure function should be covered by at least one direct unit test that does not create a temporary file.
 
@@ -149,9 +157,11 @@ Idempotence and Recovery: This refactor is safe to repeat. If tests fail, compar
 
 Artifacts and Evidence: Record a short transcript in this plan after completion, for example:
 
-    running N tests
-    test clients::tools::edit::tests::multiple_edits_in_single_call ... ok
-    test result: ok. N passed; 0 failed
+```
+running N tests
+test clients::tools::edit::tests::multiple_edits_in_single_call ... ok
+test result: ok. N passed; 0 failed
+```
 
 Success Criteria:
 
@@ -185,11 +195,15 @@ Working directory: `/Users/travisennis/Projects/cake`
 
 Run:
 
-    cargo test edit
+```
+cargo test edit
+```
 
 Add tests in the `#[cfg(test)]` module in `src/clients/tools/edit.rs`. If adding `proptest`, update `Cargo.toml` under `[dev-dependencies]` and run:
 
-    cargo test edit
+```
+cargo test edit
+```
 
 Validation and Acceptance: The tests should fail if `apply_edits_reverse_order` is changed to apply edits from low index to high index without adjusting indices. The tests should also fail if overlap detection is removed or duplicate matches are accepted.
 
@@ -229,7 +243,9 @@ Working directory: `/Users/travisennis/Projects/cake`
 
 Check whether Lean is available:
 
-    lean --version
+```
+lean --version
+```
 
 If Lean is available, create `.agents/.research/edit-tool-lean/` and add a small Lean file, for example `.agents/.research/edit-tool-lean/EditModel.lean`. Keep it independent of lake packages unless a package becomes clearly necessary.
 
@@ -271,11 +287,15 @@ Working directory: `/Users/travisennis/Projects/cake`
 
 Run focused tests:
 
-    cargo test edit
+```
+cargo test edit
+```
 
 Run full validation:
 
-    just ci
+```
+just ci
+```
 
 Expected outcome: `just ci` completes successfully. The project AGENTS instructions require running the full CI check before finishing code changes.
 
@@ -285,12 +305,14 @@ Idempotence and Recovery: Documentation and tests are additive. If `just ci` fai
 
 Artifacts and Evidence: Add concise command output to this plan after running validation:
 
-    cargo test edit
-    test result: ok. N passed; 0 failed
+```
+cargo test edit
+test result: ok. N passed; 0 failed
 
-    just ci
-    ...
-    finished successfully
+just ci
+...
+finished successfully
+```
 
 Success Criteria:
 

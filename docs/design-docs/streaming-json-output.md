@@ -30,12 +30,12 @@ All timestamps are UTC RFC 3339 strings. `session_id` and `task_id` are UUID str
 {"type":"task_start","session_id":"550e8400-e29b-41d4-a716-446655440000","task_id":"2b15f29d-8c42-4c53-9bdf-35c8f2390d3e","timestamp":"2026-05-03T12:00:01Z"}
 ```
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `type` | string | yes | Always `task_start` |
-| `session_id` | string | yes | Session UUID for this run |
-| `task_id` | string | yes | UUID for this invocation |
-| `timestamp` | string | yes | Task start time |
+  | Field        | Type   | Required | Description               |
+  | ------------ | ------ | -------- | ------------------------- |
+  | `type`       | string | yes      | Always `task_start`       |
+  | `session_id` | string | yes      | Session UUID for this run |
+  | `task_id`    | string | yes      | UUID for this invocation  |
+  | `timestamp`  | string | yes      | Task start time           |
 
 ### Message
 
@@ -45,14 +45,14 @@ All timestamps are UTC RFC 3339 strings. `session_id` and `task_id` are UUID str
 
 Roles are `system`, `user`, `assistant`, or `tool`. `id`, `status`, and `timestamp` are optional.
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `type` | string | yes | Always `message` |
-| `role` | string | yes | One of `system`, `user`, `assistant`, or `tool` |
-| `content` | string | yes | Plain text message content |
-| `id` | string | no | Provider message id |
-| `status` | string | no | Provider status such as `completed` or `incomplete` |
-| `timestamp` | string | no | Item creation time |
+  | Field       | Type   | Required | Description                                         |
+  | ----------- | ------ | -------- | --------------------------------------------------- |
+  | `type`      | string | yes      | Always `message`                                    |
+  | `role`      | string | yes      | One of `system`, `user`, `assistant`, or `tool`     |
+  | `content`   | string | yes      | Plain text message content                          |
+  | `id`        | string | no       | Provider message id                                 |
+  | `status`    | string | no       | Provider status such as `completed` or `incomplete` |
+  | `timestamp` | string | no       | Item creation time                                  |
 
 ### Function Call
 
@@ -60,14 +60,14 @@ Roles are `system`, `user`, `assistant`, or `tool`. `id`, `status`, and `timesta
 {"type":"function_call","id":"fc_abc123","call_id":"call_xyz789","name":"bash","arguments":"{\"command\":\"ls\"}"}
 ```
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `type` | string | yes | Always `function_call` |
-| `id` | string | yes | Provider function-call item id |
-| `call_id` | string | yes | Correlation id used by the matching output |
-| `name` | string | yes | Tool name |
-| `arguments` | string | yes | JSON-encoded tool argument string |
-| `timestamp` | string | no | Item creation time |
+  | Field       | Type   | Required | Description                                |
+  | ----------- | ------ | -------- | ------------------------------------------ |
+  | `type`      | string | yes      | Always `function_call`                     |
+  | `id`        | string | yes      | Provider function-call item id             |
+  | `call_id`   | string | yes      | Correlation id used by the matching output |
+  | `name`      | string | yes      | Tool name                                  |
+  | `arguments` | string | yes      | JSON-encoded tool argument string          |
+  | `timestamp` | string | no       | Item creation time                         |
 
 ### Function Call Output
 
@@ -75,12 +75,12 @@ Roles are `system`, `user`, `assistant`, or `tool`. `id`, `status`, and `timesta
 {"type":"function_call_output","call_id":"call_xyz789","output":"Cargo.toml\nsrc"}
 ```
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `type` | string | yes | Always `function_call_output` |
-| `call_id` | string | yes | Matches the preceding `function_call.call_id` |
-| `output` | string | yes | Tool output or tool error text returned to the model |
-| `timestamp` | string | no | Item creation time |
+  | Field       | Type   | Required | Description                                          |
+  | ----------- | ------ | -------- | ---------------------------------------------------- |
+  | `type`      | string | yes      | Always `function_call_output`                        |
+  | `call_id`   | string | yes      | Matches the preceding `function_call.call_id`        |
+  | `output`    | string | yes      | Tool output or tool error text returned to the model |
+  | `timestamp` | string | no       | Item creation time                                   |
 
 ### Reasoning
 
@@ -90,14 +90,14 @@ Roles are `system`, `user`, `assistant`, or `tool`. `id`, `status`, and `timesta
 
 `encrypted_content` and `content` are optional and are preserved for reasoning model round-tripping.
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `type` | string | yes | Always `reasoning` |
-| `id` | string | yes | Provider reasoning item id |
-| `summary` | array of strings | yes | Human-readable reasoning summaries |
-| `encrypted_content` | string | no | Opaque provider content for round-tripping |
-| `content` | array of objects | no | Provider reasoning content array |
-| `timestamp` | string | no | Item creation time |
+  | Field               | Type             | Required | Description                                |
+  | ------------------- | ---------------- | -------- | ------------------------------------------ |
+  | `type`              | string           | yes      | Always `reasoning`                         |
+  | `id`                | string           | yes      | Provider reasoning item id                 |
+  | `summary`           | array of strings | yes      | Human-readable reasoning summaries         |
+  | `encrypted_content` | string           | no       | Opaque provider content for round-tripping |
+  | `content`           | array of objects | no       | Provider reasoning content array           |
+  | `timestamp`         | string           | no       | Item creation time                         |
 
 Each `content` item has a required `type` string and an optional `text` string.
 
@@ -109,20 +109,20 @@ Each `content` item has a required `type` string and an optional `text` string.
 
 `subtype` is one of `success`, `error_during_execution`, or `error_max_turns`. On failure, `error` contains the error message and `result` is omitted.
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `type` | string | yes | Always `task_complete` |
-| `subtype` | string | yes | One of `success`, `error_during_execution`, or `error_max_turns` |
-| `is_error` | boolean | yes | `false` for successful completion |
-| `duration_ms` | number | yes | Wall-clock task duration in milliseconds |
-| `turn_count` | number | yes | Number of API turns with usage accumulated |
-| `tool_call_count` | number | yes | Number of tool calls executed during the task |
-| `session_id` | string | yes | Session UUID |
-| `task_id` | string | yes | Task UUID from the matching `task_start` |
-| `result` | string | no | Final assistant text on success |
-| `error` | string | no | Error message on failure |
-| `usage` | object | yes | Aggregate token usage for the task |
-| `permission_denials` | array of strings | no | Tool permission denial messages when present |
+  | Field                | Type             | Required | Description                                                      |
+  | -------------------- | ---------------- | -------- | ---------------------------------------------------------------- |
+  | `type`               | string           | yes      | Always `task_complete`                                           |
+  | `subtype`            | string           | yes      | One of `success`, `error_during_execution`, or `error_max_turns` |
+  | `is_error`           | boolean          | yes      | `false` for successful completion                                |
+  | `duration_ms`        | number           | yes      | Wall-clock task duration in milliseconds                         |
+  | `turn_count`         | number           | yes      | Number of API turns with usage accumulated                       |
+  | `tool_call_count`    | number           | yes      | Number of tool calls executed during the task                    |
+  | `session_id`         | string           | yes      | Session UUID                                                     |
+  | `task_id`            | string           | yes      | Task UUID from the matching `task_start`                         |
+  | `result`             | string           | no       | Final assistant text on success                                  |
+  | `error`              | string           | no       | Error message on failure                                         |
+  | `usage`              | object           | yes      | Aggregate token usage for the task                               |
+  | `permission_denials` | array of strings | no       | Tool permission denial messages when present                     |
 
 `usage` contains `input_tokens`, `input_tokens_details.cached_tokens`, `output_tokens`, `output_tokens_details.reasoning_tokens`, and `total_tokens`.
 

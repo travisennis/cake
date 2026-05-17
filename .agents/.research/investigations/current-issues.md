@@ -3,6 +3,7 @@
 ## Session: 2026-03-24 - Documentation Update Task
 
 ### Task Summary
+
 The acai CLI was asked to find and remove outdated `--providers` flag references from README.md and documentation files.
 
 ### What Worked Well
@@ -29,6 +30,7 @@ The acai CLI was asked to find and remove outdated `--providers` flag references
 ### Issues Identified
 
 #### 1. Redundant Tool Calls (Medium Priority)
+
 **Pattern**: The CLI made multiple overlapping grep searches:
 - First searched for `--providers` in `.md` files
 - Then searched for `--providers` in `.py` files (unnecessary for this task)
@@ -43,6 +45,7 @@ The acai CLI was asked to find and remove outdated `--providers` flag references
 - Avoiding unnecessary file type searches when the task scope is clear
 
 #### 2. Excessive File Reading (Low Priority)
+
 **Pattern**: The CLI read entire files (README.md, ARCHITECTURE.md, CHANGELOG.md) when targeted grep output already showed the relevant lines.
 
 **Impact**: Larger context window consumption, though the model handled it well.
@@ -50,6 +53,7 @@ The acai CLI was asked to find and remove outdated `--providers` flag references
 **Recommendation**: Consider adding guidance to use targeted reads (with line ranges) when the location is already known from grep output.
 
 #### 3. No Clear Task Completion Signal (Low Priority)
+
 **Pattern**: The CLI provided a summary at the end, which is good, but didn't explicitly indicate "task complete" status.
 
 **Impact**: Minor - the summary was clear enough.
@@ -60,7 +64,7 @@ The acai CLI was asked to find and remove outdated `--providers` flag references
 
 The CLI successfully completed the task. The issues above are optimization opportunities, not blockers.
 
----
+--------------------------------------------------------------------------------
 
 ## Recommendations for General Improvements
 
@@ -94,7 +98,7 @@ The CLI successfully completed the task. The issues above are optimization oppor
    - Update all affected files
    - Verify changes
 
----
+--------------------------------------------------------------------------------
 
 ## Metrics
 
@@ -103,11 +107,12 @@ The CLI successfully completed the task. The issues above are optimization oppor
 - **Execution time**: ~140 seconds
 - **Task outcome**: Success
 
----
+--------------------------------------------------------------------------------
 
 ## Session: 2026-03-28 - Hooks Research Task
 
 ### Task Summary
+
 The acai CLI was asked to research hooks implementations in other coding agents (Claude Code, Codex, Cursor) and update hooks.md with findings relevant to acai's implementation.
 
 ### What Worked Well
@@ -140,6 +145,7 @@ The acai CLI was asked to research hooks implementations in other coding agents 
 ### Issues Identified
 
 #### 1. No Explicit acai Architecture Context (Low Priority)
+
 **Pattern**: The prompt asked to "keep acai's implementation in context" but the output was a general comparison.
 
 **Impact**: The recommendations section references acai but doesn't explicitly connect findings to acai's existing architecture (sandboxing, session management, etc.).
@@ -147,6 +153,7 @@ The acai CLI was asked to research hooks implementations in other coding agents 
 **Recommendation**: The CLI could have read ARCHITECTURE.md or relevant source files to provide more context-specific recommendations.
 
 #### 2. Many Sequential Tool Calls (Low Priority)
+
 **Pattern**: 12 curl calls were made sequentially (not batched) to fetch documentation in chunks.
 
 **Impact**: Longer execution time. The calls could have been batched since they were independent.

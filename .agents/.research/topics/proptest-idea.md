@@ -13,7 +13,7 @@ Add to `Cargo.toml`:
 proptest = "1"
 ```
 
----
+--------------------------------------------------------------------------------
 
 ## 1. `truncate_output` — bash tool output truncation
 
@@ -54,7 +54,7 @@ proptest! {
 }
 ```
 
----
+--------------------------------------------------------------------------------
 
 ## 2. `truncate_display` — general display truncation
 
@@ -105,7 +105,7 @@ fn truncate_display(s: &str, max: usize) -> String {
 }
 ```
 
----
+--------------------------------------------------------------------------------
 
 ## 3. Tool argument parsing — fuzz for graceful errors
 
@@ -146,7 +146,7 @@ proptest! {
 
 **Note:** For tools that have side effects (file I/O, command execution), test only the *parsing* layer, not the full `execute_*` function. This keeps the tests fast, safe, and focused on the argument handling boundary.
 
----
+--------------------------------------------------------------------------------
 
 ## 4. Sandbox path validation — `validate_path_in_cwd` and `SandboxConfig`
 
@@ -156,7 +156,7 @@ proptest! {
 - `src/clients/tools/sandbox/mod.rs`, line 44 — `SandboxConfig::build`
 - `src/clients/tools/sandbox/mod.rs`, line 203 — `deduplicated_with_canonical`
 
-These functions decide *which paths are permitted* for agent operations. `validate_path_in_cwd` checks whether a path falls within the cwd, temp directories, or `--add-dir` directories. `SandboxConfig::build` constructs the allow-lists passed to the OS-level sandbox. None of these actually enforce the sandbox or modify the filesystem — they build data structures and compare path prefixes. That makes them safe to fuzz.
+These functions decide *which paths are permitted* for agent operations. `validate_path_in_cwd` checks whether a path falls within the cwd, temp directories, or `--add-dir` directories. `SandboxConfig::build` constructs the allow-lists passed to the OS-level sandbox. None of these actually enforce the sandbox or modify the filesystem --- they build data structures and compare path prefixes. That makes them safe to fuzz.
 
 **Why this is safe:** The functions under test only call `canonicalize()` (read-only) and `starts_with()` (pure comparison). They don't write, delete, or execute anything. The risk of "altering the system" comes from the `SandboxStrategy::apply` layer, which we intentionally skip.
 
@@ -226,7 +226,7 @@ proptest! {
 
 **Refactoring suggestion:** `validate_path_in_cwd` currently calls `std::env::current_dir()` internally, which makes it hard to test without changing global process state. Refactoring it to accept `cwd: &Path` as a parameter would make it purely functional and trivial to property-test with arbitrary directory structures via `tempfile::TempDir`.
 
----
+--------------------------------------------------------------------------------
 
 ## 5. Serde roundtrips — config and message types
 
@@ -261,14 +261,14 @@ proptest! {
 
 **Assessment for cake:** The config types in `src/config/` are relatively straightforward. Roundtrip testing would provide low-to-moderate value here unless the serde annotations become more complex. The other three areas above are higher priority.
 
----
+--------------------------------------------------------------------------------
 
 ## Summary
 
-| Area | Priority | Why |
-|---|---|---|
-| `truncate_display` | **High** | Has a known byte-slicing bug that property testing catches immediately |
-| `truncate_output` | **High** | Complex string manipulation with char-boundary logic; fuzzing builds confidence |
-| Sandbox path validation | **Medium** | Security-critical allow/deny logic; safe to fuzz since it only reads and compares paths |
-| Tool argument parsing | **Medium** | Boundary between untrusted model output and internal logic; should never panic |
-| Serde roundtrips | **Low** | Config types are simple today; revisit if serde annotations grow more complex |
+  | Area                    | Priority   | Why                                                                                     |
+  | ----------------------- | ---------- | --------------------------------------------------------------------------------------- |
+  | `truncate_display`      | **High**   | Has a known byte-slicing bug that property testing catches immediately                  |
+  | `truncate_output`       | **High**   | Complex string manipulation with char-boundary logic; fuzzing builds confidence         |
+  | Sandbox path validation | **Medium** | Security-critical allow/deny logic; safe to fuzz since it only reads and compares paths |
+  | Tool argument parsing   | **Medium** | Boundary between untrusted model output and internal logic; should never panic          |
+  | Serde roundtrips        | **Low**    | Config types are simple today; revisit if serde annotations grow more complex           |

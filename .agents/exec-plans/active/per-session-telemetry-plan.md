@@ -188,20 +188,26 @@ If an abrupt termination leaves a partially written last line in the sidecar, th
 
 The sidecar should look conceptually like this after a successful run with one API attempt and one tool call:
 
-    {"type":"telemetry_init","session_id":"550e8400-e29b-41d4-a716-446655440000","invocation_id":"8c0f2cc6-2b4d-47fa-b4b0-3e1f91a57aa2","mode":"new","model":"glm-5.1","api_type":"responses","output_format":"text"}
-    {"type":"api_attempt","session_id":"550e8400-e29b-41d4-a716-446655440000","invocation_id":"8c0f2cc6-2b4d-47fa-b4b0-3e1f91a57aa2","turn_index":1,"attempt":1,"status_code":200,"request_ms":684,"parse_ms":42,"total_ms":726,"history_items":2,"usage":{"input_tokens":1200,"output_tokens":250,"total_tokens":1450}}
-    {"type":"tool_call","session_id":"550e8400-e29b-41d4-a716-446655440000","invocation_id":"8c0f2cc6-2b4d-47fa-b4b0-3e1f91a57aa2","turn_index":1,"call_id":"call_123","name":"Bash","duration_ms":118,"output_bytes":512,"was_error":false}
-    {"type":"session_summary","session_id":"550e8400-e29b-41d4-a716-446655440000","invocation_id":"8c0f2cc6-2b4d-47fa-b4b0-3e1f91a57aa2","success":true,"duration_ms":1840,"turn_count":1,"usage":{"input_tokens":1200,"output_tokens":250,"total_tokens":1450}}
+```
+{"type":"telemetry_init","session_id":"550e8400-e29b-41d4-a716-446655440000","invocation_id":"8c0f2cc6-2b4d-47fa-b4b0-3e1f91a57aa2","mode":"new","model":"glm-5.1","api_type":"responses","output_format":"text"}
+{"type":"api_attempt","session_id":"550e8400-e29b-41d4-a716-446655440000","invocation_id":"8c0f2cc6-2b4d-47fa-b4b0-3e1f91a57aa2","turn_index":1,"attempt":1,"status_code":200,"request_ms":684,"parse_ms":42,"total_ms":726,"history_items":2,"usage":{"input_tokens":1200,"output_tokens":250,"total_tokens":1450}}
+{"type":"tool_call","session_id":"550e8400-e29b-41d4-a716-446655440000","invocation_id":"8c0f2cc6-2b4d-47fa-b4b0-3e1f91a57aa2","turn_index":1,"call_id":"call_123","name":"Bash","duration_ms":118,"output_bytes":512,"was_error":false}
+{"type":"session_summary","session_id":"550e8400-e29b-41d4-a716-446655440000","invocation_id":"8c0f2cc6-2b4d-47fa-b4b0-3e1f91a57aa2","success":true,"duration_ms":1840,"turn_count":1,"usage":{"input_tokens":1200,"output_tokens":250,"total_tokens":1450}}
+```
 
 For a retrying run, the timeline should include an explicit retry record between attempts:
 
-    {"type":"api_attempt","turn_index":1,"attempt":1,"status_code":429,"total_ms":910,"error":"429 rate limit"}
-    {"type":"retry_scheduled","turn_index":1,"attempt":2,"reason":"rate_limit","delay_ms":2000,"detail":"429 rate limit"}
-    {"type":"api_attempt","turn_index":1,"attempt":2,"status_code":200,"total_ms":701}
+```
+{"type":"api_attempt","turn_index":1,"attempt":1,"status_code":429,"total_ms":910,"error":"429 rate limit"}
+{"type":"retry_scheduled","turn_index":1,"attempt":2,"reason":"rate_limit","delay_ms":2000,"detail":"429 rate limit"}
+{"type":"api_attempt","turn_index":1,"attempt":2,"status_code":200,"total_ms":701}
+```
 
 The recommended `jq` query for quick inspection is:
 
-    jq -c '. | {type, invocation_id, turn_index, attempt, total_ms, delay_ms, name, duration_ms, success}' ~/.cache/cake/session-telemetry/{uuid}.ndjson
+```
+jq -c '. | {type, invocation_id, turn_index, attempt, total_ms, delay_ms, name, duration_ms, success}' ~/.cache/cake/session-telemetry/{uuid}.ndjson
+```
 
 ## Interfaces and Dependencies
 
@@ -209,34 +215,40 @@ Be prescriptive about the new interfaces so the implementation stays small and c
 
 In `src/session_telemetry.rs`, define a telemetry record enum and writer with stable, crate-local names:
 
-    pub(crate) enum SessionTelemetryRecord {
-        TelemetryInit { ... },
-        ApiAttempt { ... },
-        RetryScheduled { ... },
-        ToolCall { ... },
-        SessionSummary { ... },
-    }
+```
+pub(crate) enum SessionTelemetryRecord {
+    TelemetryInit { ... },
+    ApiAttempt { ... },
+    RetryScheduled { ... },
+    ToolCall { ... },
+    SessionSummary { ... },
+}
 
-    pub(crate) struct SessionTelemetryWriter {
-        ...
-    }
+pub(crate) struct SessionTelemetryWriter {
+    ...
+}
 
-    impl SessionTelemetryWriter {
-        pub fn open(path: &Path) -> anyhow::Result<Self>;
-        pub fn append(&mut self, record: &SessionTelemetryRecord) -> anyhow::Result<()>;
-    }
+impl SessionTelemetryWriter {
+    pub fn open(path: &Path) -> anyhow::Result<Self>;
+    pub fn append(&mut self, record: &SessionTelemetryRecord) -> anyhow::Result<()>;
+}
+```
 
 Every record must include `session_id`, `invocation_id`, and a UTC timestamp. `ApiAttempt` records must include `turn_index`, `attempt`, `request_ms`, `parse_ms`, `total_ms`, `history_items`, `status_code` when known, `error` when present, `usage` when present, and a summary of the active `RequestOverrides`. `RetryScheduled` records must include the retry reason, delay, attempt number, and detail string from `RetryStatus`. `ToolCall` records must include the logical turn index, `call_id`, tool name, duration, output size in bytes, and a boolean that says whether the output came from the error path. `SessionSummary` must include overall success, final duration, turn count, and total usage.
 
 In `src/config/data_dir.rs`, add a single path helper rather than duplicating path formatting:
 
-    pub fn session_telemetry_path(&self, session_id: uuid::Uuid) -> PathBuf;
+```
+pub fn session_telemetry_path(&self, session_id: uuid::Uuid) -> PathBuf;
+```
 
 That helper should resolve to `self.get_cache_dir().join("session-telemetry").join(format!("{session_id}.ndjson"))`.
 
 In `src/clients/agent.rs`, add an optional telemetry writer field and one builder method:
 
-    pub fn with_session_telemetry(mut self, telemetry: SessionTelemetryWriter) -> Self;
+```
+pub fn with_session_telemetry(mut self, telemetry: SessionTelemetryWriter) -> Self;
+```
 
 Also add small internal helper methods that append records and disable telemetry after the first append failure. Do not introduce a general logging abstraction or trait hierarchy for this feature. A single optional writer owned by `Agent` is enough.
 

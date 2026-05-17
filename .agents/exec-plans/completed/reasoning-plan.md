@@ -52,7 +52,7 @@ This document outlines the implementation plan for adding reasoning effort contr
 - Runtime CLI flags will be implemented for flexibility
 - Budget-style configuration (`reasoning_max_tokens`) will be supported
 
----
+--------------------------------------------------------------------------------
 
 ## Phase 1: Configuration Layer
 
@@ -85,6 +85,7 @@ pub reasoning_max_tokens: Option<u32>,     // Budget-style (Anthropic/Gemini via
 - [ ] `example-settings.toml` (if exists) - Add example with reasoning configuration
 
 **Example documentation**:
+
 ```toml
 [[models]]
 name = "o4-mini-reasoning"
@@ -99,7 +100,7 @@ model = "anthropic/claude-3.7-sonnet"
 reasoning_max_tokens = 8000     # Budget-style for Anthropic (via OpenRouter)
 ```
 
----
+--------------------------------------------------------------------------------
 
 ## Phase 2: Request Construction
 
@@ -164,7 +165,7 @@ pub fn normalize_reasoning_for_provider(
 - [ ] `docs/api.md` (if exists) - Document the reasoning parameters sent to each API
 - [ ] Inline code comments - Document the mapping between effort levels and provider-specific values
 
----
+--------------------------------------------------------------------------------
 
 ## Phase 3: Response Parsing Improvements
 
@@ -203,7 +204,7 @@ No additional changes needed here since OpenRouter Chat Completions is not suppo
 - [ ] `docs/responses.md` (if exists) - Document how reasoning tokens are extracted from each API
 - [ ] Code comments - Document the different response shapes
 
----
+--------------------------------------------------------------------------------
 
 ## Phase 4: Runtime Override (Optional)
 
@@ -212,6 +213,7 @@ No additional changes needed here since OpenRouter Chat Completions is not suppo
 **File**: `src/cli.rs` (or appropriate CLI module)
 
 Add optional CLI flag:
+
 ```rust
 --reasoning-effort <effort>    # Override configured reasoning effort
 --reasoning-budget <tokens>    # Override with token budget
@@ -222,6 +224,7 @@ Add optional CLI flag:
 **File**: `src/config/runtime.rs` (new or existing)
 
 Implement merge logic:
+
 ```rust
 pub fn merge_reasoning_config(
     model_config: &ModelConfig,
@@ -237,7 +240,7 @@ Priority: CLI override > Model config > Default
 - [ ] `README.md` - Add CLI flags to usage section
 - [ ] `docs/cli.md` (if exists) - Document reasoning CLI options
 
----
+--------------------------------------------------------------------------------
 
 ## Phase 5: Testing & Validation
 
@@ -260,24 +263,24 @@ Priority: CLI override > Model config > Default
 - [ ] `CONTRIBUTING.md` (if exists) - Add testing guidelines for reasoning features
 - [ ] `CHANGELOG.md` (if exists) - Document new reasoning capabilities
 
----
+--------------------------------------------------------------------------------
 
 ## Implementation Order
 
-| Phase | Priority | Effort | Dependencies |
-|-------|----------|--------|--------------|
-| Phase 1.1-1.2 | High | Low | None |
-| Phase 2.1 | High | Low | Phase 1 |
-| Phase 2.2 | High | Medium | Phase 1 |
-| Phase 3.1 | High | Low | None |
-| Phase 1.3 | Medium | Low | Phase 1.1-1.2 |
-| Phase 2.3 | Medium | Medium | Phase 2.1, 2.2 |
-| Phase 3.2 | Medium | Medium | Phase 3.1 |
-| Phase 4 | Low | Medium | Phase 1, 2 |
-| Phase 2.4, 3.3 | Medium | Low | Phase 2, 3 |
-| Phase 5 | High | High | All phases |
+  | Phase          | Priority | Effort | Dependencies   |
+  | -------------- | -------- | ------ | -------------- |
+  | Phase 1.1-1.2  | High     | Low    | None           |
+  | Phase 2.1      | High     | Low    | Phase 1        |
+  | Phase 2.2      | High     | Medium | Phase 1        |
+  | Phase 3.1      | High     | Low    | None           |
+  | Phase 1.3      | Medium   | Low    | Phase 1.1-1.2  |
+  | Phase 2.3      | Medium   | Medium | Phase 2.1, 2.2 |
+  | Phase 3.2      | Medium   | Medium | Phase 3.1      |
+  | Phase 4        | Low      | Medium | Phase 1, 2     |
+  | Phase 2.4, 3.3 | Medium   | Low    | Phase 2, 3     |
+  | Phase 5        | High     | High   | All phases     |
 
----
+--------------------------------------------------------------------------------
 
 ## Open Questions to Resolve
 
@@ -291,16 +294,18 @@ Priority: CLI override > Model config > Default
 3. **Budget-style configuration**: Should `reasoning_max_tokens` be exposed?
    - **Decision**: **YES** - Implement for Anthropic/Gemini support via OpenRouter
 
----
+--------------------------------------------------------------------------------
 
 ## Files to Create/Modify Summary
 
 ### New Files
+
 - `src/clients/reasoning.rs` - Reasoning configuration normalization
 - `tests/config/reasoning_test.rs` - Configuration tests
 - `tests/clients/reasoning_test.rs` - Request construction tests
 
 ### Modified Files
+
 - `src/config/types.rs` - Add reasoning fields to ModelDefinition/ModelConfig
 - `src/config/settings.rs` - Parse reasoning configuration
 - `src/clients/types.rs` - Add ReasoningConfig to Request
@@ -309,6 +314,7 @@ Priority: CLI override > Model config > Default
 - `src/cli.rs` - Add CLI flags (Phase 4)
 
 ### Documentation Files
+
 - `README.md` - Add reasoning configuration section
 - `docs/configuration.md` - Detailed reasoning options
 - `docs/api.md` - API parameter documentation
@@ -317,20 +323,20 @@ Priority: CLI override > Model config > Default
 - `example-settings.toml` - Example configuration
 - `CHANGELOG.md` - Feature changelog entry
 
----
+--------------------------------------------------------------------------------
 
 ## Estimated Timeline
 
-| Phase | Duration | Notes |
-|-------|----------|-------|
-| Phase 1 | 1-2 days | |
-| Phase 2 | 1-2 days | Reduced from 2-3 days (no OpenRouter Chat Completions handling) |
-| Phase 3 | 1 day | Reduced (no OpenRouter Chat Completions parsing needed) |
-| Phase 4 | 1 day | |
-| Phase 5 | 2-3 days | |
-| **Total** | **6-9 days** | Reduced from 7-11 days due to simplified OpenRouter scope |
+  | Phase     | Duration     | Notes                                                           |
+  | --------- | ------------ | --------------------------------------------------------------- |
+  | Phase 1   | 1-2 days     |                                                                 |
+  | Phase 2   | 1-2 days     | Reduced from 2-3 days (no OpenRouter Chat Completions handling) |
+  | Phase 3   | 1 day        | Reduced (no OpenRouter Chat Completions parsing needed)         |
+  | Phase 4   | 1 day        |                                                                 |
+  | Phase 5   | 2-3 days     |                                                                 |
+  | **Total** | **6-9 days** | Reduced from 7-11 days due to simplified OpenRouter scope       |
 
----
+--------------------------------------------------------------------------------
 
 ## Success Criteria
 

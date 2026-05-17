@@ -1,6 +1,6 @@
 # cake
 
-cake is a minimal coding harness for headless usage in the terminal. It's not a TUI — it's a Unix filter for AI. It takes input, does work, produces output, and exits. That's its strength: cake is composable with every tool in your shell.
+cake is a minimal coding harness for headless usage in the terminal. It's not a TUI --- it's a Unix filter for AI. It takes input, does work, produces output, and exits. That's its strength: cake is composable with every tool in your shell.
 
 ## Table of Contents
 
@@ -128,10 +128,10 @@ cake requires at least one model configured in `settings.toml`, plus an API key 
 
 #### Environment Variables
 
-| Variable        | Description                                                                                                              |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `CAKE_DATA_DIR` | Override cache and session directories (default: cache at `~/.cache/cake/`, sessions at `~/.local/share/cake/sessions/`) |
-| `CAKE_SANDBOX`  | Set to `off` to disable filesystem sandboxing                                                                            |
+  | Variable        | Description                                                                                                              |
+  | --------------- | ------------------------------------------------------------------------------------------------------------------------ |
+  | `CAKE_DATA_DIR` | Override cache and session directories (default: cache at `~/.cache/cake/`, sessions at `~/.local/share/cake/sessions/`) |
+  | `CAKE_SANDBOX`  | Set to `off` to disable filesystem sandboxing                                                                            |
 
 ### Model Configuration
 
@@ -222,11 +222,11 @@ When `--profile <name>` is passed, cake applies top-level global settings, top-l
 
 Models that support reasoning (e.g., OpenAI o-series, Anthropic Claude with extended thinking) can be configured with these fields:
 
-| Field                  | Description                                      | Values                                   |
-| ---------------------- | ------------------------------------------------ | ---------------------------------------- |
-| `reasoning_effort`     | Controls how much reasoning the model performs   | `none`, `low`, `medium`, `high`, `xhigh` |
-| `reasoning_summary`    | How reasoning is summarized (Responses API only) | `concise`, `detailed`, `auto`            |
-| `reasoning_max_tokens` | Token budget for reasoning (budget-style)        | Any positive integer                     |
+  | Field                  | Description                                      | Values                                   |
+  | ---------------------- | ------------------------------------------------ | ---------------------------------------- |
+  | `reasoning_effort`     | Controls how much reasoning the model performs   | `none`, `low`, `medium`, `high`, `xhigh` |
+  | `reasoning_summary`    | How reasoning is summarized (Responses API only) | `concise`, `detailed`, `auto`            |
+  | `reasoning_max_tokens` | Token budget for reasoning (budget-style)        | Any positive integer                     |
 
 These can also be overridden at runtime with CLI flags:
 
@@ -410,12 +410,12 @@ cake --output-format json "Fix the bug" | jq '{result, usage, turns, elapsed_tim
 
 cake uses structured exit codes so that shell scripts and CI pipelines can distinguish between failure modes:
 
-| Code | Meaning     | Description                                               |
-| ---- | ----------- | --------------------------------------------------------- |
-| `0`  | Success     | The agent completed and produced a response               |
-| `1`  | Agent error | The model or a tool encountered an error during execution |
-| `2`  | API error   | Rate limit, auth failure, or network error                |
-| `3`  | Input error | No prompt provided, invalid flags, missing API key        |
+  | Code | Meaning     | Description                                               |
+  | ---- | ----------- | --------------------------------------------------------- |
+  | `0`  | Success     | The agent completed and produced a response               |
+  | `1`  | Agent error | The model or a tool encountered an error during execution |
+  | `2`  | API error   | Rate limit, auth failure, or network error                |
+  | `3`  | Input error | No prompt provided, invalid flags, missing API key        |
 
 ```bash
 # Use exit codes in scripts

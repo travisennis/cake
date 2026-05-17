@@ -1,11 +1,11 @@
-I found these Clippy overrides with `rg`. I’m counting explicit `clippy::...` suppressions plus lint config that relaxes/changes Clippy behavior. I’m not counting plain Rust `dead_code` / `unused_variables` unless it was paired with a Clippy allow.
+I found these Clippy overrides with `rg`. I'm counting explicit `clippy::...` suppressions plus lint config that relaxes/changes Clippy behavior. I'm not counting plain Rust `dead_code` / `unused_variables` unless it was paired with a Clippy allow.
 
 **Config**
 | Location | Override | Why | How to remove | Difficulty |
 |---|---:|---|---|---|
 | [Cargo.toml](/Users/travisennis/Projects/cake/Cargo.toml:73) | `missing_docs_in_private_items = "allow"` | Avoids documenting every private helper while still warning on public missing docs. | Add private docs broadly or stop enabling pedantic/nursery expectations for private docs. Probably not worth it. | High |
 | [bacon.toml](/Users/travisennis/Projects/cake/bacon.toml:29) | `-A clippy::missing_const_for_fn` | Local bacon job suppresses a noisy const suggestion. | Make eligible helpers `const fn`, or remove `clippy::pedantic`/this allow from bacon. | Medium |
-| [bacon.toml](/Users/travisennis/Projects/cake/bacon.toml:47) | `-W unwrap_used`, `-W expect_used` | The local “strict” bacon job weakens the workspace deny for unwrap/expect, likely to keep test feedback usable. CI still uses `-D warnings`. | Convert test unwrap/expect usages, then remove these `-W` overrides. | Medium |
+| [bacon.toml](/Users/travisennis/Projects/cake/bacon.toml:47) | `-W unwrap_used`, `-W expect_used` | The local "strict" bacon job weakens the workspace deny for unwrap/expect, likely to keep test feedback usable. CI still uses `-D warnings`. | Convert test unwrap/expect usages, then remove these `-W` overrides. | Medium |
 
 **Production Code**
 | Location | Override | Why | How to remove | Difficulty |

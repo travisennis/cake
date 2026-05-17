@@ -59,11 +59,15 @@ Work from the repository root, `/Users/travisennis/Projects/cake`.
 
 Run a focused test pass after the code edit:
 
-    cargo test main
+```
+cargo test main
+```
 
 Run the required full project check before completion:
 
-    just ci
+```
+just ci
+```
 
 If clippy reports the extracted helpers have new too-many-arguments or type-complexity warnings, introduce a small local state struct rather than adding new allows unless the codebase already uses the same exception for that exact shape.
 

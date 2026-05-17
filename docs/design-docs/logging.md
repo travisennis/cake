@@ -16,9 +16,9 @@ The project uses the **`tracing`** crate combined with **`tracing-subscriber`** 
 
 The project uses a **file-only logging** setup. All log levels are written to a rotating log file, keeping console output clean for user-facing messages.
 
-| Output | Log Levels | Destination |
-|--------|------------|-------------|
-| **file** | `error!`, `warn!`, `info!`, `debug!`, `trace!` | `~/.cache/cake/cake.YYYY-MM-DD.log` |
+  | Output   | Log Levels                                     | Destination                         |
+  | -------- | ---------------------------------------------- | ----------------------------------- |
+  | **file** | `error!`, `warn!`, `info!`, `debug!`, `trace!` | `~/.cache/cake/cake.YYYY-MM-DD.log` |
 
 ### Log Rotation
 
@@ -36,18 +36,18 @@ YYYY-MM-DD HH:MM:SS | LEVEL | file:line — message
 
 Example output:
 ```
-2024-01-15 10:30:45 | INFO | main:42 — data dir set: /Users/travis/.cache/cake, sessions dir set: /Users/travis/.local/share/cake/sessions
+2024-01-15 10:30:45 | INFO | main:42 --- data dir set: /Users/travis/.cache/cake, sessions dir set: /Users/travis/.local/share/cake/sessions
 ```
 
 ### Log Levels
 
-| Level | Default | With `RUST_LOG=cake=trace` |
-|-------|---------|----------------------------|
-| `error!` | ✓ | ✓ |
-| `warn!` | ✓ | ✓ |
-| `info!` | ✓ | ✓ |
-| `debug!` | ✗ | ✓ |
-| `trace!` | ✗ | ✓ |
+  | Level    | Default | With `RUST_LOG=cake=trace` |
+  | -------- | ------- | -------------------------- |
+  | `error!` | ✓       | ✓                          |
+  | `warn!`  | ✓       | ✓                          |
+  | `info!`  | ✓       | ✓                          |
+  | `debug!` | ✗       | ✓                          |
+  | `trace!` | ✗       | ✓                          |
 
 **Default level is INFO** - debug and trace logs are only emitted when explicitly enabled via environment variable.
 

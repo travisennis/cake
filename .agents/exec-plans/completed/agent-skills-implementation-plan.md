@@ -76,7 +76,7 @@ The project follows a 4-layer architecture:
    - `SettingsLoader` loads from project and user-level TOML files
    - Merge semantics: project settings override user settings
 
----
+--------------------------------------------------------------------------------
 
 ## Implementation Plan
 
@@ -202,7 +202,7 @@ impl Skill {
 **Dependencies**:
 - Add `serde_yaml` crate to `Cargo.toml` for YAML frontmatter parsing
 
----
+--------------------------------------------------------------------------------
 
 ### Phase 2: Skill Configuration and Catalog Disclosure
 
@@ -416,6 +416,7 @@ const SKILL_USAGE_INSTRUCTIONS: &str = indoc::indoc! {"
 **Modify**: `src/main.rs`
 
 In `CodingAssistant::build_client_and_session()`:
+
 ```rust
 let skill_catalog = data_dir.discover_skills(&current_dir);
 let system_prompt = build_system_prompt(&current_dir, &agents_files, &skill_catalog);
@@ -426,7 +427,7 @@ let system_prompt = build_system_prompt(&current_dir, &agents_files, &skill_cata
 - [ ] Pass catalog to `build_system_prompt()`
 - [ ] Log diagnostics (warnings/errors) to log file
 
----
+--------------------------------------------------------------------------------
 
 ### Phase 3: Skill Activation (File-Read)
 
@@ -538,14 +539,16 @@ session.activated_skills = activated_skills;
 - [ ] Save activated_skills to session on save
 - [ ] Add tests for deduplication logic
 
----
+--------------------------------------------------------------------------------
 
 ## File Changes Summary
 
 ### New Files
+
 - `src/config/skills.rs` - Skill types, parser, catalog
 
 ### Modified Files
+
 - `src/config/mod.rs` - Export skills module
 - `src/config/data_dir.rs` - Add `discover_skills()` method
 - `src/config/session.rs` - Add `activated_skills` field for persistence
@@ -557,23 +560,26 @@ session.activated_skills = activated_skills;
 - `src/clients/agent.rs` - Add `activated_skills` state, pass to tool execution
 - `Cargo.toml` - Add `serde_yaml` dependency
 
----
+--------------------------------------------------------------------------------
 
 ## Dependencies
 
 ### New Dependencies
+
 - `serde_yaml` - For parsing YAML frontmatter
 
 ### Existing Dependencies Used
+
 - `serde`, `serde_json` - Serialization
 - `anyhow`, `thiserror` - Error handling
 - `log` - Logging diagnostics
 
----
+--------------------------------------------------------------------------------
 
 ## Testing Strategy
 
 ### Unit Tests
+
 - [ ] Skill parsing (valid, malformed, missing fields)
 - [ ] Skill discovery (collision resolution, filtering)
 - [ ] Catalog generation (XML format, filtering)
@@ -581,6 +587,7 @@ session.activated_skills = activated_skills;
 - [ ] Configuration precedence (CLI overrides settings)
 
 ### Integration Tests
+
 - [ ] Full discovery-to-activation flow
 - [ ] Reading SKILL.md via Read tool
 - [ ] Multiple scopes (project + user)
@@ -592,23 +599,26 @@ session.activated_skills = activated_skills;
 - [ ] Settings.toml `skills.only` filters skills
 
 ### Test Fixtures
+
 Create test skill directories in `tests/fixtures/skills/`:
 - `valid-skill/SKILL.md` - Valid skill
 - `malformed-yaml/SKILL.md` - Invalid YAML
 - `missing-description/SKILL.md` - Missing required field
 - `name-mismatch/SKILL.md` - Name doesn't match directory
 
----
+--------------------------------------------------------------------------------
 
 ## Implementation Order
 
 ### Sprint 1: Core Discovery
+
 1. Create `src/config/skills.rs` with types
 2. Implement SKILL.md parser
 3. Implement `DataDir::discover_skills()`
 4. Unit tests for parsing and discovery
 
 ### Sprint 2: Configuration & Prompt Integration
+
 5. Add `--no-skills` and `--skills` CLI flags
 6. Add `SkillSettings` to settings module
 7. Implement configuration precedence logic
@@ -618,6 +628,7 @@ Create test skill directories in `tests/fixtures/skills/`:
 11. Test prompt generation and configuration
 
 ### Sprint 3: Activation & Polish
+
 12. Verify Read tool works with skill paths
 13. Allowlist skill directories
 14. Implement activation deduplication (Session + Agent state)
@@ -626,7 +637,7 @@ Create test skill directories in `tests/fixtures/skills/`:
 17. Test deduplication (same session and resume)
 18. Update documentation
 
----
+--------------------------------------------------------------------------------
 
 ## Design Decisions
 
@@ -635,7 +646,7 @@ Create test skill directories in `tests/fixtures/skills/`:
 3. **Activation Mechanism**: File-read only - model uses existing Read tool to load SKILL.md
 4. **Trust System**: Deferred to future security hardening
 
----
+--------------------------------------------------------------------------------
 
 ## Existing Skill Example
 
@@ -657,7 +668,7 @@ description: |
 
 This should be discovered and included in the catalog once implemented.
 
----
+--------------------------------------------------------------------------------
 
 ## Success Criteria
 

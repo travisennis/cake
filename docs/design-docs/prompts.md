@@ -46,11 +46,11 @@ The built-in default prompt is stored in `src/prompts/system.md` as proper Markd
 
 ### Resolution Behavior
 
-| Source | Path | Behavior |
-|--------|------|----------|
-| Project-level | `.cake/system.md` | Used if present and readable. Takes precedence over all other sources. |
-| User-level | `~/.config/cake/system.md` | Used if present and readable, and no project-level file exists. |
-| Built-in default | Embedded at compile time | Always available as fallback. |
+  | Source           | Path                       | Behavior                                                               |
+  | ---------------- | -------------------------- | ---------------------------------------------------------------------- |
+  | Project-level    | `.cake/system.md`          | Used if present and readable. Takes precedence over all other sources. |
+  | User-level       | `~/.config/cake/system.md` | Used if present and readable, and no project-level file exists.        |
+  | Built-in default | Embedded at compile time   | Always available as fallback.                                          |
 
 Edge cases:
 

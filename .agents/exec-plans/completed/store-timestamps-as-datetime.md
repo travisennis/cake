@@ -69,23 +69,31 @@ Finally, update `.agents/.tasks/062.md`, `.agents/.tasks/index.md`, and this Exe
 
 Work from the repository root:
 
-    cd /Users/travisennis/Projects/cake
+```
+cd /Users/travisennis/Projects/cake
+```
 
 Search the relevant timestamp surface:
 
-    rg -n "timestamp: Option<String>|to_rfc3339|timestamp: Some\\(\" src/clients src/config tests
+```
+rg -n "timestamp: Option<String>|to_rfc3339|timestamp: Some\\(\" src/clients src/config tests
+```
 
 Run targeted tests while editing:
 
-    cargo test clients::types
-    cargo test config::session
-    cargo test clients::agent_state
-    cargo test clients::responses::tests::
-    cargo test clients::chat_completions::tests::
+```
+cargo test clients::types
+cargo test config::session
+cargo test clients::agent_state
+cargo test clients::responses::tests::
+cargo test clients::chat_completions::tests::
+```
 
 Run the required final validation after code, docs, and task metadata are updated:
 
-    just ci
+```
+just ci
+```
 
 ## Validation and Acceptance
 
@@ -101,25 +109,33 @@ These edits are source, docs, task metadata, and snapshot changes only. Re-runni
 
 Relevant current code:
 
-    src/clients/types.rs: ConversationItem, SessionRecord, StreamRecord
-    src/clients/agent_state.rs: creates user, developer, and tool-output conversation timestamps
-    src/clients/chat_completions.rs: parses assistant response items
-    src/clients/responses.rs: parses Responses API output items
-    src/config/session.rs: loads and saves JSONL sessions
+```
+src/clients/types.rs: ConversationItem, SessionRecord, StreamRecord
+src/clients/agent_state.rs: creates user, developer, and tool-output conversation timestamps
+src/clients/chat_completions.rs: parses assistant response items
+src/clients/responses.rs: parses Responses API output items
+src/config/session.rs: loads and saves JSONL sessions
+```
 
 ## Interfaces and Dependencies
 
 Use the existing dependency:
 
-    chrono = { version = "0.4.44", features = ["serde"] }
+```
+chrono = { version = "0.4.44", features = ["serde"] }
+```
 
 The intended internal field shape is:
 
-    timestamp: Option<DateTime<Utc>>
+```
+timestamp: Option<DateTime<Utc>>
+```
 
 The intended external JSON shape remains:
 
-    "timestamp": "2026-05-10T12:34:56Z"
+```
+"timestamp": "2026-05-10T12:34:56Z"
+```
 
 Revision note, 2026-05-10 / Codex: Created this ExecPlan after initial source inspection because task `062` is `Effort: L`.
 

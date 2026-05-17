@@ -15,7 +15,7 @@ cake is an AI coding assistant CLI that:
 
 **Core mechanism**: The agent loop lets the model execute tools, receive results, and continue until it returns a final response.
 
----
+--------------------------------------------------------------------------------
 
 ## Start Here
 
@@ -25,7 +25,7 @@ cake is an AI coding assistant CLI that:
 4. Do not commit or push unless explicitly asked.
 5. Never edit generated task indexes by hand.
 
----
+--------------------------------------------------------------------------------
 
 ## Required Workflow
 
@@ -39,7 +39,7 @@ cake is an AI coding assistant CLI that:
 - This is a binary-only crate. Do not run `cargo test --lib`; there is no library target. Use `cargo test <module_or_test_name>` for targeted tests, or `cargo test` for the full test suite.
 - Do not commit or push code unless explicitly asked to.
 
----
+--------------------------------------------------------------------------------
 
 ## Build/Test/Run
 
@@ -81,7 +81,7 @@ just ci
 just rust-version-check
 ```
 
----
+--------------------------------------------------------------------------------
 
 ## Targeted Test Examples
 
@@ -95,7 +95,7 @@ cargo test test_name
 cargo test --lib
 ```
 
----
+--------------------------------------------------------------------------------
 
 ## Task Queue Rules
 
@@ -106,13 +106,13 @@ cargo test --lib
 - When marking a task as Completed, use `just task-complete <id>`. It updates the task front matter, moves the file from `.agents/.tasks/active/` to `.agents/.tasks/completed/`, and regenerates the indexes in one step. Do not leave Completed tasks in `active/`.
 - When marking a task as Cancelled, use `just task-cancel <id>`. It updates the task front matter, moves the file from `.agents/.tasks/active/` to `.agents/.tasks/cancelled/`, and regenerates the indexes in one step. Do not leave Cancelled tasks in `active/`.
 
----
+--------------------------------------------------------------------------------
 
 ## Research Rules
 
 - When asked to create, update, organize, or use research, first read `.agents/RESEARCH.md`, then use `.agents/.research/index.md` as the research map and open the relevant research file before acting.
 
----
+--------------------------------------------------------------------------------
 
 ## Git Worktree Safety
 
@@ -121,7 +121,7 @@ cargo test --lib
 - Before broad edits, inspect `git status --short`.
 - Before final handoff, report remaining uncommitted or untracked files when relevant.
 
----
+--------------------------------------------------------------------------------
 
 ## Commit Handoff Requirements
 
@@ -133,7 +133,7 @@ After any commit:
 - If the worktree is not clean, list the remaining modified, deleted, or untracked files.
 - Distinguish files changed by the agent from unrelated or pre-existing worktree changes when that context is known.
 
----
+--------------------------------------------------------------------------------
 
 ## Commit Conventions
 
@@ -145,21 +145,21 @@ This project uses [Conventional Commits](https://www.conventionalcommits.org/). 
 
 **Recommended Scopes** (aligned with architecture):
 
-| Scope       | Description                                            |
-| ----------- | ------------------------------------------------------ |
-| `cli`       | Command-line interface and argument parsing            |
-| `agent`     | Agent orchestration, conversation loop, tool execution |
-| `responses` | Responses API backend                                  |
-| `chat`      | Chat Completions API backend                           |
-| `tools`     | Tool definitions (Bash, Read, Edit, Write, etc.)       |
-| `sandbox`   | Sandbox implementations (Seatbelt, Landlock)           |
-| `config`    | Configuration, sessions, data directory                |
-| `session`   | Session persistence and management                     |
-| `model`     | Model configuration and API types                      |
-| `prompts`   | System prompt construction, AGENTS.md integration      |
-| `logger`    | Logging configuration                                  |
+  | Scope       | Description                                            |
+  | ----------- | ------------------------------------------------------ |
+  | `cli`       | Command-line interface and argument parsing            |
+  | `agent`     | Agent orchestration, conversation loop, tool execution |
+  | `responses` | Responses API backend                                  |
+  | `chat`      | Chat Completions API backend                           |
+  | `tools`     | Tool definitions (Bash, Read, Edit, Write, etc.)       |
+  | `sandbox`   | Sandbox implementations (Seatbelt, Landlock)           |
+  | `config`    | Configuration, sessions, data directory                |
+  | `session`   | Session persistence and management                     |
+  | `model`     | Model configuration and API types                      |
+  | `prompts`   | System prompt construction, AGENTS.md integration      |
+  | `logger`    | Logging configuration                                  |
 
----
+--------------------------------------------------------------------------------
 
 ## Code Style Guidelines
 
@@ -169,9 +169,9 @@ This project uses [Conventional Commits](https://www.conventionalcommits.org/). 
   1. **Default**: Delete dead code. If a function, method, field, or type is unused, remove it.
   2. **Acceptable**: `#[cfg(test)]` for items that are only useful from `#[cfg(test)]` callers (test fixtures, test-only constructors). Do not use `#[cfg(test)]` on `pub fn` items on public types; use `pub(crate)` for test-only accessors instead.
   3. **Last resort**: `#[expect(dead_code, reason = "...")]` only for serde struct fields that must exist for deserialization to succeed but are not read by application logic. The reason must state this explicitly: `reason = "field required for serde deserialization; not read by application code"`. Do not use `#[expect(dead_code, ...)]` for any other purpose.
-  - `#[allow(dead_code)]` is forbidden project-wide. The `allow_attributes` and `allow_attributes_without_reason` lints in `Cargo.toml` enforce this at compile time.
+- `#[allow(dead_code)]` is forbidden project-wide. The `allow_attributes` and `allow_attributes_without_reason` lints in `Cargo.toml` enforce this at compile time.
 
----
+--------------------------------------------------------------------------------
 
 ## ExecPlans
 
@@ -186,13 +186,13 @@ Use an ExecPlan for:
 
 Keep `.agents/exec-plans/active/index.md` current when creating, completing, or moving plans.
 
----
+--------------------------------------------------------------------------------
 
 ## Architecture Decision Records
 
 When a task introduces or changes a durable architectural decision, write or update an ADR under `docs/adr/` before implementation. Follow `docs/adr/README.md` for ADR triggers, numbering, naming, and template rules.
 
----
+--------------------------------------------------------------------------------
 
 ## Common Pitfalls
 
@@ -202,7 +202,7 @@ When a task introduces or changes a durable architectural decision, write or upd
 - This crate has no library target.
 - Do not introduce `#[allow(dead_code)]`.
 
----
+--------------------------------------------------------------------------------
 
 ## Additional Notes
 

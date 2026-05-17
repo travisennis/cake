@@ -146,58 +146,62 @@ cake does not support resuming a session from a different working directory than
 
 The first implementation reads JSON files from these paths:
 
-    ~/.config/cake/hooks.json
-    <project>/.cake/hooks.json
-    <project>/.cake/hooks.local.json
+```
+~/.config/cake/hooks.json
+<project>/.cake/hooks.json
+<project>/.cake/hooks.local.json
+```
 
 If a file is missing, it is ignored. If a file exists but is malformed, `cake` returns a clear configuration error before starting the model request, naming the offending file. Hooks from all files are appended in load order: global first, project second, local third. This lets project and local hooks add behavior without copying global hooks. The plan does not support deleting or overriding lower-precedence hooks yet.
 
 The file shape is:
 
-    {
-      "version": 1,
-      "hooks": {
-        "SessionStart": [
+```
+{
+  "version": 1,
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|fork",
+        "hooks": [
           {
-            "matcher": "startup|resume|fork",
-            "hooks": [
-              {
-                "type": "command",
-                "command": "./.cake/hooks/session-start.sh",
-                "timeout": 10,
-                "fail_closed": false,
-                "status_message": "Loading session hook"
-              }
-            ]
-          }
-        ],
-        "PreToolUse": [
-          {
-            "matcher": "Bash|Write",
-            "hooks": [
-              {
-                "type": "command",
-                "command": "./.cake/hooks/check-tool.sh",
-                "timeout": 5,
-                "fail_closed": true
-              }
-            ]
-          }
-        ],
-        "PostToolUse": [
-          {
-            "matcher": "*",
-            "hooks": [
-              {
-                "type": "command",
-                "command": "./.cake/hooks/audit.sh",
-                "timeout": 5
-              }
-            ]
+            "type": "command",
+            "command": "./.cake/hooks/session-start.sh",
+            "timeout": 10,
+            "fail_closed": false,
+            "status_message": "Loading session hook"
           }
         ]
       }
-    }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./.cake/hooks/check-tool.sh",
+            "timeout": 5,
+            "fail_closed": true
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./.cake/hooks/audit.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
+```
 
 `version` must be exactly `1`; any other value is a load-time error.
 
@@ -217,68 +221,82 @@ Every command hook runs with the current project directory as its working direct
 
 The common input payload sent to stdin is:
 
-    {
-      "version": 1,
-      "session_id": "550e8400-e29b-41d4-a716-446655440000",
-      "task_id": "550e8400-e29b-41d4-a716-446655440001",
-      "transcript_path": "/Users/example/.local/share/cake/sessions/....jsonl",
-      "cwd": "/path/to/project",
-      "hook_event_name": "PreToolUse",
-      "model": "glm-5.1",
-      "timestamp": "2026-05-04T00:00:00Z"
-    }
+```
+{
+  "version": 1,
+  "session_id": "550e8400-e29b-41d4-a716-446655440000",
+  "task_id": "550e8400-e29b-41d4-a716-446655440001",
+  "transcript_path": "/Users/example/.local/share/cake/sessions/....jsonl",
+  "cwd": "/path/to/project",
+  "hook_event_name": "PreToolUse",
+  "model": "glm-5.1",
+  "timestamp": "2026-05-04T00:00:00Z"
+}
+```
 
 `SessionStart` adds:
 
-    {
-      "source": "startup",
-      "initial_prompt": "the user prompt text"
-    }
+```
+{
+  "source": "startup",
+  "initial_prompt": "the user prompt text"
+}
+```
 
 `UserPromptSubmit` adds:
 
-    {
-      "prompt": "the user prompt text"
-    }
+```
+{
+  "prompt": "the user prompt text"
+}
+```
 
 `PreToolUse` adds:
 
-    {
-      "tool_name": "Bash",
-      "tool_use_id": "call_abc123",
-      "tool_input": { "command": "cargo test" },
-      "tool_input_json": "{\"command\":\"cargo test\"}"
-    }
+```
+{
+  "tool_name": "Bash",
+  "tool_use_id": "call_abc123",
+  "tool_input": { "command": "cargo test" },
+  "tool_input_json": "{\"command\":\"cargo test\"}"
+}
+```
 
 `PostToolUse` and `PostToolUseFailure` add:
 
-    {
-      "tool_name": "Bash",
-      "tool_use_id": "call_abc123",
-      "tool_input": { "command": "cargo test" },
-      "tool_input_json": "{\"command\":\"cargo test\"}",
-      "tool_result": {
-        "result_type": "success",
-        "text_result_for_llm": "... tool output ..."
-      }
-    }
+```
+{
+  "tool_name": "Bash",
+  "tool_use_id": "call_abc123",
+  "tool_input": { "command": "cargo test" },
+  "tool_input_json": "{\"command\":\"cargo test\"}",
+  "tool_result": {
+    "result_type": "success",
+    "text_result_for_llm": "... tool output ..."
+  }
+}
+```
 
 The `result_type` field is `"success"` for `PostToolUse` and `"failure"` for `PostToolUseFailure`. The classification is read from the `Result<ToolResult, String>` variant returned by `execute_tool`: `Ok(_)` is success, `Err(_)` is failure. The plan does not sniff the output text.
 
 `Stop` adds:
 
-    {
-      "result": "final assistant response text, if available"
-    }
+```
+{
+  "result": "final assistant response text, if available"
+}
+```
 
 `ErrorOccurred` adds:
 
-    {
-      "error": {
-        "message": "error text",
-        "name": "Error"
-      }
-    }
+```
+{
+  "error": {
+    "message": "error text",
+    "name": "Error"
+  }
+}
+```
 
 When a hook exits with code `0`, parse stdout as JSON only if stdout is non-empty after trimming whitespace. Empty stdout means no decision. Invalid JSON is a hook error. If `fail_closed` is false, log the invalid output and continue. If `fail_closed` is true, convert to a tool-call block for `PreToolUse` and to a CLI exit with non-zero status for any other event.
 
@@ -288,26 +306,30 @@ When a hook exits with any other code, treat it as a non-blocking hook error unl
 
 Supported JSON output fields are:
 
-    {
-      "continue": true,
-      "stop_reason": "optional message",
-      "decision": "allow",
-      "permission": "allow",
-      "reason": "optional explanation",
-      "updated_input": { "command": "modified command" },
-      "additional_context": "message to add to the model context",
-      "suppress_output": false
-    }
+```
+{
+  "continue": true,
+  "stop_reason": "optional message",
+  "decision": "allow",
+  "permission": "allow",
+  "reason": "optional explanation",
+  "updated_input": { "command": "modified command" },
+  "additional_context": "message to add to the model context",
+  "suppress_output": false
+}
+```
 
 For compatibility with the research findings, accept either `permission` or `decision`, with values `allow`, `deny`, `block`, or `ask`. Treat `deny` and `block` the same. Treat `ask` as deny in the first implementation and include a reason saying interactive ask is not supported yet. If `continue` is explicitly false, stop the task with `stop_reason` or `reason`.
 
 For `PreToolUse`, support `updated_input` by replacing the tool argument JSON before execution. The replacement must parse as a JSON object; if it does not, treat as a hook error governed by `fail_closed`. After substitution, the new arguments are passed through the target tool's normal serde deserialization and safety validation (`validate_command_safety` for Bash, `validate_path` / `validate_path_for_write` for path tools). If validation fails, return the validation error as the tool result. When `updated_input` is applied, prepend the following notice to the tool result string returned to the model:
 
-    Hook updated tool input.
-    Original arguments: {original_json}
-    New arguments: {new_json}
-    ---
-    {actual tool output or error}
+```
+Hook updated tool input.
+Original arguments: {original_json}
+New arguments: {new_json}
+---
+{actual tool output or error}
+```
 
 For `UserPromptSubmit` and `SessionStart`, support `additional_context` by appending a `Role::Developer` message to the agent history before the next provider request. For `PostToolUse` and `PostToolUseFailure`, support `additional_context` by appending it to the tool result text under a heading `Additional hook context:`. When multiple matched hooks each return `additional_context`, append all of them in load order separated by blank lines. When multiple matched hooks each return `updated_input` for the same `PreToolUse` call, the first one in load order wins and a `tracing::warn!` is emitted naming the conflicting source files. When any matched hook returns a denial, the call is denied; combined denial reasons are joined with `; `. Defer `suppress_output` behavior; parse the field but do not act on it.
 
@@ -331,21 +353,23 @@ Without observability, this feature cannot be debugged when a hook script behave
 
 2. **Session JSONL transcript**. When sessions are enabled, each hook invocation writes one record to the transcript. The record reuses the existing transcript writer (`open_session_for_append` in `src/config/data_dir.rs`) so the `session-investigation` skill can read hook activity without code changes. The record shape is:
 
-       {
-         "type": "hook_event",
-         "timestamp": "2026-05-04T00:00:00Z",
-         "task_id": "...",
-         "event": "PreToolUse",
-         "source": "Bash",
-         "source_file": ".cake/hooks.json",
-         "command": "./.cake/hooks/check-tool.sh",
-         "exit_code": 0,
-         "duration_ms": 42,
-         "decision": "allow",
-         "fail_closed": false,
-         "stdout": "...",
-         "stderr": "..."
-       }
+   ```
+      {
+        "type": "hook_event",
+        "timestamp": "2026-05-04T00:00:00Z",
+        "task_id": "...",
+        "event": "PreToolUse",
+        "source": "Bash",
+        "source_file": ".cake/hooks.json",
+        "command": "./.cake/hooks/check-tool.sh",
+        "exit_code": 0,
+        "duration_ms": 42,
+        "decision": "allow",
+        "fail_closed": false,
+        "stdout": "...",
+        "stderr": "..."
+      }
+   ```
 
    Stdout and stderr are captured to memory bounded at 64 KiB each. Bytes beyond the cap are truncated with the suffix `... (truncated, N more bytes)`. The session writer truncates stored stdout/stderr further if necessary to stay within the existing record-size limits in `src/config/session.rs`.
 
@@ -389,16 +413,16 @@ For hook tests:
   1. Builds a tiny in-memory `LoadedHooks` with one or two hook entries that point to a temporary `sh -c` snippet.
   2. Constructs `Agent` with a fake transport that returns a fixed sequence of model responses, including tool calls.
   3. Drives `Agent::send` and inspects the `history` after completion.
-  Required tests:
-  - `pre_tool_hook_denies_tool_execution`: hook exits 2; verify the tool was not run (e.g., the script that the tool would execute writes to a sentinel file that must not exist) and the `FunctionCallOutput` text starts with `Hook blocked tool execution:`.
-  - `pre_tool_hook_updated_input_changes_arguments`: hook returns `{"permission":"allow","updated_input":{"command":"printf safe"}}`; verify the recorded tool output contains `safe` and the `Hook updated tool input.` notice with both original and new arguments.
-  - `pre_tool_hook_updated_input_invalid_returns_validation_error`: hook returns `updated_input` that the tool's serde rejects; verify the tool result is the validation error message with the `Hook updated tool input.` notice prepended.
-  - `post_tool_hook_additional_context_reaches_next_turn`: hook returns `{"additional_context":"please run the formatter"}`; verify the next provider request body (captured by the fake transport) contains both the original tool output and the `Additional hook context: please run the formatter` line.
-  - `post_tool_hook_failure_fires_only_on_err_variant`: a tool that returns `Err` triggers `PostToolUseFailure` with `result_type: "failure"` and does not trigger `PostToolUse`. A tool that returns `Ok` does the opposite. Verify with a hook script that records the event name to a sentinel file.
-  - `hook_errors_fail_open_by_default`: hook exits 1; verify the run completes normally and emits a `tracing::warn!` event under `cake::hooks`.
-  - `fail_closed_lifecycle_hook_exits_nonzero`: a `SessionStart` hook with `fail_closed: true` exits 1; verify cake exits non-zero. This is best validated as an integration test in `tests/exit_codes.rs` so the actual process exit status is observed.
-  - `concurrent_pre_tool_hooks_are_aggregated`: two matched hooks run concurrently; one allows, one denies; verify the call is denied. Two matched hooks both providing `additional_context` produce both strings in load order. Two matched hooks both providing `updated_input` log a warning and use the first.
-  - `transcript_contains_hook_records`: when sessions are enabled, verify a `hook_event` record appears in the JSONL transcript per invocation.
+     Required tests:
+- `pre_tool_hook_denies_tool_execution`: hook exits 2; verify the tool was not run (e.g., the script that the tool would execute writes to a sentinel file that must not exist) and the `FunctionCallOutput` text starts with `Hook blocked tool execution:`.
+- `pre_tool_hook_updated_input_changes_arguments`: hook returns `{"permission":"allow","updated_input":{"command":"printf safe"}}`; verify the recorded tool output contains `safe` and the `Hook updated tool input.` notice with both original and new arguments.
+- `pre_tool_hook_updated_input_invalid_returns_validation_error`: hook returns `updated_input` that the tool's serde rejects; verify the tool result is the validation error message with the `Hook updated tool input.` notice prepended.
+- `post_tool_hook_additional_context_reaches_next_turn`: hook returns `{"additional_context":"please run the formatter"}`; verify the next provider request body (captured by the fake transport) contains both the original tool output and the `Additional hook context: please run the formatter` line.
+- `post_tool_hook_failure_fires_only_on_err_variant`: a tool that returns `Err` triggers `PostToolUseFailure` with `result_type: "failure"` and does not trigger `PostToolUse`. A tool that returns `Ok` does the opposite. Verify with a hook script that records the event name to a sentinel file.
+- `hook_errors_fail_open_by_default`: hook exits 1; verify the run completes normally and emits a `tracing::warn!` event under `cake::hooks`.
+- `fail_closed_lifecycle_hook_exits_nonzero`: a `SessionStart` hook with `fail_closed: true` exits 1; verify cake exits non-zero. This is best validated as an integration test in `tests/exit_codes.rs` so the actual process exit status is observed.
+- `concurrent_pre_tool_hooks_are_aggregated`: two matched hooks run concurrently; one allows, one denies; verify the call is denied. Two matched hooks both providing `additional_context` produce both strings in load order. Two matched hooks both providing `updated_input` log a warning and use the first.
+- `transcript_contains_hook_records`: when sessions are enabled, verify a `hook_event` record appears in the JSONL transcript per invocation.
 
 ## Concrete Steps
 
@@ -406,57 +430,73 @@ Run all commands from the repository root, `/Users/travisennis/Projects/cake`.
 
 Start with a baseline:
 
-    cargo test hooks
-    cargo test agent
+```
+cargo test hooks
+cargo test agent
+```
 
 The first command may report that there are no hook tests yet. That is acceptable before implementation. The second command should pass before edits and gives confidence that agent loop tests are healthy.
 
 After adding `src/config/hooks.rs`, run:
 
-    cargo test config::hooks
+```
+cargo test config::hooks
+```
 
 Expected result:
 
-    test config::hooks::tests::missing_hook_files_load_empty ... ok
-    test config::hooks::tests::loads_global_project_and_local_in_order ... ok
-    test config::hooks::tests::matcher_pipe_syntax_matches_exact_names ... ok
-    test config::hooks::tests::rejects_matcher_on_non_source_events ... ok
-    test config::hooks::tests::rejects_unknown_event_names ... ok
-    test config::hooks::tests::rejects_version_other_than_1 ... ok
-    test result: ok. N passed; 0 failed
+```
+test config::hooks::tests::missing_hook_files_load_empty ... ok
+test config::hooks::tests::loads_global_project_and_local_in_order ... ok
+test config::hooks::tests::matcher_pipe_syntax_matches_exact_names ... ok
+test config::hooks::tests::rejects_matcher_on_non_source_events ... ok
+test config::hooks::tests::rejects_unknown_event_names ... ok
+test config::hooks::tests::rejects_version_other_than_1 ... ok
+test result: ok. N passed; 0 failed
+```
 
 After adding the hook runner, run:
 
-    cargo test hooks::tests
+```
+cargo test hooks::tests
+```
 
 Expected result:
 
-    test hooks::tests::command_hook_receives_stdin_json ... ok
-    test hooks::tests::exit_two_blocks_pre_tool_use ... ok
-    test hooks::tests::invalid_json_fails_open_by_default ... ok
-    test hooks::tests::fail_closed_invalid_json_blocks ... ok
-    test hooks::tests::timeout_is_reported_as_hook_error ... ok
-    test hooks::tests::stdout_is_capped_at_64_kib ... ok
+```
+test hooks::tests::command_hook_receives_stdin_json ... ok
+test hooks::tests::exit_two_blocks_pre_tool_use ... ok
+test hooks::tests::invalid_json_fails_open_by_default ... ok
+test hooks::tests::fail_closed_invalid_json_blocks ... ok
+test hooks::tests::timeout_is_reported_as_hook_error ... ok
+test hooks::tests::stdout_is_capped_at_64_kib ... ok
+```
 
 After integrating with `Agent`, run focused tests:
 
-    cargo test pre_tool_hook_denies_tool_execution
-    cargo test pre_tool_hook_updated_input_changes_arguments
-    cargo test pre_tool_hook_updated_input_invalid_returns_validation_error
-    cargo test post_tool_hook_additional_context_reaches_next_turn
-    cargo test post_tool_hook_failure_fires_only_on_err_variant
-    cargo test hook_errors_fail_open_by_default
-    cargo test concurrent_pre_tool_hooks_are_aggregated
-    cargo test transcript_contains_hook_records
+```
+cargo test pre_tool_hook_denies_tool_execution
+cargo test pre_tool_hook_updated_input_changes_arguments
+cargo test pre_tool_hook_updated_input_invalid_returns_validation_error
+cargo test post_tool_hook_additional_context_reaches_next_turn
+cargo test post_tool_hook_failure_fires_only_on_err_variant
+cargo test hook_errors_fail_open_by_default
+cargo test concurrent_pre_tool_hooks_are_aggregated
+cargo test transcript_contains_hook_records
+```
 
 After integration tests are added, run:
 
-    cargo test --test exit_codes fail_closed_lifecycle_hook_exits_nonzero
+```
+cargo test --test exit_codes fail_closed_lifecycle_hook_exits_nonzero
+```
 
 After documentation and examples are added, run:
 
-    cargo fmt
-    just ci
+```
+cargo fmt
+just ci
+```
 
 The expected final result is that formatting, clippy, and the full test suite complete successfully. Record the exact `just ci` result in `Progress` and `Outcomes & Retrospective`.
 
@@ -468,18 +508,22 @@ A project can create `.cake/hooks.json` with a `PreToolUse` hook matching `Bash`
 
 A `PreToolUse` hook can return:
 
-    {
-      "permission": "allow",
-      "updated_input": { "command": "printf safe" }
-    }
+```
+{
+  "permission": "allow",
+  "updated_input": { "command": "printf safe" }
+}
+```
 
 When the model requested `printf unsafe`, the tool output proves that `printf safe` ran instead, and the `FunctionCallOutput` text begins with the `Hook updated tool input.` notice including both the original and new JSON.
 
 A `PostToolUse` hook can return:
 
-    {
-      "additional_context": "The command produced a generated file that should be inspected."
-    }
+```
+{
+  "additional_context": "The command produced a generated file that should be inspected."
+}
+```
 
 The next provider request includes the original tool output plus an `Additional hook context:` section containing that text.
 
@@ -509,114 +553,124 @@ Hook scripts must be executable. cake does not chmod hook files; if a script is 
 
 The current tool execution flow in `src/clients/agent.rs` (around line 458) is the primary insertion point:
 
-    let futures = function_calls
-        .iter()
-        .map(|(_id, call_id, name, arguments)| {
-            ...
-            async move {
-                let result = execute_tool_with_skill_dedup(
-                    &name,
-                    &arguments,
-                    &skill_locations,
-                    &activated_skills,
-                )
-                .await;
-                (call_id, result)
-            }
-        });
+```
+let futures = function_calls
+    .iter()
+    .map(|(_id, call_id, name, arguments)| {
+        ...
+        async move {
+            let result = execute_tool_with_skill_dedup(
+                &name,
+                &arguments,
+                &skill_locations,
+                &activated_skills,
+            )
+            .await;
+            (call_id, result)
+        }
+    });
 
-    let results = futures::future::join_all(futures).await;
+let results = futures::future::join_all(futures).await;
+```
 
 The hook implementation changes this in two stages. First, run pre-tool hooks (concurrently across calls, concurrently within each call) and build an execution plan per call: execute, execute-with-updated-input, or skip-with-blocked-output. Second, run the allowed executions concurrently and merge blocked outputs back into the same ordered result list. Branch on the `Result<ToolResult, String>` variant to drive `PostToolUse` vs `PostToolUseFailure`.
 
 An example blocking script for Unix tests can be as small as:
 
-    #!/bin/sh
-    payload="$(cat)"
-    case "$payload" in
-      *"rm -rf"*)
-        echo "destructive command blocked" >&2
-        exit 2
-        ;;
-      *)
-        printf '{"permission":"allow"}'
-        ;;
-    esac
+```
+#!/bin/sh
+payload="$(cat)"
+case "$payload" in
+  *"rm -rf"*)
+    echo "destructive command blocked" >&2
+    exit 2
+    ;;
+  *)
+    printf '{"permission":"allow"}'
+    ;;
+esac
+```
 
 An example hook output that injects context is:
 
-    {"additional_context":"Prefer running the formatter after this edit."}
+```
+{"additional_context":"Prefer running the formatter after this edit."}
+```
 
 ## Interfaces and Dependencies
 
 In `src/config/hooks.rs`, define these public types and functions:
 
-    pub struct LoadedHooks {
-        pub groups: Vec<HookGroup>,
-    }
+```
+pub struct LoadedHooks {
+    pub groups: Vec<HookGroup>,
+}
 
-    pub struct HookGroup {
-        pub source_path: PathBuf,
-        pub event: HookEvent,
-        pub matcher: HookMatcher,
-        pub hooks: Vec<HookCommand>,
-    }
+pub struct HookGroup {
+    pub source_path: PathBuf,
+    pub event: HookEvent,
+    pub matcher: HookMatcher,
+    pub hooks: Vec<HookCommand>,
+}
 
-    pub enum HookEvent {
-        SessionStart,
-        UserPromptSubmit,
-        PreToolUse,
-        PostToolUse,
-        PostToolUseFailure,
-        Stop,
-        ErrorOccurred,
-    }
+pub enum HookEvent {
+    SessionStart,
+    UserPromptSubmit,
+    PreToolUse,
+    PostToolUse,
+    PostToolUseFailure,
+    Stop,
+    ErrorOccurred,
+}
 
-    pub struct HookCommand {
-        pub command: String,
-        pub timeout: Duration,
-        pub fail_closed: bool,
-        pub status_message: Option<String>,
-        pub source_dir: PathBuf,
-    }
+pub struct HookCommand {
+    pub command: String,
+    pub timeout: Duration,
+    pub fail_closed: bool,
+    pub status_message: Option<String>,
+    pub source_dir: PathBuf,
+}
 
-    pub struct HooksLoader;
+pub struct HooksLoader;
 
-    impl HooksLoader {
-        pub fn load(project_dir: &Path) -> Result<LoadedHooks, HooksError>;
-    }
+impl HooksLoader {
+    pub fn load(project_dir: &Path) -> Result<LoadedHooks, HooksError>;
+}
+```
 
 In `src/hooks.rs`, define the runtime API:
 
-    pub struct HookRunner { ... }
+```
+pub struct HookRunner { ... }
 
-    pub struct HookContext {
-        pub session_id: uuid::Uuid,
-        pub task_id: uuid::Uuid,
-        pub transcript_path: Option<PathBuf>,
-        pub cwd: PathBuf,
-        pub model: String,
-    }
+pub struct HookContext {
+    pub session_id: uuid::Uuid,
+    pub task_id: uuid::Uuid,
+    pub transcript_path: Option<PathBuf>,
+    pub cwd: PathBuf,
+    pub model: String,
+}
 
-    pub enum ToolHookPlan {
-        Execute { arguments: String, prefix_notice: Option<String>, additional_context: Vec<String> },
-        Block { reason: String, additional_context: Vec<String> },
-    }
+pub enum ToolHookPlan {
+    Execute { arguments: String, prefix_notice: Option<String>, additional_context: Vec<String> },
+    Block { reason: String, additional_context: Vec<String> },
+}
 
-    pub enum HookPermission {
-        Allow,
-        Deny,
-    }
+pub enum HookPermission {
+    Allow,
+    Deny,
+}
 
-    impl HookRunner {
-        pub fn new(loaded: LoadedHooks, context: HookContext) -> Self;
-        pub async fn session_start(&self, source: &str, initial_prompt: &str) -> anyhow::Result<Vec<String>>;
-        pub async fn user_prompt_submit(&self, prompt: &str) -> anyhow::Result<Vec<String>>;
-        pub async fn pre_tool_use(&self, tool_name: &str, tool_use_id: &str, arguments: &str) -> anyhow::Result<ToolHookPlan>;
-        pub async fn post_tool_use(&self, tool_name: &str, tool_use_id: &str, arguments: &str, result: &Result<String, String>) -> anyhow::Result<Option<String>>;
-        pub async fn stop(&self, result: Option<&str>) -> anyhow::Result<Option<String>>;
-        pub async fn error_occurred(&self, error: &anyhow::Error) -> anyhow::Result<()>;
-    }
+impl HookRunner {
+    pub fn new(loaded: LoadedHooks, context: HookContext) -> Self;
+    pub async fn session_start(&self, source: &str, initial_prompt: &str) -> anyhow::Result<Vec<String>>;
+    pub async fn user_prompt_submit(&self, prompt: &str) -> anyhow::Result<Vec<String>>;
+    pub async fn pre_tool_use(&self, tool_name: &str, tool_use_id: &str, arguments: &str) -> anyhow::Result<ToolHookPlan>;
+    pub async fn post_tool_use(&self, tool_name: &str, tool_use_id: &str, arguments: &str, result: &Result<String, String>) -> anyhow::Result<Option<String>>;
+    pub async fn stop(&self, result: Option<&str>) -> anyhow::Result<Option<String>>;
+    pub async fn error_occurred(&self, error: &anyhow::Error) -> anyhow::Result<()>;
+}
+```
 
 `session_start` and `user_prompt_submit` return developer-context strings that `Agent` should append before the first provider request. `pre_tool_use` returns a plan that distinguishes execute (with optional updated arguments and a notice to prepend) from block (with a reason). `post_tool_use` accepts the typed `Result` so it can dispatch on success vs failure without string sniffing, and returns optional extra context to append to the tool output. `stop` and `error_occurred` are lifecycle side effects in the first implementation.
 

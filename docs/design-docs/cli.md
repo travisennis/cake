@@ -4,7 +4,7 @@ The CLI module provides the command-line interface for cake, handling argument p
 
 ## Overview
 
-The CLI layer is intentionally thin—it delegates all business logic to lower layers while handling:
+The CLI layer is intentionally thin---it delegates all business logic to lower layers while handling:
 
 - **Argument parsing**: Using `clap` to define and validate command-line flags
 - **User interaction**: Reading from stdin, handling worktrees, and formatting output
@@ -156,7 +156,7 @@ The CLI handles four session modes:
 3. **Resume** (`--resume <UUID>`): Loads a specific session by UUID
 4. **Fork** (`--fork [UUID]`): Copies history from an existing session into a new session
 
-These modes are mutually exclusive—only one can be used at a time.
+These modes are mutually exclusive---only one can be used at a time.
 
 ## Input Sources
 
@@ -206,12 +206,12 @@ When using `stream-json` or `json`, console progress reporting (spinner) is auto
 
 cake returns structured exit codes so that shell scripts and CI pipelines can branch on the reason for failure:
 
-| Code | Name        | Description                                               |
-| ---- | ----------- | --------------------------------------------------------- |
-| `0`  | Success     | The agent completed and produced a response               |
-| `1`  | Agent error | The model or a tool encountered an error during execution |
-| `2`  | API error   | Rate limit, auth failure, or network error                |
-| `3`  | Input error | No prompt provided, invalid flags, missing API key        |
+  | Code | Name        | Description                                               |
+  | ---- | ----------- | --------------------------------------------------------- |
+  | `0`  | Success     | The agent completed and produced a response               |
+  | `1`  | Agent error | The model or a tool encountered an error during execution |
+  | `2`  | API error   | Rate limit, auth failure, or network error                |
+  | `3`  | Input error | No prompt provided, invalid flags, missing API key        |
 
 ### Classification Logic
 

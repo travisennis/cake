@@ -6,12 +6,12 @@ Cake sandboxes commands executed by the Bash tool to restrict filesystem access.
 
 When the Bash tool executes a command, cake wraps it in an OS-level sandbox that enforces a deny-default filesystem policy. Only explicitly allowed paths are accessible:
 
-| Access Level | Paths | Purpose |
-|---|---|---|
-| **Read-write** | Current working directory, temp directories, `~/.cargo`, `~/.rustup`, `~/.cache/sccache`, `~/.config/gh`, `~/.config/glab-cli`, `~/.config/mise`, `~/.asdf`, `~/.volta`, and related cache/state directories | Project files, build artifacts, toolchain caches, SCM CLI configs |
-| **Read-only + execute** | `/usr`, `/bin`, `/sbin`, system paths, `/Library`, `/System/Library`, `/Applications`, `/opt/homebrew`, `/opt/local` (macOS); `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64`, `/etc/alternatives`, `/snap` (Linux) | Running system tools and compilers |
-| **Read-only** | `/etc`, `/dev`, `/var`, `/proc`, `/sys` (Linux); `/etc`, `/private/etc`, `/private/var`, `/dev`, `/var` (macOS); `~/.config/git`, `~/.gitattributes`; **plus any directories added via `--add-dir`**; **plus skill directories (parent dirs of SKILL.md files)** | Configuration, device access, git config, user-specified reference directories, skill scripts |
-| **Denied** | Everything else | Home directory (except allowed paths), other projects, etc. |
+  | Access Level            | Paths                                                                                                                                                                                                                                                            | Purpose                                                                                       |
+  | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+  | **Read-write**          | Current working directory, temp directories, `~/.cargo`, `~/.rustup`, `~/.cache/sccache`, `~/.config/gh`, `~/.config/glab-cli`, `~/.config/mise`, `~/.asdf`, `~/.volta`, and related cache/state directories                                                     | Project files, build artifacts, toolchain caches, SCM CLI configs                             |
+  | **Read-only + execute** | `/usr`, `/bin`, `/sbin`, system paths, `/Library`, `/System/Library`, `/Applications`, `/opt/homebrew`, `/opt/local` (macOS); `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64`, `/etc/alternatives`, `/snap` (Linux)                                                    | Running system tools and compilers                                                            |
+  | **Read-only**           | `/etc`, `/dev`, `/var`, `/proc`, `/sys` (Linux); `/etc`, `/private/etc`, `/private/var`, `/dev`, `/var` (macOS); `~/.config/git`, `~/.gitattributes`; **plus any directories added via `--add-dir`**; **plus skill directories (parent dirs of SKILL.md files)** | Configuration, device access, git config, user-specified reference directories, skill scripts |
+  | **Denied**              | Everything else                                                                                                                                                                                                                                                  | Home directory (except allowed paths), other projects, etc.                                   |
 
 ## Platform Support
 
@@ -56,7 +56,7 @@ System paths on Linux include `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64`, `/etc/a
 
 ## Layered Defense
 
-The sandbox provides OS-level filesystem restriction as the primary enforcement mechanism. In addition, the Bash tool includes a narrow pre-execution destructive command guard that blocks known-destructive commands (e.g., `git reset --hard`, `git push --force`, `rm -rf` outside literal `/tmp` or `/var/tmp` targets) before they reach the shell. This best-effort guard complements the sandbox by catching destructive operations that are technically allowed within the sandbox's permitted zones—for example, destructive git operations inside the repository directory. It is not a shell security policy engine. See [tools.md](./tools.md) for the full list of blocked commands.
+The sandbox provides OS-level filesystem restriction as the primary enforcement mechanism. In addition, the Bash tool includes a narrow pre-execution destructive command guard that blocks known-destructive commands (e.g., `git reset --hard`, `git push --force`, `rm -rf` outside literal `/tmp` or `/var/tmp` targets) before they reach the shell. This best-effort guard complements the sandbox by catching destructive operations that are technically allowed within the sandbox's permitted zones---for example, destructive git operations inside the repository directory. It is not a shell security policy engine. See [tools.md](./tools.md) for the full list of blocked commands.
 
 ## Configuration
 

@@ -2,13 +2,13 @@
 
 Comprehensive security analysis of the acai codebase. Findings ordered by severity, with proven exploitability for each.
 
----
+--------------------------------------------------------------------------------
 
 ## 🟠 HIGH: `--add-dir` Grants Write Access via Edit/Write Tools (Design Inconsistency)
 
 **Location:** `src/clients/tools/mod.rs:90-95`, `src/clients/tools/write.rs:141-144`, `src/clients/tools/edit.rs:133`
 
-**The bug:** The `--add-dir` flag is documented as providing **read-only access** to additional directories. The sandbox config (`sandbox/mod.rs:118-127`) correctly adds them as `read_only`. However, the path validation in `validate_path_in_cwd()` treats `additional_dirs` the same as cwd — it returns `Ok(canonical)` for any path inside an additional dir. Both `Edit` and `Write` tools call `validate_path_in_cwd()` and will **happily write to files inside `--add-dir` directories**, bypassing the intended read-only restriction.
+**The bug:** The `--add-dir` flag is documented as providing **read-only access** to additional directories. The sandbox config (`sandbox/mod.rs:118-127`) correctly adds them as `read_only`. However, the path validation in `validate_path_in_cwd()` treats `additional_dirs` the same as cwd --- it returns `Ok(canonical)` for any path inside an additional dir. Both `Edit` and `Write` tools call `validate_path_in_cwd()` and will **happily write to files inside `--add-dir` directories**, bypassing the intended read-only restriction.
 
 **Proof:**
 
@@ -27,7 +27,7 @@ The `validate_path_in_cwd()` function makes no distinction between cwd paths and
 
 **Recommended fix:** `validate_path_in_cwd()` should return a flag indicating read-only vs read-write, and the Edit/Write tools should reject paths that resolve to read-only additional directories.
 
----
+--------------------------------------------------------------------------------
 
 ## 🟠 HIGH: Prompt Injection via AGENTS.md Files
 
@@ -39,7 +39,7 @@ The `validate_path_in_cwd()` function makes no distinction between cwd paths and
 - Execute arbitrary commands
 - Read sensitive files and transmit them via Bash (`curl`)
 
-**Proof of concept — malicious `AGENTS.md`:**
+**Proof of concept --- malicious `AGENTS.md`:**
 
 ```markdown
 # AGENTS.md
@@ -56,7 +56,7 @@ When a user clones a repo containing this file and runs `acai`, the content is i
 
 **Recommended fix:** Display a warning or require user confirmation when loading a project-level AGENTS.md for the first time, or hash-and-cache known-good versions.
 
----
+--------------------------------------------------------------------------------
 
 ## 🟡 MEDIUM: Sandbox Allows Unrestricted Network Access
 
@@ -74,7 +74,7 @@ When a user clones a repo containing this file and runs `acai`, the content is i
 
 **Recommended fix:** Add an opt-in `--allow-network` flag and deny network access by default in the sandbox profile, or restrict to specific domains/ports.
 
----
+--------------------------------------------------------------------------------
 
 ## 🟡 MEDIUM: Sandbox Grants Read-Write to Sensitive Home Directories
 
@@ -93,13 +93,13 @@ When a user clones a repo containing this file and runs `acai`, the content is i
 
 **Recommended fix:** Grant read-only access to credential directories where possible, or restrict to only the specific files needed (e.g., allow `cargo` binary execution but not reading `~/.cargo/credentials.toml`).
 
----
+--------------------------------------------------------------------------------
 
 ## 🟡 MEDIUM: Linux Landlock Not Compiled by Default
 
 **Location:** `Cargo.toml:41`, `src/clients/tools/sandbox/linux.rs:107-133`
 
-**The bug:** The `landlock` feature is **not in the default features** (`default = []`). On Linux, unless the user explicitly builds with `--features landlock`, the sandbox does nothing — it logs a warning and allows execution without restrictions.
+**The bug:** The `landlock` feature is **not in the default features** (`default = []`). On Linux, unless the user explicitly builds with `--features landlock`, the sandbox does nothing --- it logs a warning and allows execution without restrictions.
 
 **Proof:** From `linux.rs:122-130`:
 
@@ -114,31 +114,31 @@ When a user clones a repo containing this file and runs `acai`, the content is i
 }
 ```
 
-**Impact:** Linux users running a default build have **no sandbox protection** — all bash commands run unrestricted. The warning only appears in the log file, not on stderr.
+**Impact:** Linux users running a default build have **no sandbox protection** --- all bash commands run unrestricted. The warning only appears in the log file, not on stderr.
 
 **Recommended fix:** Add `landlock` to the default features, or emit a visible stderr warning at startup when running on Linux without the feature.
 
----
+--------------------------------------------------------------------------------
 
 ## 🟢 LOW: API Key Logged at TRACE Level
 
 **Location:** `src/clients/responses.rs:61-62`, `src/clients/chat_completions.rs:55-56`
 
-**The bug:** The full request JSON (including bearer token in headers) is logged at TRACE level. While the bearer token isn't in the JSON body, the `prompt_json` includes the full request object. Additionally, the `ResolvedModelConfig` struct contains `api_key` and is used throughout — if any debug formatting ever includes it, the key would be logged.
+**The bug:** The full request JSON (including bearer token in headers) is logged at TRACE level. While the bearer token isn't in the JSON body, the `prompt_json` includes the full request object. Additionally, the `ResolvedModelConfig` struct contains `api_key` and is used throughout --- if any debug formatting ever includes it, the key would be logged.
 
 **Impact:** Low risk since TRACE requires explicit `RUST_LOG=acai=trace`, but the log file at `~/.cache/acai/` could leak the key if a user enables trace logging for debugging.
 
 **Recommended fix:** Redact the API key from any logged request data, or implement a `Debug` trait for `ResolvedModelConfig` that masks the key.
 
----
+--------------------------------------------------------------------------------
 
 ## Summary Table
 
-| # | Severity | Finding | Exploitable? |
-|---|----------|---------|-------------|
-| 1 | 🟠 HIGH | `--add-dir` bypass: Edit/Write ignore read-only intent | ✅ Yes — direct write to "read-only" dirs |
-| 2 | 🟠 HIGH | Prompt injection via project AGENTS.md | ✅ Yes — cloned repo can inject instructions |
-| 3 | 🟡 MEDIUM | Sandbox allows unrestricted network (data exfiltration) | ✅ Yes — `curl` exfiltration from sandbox |
-| 4 | 🟡 MEDIUM | Sandbox grants R/W to `~/.config/gh`, `~/.cargo` etc. | ✅ Yes — credential read from sandbox |
-| 5 | 🟡 MEDIUM | Linux landlock not in default features | ✅ Yes — default Linux builds are unsandboxed |
-| 6 | 🟢 LOW | API key in trace logs | Conditional — requires TRACE level |
+  | #   | Severity  | Finding                                                 | Exploitable?                                  |
+  | --- | --------- | ------------------------------------------------------- | --------------------------------------------- |
+  | 1   | 🟠 HIGH   | `--add-dir` bypass: Edit/Write ignore read-only intent  | ✅ Yes — direct write to "read-only" dirs     |
+  | 2   | 🟠 HIGH   | Prompt injection via project AGENTS.md                  | ✅ Yes — cloned repo can inject instructions  |
+  | 3   | 🟡 MEDIUM | Sandbox allows unrestricted network (data exfiltration) | ✅ Yes — `curl` exfiltration from sandbox     |
+  | 4   | 🟡 MEDIUM | Sandbox grants R/W to `~/.config/gh`, `~/.cargo` etc.   | ✅ Yes — credential read from sandbox         |
+  | 5   | 🟡 MEDIUM | Linux landlock not in default features                  | ✅ Yes — default Linux builds are unsandboxed |
+  | 6   | 🟢 LOW    | API key in trace logs                                   | Conditional — requires TRACE level            |

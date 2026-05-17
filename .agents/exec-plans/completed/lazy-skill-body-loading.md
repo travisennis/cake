@@ -72,29 +72,39 @@ Finally, run focused tests, perform the deslop review pass, run `just ci`, updat
 
 From `/Users/travisennis/Projects/cake`, inspect the relevant code with:
 
-    sed -n '1,320p' src/config/skills.rs
-    sed -n '500,760p' src/clients/agent.rs
-    sed -n '500,680p' src/main.rs
+```
+sed -n '1,320p' src/config/skills.rs
+sed -n '500,760p' src/clients/agent.rs
+sed -n '500,680p' src/main.rs
+```
 
 After implementation, run focused tests:
 
-    cargo test config::skills
-    cargo test skill_read
-    cargo test active_skill_read_does_not_reload_body
+```
+cargo test config::skills
+cargo test skill_read
+cargo test active_skill_read_does_not_reload_body
+```
 
 Then run the repository's full check:
 
-    just ci
+```
+just ci
+```
 
 Focused validation completed successfully before final CI:
 
-    cargo test config::skills
-    cargo test skill_read
-    cargo test active_skill_read_does_not_reload_body
+```
+cargo test config::skills
+cargo test skill_read
+cargo test active_skill_read_does_not_reload_body
+```
 
 Final validation completed successfully:
 
-    just ci
+```
+just ci
+```
 
 The final CI run reported 575 unit tests, 12 exit-code integration tests, and 10 stdin integration tests passing, plus rustfmt, clippy with `-D warnings`, toolchain pin verification, and import lint.
 
@@ -114,8 +124,10 @@ No destructive migration or user data rewrite is involved. Existing sessions tha
 
 Current behavior evidence before code changes:
 
-    src/config/skills.rs::Skill::parse reads the whole file with std::fs::read_to_string(path).
-    src/clients/agent.rs::execute_tool_with_skill_dedup stores HashMap<PathBuf, String> and calls the generic Read tool for first activation.
+```
+src/config/skills.rs::Skill::parse reads the whole file with std::fs::read_to_string(path).
+src/clients/agent.rs::execute_tool_with_skill_dedup stores HashMap<PathBuf, String> and calls the generic Read tool for first activation.
+```
 
 ## Interfaces and Dependencies
 

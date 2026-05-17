@@ -73,18 +73,18 @@ All timestamps are UTC RFC 3339 strings. `session_id` and `task_id` are UUID str
 
 `session_meta` appears once, as the first record in the file.
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `type` | string | yes | Always `session_meta` |
-| `format_version` | number | yes | Current value is `4` |
-| `session_id` | string | yes | Stable session UUID; also used as the `{uuid}.jsonl` filename |
-| `timestamp` | string | yes | Session creation time |
-| `working_directory` | string | yes | Directory where the session was created |
-| `model` | string | no | Resolved model identifier used for the session |
-| `tools` | array of strings | yes | Enabled tool names at session creation |
-| `cake_version` | string | no | Package version that created the file |
-| `system_prompt` | string | no | Stable system prompt used when the session was created |
-| `git` | object | yes | Git repository state at session creation |
+  | Field               | Type             | Required | Description                                                   |
+  | ------------------- | ---------------- | -------- | ------------------------------------------------------------- |
+  | `type`              | string           | yes      | Always `session_meta`                                         |
+  | `format_version`    | number           | yes      | Current value is `4`                                          |
+  | `session_id`        | string           | yes      | Stable session UUID; also used as the `{uuid}.jsonl` filename |
+  | `timestamp`         | string           | yes      | Session creation time                                         |
+  | `working_directory` | string           | yes      | Directory where the session was created                       |
+  | `model`             | string           | no       | Resolved model identifier used for the session                |
+  | `tools`             | array of strings | yes      | Enabled tool names at session creation                        |
+  | `cake_version`      | string           | no       | Package version that created the file                         |
+  | `system_prompt`     | string           | no       | Stable system prompt used when the session was created        |
+  | `git`               | object           | yes      | Git repository state at session creation                      |
 
 The `git` object contains `repository_url`, `branch`, and `commit_hash`. Each
 property is `null` when cake cannot determine that value, such as outside a git
@@ -94,12 +94,12 @@ repository or in a detached HEAD state.
 
 `task_start` marks one CLI invocation inside the session.
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `type` | string | yes | Always `task_start` |
-| `session_id` | string | yes | Session UUID |
-| `task_id` | string | yes | UUID for this invocation |
-| `timestamp` | string | yes | Task start time |
+  | Field        | Type   | Required | Description              |
+  | ------------ | ------ | -------- | ------------------------ |
+  | `type`       | string | yes      | Always `task_start`      |
+  | `session_id` | string | yes      | Session UUID             |
+  | `task_id`    | string | yes      | UUID for this invocation |
+  | `timestamp`  | string | yes      | Task start time          |
 
 ### `prompt_context`
 
@@ -107,14 +107,14 @@ repository or in a detached HEAD state.
 These records are session-file audit entries and are not restored as conversation
 history.
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `type` | string | yes | Always `prompt_context` |
-| `session_id` | string | yes | Session UUID |
-| `task_id` | string | yes | UUID for this invocation |
-| `role` | string | yes | Logical role for this context, currently `developer` |
-| `content` | string | yes | Context content sent to the model for this invocation |
-| `timestamp` | string | yes | Record creation time |
+  | Field        | Type   | Required | Description                                           |
+  | ------------ | ------ | -------- | ----------------------------------------------------- |
+  | `type`       | string | yes      | Always `prompt_context`                               |
+  | `session_id` | string | yes      | Session UUID                                          |
+  | `task_id`    | string | yes      | UUID for this invocation                              |
+  | `role`       | string | yes      | Logical role for this context, currently `developer`  |
+  | `content`    | string | yes      | Context content sent to the model for this invocation |
+  | `timestamp`  | string | yes      | Record creation time                                  |
 
 ### `message`
 
@@ -122,87 +122,87 @@ history.
 system or developer messages; current prompt context is stored separately in
 `session_meta.system_prompt` and `prompt_context`.
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `type` | string | yes | Always `message` |
-| `role` | string | yes | One of `user`, `assistant`, or `tool` for current sessions |
-| `content` | string | yes | Plain text message content |
-| `id` | string | no | Provider message id, normally present for assistant messages from the Responses API |
-| `status` | string | no | Provider status such as `completed` or `incomplete` |
-| `timestamp` | string | no | Item creation time |
+  | Field       | Type   | Required | Description                                                                         |
+  | ----------- | ------ | -------- | ----------------------------------------------------------------------------------- |
+  | `type`      | string | yes      | Always `message`                                                                    |
+  | `role`      | string | yes      | One of `user`, `assistant`, or `tool` for current sessions                          |
+  | `content`   | string | yes      | Plain text message content                                                          |
+  | `id`        | string | no       | Provider message id, normally present for assistant messages from the Responses API |
+  | `status`    | string | no       | Provider status such as `completed` or `incomplete`                                 |
+  | `timestamp` | string | no       | Item creation time                                                                  |
 
 ### `function_call`
 
 `function_call` stores a model request to execute a tool.
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `type` | string | yes | Always `function_call` |
-| `id` | string | yes | Provider function-call item id |
-| `call_id` | string | yes | Correlation id used by the matching output |
-| `name` | string | yes | Tool name, for example `bash`, `read`, `edit`, or `write` |
-| `arguments` | string | yes | JSON-encoded tool argument string exactly as received from the model |
-| `timestamp` | string | no | Item creation time |
+  | Field       | Type   | Required | Description                                                          |
+  | ----------- | ------ | -------- | -------------------------------------------------------------------- |
+  | `type`      | string | yes      | Always `function_call`                                               |
+  | `id`        | string | yes      | Provider function-call item id                                       |
+  | `call_id`   | string | yes      | Correlation id used by the matching output                           |
+  | `name`      | string | yes      | Tool name, for example `bash`, `read`, `edit`, or `write`            |
+  | `arguments` | string | yes      | JSON-encoded tool argument string exactly as received from the model |
+  | `timestamp` | string | no       | Item creation time                                                   |
 
 ### `function_call_output`
 
 `function_call_output` stores the result of a tool execution.
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `type` | string | yes | Always `function_call_output` |
-| `call_id` | string | yes | Matches the preceding `function_call.call_id` |
-| `output` | string | yes | Tool output or tool error text returned to the model |
-| `timestamp` | string | no | Item creation time |
+  | Field       | Type   | Required | Description                                          |
+  | ----------- | ------ | -------- | ---------------------------------------------------- |
+  | `type`      | string | yes      | Always `function_call_output`                        |
+  | `call_id`   | string | yes      | Matches the preceding `function_call.call_id`        |
+  | `output`    | string | yes      | Tool output or tool error text returned to the model |
+  | `timestamp` | string | no       | Item creation time                                   |
 
 ### `reasoning`
 
 `reasoning` preserves reasoning-model output needed for future API turns.
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `type` | string | yes | Always `reasoning` |
-| `id` | string | yes | Provider reasoning item id |
-| `summary` | array of strings | yes | Human-readable reasoning summaries |
-| `encrypted_content` | string | no | Opaque provider content that must be echoed back for some reasoning models |
-| `content` | array of objects | no | Provider reasoning content array, preserved for round-tripping |
-| `timestamp` | string | no | Item creation time |
+  | Field               | Type             | Required | Description                                                                |
+  | ------------------- | ---------------- | -------- | -------------------------------------------------------------------------- |
+  | `type`              | string           | yes      | Always `reasoning`                                                         |
+  | `id`                | string           | yes      | Provider reasoning item id                                                 |
+  | `summary`           | array of strings | yes      | Human-readable reasoning summaries                                         |
+  | `encrypted_content` | string           | no       | Opaque provider content that must be echoed back for some reasoning models |
+  | `content`           | array of objects | no       | Provider reasoning content array, preserved for round-tripping             |
+  | `timestamp`         | string           | no       | Item creation time                                                         |
 
 Each `content` item has:
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `type` | string | yes | Provider content item type, for example `reasoning_text` |
-| `text` | string | no | Text for content item types that carry text |
+  | Field  | Type   | Required | Description                                              |
+  | ------ | ------ | -------- | -------------------------------------------------------- |
+  | `type` | string | yes      | Provider content item type, for example `reasoning_text` |
+  | `text` | string | no       | Text for content item types that carry text              |
 
 ### `task_complete`
 
 `task_complete` records the outcome and aggregate usage for one invocation.
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `type` | string | yes | Always `task_complete` |
-| `subtype` | string | yes | One of `success`, `error_during_execution`, or `error_max_turns` |
-| `is_error` | boolean | yes | `false` for successful completion |
-| `duration_ms` | number | yes | Wall-clock task duration in milliseconds |
-| `turn_count` | number | yes | Number of API turns with usage accumulated |
-| `tool_call_count` | number | yes | Number of tool calls executed during the task |
-| `session_id` | string | yes | Session UUID |
-| `task_id` | string | yes | Task UUID from the matching `task_start` |
-| `result` | string | no | Final assistant text on success |
-| `error` | string | no | Error message on failure |
-| `usage` | object | yes | Aggregate token usage for the task |
-| `permission_denials` | array of strings | no | Tool permission denial messages when present |
+  | Field                | Type             | Required | Description                                                      |
+  | -------------------- | ---------------- | -------- | ---------------------------------------------------------------- |
+  | `type`               | string           | yes      | Always `task_complete`                                           |
+  | `subtype`            | string           | yes      | One of `success`, `error_during_execution`, or `error_max_turns` |
+  | `is_error`           | boolean          | yes      | `false` for successful completion                                |
+  | `duration_ms`        | number           | yes      | Wall-clock task duration in milliseconds                         |
+  | `turn_count`         | number           | yes      | Number of API turns with usage accumulated                       |
+  | `tool_call_count`    | number           | yes      | Number of tool calls executed during the task                    |
+  | `session_id`         | string           | yes      | Session UUID                                                     |
+  | `task_id`            | string           | yes      | Task UUID from the matching `task_start`                         |
+  | `result`             | string           | no       | Final assistant text on success                                  |
+  | `error`              | string           | no       | Error message on failure                                         |
+  | `usage`              | object           | yes      | Aggregate token usage for the task                               |
+  | `permission_denials` | array of strings | no       | Tool permission denial messages when present                     |
 
 `usage` has this shape:
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `input_tokens` | number | yes | Total input tokens |
-| `input_tokens_details.cached_tokens` | number | yes | Cached input tokens |
-| `output_tokens` | number | yes | Total output tokens |
-| `output_tokens_details.reasoning_tokens` | number | yes | Reasoning output tokens |
-| `total_tokens` | number | yes | Provider-reported total tokens |
+  | Field                                    | Type   | Required | Description                    |
+  | ---------------------------------------- | ------ | -------- | ------------------------------ |
+  | `input_tokens`                           | number | yes      | Total input tokens             |
+  | `input_tokens_details.cached_tokens`     | number | yes      | Cached input tokens            |
+  | `output_tokens`                          | number | yes      | Total output tokens            |
+  | `output_tokens_details.reasoning_tokens` | number | yes      | Reasoning output tokens        |
+  | `total_tokens`                           | number | yes      | Provider-reported total tokens |
 
 ## Append Semantics
 

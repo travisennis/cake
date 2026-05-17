@@ -528,7 +528,6 @@ function computePendingChanges(
 }
 ```
 
-
 ## Phase 2: Check Response for Cache Break (Post-Call)
 
 See the source file for full implementation.
@@ -647,4 +646,3 @@ function recordPromptState(snapshot: PromptStateSnapshot): void {
 2. **Lazy diffable content**: buildDiffableContent is only called when needed (cache break detected)
 3. **Map size limit**: Cap at 10 sources to prevent unbounded growth with many subagents
 4. **Fast hash function**: Use DJB2 or runtime-native hash, not cryptographic hashes
-

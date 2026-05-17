@@ -57,7 +57,7 @@ Toolboxes are a mechanism for users to extend the agent's tool set with custom, 
    - `amp tools show <name>`: Show a tool's schema.
    - `amp tools use <name> [--args...]`: Invoke a tool directly from the CLI.
 
----
+--------------------------------------------------------------------------------
 
 ## How This Maps to Cake's Architecture
 
@@ -73,15 +73,15 @@ Cake has four hardcoded tools: `Bash`, `Read`, `Edit`, `Write`. They are:
 
 The toolbox feature touches these layers:
 
-| Layer | Module | Change |
-|-------|--------|--------|
-| Layer 2 (Config) | `config/` | New `toolbox` module for discovery and protocol |
-| Layer 3 (Clients) | `clients/tools/mod.rs` | Add `Tool::new()` constructor, extend dispatch |
-| Layer 3 (Clients) | `clients/tools/toolbox.rs` | Toolbox execute logic, registry |
-| Layer 3 (Clients) | `clients/agent.rs` | Make `execute_tool` a method, store toolbox registry |
-| Layer 4 (CLI) | `main.rs` | Discovery at startup, new `--toolbox` flag, subcommands |
+  | Layer             | Module                     | Change                                                  |
+  | ----------------- | -------------------------- | ------------------------------------------------------- |
+  | Layer 2 (Config)  | `config/`                  | New `toolbox` module for discovery and protocol         |
+  | Layer 3 (Clients) | `clients/tools/mod.rs`     | Add `Tool::new()` constructor, extend dispatch          |
+  | Layer 3 (Clients) | `clients/tools/toolbox.rs` | Toolbox execute logic, registry                         |
+  | Layer 3 (Clients) | `clients/agent.rs`         | Make `execute_tool` a method, store toolbox registry    |
+  | Layer 4 (CLI)     | `main.rs`                  | Discovery at startup, new `--toolbox` flag, subcommands |
 
----
+--------------------------------------------------------------------------------
 
 ## Implementation Plan
 
@@ -126,6 +126,7 @@ impl Tool {
 > **Note on Amp compatibility**: The Amp documentation is ambiguous on the unset case (one sentence says it uses the default directory, the next says no scanning). Our behavior (scan default directory when unset) is the more user-friendly interpretation and likely matches Amp's actual behavior.
 
 **Output**: A `Vec<ToolboxEntry>` where each entry contains:
+
 ```rust
 struct ToolboxEntry {
     /// Name as discovered (filename)
@@ -163,6 +164,7 @@ For each discovered `ToolboxEntry`, run the executable with `TOOLBOX_ACTION=desc
 **Error handling**: If a toolbox executable fails during `describe` (non-zero exit, invalid output, timeout), **skip it with a warning log** and continue startup with the remaining tools. One broken tool should not block the session.
 
 **Data types**:
+
 ```rust
 enum ToolboxFormat {
     Json,
@@ -261,53 +263,67 @@ pub fn new(config: ResolvedModelConfig, system_prompt: &str, toolbox_tools: Vec<
 
 **In progress/spinner display**: Toolbox tool calls should display like built-in tools (e.g., `tb__run_tests: running...`).
 
----
+--------------------------------------------------------------------------------
 
 ## Design Decisions
 
 ### Prefix: `tb__`
+
 Matches Amp's convention. Prevents collisions with built-in tool names. The model sees these as distinct tools.
 
 ### Environment variable naming
+
 `CAKE_TOOLBOX` follows the project's `CAKE_` prefix convention (like `CAKE_DATA_DIR`, `CAKE_SANDBOX`).
 
 ### Default directory
+
 `~/.config/cake/tools` keeps everything under cake's config directory. Project-level tools can go in `.cake/tools/`.
 
 ### No sandbox for toolbox tools
+
 Toolbox tools are user-authored executables. Sandboxing them would be restrictive and complex. The user takes responsibility for what their tools do.
 
 ### Format compatibility
+
 Support both JSON and text formats for Amp compatibility. Users can write tools that work with both Amp and cake. Both `args` (compact) and `inputSchema` (full JSON Schema) are supported in JSON format.
 
 ### Tool naming: describe output is authoritative
+
 The `name` field from the describe output determines the registered tool name, not the filename. The filename is only used for discovery.
 
 ### Optional parameter syntax
+
 Only the type suffix form (`string?`) is supported for marking parameters optional. This is the simplest to parse and the most visually clear.
 
 ### Text format: explicit types required
+
 Parameter lines in text format must include an explicit type. No implicit defaulting to string.
 
 ### Text format execute input separator
+
 Uses `=` as the key-value separator (`key=value\n`), matching the Amp spec text.
 
 ### Session ID exposure
+
 Pass `session_id` as both `CAKE_THREAD_ID` and `AGENT_THREAD_ID` so tools can correlate with sessions. The dual naming provides compatibility with Amp (`AGENT_THREAD_ID`) while following cake's naming convention (`CAKE_THREAD_ID`).
 
 ### Describe failure handling
+
 Failures during describe are logged as warnings and the tool is skipped. One broken tool does not block startup.
 
 ### execute_tool as an Agent method
+
 Moved from a free function to a method on `Agent` to provide access to the toolbox registry. This is the idiomatic Rust approach and avoids globals or thread-locals.
 
 ### Tool::new() constructor
+
 Added to `Tool` to allow construction from outside `src/clients/tools/` without exposing struct fields. Fields remain `pub(super)` for existing internal use.
 
 ### Scaffolding defaults
+
 `cake tools make` defaults to bash scaffolding, with `--python` and `--node` options available.
 
----
+--------------------------------------------------------------------------------
 
 ## Module Placement
 
@@ -330,7 +346,7 @@ Layer 2 (Config)
 
 Discovery and describe parsing belong in Layer 2 (config) because they deal with filesystem scanning and configuration. Execution belongs in Layer 3 (clients/tools) because it's tool execution logic alongside the existing tools.
 
----
+--------------------------------------------------------------------------------
 
 ## Implementation Order
 
@@ -343,11 +359,12 @@ Discovery and describe parsing belong in Layer 2 (config) because they deal with
 7. Tests for each layer
 8. CLI subcommands (lower priority, can be a follow-up)
 
----
+--------------------------------------------------------------------------------
 
 ## Testing Strategy
 
 ### Unit Tests
+
 - **Text format parsing**: Single and multiple `description:` lines, parameters with explicit types, optional markers (`string?`), empty lines, edge cases (special characters in descriptions, parameter names with underscores).
 - **JSON format parsing**: Compact `args` format, full `inputSchema` format, missing fields, invalid JSON.
 - **`args` to JSON Schema conversion**: Verify the compact format correctly converts to a valid JSON Schema object.
@@ -356,16 +373,18 @@ Discovery and describe parsing belong in Layer 2 (config) because they deal with
 - **Discovery precedence**: Earlier directories win for name conflicts.
 
 ### Integration Tests
+
 - **Fixture executables**: Bash scripts in a temp directory that implement the describe/execute protocol. Test the full discover → describe → execute cycle.
 - **Both formats**: Fixture tools using JSON format and text format.
 - **Error cases**: Non-zero exit on describe, invalid output, timeout, missing name field.
 
 ### Property-Based Tests (using `proptest`)
+
 - **Text format parsing roundtrip**: Generate arbitrary tool names, descriptions, and parameter lists → serialize to text format → parse → verify all fields preserved.
 - **`key=value` serialization roundtrip**: Generate random `HashMap<String, String>` → serialize to `key=value\n` → deserialize → verify equality. Surfaces edge cases like values containing `=`, empty values, unicode.
 - **JSON `args` → `inputSchema` conversion**: Generate arbitrary `args` maps → convert to JSON Schema → verify the schema validates the expected inputs.
 
----
+--------------------------------------------------------------------------------
 
 ## Resolved Questions
 

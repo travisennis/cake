@@ -1,8 +1,6 @@
 # Documentation
 
-
-
-## Documentation Has Canonical Sections (M-CANONICAL-DOCS) { #M-CANONICAL-DOCS }
+## Documentation Has Canonical Sections (M-CANONICAL-DOCS) {#M-CANONICAL-DOCS}
 
 <why>To follow established and expected Rust best practices.</why>
 <version>1.0</version>
@@ -55,9 +53,7 @@ fn copy(src: File, dst: File) {}
 
 - Function docs include error, panic, and safety considerations ([C-FAILURE](https://rust-lang.github.io/api-guidelines/documentation.html#c-failure))
 
-
-
-## Mark `pub use` Items with `#[doc(inline)]` (M-DOC-INLINE) { #M-DOC-INLINE }
+## Mark `pub use` Items with `#[doc(inline)]` (M-DOC-INLINE) {#M-DOC-INLINE}
 
 <why>To make re-exported items 'fit in' with their non re-exported siblings.</why>
 <version>1.0</version>
@@ -90,9 +86,7 @@ This does not apply to `std` or 3rd party types; these should always be re-expor
 
 [M-NO-GLOB-REEXPORTS]: ../libs/resilience/#M-NO-GLOB-REEXPORTS
 
-
-
-## First Sentence is One Line; Approx. 15 Words (M-FIRST-DOC-SENTENCE) { #M-FIRST-DOC-SENTENCE }
+## First Sentence is One Line; Approx. 15 Words (M-FIRST-DOC-SENTENCE) {#M-FIRST-DOC-SENTENCE}
 
 <why>To make API docs easily skimmable.</why>
 <version>1.0</version>
@@ -120,9 +114,7 @@ Otherwise, you might end up with _widows_ and a generally unpleasant reading flo
 
 As a rule of thumb, the first sentence should not exceed **15 words**.
 
-
-
-## Has Comprehensive Module Documentation (M-MODULE-DOCS) { #M-MODULE-DOCS }
+## Has Comprehensive Module Documentation (M-MODULE-DOCS) {#M-MODULE-DOCS}
 
 <why>To allow for better API docs navigation.</why>
 <version>1.1</version>
@@ -156,4 +148,3 @@ This does not mean every module should contain all of these items. But if there 
 their module documentation is the right place.
 
 [M-DOC-FIRST-SENTENCE]: ./#M-DOC-FIRST-SENTENCE
-

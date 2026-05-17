@@ -14,24 +14,26 @@ Missing files are ignored. Malformed files stop cake before the model request an
 
 Every file must use `version: 1`:
 
-    {
-      "version": 1,
-      "hooks": {
-        "PreToolUse": [
+```
+{
+  "version": 1,
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Write",
+        "hooks": [
           {
-            "matcher": "Bash|Write",
-            "hooks": [
-              {
-                "type": "command",
-                "command": "./.cake/hooks/check-tool.sh",
-                "timeout": 5,
-                "fail_closed": true
-              }
-            ]
+            "type": "command",
+            "command": "./.cake/hooks/check-tool.sh",
+            "timeout": 5,
+            "fail_closed": true
           }
         ]
       }
-    }
+    ]
+  }
+}
+```
 
 Supported events are `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Stop`, and `ErrorOccurred`.
 
@@ -43,16 +45,18 @@ Each command hook runs through the platform shell (`sh -c` on Unix, `cmd /C` on 
 
 cake sends one JSON object to the hook command on stdin and waits for the process to exit. Common fields include:
 
-    {
-      "version": 1,
-      "session_id": "...",
-      "task_id": "...",
-      "transcript_path": "/path/to/session.jsonl",
-      "cwd": "/path/to/project",
-      "hook_event_name": "PreToolUse",
-      "model": "glm-5.1",
-      "timestamp": "2026-05-04T00:00:00Z"
-    }
+```
+{
+  "version": 1,
+  "session_id": "...",
+  "task_id": "...",
+  "transcript_path": "/path/to/session.jsonl",
+  "cwd": "/path/to/project",
+  "hook_event_name": "PreToolUse",
+  "model": "glm-5.1",
+  "timestamp": "2026-05-04T00:00:00Z"
+}
+```
 
 Tool hooks also receive `tool_name`, `tool_use_id`, `tool_input`, and `tool_input_json`. Post-tool hooks receive `tool_result.result_type` as `success` or `failure`, plus `tool_result.text_result_for_llm`.
 
@@ -62,11 +66,11 @@ Exit code `0` means success. If stdout is non-empty, cake parses it as JSON. Exi
 
 Every hook invocation resolves to one of three decisions:
 
-| Decision   | JSON shape                                                                                            | Behavior                                                                                                      |
-| ---------- | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `Continue` | `{}`, `{"permission": "allow"}`, `{"decision": "allow"}`, or omit both fields                         | Action proceeds normally.                                                                                     |
-| `Deny`     | `{"permission": "deny"}`, `{"decision": "deny"}`, `{"permission": "block"}`, or `{"decision": "ask"}` | Blocks the action. On `PreToolUse` the tool is blocked; on other events the session terminates with an error. |
-| `Stop`     | `{"continue": false}`                                                                                 | Stops the session. On `PreToolUse` the tool is blocked; on other events the session terminates.               |
+  | Decision   | JSON shape                                                                                            | Behavior                                                                                                      |
+  | ---------- | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+  | `Continue` | `{}`, `{"permission": "allow"}`, `{"decision": "allow"}`, or omit both fields                         | Action proceeds normally.                                                                                     |
+  | `Deny`     | `{"permission": "deny"}`, `{"decision": "deny"}`, `{"permission": "block"}`, or `{"decision": "ask"}` | Blocks the action. On `PreToolUse` the tool is blocked; on other events the session terminates with an error. |
+  | `Stop`     | `{"continue": false}`                                                                                 | Stops the session. On `PreToolUse` the tool is blocked; on other events the session terminates.               |
 
 `reason` (optional string) supplies the reason message for `Deny` and `Stop` decisions.
 
@@ -82,10 +86,12 @@ Every hook invocation resolves to one of three decisions:
 
 Supported stdout fields beyond the decision:
 
-    {
-      "updated_input": { "command": "printf safe" },
-      "additional_context": "context for the model"
-    }
+```
+{
+  "updated_input": { "command": "printf safe" },
+  "additional_context": "context for the model"
+}
+```
 
 `PreToolUse` can return `updated_input`; it must be a JSON object and is passed through the target tool's normal validation. Only the first hook in load order that returns `updated_input` is honored; subsequent values are dropped with a warning.
 

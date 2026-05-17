@@ -48,6 +48,7 @@ curl -s -X POST "https://opencode.ai/zen/go/v1/chat/completions" \
 ```
 
 **Response:**
+
 ```json
 {"choices":[{"finish_reason":"stop","index":0,"message":{"content":"2 + 2 = 4","reasoning_content":"1.  **Identify the core question:** The user is asking for the sum of 2 and 2.\n2.  **Perform the calculation:** 2 + 2 = 4.\n3.  **Formulate the response:** State the answer clearly and concisely. (e.g., \"4\", \"2 + 2 = 4\", \"The answer is 4.\")\n4.  **Select the best response:** \"4\" or \"2 + 2 = 4\" are both perfectly acceptable and direct. I'll go with a simple, direct answer.","role":"assistant"}}],"created":1775612809,"id":"20260408094646672fd5dd85b2447f","model":"GLM-5.1","object":"chat.completion","request_id":"20260408094646672fd5dd85b2447f","usage":{"completion_tokens":130,"completion_tokens_details":{"reasoning_tokens":121},"prompt_tokens":12,"prompt_tokens_details":{"cached_tokens":0},"total_tokens":142},"cost":"0"}
 ```
@@ -74,6 +75,7 @@ curl -s -X POST "https://opencode.ai/zen/go/v1/chat/completions" \
 ```
 
 **Response:**
+
 ```json
 {"choices":[{"finish_reason":"stop","index":0,"message":{"content":"2 + 2 = **4**","reasoning_content":"The user is asking a simple math question. No tools needed.","role":"assistant"}}],"created":1775613013,"id":"20260408095011da5c088352ff4118","model":"GLM-5.1","object":"chat.completion","request_id":"20260408095011da5c088352ff4118","usage":{"completion_tokens":4,"completion_tokens_details":{"reasoning_tokens":1},"prompt_tokens":481,"prompt_tokens_details":{"cached_tokens":0},"total_tokens":485},"cost":"0"}
 ```
@@ -90,6 +92,7 @@ curl -s -X POST "https://opencode.ai/zen/go/v1/chat/completions" \
 ```
 
 **Response:**
+
 ```json
 {"choices":[{"finish_reason":"stop","index":0,"message":{"content":"4","reasoning_content":"4","role":"assistant"}}],"created":1775613130,"id":"202604080952084c2579e0f74b4286","model":"GLM-5.1","object":"chat.completion","request_id":"202604080952084c2579e0f74b4286","usage":{"completion_tokens":7,"completion_tokens_details":{"reasoning_tokens":4},"prompt_tokens":1910,"prompt_tokens_details":{"cached_tokens":0},"total_tokens":1917},"cost":"0"}
 ```
@@ -131,6 +134,7 @@ The exact JSON body sent by acai (captured from trace logs):
 ## Investigation Findings
 
 ### What Works
+
 - All curl variations work consistently
 - HTTP/2 via curl works
 - HTTP/1.1 via curl works
@@ -139,6 +143,7 @@ The exact JSON body sent by acai (captured from trace logs):
 - Same exact JSON body works via curl
 
 ### What Fails
+
 - Acai using reqwest HTTP client fails consistently
 - Fails with HTTP/2 (default)
 - Fails with HTTP/1.1 (forced via `.http1_only()`)

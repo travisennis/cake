@@ -51,18 +51,18 @@ Retry behavior should be verified with a policy matrix instead of relying on liv
 
 Important matrix cases:
 
-| Status | Body/Header Signal | Expected |
-|--------|--------------------|----------|
-| `401` | any | no retry |
-| `403` | any | no retry |
-| `400` | ordinary invalid request | no retry |
-| `400` | parseable context overflow | retry once with lower token budget |
-| `429` | `Retry-After` | retry using the header delay |
-| `503` | `x-should-retry: false` | no retry |
-| `503` | structured `overloaded_error` + `x-should-retry: false` | no retry |
-| `503` | structured `overloaded_error` | retry |
-| `529` | no no-retry header | retry |
-| `500` | `x-should-retry: true` | retry |
-| `404` | `x-should-retry: true` | no retry |
+  | Status | Body/Header Signal                                      | Expected                           |
+  | ------ | ------------------------------------------------------- | ---------------------------------- |
+  | `401`  | any                                                     | no retry                           |
+  | `403`  | any                                                     | no retry                           |
+  | `400`  | ordinary invalid request                                | no retry                           |
+  | `400`  | parseable context overflow                              | retry once with lower token budget |
+  | `429`  | `Retry-After`                                           | retry using the header delay       |
+  | `503`  | `x-should-retry: false`                                 | no retry                           |
+  | `503`  | structured `overloaded_error` + `x-should-retry: false` | no retry                           |
+  | `503`  | structured `overloaded_error`                           | retry                              |
+  | `529`  | no no-retry header                                      | retry                              |
+  | `500`  | `x-should-retry: true`                                  | retry                              |
+  | `404`  | `x-should-retry: true`                                  | no retry                           |
 
 Live provider checks should be limited to deterministic cases such as fake-key `401` and malformed-request `400`. Captured real provider error responses can be saved as fixtures and fed into the classifier when adding provider-specific behavior.

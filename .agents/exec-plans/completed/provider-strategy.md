@@ -60,28 +60,36 @@ Run commands from `/Users/travisennis/Projects/cake`.
 
 1. Inspect current state:
 
-       sed -n '1,260p' .agents/.tasks/052.md
-       sed -n '1,260p' .agents/PLANS.md
-       sed -n '1,320p' src/clients/chat_completions.rs
-       sed -n '1,320p' src/clients/responses.rs
+   ```
+      sed -n '1,260p' .agents/.tasks/052.md
+      sed -n '1,260p' .agents/PLANS.md
+      sed -n '1,320p' src/clients/chat_completions.rs
+      sed -n '1,320p' src/clients/responses.rs
+   ```
 
 2. Edit task and plan metadata:
 
-       update .agents/.tasks/052.md with the ExecPlan path
-       update .agents/exec-plans/active/index.md with provider-strategy.md
+   ```
+      update .agents/.tasks/052.md with the ExecPlan path
+      update .agents/exec-plans/active/index.md with provider-strategy.md
+   ```
 
 3. Implement `src/clients/provider_strategy.rs` and update `src/clients/mod.rs`, `src/clients/chat_completions.rs`, and `src/clients/responses.rs`.
 
 4. Run targeted tests during development:
 
-       cargo test provider_strategy
-       cargo test clients::chat_completions
-       cargo test clients::responses
+   ```
+      cargo test provider_strategy
+      cargo test clients::chat_completions
+      cargo test clients::responses
+   ```
 
 5. Run final validation:
 
-       cargo fmt
-       just ci
+   ```
+      cargo fmt
+      just ci
+   ```
 
 ## Validation and Acceptance
 
@@ -97,31 +105,35 @@ The edits are additive and local to provider request construction. Re-running te
 
 Validation evidence:
 
-       just ci
-       Rust toolchain pins match rust-toolchain.toml (1.95.0)
-       cargo clippy --all-targets --all-features -- -D warnings
-       cargo test --quiet
-       test result: ok. 499 passed; 0 failed
-       test result: ok. 12 passed; 0 failed
-       test result: ok. 8 passed; 0 failed
-       Import lint passed!
-       All checks passed!
+```
+   just ci
+   Rust toolchain pins match rust-toolchain.toml (1.95.0)
+   cargo clippy --all-targets --all-features -- -D warnings
+   cargo test --quiet
+   test result: ok. 499 passed; 0 failed
+   test result: ok. 12 passed; 0 failed
+   test result: ok. 8 passed; 0 failed
+   Import lint passed!
+   All checks passed!
+```
 
 ## Interfaces and Dependencies
 
 `src/clients/provider_strategy.rs` should define an internal strategy type available only inside `src/clients`:
 
-    pub(super) struct ProviderStrategy<'a> {
-        config: &'a ResolvedModelConfig,
-        kind: ProviderKind,
-    }
+```
+pub(super) struct ProviderStrategy<'a> {
+    config: &'a ResolvedModelConfig,
+    kind: ProviderKind,
+}
 
-    impl<'a> ProviderStrategy<'a> {
-        pub(super) fn from_config(config: &'a ResolvedModelConfig) -> Self;
-        pub(super) fn apply_headers(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder;
-        pub(super) fn responses_provider_config(&self) -> Option<ProviderConfig>;
-        pub(super) fn transform_chat_messages(&self, messages: &mut [ChatMessage<'_>]);
-    }
+impl<'a> ProviderStrategy<'a> {
+    pub(super) fn from_config(config: &'a ResolvedModelConfig) -> Self;
+    pub(super) fn apply_headers(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder;
+    pub(super) fn responses_provider_config(&self) -> Option<ProviderConfig>;
+    pub(super) fn transform_chat_messages(&self, messages: &mut [ChatMessage<'_>]);
+}
+```
 
 The exact private enum names may vary, but the public-to-module hooks should remain stable enough for both backends to use. No new third-party dependencies are required because `reqwest` already exposes URL parsing through its existing dependency graph.
 

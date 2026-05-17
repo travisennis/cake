@@ -363,6 +363,7 @@ for (const line of lines) {
 Key methods for working with sessions programmatically.
 
 ### Static Creation Methods
+
 - `SessionManager.create(cwd, sessionDir?)` - New session
 - `SessionManager.open(path, sessionDir?)` - Open existing session file
 - `SessionManager.continueRecent(cwd, sessionDir?)` - Continue most recent or create new
@@ -370,15 +371,18 @@ Key methods for working with sessions programmatically.
 - `SessionManager.forkFrom(sourcePath, targetCwd, sessionDir?)` - Fork session from another project
 
 ### Static Listing Methods
+
 - `SessionManager.list(cwd, sessionDir?, onProgress?)` - List sessions for a directory
 - `SessionManager.listAll(onProgress?)` - List all sessions across all projects
 
 ### Instance Methods - Session Management
+
 - `newSession(options?)` - Start a new session (options: `{ parentSession?: string }`)
 - `setSessionFile(path)` - Switch to a different session file
 - `createBranchedSession(leafId)` - Extract branch to new session file
 
 ### Instance Methods - Appending (all return entry ID)
+
 - `appendMessage(message)` - Add message
 - `appendThinkingLevelChange(level)` - Record thinking change
 - `appendModelChange(provider, modelId)` - Record model change
@@ -389,6 +393,7 @@ Key methods for working with sessions programmatically.
 - `appendLabelChange(targetId, label)` - Set/clear label
 
 ### Instance Methods - Tree Navigation
+
 - `getLeafId()` - Current position
 - `getLeafEntry()` - Get current leaf entry
 - `getEntry(id)` - Get entry by ID
@@ -401,6 +406,7 @@ Key methods for working with sessions programmatically.
 - `branchWithSummary(entryId, summary, details?, fromHook?)` - Branch with context summary
 
 ### Instance Methods - Context & Info
+
 - `buildSessionContext()` - Get messages, thinkingLevel, and model for LLM
 - `getEntries()` - All entries (excluding header)
 - `getHeader()` - Session header metadata

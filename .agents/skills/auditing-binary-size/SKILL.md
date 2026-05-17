@@ -44,14 +44,14 @@ cargo bloat --release -n 30
 
 The typical size breakdown for this project:
 
-| Category | Typical Contributors |
-|---|---|
-| **TLS/Networking** | `aws_lc_sys`, `rustls`, `h2`, `hyper`, `reqwest` — usually the largest chunk |
-| **Standard library** | `std` — unavoidable baseline |
-| **Async runtime** | `tokio` — moderate |
-| **CLI framework** | `clap_builder` — moderate |
-| **Application code** | `cake` — relatively small |
-| **Other deps** | `similar`, `regex_*`, `serde_json`, `tracing_subscriber`, etc. |
+  | Category             | Typical Contributors                                                         |
+  | -------------------- | ---------------------------------------------------------------------------- |
+  | **TLS/Networking**   | `aws_lc_sys`, `rustls`, `h2`, `hyper`, `reqwest` — usually the largest chunk |
+  | **Standard library** | `std` — unavoidable baseline                                                 |
+  | **Async runtime**    | `tokio` — moderate                                                           |
+  | **CLI framework**    | `clap_builder` — moderate                                                    |
+  | **Application code** | `cake` — relatively small                                                    |
+  | **Other deps**       | `similar`, `regex_*`, `serde_json`, `tracing_subscriber`, etc.               |
 
 ### 5. Check for easy wins
 

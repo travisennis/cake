@@ -2,24 +2,24 @@
 
 This document describes how Claude Code discovers, loads, processes, and injects CLAUDE.md files into the model's context. It is written for someone evaluating whether to adopt a similar approach in a different project.
 
----
+--------------------------------------------------------------------------------
 
 ## 1. Memory File Types and Priority
 
 Claude Code defines six types of memory files, loaded in a specific order. Later files have higher priority because the model pays more attention to content that appears later in the prompt.
 
-| Order | Type | Location | Scope | Checked In? |
-|-------|------|----------|-------|-------------|
-| 1 | `Managed` | `/etc/claude-code/CLAUDE.md` (system-managed) | All users, all projects | Admin-controlled |
-| 2 | `User` | `~/.claude/CLAUDE.md` + `~/.claude/rules/*.md` | One user, all projects | No (private) |
-| 3 | `Project` | `CLAUDE.md`, `.claude/CLAUDE.md`, `.claude/rules/*.md` (walked from CWD up to root) | All contributors to a repo | Yes |
-| 4 | `Local` | `CLAUDE.local.md` (walked from CWD up to root) | One user, one project | No (gitignored) |
-| 5 | `AutoMem` | `memory.md` entrypoint (auto-memory feature) | One user, across conversations | No |
-| 6 | `TeamMem` | Team memory entrypoint (org sync feature) | Entire organization | Synced |
+  | Order | Type      | Location                                                                            | Scope                          | Checked In?      |
+  | ----- | --------- | ----------------------------------------------------------------------------------- | ------------------------------ | ---------------- |
+  | 1     | `Managed` | `/etc/claude-code/CLAUDE.md` (system-managed)                                       | All users, all projects        | Admin-controlled |
+  | 2     | `User`    | `~/.claude/CLAUDE.md` + `~/.claude/rules/*.md`                                      | One user, all projects         | No (private)     |
+  | 3     | `Project` | `CLAUDE.md`, `.claude/CLAUDE.md`, `.claude/rules/*.md` (walked from CWD up to root) | All contributors to a repo     | Yes              |
+  | 4     | `Local`   | `CLAUDE.local.md` (walked from CWD up to root)                                      | One user, one project          | No (gitignored)  |
+  | 5     | `AutoMem` | `memory.md` entrypoint (auto-memory feature)                                        | One user, across conversations | No               |
+  | 6     | `TeamMem` | Team memory entrypoint (org sync feature)                                           | Entire organization            | Synced           |
 
 Each type can be individually disabled via the `settingSources` configuration (e.g., `projectSettings`, `userSettings`, `localSettings`). The `--bare` flag disables all auto-discovery except `--add-dir` directories.
 
----
+--------------------------------------------------------------------------------
 
 ## 2. File Discovery: Eager Loading
 
@@ -53,7 +53,7 @@ The `claudeMdExcludes` setting (glob patterns) can exclude specific User, Projec
 
 If a memory file uses `@include` to reference a file outside the project directory (`pathInOriginalCwd` check), it is treated as an "external include." These are only loaded if the user has approved them (`hasClaudeMdExternalIncludesApproved`) or if `forceIncludeExternal` is passed (used only for approval checks, not for building context).
 
----
+--------------------------------------------------------------------------------
 
 ## 3. File Processing: What Happens to Each File
 
@@ -96,7 +96,7 @@ AutoMem and TeamMem entrypoints are truncated to line and byte caps via `truncat
 
 A `processedPaths` set (normalized for case-insensitive filesystems) prevents the same file from being loaded twice, even when reached via different include chains or directory walks.
 
----
+--------------------------------------------------------------------------------
 
 ## 4. Conditional Rules (paths frontmatter)
 
@@ -121,7 +121,7 @@ During the eager `getMemoryFiles()` walk:
 
 Conditional rules are loaded later via `processConditionedMdRules()` when a file path triggers them.
 
----
+--------------------------------------------------------------------------------
 
 ## 5. Eager Injection into the Conversation
 
@@ -160,6 +160,7 @@ const claudeMd = shouldDisableClaudeMd
 `filterInjectedMemoryFiles()` removes AutoMem and TeamMem entries from the eager load when the `tengu_moth_copse` feature flag is on (those are instead surfaced via a separate relevant-memories prefetch system).
 
 The result is a dict:
+
 ```ts
 {
   claudeMd: "<formatted string from getClaudeMds()>",
@@ -188,7 +189,7 @@ This message is marked `isMeta: true`, which means it is hidden from the user in
 
 **Key point**: CLAUDE.md content is injected as a **user message**, not as part of the system prompt. The system prompt is assembled separately via `getSystemPrompt()`.
 
----
+--------------------------------------------------------------------------------
 
 ## 6. Lazy Injection: Nested Memory Attachments
 
@@ -235,7 +236,7 @@ Contents of /path/to/subdir/CLAUDE.md:
 
 These are appended to the conversation as attachments on the turn where the trigger file was accessed, not prepended at the start.
 
----
+--------------------------------------------------------------------------------
 
 ## 7. Subagent Optimization
 
@@ -250,19 +251,19 @@ const resolvedUserContext = shouldOmitClaudeMd
 
 This saves approximately 5-15 Gtok/week across 34M+ Explore spawns, since read-only agents don't need commit/PR/lint guidelines from CLAUDE.md. The main agent has full context and interprets their output.
 
----
+--------------------------------------------------------------------------------
 
 ## 8. Caching and Invalidation
 
 ### Caches
 
-| Cache | Location | Scope |
-|-------|----------|-------|
-| `getMemoryFiles` | `claudemd.ts` | Memoized; cleared on compaction, `/clear`, worktree changes, settings sync |
-| `getUserContext` | `context.ts` | Memoized; cleared on compaction, `/clear`, system prompt injection changes |
-| `getSystemContext` | `context.ts` | Memoized; cleared on `/clear` |
-| `readFileState` | `Tool.ts` (per-session) | LRU(100); tracks nested memory dedup |
-| `loadedNestedMemoryPaths` | `Tool.ts` (per-session) | Set; never evicted; tracks what has been injected |
+  | Cache                     | Location                | Scope                                                                      |
+  | ------------------------- | ----------------------- | -------------------------------------------------------------------------- |
+  | `getMemoryFiles`          | `claudemd.ts`           | Memoized; cleared on compaction, `/clear`, worktree changes, settings sync |
+  | `getUserContext`          | `context.ts`            | Memoized; cleared on compaction, `/clear`, system prompt injection changes |
+  | `getSystemContext`        | `context.ts`            | Memoized; cleared on `/clear`                                              |
+  | `readFileState`           | `Tool.ts` (per-session) | LRU(100); tracks nested memory dedup                                       |
+  | `loadedNestedMemoryPaths` | `Tool.ts` (per-session) | Set; never evicted; tracks what has been injected                          |
 
 ### Cache Clearing Functions
 
@@ -274,15 +275,15 @@ This saves approximately 5-15 Gtok/week across 34M+ Explore spawns, since read-o
 
 ### When Caches Are Cleared
 
-| Event | What's Cleared |
-|-------|---------------|
-| `/clear` command | `getUserContext`, `getSystemContext`, `getGitStatus`, `getMemoryFiles` |
-| Compaction (auto or manual) | `getUserContext`, `getMemoryFiles` (with hook) |
-| Worktree enter/exit | `getMemoryFiles` (no hook) |
-| Settings sync | `getMemoryFiles` (no hook) |
-| Writing to CLAUDE.md | Analytics event logged; caches not explicitly cleared (content is stable within a session) |
+  | Event                       | What's Cleared                                                                             |
+  | --------------------------- | ------------------------------------------------------------------------------------------ |
+  | `/clear` command            | `getUserContext`, `getSystemContext`, `getGitStatus`, `getMemoryFiles`                     |
+  | Compaction (auto or manual) | `getUserContext`, `getMemoryFiles` (with hook)                                             |
+  | Worktree enter/exit         | `getMemoryFiles` (no hook)                                                                 |
+  | Settings sync               | `getMemoryFiles` (no hook)                                                                 |
+  | Writing to CLAUDE.md        | Analytics event logged; caches not explicitly cleared (content is stable within a session) |
 
----
+--------------------------------------------------------------------------------
 
 ## 9. Hook: InstructionsLoaded
 
@@ -297,20 +298,20 @@ The hook fires with a `load_reason`:
 
 AutoMem and TeamMem types are excluded from hook dispatch (they are a separate memory system).
 
----
+--------------------------------------------------------------------------------
 
 ## 10. Feature Flags Affecting CLAUDE.md Loading
 
-| Flag | Effect |
-|------|--------|
-| `tengu_paper_halyard` | Skips Project and Local memory files entirely (both eager and nested) |
-| `tengu_moth_copse` | Removes AutoMem and TeamMem from eager load (surfaced via relevant-memories prefetch instead) |
-| `tengu_slim_subagent_claudemd` | Strips CLAUDE.md from subagent contexts (default: true) |
-| `CLAUDE_CODE_DISABLE_CLAUDE_MDS` | Disables all CLAUDE.md loading entirely |
-| `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD` | Enables loading CLAUDE.md from `--add-dir` directories |
-| `--bare` mode | Disables auto-discovery (CWD walk), but honors explicit `--add-dir` directories |
+  | Flag                                           | Effect                                                                                        |
+  | ---------------------------------------------- | --------------------------------------------------------------------------------------------- |
+  | `tengu_paper_halyard`                          | Skips Project and Local memory files entirely (both eager and nested)                         |
+  | `tengu_moth_copse`                             | Removes AutoMem and TeamMem from eager load (surfaced via relevant-memories prefetch instead) |
+  | `tengu_slim_subagent_claudemd`                 | Strips CLAUDE.md from subagent contexts (default: true)                                       |
+  | `CLAUDE_CODE_DISABLE_CLAUDE_MDS`               | Disables all CLAUDE.md loading entirely                                                       |
+  | `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD` | Enables loading CLAUDE.md from `--add-dir` directories                                        |
+  | `--bare` mode                                  | Disables auto-discovery (CWD walk), but honors explicit `--add-dir` directories               |
 
----
+--------------------------------------------------------------------------------
 
 ## 11. Key Design Decisions and Tradeoffs
 

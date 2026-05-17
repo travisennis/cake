@@ -78,16 +78,22 @@ Finally, update `.agents/.tasks/064.md`, `.agents/.tasks/index.md`, and this Exe
 
 Work from the repository root:
 
-    cd /Users/travisennis/Projects/cake
+```
+cd /Users/travisennis/Projects/cake
+```
 
 Run targeted tests while editing:
 
-    cargo test clients::chat_completions::tests::build_messages
-    cargo test clients::chat_completions::tests::snapshot_
+```
+cargo test clients::chat_completions::tests::build_messages
+cargo test clients::chat_completions::tests::snapshot_
+```
 
 Run full project validation after code, docs, and task metadata are updated:
 
-    just ci
+```
+just ci
+```
 
 ## Validation and Acceptance
 
@@ -103,25 +109,31 @@ These edits are source and Markdown changes only. Re-running tests is safe. If s
 
 Important current locations:
 
-    src/clients/chat_completions.rs::build_messages
-    src/clients/chat_completions.rs::ChatMessageBuilder::flush_pending_tool_calls
-    src/clients/chat_completions.rs tests beginning around build_messages_simple_conversation
-    src/clients/snapshots/cake__clients__chat_completions__tests__*.snap
+```
+src/clients/chat_completions.rs::build_messages
+src/clients/chat_completions.rs::ChatMessageBuilder::flush_pending_tool_calls
+src/clients/chat_completions.rs tests beginning around build_messages_simple_conversation
+src/clients/snapshots/cake__clients__chat_completions__tests__*.snap
+```
 
 ## Interfaces and Dependencies
 
 No new dependencies are needed. The public signature should stay:
 
-    fn build_messages(history: &[ConversationItem]) -> Vec<ChatMessage<'_>>
+```
+fn build_messages(history: &[ConversationItem]) -> Vec<ChatMessage<'_>>
+```
 
 The new helper should stay private to `src/clients/chat_completions.rs`, with a shape similar to:
 
-    struct ChatMessageBuilder<'a> {
-        messages: Vec<ChatMessage<'a>>,
-        pending_tool_calls: Vec<ChatToolCallRef<'a>>,
-        pending_reasoning_content: Option<Cow<'a, str>>,
-        pending_developer_context: Vec<&'a str>,
-    }
+```
+struct ChatMessageBuilder<'a> {
+    messages: Vec<ChatMessage<'a>>,
+    pending_tool_calls: Vec<ChatToolCallRef<'a>>,
+    pending_reasoning_content: Option<Cow<'a, str>>,
+    pending_developer_context: Vec<&'a str>,
+}
+```
 
 Revision note, 2026-05-10 / Codex: Created this ExecPlan after initial source inspection because task `064` is `Effort: L`.
 

@@ -20,18 +20,18 @@ For the JSONL file format and SessionManager API, see [Session Format](pi-sessio
 
 ## Session Commands
 
-| Command | Description |
-|---------|-------------|
-| `/resume` | Browse and select previous sessions |
-| `/new` | Start a new session |
-| `/name <name>` | Set the current session display name |
-| `/session` | Show session info |
-| `/tree` | Navigate the current session tree |
-| `/fork` | Create a new session from a previous user message |
-| `/clone` | Duplicate the current active branch into a new session |
-| `/compact [prompt]` | Summarize older context; see [Compaction](pi-compaction.md) |
-| `/export [file]` | Export session to HTML |
-| `/share` | Upload as private GitHub gist with shareable HTML link |
+  | Command             | Description                                                 |
+  | ------------------- | ----------------------------------------------------------- |
+  | `/resume`           | Browse and select previous sessions                         |
+  | `/new`              | Start a new session                                         |
+  | `/name <name>`      | Set the current session display name                        |
+  | `/session`          | Show session info                                           |
+  | `/tree`             | Navigate the current session tree                           |
+  | `/fork`             | Create a new session from a previous user message           |
+  | `/clone`            | Duplicate the current active branch into a new session      |
+  | `/compact [prompt]` | Summarize older context; see [Compaction](pi-compaction.md) |
+  | `/export [file]`    | Export session to HTML                                      |
+  | `/share`            | Upload as private GitHub gist with shareable HTML link      |
 
 ## Resuming and Deleting Sessions
 
@@ -78,16 +78,16 @@ Example shape:
 
 ### Tree Controls
 
-| Key | Action |
-|-----|--------|
-| ↑/↓ | Navigate visible entries |
-| ←/→ | Page up/down |
-| Ctrl+←/Ctrl+→ or Alt+←/Alt+→ | Fold/unfold or jump between branch segments |
-| Shift+L | Set or clear a label on the selected entry |
-| Shift+T | Toggle label timestamps |
-| Enter | Select entry |
-| Escape/Ctrl+C | Cancel |
-| Ctrl+O | Cycle filter mode |
+  | Key                          | Action                                      |
+  | ---------------------------- | ------------------------------------------- |
+  | ↑/↓                          | Navigate visible entries                    |
+  | ←/→                          | Page up/down                                |
+  | Ctrl+←/Ctrl+→ or Alt+←/Alt+→ | Fold/unfold or jump between branch segments |
+  | Shift+L                      | Set or clear a label on the selected entry  |
+  | Shift+T                      | Toggle label timestamps                     |
+  | Enter                        | Select entry                                |
+  | Escape/Ctrl+C                | Cancel                                      |
+  | Ctrl+O                       | Cycle filter mode                           |
 
 Filter modes are: default, no-tools, user-only, labeled-only, and all. Configure the default with `treeFilterMode` in [Settings](pi-settings.md).
 
@@ -109,12 +109,12 @@ Selecting the root user message resets the leaf to an empty conversation and pla
 
 ## `/tree`, `/fork`, and `/clone`
 
-| Feature | `/tree` | `/fork` | `/clone` |
-|---------|---------|---------|----------|
-| Output | Same session file | New session file | New session file |
-| View | Full tree | User-message selector | Current active branch |
-| Typical use | Explore alternatives in place | Start a new session from an earlier prompt | Duplicate current work before continuing |
-| Summary | Optional branch summary | None | None |
+  | Feature     | `/tree`                       | `/fork`                                    | `/clone`                                 |
+  | ----------- | ----------------------------- | ------------------------------------------ | ---------------------------------------- |
+  | Output      | Same session file             | New session file                           | New session file                         |
+  | View        | Full tree                     | User-message selector                      | Current active branch                    |
+  | Typical use | Explore alternatives in place | Start a new session from an earlier prompt | Duplicate current work before continuing |
+  | Summary     | Optional branch summary       | None                                       | None                                     |
 
 Use `/tree` when you want to keep alternatives together. Use `/fork` or `/clone` when you want a separate session file.
 

@@ -208,21 +208,21 @@ This project uses [Conventional Commits](https://www.conventionalcommits.org/). 
 
 **Recommended Scopes** (aligned with architecture):
 
-| Scope | Description |
-|-------|-------------|
-| `cli` | Command-line interface and argument parsing |
-| `agent` | Agent orchestration, conversation loop, tool execution |
-| `responses` | Responses API backend |
-| `chat` | Chat Completions API backend |
-| `tools` | Tool definitions (Bash, Read, Edit, Write, etc.) |
-| `sandbox` | Sandbox implementations (Seatbelt, Landlock) |
-| `config` | Configuration, sessions, data directory |
-| `session` | Session persistence and management |
-| `model` | Model configuration and API types |
-| `prompts` | System prompt construction, AGENTS.md integration |
-| `logger` | Logging configuration |
-| `docs` | Documentation changes |
-| `tests` | Test files and test infrastructure |
+  | Scope       | Description                                            |
+  | ----------- | ------------------------------------------------------ |
+  | `cli`       | Command-line interface and argument parsing            |
+  | `agent`     | Agent orchestration, conversation loop, tool execution |
+  | `responses` | Responses API backend                                  |
+  | `chat`      | Chat Completions API backend                           |
+  | `tools`     | Tool definitions (Bash, Read, Edit, Write, etc.)       |
+  | `sandbox`   | Sandbox implementations (Seatbelt, Landlock)           |
+  | `config`    | Configuration, sessions, data directory                |
+  | `session`   | Session persistence and management                     |
+  | `model`     | Model configuration and API types                      |
+  | `prompts`   | System prompt construction, AGENTS.md integration      |
+  | `logger`    | Logging configuration                                  |
+  | `docs`      | Documentation changes                                  |
+  | `tests`     | Test files and test infrastructure                     |
 
 **Examples:**
 ```

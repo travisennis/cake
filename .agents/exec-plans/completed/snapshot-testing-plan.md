@@ -140,11 +140,15 @@ All commands run from the repository root at `/Users/travisennis/Projects/cake`.
 
 Add `insta` to the `[dev-dependencies]` section of `Cargo.toml`:
 
-    insta = { version = "1", features = ["json"] }
+```
+insta = { version = "1", features = ["json"] }
+```
 
 Do not add a temporary smoke-test file. The first real snapshot assertions added below are sufficient proof that the dependency compiles and works.
 
-    cargo test
+```
+cargo test
+```
 
 If the machine already has `cargo-insta`, it can be used later for interactive review. Do not treat that installation as a required repository step.
 
@@ -152,57 +156,67 @@ If the machine already has `cargo-insta`, it can be used later for interactive r
 
 In `src/prompts/mod.rs`, inside the existing `#[cfg(test)] mod tests` block, add a helper that normalizes the date line before asserting a snapshot. Use explicit snapshot names so the generated snapshot filenames remain stable even if test names change later.
 
-    fn assert_prompt_snapshot(name: &str, prompt: String) {
-        insta::with_settings!({
-            filters => vec![(r"Today's date: \d{4}-\d{2}-\d{2}", "Today's date: [DATE]")]
-        }, {
-            insta::assert_snapshot!(name, prompt);
-        });
-    }
+```
+fn assert_prompt_snapshot(name: &str, prompt: String) {
+    insta::with_settings!({
+        filters => vec![(r"Today's date: \d{4}-\d{2}-\d{2}", "Today's date: [DATE]")]
+    }, {
+        insta::assert_snapshot!(name, prompt);
+    });
+}
+```
 
 Then add snapshot tests that capture the complete output of `build_system_prompt`. Add these tests after the existing ones.
 
 For the test `snapshot_empty_prompt`, call `build_system_prompt` with an empty agents file list and empty skill catalog, then snapshot the result:
 
-    let prompt = build_system_prompt(Path::new("/tmp"), &[], &SkillCatalog::empty());
-    assert_prompt_snapshot("prompt_empty", prompt);
+```
+let prompt = build_system_prompt(Path::new("/tmp"), &[], &SkillCatalog::empty());
+assert_prompt_snapshot("prompt_empty", prompt);
+```
 
 For the test `snapshot_with_project_agents`, call with one project-level AGENTS.md file:
 
-    let files = vec![AgentsFile {
-        path: "./AGENTS.md".to_string(),
-        content: "You are a Rust expert. Follow all project conventions.".to_string(),
-    }];
-    let prompt = build_system_prompt(Path::new("/project"), &files, &SkillCatalog::empty());
-    assert_prompt_snapshot("prompt_with_project_agents", prompt);
+```
+let files = vec![AgentsFile {
+    path: "./AGENTS.md".to_string(),
+    content: "You are a Rust expert. Follow all project conventions.".to_string(),
+}];
+let prompt = build_system_prompt(Path::new("/project"), &files, &SkillCatalog::empty());
+assert_prompt_snapshot("prompt_with_project_agents", prompt);
+```
 
 For the test `snapshot_with_user_and_project_agents`, call with two files:
 
-    let files = vec![
-        AgentsFile {
-            path: "~/.cake/AGENTS.md".to_string(),
-            content: "User-level global instructions.".to_string(),
-        },
-        AgentsFile {
-            path: "./AGENTS.md".to_string(),
-            content: "Project-level overrides.".to_string(),
-        },
-    ];
-    let prompt = build_system_prompt(Path::new("/project"), &files, &SkillCatalog::empty());
-    assert_prompt_snapshot("prompt_with_user_and_project_agents", prompt);
+```
+let files = vec![
+    AgentsFile {
+        path: "~/.cake/AGENTS.md".to_string(),
+        content: "User-level global instructions.".to_string(),
+    },
+    AgentsFile {
+        path: "./AGENTS.md".to_string(),
+        content: "Project-level overrides.".to_string(),
+    },
+];
+let prompt = build_system_prompt(Path::new("/project"), &files, &SkillCatalog::empty());
+assert_prompt_snapshot("prompt_with_user_and_project_agents", prompt);
+```
 
 For the test `snapshot_with_skill_catalog`, create a catalog with one skill:
 
-    let mut catalog = SkillCatalog::empty();
-    catalog.skills.push(Skill {
-        name: "debugging".to_string(),
-        description: "How to debug Rust programs".to_string(),
-        location: PathBuf::from("/project/.agents/skills/debugging/SKILL.md"),
-        base_directory: PathBuf::from("/project/.agents/skills/debugging"),
-        scope: SkillScope::Project,
-    });
-    let prompt = build_system_prompt(Path::new("/project"), &[], &catalog);
-    assert_prompt_snapshot("prompt_with_skill_catalog", prompt);
+```
+let mut catalog = SkillCatalog::empty();
+catalog.skills.push(Skill {
+    name: "debugging".to_string(),
+    description: "How to debug Rust programs".to_string(),
+    location: PathBuf::from("/project/.agents/skills/debugging/SKILL.md"),
+    base_directory: PathBuf::from("/project/.agents/skills/debugging"),
+    scope: SkillScope::Project,
+});
+let prompt = build_system_prompt(Path::new("/project"), &[], &catalog);
+assert_prompt_snapshot("prompt_with_skill_catalog", prompt);
+```
 
 For the test `snapshot_with_agents_and_skills`, combine AGENTS files with a skill catalog and assert it with the name `prompt_with_agents_and_skills`.
 
@@ -210,16 +224,22 @@ In `src/config/skills.rs`, add a localized snapshot test for `SkillCatalog::to_p
 
 After adding these tests, accept the initial snapshots:
 
-    cargo test prompts::tests
-    cargo test config::skills::tests
+```
+cargo test prompts::tests
+cargo test config::skills::tests
+```
 
 If `cargo-insta` is installed, run:
 
-    cargo insta review
+```
+cargo insta review
+```
 
 If it is not installed, accept the snapshots non-interactively with:
 
-    INSTA_UPDATE=always cargo test prompts::tests config::skills::tests
+```
+INSTA_UPDATE=always cargo test prompts::tests config::skills::tests
+```
 
 ### Milestone 3: Chat Completions build_messages snapshot tests
 
@@ -227,40 +247,48 @@ In `src/clients/chat_completions.rs`, inside the existing `#[cfg(test)] mod test
 
 For the test `snapshot_simple_conversation`, reuse the same history from the existing `build_messages_simple_conversation` test but snapshot the serialized output:
 
-    let history = vec![
-        ConversationItem::Message {
-            role: Role::System,
-            content: "You are helpful.".to_string(),
-            id: None, status: None, timestamp: None,
-        },
-        ConversationItem::Message {
-            role: Role::User,
-            content: "Hello".to_string(),
-            id: None, status: None, timestamp: None,
-        },
-    ];
-    let msgs = build_messages(&history);
-    insta::assert_json_snapshot!("build_messages_simple_conversation", msgs);
+```
+let history = vec![
+    ConversationItem::Message {
+        role: Role::System,
+        content: "You are helpful.".to_string(),
+        id: None, status: None, timestamp: None,
+    },
+    ConversationItem::Message {
+        role: Role::User,
+        content: "Hello".to_string(),
+        id: None, status: None, timestamp: None,
+    },
+];
+let msgs = build_messages(&history);
+insta::assert_json_snapshot!("build_messages_simple_conversation", msgs);
+```
 
 For the test `snapshot_grouped_function_calls`, reuse the history from `build_messages_groups_consecutive_function_calls`:
 
-    // Same history as the existing test
-    let msgs = build_messages(&history);
-    insta::assert_json_snapshot!("build_messages_grouped_function_calls", msgs);
+```
+// Same history as the existing test
+let msgs = build_messages(&history);
+insta::assert_json_snapshot!("build_messages_grouped_function_calls", msgs);
+```
 
 For the test `snapshot_reasoning_with_assistant_text`, reuse the history from `build_messages_preserves_reasoning_content_for_assistant_messages` and snapshot it with the name `build_messages_reasoning_with_assistant_text`.
 
 For the test `snapshot_reasoning_with_tool_calls`, reuse the history from `build_messages_preserves_reasoning_content_for_assistant_tool_calls`:
 
-    let msgs = build_messages(&history);
-    insta::assert_json_snapshot!("build_messages_reasoning_with_tool_calls", msgs);
+```
+let msgs = build_messages(&history);
+insta::assert_json_snapshot!("build_messages_reasoning_with_tool_calls", msgs);
+```
 
 For the test `snapshot_assistant_text_with_tool_calls`, reuse the history from `build_messages_combines_tool_calls_with_assistant_text` and snapshot it with the name `build_messages_assistant_text_with_tool_calls`.
 
 For the test `snapshot_empty_history`:
 
-    let msgs = build_messages(&[]);
-    insta::assert_json_snapshot!("build_messages_empty_history", msgs);
+```
+let msgs = build_messages(&[]);
+insta::assert_json_snapshot!("build_messages_empty_history", msgs);
+```
 
 For the placeholder path, reuse the history from `inject_reasoning_placeholders_adds_placeholder_for_tool_calls_without_reasoning`, run `build_messages`, then call `inject_reasoning_placeholders(&mut msgs)` and snapshot the resulting vector with the name `build_messages_with_reasoning_placeholder`.
 
@@ -268,7 +296,9 @@ After the helper-output snapshots, add one full request-boundary snapshot in the
 
 Accept the snapshots:
 
-    cargo test chat_completions::tests
+```
+cargo test chat_completions::tests
+```
 
 Then review with `cargo insta review`, or accept with `INSTA_UPDATE=always cargo test chat_completions::tests` if `cargo-insta` is unavailable.
 
@@ -278,94 +308,110 @@ In `src/clients/types.rs`, inside the existing `#[cfg(test)] mod tests` block, a
 
 For the test `snapshot_user_message`:
 
-    let item = ConversationItem::Message {
-        role: Role::User,
-        content: "Hello".to_string(),
-        id: None, status: None, timestamp: None,
-    };
-    insta::assert_json_snapshot!("to_api_input_user_message", item.to_api_input());
+```
+let item = ConversationItem::Message {
+    role: Role::User,
+    content: "Hello".to_string(),
+    id: None, status: None, timestamp: None,
+};
+insta::assert_json_snapshot!("to_api_input_user_message", item.to_api_input());
+```
 
 For the test `snapshot_assistant_message_with_id_and_status`:
 
-    let item = ConversationItem::Message {
-        role: Role::Assistant,
-        content: "Hi there".to_string(),
-        id: Some("msg-1".to_string()),
-        status: Some("completed".to_string()),
-        timestamp: None,
-    };
-    insta::assert_json_snapshot!(
-        "to_api_input_assistant_message_with_id_and_status",
-        item.to_api_input()
-    );
+```
+let item = ConversationItem::Message {
+    role: Role::Assistant,
+    content: "Hi there".to_string(),
+    id: Some("msg-1".to_string()),
+    status: Some("completed".to_string()),
+    timestamp: None,
+};
+insta::assert_json_snapshot!(
+    "to_api_input_assistant_message_with_id_and_status",
+    item.to_api_input()
+);
+```
 
 For the test `snapshot_system_message`:
 
-    let item = ConversationItem::Message {
-        role: Role::System,
-        content: "You are cake".to_string(),
-        id: None, status: None, timestamp: None,
-    };
-    insta::assert_json_snapshot!("to_api_input_system_message", item.to_api_input());
+```
+let item = ConversationItem::Message {
+    role: Role::System,
+    content: "You are cake".to_string(),
+    id: None, status: None, timestamp: None,
+};
+insta::assert_json_snapshot!("to_api_input_system_message", item.to_api_input());
+```
 
 For the test `snapshot_function_call`:
 
-    let item = ConversationItem::FunctionCall {
-        id: "fc-1".to_string(),
-        call_id: "call-1".to_string(),
-        name: "bash".to_string(),
-        arguments: r#"{"cmd":"ls"}"#.to_string(),
-        timestamp: None,
-    };
-    insta::assert_json_snapshot!("to_api_input_function_call", item.to_api_input());
+```
+let item = ConversationItem::FunctionCall {
+    id: "fc-1".to_string(),
+    call_id: "call-1".to_string(),
+    name: "bash".to_string(),
+    arguments: r#"{"cmd":"ls"}"#.to_string(),
+    timestamp: None,
+};
+insta::assert_json_snapshot!("to_api_input_function_call", item.to_api_input());
+```
 
 For the test `snapshot_function_call_output`:
 
-    let item = ConversationItem::FunctionCallOutput {
-        call_id: "call-1".to_string(),
-        output: "file.txt\nother.txt".to_string(),
-        timestamp: None,
-    };
-    insta::assert_json_snapshot!("to_api_input_function_call_output", item.to_api_input());
+```
+let item = ConversationItem::FunctionCallOutput {
+    call_id: "call-1".to_string(),
+    output: "file.txt\nother.txt".to_string(),
+    timestamp: None,
+};
+insta::assert_json_snapshot!("to_api_input_function_call_output", item.to_api_input());
+```
 
 For the test `snapshot_reasoning_with_summary`:
 
-    let item = ConversationItem::Reasoning {
-        id: "r-1".to_string(),
-        summary: vec!["thinking...".to_string()],
-        encrypted_content: None,
-        content: None,
-        timestamp: None,
-    };
-    insta::assert_json_snapshot!("to_api_input_reasoning_with_summary", item.to_api_input());
+```
+let item = ConversationItem::Reasoning {
+    id: "r-1".to_string(),
+    summary: vec!["thinking...".to_string()],
+    encrypted_content: None,
+    content: None,
+    timestamp: None,
+};
+insta::assert_json_snapshot!("to_api_input_reasoning_with_summary", item.to_api_input());
+```
 
 For the test `snapshot_reasoning_with_encrypted_content`:
 
-    let item = ConversationItem::Reasoning {
-        id: "r-1".to_string(),
-        summary: vec!["thinking...".to_string()],
-        encrypted_content: Some("gAAAAABencrypted...".to_string()),
-        content: None,
-        timestamp: None,
-    };
-    insta::assert_json_snapshot!(
-        "to_api_input_reasoning_with_encrypted_content",
-        item.to_api_input()
-    );
+```
+let item = ConversationItem::Reasoning {
+    id: "r-1".to_string(),
+    summary: vec!["thinking...".to_string()],
+    encrypted_content: Some("gAAAAABencrypted...".to_string()),
+    content: None,
+    timestamp: None,
+};
+insta::assert_json_snapshot!(
+    "to_api_input_reasoning_with_encrypted_content",
+    item.to_api_input()
+);
+```
 
 For the test `snapshot_reasoning_with_content_array`:
 
-    let item = ConversationItem::Reasoning {
-        id: "r-1".to_string(),
-        summary: vec!["thinking...".to_string()],
-        encrypted_content: None,
-        content: Some(vec![ReasoningContent {
-            content_type: "reasoning_text".to_string(),
-            text: Some("deep analysis".to_string()),
-        }]),
-        timestamp: None,
-    };
-    insta::assert_json_snapshot!("to_api_input_reasoning_with_content_array", item.to_api_input());
+```
+let item = ConversationItem::Reasoning {
+    id: "r-1".to_string(),
+    summary: vec!["thinking...".to_string()],
+    encrypted_content: None,
+    content: Some(vec![ReasoningContent {
+        content_type: "reasoning_text".to_string(),
+        text: Some("deep analysis".to_string()),
+    }]),
+    timestamp: None,
+};
+insta::assert_json_snapshot!("to_api_input_reasoning_with_content_array", item.to_api_input());
+```
 
 Add matching `to_streaming_json` snapshots for the variants whose streaming format materially differs from `to_api_input`: a message with `id` and `status`, a reasoning item with plain-string summary output, a function call, and a function call output. Use names such as `to_streaming_json_message_with_id_and_status` and `to_streaming_json_reasoning_plain_summary`.
 
@@ -373,7 +419,9 @@ Keep the existing field-level assertions in this module. The snapshots are compl
 
 Accept the snapshots:
 
-    cargo test types::tests
+```
+cargo test types::tests
+```
 
 Then review with `cargo insta review`, or accept with `INSTA_UPDATE=always cargo test types::tests` if needed.
 
@@ -387,7 +435,9 @@ The second request snapshot should exercise the interesting omit-if-none and ove
 
 Accept the snapshots:
 
-    cargo test responses::tests
+```
+cargo test responses::tests
+```
 
 Then review with `cargo insta review`, or accept with `INSTA_UPDATE=always cargo test responses::tests` if needed.
 
@@ -395,7 +445,9 @@ Then review with `cargo insta review`, or accept with `INSTA_UPDATE=always cargo
 
 Run the full CI check:
 
-    just ci
+```
+just ci
+```
 
 The expected result is that formatting, clippy, and all tests (including snapshot tests) pass with no errors. The snapshot files will be generated in `src/prompts/snapshots/`, `src/config/snapshots/`, and `src/clients/snapshots/` (or similar paths as determined by `insta`).
 
@@ -433,7 +485,9 @@ If CI ever needs stricter snapshot hygiene later, `cargo insta test --unreferenc
 
 After Milestone 1, `Cargo.toml` gains one line in `[dev-dependencies]`:
 
-    insta = { version = "1", features = ["filters", "json"] }
+```
+insta = { version = "1", features = ["filters", "json"] }
+```
 
 After Milestone 2, `src/prompts/mod.rs` gains approximately 5 snapshot tests and `src/config/skills.rs` gains 1 localized XML snapshot test. New files appear at `src/prompts/snapshots/` and `src/config/snapshots/` containing the expected prompt and XML text. A sample prompt snapshot file might look like:
 
@@ -460,11 +514,13 @@ Today's date: [DATE]
 
 The prompt helper should normalize the date line with `insta::with_settings!` and a filter:
 
-    insta::with_settings!({
-        filters => vec![(r"Today's date: \d{4}-\d{2}-\d{2}", "Today's date: [DATE]")]
-    }, {
-        insta::assert_snapshot!("prompt_name", prompt);
-    });
+```
+insta::with_settings!({
+    filters => vec![(r"Today's date: \d{4}-\d{2}-\d{2}", "Today's date: [DATE]")]
+}, {
+    insta::assert_snapshot!("prompt_name", prompt);
+});
+```
 
 After Milestone 3, `src/clients/chat_completions.rs` gains approximately 7 helper-output snapshots and 1 request-payload snapshot. New files appear at `src/clients/snapshots/` containing JSON representations of `Vec<ChatMessage>` and `ChatRequest`. The JSON snapshots will be pretty-printed by `insta`.
 
@@ -480,7 +536,9 @@ No changes to existing public interfaces are required. All changes are confined 
 
 The `insta::with_settings!` macro will be imported in test modules that need date normalization:
 
-    use insta::with_settings;
+```
+use insta::with_settings;
+```
 
 The `insta::assert_snapshot!` macro will be used for plain text snapshots (system prompt and localized skill catalog XML). The `insta::assert_json_snapshot!` macro will be used for JSON snapshots (build_messages output, `to_api_input` output, `to_streaming_json` output, and full request payloads).
 

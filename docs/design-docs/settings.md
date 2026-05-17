@@ -16,10 +16,10 @@ cake supports loading configuration from `settings.toml` files, enabling:
 
 Settings files are loaded from two locations:
 
-| Location | Purpose |
-|----------|---------|
-| `~/.config/cake/settings.toml` | Global/system-wide settings |
-| `./.cake/settings.toml` | Project-specific settings |
+  | Location                       | Purpose                     |
+  | ------------------------------ | --------------------------- |
+  | `~/.config/cake/settings.toml` | Global/system-wide settings |
+  | `./.cake/settings.toml`        | Project-specific settings   |
 
 Both files are optional. If neither exists and no `default_model` is configured, cake errors with a setup guide.
 
@@ -119,11 +119,11 @@ only = ["review", "debugging-cake"]
 
 Supported profile fields:
 
-| Field | Description |
-|-------|-------------|
-| `default_model` | Model name to use when `--model` is omitted |
-| `[profiles.<name>.skills]` | Partial skill settings overlay |
-| `directories` | Additional persistent read-write directories |
+  | Field                      | Description                                  |
+  | -------------------------- | -------------------------------------------- |
+  | `default_model`            | Model name to use when `--model` is omitted  |
+  | `[profiles.<name>.skills]` | Partial skill settings overlay               |
+  | `directories`              | Additional persistent read-write directories |
 
 Model provider configs are not allowed inside profiles. Keep all model definitions in top-level `[[models]]` entries.
 
@@ -148,11 +148,11 @@ only = []              # List of skill names to load (empty = all)
 path = ""              # Additional skill roots; colon-separated, semicolon on Windows
 ```
 
-| Field | Default | Description |
-|-------|---------|-------------|
-| `disabled` | `false` | If `true`, no skills are discovered or shown in the system prompt |
-| `only` | `[]` | If non-empty, only skills with these names are loaded |
-| `path` | `""` | Additional directories containing skills. Supports platform-separated paths and `~` for the home directory, for example `~/my-skills:/shared/team-skills` |
+  | Field      | Default | Description                                                                                                                                               |
+  | ---------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | `disabled` | `false` | If `true`, no skills are discovered or shown in the system prompt                                                                                         |
+  | `only`     | `[]`    | If non-empty, only skills with these names are loaded                                                                                                     |
+  | `path`     | `""`    | Additional directories containing skills. Supports platform-separated paths and `~` for the home directory, for example `~/my-skills:/shared/team-skills` |
 
 ### Precedence
 
@@ -168,27 +168,27 @@ Skill configuration is resolved with the following precedence (highest to lowest
 
 ### Required Fields
 
-| Field | Description |
-|-------|-------------|
-| `name` | Unique identifier for the model. Must be lowercase alphanumeric with hyphens only (`^[a-z0-9-]+$`) |
-| `model` | Model identifier string |
+  | Field   | Description                                                                                        |
+  | ------- | -------------------------------------------------------------------------------------------------- |
+  | `name`  | Unique identifier for the model. Must be lowercase alphanumeric with hyphens only (`^[a-z0-9-]+$`) |
+  | `model` | Model identifier string                                                                            |
 
 ### Optional Fields
 
 All fields except `name` and `model` are optional, but `base_url` and `api_key_env` are required for any model that will be used at runtime:
 
-| Field | Default | Description |
-|-------|---------|-------------|
-| `base_url` | Required (no default) | API endpoint base URL |
-| `api_key_env` | Required (no default) | Environment variable name for API key |
-| `api_type` | `chat_completions` | API format (`chat_completions` or `responses`) |
-| `temperature` | `None` | Sampling temperature |
-| `top_p` | `None` | Nucleus sampling parameter |
-| `max_output_tokens` | `None` | Maximum output tokens |
-| `providers` | `[]` | Provider routing hints |
-| `reasoning_effort` | `None` | Reasoning effort level (none, low, medium, high, xhigh) |
-| `reasoning_summary` | `None` | Reasoning summary mode (Responses API only) |
-| `reasoning_max_tokens` | `None` | Maximum reasoning tokens budget |
+  | Field                  | Default               | Description                                             |
+  | ---------------------- | --------------------- | ------------------------------------------------------- |
+  | `base_url`             | Required (no default) | API endpoint base URL                                   |
+  | `api_key_env`          | Required (no default) | Environment variable name for API key                   |
+  | `api_type`             | `chat_completions`    | API format (`chat_completions` or `responses`)          |
+  | `temperature`          | `None`                | Sampling temperature                                    |
+  | `top_p`                | `None`                | Nucleus sampling parameter                              |
+  | `max_output_tokens`    | `None`                | Maximum output tokens                                   |
+  | `providers`            | `[]`                  | Provider routing hints                                  |
+  | `reasoning_effort`     | `None`                | Reasoning effort level (none, low, medium, high, xhigh) |
+  | `reasoning_summary`    | `None`                | Reasoning summary mode (Responses API only)             |
+  | `reasoning_max_tokens` | `None`                | Maximum reasoning tokens budget                         |
 
 ## Model Name Validation
 
@@ -220,12 +220,12 @@ cake --profile review "Your prompt here"
 
 ### Behavior
 
-| Flag | Settings Found | Behavior |
-|------|----------------|----------|
-| `--model foo` | Yes | Use model config from settings |
-| `--model foo` | No | Error with available model names |
-| No `--model` | `default_model` set | Use the `default_model` from settings |
-| No `--model` | No `default_model` | Error with setup instructions |
+  | Flag          | Settings Found      | Behavior                              |
+  | ------------- | ------------------- | ------------------------------------- |
+  | `--model foo` | Yes                 | Use model config from settings        |
+  | `--model foo` | No                  | Error with available model names      |
+  | No `--model`  | `default_model` set | Use the `default_model` from settings |
+  | No `--model`  | No `default_model`  | Error with setup instructions         |
 
 ### Error Messages
 
@@ -286,6 +286,7 @@ impl SettingsLoader {
 ### 1. Create global settings
 
 `~/.config/cake/settings.toml`:
+
 ```toml
 default_model = "deepseek"
 
@@ -299,6 +300,7 @@ api_key_env = "OPENROUTER_API_KEY"
 ### 2. Create project settings
 
 `.cake/settings.toml`:
+
 ```toml
 [[models]]
 name = "claude"

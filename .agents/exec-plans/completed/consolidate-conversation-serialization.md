@@ -67,15 +67,21 @@ Finally, update `.agents/.tasks/061.md` and `.agents/.tasks/index.md` to mark th
 
 Work from the repository root:
 
-    cd /Users/travisennis/Projects/cake
+```
+cd /Users/travisennis/Projects/cake
+```
 
 Run the targeted tests while editing:
 
-    cargo test clients::types
+```
+cargo test clients::types
+```
 
 Run full project validation after code and task metadata are updated:
 
-    just ci
+```
+just ci
+```
 
 If snapshots change, review the generated `.snap.new` files and accept only intentional changes by moving them over the existing snapshot files.
 
@@ -95,9 +101,11 @@ The edits are source and Markdown changes only. Re-running tests is safe. If sna
 
 The important existing evidence is:
 
-    src/clients/agent_observer.rs: stream_record serializes StreamRecord directly.
-    src/clients/types.rs: ConversationItem::to_streaming_json is marked dead code.
-    src/clients/responses.rs: build_input maps ConversationItem::to_api_input.
+```
+src/clients/agent_observer.rs: stream_record serializes StreamRecord directly.
+src/clients/types.rs: ConversationItem::to_streaming_json is marked dead code.
+src/clients/responses.rs: build_input maps ConversationItem::to_api_input.
+```
 
 ## Interfaces and Dependencies
 
@@ -105,15 +113,19 @@ The implementation should stay within existing dependencies: `serde` and `serde_
 
 The desired helper interface in `src/clients/types.rs` is:
 
-    impl ConversationItem {
-        pub fn to_api_input(&self) -> serde_json::Value
-    }
+```
+impl ConversationItem {
+    pub fn to_api_input(&self) -> serde_json::Value
+}
+```
 
 The method may remain public because tests and Responses API code already use it, but its body must delegate to typed serializable DTOs instead of using `serde_json::json!` for each variant. Stream conversion should use the existing:
 
-    impl StreamRecord {
-        pub fn from_conversation_item(item: &ConversationItem) -> Self
-    }
+```
+impl StreamRecord {
+    pub fn from_conversation_item(item: &ConversationItem) -> Self
+}
+```
 
 Revision note, 2026-05-10 / Codex: Created this ExecPlan because task `061` is marked `XL` and requires a plan before implementation.
 

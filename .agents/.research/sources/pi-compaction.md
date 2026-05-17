@@ -15,10 +15,10 @@ For TypeScript definitions in your project, inspect `node_modules/@mariozechner/
 
 Pi has two summarization mechanisms:
 
-| Mechanism | Trigger | Purpose |
-|-----------|---------|---------|
-| Compaction | Context exceeds threshold, or `/compact` | Summarize old messages to free up context |
-| Branch summarization | `/tree` navigation | Preserve context when switching branches |
+  | Mechanism            | Trigger                                  | Purpose                                   |
+  | -------------------- | ---------------------------------------- | ----------------------------------------- |
+  | Compaction           | Context exceeds threshold, or `/compact` | Summarize old messages to free up context |
+  | Branch summarization | `/tree` navigation                       | Preserve context when switching branches  |
 
 Both use the same structured summary format and track file operations cumulatively.
 
@@ -385,10 +385,10 @@ Configure compaction in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settin
 }
 ```
 
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `enabled` | `true` | Enable auto-compaction |
-| `reserveTokens` | `16384` | Tokens to reserve for LLM response |
-| `keepRecentTokens` | `20000` | Recent tokens to keep (not summarized) |
+  | Setting            | Default | Description                            |
+  | ------------------ | ------- | -------------------------------------- |
+  | `enabled`          | `true`  | Enable auto-compaction                 |
+  | `reserveTokens`    | `16384` | Tokens to reserve for LLM response     |
+  | `keepRecentTokens` | `20000` | Recent tokens to keep (not summarized) |
 
 Disable auto-compaction with `"enabled": false`. You can still compact manually with `/compact`.

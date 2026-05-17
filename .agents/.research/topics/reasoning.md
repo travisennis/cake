@@ -54,7 +54,7 @@ The Chat Completions API accepts a top-level `reasoning_effort` string:
 - `gpt-5.1` defaults to `"none"` (no reasoning); earlier models default to `"medium"`.
 - `"xhigh"` only supported for models after `gpt-5.1-codex-max`.
 
-**Response shape**: Reasoning tokens are reported in `usage.completion_tokens_details.reasoning_tokens`. The Chat Completions API does *not* return reasoning text/traces in the response body — it only reports the token count. cake currently hardcodes `reasoning_tokens: 0` for Chat Completions and should instead parse `completion_tokens_details` from the response.
+**Response shape**: Reasoning tokens are reported in `usage.completion_tokens_details.reasoning_tokens`. The Chat Completions API does *not* return reasoning text/traces in the response body --- it only reports the token count. cake currently hardcodes `reasoning_tokens: 0` for Chat Completions and should instead parse `completion_tokens_details` from the response.
 
 ### 3. OpenRouter's Unified `reasoning` Parameter (Chat Completions)
 
@@ -82,13 +82,13 @@ When using OpenRouter as the base URL with the Chat Completions API, OpenRouter 
 
 ### 4. Provider-Specific Nuances
 
-| Provider | Effort support | Budget support | Notes |
-|----------|---------------|----------------|-------|
-| OpenAI (o-series, GPT-5) | `effort` ✅ | ❌ | Does not return reasoning text, only token counts |
-| Anthropic (Claude 3.7+) | `effort` → mapped to budget | `max_tokens` ✅ | Budget range: 1024–128000 tokens. `max_tokens` must exceed budget. |
-| Google Gemini 3 | `effort` → `thinkingLevel` | `max_tokens` → `thinkingBudget` | Token consumption determined internally by Google |
-| Grok (xAI) | `effort` ✅ | ❌ | |
-| DeepSeek R1 | via `exclude` | ❌ | Reasons by default; use `exclude` to hide |
+  | Provider                 | Effort support              | Budget support                  | Notes                                                              |
+  | ------------------------ | --------------------------- | ------------------------------- | ------------------------------------------------------------------ |
+  | OpenAI (o-series, GPT-5) | `effort` ✅                 | ❌                              | Does not return reasoning text, only token counts                  |
+  | Anthropic (Claude 3.7+)  | `effort` → mapped to budget | `max_tokens` ✅                 | Budget range: 1024–128000 tokens. `max_tokens` must exceed budget. |
+  | Google Gemini 3          | `effort` → `thinkingLevel`  | `max_tokens` → `thinkingBudget` | Token consumption determined internally by Google                  |
+  | Grok (xAI)               | `effort` ✅                 | ❌                              |                                                                    |
+  | DeepSeek R1              | via `exclude`               | ❌                              | Reasons by default; use `exclude` to hide                          |
 
 ### 5. Recommended Implementation Plan
 
@@ -105,8 +105,8 @@ reasoning_effort = "high"     # none|low|medium|high|xhigh
 ```
 
 New fields:
-- `reasoning_effort: Option<String>` — the effort level enum value
-- Consider also: `reasoning_summary: Option<String>` — for Responses API summary control
+- `reasoning_effort: Option<String>` --- the effort level enum value
+- Consider also: `reasoning_summary: Option<String>` --- for Responses API summary control
 
 #### Phase 2: Request Construction
 

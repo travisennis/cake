@@ -154,17 +154,17 @@ Evaluate:
 
 ### Common Issues to Identify
 
-| Category | Examples |
-|----------|----------|
-| **Tool misuse** | Wrong tool for the job, incorrect parameters |
-| **Missing tools** | Task needed a tool the CLI doesn't have |
-| **Tool description issues** | Agent misunderstood what a tool does |
-| **Knowledge gaps** | Missing context from AGENTS.md or system prompt |
-| **Reasoning flaws** | Poor problem decomposition, missed steps |
-| **Context loss** | Agent forgot earlier information |
-| **Premature action** | Agent acted before understanding the task |
-| **Over-caution** | Agent asked too many clarifying questions |
-| **Under-caution** | Agent made assumptions without verification |
+  | Category                    | Examples                                        |
+  | --------------------------- | ----------------------------------------------- |
+  | **Tool misuse**             | Wrong tool for the job, incorrect parameters    |
+  | **Missing tools**           | Task needed a tool the CLI doesn't have         |
+  | **Tool description issues** | Agent misunderstood what a tool does            |
+  | **Knowledge gaps**          | Missing context from AGENTS.md or system prompt |
+  | **Reasoning flaws**         | Poor problem decomposition, missed steps        |
+  | **Context loss**            | Agent forgot earlier information                |
+  | **Premature action**        | Agent acted before understanding the task       |
+  | **Over-caution**            | Agent asked too many clarifying questions       |
+  | **Under-caution**           | Agent made assumptions without verification     |
 
 ## Phase 4: Document Findings
 
@@ -271,6 +271,7 @@ When evaluation is complete:
 ## Quick Reference: Evaluation Checklist
 
 ### Session Analysis
+
 - [ ] Locate and read the session
 - [ ] Validate the first record is `session_meta` with `format_version: 4`
 - [ ] Segment records by `task_start` and `task_complete`
@@ -281,12 +282,14 @@ When evaluation is complete:
 - [ ] Check final response for completion
 
 ### Quality Assessment
+
 - [ ] Was the task completed?
 - [ ] Was the solution correct?
 - [ ] Were all requirements addressed?
 - [ ] Was the approach efficient?
 
 ### Issue Identification
+
 - [ ] Tool selection issues?
 - [ ] Parameter problems?
 - [ ] Result misinterpretation?
@@ -296,13 +299,14 @@ When evaluation is complete:
 - [ ] Error handling problems?
 
 ### Documentation
+
 - [ ] Findings include evidence and implementation-ready recommendations
 - [ ] Persistent report file created only if requested
 - [ ] Recommendations prioritized
 
 ## File Locations
 
-| File | Purpose |
-|------|---------|
-| `~/.local/share/cake/sessions/{uuid}.jsonl` | Session files (or `$CAKE_DATA_DIR/sessions/` if set) |
-| `~/.cache/cake/cake.YYYY-MM-DD.log` | Daily logs (or `$CAKE_DATA_DIR/cake.YYYY-MM-DD.log` if set) |
+  | File                                        | Purpose                                                     |
+  | ------------------------------------------- | ----------------------------------------------------------- |
+  | `~/.local/share/cake/sessions/{uuid}.jsonl` | Session files (or `$CAKE_DATA_DIR/sessions/` if set)        |
+  | `~/.cache/cake/cake.YYYY-MM-DD.log`         | Daily logs (or `$CAKE_DATA_DIR/cake.YYYY-MM-DD.log` if set) |

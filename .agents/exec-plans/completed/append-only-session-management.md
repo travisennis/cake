@@ -213,32 +213,44 @@ Milestone 7 updates documentation.
 
 Start from the repository root:
 
-    cd /Users/travisennis/Projects/cake
+```
+cd /Users/travisennis/Projects/cake
+```
 
 Run the current test suite before editing to establish a baseline:
 
-    just ci
+```
+just ci
+```
 
 Expect the command to complete successfully before the refactor. If it fails because of unrelated current work, record the failure in `Surprises & Discoveries` with the exact failing command and a short excerpt. Do not hide a pre-existing failure.
 
 Inspect the core files before each milestone with anchored patterns:
 
-    rg -n '\b(Init|Result)\b|"type":"(init|result|session_start)"|load_session_from_path|with_stream_records|emit_(init|result)_message' src tests docs
+```
+rg -n '\b(Init|Result)\b|"type":"(init|result|session_start)"|load_session_from_path|with_stream_records|emit_(init|result)_message' src tests docs
+```
 
 Implement the milestones in order. After each milestone, run a focused test command before moving on:
 
-    cargo test session
-    cargo test agent
-    cargo test exit_codes
+```
+cargo test session
+cargo test agent
+cargo test exit_codes
+```
 
 After Milestone 6, refresh snapshots:
 
-    cargo insta test
-    cargo insta review
+```
+cargo insta test
+cargo insta review
+```
 
 At the end, run the full project check:
 
-    just ci
+```
+just ci
+```
 
 Update this `Progress` section after every completed milestone and add any design changes to `Decision Log`.
 
@@ -248,48 +260,64 @@ Acceptance is automated via `just ci` plus the unit and integration tests define
 
 For a new session, run cake with a temporary data directory:
 
-    CAKE_DATA_DIR=/tmp/cake-session-test cake --no-color "Say hello"
+```
+CAKE_DATA_DIR=/tmp/cake-session-test cake --no-color "Say hello"
+```
 
 Inspect the single session file under `/tmp/cake-session-test/sessions`. Its first line must have `"type":"session_meta"`. It must contain exactly one `session_meta`. It must contain a `task_start` before the user message and a `task_complete` after the conversation records.
 
 For a continued session, run:
 
-    CAKE_DATA_DIR=/tmp/cake-session-test cake --continue "Say hello again"
+```
+CAKE_DATA_DIR=/tmp/cake-session-test cake --continue "Say hello again"
+```
 
 Inspect the same session file. It must still contain exactly one `session_meta`. It must now contain two `task_start` records and two `task_complete` records. The file should have grown by appending lines; the first task's lines should remain in their original order and should not be duplicated.
 
 For stream-json under `--continue`, run:
 
-    CAKE_DATA_DIR=/tmp/cake-session-test cake --continue --output-format stream-json "Say hello once more" > /tmp/cake-stream.jsonl
+```
+CAKE_DATA_DIR=/tmp/cake-session-test cake --continue --output-format stream-json "Say hello once more" > /tmp/cake-stream.jsonl
+```
 
 Inspect `/tmp/cake-stream.jsonl`. The first streamed line must have `"type":"task_start"`. No line may have `"type":"session_meta"`. The final streamed line must have `"type":"task_complete"`. The file must contain only the current task's records, not any prior task's records.
 
 For removed path loading, run:
 
-    cake --resume /tmp/cake-stream.jsonl "continue"
+```
+cake --resume /tmp/cake-stream.jsonl "continue"
+```
 
 The command must fail with a clear message that file-path resume is no longer supported and session UUIDs are required. Similarly:
 
-    cake --fork /tmp/cake-stream.jsonl "branch"
+```
+cake --fork /tmp/cake-stream.jsonl "branch"
+```
 
 must fail with a clear message that file-path fork is no longer supported.
 
 For the directory-mismatch case, from a *different* directory:
 
-    cd /tmp && CAKE_DATA_DIR=/tmp/cake-session-test cake --continue "should fail"
+```
+cd /tmp && CAKE_DATA_DIR=/tmp/cake-session-test cake --continue "should fail"
+```
 
 The command must fail with the directory-mismatch error.
 
 For the concurrent-write lock case:
 
-    CAKE_DATA_DIR=/tmp/cake-session-test cake --continue "long task" &
-    CAKE_DATA_DIR=/tmp/cake-session-test cake --continue "second task"
+```
+CAKE_DATA_DIR=/tmp/cake-session-test cake --continue "long task" &
+CAKE_DATA_DIR=/tmp/cake-session-test cake --continue "second task"
+```
 
 The second invocation must fail immediately with the file-lock error message.
 
 The full automated validation command is:
 
-    just ci
+```
+just ci
+```
 
 It must pass before the task is complete.
 
@@ -301,7 +329,9 @@ Because the new session save model is append-only, a crash may leave a file with
 
 Legacy v2 and old-v3 session files will not be migrated. After this refactor they are unreadable. Per the Decision Log, this is acceptable for pre-release software with a single user. The implementer should delete or archive their personal session directory before running the new build for the first time:
 
-    mv ~/.local/share/cake/sessions ~/.local/share/cake/sessions.legacy
+```
+mv ~/.local/share/cake/sessions ~/.local/share/cake/sessions.legacy
+```
 
 ## Artifacts and Notes
 
@@ -309,10 +339,12 @@ The current bug-driving context is that restored sessions seed previous conversa
 
 Relevant current excerpts:
 
-    src/clients/agent.rs::with_stream_records filters out Init and Result but seeds prior conversation records into Agent.stream.
-    src/clients/agent.rs::emit_init_message appends an Init record and streams it to stdout in stream-json mode.
-    src/config/session.rs::Session::save rewrites the entire file and synthesizes an Init if the first record is not Init.
-    src/config/session.rs::Session::load strips a trailing Result from loaded history.
+```
+src/clients/agent.rs::with_stream_records filters out Init and Result but seeds prior conversation records into Agent.stream.
+src/clients/agent.rs::emit_init_message appends an Init record and streams it to stdout in stream-json mode.
+src/config/session.rs::Session::save rewrites the entire file and synthesizes an Init if the first record is not Init.
+src/config/session.rs::Session::load strips a trailing Result from loaded history.
+```
 
 These excerpts should disappear or be meaningfully rewritten by the end of the refactor.
 
@@ -322,52 +354,54 @@ This refactor adds one dependency: `fs4` (advisory file locking; the maintained 
 
 At the end of the refactor, `src/clients/types.rs` should expose two enums equivalent to:
 
-    pub enum SessionRecord {
-        SessionMeta {
-            format_version: u32,
-            session_id: String,
-            timestamp: DateTime<Utc>,
-            working_directory: PathBuf,
-            model: Option<String>,
-            tools: Vec<String>,
-            #[serde(default)]
-            cake_version: Option<String>,
-        },
-        TaskStart {
-            session_id: String,
-            task_id: String,
-            timestamp: DateTime<Utc>,
-        },
-        Message { ... },
-        FunctionCall { ... },
-        FunctionCallOutput { ... },
-        Reasoning { ... },
-        TaskComplete {
-            subtype: TaskCompleteSubtype,
-            success: bool,
-            is_error: bool,
-            duration_ms: u64,
-            turn_count: u32,
-            num_turns: u32,
-            session_id: String,
-            task_id: String,
-            result: Option<String>,
-            error: Option<String>,
-            usage: Usage,
-            permission_denials: Option<Vec<String>>,
-        },
-    }
+```
+pub enum SessionRecord {
+    SessionMeta {
+        format_version: u32,
+        session_id: String,
+        timestamp: DateTime<Utc>,
+        working_directory: PathBuf,
+        model: Option<String>,
+        tools: Vec<String>,
+        #[serde(default)]
+        cake_version: Option<String>,
+    },
+    TaskStart {
+        session_id: String,
+        task_id: String,
+        timestamp: DateTime<Utc>,
+    },
+    Message { ... },
+    FunctionCall { ... },
+    FunctionCallOutput { ... },
+    Reasoning { ... },
+    TaskComplete {
+        subtype: TaskCompleteSubtype,
+        success: bool,
+        is_error: bool,
+        duration_ms: u64,
+        turn_count: u32,
+        num_turns: u32,
+        session_id: String,
+        task_id: String,
+        result: Option<String>,
+        error: Option<String>,
+        usage: Usage,
+        permission_denials: Option<Vec<String>>,
+    },
+}
 
-    pub enum StreamRecord {
-        TaskStart { session_id: String, task_id: String, timestamp: DateTime<Utc> },
-        Message { ... },
-        FunctionCall { ... },
-        FunctionCallOutput { ... },
-        Reasoning { ... },
-        TaskComplete { /* same fields as SessionRecord::TaskComplete */ },
-    }
+pub enum StreamRecord {
+    TaskStart { session_id: String, task_id: String, timestamp: DateTime<Utc> },
+    Message { ... },
+    FunctionCall { ... },
+    FunctionCallOutput { ... },
+    Reasoning { ... },
+    TaskComplete { /* same fields as SessionRecord::TaskComplete */ },
+}
 
-    impl From<StreamRecord> for SessionRecord { /* trivial mapping */ }
+impl From<StreamRecord> for SessionRecord { /* trivial mapping */ }
+```
 
 The exact Rust fields for the conversation variants remain compatible with current `ConversationItem` conversions; the recommended implementation extracts the conversation variants into a shared struct or has both enums hold a `ConversationItem` directly to avoid duplicated field lists.
 

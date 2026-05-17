@@ -113,19 +113,19 @@ Replace `START` and `END` with a small range around the Edit call and the subseq
 
 For each Edit call, capture:
 
-| Field | Source | Why It Matters |
-|---|---|---|
-| `session_id` | `session_meta.session_id` | Joins evidence across reports |
-| `task_id` | nearest `task_start` / `task_complete` | Groups edits by user request |
-| call line | `input_line_number` of `function_call` | Evidence pointer |
-| output line | `input_line_number` of matching output | Evidence pointer |
-| `call_id` | `function_call.call_id` | Correlates call and output |
-| path | `arguments.path` | Identifies target file |
-| edit count | `arguments.edits | length` | Detects large or risky edit batches |
-| old text length | each `old_text | length` | Proxy for specificity and brittleness |
-| new text length | each `new_text | length` | Proxy for rewrite size |
-| output status | output prefix / error text | Success or failure |
-| follow-up work | later records | Reveals hidden underperformance |
+  | Field           | Source                                 | Why It Matters                  |
+  | --------------- | -------------------------------------- | ------------------------------- | ------------------------------------- |
+  | `session_id`    | `session_meta.session_id`              | Joins evidence across reports   |
+  | `task_id`       | nearest `task_start` / `task_complete` | Groups edits by user request    |
+  | call line       | `input_line_number` of `function_call` | Evidence pointer                |
+  | output line     | `input_line_number` of matching output | Evidence pointer                |
+  | `call_id`       | `function_call.call_id`                | Correlates call and output      |
+  | path            | `arguments.path`                       | Identifies target file          |
+  | edit count      | `arguments.edits                       | length`                         | Detects large or risky edit batches   |
+  | old text length | each `old_text                         | length`                         | Proxy for specificity and brittleness |
+  | new text length | each `new_text                         | length`                         | Proxy for rewrite size                |
+  | output status   | output prefix / error text             | Success or failure              |
+  | follow-up work  | later records                          | Reveals hidden underperformance |
 
 ## Success Signals
 
@@ -235,19 +235,19 @@ For each aggregated pattern:
 
 Use a table or JSONL artifact with one row per Edit finding:
 
-| Field | Description |
-|---|---|
-| `session_id` | Session UUID |
-| `task_id` | Task UUID |
-| `call_id` | Edit call id |
-| `line` | Function call line number |
-| `path` | Edited file |
-| `status` | `success`, `failed`, or `underperformed` |
-| `category` | Issue category |
-| `symptom` | Short failure or underperformance label |
-| `evidence` | Minimal excerpt |
-| `impact` | What it cost or broke |
-| `recommendation` | Tool or prompt improvement |
+  | Field            | Description                              |
+  | ---------------- | ---------------------------------------- |
+  | `session_id`     | Session UUID                             |
+  | `task_id`        | Task UUID                                |
+  | `call_id`        | Edit call id                             |
+  | `line`           | Function call line number                |
+  | `path`           | Edited file                              |
+  | `status`         | `success`, `failed`, or `underperformed` |
+  | `category`       | Issue category                           |
+  | `symptom`        | Short failure or underperformance label  |
+  | `evidence`       | Minimal excerpt                          |
+  | `impact`         | What it cost or broke                    |
+  | `recommendation` | Tool or prompt improvement               |
 
 Example:
 

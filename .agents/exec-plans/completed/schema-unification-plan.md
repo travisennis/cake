@@ -220,6 +220,7 @@ pub enum ResultSubtype {
 ### 2. `src/config/session.rs`
 
 - Replace `SessionLine` and `SessionHeader` with `SessionRecord`.
+
 - `Session` struct becomes:
   ```rust
   pub struct Session {
@@ -229,11 +230,15 @@ pub enum ResultSubtype {
       pub records: Vec<SessionRecord>,
   }
   ```
+
 - `Session::save` rewrites the full file in v3 format and ensures there is at most one terminal `Result` record.
+
 - `Session::load` detects old format (v2) vs new format (v3):
   - v2: first line contains `"type": "session_start"`. Use existing `load_format_v2` logic and convert `ConversationItem`s to `SessionRecord`s in memory.
   - v3: first line is `{"type":"init", ...}`. Parse directly as `SessionRecord::Init`, then parse remaining lines as `SessionRecord`.
+
 - When loading v3, drop any trailing `Result` from the in-memory resumable history. That record is metadata about the prior completed run, not an input item for the next run.
+
 - On save, always write v3.
 
 ### 3. `src/clients/agent.rs`
@@ -251,15 +256,22 @@ pub enum ResultSubtype {
   ```rust
   session.records = client.drain_stream();
   ```
+
 - Update `--resume` argument parsing to accept either a UUID or a file path.
+
 - Update `--fork` argument parsing to accept either a UUID or a file path.
+
 - When loading a session for resume/continue, check the model:
   - If `--model` is not provided, use the session's model.
   - If `--model` is provided and differs from the session's resolved model, error out.
   - If the loaded session has no model, use the existing default model resolution behavior.
+
 - Emit and store the `Result` record for both text mode and stream-json mode. Only stdout emission remains conditional on `--output-format stream-json`.
+
 - Remove `exit_code` from the `emit_result_message` call.
+
 - For file-based `--resume` and `--fork`, preserve the original session working directory from the loaded session metadata.
+
 - If a file-based restore is attempted from a different current working directory, exit early with a warning/error that explains the mismatch and instructs the user to run the command from the original directory.
 
 ### 5. `src/clients/chat_completions.rs` and `src/clients/responses.rs`
@@ -275,15 +287,15 @@ pub enum ResultSubtype {
 
 ## Files to touch
 
-| File | Changes |
-|---|---|
-| `src/clients/types.rs` | Add `SessionRecord`, `ResultSubtype`, conversion methods |
-| `src/config/session.rs` | Replace `SessionLine`/`SessionHeader` with `SessionRecord`; dual-format `load`; simplified `save` |
-| `src/clients/agent.rs` | Add `stream` buffer; change emit methods to `&mut self`; add `drain_stream` |
-| `src/main.rs` | Use `drain_stream`; update `--resume` and `--fork`; model enforcement; drop `exit_code` |
-| `src/config/data_dir.rs` | Add helper(s) for loading from file path and update UUID-only assumptions |
-| `README.md` and `docs/design-docs/*.md` | Update `--resume`/`--fork` docs and remove `exit_code` from result examples |
-| `tests/` | Update session roundtrip tests; add v2 -> v3 migration test; add stream-json file resume test |
+  | File                                    | Changes                                                                                           |
+  | --------------------------------------- | ------------------------------------------------------------------------------------------------- |
+  | `src/clients/types.rs`                  | Add `SessionRecord`, `ResultSubtype`, conversion methods                                          |
+  | `src/config/session.rs`                 | Replace `SessionLine`/`SessionHeader` with `SessionRecord`; dual-format `load`; simplified `save` |
+  | `src/clients/agent.rs`                  | Add `stream` buffer; change emit methods to `&mut self`; add `drain_stream`                       |
+  | `src/main.rs`                           | Use `drain_stream`; update `--resume` and `--fork`; model enforcement; drop `exit_code`           |
+  | `src/config/data_dir.rs`                | Add helper(s) for loading from file path and update UUID-only assumptions                         |
+  | `README.md` and `docs/design-docs/*.md` | Update `--resume`/`--fork` docs and remove `exit_code` from result examples                       |
+  | `tests/`                                | Update session roundtrip tests; add v2 -> v3 migration test; add stream-json file resume test     |
 
 ## Acceptance criteria
 

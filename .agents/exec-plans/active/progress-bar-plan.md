@@ -165,11 +165,11 @@ In stream-JSON mode, `Verbosity` is set to `Quiet`, which means stdout is being 
 
 ## File Changes Summary
 
-| File | Change |
-|------|--------|
-| `src/progress.rs` | New file. OSC 9;4 sequence formatting and terminal-gated write functions. `ProgressGuard` Drop type. Unit tests. |
-| `src/main.rs` | Add `mod progress;`. Create `ProgressGuard` before `client.send()`. |
-| `Cargo.toml` | No changes needed. `std::io::stdout().is_terminal()` is stable in Rust 1.70+ and requires no additional dependency. |
+  | File              | Change                                                                                                              |
+  | ----------------- | ------------------------------------------------------------------------------------------------------------------- |
+  | `src/progress.rs` | New file. OSC 9;4 sequence formatting and terminal-gated write functions. `ProgressGuard` Drop type. Unit tests.    |
+  | `src/main.rs`     | Add `mod progress;`. Create `ProgressGuard` before `client.send()`.                                                 |
+  | `Cargo.toml`      | No changes needed. `std::io::stdout().is_terminal()` is stable in Rust 1.70+ and requires no additional dependency. |
 
 ## Non-Goals
 

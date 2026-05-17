@@ -66,23 +66,27 @@ Finally, update task and plan indexes. If all validation passes, mark task `049`
 
 From `/Users/travisennis/Projects/cake`, run:
 
-    cargo fmt
-    cargo test clients::agent
-    just ci
+```
+cargo fmt
+cargo test clients::agent
+just ci
+```
 
 Expected outcomes are successful formatting, passing agent tests, and a passing full CI check.
 
 Observed outcomes:
 
-    cargo test clients::agent
-    test result: ok. 40 passed; 0 failed; 0 ignored; 0 measured; 454 filtered out
+```
+cargo test clients::agent
+test result: ok. 40 passed; 0 failed; 0 ignored; 0 measured; 454 filtered out
 
-    just ci
-    test result: ok. 494 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
-    test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
-    test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
-    Import lint passed!
-    All checks passed!
+just ci
+test result: ok. 494 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+Import lint passed!
+All checks passed!
+```
 
 ## Validation and Acceptance
 
@@ -98,17 +102,21 @@ The refactor is source-only and can be retried by re-running formatting and test
 
 Relevant starting facts:
 
-    src/clients/agent.rs has 2457 lines.
-    src/main.rs reads Agent session_id, total_usage, and turn_count.
-    The task queue lists 049 as the next ready P1 XL task with all dependencies complete.
+```
+src/clients/agent.rs has 2457 lines.
+src/main.rs reads Agent session_id, total_usage, and turn_count.
+The task queue lists 049 as the next ready P1 XL task with all dependencies complete.
+```
 
 ## Interfaces and Dependencies
 
 The public interface remains `crate::clients::Agent`. Internally, the refactor should introduce small types with responsibilities similar to:
 
-    struct AgentObserver { ... callbacks ... }
-    struct AgentRunner { backend: Backend, client: reqwest::Client }
-    struct ConversationState { history: Vec<ConversationItem> }
+```
+struct AgentObserver { ... callbacks ... }
+struct AgentRunner { backend: Backend, client: reqwest::Client }
+struct ConversationState { history: Vec<ConversationItem> }
+```
 
 Any exact names may vary if the surrounding code suggests a clearer local pattern, but the final code must preserve current CLI behavior and test expectations.
 

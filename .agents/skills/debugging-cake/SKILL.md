@@ -18,6 +18,7 @@ This skill helps investigate and debug issues with the cake CLI tool.
 ## Quick Reference: Essential Commands
 
 ### Find Latest Session
+
 ```bash
 # List all session files
 ls ~/.local/share/cake/sessions/
@@ -128,6 +129,7 @@ ls -lt ~/.local/share/cake/sessions/*.jsonl 2>/dev/null | head -5
 Current persisted sessions use append-only JSON Lines (`.jsonl`) format version 4. Each line is a valid JSON object.
 
 **Line 1: Session Metadata**
+
 ```json
 {
   "type": "session_meta",
@@ -147,6 +149,7 @@ Current persisted sessions use append-only JSON Lines (`.jsonl`) format version 
 ```
 
 **Subsequent Lines: Task and Conversation Records**
+
 ```json
 {"type":"task_start","session_id":"uuid-v4","task_id":"task-uuid","timestamp":"2026-03-28T12:00:01Z"}
 {"type":"prompt_context","session_id":"uuid-v4","task_id":"task-uuid","role":"developer","content":"...","timestamp":"2026-03-28T12:00:01Z"}
@@ -178,6 +181,7 @@ Each task starts with `task_start` and should end with `task_complete`. `prompt_
 **Symptom**: CLI returns `None` instead of a meaningful response.
 
 **Check**:
+
 ```bash
 # A complete invocation usually ends with type: "task_complete"
 # If the file ends with task_start, reasoning, function_call, function_call_output,
@@ -187,6 +191,7 @@ tail -1 ~/.local/share/cake/sessions/{uuid}.jsonl | jq '{type, is_error, subtype
 ```
 
 **Example truncated response** (last line of `.jsonl` file):
+
 ```json
 {"type":"reasoning","id":"rs_tmp_tf8nkow8vrp","summary":["Now"],"timestamp":"2026-03-28T12:00:05Z"}
 ```
@@ -201,6 +206,7 @@ Note: A trailing conversation record without `task_complete` indicates the task 
 ### 2. Tool Execution Failed
 
 **Check**:
+
 ```bash
 # Find all function_call_output messages and check for errors
 jq 'select(.type == "function_call_output") | {call_id, output: .output[0:200]}' ~/.local/share/cake/sessions/{uuid}.jsonl
@@ -218,6 +224,7 @@ jq 'select(.type == "function_call_output") | {call_id, output: .output[0:200]}'
 ### 4. Session Grew Too Large
 
 **Check**:
+
 ```bash
 # Check session file size
 ls -lh ~/.local/share/cake/sessions/{uuid}.jsonl
@@ -232,6 +239,7 @@ jq -r '.content // ""' ~/.local/share/cake/sessions/{uuid}.jsonl | wc -c
 ### 5. Model Made Unexpected Tool Calls
 
 **Check**:
+
 ```bash
 # List all tool calls made
 jq 'select(.type == "function_call") | {name, arguments}' ~/.local/share/cake/sessions/{uuid}.jsonl
@@ -351,12 +359,12 @@ cat /tmp/sandbox_trace.log
 
 ### Common Missing Permissions
 
-| Error Pattern | Likely Cause | Fix |
-|---|---|---|
-| `Operation not permitted` on `target/` writes | Missing `file-lock` | Add `(allow file-lock)` to profile |
-| `/tmp` access denied despite being allowed | Symlink mismatch (`/tmp` → `/private/tmp`) | Ensure both forms in profile |
-| Cargo registry download fails | `~/.cargo/registry` is read-only | Add to `read_write` paths |
-| `flock` / `fcntl` failures | Missing `file-lock` permission | Add `(allow file-lock)` to profile |
+  | Error Pattern                                 | Likely Cause                               | Fix                                |
+  | --------------------------------------------- | ------------------------------------------ | ---------------------------------- |
+  | `Operation not permitted` on `target/` writes | Missing `file-lock`                        | Add `(allow file-lock)` to profile |
+  | `/tmp` access denied despite being allowed    | Symlink mismatch (`/tmp` → `/private/tmp`) | Ensure both forms in profile       |
+  | Cargo registry download fails                 | `~/.cargo/registry` is read-only           | Add to `read_write` paths          |
+  | `flock` / `fcntl` failures                    | Missing `file-lock` permission             | Add `(allow file-lock)` to profile |
 
 ### Inspecting the Generated Profile
 
@@ -371,14 +379,14 @@ cat "$TMPDIR"/cake/sandbox_profiles/cake_sandbox_*.sb
 
 ## File Locations Summary
 
-| File Type | Location |
-|-----------|----------|
-| Sessions | `~/.local/share/cake/sessions/{uuid}.jsonl` |
-| Logs | `~/.cache/cake/cake.YYYY-MM-DD.log` |
-| Global config | `~/.config/cake/settings.toml` |
-| Project config | `.cake/settings.toml` |
-| User-level AGENTS.md | `~/.cake/AGENTS.md` |
-| Project-level AGENTS.md | `./AGENTS.md` |
+  | File Type               | Location                                    |
+  | ----------------------- | ------------------------------------------- |
+  | Sessions                | `~/.local/share/cake/sessions/{uuid}.jsonl` |
+  | Logs                    | `~/.cache/cake/cake.YYYY-MM-DD.log`         |
+  | Global config           | `~/.config/cake/settings.toml`              |
+  | Project config          | `.cake/settings.toml`                       |
+  | User-level AGENTS.md    | `~/.cake/AGENTS.md`                         |
+  | Project-level AGENTS.md | `./AGENTS.md`                               |
 
 ## Configuration
 

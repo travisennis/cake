@@ -66,8 +66,10 @@ From `/Users/travisennis/Projects/cake`, edit:
 
 Run:
 
-    cargo test config::session
-    just ci
+```
+cargo test config::session
+just ci
+```
 
 Expected result: the targeted session tests pass, and `just ci` completes successfully.
 
@@ -83,13 +85,17 @@ The code changes are additive and safe to re-run. Tests create temporary session
 
 Targeted validation passed:
 
-    cargo test config::session
-    test result: ok. 15 passed; 0 failed
+```
+cargo test config::session
+test result: ok. 15 passed; 0 failed
+```
 
 Full validation passed:
 
-    just ci
-    All checks passed!
+```
+just ci
+All checks passed!
+```
 
 Deslop findings kept: document load-time normalization in `docs/design-docs/session-management.md` and `docs/design-docs/conversation-types.md`.
 
