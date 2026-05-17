@@ -11,6 +11,7 @@ Active tasks include open, pending, blocked, and tracking work.
 - Blocked: 12
 - Tracking: 0
 - Completed: 0
+- Cancelled: 0
 
 ## Tasks
 

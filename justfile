@@ -44,6 +44,11 @@ task-complete id:
     python3 .agents/scripts/complete-task.py {{id}}
     @just task-index
 
+# Mark a task as Cancelled, move active/<id>.md to cancelled/, and refresh indexes
+task-cancel id:
+    python3 .agents/scripts/cancel-task.py {{id}}
+    @just task-index
+
 # Clippy against the Linux target so local macOS checks cover CI-only cfg paths
 clippy-linux:
     @rustup target list --installed | grep -qx 'x86_64-unknown-linux-gnu' || { echo "ERROR: missing Rust target x86_64-unknown-linux-gnu. Run: rustup target add x86_64-unknown-linux-gnu"; exit 1; }

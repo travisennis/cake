@@ -11,6 +11,7 @@ Completed tasks are retained for history and stable task-id lookup.
 - Blocked: 0
 - Tracking: 0
 - Completed: 110
+- Cancelled: 0
 
 ## Tasks
 

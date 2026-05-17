@@ -73,6 +73,7 @@ just rust-version-check
 - Use task labels to filter work by type, area, and risk when the user asks for focused work.
 - Do not edit generated task indexes by hand; update task files and run `just task-index` (never invoke the underlying Python script directly).
 - When marking a task as Completed, use `just task-complete <id>`. It updates the task front matter, moves the file from `.agents/.tasks/active/` to `.agents/.tasks/completed/`, and regenerates the indexes in one step. Do not leave Completed tasks in `active/`.
+- When marking a task as Cancelled, use `just task-cancel <id>`. It updates the task front matter, moves the file from `.agents/.tasks/active/` to `.agents/.tasks/cancelled/`, and regenerates the indexes in one step. Do not leave Cancelled tasks in `active/`.
 - When asked to create, update, organize, or use research, first read `.agents/RESEARCH.md`, then use `.agents/.research/index.md` as the research map and open the relevant research file before acting.
 - Do not commit or push code unless explicitly asked to.
 

@@ -1,20 +1,21 @@
 # Task Workflow
 
-This document explains how tasks are handled in this repository. When you are asked to create, choose, update, or work on a task, read this file first, then use `.agents/.tasks/index.md` as the task queue and open the relevant task file under `.agents/.tasks/active/` or `.agents/.tasks/completed/`.
+This document explains how tasks are handled in this repository. When you are asked to create, choose, update, or work on a task, read this file first, then use `.agents/.tasks/index.md` as the task queue and open the relevant task file under `.agents/.tasks/active/`, `.agents/.tasks/completed/`, or `.agents/.tasks/cancelled/`.
 
 ## Task Storage
 
-Tasks live in `.agents/.tasks/active/` while they are not complete, and `.agents/.tasks/completed/` after they are finished. Each task is a Markdown file named with a stable task id, such as `046.md` or `109.md`. Parent tasks may have lettered child tasks, such as `047a.md`, `047b.md`, and `047c.md`.
+Tasks live in `.agents/.tasks/active/` while they are not complete, `.agents/.tasks/completed/` after they are finished, and `.agents/.tasks/cancelled/` when they have been abandoned. Each task is a Markdown file named with a stable task id, such as `046.md` or `109.md`. Parent tasks may have lettered child tasks, such as `047a.md`, `047b.md`, and `047c.md`.
 
-The file `.agents/.tasks/index.md` is the generated queue and summary. It lists status counts, the next ready work, blocked or untriaged tasks, parent trackers, and links to the generated active and completed indexes. Use the index to orient yourself, but always open the task file before making changes or deciding the implementation approach.
+The file `.agents/.tasks/index.md` is the generated queue and summary. It lists status counts, the next ready work, blocked or untriaged tasks, parent trackers, and links to the generated active, completed, and cancelled indexes. Use the index to orient yourself, but always open the task file before making changes or deciding the implementation approach.
 
 The generated indexes are:
 
 - `.agents/.tasks/index.md` for the concise dashboard and next ready queue.
 - `.agents/.tasks/active/index.md` for all active, blocked, open, pending, and tracking tasks.
 - `.agents/.tasks/completed/index.md` for historical lookup of completed tasks.
+- `.agents/.tasks/cancelled/index.md` for historical lookup of cancelled tasks.
 
-Do not edit generated indexes by hand. After changing task metadata, moving tasks between `active/` and `completed/`, or creating tasks, run:
+Do not edit generated indexes by hand. After changing task metadata, moving tasks between `active/`, `completed/`, and `cancelled/`, or creating tasks, run:
 
 ```bash
 just task-index
@@ -31,7 +32,7 @@ just task-index-check
 If the user names a task id or title, work from that task even if another task is higher in the queue. If the user asks for the next task, choose from `.agents/.tasks/index.md` using these rules:
 
 1. Prefer the lowest priority number first: `P0`, then `P1`, `P2`, `P3`, and `P4`.
-2. Skip tasks marked `Completed`, `Blocked`, `Open`, or `Tracking`.
+2. Skip tasks marked `Completed`, `Cancelled`, `Blocked`, `Open`, or `Tracking`.
 3. Check dependencies before starting. If a dependency is incomplete, do the dependency first or tell the user why the requested task is blocked.
 4. Treat parent tracker tasks as planning references. Work their child tasks in the order stated by the parent tracker or the index.
 5. Use task labels to filter work by type, area, and risk when the user asks for focused work.
@@ -40,7 +41,7 @@ Before editing code, read the full task file and inspect the relevant source fil
 
 ## Creating Tasks
 
-Create new tasks in `.agents/.tasks/active/` with the next available three-digit id across both `active/` and `completed/`. For example, if the highest numbered task is `109.md`, the next unrelated task is `110.md`. Use letter suffixes only for subtasks that belong to a parent tracker, such as `110a.md`.
+Create new tasks in `.agents/.tasks/active/` with the next available three-digit id across `active/`, `completed/`, and `cancelled/`. For example, if the highest numbered task is `109.md`, the next unrelated task is `110.md`. Use letter suffixes only for subtasks that belong to a parent tracker, such as `110a.md`.
 
 A new task should include enough context for another agent to work it later without the original conversation. Use this shape unless the existing task family clearly uses a narrower format:
 
@@ -98,6 +99,7 @@ Use this standard status set:
 - `Blocked` means the task is not ready because it is underspecified, waiting on another task, or needs a product or design decision.
 - `Tracking` means a parent task whose implementation happens through child tasks.
 - `Completed` means the work is finished.
+- `Cancelled` means the task has been abandoned and will not be worked on. Use this when a task is obsolete, superseded, no longer relevant, or explicitly declined.
 
 ## Updating Tasks
 
@@ -105,12 +107,15 @@ Tasks are working records. When you complete a task, discover it is blocked, cha
 
 Keep task storage consistent with status:
 
-- Non-completed tasks stay in `.agents/.tasks/active/`.
+- Non-completed, non-cancelled tasks stay in `.agents/.tasks/active/`.
 - Completed tasks move to `.agents/.tasks/completed/`.
+- Cancelled tasks move to `.agents/.tasks/cancelled/`.
 - When moving a task, keep the same filename so the stable task id is preserved.
 - After moving or editing task metadata, regenerate the indexes.
 
 To mark a task as Completed, prefer `just task-complete <id>`. It sets the front-matter `status:` to `Completed`, moves the file from `.agents/.tasks/active/<id>.md` to `.agents/.tasks/completed/<id>.md` (using `git mv` when the file is tracked), and regenerates the indexes in one step. Do not leave Completed tasks in `active/`.
+
+To mark a task as Cancelled, prefer `just task-cancel <id>`. It sets the front-matter `status:` to `Cancelled`, moves the file from `.agents/.tasks/active/<id>.md` to `.agents/.tasks/cancelled/<id>.md` (using `git mv` when the file is tracked), and regenerates the indexes in one step. Do not leave Cancelled tasks in `active/`. Before cancelling, note in the task body why it is being cancelled so future readers understand the decision.
 
 If a generated index is stale, do not patch the index directly. Fix the task file metadata or location, then rerun `just task-index`. Always go through the `just` recipes; do not invoke the underlying Python scripts directly.
 

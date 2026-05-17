@@ -14,8 +14,9 @@ ROOT = Path(__file__).resolve().parents[1]
 TASKS_DIR = ROOT / ".tasks"
 ACTIVE_DIR = TASKS_DIR / "active"
 COMPLETED_DIR = TASKS_DIR / "completed"
+CANCELLED_DIR = TASKS_DIR / "cancelled"
 
-STATUS_ORDER = ["Open", "Pending", "Blocked", "Tracking", "Completed"]
+STATUS_ORDER = ["Open", "Pending", "Blocked", "Tracking", "Completed", "Cancelled"]
 PRIORITY_ORDER = {"P0": 0, "P1": 1, "P2": 2, "P3": 3, "P4": 4, "-": 99, "": 99}
 MAX_READY_TASKS = 10
 
@@ -104,7 +105,11 @@ def parse_task(path: Path, bucket: str) -> Task:
 
 def collect_tasks() -> list[Task]:
     tasks: list[Task] = []
-    for bucket, directory in (("active", ACTIVE_DIR), ("completed", COMPLETED_DIR)):
+    for bucket, directory in (
+        ("active", ACTIVE_DIR),
+        ("completed", COMPLETED_DIR),
+        ("cancelled", CANCELLED_DIR),
+    ):
         if not directory.exists():
             continue
         for path in sorted(directory.glob("*.md")):
@@ -215,6 +220,7 @@ def render_root_index(tasks: list[Task]) -> str:
     else:
         lines.append("None.")
 
+    cancelled = [task for task in tasks if task.bucket == "cancelled"]
     lines.extend(
         [
             "",
@@ -222,6 +228,7 @@ def render_root_index(tasks: list[Task]) -> str:
             "",
             f"- [Active tasks](active/index.md): {len(active)}",
             f"- [Completed tasks](completed/index.md): {len(completed)}",
+            f"- [Cancelled tasks](cancelled/index.md): {len(cancelled)}",
             "",
         ]
     )
@@ -253,6 +260,7 @@ def render_bucket_index(title: str, description: str, tasks: list[Task], from_di
 def desired_outputs(tasks: list[Task]) -> dict[Path, str]:
     active = [task for task in tasks if task.bucket == "active"]
     completed = [task for task in tasks if task.bucket == "completed"]
+    cancelled = [task for task in tasks if task.bucket == "cancelled"]
     return {
         TASKS_DIR / "index.md": render_root_index(tasks),
         ACTIVE_DIR / "index.md": render_bucket_index(
@@ -266,6 +274,12 @@ def desired_outputs(tasks: list[Task]) -> dict[Path, str]:
             "Completed tasks are retained for history and stable task-id lookup.",
             completed,
             COMPLETED_DIR,
+        ),
+        CANCELLED_DIR / "index.md": render_bucket_index(
+            "Cancelled Tasks",
+            "Cancelled tasks are retained for history and stable task-id lookup. They are not part of the active queue and will not be worked on.",
+            cancelled,
+            CANCELLED_DIR,
         ),
     }
 
