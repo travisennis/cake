@@ -6,8 +6,8 @@ Active tasks include open, pending, blocked, and tracking work.
 
 ## Status Summary
 
-- Open: 4
-- Pending: 36
+- Open: 2
+- Pending: 40
 - Blocked: 12
 - Tracking: 0
 - Completed: 0
@@ -60,12 +60,14 @@ Active tasks include open, pending, blocked, and tracking work.
 | [135](135.md) | Prefer Focused Checks Before Final CI in Deslop Guidance | Pending | P3 | XS | - | - | - |
 | [139](139.md) | Add Structured Bulk Edit Support for Mechanical Transformations | Pending | P2 | M | - | - | - |
 | [140](140.md) | Harden Edit Schema Guidance Against Malformed Arguments | Pending | P2 | S | - | - | - |
-| [142](142.md) | Add Bash Command Lint Hints for Common Agent Footguns | Pending | P2 | M | - | - | - |
+| [142](142.md) | Add Bash Command Lint Hints for Common Agent Footguns | Pending | P2 | M | type:bug, area:tools | - | - |
 | [144](144.md) | Require Final Dirty Worktree Reporting After Commits | Pending | P2 | S | - | - | - |
 | [145](145.md) | Add Platform Verification Guidance for cfg-Sensitive Changes | Pending | P2 | M | - | - | - |
-| [146](146.md) | Compact Large Tool Outputs Before Adding to Model Context | Pending | P2 | L | - | - | - |
+| [146](146.md) | Compact Large Tool Outputs Before Adding to Model Context | Pending | P2 | L | type:feature, area:agent, area:tools, area:session | - | - |
 | [147](147.md) | Clarify Hook Event Decision Semantics in Session Records | Pending | P3 | S | - | - | - |
-| [148](148.md) | Make Deslop Passes Produce Evidence-Backed Results | Pending | P3 | S | - | - | 135 |
+| [148](148.md) | Make Deslop Passes Produce Evidence-Backed Results | Pending | P3 | S | type:docs, area:dev-env | - | 135 |
 | [151](151.md) | Add Settings-Based and Profile-Based System Prompt Configuration | Open | P3 | M | - | - | 150 |
-| [152](152.md) | Prevent shell command-substitution in Bash-tool git commit messages | Open | P3 | S | type:bug, area:tools | - | - |
-| [153](153.md) | Disambiguate Bash-tool output for empty rg/grep no-match results | Open | P4 | XS | type:bug, area:tools | - | - |
+| [152](152.md) | Prevent shell command-substitution in Bash-tool git commit messages | Pending | P2 | S | type:bug, area:tools | - | - |
+| [153](153.md) | Disambiguate Bash-tool output for empty rg/grep no-match results | Pending | P3 | S | type:bug, area:tools | - | - |
+| [154](154.md) | Surface Bash Stderr Warnings Separately From Successful Exit Status | Pending | P2 | M | type:bug, area:tools, area:session | - | - |
+| [155](155.md) | Track Skill And Workflow Checklist Obligations In Sessions | Pending | P2 | L | type:feature, area:agent, area:session, area:prompts | - | - |
