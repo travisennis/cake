@@ -110,7 +110,9 @@ Keep task storage consistent with status:
 - When moving a task, keep the same filename so the stable task id is preserved.
 - After moving or editing task metadata, regenerate the indexes.
 
-If a generated index is stale, do not patch the index directly. Fix the task file metadata or location, then rerun `just task-index`.
+To mark a task as Completed, prefer `just task-complete <id>`. It sets the front-matter `status:` to `Completed`, moves the file from `.agents/.tasks/active/<id>.md` to `.agents/.tasks/completed/<id>.md` (using `git mv` when the file is tracked), and regenerates the indexes in one step. Do not leave Completed tasks in `active/`.
+
+If a generated index is stale, do not patch the index directly. Fix the task file metadata or location, then rerun `just task-index`. Always go through the `just` recipes; do not invoke the underlying Python scripts directly.
 
 ## Working a Task
 

@@ -10,7 +10,7 @@ Active tasks include open, pending, blocked, and tracking work.
 - Pending: 37
 - Blocked: 12
 - Tracking: 0
-- Completed: 1
+- Completed: 0
 
 ## Tasks
 
@@ -29,7 +29,6 @@ Active tasks include open, pending, blocked, and tracking work.
 | [015](015.md) | Consolidate Per-Function unwrap_used Allow to Module-Level in Tests | Blocked | - | - | - | - | - |
 | [016](016.md) | Refactor send() and execute_bash() into Smaller Functions | Blocked | - | - | - | - | - |
 | [030](030.md) | Investigate Session-Level Hook Observability | Pending | - | - | - | - | - |
-| [090](090.md) | Decide on Tokio Runtime Entry Style | Completed | P3 | S | - | - | - |
 | [091](091.md) | Clean Up macOS Sandbox String Construction Style | Pending | P3 | M | - | - | 040 (Seatbelt profile builder) |
 | [092](092.md) | Simplify Binary Ratio Threshold Constants | Pending | P3 | S | - | - | - |
 | [093](093.md) | Rename with_text_progress to Avoid Builder Semantics | Pending | P3 | S | - | - | - |

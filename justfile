@@ -39,6 +39,11 @@ task-index:
 task-index-check:
     python3 .agents/scripts/generate-task-indexes.py --check
 
+# Mark a task as Completed, move active/<id>.md to completed/, and refresh indexes
+task-complete id:
+    python3 .agents/scripts/complete-task.py {{id}}
+    @just task-index
+
 # Clippy against the Linux target so local macOS checks cover CI-only cfg paths
 clippy-linux:
     @rustup target list --installed | grep -qx 'x86_64-unknown-linux-gnu' || { echo "ERROR: missing Rust target x86_64-unknown-linux-gnu. Run: rustup target add x86_64-unknown-linux-gnu"; exit 1; }

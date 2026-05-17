@@ -71,7 +71,8 @@ just rust-version-check
 - When a task includes committing and task-status updates, commit the intended code/task changes together unless the user asks for separate commits. After committing and moving or regenerating task files, run `git status --short` before the final response and report any remaining uncommitted or untracked files.
 - When asked to create, choose, update, or work on a task, first read `.agents/TASKS.md`, then use `.agents/.tasks/index.md` as the task queue and open the specific task file before acting.
 - Use task labels to filter work by type, area, and risk when the user asks for focused work.
-- Do not edit generated task indexes by hand; update task files and run the task index generator.
+- Do not edit generated task indexes by hand; update task files and run `just task-index` (never invoke the underlying Python script directly).
+- When marking a task as Completed, use `just task-complete <id>`. It updates the task front matter, moves the file from `.agents/.tasks/active/` to `.agents/.tasks/completed/`, and regenerates the indexes in one step. Do not leave Completed tasks in `active/`.
 - When asked to create, update, organize, or use research, first read `.agents/RESEARCH.md`, then use `.agents/.research/index.md` as the research map and open the relevant research file before acting.
 - Do not commit or push code unless explicitly asked to.
 

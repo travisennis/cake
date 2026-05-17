@@ -59,6 +59,6 @@ None.
 
 ## Indexes
 
-- [Active tasks](active/index.md): 52
-- [Completed tasks](completed/index.md): 109
+- [Active tasks](active/index.md): 51
+- [Completed tasks](completed/index.md): 110
 

@@ -10,7 +10,7 @@ Completed tasks are retained for history and stable task-id lookup.
 - Pending: 0
 - Blocked: 0
 - Tracking: 0
-- Completed: 109
+- Completed: 110
 
 ## Tasks
 
@@ -98,6 +98,7 @@ Completed tasks are retained for history and stable task-id lookup.
 | [087](087.md) | Simplify Responses Reasoning Config Construction | Completed | P3 | S | - | - | - |
 | [088](088.md) | Clean Up Dead Code Allows | Completed | P3 | S | - | - | - |
 | [089](089.md) | Rationalize Clippy Allow Policy | Completed | P3 | M | - | - | Resolved in same PR as 110 with 107. |
+| [090](090.md) | Decide on Tokio Runtime Entry Style | Completed | P3 | S | - | - | - |
 | [107](107.md) | Reconsider Missing Docs Lint Policy | Completed | P3 | S | - | - | Resolved in same PR as 110 with 089. |
 | [110](110.md) | Apply Stricter Clippy Configuration from External Research | Completed | P2 | M | - | - | Research: clippy-stricter-config; related: 089, 107 (both completed together) |
 | [111](111.md) | Round-Trip Test ConversationItem → StreamRecord → SessionRecord | Completed | P1 | S | - | - | Follows 061 |
