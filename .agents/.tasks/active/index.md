@@ -7,7 +7,7 @@ Active tasks include open, pending, blocked, and tracking work.
 ## Status Summary
 
 - Open: 2
-- Pending: 40
+- Pending: 39
 - Blocked: 5
 - Tracking: 0
 - Completed: 0
@@ -23,7 +23,6 @@ Active tasks include open, pending, blocked, and tracking work.
 | [012](012.md) | Add Template Prompts from .cake/prompts/ | Blocked | - | - | - | - | - |
 | [016](016.md) | Refactor send() and execute_bash() into Smaller Functions | Blocked | - | - | - | - | - |
 | [030](030.md) | Investigate Session-Level Hook Observability | Pending | - | - | - | - | - |
-| [091](091.md) | Clean Up macOS Sandbox String Construction Style | Pending | P3 | M | - | - | 040 (Seatbelt profile builder) |
 | [092](092.md) | Simplify Binary Ratio Threshold Constants | Pending | P3 | S | - | - | - |
 | [093](093.md) | Rename with_text_progress to Avoid Builder Semantics | Pending | P3 | S | - | - | - |
 | [094](094.md) | Simplify Test-Only Bash Sandbox Constructor | Pending | P3 | S | - | - | - |

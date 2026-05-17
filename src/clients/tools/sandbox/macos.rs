@@ -170,7 +170,10 @@ impl MacOsSandbox {
 
     /// Generate a deny-default sandbox profile (.sb file content) from the configuration
     fn generate_profile(config: &SandboxConfig) -> String {
-        let mut profile = SeatbeltProfileBuilder::deny_default();
+        let mut profile = SeatbeltProfileBuilder::new();
+        profile.version(1);
+        profile.deny_default();
+        profile.blank();
 
         // Process execution (fork/exec needed for bash and subcommands)
         profile.comment("Allow process execution");
@@ -283,8 +286,6 @@ impl MacOsSandbox {
 
     /// Write the profile to a temp file and return its path
     fn write_profile_to_temp(profile: &str) -> Result<tempfile::NamedTempFile, String> {
-        use std::io::Write;
-
         let tmp_dir = std::env::temp_dir().join("cake").join("sandbox_profiles");
         std::fs::create_dir_all(&tmp_dir)
             .map_err(|e| format!("Failed to create sandbox profile directory: {e}"))?;
@@ -325,7 +326,7 @@ impl SandboxStrategy for MacOsSandbox {
         let original_args: Vec<String> = command
             .as_std()
             .get_args()
-            .map(|s| s.to_string_lossy().to_string())
+            .map(|s| s.to_string_lossy().into_owned())
             .collect();
 
         // Reconfigure the command to use sandbox-exec
@@ -364,14 +365,16 @@ struct SeatbeltProfileBuilder {
 }
 
 impl SeatbeltProfileBuilder {
-    fn deny_default() -> Self {
-        Self {
-            lines: vec![
-                "(version 1)".to_string(),
-                "(deny default)".to_string(),
-                String::new(),
-            ],
-        }
+    const fn new() -> Self {
+        Self { lines: Vec::new() }
+    }
+
+    fn version(&mut self, version: u32) {
+        self.lines.push(format!("(version {version})"));
+    }
+
+    fn deny_default(&mut self) {
+        self.lines.push(String::from("(deny default)"));
     }
 
     fn comment(&mut self, comment: &str) {
