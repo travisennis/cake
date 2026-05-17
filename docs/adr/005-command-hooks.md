@@ -23,7 +23,7 @@ Hooks receive a JSON event payload on stdin and may return JSON on stdout. Suppo
 
 `PreToolUse` hooks can allow, deny, or update a tool call before execution. Session and post-tool hooks can return additional context for the model. Hook failures are fail-open by default, with per-command `fail_closed` support when policy enforcement requires blocking behavior.
 
-Hook activity is recorded through tracing and appended to session JSONL as `hook_event` records when sessions are enabled.
+Hook activity is recorded through tracing and appended to session JSONL as `hook_event` records when sessions are enabled. Tool hook records include the associated tool `call_id`, tool name, and a compact tool input summary so audit tools can join each hook invocation to the matching `function_call` record without relying on transcript order. Hook records also store a parsed `resolved_decision` in addition to raw stdout/stderr and the historical coarse `decision` label.
 
 ## Rationale
 
@@ -32,7 +32,7 @@ Hook activity is recorded through tracing and appended to session JSONL as `hook
 - **Lifecycle coverage**: Session, prompt, tool, completion, and error events cover the main extension points users need without exposing the entire agent internals.
 - **Deterministic configuration**: Global, project, and local hook files are loaded in a fixed append-only order, making behavior predictable.
 - **Safe default failure mode**: Hooks fail open unless explicitly configured as `fail_closed`, avoiding accidental task breakage for auditing or context hooks.
-- **Session observability**: Persisted hook records make policy decisions and automation effects inspectable alongside the conversation transcript.
+- **Session observability**: Persisted hook records make policy decisions and automation effects inspectable alongside the conversation transcript, and tool hook records can be correlated directly with the tool call that triggered them.
 
 ## Consequences
 
@@ -42,6 +42,7 @@ Hook activity is recorded through tracing and appended to session JSONL as `hook
 - **Negative**: Hook commands are trusted local configuration and run outside the model tool sandbox.
 - **Negative**: Hook execution adds latency to lifecycle events and tool calls.
 - **Negative**: Hook authors must keep stdout valid JSON when returning decisions or context.
+- **Negative**: Session hook records carry a small amount of duplicated tool-call metadata to make offline analysis simpler.
 
 ## Alternatives Considered
 

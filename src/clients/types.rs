@@ -520,12 +520,20 @@ pub enum SessionRecord {
         event: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         source: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        call_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tool_name: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tool_input_summary: Option<String>,
         source_file: PathBuf,
         command: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         exit_code: Option<i32>,
         duration_ms: u64,
         decision: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resolved_decision: Option<String>,
         fail_closed: bool,
         stdout: String,
         stderr: String,
@@ -1711,11 +1719,15 @@ mod tests {
             task_id: fixed_task_id(),
             event: "post_tool_use".to_string(),
             source: Some("Bash".to_string()),
+            call_id: Some("call-1".to_string()),
+            tool_name: Some("Bash".to_string()),
+            tool_input_summary: Some("just ci".to_string()),
             source_file: PathBuf::from("/workspace/cake/.cake/hooks/post-tool-use.sh"),
             command: "./post-tool-use.sh".to_string(),
             exit_code: Some(0),
             duration_ms: 42,
             decision: "none".to_string(),
+            resolved_decision: Some("allow".to_string()),
             fail_closed: false,
             stdout: "ok".to_string(),
             stderr: String::new(),
@@ -1734,11 +1746,15 @@ mod tests {
             task_id: fixed_task_id(),
             event: "session_start".to_string(),
             source: None,
+            call_id: None,
+            tool_name: None,
+            tool_input_summary: None,
             source_file: PathBuf::from("/workspace/cake/.cake/hooks/session-start.sh"),
             command: "./session-start.sh".to_string(),
             exit_code: None,
             duration_ms: 17,
             decision: "none".to_string(),
+            resolved_decision: Some("none".to_string()),
             fail_closed: true,
             stdout: String::new(),
             stderr: "no exit code".to_string(),
@@ -1748,5 +1764,41 @@ mod tests {
             "session_json_hook_event_without_optional_fields",
             session_record_json(record)
         );
+    }
+
+    #[test]
+    fn deserialize_legacy_hook_event_without_correlation_fields() {
+        let record: SessionRecord = serde_json::from_value(serde_json::json!({
+            "type": "hook_event",
+            "timestamp": "2026-05-10T12:34:56Z",
+            "task_id": fixed_task_id(),
+            "event": "PostToolUse",
+            "source": "Bash",
+            "source_file": "/workspace/cake/.cake/hooks/post-tool-use.sh",
+            "command": "./post-tool-use.sh",
+            "exit_code": 0,
+            "duration_ms": 42,
+            "decision": "none",
+            "fail_closed": false,
+            "stdout": "ok",
+            "stderr": ""
+        }))
+        .unwrap();
+
+        match record {
+            SessionRecord::HookEvent {
+                call_id,
+                tool_name,
+                tool_input_summary,
+                resolved_decision,
+                ..
+            } => {
+                assert!(call_id.is_none());
+                assert!(tool_name.is_none());
+                assert!(tool_input_summary.is_none());
+                assert!(resolved_decision.is_none());
+            },
+            other => panic!("expected hook_event, got {other:?}"),
+        }
     }
 }

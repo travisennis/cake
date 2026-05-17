@@ -8,6 +8,7 @@ expression: session_record_json(record)
   "duration_ms": 17,
   "event": "session_start",
   "fail_closed": true,
+  "resolved_decision": "none",
   "source_file": "/workspace/cake/.cake/hooks/session-start.sh",
   "stderr": "no exit code",
   "stdout": "",

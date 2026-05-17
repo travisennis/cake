@@ -61,7 +61,7 @@ The first non-empty line must be exactly one `session_meta` record. Every saved 
 {"type":"task_complete","subtype":"success","is_error":false,"duration_ms":1523,"turn_count":2,"tool_call_count":3,"session_id":"550e8400-e29b-41d4-a716-446655440000","task_id":"2b15f29d-8c42-4c53-9bdf-35c8f2390d3e","result":"The project contains Cargo.toml and src.","usage":{"input_tokens":150,"input_tokens_details":{"cached_tokens":50},"output_tokens":320,"output_tokens_details":{"reasoning_tokens":120},"total_tokens":470}}
 ```
 
-Conversation records are `message`, `function_call`, `function_call_output`, and `reasoning`. Only those records are restored into model context. `session_meta`, `task_start`, `prompt_context`, and `task_complete` remain in the file but are skipped when reconstructing conversation history.
+Conversation records are `message`, `function_call`, `function_call_output`, and `reasoning`. Only those records are restored into model context. `session_meta`, `task_start`, `prompt_context`, `skill_activated`, `hook_event`, and `task_complete` remain in the file but are skipped when reconstructing conversation history.
 
 `prompt_context` records are append-only audit records for the mutable context used by a single invocation, such as AGENTS.md contents, discovered skills, and environment details. On continue, resume, or fork, cake rebuilds fresh prompt context and appends new `prompt_context` records; it does not replay stale prompt context from earlier invocations.
 
@@ -174,6 +174,35 @@ Each `content` item has:
   | ------ | ------ | -------- | -------------------------------------------------------- |
   | `type` | string | yes      | Provider content item type, for example `reasoning_text` |
   | `text` | string | no       | Text for content item types that carry text              |
+
+### `hook_event`
+
+`hook_event` stores one command hook invocation for audit and debugging. These
+records are metadata and are not restored into model context.
+
+  | Field                | Type   | Required | Description                                                                 |
+  | -------------------- | ------ | -------- | --------------------------------------------------------------------------- |
+  | `type`               | string | yes      | Always `hook_event`                                                         |
+  | `timestamp`          | string | yes      | Record creation time                                                        |
+  | `task_id`            | string | yes      | UUID for the invocation that ran the hook                                    |
+  | `event`              | string | yes      | Hook lifecycle event, such as `PreToolUse` or `PostToolUse`                 |
+  | `source`             | string | no       | Hook matcher source, such as a tool name                                    |
+  | `call_id`            | string | no       | Tool call id for tool hooks; matches `function_call.call_id`                |
+  | `tool_name`          | string | no       | Tool name for tool hooks                                                    |
+  | `tool_input_summary` | string | no       | Compact, capped tool input summary for quick inspection                     |
+  | `source_file`        | string | yes      | Hook configuration file that defined the command                            |
+  | `command`            | string | yes      | Hook shell command                                                          |
+  | `exit_code`          | number | no       | Process exit code when available                                            |
+  | `duration_ms`        | number | yes      | Hook process duration in milliseconds                                       |
+  | `decision`           | string | yes      | Historical coarse decision label preserved for compatibility                |
+  | `resolved_decision`  | string | no       | Effective parsed decision, such as `allow`, `deny`, `stop`, `error`, `none` |
+  | `fail_closed`        | bool   | yes      | Whether a hook execution error blocks the associated action                 |
+  | `stdout`             | string | yes      | Captured hook stdout, capped at 64 KiB                                      |
+  | `stderr`             | string | yes      | Captured hook stderr, capped at 64 KiB                                      |
+
+Older `hook_event` records may omit `call_id`, `tool_name`,
+`tool_input_summary`, and `resolved_decision`. Readers must treat missing fields
+as unknown rather than invalid.
 
 ### `task_complete`
 

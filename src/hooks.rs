@@ -120,6 +120,13 @@ struct AggregatedHookResult {
     additional_context: Vec<String>,
 }
 
+#[derive(Debug, Clone)]
+struct ToolHookMetadata {
+    call_id: String,
+    tool_name: String,
+    input_summary: String,
+}
+
 #[derive(Debug)]
 struct InvocationOutcome {
     command: HookCommand,
@@ -135,6 +142,7 @@ struct InvocationOutcome {
 #[derive(Debug)]
 struct ParsedHookOutput {
     decision: HookDecision,
+    explicit_allow: bool,
     updated_input: Option<Value>,
     additional_context: Option<String>,
 }
@@ -162,8 +170,13 @@ impl From<RawHookOutput> for ParsedHookOutput {
             raw.decision.as_deref(),
             raw.reason.as_deref(),
         );
+        let explicit_allow = decision == HookDecision::Continue
+            && (raw.r#continue == Some(true)
+                || matches!(raw.permission.as_deref(), Some("allow"))
+                || (raw.permission.is_none() && matches!(raw.decision.as_deref(), Some("allow"))));
         Self {
             decision,
+            explicit_allow,
             updated_input: raw.updated_input,
             additional_context: raw.additional_context,
         }
@@ -180,6 +193,16 @@ struct HookRecord<'a> {
     hook_event_name: &'static str,
     model: &'a str,
     timestamp: String,
+}
+
+impl ToolHookMetadata {
+    fn new(call_id: &str, tool_name: &str, arguments: &str) -> Self {
+        Self {
+            call_id: call_id.to_owned(),
+            tool_name: tool_name.to_owned(),
+            input_summary: tool_input_summary(arguments),
+        }
+    }
 }
 
 impl HookRunner {
@@ -200,7 +223,7 @@ impl HookRunner {
             }),
         );
         let result = self
-            .run_and_aggregate(HookEvent::SessionStart, source, payload)
+            .run_and_aggregate(HookEvent::SessionStart, source, payload, None)
             .await?;
         Ok(result.additional_context)
     }
@@ -213,7 +236,12 @@ impl HookRunner {
             }),
         );
         let result = self
-            .run_and_aggregate(HookEvent::UserPromptSubmit, &HookSource::None, payload)
+            .run_and_aggregate(
+                HookEvent::UserPromptSubmit,
+                &HookSource::None,
+                payload,
+                None,
+            )
             .await?;
         Ok(result.additional_context)
     }
@@ -226,6 +254,7 @@ impl HookRunner {
     ) -> anyhow::Result<ToolHookPlan> {
         let source = HookSource::Tool(tool_name.to_owned());
         let tool_input = parse_tool_input(arguments);
+        let metadata = ToolHookMetadata::new(tool_use_id, tool_name, arguments);
         let payload = self.payload(
             HookEvent::PreToolUse,
             json!({
@@ -236,7 +265,7 @@ impl HookRunner {
             }),
         );
         let result = self
-            .run_and_aggregate(HookEvent::PreToolUse, &source, payload)
+            .run_and_aggregate(HookEvent::PreToolUse, &source, payload, Some(metadata))
             .await?;
 
         if !result.deny_reasons.is_empty() {
@@ -296,6 +325,7 @@ impl HookRunner {
             Err(error) => (HookEvent::PostToolUseFailure, "failure", error.as_str()),
         };
         let source = HookSource::Tool(tool_name.to_owned());
+        let metadata = ToolHookMetadata::new(tool_use_id, tool_name, arguments);
         let payload = self.payload(
             event,
             json!({
@@ -309,14 +339,16 @@ impl HookRunner {
                 }
             }),
         );
-        let result = self.run_and_aggregate(event, &source, payload).await?;
+        let result = self
+            .run_and_aggregate(event, &source, payload, Some(metadata))
+            .await?;
         Ok(join_context(&result.additional_context))
     }
 
     pub async fn stop(&self, result: Option<&str>) -> anyhow::Result<Option<String>> {
         let payload = self.payload(HookEvent::Stop, json!({ "result": result }));
         let result = self
-            .run_and_aggregate(HookEvent::Stop, &HookSource::None, payload)
+            .run_and_aggregate(HookEvent::Stop, &HookSource::None, payload, None)
             .await?;
         Ok(join_context(&result.additional_context))
     }
@@ -331,7 +363,7 @@ impl HookRunner {
                 }
             }),
         );
-        self.run_and_aggregate(HookEvent::ErrorOccurred, &HookSource::None, payload)
+        self.run_and_aggregate(HookEvent::ErrorOccurred, &HookSource::None, payload, None)
             .await?;
         Ok(())
     }
@@ -341,6 +373,7 @@ impl HookRunner {
         event: HookEvent,
         source: &HookSource,
         payload: Value,
+        tool_metadata: Option<ToolHookMetadata>,
     ) -> anyhow::Result<AggregatedHookResult> {
         let matched = self.loaded.matching_groups(event, source);
         if matched.is_empty() {
@@ -363,7 +396,7 @@ impl HookRunner {
 
         let mut aggregated = AggregatedHookResult::default();
         for outcome in outcomes {
-            self.record_outcome(event, source, &outcome);
+            self.record_outcome(event, source, tool_metadata.as_ref(), &outcome);
 
             if let Some(error) = &outcome.error {
                 if outcome.command.fail_closed {
@@ -453,12 +486,20 @@ impl HookRunner {
         value
     }
 
-    fn record_outcome(&self, event: HookEvent, source: &HookSource, outcome: &InvocationOutcome) {
+    fn record_outcome(
+        &self,
+        event: HookEvent,
+        source: &HookSource,
+        tool_metadata: Option<&ToolHookMetadata>,
+        outcome: &InvocationOutcome,
+    ) {
         let stderr_bytes = outcome.stderr.len();
         let stdout_bytes = outcome.stdout.len();
         let level_error = outcome.command.fail_closed && outcome.error.is_some();
         let source_str = source.as_display_str();
-        let decision = outcome_decision_label(outcome.parsed.as_ref(), outcome.error.as_ref());
+        let decision = outcome_decision_label(outcome.parsed.as_ref(), outcome.error.as_deref());
+        let resolved_decision =
+            resolved_decision_label(outcome.parsed.as_ref(), outcome.error.as_deref());
         if level_error {
             tracing::error!(
                 target: "cake::hooks",
@@ -471,6 +512,7 @@ impl HookRunner {
                 stderr_bytes,
                 stdout_bytes,
                 decision,
+                resolved_decision,
                 fail_closed = outcome.command.fail_closed,
                 "Hook invocation failed closed"
             );
@@ -486,6 +528,7 @@ impl HookRunner {
                 stderr_bytes,
                 stdout_bytes,
                 decision,
+                resolved_decision,
                 fail_closed = outcome.command.fail_closed,
                 "Hook invocation completed with non-blocking error"
             );
@@ -501,6 +544,7 @@ impl HookRunner {
                 stderr_bytes,
                 stdout_bytes,
                 decision,
+                resolved_decision,
                 fail_closed = outcome.command.fail_closed,
                 "Hook invocation completed"
             );
@@ -514,11 +558,15 @@ impl HookRunner {
             task_id: self.context.task_id.to_string(),
             event: event.as_str().to_string(),
             source: source.as_display_str().map(ToOwned::to_owned),
+            call_id: tool_metadata.map(|metadata| metadata.call_id.clone()),
+            tool_name: tool_metadata.map(|metadata| metadata.tool_name.clone()),
+            tool_input_summary: tool_metadata.map(|metadata| metadata.input_summary.clone()),
             source_file: outcome.command.source_path.clone(),
             command: outcome.command.command.clone(),
             exit_code: outcome.exit_code,
             duration_ms: outcome.duration.as_millis().try_into().unwrap_or(u64::MAX),
             decision: decision.to_owned(),
+            resolved_decision: Some(resolved_decision.to_owned()),
             fail_closed: outcome.command.fail_closed,
             stdout: outcome.stdout.clone(),
             stderr: outcome.stderr.clone(),
@@ -639,6 +687,7 @@ async fn run_command_hook(command: HookCommand, payload: Value, cwd: PathBuf) ->
             stderr,
             parsed: Some(ParsedHookOutput {
                 decision: HookDecision::Stop { reason },
+                explicit_allow: false,
                 updated_input: None,
                 additional_context: None,
             }),
@@ -727,7 +776,7 @@ fn parse_hook_output(stdout: &str) -> Result<Option<RawHookOutput>, String> {
 
 const fn outcome_decision_label(
     parsed: Option<&ParsedHookOutput>,
-    error: Option<&String>,
+    error: Option<&str>,
 ) -> &'static str {
     match (parsed, error) {
         (Some(parsed), _) => parsed.decision.decision_label(),
@@ -736,8 +785,48 @@ const fn outcome_decision_label(
     }
 }
 
+const fn resolved_decision_label(
+    parsed: Option<&ParsedHookOutput>,
+    error: Option<&str>,
+) -> &'static str {
+    match (parsed, error) {
+        (Some(parsed), _) if parsed.explicit_allow => "allow",
+        (Some(parsed), _) => parsed.decision.decision_label(),
+        (None, Some(_)) => "error",
+        (None, None) => "none",
+    }
+}
+
 fn parse_tool_input(arguments: &str) -> Value {
     serde_json::from_str(arguments).unwrap_or_else(|_| json!({}))
+}
+
+fn tool_input_summary(arguments: &str) -> String {
+    let value = parse_tool_input(arguments);
+    let summary = value
+        .as_object()
+        .and_then(|object| {
+            ["command", "path", "file_path", "old_text"]
+                .into_iter()
+                .find_map(|key| object.get(key).and_then(Value::as_str))
+        })
+        .map_or_else(|| compact_json(arguments), ToOwned::to_owned);
+    truncate_chars(&summary, 240)
+}
+
+fn compact_json(arguments: &str) -> String {
+    serde_json::from_str::<Value>(arguments)
+        .ok()
+        .and_then(|value| serde_json::to_string(&value).ok())
+        .unwrap_or_else(|| arguments.to_owned())
+}
+
+fn truncate_chars(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_owned();
+    }
+    let keep = max_chars.saturating_sub(1);
+    format!("{}...", value.chars().take(keep).collect::<String>())
 }
 
 fn join_context(context: &[String]) -> Option<String> {
@@ -918,6 +1007,10 @@ mod tests {
             "expected hook_event record in {content}"
         );
         assert!(content.contains(r#""event":"PostToolUse""#));
+        assert!(content.contains(r#""call_id":"call-1""#));
+        assert!(content.contains(r#""tool_name":"Bash""#));
+        assert!(content.contains(r#""tool_input_summary":"printf ok""#));
+        assert!(content.contains(r#""resolved_decision":"allow""#));
         drop(writer);
     }
 
@@ -1181,7 +1274,7 @@ mod tests {
             error: None,
         };
 
-        let decision = outcome_decision_label(outcome.parsed.as_ref(), outcome.error.as_ref());
+        let decision = outcome_decision_label(outcome.parsed.as_ref(), outcome.error.as_deref());
         assert_eq!(decision, "none");
     }
 
@@ -1205,7 +1298,7 @@ mod tests {
             error: Some("hook exited with code 1: command not found".to_string()),
         };
 
-        let decision = outcome_decision_label(outcome.parsed.as_ref(), outcome.error.as_ref());
+        let decision = outcome_decision_label(outcome.parsed.as_ref(), outcome.error.as_deref());
         assert_eq!(decision, "error");
     }
 
@@ -1226,14 +1319,34 @@ mod tests {
             stderr: String::new(),
             parsed: Some(ParsedHookOutput {
                 decision: HookDecision::Continue,
+                explicit_allow: true,
                 updated_input: None,
                 additional_context: None,
             }),
             error: None,
         };
 
-        let decision = outcome_decision_label(outcome.parsed.as_ref(), outcome.error.as_ref());
+        let decision = outcome_decision_label(outcome.parsed.as_ref(), outcome.error.as_deref());
         assert_eq!(decision, "none");
+    }
+
+    #[test]
+    fn resolved_decision_label_explicit_allow_is_allow() {
+        let parsed: ParsedHookOutput =
+            serde_json::from_str::<RawHookOutput>(r#"{"permission":"allow"}"#)
+                .unwrap()
+                .into();
+
+        let decision = resolved_decision_label(Some(&parsed), None);
+
+        assert_eq!(decision, "allow");
+    }
+
+    #[test]
+    fn tool_input_summary_prefers_command() {
+        let summary = tool_input_summary(r#"{"command":"just ci","timeout":120}"#);
+
+        assert_eq!(summary, "just ci");
     }
 
     #[test]
@@ -1254,13 +1367,14 @@ mod tests {
                 decision: HookDecision::Deny {
                     reason: "not allowed".to_string(),
                 },
+                explicit_allow: false,
                 updated_input: None,
                 additional_context: None,
             }),
             error: None,
         };
 
-        let decision = outcome_decision_label(outcome.parsed.as_ref(), outcome.error.as_ref());
+        let decision = outcome_decision_label(outcome.parsed.as_ref(), outcome.error.as_deref());
         assert_eq!(decision, "deny");
     }
 }
