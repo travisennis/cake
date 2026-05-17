@@ -1238,7 +1238,8 @@ fn format_retry_message(status: &crate::clients::retry::RetryStatus) -> String {
     )
 }
 
-fn main() -> std::process::ExitCode {
+#[tokio::main]
+async fn main() -> std::process::ExitCode {
     let data_dir = match DataDir::new() {
         Ok(d) => d,
         Err(e) => {
@@ -1268,19 +1269,7 @@ fn main() -> std::process::ExitCode {
         },
     };
 
-    // Set up the Tokio runtime and run the async command
-    let rt = match tokio::runtime::Runtime::new() {
-        Ok(rt) => rt,
-        Err(e) => {
-            let err = anyhow::anyhow!("Failed to initialize Tokio runtime: {e}");
-            CliOutputSink::write_error(&err);
-            return exit_code::classify(&err);
-        },
-    };
-
-    let result = rt.block_on(args.run(&data_dir));
-
-    match result {
+    match args.run(&data_dir).await {
         Ok(()) => std::process::ExitCode::from(exit_code::code::SUCCESS),
         Err(e) => {
             CliOutputSink::write_error(&e);
