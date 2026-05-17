@@ -7,7 +7,7 @@ Active tasks include open, pending, blocked, and tracking work.
 ## Status Summary
 
 - Open: 4
-- Pending: 37
+- Pending: 36
 - Blocked: 12
 - Tracking: 0
 - Completed: 0
@@ -34,7 +34,6 @@ Active tasks include open, pending, blocked, and tracking work.
 | [092](092.md) | Simplify Binary Ratio Threshold Constants | Pending | P3 | S | - | - | - |
 | [093](093.md) | Rename with_text_progress to Avoid Builder Semantics | Pending | P3 | S | - | - | - |
 | [094](094.md) | Simplify Test-Only Bash Sandbox Constructor | Pending | P3 | S | - | - | - |
-| [095](095.md) | Fix Dead Code in is_allowed_rm_target | Pending | P3 | S | - | - | - |
 | [096](096.md) | Make Git Branch Delete Detection Parser Safe | Pending | P3 | M | - | - | - |
 | [097](097.md) | Revisit macOS Sandbox Probe Caching and Cleanup | Pending | P3 | M | - | - | - |
 | [098](098.md) | Reorganize Type Modules | Pending | P3 | XL | - | Required before implementation | 049 (Split Agent), 050 (Backend abstraction), 051 (Tool abstraction), 058 (Typed reasoning content), 061 (Consolidate serialization), 062 (DateTime types), 063 (Optional field normalization). Do this last. |

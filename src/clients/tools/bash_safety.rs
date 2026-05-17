@@ -703,13 +703,10 @@ fn check_dangerous_rm(normalized: &str, original: &str) -> Result<(), String> {
 
 /// Check if an `rm -rf` target is in an allowed temporary directory.
 fn is_allowed_rm_target(target: &str) -> bool {
-    let allowed_prefixes = ["/tmp/", "/tmp", "/var/tmp/", "/var/tmp"];
+    let allowed_prefixes = ["/tmp", "/var/tmp"];
 
     for prefix in &allowed_prefixes {
         if target == *prefix || target.starts_with(&format!("{prefix}/")) {
-            return true;
-        }
-        if target == *prefix {
             return true;
         }
     }
@@ -888,6 +885,30 @@ mod tests {
     // =========================================================================
     // rm -rf
     // =========================================================================
+
+    // =========================================================================
+    // is_allowed_rm_target (unit-level)
+    // =========================================================================
+
+    #[test]
+    fn allowed_rm_target_accepts_tmp_variants() {
+        assert!(is_allowed_rm_target("/tmp"));
+        assert!(is_allowed_rm_target("/tmp/"));
+        assert!(is_allowed_rm_target("/tmp/build-cache"));
+        assert!(is_allowed_rm_target("/var/tmp"));
+        assert!(is_allowed_rm_target("/var/tmp/"));
+        assert!(is_allowed_rm_target("/var/tmp/test"));
+    }
+
+    #[test]
+    fn allowed_rm_target_rejects_non_tmp() {
+        assert!(!is_allowed_rm_target("/home/user"));
+        assert!(!is_allowed_rm_target("/usr"));
+        assert!(!is_allowed_rm_target("."));
+        assert!(!is_allowed_rm_target(".."));
+        assert!(!is_allowed_rm_target("/tmpsomething"));
+        assert!(!is_allowed_rm_target("/var/tmpsomething"));
+    }
 
     #[test]
     fn blocks_rm_rf_dangerous_targets() {
