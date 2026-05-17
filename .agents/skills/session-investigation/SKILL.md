@@ -57,7 +57,7 @@ unsupported unless compatibility is the target of the investigation. Redirected
 ### 2. Segment Tasks
 
 - Group records from each `task_start` through its matching `task_complete`.
-- Report task id, timestamp, duration, success, subtype, turns, usage, final
+- Report task id, timestamp, duration, subtype, is_error, turns, tool_call_count, usage, final
   result or error, and `permission_denials`.
 - Flag trailing tasks without `task_complete`, incomplete assistant messages,
   malformed final records, abrupt endings, and suspicious status fields.

@@ -51,7 +51,7 @@ jq 'select(.role == "assistant") | .content' ~/.local/share/cake/sessions/{uuid}
 tail -1 ~/.local/share/cake/sessions/{uuid}.jsonl | jq '{type, is_error, subtype, error}'
 
 # View task summaries
-jq 'select(.type == "task_complete") | {task_id, subtype, is_error, duration_ms, turn_count, result, error, usage}' ~/.local/share/cake/sessions/{uuid}.jsonl
+jq 'select(.type == "task_complete") | {task_id, subtype, is_error, duration_ms, turn_count, tool_call_count, result, error, usage}' ~/.local/share/cake/sessions/{uuid}.jsonl
 
 # View all reasoning messages
 jq 'select(.type == "reasoning")' ~/.local/share/cake/sessions/{uuid}.jsonl

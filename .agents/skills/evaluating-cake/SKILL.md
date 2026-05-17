@@ -82,7 +82,7 @@ jq 'select(.type == "function_call" or .type == "function_call_output")' session
 jq 'select(.type == "prompt_context") | {task_id, role, timestamp, content: (.content[0:500])}' session.jsonl
 
 # View task outcomes
-jq 'select(.type == "task_complete") | {task_id, subtype, success, duration_ms, turn_count, result, error, usage, permission_denials}' session.jsonl
+jq 'select(.type == "task_complete") | {task_id, subtype, is_error, duration_ms, turn_count, tool_call_count, result, error, usage, permission_denials}' session.jsonl
 
 # Count message types
 jq -r '.type' session.jsonl | sort | uniq -c
