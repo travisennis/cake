@@ -7,7 +7,7 @@ Active tasks include open, pending, blocked, and tracking work.
 ## Status Summary
 
 - Open: 2
-- Pending: 39
+- Pending: 41
 - Blocked: 5
 - Tracking: 0
 - Completed: 0
@@ -63,3 +63,5 @@ Active tasks include open, pending, blocked, and tracking work.
 | [153](153.md) | Disambiguate Bash-tool output for empty rg/grep no-match results | Pending | P3 | S | type:bug, area:tools | - | - |
 | [154](154.md) | Surface Bash Stderr Warnings Separately From Successful Exit Status | Pending | P2 | M | type:bug, area:tools, area:session | - | - |
 | [155](155.md) | Track Skill And Workflow Checklist Obligations In Sessions | Pending | P2 | L | type:feature, area:agent, area:session, area:prompts | - | - |
+| [156](156.md) | Correlate Hook Event Records With Tool Calls | Pending | P2 | M | type:feature, area:session, area:agent | - | - |
+| [157](157.md) | Update Session Evaluation Skills For Current Task Completion Schema | Pending | P3 | S | type:docs, area:session, area:dev-env | - | - |
