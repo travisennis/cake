@@ -4,7 +4,7 @@ use std::path::Path;
 
 use crate::clients::tools::{ToolContext, validate_path_in_cwd};
 
-const DEFAULT_END_LINE: usize = 500;
+const DEFAULT_END_LINE: usize = 200;
 const MAX_OUTPUT_BYTES: usize = 100_000;
 
 // =============================================================================
@@ -34,7 +34,7 @@ pub(super) fn read_tool() -> super::Tool {
                 },
                 "end_line": {
                     "type": "integer",
-                    "description": "Last line to read (1-indexed, inclusive). Defaults to 500 when start_line is not provided, or start_line+499 when start_line is provided but end_line is not. Use to limit output for large files."
+                    "description": "Last line to read (1-indexed, inclusive). Defaults to 200 when start_line is not provided, or start_line+199 when start_line is provided but end_line is not. Use to limit output for large files."
                 }
             },
             "required": ["path"]
@@ -309,8 +309,8 @@ mod tests {
     }
 
     #[test]
-    fn default_read_still_1_to_500() {
-        // Neither start_line nor end_line should still default to 1-500.
+    fn default_read_still_1_to_200() {
+        // Neither start_line nor end_line should still default to 1-200.
         let temp_dir = TempDir::new().unwrap();
         let file_path = temp_dir.path().join("test.txt");
         let lines: Vec<String> = (1..=600).map(|i| format!("Line {i}")).collect();
@@ -322,9 +322,9 @@ mod tests {
         .to_string();
 
         let result = execute_read(&ToolContext::from_current_process(), &args).unwrap();
-        assert!(result.output.contains("Lines 1-500/600"));
-        assert!(result.output.contains("Line 500"));
-        assert!(result.output.contains("[... 100 more lines ...]"));
+        assert!(result.output.contains("Lines 1-200/600"));
+        assert!(result.output.contains("Line 200"));
+        assert!(result.output.contains("[... 400 more lines ...]"));
     }
 
     #[test]
@@ -361,7 +361,7 @@ mod tests {
     #[test]
     fn start_line_without_end_line_returns_window() {
         // When start_line is provided without end_line, the window should be
-        // start_line..start_line+499, not the absolute 1-500 default.
+        // start_line..start_line+199, not the absolute 1-200 default.
         let temp_dir = TempDir::new().unwrap();
         let file_path = temp_dir.path().join("test.txt");
         let lines: Vec<String> = (1..=720).map(|i| format!("Line {i}")).collect();
@@ -369,21 +369,21 @@ mod tests {
 
         let args = serde_json::json!({
             "path": file_path.to_str().unwrap(),
-            "start_line": 500
+            "start_line": 200
         })
         .to_string();
 
         let result = execute_read(&ToolContext::from_current_process(), &args).unwrap();
-        // Should read lines 500-720 (file ends before start_line+499)
-        assert!(result.output.contains("Lines 500-720/720"));
-        assert!(result.output.contains("   500: Line 500"));
-        assert!(result.output.contains("   720: Line 720"));
-        assert!(!result.output.contains("Line 499"));
+        // Should read lines 200-399 (file ends before start_line+199)
+        assert!(result.output.contains("Lines 200-399/720"));
+        assert!(result.output.contains("   200: Line 200"));
+        assert!(result.output.contains("   399: Line 399"));
+        assert!(!result.output.contains("Line 199"));
     }
 
     #[test]
     fn start_line_without_end_line_window_in_middle() {
-        // When the file is long enough, start_line+499 should be the end.
+        // When the file is long enough, start_line+199 should be the end.
         let temp_dir = TempDir::new().unwrap();
         let file_path = temp_dir.path().join("test.txt");
         let lines: Vec<String> = (1..=1000).map(|i| format!("Line {i}")).collect();
@@ -396,12 +396,12 @@ mod tests {
         .to_string();
 
         let result = execute_read(&ToolContext::from_current_process(), &args).unwrap();
-        assert!(result.output.contains("Lines 300-799/1000"));
+        assert!(result.output.contains("Lines 300-499/1000"));
         assert!(result.output.contains("   300: Line 300"));
-        assert!(result.output.contains("   799: Line 799"));
+        assert!(result.output.contains("   499: Line 499"));
         assert!(!result.output.contains("Line 299"));
         assert!(!result.output.contains("Line 800"));
-        assert!(result.output.contains("[... 201 more lines ...]"));
+        assert!(result.output.contains("[... 501 more lines ...]"));
     }
 
     #[test]
@@ -437,7 +437,7 @@ mod tests {
         .to_string();
 
         let result = execute_read(&ToolContext::from_current_process(), &args).unwrap();
-        assert!(result.output.contains("Lines 1-500/600"));
-        assert!(result.output.contains("[... 100 more lines ...]"));
+        assert!(result.output.contains("Lines 1-200/600"));
+        assert!(result.output.contains("[... 400 more lines ...]"));
     }
 }
