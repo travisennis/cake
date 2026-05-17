@@ -46,6 +46,7 @@ pub(super) fn validate_command_safety(command: &str) -> Result<(), String> {
         check_git_push(&lower, seg)?;
         check_git_branch_delete(&normalized, seg)?;
         check_git_stash(&lower, seg)?;
+        check_git_commit_backticks(seg)?;
         check_dangerous_rm(&normalized, seg)?;
     }
 
@@ -635,6 +636,175 @@ fn check_git_stash(lower: &str, original: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// `git commit -m` with backticks or `$()` inside double-quoted message.
+///
+/// Shell interprets backticks and `$()` as command substitution even inside
+/// double-quoted arguments passed to `-m`/`--message`. This blocks such calls
+/// and tells the agent to use `git commit -F -` with a heredoc, or single
+/// quotes around the message instead.
+fn check_git_commit_backticks(original: &str) -> Result<(), String> {
+    // Quick bail-out: if there's no git commit, skip.
+    if !original.contains("git commit") {
+        return Ok(());
+    }
+
+    let bytes = original.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+
+    while i < len {
+        // Find the start of a "git commit" token pair.
+        // Skip past whitespace to find "git" then check the next token is "commit".
+        while i < len && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= len {
+            break;
+        }
+        let word_start = i;
+        while i < len && !bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        let git_end = i;
+        // SAFETY: word_start..git_end spans ASCII whitespace-delimited bytes,
+        // which are valid UTF-8 by construction.
+        let git_word = std::str::from_utf8(&bytes[word_start..git_end]).unwrap_or("");
+        if git_word.eq_ignore_ascii_case("git") {
+            // Find the next non-whitespace token
+            while i < len && bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            let commit_start = i;
+            while i < len && !bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            let commit_end = i;
+            if commit_start < len {
+                // SAFETY: commit_start..commit_end spans ASCII bytes, safe.
+                let commit_word =
+                    std::str::from_utf8(&bytes[commit_start..commit_end]).unwrap_or("");
+                if commit_word.eq_ignore_ascii_case("commit") {
+                    // Found "git commit", now scan for -m/--message flags with
+                    // double-quoted values containing backticks or $(.
+                    if has_unsafe_message_flag(original, i) {
+                        return Err(blocked(
+                            "git commit -m/--message with backticks or $() in double-quoted message",
+                            original,
+                            "Use 'git commit -F -' with a heredoc to pass the message via stdin, \
+                             or use single quotes around the message instead of double quotes.",
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Scan the remainder of a command (starting at `start`) for `-m`/`--message`
+/// flags whose double-quoted value contains backticks or `$(`.
+///
+/// Handles both `-m "..."` (space-separated) and `-m="..."` / `-m"..."`
+/// (no space / equals sign) forms. Respects single-quote contexts where
+/// backticks are literal and harmless.
+fn has_unsafe_message_flag(command: &str, start: usize) -> bool {
+    let bytes = command.as_bytes();
+    let len = bytes.len();
+    let mut i = start;
+
+    while i < len {
+        // Skip whitespace
+        while i < len && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= len {
+            return false;
+        }
+
+        // Check if we're entering a single-quoted region — everything inside
+        // is literal data, not evaluated by the shell.
+        if bytes[i] == b'\'' {
+            i += 1;
+            while i < len && bytes[i] != b'\'' {
+                if bytes[i] == b'\\' && i + 1 < len {
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            if i < len {
+                i += 1; // skip closing quote
+            }
+            continue;
+        }
+
+        // Use byte-based checks to avoid clippy string-slice warnings.
+        // Check if current position starts with -m (not preceded by another dash,
+        // so we don't match --message here).
+        let starts_with_m_flag = i + 1 < len && bytes[i] == b'-' && bytes[i + 1] == b'm';
+        let starts_with_message_flag = i + 8 < len
+            && bytes[i] == b'-'
+            && bytes[i + 1] == b'-'
+            && bytes[i + 2..i + 9].eq(b"message");
+
+        if !starts_with_m_flag && !starts_with_message_flag {
+            // Skip this token
+            while i < len && !bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            continue;
+        }
+
+        let flag_len: usize = if starts_with_m_flag { 2 } else { 9 };
+        i += flag_len;
+
+        // Skip optional whitespace before the message value
+        while i < len && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+
+        if i >= len {
+            return false;
+        }
+
+        // Handle -m="value" or --message="value"
+        if bytes[i] == b'=' {
+            i += 1;
+            while i < len && bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+        }
+
+        // Handle -m"value" (no space, no equals)
+        if i < len && bytes[i] == b'"' {
+            // Scan inside the double-quoted string for backticks or $(
+            i += 1; // skip opening quote
+            while i < len && bytes[i] != b'"' {
+                if bytes[i] == b'\\' && i + 1 < len {
+                    i += 2; // skip escaped character
+                    continue;
+                }
+                // Check for backtick or $(
+                if bytes[i] == b'`' {
+                    return true;
+                }
+                if bytes[i] == b'$' && i + 1 < len && bytes[i + 1] == b'(' {
+                    return true;
+                }
+                i += 1;
+            }
+            if i < len {
+                i += 1; // skip closing quote
+            }
+            // If we get here, there was no double-quoted value after -m/--message.
+            // Continue scanning for more flags.
+        }
+    }
+
+    false
+}
+
 // =============================================================================
 // rm -rf Check
 // =============================================================================
@@ -1058,6 +1228,56 @@ mod tests {
     fn allows_quoted_separators_in_commit_messages() {
         assert_allowed("git commit -m \"fix: updated stuff ; git reset --hard\"");
         assert_allowed("git commit -m 'refactor && git clean -f'");
+    }
+
+    // =========================================================================
+    // git commit -m backtick / $() safeguard
+    // =========================================================================
+
+    #[test]
+    fn blocks_commit_message_with_backticks_in_double_quotes() {
+        assert_blocked("git commit -m \"feat: add `Runtime::new()` support\"");
+        assert_blocked("git commit -m \"fix: handle `$var` weird case\"");
+    }
+
+    #[test]
+    fn blocks_commit_message_with_dollar_paren_in_double_quotes() {
+        assert_blocked("git commit -m \"refactor: use $(some_command) result\"");
+    }
+
+    #[test]
+    fn blocks_commit_message_with_backticks_via_message_flag() {
+        assert_blocked("git commit --message \"docs: updated `function_name` docs\"");
+    }
+
+    #[test]
+    fn blocks_commit_message_backticks_with_equal_sign() {
+        assert_blocked("git commit -m=\"feat: add `new_feature`\"");
+        assert_blocked("git commit --message=\"fix: handle `edge_case`\"");
+    }
+
+    #[test]
+    fn allows_commit_message_with_backticks_in_single_quotes() {
+        assert_allowed("git commit -m 'feat: add `Runtime::new()` support'");
+    }
+
+    #[test]
+    fn allows_commit_message_without_backticks_or_dollar_paren() {
+        assert_allowed("git commit -m \"feat: add Runtime::new() support\"");
+        assert_allowed("git commit --message \"fix: handle edge case\"");
+    }
+
+    #[test]
+    fn allows_git_commands_unrelated_to_commit() {
+        assert_allowed("git add .");
+        assert_allowed("git log");
+        assert_allowed("git diff");
+    }
+
+    #[test]
+    fn blocks_commit_message_dollar_paren_with_equal_sign() {
+        assert_blocked("git commit -m=\"use $(pwd) for path\"");
+        assert_blocked("git commit --message=\"use $(hostname) for host\"");
     }
 
     // =========================================================================

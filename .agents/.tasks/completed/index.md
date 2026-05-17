@@ -10,7 +10,7 @@ Completed tasks are retained for history and stable task-id lookup.
 - Pending: 0
 - Blocked: 0
 - Tracking: 0
-- Completed: 113
+- Completed: 114
 - Cancelled: 0
 
 ## Tasks
@@ -130,3 +130,4 @@ Completed tasks are retained for history and stable task-id lookup.
 | [144](144.md) | Require Final Dirty Worktree Reporting After Commits | Completed | P2 | S | - | - | - |
 | [149](149.md) | Record No-Op Hook Outcomes as Decision None | Completed | P2 | S | - | - | - |
 | [150](150.md) | Move Built-In System Prompt to Markdown With Runtime Overrides | Completed | P2 | M | - | - | - |
+| [152](152.md) | Prevent shell command-substitution in Bash-tool git commit messages | Completed | P2 | S | type:bug, area:tools | - | - |

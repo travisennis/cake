@@ -7,7 +7,7 @@ Active tasks include open, pending, blocked, and tracking work.
 ## Status Summary
 
 - Open: 2
-- Pending: 40
+- Pending: 39
 - Blocked: 5
 - Tracking: 0
 - Completed: 0
@@ -58,7 +58,6 @@ Active tasks include open, pending, blocked, and tracking work.
 | [147](147.md) | Clarify Hook Event Decision Semantics in Session Records | Pending | P3 | S | - | - | - |
 | [148](148.md) | Make Deslop Passes Produce Evidence-Backed Results | Pending | P3 | S | type:docs, area:dev-env | - | 135 |
 | [151](151.md) | Add Settings-Based and Profile-Based System Prompt Configuration | Open | P3 | M | - | - | 150 |
-| [152](152.md) | Prevent shell command-substitution in Bash-tool git commit messages | Pending | P2 | S | type:bug, area:tools | - | - |
 | [153](153.md) | Disambiguate Bash-tool output for empty rg/grep no-match results | Pending | P3 | S | type:bug, area:tools | - | - |
 | [154](154.md) | Surface Bash Stderr Warnings Separately From Successful Exit Status | Pending | P2 | M | type:bug, area:tools, area:session | - | - |
 | [155](155.md) | Track Skill And Workflow Checklist Obligations In Sessions | Pending | P2 | L | type:feature, area:agent, area:session, area:prompts | - | - |

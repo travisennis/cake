@@ -72,7 +72,11 @@ pub(super) fn bash_tool() -> super::Tool {
         type_: "function".to_string(),
         name: "Bash".to_string(),
         description: "Execute a shell command in the host machine's terminal. \
-            Returns the stdout/stderr output along with a footer showing the exit code and elapsed time of the command. Does not support interactive commands."
+            Returns the stdout/stderr output along with a footer showing the exit code and \
+            elapsed time of the command. Does not support interactive commands.\n\
+            IMPORTANT: Shell interprets backticks (`) and $() inside double-quoted arguments \
+            as command substitution. For `git commit -m` with messages containing backticks \
+            or $(), use `git commit -F -` with a heredoc, or single-quote the message."
             .to_string(),
         parameters: serde_json::json!({
             "type": "object",
