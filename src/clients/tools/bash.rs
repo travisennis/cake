@@ -12,9 +12,10 @@ use crate::time_format::format_seconds_tenths;
 /// allowed before considering output as binary.
 const BINARY_NULL_BYTE_THRESHOLD: usize = 8;
 
-/// Ratio of non-printable characters that indicates binary data (0.3 = 30%)
-const BINARY_RATIO_THRESHOLD_NUMERATOR: usize = 3;
-const BINARY_RATIO_THRESHOLD_DENOMINATOR: usize = 10;
+/// Non-printable character ratio threshold (30%).
+/// When more than this percentage of bytes are non-printable (excluding
+/// common whitespace and high bytes), the data is considered binary.
+const BINARY_RATIO_THRESHOLD_PERCENT: usize = 30;
 const BYTES_PER_KIB: u128 = 1024;
 const TENTHS_PER_KIB: u128 = 10;
 
@@ -165,8 +166,7 @@ fn is_binary_data(data: &[u8]) -> bool {
     }
 
     // If more than 30% of the data is non-printable, it's likely binary
-    non_printable_count * BINARY_RATIO_THRESHOLD_DENOMINATOR
-        > data.len() * BINARY_RATIO_THRESHOLD_NUMERATOR
+    non_printable_count * 100 > data.len() * BINARY_RATIO_THRESHOLD_PERCENT
 }
 
 /// Format bytes as KiB with one decimal place using integer rounding.

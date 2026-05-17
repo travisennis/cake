@@ -10,7 +10,7 @@ Completed tasks are retained for history and stable task-id lookup.
 - Pending: 0
 - Blocked: 0
 - Tracking: 0
-- Completed: 116
+- Completed: 117
 - Cancelled: 0
 
 ## Tasks
@@ -101,6 +101,7 @@ Completed tasks are retained for history and stable task-id lookup.
 | [089](089.md) | Rationalize Clippy Allow Policy | Completed | P3 | M | - | - | Resolved in same PR as 110 with 107. |
 | [090](090.md) | Decide on Tokio Runtime Entry Style | Completed | P3 | S | - | - | - |
 | [091](091.md) | Clean Up macOS Sandbox String Construction Style | Completed | P3 | M | - | - | 040 (Seatbelt profile builder) |
+| [092](092.md) | Simplify Binary Ratio Threshold Constants | Completed | P3 | S | - | - | - |
 | [095](095.md) | Fix Dead Code in is_allowed_rm_target | Completed | P3 | S | - | - | - |
 | [107](107.md) | Reconsider Missing Docs Lint Policy | Completed | P3 | S | - | - | Resolved in same PR as 110 with 089. |
 | [110](110.md) | Apply Stricter Clippy Configuration from External Research | Completed | P2 | M | - | - | Research: clippy-stricter-config; related: 089, 107 (both completed together) |
