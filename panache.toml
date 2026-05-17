@@ -1,0 +1,4 @@
+exclude = [".agents/.tasks/"]
+
+[format]
+wrap = "preserve"

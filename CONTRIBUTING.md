@@ -22,6 +22,7 @@ This installs:
 - `cargo-deny` for security audits
 - `cargo-insta` for snapshot test review
 - `cargo-llvm-cov` for coverage reports
+- `panache` for Markdown formatting
 
 ### Install Development Tools
 
@@ -30,7 +31,7 @@ just setup
 prek install --hook-type pre-commit --hook-type commit-msg
 ```
 
-This installs all required cargo tools (prek, cocogitto, cargo-edit, cargo-deny, cargo-insta, cargo-llvm-cov) and sets up git hooks for formatting, linting, and commit message validation.
+This installs all required cargo tools (prek, cocogitto, cargo-edit, cargo-deny, cargo-insta, cargo-llvm-cov, panache) and sets up git hooks for formatting, linting, and commit message validation.
 
 Git hooks will automatically run:
 - **pre-commit**: `cargo fmt -- --check` (formatting verification)

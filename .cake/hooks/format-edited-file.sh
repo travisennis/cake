@@ -58,7 +58,10 @@ if suffix == ".rs" and shutil.which("rustfmt"):
 elif suffix == ".toml" and shutil.which("taplo"):
     formatter = "taplo"
     command = ["taplo", "format", str(path)]
-elif suffix in {".json", ".jsonc", ".md", ".markdown", ".yaml", ".yml"} and shutil.which("prettier"):
+elif suffix in {".md", ".markdown"} and shutil.which("panache"):
+    formatter = "panache"
+    command = ["panache", "format", "--force-exclude", str(path)]
+elif suffix in {".json", ".jsonc", ".yaml", ".yml"} and shutil.which("prettier"):
     formatter = "prettier"
     command = ["prettier", "--write", str(path)]
 
