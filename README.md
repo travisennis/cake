@@ -20,6 +20,7 @@ cake is a minimal coding harness for headless usage in the terminal. It's not a 
   - [Destructive Command Protection](#destructive-command-protection)
   - [Adding Read-Only Directories](#adding-read-only-directories)
 - [AGENTS.md — Per-Project AI Behavior](#agentsmd--per-project-ai-behavior)
+- [System Prompt Customization](#system-prompt-customization)
 - [Shell Aliases and Functions](#shell-aliases-and-functions)
 - [Streaming JSON Output](#streaming-json-output)
 - [Exit Codes](#exit-codes)
@@ -361,6 +362,19 @@ This is a Rust project using Tokio for async. Use `anyhow` for errors.
 Always run `cargo fmt` and `cargo clippy` after editing Rust files.
 Never use `unwrap()` in production code.
 ```
+
+### System Prompt Customization
+
+cake uses a built-in system prompt that tells the model it is a coding agent and how to use its tools. You can replace this prompt with your own by creating a `system.md` file:
+
+- **Project-level**: `.cake/system.md` in your project directory — applies to that project only
+- **User-level**: `~/.config/cake/system.md` — applies to all projects
+
+Project-level overrides take precedence over user-level. If neither file exists, the built-in default is used. Custom files **replace** the default prompt entirely; they do not append to it.
+
+An empty `system.md` file is valid and results in no system prompt (the model receives only the AGENTS.md context, skills, and environment messages).
+
+The built-in default prompt is in `src/prompts/system.md` in the source repository.
 
 ### Shell Aliases and Functions
 

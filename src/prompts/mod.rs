@@ -2,13 +2,31 @@
 //!
 //! This module builds the stable system prompt plus mutable context messages
 //! that are sent to the AI model at the start of each conversation.
+//!
+//! # System prompt resolution
+//!
+//! The system prompt is resolved from three sources in precedence order
+//! (highest to lowest):
+//!
+//! 1. **Project-level override**: `.cake/system.md` in the working directory
+//! 2. **User-level override**: `system.md` in the user config directory
+//!    (typically `~/.config/cake/system.md`)
+//! 3. **Built-in default**: `system.md` embedded at compile time
+//!
+//! The first readable file found wins. Override files replace the default
+//! prompt entirely. Empty files are valid (intentional blank prompt).
+//! Unreadable files are skipped with a warning.
 
 use std::path::Path;
 
 use chrono::Local;
+use tracing::{debug, warn};
 
 use crate::config::{AgentsFile, SkillCatalog};
 use crate::models::Role;
+
+/// Built-in default system prompt, embedded at compile time from `system.md`.
+const BUILTIN_SYSTEM_PROMPT: &str = include_str!("system.md");
 
 const SKILL_USAGE_INSTRUCTIONS: &str = r"<skill_instructions>
 The following skills provide specialized instructions for specific tasks.
@@ -18,29 +36,54 @@ When a skill references relative paths, resolve them against the skill's
 directory (the parent of SKILL.md) and use absolute paths in tool calls.
 </skill_instructions>";
 
-/// Builds the stable system prompt for the AI agent.
-pub fn build_system_prompt() -> String {
-    String::from(
-        "You are cake. You are running as a coding agent in a CLI on the user's computer.\n\n\
-Available tools:\n\
-- Bash: Execute shell commands. Use this for search and file discovery with commands such as `rg` and `fd`.\n\
-- Read: Read file contents or list directory entries.\n\
-- Edit: Make targeted literal search-and-replace edits to files.\n\
-- Write: Create or overwrite files.\n\n\
-Only these tools are available. There is no Glob, Grep, or LS tool.\n\n\
-Efficiency rules:\n\
-- Focus on speed and efficiency. If you can call multiple tools in one turn, do so. If you can combine operations, do so.\n\
-- Prefer targeted edits (Edit tool) over full file rewrites (Write tool) when making changes to existing files.\n\
-- Do not repeat tool calls whose results would be unchanged. If the underlying state has changed (e.g. you fixed test failures and want to re-run tests), call again.\n\
-- Skip unnecessary exploration when the path forward is clear. Act directly.\n\
-- Read only the lines you need. Prefer offset and limit over reading entire files when you know the relevant region.\n\
-- Do not narrate your plan before acting. Act, then summarize concisely.\n\n\
-Self-reflection notes:\n\
-- Please make note of mistakes you make in `~/.cake/MISTAKES.md`.\n\
-- If you find you wish you had more context or tools, write that down in `~/.cake/DESIRES.md`.\n\
-- If you learn anything about your environment, write that down in `~/.cake/LEARNINGS.md`.\n\
-Append to these files (do not overwrite). Create them if they do not exist.",
-    )
+/// Resolves the system prompt from override files or the built-in default.
+///
+/// Checks for override files in precedence order:
+/// 1. Project-level: `working_dir/.cake/system.md`
+/// 2. User-level: `config_dir/system.md`
+///
+/// The first readable file found is used. Empty files are valid.
+/// Unreadable files produce a warning and are skipped.
+/// If no override is found, the built-in default is used.
+pub fn resolve_system_prompt(working_dir: &Path, config_dir: &Path) -> String {
+    let project_path = working_dir.join(".cake").join("system.md");
+    let user_path = config_dir.join("system.md");
+
+    if project_path.exists() {
+        match std::fs::read_to_string(&project_path) {
+            Ok(content) => {
+                debug!(
+                    "Using project-level system prompt: {}",
+                    project_path.display()
+                );
+                return content.trim().to_string();
+            },
+            Err(e) => {
+                warn!(
+                    "Skipping unreadable system prompt file at {}: {e}",
+                    project_path.display()
+                );
+            },
+        }
+    }
+
+    if user_path.exists() {
+        match std::fs::read_to_string(&user_path) {
+            Ok(content) => {
+                debug!("Using user-level system prompt: {}", user_path.display());
+                return content.trim().to_string();
+            },
+            Err(e) => {
+                warn!(
+                    "Skipping unreadable system prompt file at {}: {e}",
+                    user_path.display()
+                );
+            },
+        }
+    }
+
+    debug!("Using built-in system prompt (no override found)");
+    BUILTIN_SYSTEM_PROMPT.trim().to_string()
 }
 
 /// Builds all initial prompt messages for the AI agent.
@@ -50,10 +93,11 @@ Append to these files (do not overwrite). Create them if they do not exist.",
 /// separate developer messages so it is not tied to the system prompt.
 pub fn build_initial_prompt_messages(
     working_dir: &Path,
+    config_dir: &Path,
     agents_files: &[AgentsFile],
     skill_catalog: &SkillCatalog,
 ) -> Vec<(Role, String)> {
-    let mut messages = vec![(Role::System, build_system_prompt())];
+    let mut messages = vec![(Role::System, resolve_system_prompt(working_dir, config_dir))];
     let context = format_agents_context(agents_files);
     if !context.is_empty() {
         messages.push((Role::Developer, context));
@@ -114,6 +158,7 @@ mod tests {
     use super::*;
     use crate::config::skills::{Skill, SkillScope};
     use std::path::PathBuf;
+    use tempfile::TempDir;
 
     fn render_messages(messages: &[(Role, String)]) -> String {
         messages
@@ -132,10 +177,192 @@ mod tests {
         });
     }
 
+    // --- resolve_system_prompt tests ---
+
+    #[test]
+    fn resolve_uses_builtin_when_no_override() {
+        let dir = TempDir::new().unwrap();
+        let config_dir = TempDir::new().unwrap();
+        let prompt = resolve_system_prompt(dir.path(), config_dir.path());
+        assert!(prompt.starts_with("You are cake."));
+    }
+
+    #[test]
+    fn resolve_uses_project_level_override() {
+        let working_dir = TempDir::new().unwrap();
+        let config_dir = TempDir::new().unwrap();
+
+        let cake_dir = working_dir.path().join(".cake");
+        std::fs::create_dir_all(&cake_dir).unwrap();
+        std::fs::write(cake_dir.join("system.md"), "Project prompt").unwrap();
+
+        let prompt = resolve_system_prompt(working_dir.path(), config_dir.path());
+        assert_eq!(prompt, "Project prompt");
+    }
+
+    #[test]
+    fn resolve_uses_user_level_override_when_no_project_override() {
+        let working_dir = TempDir::new().unwrap();
+        let config_dir = TempDir::new().unwrap();
+
+        std::fs::write(config_dir.path().join("system.md"), "User prompt").unwrap();
+
+        let prompt = resolve_system_prompt(working_dir.path(), config_dir.path());
+        assert_eq!(prompt, "User prompt");
+    }
+
+    #[test]
+    fn resolve_project_level_takes_precedence_over_user_level() {
+        let working_dir = TempDir::new().unwrap();
+        let config_dir = TempDir::new().unwrap();
+
+        let cake_dir = working_dir.path().join(".cake");
+        std::fs::create_dir_all(&cake_dir).unwrap();
+        std::fs::write(cake_dir.join("system.md"), "Project prompt").unwrap();
+        std::fs::write(config_dir.path().join("system.md"), "User prompt").unwrap();
+
+        let prompt = resolve_system_prompt(working_dir.path(), config_dir.path());
+        assert_eq!(prompt, "Project prompt");
+    }
+
+    #[test]
+    fn resolve_empty_file_is_valid() {
+        let working_dir = TempDir::new().unwrap();
+        let config_dir = TempDir::new().unwrap();
+
+        let cake_dir = working_dir.path().join(".cake");
+        std::fs::create_dir_all(&cake_dir).unwrap();
+        std::fs::write(cake_dir.join("system.md"), "").unwrap();
+
+        let prompt = resolve_system_prompt(working_dir.path(), config_dir.path());
+        assert_eq!(prompt, "");
+    }
+
+    #[test]
+    fn resolve_whitespace_only_file_is_trimmed_to_empty() {
+        let working_dir = TempDir::new().unwrap();
+        let config_dir = TempDir::new().unwrap();
+
+        let cake_dir = working_dir.path().join(".cake");
+        std::fs::create_dir_all(&cake_dir).unwrap();
+        std::fs::write(cake_dir.join("system.md"), "   \n\n  ").unwrap();
+
+        let prompt = resolve_system_prompt(working_dir.path(), config_dir.path());
+        assert_eq!(prompt, "");
+    }
+
+    #[test]
+    fn resolve_unreadable_project_file_falls_back_to_user_level() {
+        let working_dir = TempDir::new().unwrap();
+        let config_dir = TempDir::new().unwrap();
+
+        let cake_dir = working_dir.path().join(".cake");
+        std::fs::create_dir_all(&cake_dir).unwrap();
+        let project_file = cake_dir.join("system.md");
+        std::fs::write(&project_file, "Unreadable").unwrap();
+        // Remove read permission
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&project_file, std::fs::Permissions::from_mode(0o000))
+                .unwrap();
+        }
+
+        std::fs::write(config_dir.path().join("system.md"), "User prompt").unwrap();
+
+        let prompt = resolve_system_prompt(working_dir.path(), config_dir.path());
+
+        #[cfg(unix)]
+        {
+            assert_eq!(prompt, "User prompt");
+        }
+        #[cfg(not(unix))]
+        {
+            // On non-Unix, file permissions may not apply, so project file wins
+            assert_eq!(prompt, "Unreadable");
+        }
+
+        // Clean up: restore permissions so TempDir can delete the file
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            drop(std::fs::set_permissions(
+                &project_file,
+                std::fs::Permissions::from_mode(0o644),
+            ));
+        }
+    }
+
+    #[test]
+    fn resolve_unreadable_files_fall_back_to_builtin() {
+        let working_dir = TempDir::new().unwrap();
+        let config_dir = TempDir::new().unwrap();
+
+        let cake_dir = working_dir.path().join(".cake");
+        std::fs::create_dir_all(&cake_dir).unwrap();
+        let project_file = cake_dir.join("system.md");
+        std::fs::write(&project_file, "Unreadable project").unwrap();
+        let user_file = config_dir.path().join("system.md");
+        std::fs::write(&user_file, "Unreadable user").unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&project_file, std::fs::Permissions::from_mode(0o000))
+                .unwrap();
+            std::fs::set_permissions(&user_file, std::fs::Permissions::from_mode(0o000)).unwrap();
+        }
+
+        let prompt = resolve_system_prompt(working_dir.path(), config_dir.path());
+
+        #[cfg(unix)]
+        {
+            assert!(prompt.starts_with("You are cake."));
+        }
+        #[cfg(not(unix))]
+        {
+            assert!(prompt.starts_with("Unreadable"));
+        }
+
+        // Clean up
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            drop(std::fs::set_permissions(
+                &project_file,
+                std::fs::Permissions::from_mode(0o644),
+            ));
+            drop(std::fs::set_permissions(
+                &user_file,
+                std::fs::Permissions::from_mode(0o644),
+            ));
+        }
+    }
+
+    #[test]
+    fn resolve_builtin_is_trimmed() {
+        let dir = TempDir::new().unwrap();
+        let config_dir = TempDir::new().unwrap();
+        let prompt = resolve_system_prompt(dir.path(), config_dir.path());
+        assert!(!prompt.starts_with('\n'));
+        assert!(!prompt.ends_with('\n'));
+    }
+
+    // --- build_initial_prompt_messages tests ---
+
+    fn default_config_dir() -> TempDir {
+        TempDir::new().unwrap()
+    }
+
     #[test]
     fn empty_agents_files() {
-        let messages =
-            build_initial_prompt_messages(Path::new("/tmp"), &[], &SkillCatalog::empty());
+        let config_dir = default_config_dir();
+        let messages = build_initial_prompt_messages(
+            Path::new("/tmp"),
+            config_dir.path(),
+            &[],
+            &SkillCatalog::empty(),
+        );
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].0, Role::System);
         assert!(messages[0].1.starts_with(
@@ -148,6 +375,7 @@ mod tests {
 
     #[test]
     fn with_agents_files() {
+        let config_dir = default_config_dir();
         let files = vec![
             AgentsFile {
                 path: "~/.cake/AGENTS.md".to_string(),
@@ -158,8 +386,12 @@ mod tests {
                 content: "Project level instructions".to_string(),
             },
         ];
-        let messages =
-            build_initial_prompt_messages(Path::new("/tmp"), &files, &SkillCatalog::empty());
+        let messages = build_initial_prompt_messages(
+            Path::new("/tmp"),
+            config_dir.path(),
+            &files,
+            &SkillCatalog::empty(),
+        );
         let prompt = render_messages(&messages);
         assert!(prompt.contains("## Additional Context"));
         assert!(prompt.contains("~/.cake/AGENTS.md"));
@@ -173,12 +405,17 @@ mod tests {
 
     #[test]
     fn only_user_agents_file() {
+        let config_dir = default_config_dir();
         let files = vec![AgentsFile {
             path: "~/.cake/AGENTS.md".to_string(),
             content: "User instructions".to_string(),
         }];
-        let messages =
-            build_initial_prompt_messages(Path::new("/tmp"), &files, &SkillCatalog::empty());
+        let messages = build_initial_prompt_messages(
+            Path::new("/tmp"),
+            config_dir.path(),
+            &files,
+            &SkillCatalog::empty(),
+        );
         let prompt = render_messages(&messages);
         assert!(prompt.contains("## Additional Context"));
         assert!(prompt.contains("~/.cake/AGENTS.md"));
@@ -189,6 +426,7 @@ mod tests {
 
     #[test]
     fn empty_content_skipped() {
+        let config_dir = default_config_dir();
         let files = vec![
             AgentsFile {
                 path: "~/.cake/AGENTS.md".to_string(),
@@ -199,8 +437,12 @@ mod tests {
                 content: "   ".to_string(), // whitespace only
             },
         ];
-        let messages =
-            build_initial_prompt_messages(Path::new("/tmp"), &files, &SkillCatalog::empty());
+        let messages = build_initial_prompt_messages(
+            Path::new("/tmp"),
+            config_dir.path(),
+            &files,
+            &SkillCatalog::empty(),
+        );
         let prompt = render_messages(&messages);
         // Should not include Project Context section since all files are empty
         assert!(!prompt.contains("## Additional Context"));
@@ -211,6 +453,7 @@ mod tests {
 
     #[test]
     fn with_skill_catalog() {
+        let config_dir = default_config_dir();
         let mut catalog = SkillCatalog::empty();
         catalog.skills.push(Skill {
             name: "debugging".to_string(),
@@ -220,7 +463,8 @@ mod tests {
             scope: SkillScope::Project,
         });
 
-        let messages = build_initial_prompt_messages(Path::new("/tmp"), &[], &catalog);
+        let messages =
+            build_initial_prompt_messages(Path::new("/tmp"), config_dir.path(), &[], &catalog);
         let prompt = render_messages(&messages);
         assert!(prompt.contains("## Skills"));
         assert!(prompt.contains("<skill_instructions>"));
@@ -232,6 +476,7 @@ mod tests {
 
     #[test]
     fn with_agents_and_skills() {
+        let config_dir = default_config_dir();
         let files = vec![AgentsFile {
             path: "./AGENTS.md".to_string(),
             content: "Project instructions".to_string(),
@@ -245,7 +490,8 @@ mod tests {
             scope: SkillScope::Project,
         });
 
-        let messages = build_initial_prompt_messages(Path::new("/tmp"), &files, &catalog);
+        let messages =
+            build_initial_prompt_messages(Path::new("/tmp"), config_dir.path(), &files, &catalog);
         let prompt = render_messages(&messages);
         // AGENTS.md comes before Skills
         let agents_pos = prompt.find("## Additional Context").unwrap();
@@ -255,24 +501,35 @@ mod tests {
 
     #[test]
     fn snapshot_empty_prompt() {
-        let messages =
-            build_initial_prompt_messages(Path::new("/tmp"), &[], &SkillCatalog::empty());
+        let config_dir = default_config_dir();
+        let messages = build_initial_prompt_messages(
+            Path::new("/tmp"),
+            config_dir.path(),
+            &[],
+            &SkillCatalog::empty(),
+        );
         assert_prompt_snapshot("prompt_empty", &messages);
     }
 
     #[test]
     fn snapshot_with_project_agents() {
+        let config_dir = default_config_dir();
         let files = vec![AgentsFile {
             path: "./AGENTS.md".to_string(),
             content: "You are a Rust expert. Follow all project conventions.".to_string(),
         }];
-        let messages =
-            build_initial_prompt_messages(Path::new("/project"), &files, &SkillCatalog::empty());
+        let messages = build_initial_prompt_messages(
+            Path::new("/project"),
+            config_dir.path(),
+            &files,
+            &SkillCatalog::empty(),
+        );
         assert_prompt_snapshot("prompt_with_project_agents", &messages);
     }
 
     #[test]
     fn snapshot_with_user_and_project_agents() {
+        let config_dir = default_config_dir();
         let files = vec![
             AgentsFile {
                 path: "~/.cake/AGENTS.md".to_string(),
@@ -283,13 +540,18 @@ mod tests {
                 content: "Project-level overrides.".to_string(),
             },
         ];
-        let messages =
-            build_initial_prompt_messages(Path::new("/project"), &files, &SkillCatalog::empty());
+        let messages = build_initial_prompt_messages(
+            Path::new("/project"),
+            config_dir.path(),
+            &files,
+            &SkillCatalog::empty(),
+        );
         assert_prompt_snapshot("prompt_with_user_and_project_agents", &messages);
     }
 
     #[test]
     fn snapshot_with_skill_catalog() {
+        let config_dir = default_config_dir();
         let mut catalog = SkillCatalog::empty();
         catalog.skills.push(Skill {
             name: "debugging".to_string(),
@@ -298,12 +560,14 @@ mod tests {
             base_directory: PathBuf::from("/project/.agents/skills/debugging"),
             scope: SkillScope::Project,
         });
-        let messages = build_initial_prompt_messages(Path::new("/project"), &[], &catalog);
+        let messages =
+            build_initial_prompt_messages(Path::new("/project"), config_dir.path(), &[], &catalog);
         assert_prompt_snapshot("prompt_with_skill_catalog", &messages);
     }
 
     #[test]
     fn snapshot_with_agents_and_skills() {
+        let config_dir = default_config_dir();
         let files = vec![AgentsFile {
             path: "./AGENTS.md".to_string(),
             content: "Project instructions for all contributors.".to_string(),
@@ -316,7 +580,12 @@ mod tests {
             base_directory: PathBuf::from("/project/.agents/skills/debugging"),
             scope: SkillScope::Project,
         });
-        let messages = build_initial_prompt_messages(Path::new("/project"), &files, &catalog);
+        let messages = build_initial_prompt_messages(
+            Path::new("/project"),
+            config_dir.path(),
+            &files,
+            &catalog,
+        );
         assert_prompt_snapshot("prompt_with_agents_and_skills", &messages);
     }
 }

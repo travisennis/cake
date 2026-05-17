@@ -658,6 +658,7 @@ impl CodingAssistant {
         run_mode: &RunMode,
         data_dir: &DataDir,
         current_dir: PathBuf,
+        config_dir: &Path,
         agents_files: &[AgentsFile],
         models: &HashMap<String, ModelDefinition>,
         default_model: Option<&str>,
@@ -666,7 +667,7 @@ impl CodingAssistant {
         task_id: uuid::Uuid,
     ) -> anyhow::Result<RunSession> {
         let initial_messages =
-            build_initial_prompt_messages(&current_dir, agents_files, skill_catalog);
+            build_initial_prompt_messages(&current_dir, config_dir, agents_files, skill_catalog);
         let skill_locations = Self::skill_locations(skill_catalog);
 
         match run_mode {
@@ -1123,10 +1124,15 @@ impl CmdRunner for CodingAssistant {
             self.load_run_resources(data_dir, &prepared.current_dir, prepared.additional_dirs)?;
         let task_id = uuid::Uuid::new_v4();
         let run_mode = RunMode::from_cli(self)?;
+        let config_dir = dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".config")
+            .join("cake");
         let mut run_session = self.build_client_and_session(
             &run_mode,
             data_dir,
             prepared.current_dir.clone(),
+            &config_dir,
             &resources.agents_files,
             &resources.loaded.models,
             resources.loaded.default_model.as_deref(),

@@ -22,14 +22,55 @@ invocation.
 The module provides these public functions:
 
 ```rust
-pub fn build_system_prompt() -> String
+pub fn resolve_system_prompt(working_dir: &Path, config_dir: &Path) -> String
 
 pub fn build_initial_prompt_messages(
     working_dir: &Path,
+    config_dir: &Path,
     agents_files: &[AgentsFile],
     skill_catalog: &SkillCatalog,
 ) -> Vec<(Role, String)>
 ```
+
+## System Prompt Resolution
+
+The system prompt is resolved from three sources in precedence order (highest to lowest):
+
+1. **Project-level override**: `.cake/system.md` in the working directory
+2. **User-level override**: `system.md` in the user config directory (typically `~/.config/cake/system.md`)
+3. **Built-in default**: `system.md` embedded at compile time via `include_str!`
+
+The first readable file found wins. Override files **replace** the default prompt entirely; they do not append to it. Empty files are valid (intentional blank prompt). Unreadable files are skipped with a warning, and resolution falls through to the next source.
+
+The built-in default prompt is stored in `src/prompts/system.md` as proper Markdown. It is embedded into the binary at compile time, so cake never depends on an external file for normal operation.
+
+### Resolution Behavior
+
+| Source | Path | Behavior |
+|--------|------|----------|
+| Project-level | `.cake/system.md` | Used if present and readable. Takes precedence over all other sources. |
+| User-level | `~/.config/cake/system.md` | Used if present and readable, and no project-level file exists. |
+| Built-in default | Embedded at compile time | Always available as fallback. |
+
+Edge cases:
+
+- **Empty file**: Valid — the model receives no system prompt content.
+- **Whitespace-only file**: Trimmed to empty, same as empty file.
+- **Unreadable file**: Skipped with a warning. Resolution continues to the next source.
+- **Missing file**: Not an error. Resolution continues to the next source.
+- **Session resume/continue**: The system prompt is resolved once at session creation and stored in session metadata. It is not re-resolved on continue or resume.
+
+### Logging
+
+Resolution is logged at debug level:
+
+- `Using project-level system prompt: .cake/system.md`
+- `Using user-level system prompt: ~/.config/cake/system.md`
+- `Using built-in system prompt (no override found)`
+
+Unreadable files produce a warning:
+
+- `Skipping unreadable system prompt file at <path>: <error>`
 
 ## AGENTS.md Files
 
@@ -56,11 +97,20 @@ This struct is defined in the `config` module and populated by `DataDir::read_ag
 
 ### Base Prompt
 
-The base system prompt establishes the AI's identity:
+The base system prompt establishes the AI's identity and behavioral rules. It is stored in `src/prompts/system.md` as Markdown and embedded at compile time:
 
 ```rust
-"You are cake. You are running as a coding agent in a CLI on the user's computer."
+const BUILTIN_SYSTEM_PROMPT: &str = include_str!("system.md");
 ```
+
+The prompt covers:
+
+1. **Identity**: "You are cake. You are running as a coding agent in a CLI on the user's computer."
+2. **Available tools**: Bash, Read, Edit, Write
+3. **Efficiency rules**: Prefer targeted edits, batch tool calls, skip unnecessary exploration
+4. **Self-reflection notes**: Record mistakes, desires, and learnings in `~/.cake/` files
+
+For details on overriding this prompt, see [System Prompt Resolution](#system-prompt-resolution) above.
 
 ### Skills Section
 
@@ -195,9 +245,11 @@ The prompt construction flow:
 1. **`main.rs`** calls `data_dir.read_agents_files(&current_dir)`
 2. **`config::DataDir`** reads and parses `~/.cake/AGENTS.md`, `~/.config/AGENTS.md`, and `./AGENTS.md`
 3. **`main.rs`** calls `discover_skills(&current_dir)` to find available skills
-4. **`main.rs`** passes `current_dir`, `agents_files`, and `skill_catalog` to `build_initial_prompt_messages()`
-5. **`prompts`** constructs a stable system message plus separate mutable context messages
-6. **`clients::responses`** sends mutable context as developer messages; **`clients::chat_completions`** folds mutable context into the first user message
+4. **`main.rs`** computes the config directory from `dirs::home_dir()`
+5. **`main.rs`** passes `current_dir`, `config_dir`, `agents_files`, and `skill_catalog` to `build_initial_prompt_messages()`
+6. **`prompts`** resolves the system prompt via `resolve_system_prompt(working_dir, config_dir)`
+7. **`prompts`** constructs a stable system message plus separate mutable context messages
+8. **`clients::responses`** sends mutable context as developer messages; **`clients::chat_completions`** folds mutable context into the first user message
 
 ## Use Cases
 
@@ -238,37 +290,35 @@ Both files work together:
 
 The module includes tests for:
 
+- **System prompt resolution**: Override precedence, empty files, whitespace trimming, unreadable files, built-in fallback
 - **Empty agents files**: No additional context section added
 - **With agents files**: Correct formatting and inclusion
 - **Only user file**: Single file in context section
 - **Empty content skipped**: Whitespace-only files ignored
+- **Snapshot tests**: Full prompt composition for various configurations
 
 Example tests:
 
 ```rust
 #[test]
-fn with_agents_files() {
-    let files = vec![
-        AgentsFile { path: "~/.cake/AGENTS.md".to_string(), content: "User instructions".to_string() },
-        AgentsFile { path: "./AGENTS.md".to_string(), content: "Project instructions".to_string() },
-    ];
-    let messages = build_initial_prompt_messages(Path::new("/tmp"), &files, &SkillCatalog::empty());
-    let context = &messages[1].1;
-    assert!(context.contains("## Additional Context"));
-    assert!(context.contains("~/.cake/AGENTS.md"));
-    assert!(context.contains("./AGENTS.md"));
-    assert!(context.contains("User instructions"));
-    assert!(context.contains("Project instructions"));
+fn resolve_uses_project_level_override() {
+    let working_dir = TempDir::new().unwrap();
+    let config_dir = TempDir::new().unwrap();
+
+    let cake_dir = working_dir.path().join(".cake");
+    std::fs::create_dir_all(&cake_dir).unwrap();
+    std::fs::write(cake_dir.join("system.md"), "Project prompt").unwrap();
+
+    let prompt = resolve_system_prompt(working_dir.path(), config_dir.path());
+    assert_eq!(prompt, "Project prompt");
 }
 
 #[test]
-fn empty_content_skipped() {
-    let files = vec![
-        AgentsFile { path: "~/.cake/AGENTS.md".to_string(), content: String::new() },
-        AgentsFile { path: "./AGENTS.md".to_string(), content: "   ".to_string() },
-    ];
-    let messages = build_initial_prompt_messages(Path::new("/tmp"), &files, &SkillCatalog::empty());
-    assert_eq!(messages.len(), 2); // system + environment context
+fn resolve_uses_builtin_when_no_override() {
+    let dir = TempDir::new().unwrap();
+    let config_dir = TempDir::new().unwrap();
+    let prompt = resolve_system_prompt(dir.path(), config_dir.path());
+    assert!(prompt.starts_with("You are cake."));
 }
 ```
 
@@ -281,5 +331,7 @@ Potential improvements:
 - **Conditional rules**: Different instructions based on file type
 - **Validation**: Lint AGENTS.md and SKILL.md for common issues
 - **Skill dependencies**: Allow skills to declare dependencies on other skills
+- **Settings-based system prompt**: Add `system_prompt` key to `settings.toml` and profiles for per-model prompt configuration (see task 151)
+- **CLI flag**: Add `--system-prompt <path>` flag for one-off prompt overrides (see task 151)
 
 These would be additions to the current simple, reliable approach rather than replacements.
