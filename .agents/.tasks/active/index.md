@@ -6,7 +6,7 @@ Active tasks include open, pending, blocked, and tracking work.
 
 ## Status Summary
 
-- Open: 2
+- Open: 4
 - Pending: 37
 - Blocked: 12
 - Tracking: 0
@@ -67,3 +67,5 @@ Active tasks include open, pending, blocked, and tracking work.
 | [147](147.md) | Clarify Hook Event Decision Semantics in Session Records | Pending | P3 | S | - | - | - |
 | [148](148.md) | Make Deslop Passes Produce Evidence-Backed Results | Pending | P3 | S | - | - | 135 |
 | [151](151.md) | Add Settings-Based and Profile-Based System Prompt Configuration | Open | P3 | M | - | - | 150 |
+| [152](152.md) | Prevent shell command-substitution in Bash-tool git commit messages | Open | P3 | S | type:bug, area:tools | - | - |
+| [153](153.md) | Disambiguate Bash-tool output for empty rg/grep no-match results | Open | P4 | XS | type:bug, area:tools | - | - |
