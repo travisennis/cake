@@ -195,7 +195,7 @@ The API uses content arrays for flexibility, but this adds complexity. The desig
 ### Dual-Backend Translation
 
 Storing plain text internally decouples conversation state from any specific wire format. Each backend translates `ConversationItem` independently:
-- The **Responses API** backend uses `to_api_input()` to produce content arrays (`input_text`, `output_text`)
+- The **Responses API** backend uses `ResponsesApiInputItem::from()` to produce the typed request DTO with content arrays (`input_text`, `output_text`)
 - The **Chat Completions API** backend uses `build_messages()` to produce the chat completions message structure
 
 This means adding or changing a backend does not affect the canonical conversation representation or the other backend.
