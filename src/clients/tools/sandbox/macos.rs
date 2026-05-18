@@ -8,7 +8,7 @@
 use crate::clients::tools::sandbox::{SandboxConfig, SandboxStrategy};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::process::{ExitStatus, Stdio};
 use std::sync::OnceLock;
 
 /// macOS sandbox strategy using sandbox-exec
@@ -22,15 +22,29 @@ impl MacOsSandbox {
     /// process. Probing avoids treating the mere presence of `/usr/bin/sandbox-exec`
     /// as proof that Bash commands can be sandboxed.
     pub(super) fn can_apply_profile() -> bool {
-        static CAN_APPLY: OnceLock<bool> = OnceLock::new();
-        *CAN_APPLY.get_or_init(Self::probe_can_apply_profile)
+        Self::profile_probe().can_apply
     }
 
-    fn probe_can_apply_profile() -> bool {
+    /// Return the cached probe failure detail, if profile application is unavailable.
+    pub(super) fn profile_probe_failure() -> Option<&'static str> {
+        Self::profile_probe().failure.as_deref()
+    }
+
+    fn profile_probe() -> &'static SandboxProfileProbe {
+        static PROBE: OnceLock<SandboxProfileProbe> = OnceLock::new();
+        // Seatbelt profile applicability is a property of this process context:
+        // an already-sandboxed cake process cannot become unsandboxed later in
+        // the same run. Cache the probe so every Bash command does not pay for
+        // a sandbox-exec subprocess before doing real work.
+        PROBE.get_or_init(Self::probe_can_apply_profile)
+    }
+
+    fn probe_can_apply_profile() -> SandboxProfileProbe {
         let tmp_dir = std::env::temp_dir().join("cake").join("sandbox_profiles");
         if let Err(e) = std::fs::create_dir_all(&tmp_dir) {
-            tracing::warn!("Failed to create sandbox profile probe directory: {e}");
-            return false;
+            let failure = format!("failed to create sandbox profile probe directory: {e}");
+            tracing::warn!("{failure}");
+            return SandboxProfileProbe::unavailable(failure);
         }
 
         let mut temp_file = match tempfile::Builder::new()
@@ -40,14 +54,16 @@ impl MacOsSandbox {
         {
             Ok(file) => file,
             Err(e) => {
-                tracing::warn!("Failed to create sandbox profile probe file: {e}");
-                return false;
+                let failure = format!("failed to create sandbox profile probe file: {e}");
+                tracing::warn!("{failure}");
+                return SandboxProfileProbe::unavailable(failure);
             },
         };
 
         if let Err(e) = temp_file.write_all(b"(version 1)\n(allow default)\n") {
-            tracing::warn!("Failed to write sandbox profile probe file: {e}");
-            return false;
+            let failure = format!("failed to write sandbox profile probe file: {e}");
+            tracing::warn!("{failure}");
+            return SandboxProfileProbe::unavailable(failure);
         }
 
         let output = std::process::Command::new("/usr/bin/sandbox-exec")
@@ -58,19 +74,36 @@ impl MacOsSandbox {
             .output();
 
         match output {
-            Ok(output) if output.status.success() => true,
+            Ok(output) if output.status.success() => SandboxProfileProbe::available(),
             Ok(output) => {
-                let stderr = String::from_utf8_lossy(&output.stderr);
+                let failure =
+                    Self::format_probe_failure(output.status, &output.stdout, &output.stderr);
                 tracing::warn!(
                     "macOS sandbox-exec is present but cannot apply profiles: {}",
-                    stderr.trim()
+                    failure
                 );
-                false
+                SandboxProfileProbe::unavailable(failure)
             },
             Err(e) => {
-                tracing::warn!("Failed to run sandbox-exec probe: {e}");
-                false
+                let failure = format!("failed to run sandbox-exec probe: {e}");
+                tracing::warn!("{failure}");
+                SandboxProfileProbe::unavailable(failure)
             },
+        }
+    }
+
+    fn format_probe_failure(status: ExitStatus, stdout: &[u8], stderr: &[u8]) -> String {
+        let stderr = String::from_utf8_lossy(stderr);
+        let stdout = String::from_utf8_lossy(stdout);
+        let stderr = stderr.trim();
+        let stdout = stdout.trim();
+
+        if !stderr.is_empty() {
+            format!("sandbox-exec exited with {status}; stderr: {stderr}")
+        } else if !stdout.is_empty() {
+            format!("sandbox-exec exited with {status}; stdout: {stdout}")
+        } else {
+            format!("sandbox-exec exited with {status}; no stderr or stdout")
         }
     }
 
@@ -309,6 +342,28 @@ impl MacOsSandbox {
     }
 }
 
+#[derive(Debug)]
+struct SandboxProfileProbe {
+    can_apply: bool,
+    failure: Option<String>,
+}
+
+impl SandboxProfileProbe {
+    const fn available() -> Self {
+        Self {
+            can_apply: true,
+            failure: None,
+        }
+    }
+
+    const fn unavailable(failure: String) -> Self {
+        Self {
+            can_apply: false,
+            failure: Some(failure),
+        }
+    }
+}
+
 impl SandboxStrategy for MacOsSandbox {
     fn apply(
         &self,
@@ -435,6 +490,7 @@ impl SeatbeltProfileBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::process::ExitStatusExt;
 
     fn test_config() -> SandboxConfig {
         SandboxConfig {
@@ -458,6 +514,28 @@ mod tests {
         let profile = MacOsSandbox::generate_profile(&test_config());
 
         assert!(profile.contains("(allow file-read* (literal \"/\"))"));
+    }
+
+    #[test]
+    fn probe_failure_details_prefer_stderr() {
+        let status = ExitStatus::from_raw(256);
+        let details = MacOsSandbox::format_probe_failure(
+            status,
+            b"stdout fallback\n",
+            b"sandbox_apply failed\n",
+        );
+
+        assert!(details.contains("sandbox-exec exited with"));
+        assert!(details.contains("stderr: sandbox_apply failed"));
+        assert!(!details.contains("stdout fallback"));
+    }
+
+    #[test]
+    fn probe_failure_details_use_stdout_when_stderr_empty() {
+        let status = ExitStatus::from_raw(256);
+        let details = MacOsSandbox::format_probe_failure(status, b"stdout fallback\n", b" \n");
+
+        assert!(details.contains("stdout: stdout fallback"));
     }
 
     #[test]

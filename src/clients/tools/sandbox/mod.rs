@@ -533,13 +533,15 @@ pub(super) fn detect_platform() -> Result<Option<Box<dyn SandboxStrategy>>, Stri
         }
 
         if !MacOsSandbox::can_apply_profile() {
-            return Err(
+            let details = MacOsSandbox::profile_probe_failure()
+                .map(|failure| format!(" Probe failure: {failure}."))
+                .unwrap_or_default();
+            return Err(format!(
                 "macOS sandbox unavailable: sandbox-exec could not apply a Seatbelt profile \
-                 in this process context. This commonly happens when cake is already running \
-                 inside another sandbox. Set CAKE_SANDBOX=off to run Bash commands without \
-                 filesystem sandboxing."
-                    .to_string(),
-            );
+                 in this process context.{details} This commonly happens when cake is already \
+                 running inside another sandbox. Set CAKE_SANDBOX=off to run Bash commands \
+                 without filesystem sandboxing."
+            ));
         }
 
         tracing::debug!("Using macOS sandbox-exec for filesystem sandboxing");
