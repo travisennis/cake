@@ -56,10 +56,9 @@ impl BashExecutionArgs {
 
 #[cfg(test)]
 impl BashExecutionArgs {
-    fn from_json_with_sandbox(arguments: &str, use_sandbox: bool) -> Result<Self, String> {
-        let mut args = Self::from_json(arguments)?;
-        args.use_sandbox = use_sandbox;
-        Ok(args)
+    fn with_sandbox(mut self, use_sandbox: bool) -> Self {
+        self.use_sandbox = use_sandbox;
+        self
     }
 }
 
@@ -426,7 +425,7 @@ async fn execute_bash_with_args(
 
 #[cfg(test)]
 async fn execute_bash_unsandboxed(arguments: &str) -> Result<super::ToolResult, String> {
-    let args = BashExecutionArgs::from_json_with_sandbox(arguments, false)?;
+    let args = BashExecutionArgs::from_json(arguments)?.with_sandbox(false);
     let context = super::ToolContext::from_current_process();
     Box::pin(execute_bash_with_args(&context, args)).await
 }

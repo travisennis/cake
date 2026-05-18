@@ -7,7 +7,7 @@ Active tasks include open, pending, blocked, and tracking work.
 ## Status Summary
 
 - Open: 2
-- Pending: 38
+- Pending: 37
 - Blocked: 5
 - Tracking: 0
 - Completed: 0
@@ -23,7 +23,6 @@ Active tasks include open, pending, blocked, and tracking work.
 | [012](012.md) | Add Template Prompts from .cake/prompts/ | Blocked | - | - | - | - | - |
 | [016](016.md) | Refactor send() and execute_bash() into Smaller Functions | Blocked | - | - | - | - | - |
 | [030](030.md) | Investigate Session-Level Hook Observability | Pending | - | - | - | - | - |
-| [094](094.md) | Simplify Test-Only Bash Sandbox Constructor | Pending | P3 | S | - | - | - |
 | [096](096.md) | Make Git Branch Delete Detection Parser Safe | Pending | P3 | M | - | - | - |
 | [097](097.md) | Revisit macOS Sandbox Probe Caching and Cleanup | Pending | P3 | M | - | - | - |
 | [098](098.md) | Reorganize Type Modules | Pending | P3 | XL | - | Required before implementation | 049 (Split Agent), 050 (Backend abstraction), 051 (Tool abstraction), 058 (Typed reasoning content), 061 (Consolidate serialization), 062 (DateTime types), 063 (Optional field normalization). Do this last. |
