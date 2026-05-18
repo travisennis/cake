@@ -7,7 +7,7 @@ Active tasks include open, pending, blocked, and tracking work.
 ## Status Summary
 
 - Open: 2
-- Pending: 37
+- Pending: 39
 - Blocked: 5
 - Tracking: 0
 - Completed: 0
@@ -61,3 +61,5 @@ Active tasks include open, pending, blocked, and tracking work.
 | [158](158.md) | Fix Skill Activation Reads And Consider Dedicated Skill Tool | Pending | P2 | L | type:feature, area:tools, area:agent, area:prompts | - | - |
 | [159](159.md) | Record Hook-Blocked Tool Calls As Permission Denials | Pending | P2 | M | type:bug, area:agent, area:session, area:tools | - | - |
 | [160](160.md) | Guard Git Add All When Untracked Files Are Present | Pending | P2 | M | type:bug, area:tools, area:agent | - | - |
+| [161](161.md) | Align Self-Reflection Note Instructions With Tool Write Permissions | Pending | P3 | S | type:bug, area:prompts, area:tools, area:config | - | - |
+| [162](162.md) | Prevent Clean Worktree Claims When Untracked Files Remain | Pending | P3 | XS | type:bug, area:prompts, area:cli | - | - |
