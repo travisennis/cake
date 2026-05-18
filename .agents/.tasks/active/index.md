@@ -7,7 +7,7 @@ Active tasks include open, pending, blocked, and tracking work.
 ## Status Summary
 
 - Open: 2
-- Pending: 38
+- Pending: 37
 - Blocked: 5
 - Tracking: 0
 - Completed: 0
@@ -45,7 +45,6 @@ Active tasks include open, pending, blocked, and tracking work.
 | [119](119.md) | Add Per-Session Telemetry Sidecar | Pending | P2 | XL | - | `.agents/exec-plans/active/per-session-telemetry-plan.md` | - |
 | [120](120.md) | Add OSC 9;4 Terminal Progress Indicator | Pending | P3 | S | - | `.agents/exec-plans/active/progress-bar-plan.md` | - |
 | [121](121.md) | Implement User-Defined Toolbox Tools | Pending | P2 | XL | - | `.agents/exec-plans/active/toolboxes-plan.md` | 050 (Backend abstraction, completed), 051 (Tool abstraction, completed) |
-| [128](128.md) | Remove No-Op `_ = result.as_bytes()` In bash.rs Test | Pending | P3 | XS | - | - | From code review of 110/3cc2e73 |
 | [129](129.md) | Restore `e.print().ok()` With Localized `unused_result_ok` Expect | Pending | P3 | XS | - | - | From code review of 110/3cc2e73 |
 | [135](135.md) | Prefer Focused Checks Before Final CI in Deslop Guidance | Pending | P3 | XS | - | - | - |
 | [139](139.md) | Add Structured Bulk Edit Support for Mechanical Transformations | Pending | P2 | M | - | - | - |

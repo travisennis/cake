@@ -550,8 +550,6 @@ mod tests {
         let result = truncate_output(&large, 1, 2000);
         assert!(result.contains("[Output too long"));
         assert!(result.contains("[exit:1 | 2.0s]"));
-        // Verify the result is valid UTF-8 (would panic if not)
-        _ = result.as_bytes();
     }
 
     #[test]

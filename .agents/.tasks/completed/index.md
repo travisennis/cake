@@ -10,7 +10,7 @@ Completed tasks are retained for history and stable task-id lookup.
 - Pending: 0
 - Blocked: 0
 - Tracking: 0
-- Completed: 118
+- Completed: 119
 - Cancelled: 0
 
 ## Tasks
@@ -119,6 +119,7 @@ Completed tasks are retained for history and stable task-id lookup.
 | [125](125.md) | Implement Lazy Skill Body Loading at Activation Time | Completed | P1 | L | - | `.agents/exec-plans/completed/lazy-skill-body-loading.md` | From code review of 110/3cc2e73 |
 | [126](126.md) | Remove Test-Only `Agent::activated_skills` Accessor | Completed | P1 | S | - | - | From code review of 110/3cc2e73 |
 | [127](127.md) | Document and Enforce Dead-Code Suppression Policy | Completed | P1 | S | - | - | From code review of 110/3cc2e73; interacts with 123, 125, 126, 130 |
+| [128](128.md) | Remove No-Op `_ = result.as_bytes()` In bash.rs Test | Completed | P3 | XS | - | - | From code review of 110/3cc2e73 |
 | [130](130.md) | Delete Unused Serde Response Fields | Completed | P2 | S | - | - | - |
 | [131](131.md) | Fix `SandboxConfig` `struct_field_names` Reason and Verify `dead_code` | Completed | P2 | S | - | - | From code review of 110/3cc2e73 |
 | [132](132.md) | Only Attach Rust Failure Guidance on Failed Commands | Completed | P1 | S | - | - | - |
