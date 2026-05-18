@@ -677,9 +677,26 @@ fn normalize_crlf_line_endings(content: &str) -> NormalizedContent {
 /// Convert replacement LF line endings to the file's dominant line ending.
 fn normalize_replacement_line_endings(content: &str, ending: LineEnding) -> String {
     match ending {
-        LineEnding::Crlf => content.replace('\n', "\r\n"),
+        LineEnding::Crlf => normalize_bare_lf_to_crlf(content),
         LineEnding::Lf => content.to_string(),
     }
+}
+
+fn normalize_bare_lf_to_crlf(content: &str) -> String {
+    let mut normalized = String::with_capacity(content.len());
+    let mut previous_was_cr = false;
+
+    for ch in content.chars() {
+        if ch == '\n' && !previous_was_cr {
+            normalized.push_str("\r\n");
+        } else {
+            normalized.push(ch);
+        }
+
+        previous_was_cr = ch == '\r';
+    }
+
+    normalized
 }
 
 impl NormalizedContent {
@@ -1102,6 +1119,26 @@ mod tests {
         let content = String::from_utf8(fs::read(&file_path).unwrap()).unwrap();
         assert!(content.contains("Hello universe\r\n"));
         assert!(content.contains("\r\n"));
+    }
+
+    #[test]
+    fn does_not_double_encode_crlf_replacement_text() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+        fs::write(&file_path, b"before\r\ntarget\r\nafter\r\n").unwrap();
+
+        let args = serde_json::json!({
+            "path": file_path.to_str().unwrap(),
+            "edits": [
+                { "old_text": "target", "new_text": "first\r\nsecond\nthird" }
+            ]
+        })
+        .to_string();
+
+        let _ = execute_edit(&ToolContext::from_current_process(), &args).unwrap();
+
+        let content = fs::read(&file_path).unwrap();
+        assert_eq!(content, b"before\r\nfirst\r\nsecond\r\nthird\r\nafter\r\n");
     }
 
     #[test]

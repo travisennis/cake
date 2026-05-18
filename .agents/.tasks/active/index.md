@@ -6,7 +6,7 @@ Active tasks include open, pending, blocked, and tracking work.
 
 ## Status Summary
 
-- Open: 2
+- Open: 1
 - Pending: 35
 - Blocked: 5
 - Tracking: 0
@@ -33,7 +33,6 @@ Active tasks include open, pending, blocked, and tracking work.
 | [105](105.md) | Improve Unknown or Missing API Field Diagnostics | Pending | P3 | M | - | - | - |
 | [106](106.md) | Audit Public Module Visibility in Tools | Pending | P3 | S | - | - | 051 (Tool abstraction) |
 | [108](108.md) | Track Manual Review Findings Without Losing Original Numbers | Pending | P3 | S | - | - | - |
-| [109](109.md) | Edit tool: CRLF replacement text double-encoding | Open | - | - | - | - | - |
 | [113](113.md) | Document ResponsesApiInputItem Construction Boundary | Pending | P3 | XS | - | - | Follows 061 |
 | [115](115.md) | Comment annotations:[] Provider Quirk in ResponsesApiInputItem | Pending | P3 | XS | - | - | Follows 061 |
 | [117](117.md) | Strengthen Edit Tool Semantics via Lean-Assisted Testing | Pending | P2 | XL | - | `.agents/exec-plans/active/edit-tool-lean.md` | - |
