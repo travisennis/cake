@@ -7,7 +7,7 @@ Active tasks include open, pending, blocked, and tracking work.
 ## Status Summary
 
 - Open: 2
-- Pending: 36
+- Pending: 38
 - Blocked: 5
 - Tracking: 0
 - Completed: 0
@@ -60,3 +60,5 @@ Active tasks include open, pending, blocked, and tracking work.
 | [154](154.md) | Surface Bash Stderr Warnings Separately From Successful Exit Status | Pending | P2 | M | type:bug, area:tools, area:session | - | - |
 | [155](155.md) | Track Skill And Workflow Checklist Obligations In Sessions | Pending | P2 | L | type:feature, area:agent, area:session, area:prompts | - | - |
 | [158](158.md) | Fix Skill Activation Reads And Consider Dedicated Skill Tool | Pending | P2 | L | type:feature, area:tools, area:agent, area:prompts | - | - |
+| [159](159.md) | Record Hook-Blocked Tool Calls As Permission Denials | Pending | P2 | M | type:bug, area:agent, area:session, area:tools | - | - |
+| [160](160.md) | Guard Git Add All When Untracked Files Are Present | Pending | P2 | M | type:bug, area:tools, area:agent | - | - |
