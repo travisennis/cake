@@ -42,7 +42,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
+        run: |
+          if [ "${{ matrix.target }}" = "x86_64-unknown-linux-gnu" ]; then
+            cargo build --release --target ${{ matrix.target }} --features landlock
+          else
+            cargo build --release --target ${{ matrix.target }}
+          fi
       
       - name: Prepare artifact
         run: |

@@ -42,7 +42,8 @@ On Linux, cake uses [Landlock](https://landlock.io/), a Linux Security Module av
 
 The Landlock sandbox is applied via `pre_exec`, so rules take effect in the child process after `fork()` but before `exec()`.
 
-**Important**: Landlock support must be compiled in explicitly:
+Official Linux release binaries include Landlock support. Source builds should
+compile it in explicitly:
 
 ```bash
 cargo build --release --features landlock

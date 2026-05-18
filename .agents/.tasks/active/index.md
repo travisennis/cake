@@ -7,7 +7,7 @@ Active tasks include open, pending, blocked, and tracking work.
 ## Status Summary
 
 - Open: 2
-- Pending: 36
+- Pending: 35
 - Blocked: 5
 - Tracking: 0
 - Completed: 0
@@ -26,7 +26,6 @@ Active tasks include open, pending, blocked, and tracking work.
 | [096](096.md) | Make Git Branch Delete Detection Parser Safe | Pending | P3 | M | - | - | - |
 | [098](098.md) | Reorganize Type Modules | Pending | P3 | XL | - | Required before implementation | 049 (Split Agent), 050 (Backend abstraction), 051 (Tool abstraction), 058 (Typed reasoning content), 061 (Consolidate serialization), 062 (DateTime types), 063 (Optional field normalization). Do this last. |
 | [099](099.md) | Remove Library-Style Doctests From Binary-Only Crate | Pending | P3 | S | - | - | - |
-| [100](100.md) | Decide Linux Landlock Default Feature Policy | Pending | P3 | M | - | - | - |
 | [101](101.md) | Review Module Size and Ownership Boundaries | Pending | P3 | XL | - | Required before implementation | 047 (ToolContext), 049 (Split Agent), 050 (Backend abstraction), 051 (Tool abstraction), 052 (Provider strategy), 053 (Typed SessionMode), 054 (Refactor run), 064 (build_messages refactor). Do this after behavior-oriented refactors land. |
 | [102](102.md) | Validate Stream Hook Record Contract | Pending | P3 | M | - | - | 030 (existing - see notes), 059 (Output sink). Confirm not superseded by 059 once that lands. |
 | [103](103.md) | Add Builder or Fixture Infrastructure for Agent Tests | Pending | P3 | M | - | - | 066 (Encapsulate Agent fields) |

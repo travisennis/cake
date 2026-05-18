@@ -312,7 +312,8 @@ When the task finishes, cake automatically removes the worktree if no changes we
 Commands executed by the Bash tool run inside an OS-level filesystem sandbox that restricts access to only the project directory and essential system paths. This prevents LLM-generated commands from reading or writing files outside the allowed set.
 
 - **macOS**: Uses `sandbox-exec` with a deny-default Seatbelt profile
-- **Linux**: Uses Landlock LSM (kernel 5.13+, requires `--features landlock`)
+- **Linux**: Uses Landlock LSM (kernel 5.13+). Official Linux release binaries
+  include Landlock support; source builds should use `--features landlock`.
 
 Linux Bash execution fails closed when sandboxing is enabled but cake was built
 without Landlock support, or when Landlock cannot fully enforce the filesystem
