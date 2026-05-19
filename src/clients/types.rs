@@ -139,6 +139,10 @@ pub enum ConversationItem {
 }
 
 /// Typed Responses API input item serialized into the request `input` array.
+///
+/// **Construction boundary:** Instances are built only via the
+/// [`From<&ConversationItem>`] impl in this module, never by hand. This keeps
+/// the API wire shape owned in one place.
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(super) enum ResponsesApiInputItem<'a> {
@@ -171,6 +175,10 @@ pub(super) enum ResponsesApiInputItem<'a> {
 }
 
 /// Content block used by Responses API message input.
+///
+/// **Construction boundary:** Instances are built only through the
+/// [`From<&ConversationItem>`] impl on [`ResponsesApiInputItem`]. Do not
+/// construct by hand.
 #[derive(Debug, Serialize)]
 pub(super) struct ResponsesMessageContent<'a> {
     #[serde(rename = "type")]
@@ -181,6 +189,10 @@ pub(super) struct ResponsesMessageContent<'a> {
 }
 
 /// Summary block used by Responses API reasoning input.
+///
+/// **Construction boundary:** Instances are built only through the
+/// [`From<&ConversationItem>`] impl on [`ResponsesApiInputItem`]. Do not
+/// construct by hand.
 #[derive(Debug, Serialize)]
 pub(super) struct ResponsesReasoningSummary<'a> {
     #[serde(rename = "type")]

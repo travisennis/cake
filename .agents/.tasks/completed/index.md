@@ -10,7 +10,7 @@ Completed tasks are retained for history and stable task-id lookup.
 - Pending: 0
 - Blocked: 0
 - Tracking: 0
-- Completed: 126
+- Completed: 127
 - Cancelled: 0
 
 ## Tasks
@@ -112,6 +112,7 @@ Completed tasks are retained for history and stable task-id lookup.
 | [110](110.md) | Apply Stricter Clippy Configuration from External Research | Completed | P2 | M | - | - | Research: clippy-stricter-config; related: 089, 107 (both completed together) |
 | [111](111.md) | Round-Trip Test ConversationItem → StreamRecord → SessionRecord | Completed | P1 | S | - | - | Follows 061 |
 | [112](112.md) | Snapshot Persistence-Only SessionRecord Variants | Completed | P1 | S | - | - | Follows 061 |
+| [113](113.md) | Document ResponsesApiInputItem Construction Boundary | Completed | P3 | XS | - | - | Follows 061 |
 | [114](114.md) | Update conversation-types.md After to_api_input Refactor | Completed | P3 | XS | - | - | Follows 061 |
 | [116](116.md) | Eliminate Redundant num_turns/turn_count; Add Tool-Call Counter | Completed | P3 | M | - | - | - |
 | [119](119.md) | Add Per-Session Telemetry Sidecar | Completed | P2 | XL | - | `.agents/exec-plans/active/per-session-telemetry-plan.md` | - |
