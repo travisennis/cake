@@ -48,6 +48,8 @@ model = "anthropic/claude-3-sonnet"
 base_url = "https://openrouter.ai/api/v1/"
 api_key_env = "OPENROUTER_API_KEY"
 api_type = "responses"
+provider = "openrouter" # Optional; inferred for openrouter.ai URLs
+# provider_headers = { http_referer = "https://github.com/you/project", x_title = "cake" }
 # temperature = 0.7
 # top_p = 0.9
 # max_output_tokens = 8000

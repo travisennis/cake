@@ -190,6 +190,8 @@ ModelConfig {
     api_type: ApiType::ChatCompletions,
     base_url: "https://opencode.ai/zen/go/v1".to_string(),
     api_key_env: "OPENCODE_ZEN_API_TOKEN".to_string(),
+    provider: None,
+    provider_headers: None,
     temperature: Some(0.8),
     top_p: None,
     max_output_tokens: Some(8000),

@@ -934,6 +934,8 @@ fn test_resolved_model_config(api_type: ApiType, base_url: &str) -> ResolvedMode
             api_type,
             base_url: base_url.to_string(),
             api_key_env: "TEST_API_KEY".to_string(),
+            provider: None,
+            provider_headers: None,
             temperature: None,
             top_p: None,
             max_output_tokens: None,

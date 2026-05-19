@@ -3,7 +3,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::model::{ApiType, ModelConfig, ReasoningEffort};
+use crate::config::model::{ApiType, ModelConfig, ModelProvider, ProviderHeaders, ReasoningEffort};
 use crate::config::skills::SkillConfig;
 
 /// Skill settings loaded from settings.toml.
@@ -149,6 +149,12 @@ pub struct ModelDefinition {
     pub base_url: String,
     /// Name of the environment variable containing the API key (required)
     pub api_key_env: String,
+    /// Provider strategy to use. If unset, cake may infer from `base_url`.
+    #[serde(default)]
+    pub provider: Option<ModelProvider>,
+    /// Structured provider-specific request headers.
+    #[serde(default)]
+    pub provider_headers: Option<ProviderHeaders>,
     /// Which API format to use
     #[serde(default)]
     pub api_type: ApiType,
@@ -229,6 +235,8 @@ impl ModelDefinition {
     ///     model: "test/model".to_string(),
     ///     base_url: "https://example.com".to_string(),
     ///     api_key_env: "MY_KEY".to_string(),
+    ///     provider: None,
+    ///     provider_headers: None,
     ///     api_type: ApiType::ChatCompletions,
     ///     temperature: Some(0.5),
     ///     top_p: None,
@@ -248,6 +256,8 @@ impl ModelDefinition {
             api_type: self.api_type,
             base_url: self.base_url.clone(),
             api_key_env: self.api_key_env.clone(),
+            provider: self.provider,
+            provider_headers: self.provider_headers.clone(),
             temperature: self.temperature,
             top_p: self.top_p,
             max_output_tokens: self.max_output_tokens,
@@ -794,6 +804,8 @@ name = "minimal"
 model = "test/model"
 base_url = "https://example.com"
 api_key_env = "MY_KEY"
+provider = "openrouter"
+provider_headers = { http_referer = "https://example.com/cake", x_title = "cake-test" }
 "#,
         );
 
@@ -807,6 +819,14 @@ api_key_env = "MY_KEY"
         assert_eq!(def.model, "test/model");
         assert_eq!(def.base_url, "https://example.com");
         assert_eq!(def.api_key_env, "MY_KEY");
+        assert_eq!(def.provider, Some(ModelProvider::OpenRouter));
+        assert_eq!(
+            def.provider_headers,
+            Some(ProviderHeaders {
+                http_referer: Some("https://example.com/cake".to_string()),
+                x_title: Some("cake-test".to_string()),
+            })
+        );
         assert_eq!(def.api_type, ApiType::ChatCompletions);
         assert!(def.providers.is_empty());
         assert_eq!(def.reasoning_effort, None);
@@ -839,6 +859,11 @@ api_key_env = "MY_KEY"
             model: "test/model".to_string(),
             base_url: "https://example.com".to_string(),
             api_key_env: "MY_KEY".to_string(),
+            provider: Some(ModelProvider::OpenRouter),
+            provider_headers: Some(ProviderHeaders {
+                http_referer: Some("https://example.com/cake".to_string()),
+                x_title: Some("cake-test".to_string()),
+            }),
             api_type: ApiType::Responses,
             temperature: Some(0.5),
             top_p: Some(0.9),
@@ -854,6 +879,14 @@ api_key_env = "MY_KEY"
         assert_eq!(config.model, "test/model");
         assert_eq!(config.base_url, "https://example.com");
         assert_eq!(config.api_key_env, "MY_KEY");
+        assert_eq!(config.provider, Some(ModelProvider::OpenRouter));
+        assert_eq!(
+            config.provider_headers,
+            Some(ProviderHeaders {
+                http_referer: Some("https://example.com/cake".to_string()),
+                x_title: Some("cake-test".to_string()),
+            })
+        );
         assert_eq!(config.api_type, ApiType::Responses);
         assert_eq!(config.temperature, Some(0.5));
         assert_eq!(config.top_p, Some(0.9));

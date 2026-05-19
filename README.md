@@ -158,6 +158,8 @@ model = "anthropic/claude-4.6-sonnet"
 base_url = "https://openrouter.ai/api/v1/"
 api_key_env = "OPENROUTER_API_KEY"
 api_type = "responses"
+provider = "openrouter"             # Optional; inferred for openrouter.ai URLs
+provider_headers = { http_referer = "https://github.com/you/project", x_title = "my-cake-client" }
 temperature = 0.7
 
 [[models]]

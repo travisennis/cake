@@ -1,6 +1,25 @@
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
+/// Provider-specific strategy selected for a model configuration.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ModelProvider {
+    /// OpenRouter-compatible endpoint behavior.
+    #[serde(rename = "openrouter")]
+    OpenRouter,
+}
+
+/// Structured provider-specific HTTP headers.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderHeaders {
+    /// Value for `OpenRouter`'s `HTTP-Referer` attribution header.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_referer: Option<String>,
+    /// Value for `OpenRouter`'s `X-Title` attribution header.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub x_title: Option<String>,
+}
+
 /// The type of API endpoint to use for model completions.
 ///
 /// Cake supports multiple API backends for interacting with AI providers:
@@ -53,6 +72,12 @@ pub struct ModelConfig {
     pub base_url: String,
     /// Name of the environment variable containing the API key
     pub api_key_env: String,
+    /// Provider strategy to use. If unset, strategies may infer from `base_url`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<ModelProvider>,
+    /// Provider-specific request headers. If unset, provider defaults may apply.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_headers: Option<ProviderHeaders>,
     /// Sampling temperature
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
@@ -90,6 +115,8 @@ pub struct ModelConfig {
 ///     api_type: ApiType::ChatCompletions,
 ///     base_url: "https://api.example.com".to_string(),
 ///     api_key_env: "MY_KEY".to_string(),
+///     provider: None,
+///     provider_headers: None,
 ///     temperature: None,
 ///     top_p: None,
 ///     max_output_tokens: None,
@@ -125,6 +152,8 @@ impl ResolvedModelConfig {
     ///     api_type: ApiType::ChatCompletions,
     ///     base_url: "https://api.example.com".to_string(),
     ///     api_key_env: "CAKE_TEST_KEY".to_string(),
+    ///     provider: None,
+    ///     provider_headers: None,
     ///     temperature: None,
     ///     top_p: None,
     ///     max_output_tokens: None,
@@ -174,6 +203,8 @@ mod tests {
             api_type: ApiType::ChatCompletions,
             base_url: "https://api.example.com".to_string(),
             api_key_env: "MY_KEY".to_string(),
+            provider: None,
+            provider_headers: None,
             temperature: Some(0.8),
             top_p: None,
             max_output_tokens: Some(8000),
@@ -208,6 +239,15 @@ mod tests {
     fn test_reasoning_effort_rejects_invalid_value() {
         let result = serde_json::from_str::<ReasoningEffort>(r#""maximum""#);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_model_provider_serialization() {
+        let json = serde_json::to_string(&ModelProvider::OpenRouter).unwrap();
+        assert_eq!(json, r#""openrouter""#);
+
+        let provider: ModelProvider = serde_json::from_str(r#""openrouter""#).unwrap();
+        assert_eq!(provider, ModelProvider::OpenRouter);
     }
 
     #[test]

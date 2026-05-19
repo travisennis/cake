@@ -2,28 +2,25 @@ use std::borrow::Cow;
 
 use crate::clients::chat_types::ChatMessage;
 use crate::clients::types::ProviderConfig;
-use crate::config::model::ResolvedModelConfig;
+use crate::config::model::{ModelProvider, ProviderHeaders, ResolvedModelConfig};
 
 const OPENROUTER_REFERER: &str = "https://github.com/travisennis/cake";
 const OPENROUTER_TITLE: &str = "cake";
 const KIMI_REASONING_CONTENT_PLACEHOLDER: &str = " ";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ProviderKind {
-    Generic,
-    OpenRouter,
-}
-
 pub(super) struct ProviderStrategy<'a> {
     config: &'a ResolvedModelConfig,
-    kind: ProviderKind,
+    provider: Option<ModelProvider>,
 }
 
 impl<'a> ProviderStrategy<'a> {
     pub(super) fn from_config(config: &'a ResolvedModelConfig) -> Self {
         Self {
             config,
-            kind: provider_kind(&config.model_config.base_url),
+            provider: config
+                .model_config
+                .provider
+                .or_else(|| infer_provider(&config.model_config.base_url)),
         }
     }
 
@@ -31,16 +28,16 @@ impl<'a> ProviderStrategy<'a> {
         &self,
         request: reqwest::RequestBuilder,
     ) -> reqwest::RequestBuilder {
-        match self.kind {
-            ProviderKind::Generic => request,
-            ProviderKind::OpenRouter => request
-                .header("HTTP-Referer", OPENROUTER_REFERER)
-                .header("X-Title", OPENROUTER_TITLE),
+        match self.provider {
+            Some(ModelProvider::OpenRouter) => {
+                apply_openrouter_headers(request, self.openrouter_headers())
+            },
+            None => request,
         }
     }
 
     pub(super) fn responses_provider_config(&self) -> Option<ProviderConfig> {
-        if self.kind != ProviderKind::OpenRouter {
+        if self.provider != Some(ModelProvider::OpenRouter) {
             return None;
         }
 
@@ -61,22 +58,45 @@ impl<'a> ProviderStrategy<'a> {
             }
         }
     }
+
+    fn openrouter_headers(&self) -> ProviderHeaders {
+        self.config
+            .model_config
+            .provider_headers
+            .clone()
+            .unwrap_or_else(default_openrouter_headers)
+    }
 }
 
-fn provider_kind(base_url: &str) -> ProviderKind {
+fn infer_provider(base_url: &str) -> Option<ModelProvider> {
     let Ok(url) = reqwest::Url::parse(base_url) else {
-        return ProviderKind::Generic;
+        return None;
     };
 
-    let Some(host) = url.host_str() else {
-        return ProviderKind::Generic;
-    };
+    let host = url.host_str()?;
 
-    if host == "openrouter.ai" || host.ends_with(".openrouter.ai") {
-        ProviderKind::OpenRouter
-    } else {
-        ProviderKind::Generic
+    (host == "openrouter.ai" || host.ends_with(".openrouter.ai"))
+        .then_some(ModelProvider::OpenRouter)
+}
+
+fn default_openrouter_headers() -> ProviderHeaders {
+    ProviderHeaders {
+        http_referer: Some(OPENROUTER_REFERER.to_string()),
+        x_title: Some(OPENROUTER_TITLE.to_string()),
     }
+}
+
+fn apply_openrouter_headers(
+    mut request: reqwest::RequestBuilder,
+    headers: ProviderHeaders,
+) -> reqwest::RequestBuilder {
+    if let Some(http_referer) = headers.http_referer {
+        request = request.header("HTTP-Referer", http_referer);
+    }
+    if let Some(x_title) = headers.x_title {
+        request = request.header("X-Title", x_title);
+    }
+    request
 }
 
 fn provider_routing_config(providers: &[String]) -> Option<ProviderConfig> {
@@ -110,6 +130,8 @@ mod tests {
                 api_type: ApiType::ChatCompletions,
                 base_url: base_url.to_string(),
                 api_key_env: "TEST_API_KEY".to_string(),
+                provider: None,
+                provider_headers: None,
                 temperature: None,
                 top_p: None,
                 max_output_tokens: None,
@@ -174,14 +196,60 @@ mod tests {
     #[test]
     fn openrouter_detection_accepts_subdomains() {
         assert_eq!(
-            provider_kind("https://gateway.openrouter.ai/api/v1"),
-            ProviderKind::OpenRouter
+            infer_provider("https://gateway.openrouter.ai/api/v1"),
+            Some(ModelProvider::OpenRouter)
         );
         assert_eq!(
-            provider_kind("https://not-openrouter.example.com/api/v1"),
-            ProviderKind::Generic
+            infer_provider("https://not-openrouter.example.com/api/v1"),
+            None
         );
-        assert_eq!(provider_kind("not a url"), ProviderKind::Generic);
+        assert_eq!(infer_provider("not a url"), None);
+    }
+
+    #[test]
+    fn explicit_openrouter_provider_applies_configured_headers() {
+        let client = reqwest::Client::new();
+        let mut config = test_config("https://api.example.com/v1", "openai/gpt-4.1", []);
+        config.model_config.provider = Some(ModelProvider::OpenRouter);
+        config.model_config.provider_headers = Some(ProviderHeaders {
+            http_referer: Some("https://example.com/cake".to_string()),
+            x_title: Some("custom-cake".to_string()),
+        });
+
+        let request = ProviderStrategy::from_config(&config)
+            .apply_headers(client.post("https://api.example.com/v1/chat/completions"))
+            .build()
+            .unwrap();
+
+        assert_eq!(
+            request
+                .headers()
+                .get("HTTP-Referer")
+                .and_then(|value| value.to_str().ok()),
+            Some("https://example.com/cake")
+        );
+        assert_eq!(
+            request
+                .headers()
+                .get("X-Title")
+                .and_then(|value| value.to_str().ok()),
+            Some("custom-cake")
+        );
+    }
+
+    #[test]
+    fn configured_empty_openrouter_headers_disable_default_headers() {
+        let client = reqwest::Client::new();
+        let mut config = test_config("https://openrouter.ai/api/v1", "openai/gpt-4.1", []);
+        config.model_config.provider_headers = Some(ProviderHeaders::default());
+
+        let request = ProviderStrategy::from_config(&config)
+            .apply_headers(client.post("https://openrouter.ai/api/v1/chat/completions"))
+            .build()
+            .unwrap();
+
+        assert!(request.headers().get("HTTP-Referer").is_none());
+        assert!(request.headers().get("X-Title").is_none());
     }
 
     #[test]

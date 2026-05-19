@@ -404,6 +404,8 @@ mod tests {
                 api_type: ApiType::ChatCompletions,
                 base_url: "https://api.example.com/v1".to_string(),
                 api_key_env: "TEST_API_KEY".to_string(),
+                provider: None,
+                provider_headers: None,
                 temperature: None,
                 top_p: None,
                 max_output_tokens: None,

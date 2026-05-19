@@ -7,7 +7,7 @@ Active tasks include open, pending, blocked, and tracking work.
 ## Status Summary
 
 - Open: 1
-- Pending: 29
+- Pending: 28
 - Blocked: 5
 - Tracking: 0
 - Completed: 0
@@ -28,7 +28,6 @@ Active tasks include open, pending, blocked, and tracking work.
 | [101](101.md) | Review Module Size and Ownership Boundaries | Pending | P3 | XL | - | Required before implementation | 047 (ToolContext), 049 (Split Agent), 050 (Backend abstraction), 051 (Tool abstraction), 052 (Provider strategy), 053 (Typed SessionMode), 054 (Refactor run), 064 (build_messages refactor). Do this after behavior-oriented refactors land. |
 | [102](102.md) | Validate Stream Hook Record Contract | Pending | P3 | M | - | - | 030 (existing - see notes), 059 (Output sink). Confirm not superseded by 059 once that lands. |
 | [103](103.md) | Add Builder or Fixture Infrastructure for Agent Tests | Pending | P3 | M | - | - | 066 (Encapsulate Agent fields) |
-| [104](104.md) | Add Structured Provider Header Configuration | Pending | P3 | M | - | - | 050 (Backend abstraction), 052 (Provider strategy) |
 | [105](105.md) | Improve Unknown or Missing API Field Diagnostics | Pending | P3 | M | - | - | - |
 | [108](108.md) | Track Manual Review Findings Without Losing Original Numbers | Pending | P3 | S | - | - | - |
 | [117](117.md) | Strengthen Edit Tool Semantics via Lean-Assisted Testing | Pending | P2 | XL | - | `.agents/exec-plans/active/edit-tool-lean.md` | - |

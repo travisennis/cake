@@ -181,6 +181,8 @@ All fields except `name` and `model` are optional, but `base_url` and `api_key_e
   | ---------------------- | --------------------- | ------------------------------------------------------- |
   | `base_url`             | Required (no default) | API endpoint base URL                                   |
   | `api_key_env`          | Required (no default) | Environment variable name for API key                   |
+  | `provider`             | Inferred from URL     | Provider strategy (`openrouter`)                        |
+  | `provider_headers`     | Provider defaults     | Structured provider-specific HTTP headers               |
   | `api_type`             | `chat_completions`    | API format (`chat_completions` or `responses`)          |
   | `temperature`          | `None`                | Sampling temperature                                    |
   | `top_p`                | `None`                | Nucleus sampling parameter                              |
@@ -259,6 +261,8 @@ struct ModelDefinition {
     model: String,             // Required
     base_url: String,          // Required (no default)
     api_key_env: String,       // Required (no default)
+    provider: Option<ModelProvider>,  // Optional, inferred from base_url
+    provider_headers: Option<ProviderHeaders>,  // Optional provider headers
     api_type: ApiType,         // Optional, defaults to ChatCompletions
     temperature: Option<f32>,  // Optional
     top_p: Option<f32>,         // Optional
@@ -295,6 +299,8 @@ name = "deepseek"
 model = "deepseek/deepseek-chat-v3"
 base_url = "https://openrouter.ai/api/v1/"
 api_key_env = "OPENROUTER_API_KEY"
+provider = "openrouter"
+provider_headers = { http_referer = "https://github.com/you/project", x_title = "cake" }
 ```
 
 ### 2. Create project settings
