@@ -215,6 +215,11 @@ impl<'a> From<&'a ConversationItem> for ResponsesApiInputItem<'a> {
                 } else {
                     "input_text"
                 };
+                // Provider quirk: the Responses API requires an `annotations`
+                // field (even if empty) on assistant `output_text` content
+                // blocks. Non-assistant `input_text` blocks must omit it.
+                // Removing the empty array would send malformed assistant
+                // turns to the provider.
                 let annotations =
                     matches!(role, Role::Assistant).then(Vec::<serde_json::Value>::new);
 
