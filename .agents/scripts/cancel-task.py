@@ -31,6 +31,20 @@ ACTIVE_DIR = TASKS_DIR / "active"
 CANCELLED_DIR = TASKS_DIR / "cancelled"
 
 
+def read_status(text: str) -> str | None:
+    """Return the current front-matter `status:` value, if any."""
+    if not text.startswith("---\n"):
+        return None
+    end = text.find("\n---\n", 4)
+    if end == -1:
+        return None
+    for line in text[4:end].splitlines():
+        m = re.match(r"\s*status\s*:\s*(.+?)\s*$", line, re.IGNORECASE)
+        if m:
+            return m.group(1)
+    return None
+
+
 def rewrite_status(text: str) -> str:
     """Set front-matter `status:` to `Cancelled` and update `**Status:**` body line."""
     if text.startswith("---\n"):
@@ -89,24 +103,43 @@ def main() -> int:
     task_id = args.task_id.strip()
     src = ACTIVE_DIR / f"{task_id}.md"
     dst = CANCELLED_DIR / f"{task_id}.md"
+    src_rel = src.relative_to(ROOT.parent)
+    dst_rel = dst.relative_to(ROOT.parent)
 
     if not src.exists():
         if dst.exists():
-            print(f"Task {task_id} is already in cancelled/.", file=sys.stderr)
+            print("=" * 60)
+            print(f"NOTE: Task {task_id} is ALREADY in cancelled/.")
+            print(f"  current location: {dst_rel}")
+            print(f"  (no file at: {src_rel})")
+            print("  No changes made. Do not look for this task under active/.")
+            print("=" * 60)
             return 0
-        print(f"error: {src} not found", file=sys.stderr)
+        print(f"error: {src_rel} not found", file=sys.stderr)
         return 1
     if dst.exists():
-        print(f"error: {dst} already exists; refusing to overwrite", file=sys.stderr)
+        print(
+            f"error: {dst_rel} already exists; refusing to overwrite",
+            file=sys.stderr,
+        )
         return 1
 
     text = src.read_text(encoding="utf-8")
+    old_status = read_status(text) or "(unset)"
     new_text = rewrite_status(text)
     if new_text != text:
         src.write_text(new_text, encoding="utf-8")
 
     move_file(src, dst)
-    print(f"Cancelled task {task_id}: moved to {dst.relative_to(ROOT.parent)}")
+
+    print("=" * 60)
+    print(f"✓ Task {task_id} marked as CANCELLED and MOVED")
+    print(f"  status: {old_status} -> Cancelled")
+    print(f"  from:   {src_rel}")
+    print(f"  to:     {dst_rel}")
+    print("  The task file is NO LONGER in active/. Reference it at the new path above.")
+    print("  Next: `just task-index` regenerates indexes (auto-run by `just task-cancel`).")
+    print("=" * 60)
     return 0
 
 
