@@ -6,10 +6,10 @@ mod config;
 mod exit_code;
 mod hooks;
 mod logger;
-mod models;
 mod prompts;
 mod session_telemetry;
 mod time_format;
+mod types;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -17,7 +17,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::cli::CmdRunner;
-use crate::clients::types::StreamRecord;
 use crate::clients::{Agent, ConversationItem, TaskOutcome, ToolContext};
 use crate::config::settings::LoadedSettings;
 use crate::config::skills::Skill;
@@ -27,12 +26,12 @@ use crate::config::{
     discover_skills_with_paths, parse_skill_path_list, worktree,
 };
 use crate::hooks::{HookContext, HookRunner};
-use crate::models::{Message, Role};
 use crate::prompts::build_initial_prompt_messages;
 use crate::session_telemetry::{
     SessionTelemetryRecord, SessionTelemetryRunMode, SessionTelemetryWriter,
 };
 use crate::time_format::{format_duration_tenths, format_seconds_tenths};
+use crate::types::{Role, StreamRecord};
 use clap::{ArgGroup, Parser, ValueEnum};
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::Serialize;
@@ -145,7 +144,7 @@ struct RunResources {
 }
 
 struct TurnResult {
-    result: anyhow::Result<Option<Message>>,
+    result: anyhow::Result<Option<String>>,
     duration_ms: u64,
 }
 
@@ -237,10 +236,10 @@ impl CliOutputSink {
         }
     }
 
-    fn render_text_result(result: anyhow::Result<Option<Message>>) -> anyhow::Result<()> {
+    fn render_text_result(result: anyhow::Result<Option<String>>) -> anyhow::Result<()> {
         let response = result?;
-        if let Some(response_msg) = response {
-            Self::write_text_response(&response_msg.content);
+        if let Some(response_text) = response {
+            Self::write_text_response(&response_text);
         } else {
             Self::write_warning("No response received from the model. The task may be incomplete.");
         }
@@ -248,7 +247,7 @@ impl CliOutputSink {
     }
 
     fn turn_result_json(
-        result: &anyhow::Result<Option<Message>>,
+        result: &anyhow::Result<Option<String>>,
         duration_ms: u64,
         client: &Agent,
         current_dir: &Path,
@@ -265,8 +264,8 @@ impl CliOutputSink {
         });
 
         match result {
-            Ok(response_msg) => {
-                let result_text = response_msg.as_ref().map_or("", |m| m.content.as_str());
+            Ok(response_text) => {
+                let result_text = response_text.as_deref().unwrap_or("");
                 json["result"] = serde_json::json!(result_text);
             },
             Err(e) => {
@@ -1144,11 +1143,6 @@ impl CodingAssistant {
         session_start_source: HookSource,
         content: &str,
     ) -> anyhow::Result<TurnResult> {
-        let msg = Message {
-            role: Role::User,
-            content: content.to_string(),
-        };
-
         let start = Instant::now();
 
         if let Some(runner) = hook_runner {
@@ -1160,12 +1154,12 @@ impl CodingAssistant {
         client.emit_prompt_context_records()?;
         client.emit_task_start_record()?;
 
-        let result = client.send(msg).await;
+        let result = client.send(content.to_string()).await;
         let duration_ms = start.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
 
         match &result {
-            Ok(response_msg) => {
-                let result_text = response_msg.as_ref().map(|m| m.content.clone());
+            Ok(response_text) => {
+                let result_text = response_text.clone();
                 if let Some(runner) = hook_runner
                     && let Some(context) = runner.stop(result_text.as_deref()).await?
                 {
@@ -1383,8 +1377,8 @@ async fn main() -> std::process::ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::clients::types::FunctionCallOutputData;
     use crate::config::model::ApiType;
+    use crate::types::session::FunctionCallOutputData;
 
     fn test_resolved_model_config() -> ResolvedModelConfig {
         ResolvedModelConfig {
@@ -2032,11 +2026,9 @@ mod tests {
             )
             .with_session_id(uuid::uuid!("550e8400-e29b-41d4-a716-446655440000"))
             .with_turn_count(3)
-            .with_total_usage(crate::clients::types::Usage {
+            .with_total_usage(crate::types::Usage {
                 input_tokens: 1000,
-                input_tokens_details: crate::clients::types::InputTokensDetails {
-                    cached_tokens: 250,
-                },
+                input_tokens_details: crate::types::InputTokensDetails { cached_tokens: 250 },
                 output_tokens: 500,
                 ..Default::default()
             });
@@ -2060,7 +2052,7 @@ mod tests {
             )
             .with_session_id(uuid::uuid!("550e8400-e29b-41d4-a716-446655440000"))
             .with_turn_count(2)
-            .with_total_usage(crate::clients::types::Usage {
+            .with_total_usage(crate::types::Usage {
                 input_tokens: 12,
                 output_tokens: 8,
                 ..Default::default()
@@ -2075,10 +2067,7 @@ mod tests {
                 Ok(data_dir) => data_dir,
                 Err(err) => panic!("data dir should be created: {err}"),
             };
-            let result = Ok(Some(Message {
-                role: Role::Assistant,
-                content: "done".to_string(),
-            }));
+            let result = Ok(Some("done".to_string()));
 
             let json = CliOutputSink::turn_result_json(
                 &result,

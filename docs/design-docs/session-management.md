@@ -278,4 +278,4 @@ Stream-json output uses the same per-task record shapes as v4 session files, inc
 - Storage and loading: `src/config/session.rs`, `src/config/data_dir.rs`
 - CLI orchestration: `src/main.rs`
 - Agent task events and live persistence fan-out: `src/clients/agent.rs`
-- Persisted and streamed schemas: `src/clients/types.rs` (`SessionRecord`, `StreamRecord`, `TaskCompleteSubtype`)
+- Persisted and streamed schemas: `src/types/session.rs` (`SessionRecord`, `StreamRecord`, `TaskCompleteSubtype`)

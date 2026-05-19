@@ -16,7 +16,6 @@ See the [../adr/](../adr/) directory for architectural decision records (ADRs).
   | [edit-tool-session-analysis.md](edit-tool-session-analysis.md) | Methodology for assessing Edit tool failures and underperformance in session JSONL |
   | [hooks.md](hooks.md)                                           | Command hook configuration, runtime protocol, and observability                    |
   | [logging.md](logging.md)                                       | Logging architecture and implementation                                            |
-  | [models.md](models.md)                                         | Role and Message types                                                             |
   | [prompts.md](prompts.md)                                       | Prompt engineering and templating                                                  |
   | [sandbox.md](sandbox.md)                                       | Sandbox environment design                                                         |
   | [session-management.md](session-management.md)                 | Session lifecycle, storage, and persisted JSONL schema                             |

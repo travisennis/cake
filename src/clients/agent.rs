@@ -11,19 +11,18 @@ use crate::clients::agent_runner::AgentRunner;
 use crate::clients::agent_state::{ConversationState, accumulate_usage};
 use crate::clients::backend::Backend;
 use crate::clients::tools::{ToolContext, ToolRegistry, default_tool_registry};
-use crate::clients::types::{
-    ConversationItem, SessionRecord, StreamRecord, TaskCompleteData, TaskOutcome, TaskStartData,
-    Usage,
-};
 #[cfg(test)]
 use crate::config::model::ApiType;
 use crate::config::model::ResolvedModelConfig;
 use crate::config::skills::Skill;
 use crate::hooks::{HookRunner, ToolHookPlan};
-use crate::models::{Message, Role};
 use crate::session_telemetry::{
     AgentRunnerTelemetryEvent, SessionTelemetryContext, SessionTelemetryRecord,
     SessionTelemetrySettings, SessionTelemetryWriter, ToolCallTelemetry,
+};
+use crate::types::{
+    ConversationItem, Role, SessionRecord, StreamRecord, TaskCompleteData, TaskOutcome,
+    TaskStartData, Usage,
 };
 
 /// Result of a single API turn (one request/response cycle).
@@ -487,8 +486,8 @@ impl Agent {
         clippy::too_many_lines,
         reason = "agent send loop orchestrates tool execution and retry logic"
     )]
-    pub async fn send(&mut self, message: Message) -> anyhow::Result<Option<Message>> {
-        let user_item = self.conversation.push_user_message(message.content.clone());
+    pub async fn send(&mut self, content: String) -> anyhow::Result<Option<String>> {
+        let user_item = self.conversation.push_user_message(content);
         self.stream_item(&user_item)?;
 
         // Agent loop: continue until model stops making tool calls
@@ -963,9 +962,9 @@ fn test_agent_for(api_type: ApiType, base_url: &str) -> Agent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::clients::types::{InputTokensDetails, OutputTokensDetails};
     use crate::config::model::ApiType;
     use crate::config::skills::SkillScope;
+    use crate::types::{InputTokensDetails, OutputTokensDetails};
     use tempfile::TempDir;
 
     fn test_agent() -> Agent {
@@ -1811,15 +1810,9 @@ mod error_tests {
         });
         agent.tools = crate::clients::tools::read_tool_registry();
 
-        let result = agent
-            .send(Message {
-                role: Role::User,
-                content: "run a command".to_string(),
-            })
-            .await
-            .unwrap();
+        let result = agent.send("run a command".to_string()).await.unwrap();
 
-        assert!(matches!(result, Some(Message { content, .. }) if content == "done"));
+        assert_eq!(result.as_deref(), Some("done"));
         assert_eq!(agent.turn_count, 2);
         assert_eq!(agent.total_usage.input_tokens, 7);
         assert_eq!(agent.total_usage.output_tokens, 3);
@@ -1879,15 +1872,9 @@ mod error_tests {
         ));
         let mut agent = test_agent_with_url(&mock_server.uri()).with_hook_runner(runner);
 
-        let result = agent
-            .send(Message {
-                role: Role::User,
-                content: "run a command".to_string(),
-            })
-            .await
-            .unwrap();
+        let result = agent.send("run a command".to_string()).await.unwrap();
 
-        assert!(matches!(result, Some(Message { content, .. }) if content == "Hello!"));
+        assert_eq!(result.as_deref(), Some("Hello!"));
         assert!(agent.history().iter().any(|item| matches!(
             item,
             ConversationItem::FunctionCallOutput { output, .. }

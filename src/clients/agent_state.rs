@@ -1,5 +1,4 @@
-use crate::clients::types::{ConversationItem, Usage};
-use crate::models::{Message, Role};
+use crate::types::{ConversationItem, Role, Usage};
 
 #[derive(Debug)]
 pub(super) struct ConversationState {
@@ -94,7 +93,7 @@ impl ConversationState {
         item
     }
 
-    pub(super) fn resolve_assistant_message(&self) -> Message {
+    pub(super) fn resolve_assistant_message(&self) -> String {
         resolve_assistant_message(&self.history)
     }
 
@@ -120,26 +119,23 @@ pub(super) const fn accumulate_usage(
     }
 }
 
-fn resolve_assistant_message(items: &[ConversationItem]) -> Message {
-    if let Some(msg) = items.iter().rev().find_map(|item| {
+fn resolve_assistant_message(items: &[ConversationItem]) -> String {
+    if let Some(content) = items.iter().rev().find_map(|item| {
         if let ConversationItem::Message {
             role: Role::Assistant,
             content,
             ..
         } = item
         {
-            Some(Message {
-                role: Role::Assistant,
-                content: content.clone(),
-            })
+            Some(content.clone())
         } else {
             None
         }
     }) {
-        return msg;
+        return content;
     }
 
-    let content = if items.is_empty() {
+    if items.is_empty() {
         "No response was received from the model.".to_string()
     } else if items
         .iter()
@@ -148,11 +144,6 @@ fn resolve_assistant_message(items: &[ConversationItem]) -> Message {
         "The model's response was incomplete. The task may have been partially completed but was cut off during reasoning.".to_string()
     } else {
         "The model's response was incomplete. No final message was received.".to_string()
-    };
-
-    Message {
-        role: Role::Assistant,
-        content,
     }
 }
 
@@ -169,8 +160,8 @@ mod tests {
             status: Some("completed".to_string()),
             timestamp: None,
         }];
-        let msg = resolve_assistant_message(&items);
-        assert_eq!(msg.content, "Hello!");
+        let content = resolve_assistant_message(&items);
+        assert_eq!(content, "Hello!");
     }
 
     #[test]
@@ -182,15 +173,15 @@ mod tests {
             content: None,
             timestamp: None,
         }];
-        let msg = resolve_assistant_message(&items);
-        assert!(msg.content.contains("cut off during reasoning"));
+        let content = resolve_assistant_message(&items);
+        assert!(content.contains("cut off during reasoning"));
     }
 
     #[test]
     fn resolve_assistant_message_no_output_items() {
         let items: Vec<ConversationItem> = vec![];
-        let msg = resolve_assistant_message(&items);
-        assert_eq!(msg.content, "No response was received from the model.");
+        let content = resolve_assistant_message(&items);
+        assert_eq!(content, "No response was received from the model.");
     }
 
     #[test]
@@ -202,9 +193,9 @@ mod tests {
             arguments: "{}".to_string(),
             timestamp: None,
         }];
-        let msg = resolve_assistant_message(&items);
+        let content = resolve_assistant_message(&items);
         assert_eq!(
-            msg.content,
+            content,
             "The model's response was incomplete. No final message was received."
         );
     }

@@ -117,8 +117,8 @@ cake << 'EOF'
 Here are two files. Explain how they interact:
 --- agent.rs ---
 $(cat src/clients/agent.rs)
---- types.rs ---
-$(cat src/clients/types.rs)
+--- conversation.rs ---
+$(cat src/types/conversation.rs)
 EOF
 ```
 

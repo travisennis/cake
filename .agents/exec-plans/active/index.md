@@ -27,3 +27,5 @@ This index follows `.agents/PLANS.md`. Active ExecPlans are checked-in plans tha
 - 2026-05-14 / Codex: Added the active ExecPlan for task 125, `Implement Lazy Skill Body Loading at Activation Time`.
 - 2026-05-14 / Codex: Moved `lazy-skill-body-loading.md` to completed after task 125 passed focused validation.
 - 2026-05-19 / Codex: Moved `per-session-telemetry-plan.md` to completed after task 119 passed validation.
+- 2026-05-19 / agent: Added the active ExecPlan for task 098, `Reorganize Type Modules`.
+- 2026-05-19 / agent: Moved `reorganize-type-modules.md` to completed after task 098 passed validation.

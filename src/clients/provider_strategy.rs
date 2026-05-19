@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
 use crate::clients::chat_types::ChatMessage;
-use crate::clients::types::ProviderConfig;
+use crate::clients::responses_types::ProviderConfig;
 use crate::config::model::{ModelProvider, ProviderHeaders, ResolvedModelConfig};
 
 const OPENROUTER_REFERER: &str = "https://github.com/travisennis/cake";

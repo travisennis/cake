@@ -7,12 +7,12 @@ use crate::clients::agent::TurnResult;
 use crate::clients::backend::Backend;
 use crate::clients::retry::{self, HttpFailure, RequestOverrides, RetryPolicy, RetryStatus};
 use crate::clients::tools::Tool;
-use crate::clients::types::ConversationItem;
 use crate::config::model::ResolvedModelConfig;
 use crate::session_telemetry::{
     AgentRunnerTelemetryEvent, ApiAttemptTelemetry, RequestOverridesSnapshot,
     RetryScheduledTelemetry,
 };
+use crate::types::ConversationItem;
 
 pub(super) fn build_http_client(disable_connection_reuse: bool) -> reqwest::Client {
     let mut builder = reqwest::Client::builder()

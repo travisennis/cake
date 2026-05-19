@@ -42,7 +42,7 @@ The bridge to external AI services and the orchestration layer for tool executio
 
 **`tools::sandbox`**: Cross-platform sandboxing abstraction. Provides `SandboxConfig` and `SandboxStrategy` for restricting filesystem and network access. Platform-specific implementations use sandbox-exec (macOS) or Landlock LSM (Linux).
 
-### Layer 2: Config, Models, Prompts
+### Layer 2: Config, Types, Prompts
 
 Foundation modules that provide data persistence, core types, and prompt generation.
 
@@ -58,12 +58,13 @@ Foundation modules that provide data persistence, core types, and prompt generat
 
 Sessions are stored as flat `{uuid}.jsonl` files under `~/.local/share/cake/sessions/`. Each file's header contains the working directory, so `--continue` filters by matching the current directory.
 
-**`models`**:
+**`types`**:
 
-- `Message`: Simple role+content struct for high-level API
-- `Role`: Enum of System, Assistant, User, Tool
+- `conversation`: `Role` enum (System, Developer, Assistant, User, Tool), `ConversationItem` enum, and `ReasoningContent`/`ReasoningContentKind` for round-tripping reasoning items.
+- `session`: `SessionRecord` and `StreamRecord` enums plus the shared `*Data` structs that back their variants, `GitState`, and `TaskOutcome`/`TaskCompleteSubtype`.
+- `usage`: `Usage`, `InputTokensDetails`, `OutputTokensDetails` — the backend-agnostic token usage shape both Chat Completions and Responses normalize into.
 
-These types are intentionally simple---most of the system uses `ConversationItem` directly.
+API wire-format DTOs live next to the backend that owns them: `clients::chat_types` for Chat Completions and `clients::responses_types` for the Responses API.
 
 **`prompts`**: System prompt construction with AGENTS.md and skill catalog integration. Reads user-level (`~/.cake/AGENTS.md`), XDG config (`~/.config/AGENTS.md`), and project-level (`./AGENTS.md`) instruction files, plus discovered skills from `.agents/skills/`, and injects them into the system prompt.
 
@@ -79,7 +80,7 @@ External crates: `anyhow` for error handling, `tokio` for async runtime, `serde`
 
 These constraints guide the design and are unlikely to change:
 
-1. **Dependencies flow downward only**: `cli` → `clients` → `config/models/prompts`. Cross-layer imports are prohibited (e.g., `config` cannot import from `clients`).
+1. **Dependencies flow downward only**: `cli` → `clients` → `config/types/prompts`. Cross-layer imports are prohibited (e.g., `config` cannot import from `clients`).
 
 2. **All internal imports use absolute paths**: `crate::module::Item`, never relative paths like `super::` or `self::`.
 
@@ -177,7 +178,6 @@ For deeper understanding of specific subsystems:
 
 - `docs/design-docs/cli.md` - Command-line interface and command dispatch
 - `docs/design-docs/conversation-types.md` - ConversationItem enum and API types
-- `docs/design-docs/models.md` - Role and Message types
 - `docs/design-docs/prompts.md` - System prompt construction and AGENTS.md integration
 - `docs/design-docs/session-management.md` - Session lifecycle and storage format
 - `docs/design-docs/sandbox.md` - Sandbox implementation details

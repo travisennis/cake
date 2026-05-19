@@ -1,5 +1,5 @@
 use crate::clients::retry::RetryStatus;
-use crate::clients::types::{ConversationItem, SessionRecord, StreamRecord};
+use crate::types::{ConversationItem, SessionRecord, StreamRecord};
 
 type StreamingCallback = Box<dyn Fn(&str) + Send + Sync>;
 type PersistCallback = Box<dyn FnMut(&SessionRecord) -> anyhow::Result<()> + Send + Sync>;

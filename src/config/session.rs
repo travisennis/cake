@@ -309,11 +309,13 @@ fn lock_session_file(file: &File, path: &Path) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::clients::types::{
-        FunctionCallData, FunctionCallOutputData, MessageData, ReasoningContent,
-        ReasoningContentKind, ReasoningData, TaskCompleteData, TaskOutcome, TaskStartData, Usage,
+    use crate::types::session::{
+        FunctionCallData, FunctionCallOutputData, MessageData, ReasoningData,
     };
-    use crate::models::Role;
+    use crate::types::{
+        ReasoningContent, ReasoningContentKind, Role, TaskCompleteData, TaskOutcome, TaskStartData,
+        Usage,
+    };
     use tempfile::TempDir;
 
     /// Helper to create a minimal v4 session for testing.

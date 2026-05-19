@@ -9,8 +9,8 @@ use serde::Serialize;
 
 use crate::OutputFormat;
 use crate::clients::retry::{RequestOverrides, RetryReason, RetryStatus};
-use crate::clients::types::Usage;
 use crate::config::model::{ApiType, ReasoningEffort};
+use crate::types::Usage;
 
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]

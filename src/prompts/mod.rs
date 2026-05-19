@@ -23,7 +23,7 @@ use chrono::Local;
 use tracing::{debug, warn};
 
 use crate::config::{AgentsFile, SkillCatalog};
-use crate::models::Role;
+use crate::types::Role;
 
 /// Built-in default system prompt, embedded at compile time from `system.md`.
 const BUILTIN_SYSTEM_PROMPT: &str = include_str!("system.md");

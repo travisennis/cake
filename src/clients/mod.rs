@@ -18,13 +18,13 @@ mod chat_completions;
 mod chat_types;
 mod provider_strategy;
 mod responses;
+mod responses_types;
 pub mod retry;
 mod tools;
-pub mod types;
 
+#[doc(inline)]
+pub use crate::types::{ConversationItem, GitState, SessionRecord, TaskOutcome};
 #[doc(inline)]
 pub use agent::Agent;
 #[doc(inline)]
 pub use tools::{ToolContext, summarize_tool_args};
-#[doc(inline)]
-pub use types::{ConversationItem, GitState, SessionRecord, TaskOutcome};

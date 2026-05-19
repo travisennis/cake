@@ -1,16 +1,17 @@
 use tracing::{debug, trace};
 
 use crate::config::model::ResolvedModelConfig;
-use crate::models::Role;
 
 use crate::clients::agent::TurnResult;
 use crate::clients::provider_strategy::ProviderStrategy;
+use crate::clients::responses_types::{
+    ApiResponse, ApiUsage, OutputMessage, ReasoningConfig, Request, ResponsesApiInputItem,
+    ResponsesMessageContent, ResponsesReasoningSummary,
+};
 use crate::clients::retry::RequestOverrides;
 use crate::clients::tools::Tool;
-use crate::clients::types::{
-    ApiResponse, ApiUsage, ConversationItem, InputTokensDetails, OutputMessage,
-    OutputTokensDetails, ReasoningConfig, ReasoningContentKind, Request, ResponsesApiInputItem,
-    Usage,
+use crate::types::{
+    ConversationItem, InputTokensDetails, OutputTokensDetails, ReasoningContentKind, Role, Usage,
 };
 
 // =============================================================================
@@ -162,10 +163,78 @@ fn extract_instructions(
 
 /// Build the input array for the Responses API from conversation history.
 fn build_input(history: &[ConversationItem]) -> Vec<ResponsesApiInputItem<'_>> {
-    history
-        .iter()
-        .map(ConversationItem::to_api_input_item)
-        .collect()
+    history.iter().map(ResponsesApiInputItem::from).collect()
+}
+
+impl<'a> From<&'a ConversationItem> for ResponsesApiInputItem<'a> {
+    fn from(item: &'a ConversationItem) -> Self {
+        match item {
+            ConversationItem::Message {
+                role,
+                content,
+                id,
+                status,
+                ..
+            } => {
+                let content_type = if matches!(role, Role::Assistant) {
+                    "output_text"
+                } else {
+                    "input_text"
+                };
+                // Provider quirk: the Responses API requires an `annotations`
+                // field (even if empty) on assistant `output_text` content
+                // blocks. Non-assistant `input_text` blocks must omit it.
+                // Removing the empty array would send malformed assistant
+                // turns to the provider.
+                let annotations =
+                    matches!(role, Role::Assistant).then(Vec::<serde_json::Value>::new);
+
+                Self::Message {
+                    role: role.as_str(),
+                    content: vec![ResponsesMessageContent {
+                        content_type,
+                        text: content,
+                        annotations,
+                    }],
+                    id: id.as_deref(),
+                    status: status.as_deref(),
+                }
+            },
+            ConversationItem::FunctionCall {
+                id,
+                call_id,
+                name,
+                arguments,
+                ..
+            } => Self::FunctionCall {
+                id,
+                call_id,
+                name,
+                arguments,
+            },
+            ConversationItem::FunctionCallOutput {
+                call_id, output, ..
+            } => Self::FunctionCallOutput { call_id, output },
+            ConversationItem::Reasoning {
+                id,
+                summary,
+                encrypted_content,
+                content,
+                ..
+            } => Self::Reasoning {
+                id,
+                summary: summary
+                    .iter()
+                    .map(|text| ResponsesReasoningSummary {
+                        summary_type: "summary_text",
+                        text,
+                    })
+                    .collect(),
+                encrypted_content: encrypted_content.as_deref(),
+                content: content.as_deref(),
+            },
+        }
+    }
 }
 
 /// Parse the output items from an API response into `ConversationItem` values.
@@ -203,7 +272,7 @@ fn parse_output_items(api_response: &ApiResponse) -> anyhow::Result<Vec<Conversa
 
                     let content = output.content.as_ref().map(|c| {
                         c.iter()
-                            .map(|item| super::types::ReasoningContent {
+                            .map(|item| crate::types::ReasoningContent {
                                 content_type: item.content_type.clone().into(),
                                 text: item.text.clone(),
                             })
@@ -335,7 +404,12 @@ fn malformed_function_call_error(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::clients::types::{OutputContent, OutputMessage, ProviderConfig};
+    use crate::clients::responses_types::{OutputContent, OutputMessage, ProviderConfig};
+
+    fn to_api_input_json(item: &ConversationItem) -> serde_json::Value {
+        serde_json::to_value(ResponsesApiInputItem::from(item))
+            .expect("Responses API input DTO serialization should be infallible")
+    }
 
     fn input_json(history: &[ConversationItem]) -> Vec<serde_json::Value> {
         build_input(history)
@@ -617,7 +691,7 @@ mod tests {
         };
         let items = parse_output_items(&response).unwrap();
         assert_eq!(items.len(), 1);
-        let api_input = items[0].to_api_input();
+        let api_input = to_api_input_json(&items[0]);
         assert_eq!(api_input["content"][0]["type"], "reasoning_text");
         assert_eq!(api_input["content"][0]["text"], "deep reasoning here");
     }
@@ -644,7 +718,7 @@ mod tests {
         };
 
         let items = parse_output_items(&response).unwrap();
-        let api_input = items[0].to_api_input();
+        let api_input = to_api_input_json(&items[0]);
 
         assert_eq!(
             api_input["content"][0]["type"],
@@ -1078,6 +1152,11 @@ mod response_parsing_tests {
     use wiremock::matchers::method;
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    fn to_api_input_json(item: &ConversationItem) -> serde_json::Value {
+        serde_json::to_value(ResponsesApiInputItem::from(item))
+            .expect("Responses API input DTO serialization should be infallible")
+    }
+
     /// Create a minimal valid response JSON
     fn minimal_valid_response() -> serde_json::Value {
         serde_json::json!({
@@ -1300,5 +1379,281 @@ mod response_parsing_tests {
         assert_eq!(usage.total_tokens, 0); // Default
         assert_eq!(usage.input_tokens_details.cached_tokens, 0); // Default
         assert_eq!(usage.output_tokens_details.reasoning_tokens, 0); // Default
+    }
+
+    #[test]
+    fn to_api_input_user_message() {
+        let item = ConversationItem::Message {
+            role: Role::User,
+            content: "Hello".to_string(),
+            id: None,
+            status: None,
+            timestamp: None,
+        };
+        let json = to_api_input_json(&item);
+        assert_eq!(json["type"], "message");
+        assert_eq!(json["role"], "user");
+        assert_eq!(json["content"][0]["type"], "input_text");
+        assert_eq!(json["content"][0]["text"], "Hello");
+    }
+
+    #[test]
+    fn to_api_input_assistant_message_uses_output_text() {
+        let item = ConversationItem::Message {
+            role: Role::Assistant,
+            content: "Hi".to_string(),
+            id: Some("msg-1".to_string()),
+            status: Some("completed".to_string()),
+            timestamp: None,
+        };
+        let json = to_api_input_json(&item);
+        assert_eq!(json["role"], "assistant");
+        assert_eq!(json["content"][0]["type"], "output_text");
+        assert_eq!(json["content"][0]["text"], "Hi");
+        assert_eq!(json["id"], "msg-1");
+        assert_eq!(json["status"], "completed");
+    }
+
+    #[test]
+    fn to_api_input_system_message() {
+        let item = ConversationItem::Message {
+            role: Role::System,
+            content: "You are helpful".to_string(),
+            id: None,
+            status: None,
+            timestamp: None,
+        };
+        let json = to_api_input_json(&item);
+        assert_eq!(json["role"], "system");
+        assert_eq!(json["content"][0]["type"], "input_text");
+    }
+
+    #[test]
+    fn to_api_input_tool_message() {
+        let item = ConversationItem::Message {
+            role: Role::Tool,
+            content: "tool result".to_string(),
+            id: None,
+            status: None,
+            timestamp: None,
+        };
+        let json = to_api_input_json(&item);
+        assert_eq!(json["role"], "tool");
+        assert_eq!(json["content"][0]["type"], "input_text");
+    }
+
+    #[test]
+    fn to_api_input_function_call() {
+        let item = ConversationItem::FunctionCall {
+            id: "fc-1".to_string(),
+            call_id: "call-1".to_string(),
+            name: "bash".to_string(),
+            arguments: r#"{"cmd":"ls"}"#.to_string(),
+            timestamp: None,
+        };
+        let json = to_api_input_json(&item);
+        assert_eq!(json["type"], "function_call");
+        assert_eq!(json["id"], "fc-1");
+        assert_eq!(json["call_id"], "call-1");
+        assert_eq!(json["name"], "bash");
+        assert_eq!(json["arguments"], r#"{"cmd":"ls"}"#);
+    }
+
+    #[test]
+    fn to_api_input_function_call_output() {
+        let item = ConversationItem::FunctionCallOutput {
+            call_id: "call-1".to_string(),
+            output: "file.txt".to_string(),
+            timestamp: None,
+        };
+        let json = to_api_input_json(&item);
+        assert_eq!(json["type"], "function_call_output");
+        assert_eq!(json["call_id"], "call-1");
+        assert_eq!(json["output"], "file.txt");
+    }
+
+    #[test]
+    fn to_api_input_reasoning() {
+        let item = ConversationItem::Reasoning {
+            id: "r-1".to_string(),
+            summary: vec!["thinking...".to_string()],
+            encrypted_content: None,
+            content: None,
+            timestamp: None,
+        };
+        let json = to_api_input_json(&item);
+        assert_eq!(json["type"], "reasoning");
+        assert_eq!(json["id"], "r-1");
+        assert_eq!(json["summary"][0]["type"], "summary_text");
+        assert_eq!(json["summary"][0]["text"], "thinking...");
+    }
+
+    #[test]
+    fn to_api_input_reasoning_multiple_summaries() {
+        let item = ConversationItem::Reasoning {
+            id: "r-2".to_string(),
+            summary: vec!["step 1".to_string(), "step 2".to_string()],
+            encrypted_content: None,
+            content: None,
+            timestamp: None,
+        };
+        let json = to_api_input_json(&item);
+        assert_eq!(json["summary"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn to_api_input_reasoning_with_encrypted_content() {
+        let item = ConversationItem::Reasoning {
+            id: "r-1".to_string(),
+            summary: vec!["thinking...".to_string()],
+            encrypted_content: Some("gAAAAABencrypted...".to_string()),
+            content: None,
+            timestamp: None,
+        };
+        let json = to_api_input_json(&item);
+        assert_eq!(json["type"], "reasoning");
+        assert_eq!(json["encrypted_content"], "gAAAAABencrypted...");
+    }
+
+    #[test]
+    fn to_api_input_reasoning_without_encrypted_content_omits_field() {
+        let item = ConversationItem::Reasoning {
+            id: "r-1".to_string(),
+            summary: vec!["thinking...".to_string()],
+            encrypted_content: None,
+            content: None,
+            timestamp: None,
+        };
+        let json = to_api_input_json(&item);
+        assert!(json.get("encrypted_content").is_none());
+    }
+
+    #[test]
+    fn to_api_input_reasoning_with_content() {
+        let item = ConversationItem::Reasoning {
+            id: "r-1".to_string(),
+            summary: vec!["thinking...".to_string()],
+            encrypted_content: None,
+            timestamp: None,
+            content: Some(vec![crate::types::ReasoningContent {
+                content_type: ReasoningContentKind::ReasoningText,
+                text: Some("deep thoughts".to_string()),
+            }]),
+        };
+        let json = to_api_input_json(&item);
+        assert_eq!(json["content"][0]["type"], "reasoning_text");
+        assert_eq!(json["content"][0]["text"], "deep thoughts");
+    }
+
+    #[test]
+    fn snapshot_user_message() {
+        let item = ConversationItem::Message {
+            role: Role::User,
+            content: "Hello".to_string(),
+            id: None,
+            status: None,
+            timestamp: None,
+        };
+        insta::assert_json_snapshot!("to_api_input_user_message", to_api_input_json(&item));
+    }
+
+    #[test]
+    fn snapshot_assistant_message_with_id_and_status() {
+        let item = ConversationItem::Message {
+            role: Role::Assistant,
+            content: "Hi there".to_string(),
+            id: Some("msg-1".to_string()),
+            status: Some("completed".to_string()),
+            timestamp: None,
+        };
+        insta::assert_json_snapshot!(
+            "to_api_input_assistant_message_with_id_and_status",
+            to_api_input_json(&item)
+        );
+    }
+
+    #[test]
+    fn snapshot_system_message() {
+        let item = ConversationItem::Message {
+            role: Role::System,
+            content: "You are cake".to_string(),
+            id: None,
+            status: None,
+            timestamp: None,
+        };
+        insta::assert_json_snapshot!("to_api_input_system_message", to_api_input_json(&item));
+    }
+
+    #[test]
+    fn snapshot_function_call() {
+        let item = ConversationItem::FunctionCall {
+            id: "fc-1".to_string(),
+            call_id: "call-1".to_string(),
+            name: "bash".to_string(),
+            arguments: r#"{"cmd":"ls"}"#.to_string(),
+            timestamp: None,
+        };
+        insta::assert_json_snapshot!("to_api_input_function_call", to_api_input_json(&item));
+    }
+
+    #[test]
+    fn snapshot_function_call_output() {
+        let item = ConversationItem::FunctionCallOutput {
+            call_id: "call-1".to_string(),
+            output: "file.txt\nother.txt".to_string(),
+            timestamp: None,
+        };
+        insta::assert_json_snapshot!(
+            "to_api_input_function_call_output",
+            to_api_input_json(&item)
+        );
+    }
+
+    #[test]
+    fn snapshot_reasoning_with_summary() {
+        let item = ConversationItem::Reasoning {
+            id: "r-1".to_string(),
+            summary: vec!["thinking...".to_string()],
+            encrypted_content: None,
+            content: None,
+            timestamp: None,
+        };
+        insta::assert_json_snapshot!(
+            "to_api_input_reasoning_with_summary",
+            to_api_input_json(&item)
+        );
+    }
+
+    #[test]
+    fn snapshot_reasoning_with_encrypted_content() {
+        let item = ConversationItem::Reasoning {
+            id: "r-1".to_string(),
+            summary: vec!["thinking...".to_string()],
+            encrypted_content: Some("gAAAAABencrypted...".to_string()),
+            content: None,
+            timestamp: None,
+        };
+        insta::assert_json_snapshot!(
+            "to_api_input_reasoning_with_encrypted_content",
+            to_api_input_json(&item)
+        );
+    }
+
+    #[test]
+    fn snapshot_reasoning_with_content_array() {
+        let item = ConversationItem::Reasoning {
+            id: "r-1".to_string(),
+            summary: vec!["thinking...".to_string()],
+            encrypted_content: None,
+            content: Some(vec![crate::types::ReasoningContent {
+                content_type: ReasoningContentKind::ReasoningText,
+                text: Some("deep analysis".to_string()),
+            }]),
+            timestamp: None,
+        };
+        insta::assert_json_snapshot!(
+            "to_api_input_reasoning_with_content_array",
+            to_api_input_json(&item)
+        );
     }
 }

@@ -3,7 +3,6 @@ use std::borrow::Cow;
 use tracing::{debug, trace};
 
 use crate::config::model::ResolvedModelConfig;
-use crate::models::Role;
 
 use crate::clients::agent::TurnResult;
 use crate::clients::chat_types::{
@@ -13,8 +12,8 @@ use crate::clients::chat_types::{
 use crate::clients::provider_strategy::ProviderStrategy;
 use crate::clients::retry::RequestOverrides;
 use crate::clients::tools::Tool;
-use crate::clients::types::{
-    ConversationItem, InputTokensDetails, OutputTokensDetails, ReasoningContentKind, Usage,
+use crate::types::{
+    ConversationItem, InputTokensDetails, OutputTokensDetails, ReasoningContentKind, Role, Usage,
 };
 
 // =============================================================================
@@ -223,7 +222,7 @@ impl<'a> ChatMessageBuilder<'a> {
         });
     }
 
-    fn remember_reasoning(&mut self, content: Option<&'a [super::types::ReasoningContent]>) {
+    fn remember_reasoning(&mut self, content: Option<&'a [crate::types::ReasoningContent]>) {
         self.pending_reasoning_content = extract_reasoning_content(content).map(Cow::Borrowed);
     }
 
@@ -288,7 +287,7 @@ const fn chat_role_name(role: Role) -> Option<&'static str> {
     }
 }
 
-fn extract_reasoning_content(content: Option<&[super::types::ReasoningContent]>) -> Option<&str> {
+fn extract_reasoning_content(content: Option<&[crate::types::ReasoningContent]>) -> Option<&str> {
     content.and_then(|items| items.iter().find_map(|item| item.text.as_deref()))
 }
 
@@ -324,7 +323,7 @@ fn parse_choices(response: &ChatResponse) -> anyhow::Result<Vec<ConversationItem
             id: response_id.clone(),
             summary: vec!["Thinking...".to_string()],
             encrypted_content: None,
-            content: Some(vec![super::types::ReasoningContent {
+            content: Some(vec![crate::types::ReasoningContent {
                 content_type: ReasoningContentKind::ReasoningText,
                 text: Some(reasoning_content.clone()),
             }]),
@@ -394,8 +393,8 @@ mod tests {
         ChatChoice, ChatFunctionCall, ChatResponse, ChatResponseMessage, ChatToolCall, ChatUsage,
         PromptTokensDetails,
     };
-    use crate::clients::types::{ReasoningContent, ReasoningContentKind};
     use crate::config::model::{ApiType, ModelConfig};
+    use crate::types::{ReasoningContent, ReasoningContentKind};
 
     fn apply_test_strategy(model: &str, messages: &mut [ChatMessage<'_>]) {
         let config = ResolvedModelConfig {

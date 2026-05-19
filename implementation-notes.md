@@ -1,5 +1,16 @@
 # Implementation Notes
 
+## Ticket 098: Reorganize Type Modules
+
+- Design decision: `mod session` is declared `pub mod` in `src/types/mod.rs` so that test-only structs (`MessageData`, `FunctionCallData`, `FunctionCallOutputData`, `ReasoningData`) can be accessed by their tests at `crate::types::session::*` without polluting the top-level `crate::types` namespace with unused re-exports. The ExecPlan's selective re-export plan only re-exports types referenced by non-test code at the top level.
+- Design decision: `Agent::send()` now takes `String` and returns `anyhow::Result<Option<String>>`. The `Message` struct is removed entirely (Milestone 8). `(Role, String)` is used by `Agent::new()` and `build_initial_prompt_messages` already returned that shape.
+- Design decision: the `From<&ConversationItem> for ResponsesApiInputItem` impl, the `ResponsesMessageContent`/`ResponsesReasoningSummary` builders, and the Responses-specific `to_api_input_json` test helper all live in `src/clients/responses.rs`. The `ConversationItem` type itself stays free of API knowledge in `src/types/conversation.rs`.
+- Design decision: kept the `ConversationItem::to_api_input_item()` helper out of the codebase; tests call `ResponsesApiInputItem::from(item)` (via a local `to_api_input_json` helper) directly.
+- Design decision: snapshot files moved with renamed module paths. `src/clients/snapshots/cake__clients__types__tests__session_*` and `stream_record_*` snapshots moved to `src/types/snapshots/cake__types__session__tests__*`. The `to_api_input_*` snapshots moved to `src/clients/snapshots/cake__clients__responses__response_parsing_tests__to_api_input_*`. Snapshot content is unchanged so the wire format is preserved.
+- Design decision: kept `TaskCompleteSubtype` as `pub` in `types/session.rs` but did not re-export it at the top of `crate::types`. It is only referenced internally by `TaskOutcome::subtype()`; not removing it because it's part of the `TaskOutcome` public API.
+- Tradeoff: a `to_api_input_json` test helper exists in both `tests` and `response_parsing_tests` modules inside `responses.rs`, because the tests live in separate `#[cfg(test)]` modules that already existed. Keeping them as siblings avoided pulling unrelated tests across module boundaries during this refactor.
+- Deviation: did not perform the milestone-by-milestone commit cadence outlined in the ExecPlan. Made the changes as one cohesive refactor since each milestone is a pure code move and the work is mechanical; verified the whole change at the end with `just ci`.
+
 ## Ticket 102: Validate Stream Hook Record Contract
 
 - Design decision: hook event records use a shared `HookEventData` struct for both `SessionRecord` and `StreamRecord` so the persisted and streamed wire shapes stay identical.

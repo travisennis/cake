@@ -13,6 +13,7 @@ This index follows `.agents/PLANS.md`. Completed ExecPlans are plans whose work 
 - `refactor-coding-assistant-run.md` - Refactor `CodingAssistant::run` into named orchestration steps.
 - `refactor-chat-build-messages.md` - Refactor Chat Completions message construction state handling.
 - `reasoning-plan.md` - Add reasoning effort and budget configuration.
+- `reorganize-type-modules.md` - Reorganize type modules into a layer-based structure under `crate::types`.
 - `retry-strategy-plan.md` - Retry transient API failures intelligently.
 - `schema-unification-plan.md` - Historical v3 stream/session unification plan, closed as superseded by append-only v4 sessions.
 - `snapshot-testing-plan.md` - Add snapshot testing for prompts and provider request shapes.
@@ -31,3 +32,4 @@ This index follows `.agents/PLANS.md`. Completed ExecPlans are plans whose work 
 - 2026-05-11 / Codex: Completed task 064 and moved `refactor-chat-build-messages.md` into this index.
 - 2026-05-14 / Codex: Completed task 125 and moved `lazy-skill-body-loading.md` into this index.
 - 2026-05-19 / Codex: Completed task 119 and moved `per-session-telemetry-plan.md` into this index.
+- 2026-05-19 / agent: Completed task 098 and moved `reorganize-type-modules.md` into this index.

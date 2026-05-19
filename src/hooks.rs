@@ -9,10 +9,9 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::time::timeout;
 
-use crate::clients::SessionRecord;
-use crate::clients::types::{HookEventData, StreamRecord};
 use crate::config::SessionWriter;
 use crate::config::hooks::{HookCommand, HookEvent, HookSource, LoadedHooks};
+use crate::types::{HookEventData, SessionRecord, StreamRecord};
 
 const HOOK_OUTPUT_LIMIT: usize = 64 * 1024;
 
@@ -945,10 +944,9 @@ mod tests {
     #[tokio::test]
     #[cfg(unix)]
     async fn post_tool_use_persists_hook_record_while_session_locked() {
-        use crate::clients::GitState;
-        use crate::clients::types::SessionRecord;
         use crate::config::session::CURRENT_FORMAT_VERSION;
         use crate::config::{Session, SessionWriter};
+        use crate::types::{GitState, SessionRecord};
 
         let dir = tempfile::TempDir::new().unwrap();
         let session_path = dir.path().join("session.jsonl");

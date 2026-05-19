@@ -1,9 +1,9 @@
 use crate::clients::agent::TurnResult;
 use crate::clients::retry::RequestOverrides;
 use crate::clients::tools::Tool;
-use crate::clients::types::ConversationItem;
 use crate::clients::{chat_completions, responses};
 use crate::config::model::{ApiType, ResolvedModelConfig};
+use crate::types::ConversationItem;
 
 #[derive(Debug, Clone, Copy)]
 pub(super) enum Backend {

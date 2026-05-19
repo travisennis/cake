@@ -1,6 +1,6 @@
 # Conversation Types
 
-The `clients::types` module defines the core data structures for representing conversations with AI models. `ConversationItem` is the canonical representation used by both the Responses API and Chat Completions API backends. Each backend handles translation to and from its own wire format, making `ConversationItem` the single source of truth for conversation state.
+The `types` module defines the core data structures for representing conversations with AI models. `ConversationItem` (in `types::conversation`) is the canonical representation used by both the Responses API and Chat Completions API backends. Each backend handles translation to and from its own wire format, making `ConversationItem` the single source of truth for conversation state.
 
 ## Overview
 
