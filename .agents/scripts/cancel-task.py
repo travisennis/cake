@@ -113,6 +113,7 @@ def main() -> int:
             print(f"  current location: {dst_rel}")
             print(f"  (no file at: {src_rel})")
             print("  No changes made. Do not look for this task under active/.")
+            print("  Git staging hint: `git add -A .agents/.tasks`")
             print("=" * 60)
             return 0
         print(f"error: {src_rel} not found", file=sys.stderr)
@@ -139,6 +140,7 @@ def main() -> int:
     print(f"  to:     {dst_rel}")
     print("  The task file is NO LONGER in active/. Reference it at the new path above.")
     print("  Next: `just task-index` regenerates indexes (auto-run by `just task-cancel`).")
+    print("  Git staging hint: `git add -A .agents/.tasks`")
     print("=" * 60)
     return 0
 
