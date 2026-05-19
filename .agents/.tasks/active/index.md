@@ -7,7 +7,7 @@ Active tasks include open, pending, blocked, and tracking work.
 ## Status Summary
 
 - Open: 1
-- Pending: 30
+- Pending: 29
 - Blocked: 5
 - Tracking: 0
 - Completed: 0
@@ -30,7 +30,6 @@ Active tasks include open, pending, blocked, and tracking work.
 | [103](103.md) | Add Builder or Fixture Infrastructure for Agent Tests | Pending | P3 | M | - | - | 066 (Encapsulate Agent fields) |
 | [104](104.md) | Add Structured Provider Header Configuration | Pending | P3 | M | - | - | 050 (Backend abstraction), 052 (Provider strategy) |
 | [105](105.md) | Improve Unknown or Missing API Field Diagnostics | Pending | P3 | M | - | - | - |
-| [106](106.md) | Audit Public Module Visibility in Tools | Pending | P3 | S | - | - | 051 (Tool abstraction) |
 | [108](108.md) | Track Manual Review Findings Without Losing Original Numbers | Pending | P3 | S | - | - | - |
 | [117](117.md) | Strengthen Edit Tool Semantics via Lean-Assisted Testing | Pending | P2 | XL | - | `.agents/exec-plans/active/edit-tool-lean.md` | - |
 | [118](118.md) | Profile and Optimize Cake Performance | Pending | P2 | L | - | `.agents/exec-plans/active/performance-improvements.md` | - |

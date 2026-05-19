@@ -143,8 +143,10 @@ pub fn get_settings_dirs(context: &ToolContext) -> &[PathBuf] {
 mod bash;
 mod bash_safety;
 mod edit;
-pub mod read;
+mod read;
 mod write;
+
+pub use read::extract_path as read_extract_path;
 
 // =============================================================================
 // Tool Types

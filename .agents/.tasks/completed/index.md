@@ -10,7 +10,7 @@ Completed tasks are retained for history and stable task-id lookup.
 - Pending: 0
 - Blocked: 0
 - Tracking: 0
-- Completed: 128
+- Completed: 129
 - Cancelled: 0
 
 ## Tasks
@@ -107,6 +107,7 @@ Completed tasks are retained for history and stable task-id lookup.
 | [095](095.md) | Fix Dead Code in is_allowed_rm_target | Completed | P3 | S | - | - | - |
 | [097](097.md) | Improve macOS Sandbox Probe Diagnostics and Cache Documentation | Completed | P3 | M | - | - | - |
 | [100](100.md) | Decide Linux Landlock Default Feature Policy | Completed | P3 | M | type:task, area:sandbox, area:ci, area:docs, risk:security-sensitive | - | - |
+| [106](106.md) | Audit Public Module Visibility in Tools | Completed | P3 | S | - | - | 051 (Tool abstraction) |
 | [107](107.md) | Reconsider Missing Docs Lint Policy | Completed | P3 | S | - | - | Resolved in same PR as 110 with 089. |
 | [109](109.md) | Edit tool: CRLF replacement text double-encoding | Completed | P3 | XS | type:bug, area:tools | - | - |
 | [110](110.md) | Apply Stricter Clippy Configuration from External Research | Completed | P2 | M | - | - | Research: clippy-stricter-config; related: 089, 107 (both completed together) |

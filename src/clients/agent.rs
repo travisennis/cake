@@ -834,7 +834,7 @@ async fn execute_tool_with_skill_dedup(
             });
     }
 
-    let Some(path_str) = crate::clients::tools::read::extract_path(arguments) else {
+    let Some(path_str) = crate::clients::tools::read_extract_path(arguments) else {
         return execute_tool_output(tools, context, name, arguments)
             .await
             .map(|output| ToolExecutionOutput {
