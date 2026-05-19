@@ -11,7 +11,7 @@ Cancelled tasks are retained for history and stable task-id lookup. They are not
 - Blocked: 0
 - Tracking: 0
 - Completed: 0
-- Cancelled: 7
+- Cancelled: 8
 
 ## Tasks
 
@@ -24,3 +24,4 @@ Cancelled tasks are retained for history and stable task-id lookup. They are not
 | [011](011.md) | Add --add-file for Injecting Single Files into Context | Cancelled | - | - | - | - | - |
 | [014](014.md) | Add Task Chaining with --then Flag | Cancelled | - | - | - | - | - |
 | [015](015.md) | Consolidate Per-Function unwrap_used Allow to Module-Level in Tests | Cancelled | - | - | - | - | - |
+| [096](096.md) | Make Git Branch Delete Detection Parser Safe | Cancelled | P3 | M | - | - | - |
