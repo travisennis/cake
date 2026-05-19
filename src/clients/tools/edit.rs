@@ -25,6 +25,7 @@ pub(super) fn edit_tool() -> super::Tool {
         description: "Edit text in files using literal search-and-replace. The set of meaningful edits is atomic: all non-no-op edits in a single call succeed together, or none are applied. Edits with identical old_text and new_text are skipped and reported as no-ops.".to_string(),
         parameters: serde_json::json!({
             "type": "object",
+            "additionalProperties": false,
             "properties": {
                 "path": {
                     "type": "string",
@@ -33,8 +34,11 @@ pub(super) fn edit_tool() -> super::Tool {
                 "edits": {
                     "type": "array",
                     "description": "The edits to make to the file. Edits with identical old_text and new_text are no-ops; they are skipped and reported without changing the file.",
+                    "minItems": 1,
+                    "maxItems": MAX_EDITS_PER_CALL,
                     "items": {
                         "type": "object",
+                        "additionalProperties": false,
                         "properties": {
                             "old_text": {
                                 "type": "string",
@@ -60,6 +64,7 @@ pub(super) fn edit_tool() -> super::Tool {
 
 /// A single edit operation
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Edit {
     old_text: String,
     new_text: String,
@@ -67,6 +72,7 @@ struct Edit {
 
 /// Arguments for the Edit tool
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct EditArgs {
     path: String,
     edits: Vec<Edit>,
@@ -132,8 +138,7 @@ pub(super) fn execute_edit(
     tool_context: &ToolContext,
     arguments: &str,
 ) -> Result<super::ToolResult, String> {
-    let args: EditArgs =
-        serde_json::from_str(arguments).map_err(|e| format!("Invalid edit arguments: {e}"))?;
+    let args = parse_edit_args(arguments)?;
 
     // Validate number of edits
     if args.edits.is_empty() {
@@ -226,6 +231,19 @@ pub(super) fn execute_edit(
     );
 
     Ok(super::ToolResult { output: result })
+}
+
+fn parse_edit_args(arguments: &str) -> Result<EditArgs, String> {
+    serde_json::from_str(arguments).map_err(|e| {
+        format!(
+            "Invalid edit arguments: {e}\nExpected shape: {}",
+            expected_edit_arguments_shape()
+        )
+    })
+}
+
+const fn expected_edit_arguments_shape() -> &'static str {
+    r#"{"path":"file.txt","edits":[{"old_text":"exact text to replace","new_text":"replacement text"}]}"#
 }
 
 // =============================================================================
@@ -786,6 +804,71 @@ mod tests {
         .to_string();
 
         assert_eq!(summarize_args(&args), "src/main.rs");
+    }
+
+    #[test]
+    fn invalid_edit_arguments_report_expected_shape() {
+        let err = parse_edit_args(r#"{"path":"src/main.rs","edits":[{"new_text":"replacement"}]}"#)
+            .unwrap_err();
+
+        assert!(
+            err.contains("Invalid edit arguments"),
+            "Error should identify invalid edit arguments: {err}"
+        );
+        assert!(
+            err.contains("missing field `old_text`"),
+            "Error should identify the missing field: {err}"
+        );
+        assert!(
+            err.contains("Expected shape"),
+            "Error should include a corrective shape: {err}"
+        );
+        assert!(
+            err.contains(r#""path":"file.txt""#),
+            "Expected shape should include top-level path: {err}"
+        );
+        assert!(
+            err.contains(r#""old_text":"exact text to replace""#),
+            "Expected shape should include per-edit old_text: {err}"
+        );
+        assert!(
+            err.contains(r#""new_text":"replacement text""#),
+            "Expected shape should include per-edit new_text: {err}"
+        );
+    }
+
+    #[test]
+    fn invalid_edit_arguments_reject_unknown_field_names() {
+        let err = parse_edit_args(
+            r#"{"path":"src/main.rs","edits":[{"old_string":"old","new_text":"new"}]}"#,
+        )
+        .unwrap_err();
+
+        assert!(
+            err.contains("unknown field `old_string`"),
+            "Error should reject the malformed field name: {err}"
+        );
+        assert!(
+            err.contains("Expected shape"),
+            "Error should include a corrective shape: {err}"
+        );
+    }
+
+    #[test]
+    fn edit_schema_enforces_required_argument_shape() {
+        let tool = edit_tool();
+
+        let params = tool.parameters;
+        assert_eq!(params["required"], serde_json::json!(["path", "edits"]));
+        assert_eq!(params["additionalProperties"], serde_json::json!(false));
+        assert_eq!(
+            params["properties"]["edits"]["items"]["required"],
+            serde_json::json!(["old_text", "new_text"])
+        );
+        assert_eq!(
+            params["properties"]["edits"]["items"]["additionalProperties"],
+            serde_json::json!(false)
+        );
     }
 
     #[test]

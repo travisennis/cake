@@ -7,7 +7,7 @@ Active tasks include open, pending, blocked, and tracking work.
 ## Status Summary
 
 - Open: 1
-- Pending: 28
+- Pending: 27
 - Blocked: 5
 - Tracking: 0
 - Completed: 0
@@ -36,7 +36,6 @@ Active tasks include open, pending, blocked, and tracking work.
 | [121](121.md) | Implement User-Defined Toolbox Tools | Pending | P2 | XL | - | `.agents/exec-plans/active/toolboxes-plan.md` | 050 (Backend abstraction, completed), 051 (Tool abstraction, completed) |
 | [135](135.md) | Prefer Focused Checks Before Final CI in Deslop Guidance | Pending | P3 | XS | - | - | - |
 | [139](139.md) | Add Structured Bulk Edit Support for Mechanical Transformations | Pending | P2 | M | - | - | - |
-| [140](140.md) | Harden Edit Schema Guidance Against Malformed Arguments | Pending | P2 | S | - | - | - |
 | [142](142.md) | Add Bash Command Lint Hints for Common Agent Footguns | Pending | P2 | M | type:bug, area:tools | - | - |
 | [145](145.md) | Add Platform Verification Guidance for cfg-Sensitive Changes | Pending | P2 | M | - | - | - |
 | [146](146.md) | Compact Large Tool Outputs Before Adding to Model Context | Pending | P2 | L | type:feature, area:agent, area:tools, area:session | - | - |
