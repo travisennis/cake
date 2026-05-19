@@ -4,7 +4,6 @@ This index follows `.agents/PLANS.md`. Active ExecPlans are checked-in plans tha
 
 - `edit-tool-lean.md` - Task 117: Strengthen Edit tool semantics with a Lean-assisted test pass.
 - `performance-improvements.md` - Task 118: Profile and optimize cake based on measured bottlenecks.
-- `per-session-telemetry-plan.md` - Task 119: Add per-session telemetry sidecar logs.
 - `progress-bar-plan.md` - Task 120: Add OSC 9;4 terminal progress indication.
 - `toolboxes-plan.md` - Task 121: Add user-defined toolbox tools.
 
@@ -27,3 +26,4 @@ This index follows `.agents/PLANS.md`. Active ExecPlans are checked-in plans tha
 - 2026-05-11 / Codex: Created tasks 117-121 in `.agents/.tasks/` for all five active ExecPlans to close the plan-to-task gap.
 - 2026-05-14 / Codex: Added the active ExecPlan for task 125, `Implement Lazy Skill Body Loading at Activation Time`.
 - 2026-05-14 / Codex: Moved `lazy-skill-body-loading.md` to completed after task 125 passed focused validation.
+- 2026-05-19 / Codex: Moved `per-session-telemetry-plan.md` to completed after task 119 passed validation.

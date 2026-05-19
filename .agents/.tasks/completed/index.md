@@ -10,7 +10,7 @@ Completed tasks are retained for history and stable task-id lookup.
 - Pending: 0
 - Blocked: 0
 - Tracking: 0
-- Completed: 124
+- Completed: 125
 - Cancelled: 0
 
 ## Tasks
@@ -114,6 +114,7 @@ Completed tasks are retained for history and stable task-id lookup.
 | [112](112.md) | Snapshot Persistence-Only SessionRecord Variants | Completed | P1 | S | - | - | Follows 061 |
 | [114](114.md) | Update conversation-types.md After to_api_input Refactor | Completed | P3 | XS | - | - | Follows 061 |
 | [116](116.md) | Eliminate Redundant num_turns/turn_count; Add Tool-Call Counter | Completed | P3 | M | - | - | - |
+| [119](119.md) | Add Per-Session Telemetry Sidecar | Completed | P2 | XL | - | `.agents/exec-plans/active/per-session-telemetry-plan.md` | - |
 | [122](122.md) | Fix `#[expect(unused_variables)]` on `LandlockSandbox::apply` | Completed | P0 | XS | - | - | From code review of 110/3cc2e73 |
 | [123](123.md) | Delete Unused `Agent::task_id` Method | Completed | P0 | XS | - | - | From code review of 110/3cc2e73 |
 | [124](124.md) | Replace Module-Wide `string_slice` Suppression (Parent) | Completed | P1 | M (split into 124a / 124b / 124c / 124d) | - | Use child tasks | From code review of 110/3cc2e73 |

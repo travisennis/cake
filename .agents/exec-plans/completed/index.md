@@ -8,6 +8,7 @@ This index follows `.agents/PLANS.md`. Completed ExecPlans are plans whose work 
 - `hooks-implementation-plan.md` - Add command hooks to cake.
 - `lazy-skill-body-loading.md` - Implement lazy skill body loading at activation time.
 - `normalize-session-optional-fields.md` - Normalize legacy missing conversation timestamps when sessions are loaded.
+- `per-session-telemetry-plan.md` - Add per-session telemetry sidecar logs.
 - `provider-strategy.md` - Move provider-specific request quirks behind a shared strategy layer.
 - `refactor-coding-assistant-run.md` - Refactor `CodingAssistant::run` into named orchestration steps.
 - `refactor-chat-build-messages.md` - Refactor Chat Completions message construction state handling.
@@ -29,3 +30,4 @@ This index follows `.agents/PLANS.md`. Completed ExecPlans are plans whose work 
 - 2026-05-10 / Codex: Completed task 063 and moved `normalize-session-optional-fields.md` into this index.
 - 2026-05-11 / Codex: Completed task 064 and moved `refactor-chat-build-messages.md` into this index.
 - 2026-05-14 / Codex: Completed task 125 and moved `lazy-skill-body-loading.md` into this index.
+- 2026-05-19 / Codex: Completed task 119 and moved `per-session-telemetry-plan.md` into this index.

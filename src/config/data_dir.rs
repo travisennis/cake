@@ -118,6 +118,13 @@ impl DataDir {
         self.sessions_dir().join(format!("{id}.jsonl"))
     }
 
+    /// Returns the canonical telemetry sidecar path for a session UUID.
+    pub fn session_telemetry_path(&self, id: uuid::Uuid) -> PathBuf {
+        self.get_cache_dir()
+            .join("session-telemetry")
+            .join(format!("{id}.ndjson"))
+    }
+
     /// Saves a session to disk with atomic write.
     ///
     /// The session is saved to `~/.local/share/cake/sessions/{session_id}.jsonl`.
@@ -566,6 +573,19 @@ mod tests {
         let (dd, tmp) = test_data_dir();
         let sessions_dir = dd.sessions_dir();
         assert_eq!(sessions_dir, tmp.path().join("sessions"));
+    }
+
+    #[test]
+    fn session_telemetry_path_lives_under_cache_directory() {
+        let (dd, tmp) = test_data_dir();
+        let session_id = uuid::Uuid::new_v4();
+
+        assert_eq!(
+            dd.session_telemetry_path(session_id),
+            tmp.path()
+                .join("session-telemetry")
+                .join(format!("{session_id}.ndjson"))
+        );
     }
 
     #[test]

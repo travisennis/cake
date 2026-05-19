@@ -8,6 +8,7 @@ mod hooks;
 mod logger;
 mod models;
 mod prompts;
+mod session_telemetry;
 mod time_format;
 
 use std::collections::HashMap;
@@ -27,13 +28,18 @@ use crate::config::{
 use crate::hooks::{HookContext, HookRunner};
 use crate::models::{Message, Role};
 use crate::prompts::build_initial_prompt_messages;
+use crate::session_telemetry::{
+    SessionTelemetryRecord, SessionTelemetryRunMode, SessionTelemetryWriter,
+};
 use crate::time_format::{format_duration_tenths, format_seconds_tenths};
 use clap::{ArgGroup, Parser, ValueEnum};
 use indicatif::{ProgressBar, ProgressStyle};
+use serde::Serialize;
 use tracing::info;
 
 /// Output format for the response
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, ValueEnum)]
+#[serde(rename_all = "kebab-case")]
 pub enum OutputFormat {
     /// Plain text output
     #[default]
@@ -343,6 +349,15 @@ impl RunMode {
             Self::ForkLatest | Self::Fork { .. } => "fork",
             Self::ContinueLatest | Self::Resume { .. } => "resume",
             Self::NewSession | Self::Ephemeral => "startup",
+        }
+    }
+
+    const fn telemetry_mode(&self) -> SessionTelemetryRunMode {
+        match self {
+            Self::NewSession | Self::Ephemeral => SessionTelemetryRunMode::New,
+            Self::ContinueLatest => SessionTelemetryRunMode::Continue,
+            Self::Resume { .. } => SessionTelemetryRunMode::Resume,
+            Self::ForkLatest | Self::Fork { .. } => SessionTelemetryRunMode::Fork,
         }
     }
 }
@@ -1021,6 +1036,58 @@ impl CodingAssistant {
         Ok((client, Some(writer)))
     }
 
+    fn attach_session_telemetry(
+        client: Agent,
+        data_dir: &DataDir,
+        session: &Session,
+        run_mode: &RunMode,
+        current_dir: &Path,
+        output_format: OutputFormat,
+    ) -> Agent {
+        if !run_mode.persists_session() {
+            return client;
+        }
+
+        let path = data_dir.session_telemetry_path(session.id);
+        let mut writer = match SessionTelemetryWriter::open(&path) {
+            Ok(writer) => writer,
+            Err(error) => {
+                tracing::warn!(
+                    target: "cake",
+                    "Disabling session telemetry; failed to open {}: {error}",
+                    path.display()
+                );
+                return client;
+            },
+        };
+
+        let invocation_id = uuid::Uuid::new_v4();
+        let settings = client.session_telemetry_settings(output_format);
+        let record = SessionTelemetryRecord::TelemetryInit {
+            session_id: session.id.to_string(),
+            invocation_id: invocation_id.to_string(),
+            timestamp: chrono::Utc::now(),
+            mode: run_mode.telemetry_mode(),
+            working_directory: current_dir.display().to_string(),
+            model: client.model_name().to_string(),
+            api_type: settings.api_type,
+            output_format,
+            tools: client.tool_names(),
+            settings,
+        };
+
+        if let Err(error) = writer.append(&record) {
+            tracing::warn!(
+                target: "cake",
+                "Disabling session telemetry; failed to write init record to {}: {error}",
+                path.display()
+            );
+            return client;
+        }
+
+        client.with_session_telemetry(writer, invocation_id)
+    }
+
     fn attach_hooks(
         mut client: Agent,
         data_dir: &DataDir,
@@ -1160,6 +1227,14 @@ impl CmdRunner for CodingAssistant {
             &run_session.storage,
             run_mode.persists_session(),
         )?;
+        let client = Self::attach_session_telemetry(
+            client,
+            data_dir,
+            &session,
+            &run_mode,
+            &prepared.current_dir,
+            self.output_format,
+        );
         let (client, hook_runner) = Self::attach_hooks(
             client,
             data_dir,
@@ -1179,6 +1254,11 @@ impl CmdRunner for CodingAssistant {
             &prepared.content,
         )
         .await?;
+        client.emit_session_summary_telemetry(
+            turn.result.is_ok(),
+            turn.duration_ms,
+            turn.result.as_ref().err().map(ToString::to_string),
+        );
         output.finish_progress(spinner, turn.duration_ms, &client);
         output.render_turn(turn, &client, &prepared.current_dir, data_dir, &session)?;
 

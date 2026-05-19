@@ -7,7 +7,7 @@ Active tasks include open, pending, blocked, and tracking work.
 ## Status Summary
 
 - Open: 1
-- Pending: 35
+- Pending: 34
 - Blocked: 5
 - Tracking: 0
 - Completed: 0
@@ -37,7 +37,6 @@ Active tasks include open, pending, blocked, and tracking work.
 | [115](115.md) | Comment annotations:[] Provider Quirk in ResponsesApiInputItem | Pending | P3 | XS | - | - | Follows 061 |
 | [117](117.md) | Strengthen Edit Tool Semantics via Lean-Assisted Testing | Pending | P2 | XL | - | `.agents/exec-plans/active/edit-tool-lean.md` | - |
 | [118](118.md) | Profile and Optimize Cake Performance | Pending | P2 | L | - | `.agents/exec-plans/active/performance-improvements.md` | - |
-| [119](119.md) | Add Per-Session Telemetry Sidecar | Pending | P2 | XL | - | `.agents/exec-plans/active/per-session-telemetry-plan.md` | - |
 | [120](120.md) | Add OSC 9;4 Terminal Progress Indicator | Pending | P3 | S | - | `.agents/exec-plans/active/progress-bar-plan.md` | - |
 | [121](121.md) | Implement User-Defined Toolbox Tools | Pending | P2 | XL | - | `.agents/exec-plans/active/toolboxes-plan.md` | 050 (Backend abstraction, completed), 051 (Tool abstraction, completed) |
 | [129](129.md) | Restore `e.print().ok()` With Localized `unused_result_ok` Expect | Pending | P3 | XS | - | - | From code review of 110/3cc2e73 |

@@ -16,10 +16,11 @@ The feature matters because cake currently preserves the semantic transcript in 
 - [x] (2026-05-02 17:52Z) Chose the high-level design: a structured sidecar file per session, appended incrementally during execution.
 - [x] (2026-05-02 17:52Z) Authored the initial ExecPlan in `.agents/.plans/per-session-telemetry-plan.md`; it now lives at `.agents/exec-plans/active/per-session-telemetry-plan.md`.
 - [x] (2026-05-02 18:02Z) Revised the storage location to `~/.cache/cake/session-telemetry/` (or `$CAKE_DATA_DIR/session-telemetry/`) so telemetry stays out of the resumable session directory.
-- [ ] Implement the telemetry record schema, append-only writer, and session-sidecar path helper.
-- [ ] Wire telemetry into session startup, API attempts, retries, tool execution, and final session summary.
-- [ ] Add end-to-end and unit tests that prove sidecar creation, retry recording, and `--no-session` behavior.
-- [ ] Update the user-facing and agent-facing docs, then run `just ci` from the repository root.
+- [x] (2026-05-19 00:07Z) Implemented the telemetry record schema, append-only writer, and cache-side session telemetry path helper.
+- [x] (2026-05-19 00:07Z) Wired telemetry into session startup, API attempts, retries, tool execution, and final session summary.
+- [x] (2026-05-19 00:07Z) Added unit and integration tests for sidecar writing, success-path sidecar creation, retry recording, and `--no-session` behavior.
+- [x] (2026-05-19 00:07Z) Updated user-facing docs, design docs, debugging skill guidance, and ADR 007.
+- [x] (2026-05-19 00:15Z) Ran `just ci`; all checks passed with elevated local-port permissions for wiremock tests.
 
 ## Surprises & Discoveries
 
@@ -31,6 +32,9 @@ The feature matters because cake currently preserves the semantic transcript in 
 
 - Observation: cake already knows total session duration and token usage at the end of a run, but it does not retain the intermediate timings that explain why a run was slow.
   Evidence: `src/main.rs` measures one overall `duration_ms` and `src/clients/agent.rs` accumulates usage totals, while `complete_turn()` currently discards request-attempt timing once the turn finishes.
+
+- Observation: The `uuid` dependency is compiled without serde support.
+  Evidence: `cargo check --tests` failed when telemetry records attempted to serialize `uuid::Uuid` directly, so telemetry now serializes UUIDs as strings like existing `SessionRecord` values.
 
 ## Decision Log
 
@@ -58,9 +62,17 @@ The feature matters because cake currently preserves the semantic transcript in 
   Rationale: A debugging aid cannot become a new source of fatal errors. If telemetry writing fails, cake should emit one warning to the daily log, disable further telemetry for that run, and continue normally.
   Date/Author: 2026-05-02 / Amp
 
+- Decision: Keep API attempt timing in `src/clients/agent_runner.rs` and keep telemetry file ownership in `src/clients/agent.rs`.
+  Rationale: `AgentRunner` is the only layer that sees the split between request time, parse time, status codes, transport errors, and retry decisions. `Agent` already owns session identity and invocation-scoped lifecycle, so it remains the right place to convert runner/tool events into session telemetry records and disable telemetry after write failures.
+  Date/Author: 2026-05-19 / Codex
+
+- Decision: Record the durable sidecar storage contract in ADR 007.
+  Rationale: The feature introduces a new persisted artifact family and must remain clearly separate from resumable transcripts and latest-session discovery.
+  Date/Author: 2026-05-19 / Codex
+
 ## Outcomes & Retrospective
 
-This plan captures the feature as a durable session-sidecar design rather than a transcript format change. That keeps the implementation narrow and preserves all existing resume behavior. The storage location has been refined so telemetry now lives in a dedicated cache subdirectory instead of beside session transcripts. No code has been written yet, so there is no runtime outcome to report beyond the design itself. The main remaining risk is implementation discipline: the telemetry hooks need to land in the right lifecycle points without turning the agent loop into a maze of incidental bookkeeping.
+The implementation now creates a cache-side `session-telemetry/{uuid}.ndjson` file for saved sessions, writes init/API/retry/tool/summary records, skips telemetry for `--no-session`, and documents the sidecar in README, design docs, the debugging skill, and ADR 007. Targeted tests pass for sidecar creation, retry recording, telemetry writer output, path derivation, and `--no-session` behavior. Final `just ci` passed after rerunning with elevated local-port permissions for wiremock tests.
 
 ## Context and Orientation
 

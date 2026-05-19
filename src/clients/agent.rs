@@ -1,9 +1,11 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use futures::FutureExt;
 
+use crate::OutputFormat;
 use crate::clients::agent_observer::AgentObserver;
 use crate::clients::agent_runner::AgentRunner;
 use crate::clients::agent_state::{ConversationState, accumulate_usage};
@@ -19,6 +21,10 @@ use crate::config::model::ResolvedModelConfig;
 use crate::config::skills::Skill;
 use crate::hooks::{HookRunner, ToolHookPlan};
 use crate::models::{Message, Role};
+use crate::session_telemetry::{
+    AgentRunnerTelemetryEvent, SessionTelemetryContext, SessionTelemetryRecord,
+    SessionTelemetrySettings, SessionTelemetryWriter, ToolCallTelemetry,
+};
 
 /// Result of a single API turn (one request/response cycle).
 #[derive(Debug)]
@@ -37,6 +43,19 @@ struct SkillActivation {
 struct ToolExecutionOutput {
     output: String,
     skill_activation: Option<SkillActivation>,
+}
+
+#[derive(Debug, Clone)]
+struct ToolRunResult {
+    call_id: String,
+    output: String,
+    skill_activation: Option<SkillActivation>,
+    telemetry: ToolCallTelemetry,
+}
+
+struct AgentTelemetry {
+    context: SessionTelemetryContext,
+    writer: SessionTelemetryWriter,
 }
 
 #[derive(Debug, Default)]
@@ -114,6 +133,8 @@ pub struct Agent {
     skill_activations: Arc<Mutex<SkillActivations>>,
     /// Optional user-configured command hook runner.
     hook_runner: Option<Arc<HookRunner>>,
+    /// Optional best-effort telemetry sidecar writer.
+    telemetry: Option<AgentTelemetry>,
 }
 
 impl Agent {
@@ -137,6 +158,7 @@ impl Agent {
             skill_locations: Arc::new(HashMap::new()),
             skill_activations: Arc::new(Mutex::new(SkillActivations::default())),
             hook_runner: None,
+            telemetry: None,
         }
     }
 
@@ -166,6 +188,19 @@ impl Agent {
         &self.config.model_config.model
     }
 
+    pub const fn session_telemetry_settings(
+        &self,
+        output_format: OutputFormat,
+    ) -> SessionTelemetrySettings {
+        SessionTelemetrySettings {
+            api_type: self.config.model_config.api_type,
+            output_format,
+            max_output_tokens: self.config.model_config.max_output_tokens,
+            reasoning_effort: self.config.model_config.reasoning_effort,
+            reasoning_max_tokens: self.config.model_config.reasoning_max_tokens,
+        }
+    }
+
     /// Returns the session ID.
     pub const fn session_id(&self) -> uuid::Uuid {
         self.session_id
@@ -184,8 +219,11 @@ impl Agent {
     /// Sets the session ID for a restored session.
     ///
     /// Use this when continuing a previous session to preserve the session ID.
-    pub const fn with_session_id(mut self, id: uuid::Uuid) -> Self {
+    pub fn with_session_id(mut self, id: uuid::Uuid) -> Self {
         self.session_id = id;
+        if let Some(telemetry) = &mut self.telemetry {
+            telemetry.context.session_id = id.to_string();
+        }
         self
     }
 
@@ -305,6 +343,22 @@ impl Agent {
         self
     }
 
+    /// Enables best-effort session telemetry sidecar writing.
+    pub fn with_session_telemetry(
+        mut self,
+        writer: SessionTelemetryWriter,
+        invocation_id: uuid::Uuid,
+    ) -> Self {
+        self.telemetry = Some(AgentTelemetry {
+            context: SessionTelemetryContext {
+                session_id: self.session_id.to_string(),
+                invocation_id: invocation_id.to_string(),
+            },
+            writer,
+        });
+        self
+    }
+
     /// Report a conversation item via the progress callback, if set.
     fn report_progress(&self, item: &ConversationItem) {
         self.observer.report_progress(item);
@@ -395,6 +449,29 @@ impl Agent {
         });
 
         self.stream_record(record)
+    }
+
+    /// Emit the final telemetry summary for this CLI invocation.
+    pub fn emit_session_summary_telemetry(
+        &mut self,
+        success: bool,
+        duration_ms: u64,
+        error: Option<String>,
+    ) {
+        let Some(context) = self.telemetry_context() else {
+            return;
+        };
+        let record = SessionTelemetryRecord::SessionSummary {
+            session_id: context.session_id,
+            invocation_id: context.invocation_id,
+            timestamp: chrono::Utc::now(),
+            success,
+            duration_ms,
+            turn_count: self.turn_count,
+            usage: self.total_usage.clone(),
+            error,
+        };
+        self.append_telemetry_record(&record);
     }
 
     /// Sends a message and runs the agent loop until completion.
@@ -504,6 +581,7 @@ impl Agent {
             let skill_activations = Arc::clone(&self.skill_activations);
             let tools = &self.tools;
             let tool_context = Arc::clone(&self.tool_context);
+            let turn_index = self.turn_count;
             let futures = tool_plans.into_iter().map(|(call_id, name, plan)| {
                 let skill_locations = Arc::clone(&skill_locations);
                 let skill_activations = Arc::clone(&skill_activations);
@@ -514,9 +592,24 @@ impl Agent {
                         reason,
                         additional_context,
                     } => async move {
+                        let start = Instant::now();
                         let output = format!("Hook blocked tool execution: {reason}");
                         let output = append_hook_context(output, &additional_context);
-                        (call_id, output, None)
+                        let duration_ms =
+                            start.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+                        ToolRunResult {
+                            telemetry: ToolCallTelemetry {
+                                turn_index,
+                                call_id: call_id.clone(),
+                                name,
+                                duration_ms,
+                                output_bytes: output.len(),
+                                was_error: true,
+                            },
+                            call_id,
+                            output,
+                            skill_activation: None,
+                        }
                     }
                     .boxed(),
                     ToolHookPlan::Execute {
@@ -524,6 +617,7 @@ impl Agent {
                         prefix_notice,
                         additional_context,
                     } => async move {
+                        let start = Instant::now();
                         let result = execute_tool_with_skill_dedup(
                             tools,
                             Arc::clone(&tool_context),
@@ -548,6 +642,7 @@ impl Agent {
                             None
                         };
 
+                        let was_error = result.is_err();
                         let (mut output, skill_activation) = match result {
                             Ok(result) => (result.output, result.skill_activation),
                             Err(error) => (format!("Error: {error}"), None),
@@ -563,7 +658,21 @@ impl Agent {
                         }
                         output = append_hook_context(output, &additional_context);
 
-                        (call_id, output, skill_activation)
+                        let duration_ms =
+                            start.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+                        ToolRunResult {
+                            telemetry: ToolCallTelemetry {
+                                turn_index,
+                                call_id: call_id.clone(),
+                                name,
+                                duration_ms,
+                                output_bytes: output.len(),
+                                was_error,
+                            },
+                            call_id,
+                            output,
+                            skill_activation,
+                        }
                     }
                     .boxed(),
                 }
@@ -572,8 +681,9 @@ impl Agent {
             let results = futures::future::join_all(futures).await;
 
             // Add results to history in order
-            for (call_id, output, skill_activation) in results {
-                if let Some(skill_activation) = skill_activation {
+            for result in results {
+                self.append_tool_call_telemetry(result.telemetry);
+                if let Some(skill_activation) = result.skill_activation {
                     let record = SessionRecord::SkillActivated {
                         session_id: self.session_id.to_string(),
                         task_id: self.task_id.to_string(),
@@ -583,7 +693,9 @@ impl Agent {
                     };
                     self.persist_record(&record)?;
                 }
-                let item = self.conversation.push_tool_output(call_id, output);
+                let item = self
+                    .conversation
+                    .push_tool_output(result.call_id, result.output);
                 self.stream_item(&item)?;
             }
 
@@ -598,11 +710,83 @@ impl Agent {
         let session_id = self.session_id;
         let history = self.conversation.history();
         let observer = &self.observer;
-        self.runner
-            .complete_turn(config, session_id, history, &tool_definitions, |status| {
-                observer.report_retry(status);
-            })
-            .await
+        let turn_index = self.turn_count.saturating_add(1);
+        let mut telemetry_events = Vec::new();
+        let result = self
+            .runner
+            .complete_turn(
+                config,
+                session_id,
+                turn_index,
+                history,
+                &tool_definitions,
+                |status| {
+                    observer.report_retry(status);
+                },
+                |event| {
+                    telemetry_events.push(event);
+                },
+            )
+            .await;
+        for event in telemetry_events {
+            self.append_runner_telemetry(event);
+        }
+        result
+    }
+
+    fn telemetry_context(&self) -> Option<SessionTelemetryContext> {
+        self.telemetry
+            .as_ref()
+            .map(|telemetry| telemetry.context.clone())
+    }
+
+    fn append_runner_telemetry(&mut self, event: AgentRunnerTelemetryEvent) {
+        let Some(context) = self.telemetry_context() else {
+            return;
+        };
+        let record = match event {
+            AgentRunnerTelemetryEvent::ApiAttempt(attempt) => SessionTelemetryRecord::ApiAttempt {
+                session_id: context.session_id,
+                invocation_id: context.invocation_id,
+                timestamp: chrono::Utc::now(),
+                attempt,
+            },
+            AgentRunnerTelemetryEvent::RetryScheduled(retry) => {
+                SessionTelemetryRecord::RetryScheduled {
+                    session_id: context.session_id,
+                    invocation_id: context.invocation_id,
+                    timestamp: chrono::Utc::now(),
+                    retry,
+                }
+            },
+        };
+        self.append_telemetry_record(&record);
+    }
+
+    fn append_tool_call_telemetry(&mut self, tool_call: ToolCallTelemetry) {
+        let Some(context) = self.telemetry_context() else {
+            return;
+        };
+        let record = SessionTelemetryRecord::ToolCall {
+            session_id: context.session_id,
+            invocation_id: context.invocation_id,
+            timestamp: chrono::Utc::now(),
+            tool_call,
+        };
+        self.append_telemetry_record(&record);
+    }
+
+    fn append_telemetry_record(&mut self, record: &SessionTelemetryRecord) {
+        let Some(telemetry) = &mut self.telemetry else {
+            return;
+        };
+        if let Err(error) = telemetry.writer.append(record) {
+            tracing::warn!(
+                target: "cake",
+                "Disabling session telemetry after write failure: {error}"
+            );
+            self.telemetry = None;
+        }
     }
 }
 

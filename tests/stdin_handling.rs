@@ -340,9 +340,15 @@ api_key_env = "NO_SESSION_TEST_KEY"
         .expect("Failed to execute command");
 
     let sessions_dir = env.data_dir.join("sessions");
+    let telemetry_dir = env.data_dir.join("session-telemetry");
 
     let no_sessions = if sessions_dir.exists() {
         std::fs::read_dir(&sessions_dir).map_or(true, |mut d| d.next().is_none())
+    } else {
+        true
+    };
+    let no_telemetry = if telemetry_dir.exists() {
+        std::fs::read_dir(&telemetry_dir).map_or(true, |mut d| d.next().is_none())
     } else {
         true
     };
@@ -350,6 +356,11 @@ api_key_env = "NO_SESSION_TEST_KEY"
     assert!(
         no_sessions,
         "--no-session should not create session files. Stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        no_telemetry,
+        "--no-session should not create telemetry files. Stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
 }

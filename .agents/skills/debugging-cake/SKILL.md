@@ -27,6 +27,21 @@ ls ~/.local/share/cake/sessions/
 ls -t ~/.local/share/cake/sessions/*.jsonl 2>/dev/null | head -1
 ```
 
+### View Session Telemetry
+
+Persisted sessions also have per-session telemetry at `~/.cache/cake/session-telemetry/{uuid}.ndjson` (or `$CAKE_DATA_DIR/session-telemetry/{uuid}.ndjson`). Use it for timings, retries, tool durations, and final usage; it is not resumable conversation history.
+
+```bash
+# Show the session performance timeline
+jq -c '. | {type, invocation_id, turn_index, attempt, total_ms, delay_ms, name, duration_ms, success}' ~/.cache/cake/session-telemetry/{uuid}.ndjson
+
+# Show retry decisions
+jq 'select(.type == "retry_scheduled") | {attempt, reason, delay_ms, detail, changed_request_overrides}' ~/.cache/cake/session-telemetry/{uuid}.ndjson
+
+# Show tool durations
+jq 'select(.type == "tool_call") | {turn_index, name, duration_ms, output_bytes, was_error}' ~/.cache/cake/session-telemetry/{uuid}.ndjson
+```
+
 ### View Session Files
 
 Sessions use JSON Lines (`.jsonl`) format. Use `jq -c` to process each line:
@@ -113,9 +128,11 @@ Sessions are stored in `~/.local/share/cake/sessions/` (or `$CAKE_DATA_DIR/sessi
 ```
 ~/.local/share/cake/sessions/
   {uuid}.jsonl          # Individual session files (JSON Lines format)
+~/.cache/cake/session-telemetry/
+  {uuid}.ndjson         # Per-session telemetry timeline
 ```
 
-The most recent session is determined by file modification time (no symlink needed).
+The most recent session is determined by `.jsonl` file modification time (no symlink needed). Telemetry sidecars are not considered during session discovery or resume.
 
 ### Finding Your Session Directory
 
@@ -201,7 +218,8 @@ Note: A trailing conversation record without `task_complete` indicates the task 
 1. Find the session directory
 2. View the last few messages to see where it ended
 3. Check logs for API, timeout, stream, or tool errors
-4. Look at the final task's reasoning and tool records to understand what the model was doing
+4. Check the telemetry sidecar for failed API attempts, retry delays, and final `session_summary`
+5. Look at the final task's reasoning and tool records to understand what the model was doing
 
 ### 2. Tool Execution Failed
 
@@ -381,8 +399,9 @@ cat "$TMPDIR"/cake/sandbox_profiles/cake_sandbox_*.sb
 
   | File Type               | Location                                    |
   | ----------------------- | ------------------------------------------- |
-  | Sessions                | `~/.local/share/cake/sessions/{uuid}.jsonl` |
-  | Logs                    | `~/.cache/cake/cake.YYYY-MM-DD.log`         |
+ | Sessions                | `~/.local/share/cake/sessions/{uuid}.jsonl` |
+  | Session telemetry       | `~/.cache/cake/session-telemetry/{uuid}.ndjson` |
+ | Logs                    | `~/.cache/cake/cake.YYYY-MM-DD.log`         |
   | Global config           | `~/.config/cake/settings.toml`              |
   | Project config          | `.cake/settings.toml`                       |
   | User-level AGENTS.md    | `~/.cake/AGENTS.md`                         |
@@ -392,6 +411,7 @@ cat "$TMPDIR"/cake/sandbox_profiles/cake_sandbox_*.sb
 
 - **Cache directory**: `~/.cache/cake/` (logs and ephemeral data)
 - **Sessions directory**: `~/.local/share/cake/sessions/` (session files)
+- **Session telemetry directory**: `~/.cache/cake/session-telemetry/` (structured per-session performance sidecars)
 - **Data directory override**: Set `CAKE_DATA_DIR` to use a custom path for both cache and sessions
 - **Logs**: `~/.cache/cake/cake.YYYY-MM-DD.log` (or `$CAKE_DATA_DIR/cake.YYYY-MM-DD.log` if set, daily rotation)
 - **API key**: Required via environment variable (set via .cake/settings.toml or ~/.config/cake/settings.toml)

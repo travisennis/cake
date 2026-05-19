@@ -61,6 +61,8 @@ let _ = logger::configure(&data_dir.get_cache_dir());
 
 The log files are written to `<cache_dir>/cake.YYYY-MM-DD.log`.
 
+Persisted sessions also write session-scoped structured telemetry to `<cache_dir>/session-telemetry/{uuid}.ndjson`. These sidecars are append-only newline-delimited JSON and are keyed by the transcript session UUID. They capture timings and outcomes for one session across invocations, while the daily log remains process-wide tracing output.
+
 ## Usage
 
 Throughout the codebase, use the `tracing` macros:
@@ -96,6 +98,7 @@ Log files are stored in the cache directory:
 
 - **macOS/Linux**: `~/.cache/cake/`
 - Files follow the pattern: `cake.YYYY-MM-DD.log`
+- Session telemetry sidecars follow `session-telemetry/{uuid}.ndjson`
 
 To view recent logs:
 
@@ -105,6 +108,9 @@ cat ~/.cache/cake/cake.$(date +%Y-%m-%d).log
 
 # View all logs
 ls -la ~/.cache/cake/cake.*.log
+
+# Summarize a session telemetry sidecar
+jq -c '. | {type, invocation_id, turn_index, attempt, total_ms, delay_ms, name, duration_ms, success}' ~/.cache/cake/session-telemetry/{uuid}.ndjson
 ```
 
 ## Implementation Details

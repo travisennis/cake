@@ -280,6 +280,8 @@ cake --fork 550e8400-e29b-41d4-a716-446655440000 "New branch of conversation"
 
 Sessions are saved to `~/.local/share/cake/sessions/` (or `$CAKE_DATA_DIR/sessions/` if set) as flat `{uuid}.jsonl` files. Each file includes full conversation history with metadata. Sessions are saved on both success and error for crash recovery.
 
+Persisted sessions also get a structured telemetry sidecar at `~/.cache/cake/session-telemetry/{uuid}.ndjson` (or `$CAKE_DATA_DIR/session-telemetry/{uuid}.ndjson` if set). The sidecar is newline-delimited JSON for debugging timings, retries, tool durations, and final usage; it is not resumable conversation history. `--no-session` skips both the transcript and telemetry sidecar.
+
 The `--output-format stream-json` output is a live task stream, not a resumable session file. It never emits session metadata; use the persisted session UUID with `--resume <uuid>`. The `--output-format json` mode outputs a single JSON summary object at completion (result, usage, session path, turns, elapsed time) for scripting and CI integration.
 
 For more details, see [Session Management](docs/design-docs/session-management.md).

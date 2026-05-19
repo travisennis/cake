@@ -40,9 +40,13 @@ Sessions are stored as flat files under `~/.local/share/cake/sessions/`:
 ```text
 ~/.local/share/cake/sessions/
   {uuid}.jsonl
+~/.cache/cake/session-telemetry/
+  {uuid}.ndjson
 ```
 
-`CAKE_DATA_DIR` overrides the data root and stores sessions under `{CAKE_DATA_DIR}/sessions/`.
+`CAKE_DATA_DIR` overrides the data root and stores transcripts under `{CAKE_DATA_DIR}/sessions/` and telemetry sidecars under `{CAKE_DATA_DIR}/session-telemetry/`.
+
+Only `sessions/{uuid}.jsonl` is resumable. `session-telemetry/{uuid}.ndjson` is operational logging keyed by the same session UUID; it is never used by `--continue`, `--resume`, `--fork`, or latest-session discovery.
 
 ## File Format
 
@@ -64,6 +68,18 @@ The first non-empty line must be exactly one `session_meta` record. Every saved 
 Conversation records are `message`, `function_call`, `function_call_output`, and `reasoning`. Only those records are restored into model context. `session_meta`, `task_start`, `prompt_context`, `skill_activated`, `hook_event`, and `task_complete` remain in the file but are skipped when reconstructing conversation history.
 
 `prompt_context` records are append-only audit records for the mutable context used by a single invocation, such as AGENTS.md contents, discovered skills, and environment details. On continue, resume, or fork, cake rebuilds fresh prompt context and appends new `prompt_context` records; it does not replay stale prompt context from earlier invocations.
+
+## Telemetry Sidecar
+
+For persisted sessions, cake appends structured telemetry records to `session-telemetry/{uuid}.ndjson`. Each line is one JSON object with `type`, `session_id`, `invocation_id`, and `timestamp`. A sidecar can span multiple `--continue` or `--resume` invocations for the same session; `invocation_id` separates those runs.
+
+Expected telemetry record types are `telemetry_init`, `api_attempt`, `retry_scheduled`, `tool_call`, and `session_summary`. The sidecar records request durations, parse durations, retry reasons and delays, tool durations, output byte counts, final success or failure, and aggregate usage. It intentionally does not store prompt text, assistant text, or raw tool output bodies because those belong in the transcript.
+
+Quick inspection:
+
+```bash
+jq -c '. | {type, invocation_id, turn_index, attempt, total_ms, delay_ms, name, duration_ms, success}' ~/.cache/cake/session-telemetry/{uuid}.ndjson
+```
 
 ## Schema
 
