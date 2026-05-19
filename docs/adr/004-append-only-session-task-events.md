@@ -25,7 +25,7 @@ Persisted session files use JSONL format version 4. The first record is `session
 
 Session files are stored as flat `{session_id}.jsonl` files under `~/.local/share/cake/sessions/` or `$CAKE_DATA_DIR/sessions/`.
 
-`--output-format stream-json` emits the same task and conversation record shapes for the current invocation, but never emits `session_meta` and never replays prior tasks. Redirected stream-json output is therefore an event stream, not a valid session file.
+`--output-format stream-json` emits the same per-task task, hook, and conversation record shapes for the current invocation, but never emits `session_meta` and never replays prior tasks. Redirected stream-json output is therefore an event stream, not a valid session file.
 
 Path-based `--resume <path>` and `--fork <path>` are removed. Resume and fork accept UUIDs only.
 

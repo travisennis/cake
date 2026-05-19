@@ -269,9 +269,9 @@ Another cake invocation is currently writing to session <id>. Wait for it to fin
 
 Version 4 is a breaking schema change. Legacy v2 files and old v3 files using `session_start`, `init`, or `result` do not load. A first record that is not `session_meta` is treated as a legacy or unsupported file. A `session_meta.format_version` other than `4` fails with an explicit unsupported-version error.
 
-Forking creates a new v4 session file with a new `session_meta`. It seeds only conversation records from the parent; parent `session_meta`, `task_start`, and `task_complete` records are not copied.
+Forking creates a new v4 session file with a new `session_meta`. It seeds only conversation records from the parent; parent `session_meta`, `task_start`, hook, and `task_complete` records are not copied.
 
-Stream-json output uses the same task and conversation record shapes as v4 session files, but omits `session_meta` and includes only the current task. A redirected stream-json file is not a valid session file and cannot be resumed by path.
+Stream-json output uses the same per-task record shapes as v4 session files, including `hook_event`, but omits `session_meta` and includes only the current task. A redirected stream-json file is not a valid session file and cannot be resumed by path.
 
 ## Implementation Details
 

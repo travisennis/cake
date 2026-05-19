@@ -17,6 +17,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::cli::CmdRunner;
+use crate::clients::types::StreamRecord;
 use crate::clients::{Agent, ConversationItem, TaskOutcome, ToolContext};
 use crate::config::settings::LoadedSettings;
 use crate::config::skills::Skill;
@@ -1090,12 +1091,8 @@ impl CodingAssistant {
 
     fn attach_hooks(
         mut client: Agent,
-        data_dir: &DataDir,
         current_dir: &Path,
-        session: &Session,
-        run_mode: &RunMode,
-        task_id: uuid::Uuid,
-        session_writer: Option<crate::config::SessionWriter>,
+        hook_context: HookContext,
     ) -> anyhow::Result<(Agent, Option<Arc<HookRunner>>)> {
         let hooks = HooksLoader::load(current_dir)?;
 
@@ -1103,21 +1100,38 @@ impl CodingAssistant {
             return Ok((client, None));
         }
 
-        let runner = Arc::new(HookRunner::new(
-            hooks,
-            HookContext {
-                session_id: session.id,
-                task_id,
-                transcript_path: run_mode
-                    .persists_session()
-                    .then(|| data_dir.session_path(session.id)),
-                session_writer,
-                cwd: current_dir.to_path_buf(),
-                model: client.model_name().to_string(),
-            },
-        ));
+        let runner = Arc::new(HookRunner::new(hooks, hook_context));
         client = client.with_hook_runner(Arc::clone(&runner));
         Ok((client, Some(runner)))
+    }
+
+    fn hook_event_sink(
+        session_writer: Option<crate::config::SessionWriter>,
+        output_format: OutputFormat,
+    ) -> Option<Arc<dyn Fn(StreamRecord) + Send + Sync>> {
+        if session_writer.is_none() && output_format != OutputFormat::StreamJson {
+            return None;
+        }
+
+        Some(Arc::new(move |record| {
+            if let Some(writer) = &session_writer {
+                let session_record = crate::clients::SessionRecord::from(record.clone());
+                if let Err(error) = writer.append_record(&session_record) {
+                    tracing::warn!(
+                        target: "cake::hooks",
+                        error = %error,
+                        "Failed to append hook transcript record"
+                    );
+                }
+            }
+
+            if output_format == OutputFormat::StreamJson {
+                match serde_json::to_string(&record) {
+                    Ok(json) => CliOutputSink::write_stream_record(&json),
+                    Err(error) => tracing::warn!("Stream serialization failed: {error}"),
+                }
+            }
+        }))
     }
 
     const fn output_sink(&self) -> CliOutputSink {
@@ -1235,15 +1249,19 @@ impl CmdRunner for CodingAssistant {
             &prepared.current_dir,
             self.output_format,
         );
-        let (client, hook_runner) = Self::attach_hooks(
-            client,
-            data_dir,
-            &prepared.current_dir,
-            &session,
-            &run_mode,
+        let hook_context = HookContext {
+            session_id: session.id,
             task_id,
-            session_writer,
-        )?;
+            transcript_path: run_mode
+                .persists_session()
+                .then(|| data_dir.session_path(session.id)),
+            session_writer: session_writer.clone(),
+            hook_event_sink: Self::hook_event_sink(session_writer, self.output_format),
+            cwd: prepared.current_dir.clone(),
+            model: client.model_name().to_string(),
+        };
+        let (client, hook_runner) =
+            Self::attach_hooks(client, &prepared.current_dir, hook_context)?;
         let output = self.output_sink();
         let (mut client, spinner) = output.attach_callbacks(client);
 

@@ -476,6 +476,33 @@ pub struct TaskCompleteData {
     pub permission_denials: Option<Vec<String>>,
 }
 
+/// Shared data for `HookEvent` records in both `StreamRecord` and `SessionRecord`.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct HookEventData {
+    pub timestamp: DateTime<Utc>,
+    pub task_id: String,
+    pub event: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_input_summary: Option<String>,
+    pub source_file: PathBuf,
+    pub command: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    pub duration_ms: u64,
+    pub decision: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_decision: Option<String>,
+    pub fail_closed: bool,
+    pub stdout: String,
+    pub stderr: String,
+}
+
 // =============================================================================
 // Session Record Enum (for unified JSONL schema)
 // =============================================================================
@@ -531,30 +558,7 @@ pub enum SessionRecord {
         path: PathBuf,
     },
 
-    HookEvent {
-        timestamp: DateTime<Utc>,
-        task_id: String,
-        event: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        source: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        call_id: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        tool_name: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        tool_input_summary: Option<String>,
-        source_file: PathBuf,
-        command: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        exit_code: Option<i32>,
-        duration_ms: u64,
-        decision: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        resolved_decision: Option<String>,
-        fail_closed: bool,
-        stdout: String,
-        stderr: String,
-    },
+    HookEvent(HookEventData),
 
     Reasoning(ReasoningData),
 
@@ -578,6 +582,8 @@ pub enum StreamRecord {
 
     Reasoning(ReasoningData),
 
+    HookEvent(HookEventData),
+
     TaskComplete(TaskCompleteData),
 }
 
@@ -589,6 +595,7 @@ impl From<StreamRecord> for SessionRecord {
             StreamRecord::FunctionCall(d) => Self::FunctionCall(d),
             StreamRecord::FunctionCallOutput(d) => Self::FunctionCallOutput(d),
             StreamRecord::Reasoning(d) => Self::Reasoning(d),
+            StreamRecord::HookEvent(d) => Self::HookEvent(d),
             StreamRecord::TaskComplete(d) => Self::TaskComplete(d),
         }
     }
@@ -664,7 +671,7 @@ impl SessionRecord {
             | Self::TaskStart(_)
             | Self::PromptContext { .. }
             | Self::SkillActivated { .. }
-            | Self::HookEvent { .. }
+            | Self::HookEvent(_)
             | Self::TaskComplete(_) => {},
         }
     }
@@ -726,7 +733,7 @@ impl SessionRecord {
             | Self::TaskStart(_)
             | Self::PromptContext { .. }
             | Self::SkillActivated { .. }
-            | Self::HookEvent { .. }
+            | Self::HookEvent(_)
             | Self::TaskComplete(_) => None,
         }
     }
@@ -879,6 +886,27 @@ mod tests {
 
     fn fixed_task_id() -> String {
         "550e8400-e29b-41d4-a716-446655440001".to_string()
+    }
+
+    fn hook_event_data_with_optional_fields() -> HookEventData {
+        HookEventData {
+            timestamp: fixed_timestamp(),
+            task_id: fixed_task_id(),
+            event: "post_tool_use".to_string(),
+            source: Some("Bash".to_string()),
+            call_id: Some("call-1".to_string()),
+            tool_name: Some("Bash".to_string()),
+            tool_input_summary: Some("just ci".to_string()),
+            source_file: PathBuf::from("/workspace/cake/.cake/hooks/post-tool-use.sh"),
+            command: "./post-tool-use.sh".to_string(),
+            exit_code: Some(0),
+            duration_ms: 42,
+            decision: "none".to_string(),
+            resolved_decision: Some("allow".to_string()),
+            fail_closed: false,
+            stdout: "ok".to_string(),
+            stderr: String::new(),
+        }
     }
 
     fn assert_conversation_item_stream_session_roundtrip(item: &ConversationItem) {
@@ -1731,24 +1759,7 @@ mod tests {
 
     #[test]
     fn snapshot_session_json_hook_event_with_optional_fields() {
-        let record = SessionRecord::HookEvent {
-            timestamp: fixed_timestamp(),
-            task_id: fixed_task_id(),
-            event: "post_tool_use".to_string(),
-            source: Some("Bash".to_string()),
-            call_id: Some("call-1".to_string()),
-            tool_name: Some("Bash".to_string()),
-            tool_input_summary: Some("just ci".to_string()),
-            source_file: PathBuf::from("/workspace/cake/.cake/hooks/post-tool-use.sh"),
-            command: "./post-tool-use.sh".to_string(),
-            exit_code: Some(0),
-            duration_ms: 42,
-            decision: "none".to_string(),
-            resolved_decision: Some("allow".to_string()),
-            fail_closed: false,
-            stdout: "ok".to_string(),
-            stderr: String::new(),
-        };
+        let record = SessionRecord::HookEvent(hook_event_data_with_optional_fields());
 
         insta::assert_json_snapshot!(
             "session_json_hook_event_with_optional_fields",
@@ -1757,8 +1768,18 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_stream_json_hook_event_with_optional_fields() {
+        let record = StreamRecord::HookEvent(hook_event_data_with_optional_fields());
+
+        insta::assert_json_snapshot!(
+            "stream_record_json_hook_event_with_optional_fields",
+            serde_json::to_value(record).unwrap()
+        );
+    }
+
+    #[test]
     fn snapshot_session_json_hook_event_without_optional_fields() {
-        let record = SessionRecord::HookEvent {
+        let record = SessionRecord::HookEvent(HookEventData {
             timestamp: fixed_timestamp(),
             task_id: fixed_task_id(),
             event: "session_start".to_string(),
@@ -1775,7 +1796,7 @@ mod tests {
             fail_closed: true,
             stdout: String::new(),
             stderr: "no exit code".to_string(),
-        };
+        });
 
         insta::assert_json_snapshot!(
             "session_json_hook_event_without_optional_fields",
@@ -1803,13 +1824,13 @@ mod tests {
         .unwrap();
 
         match record {
-            SessionRecord::HookEvent {
+            SessionRecord::HookEvent(HookEventData {
                 call_id,
                 tool_name,
                 tool_input_summary,
                 resolved_decision,
                 ..
-            } => {
+            }) => {
                 assert!(call_id.is_none());
                 assert!(tool_name.is_none());
                 assert!(tool_input_summary.is_none());

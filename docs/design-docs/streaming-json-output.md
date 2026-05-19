@@ -12,7 +12,7 @@ The final plain-text assistant response is not printed in this mode. Consumers s
 
 ## Behavior
 
-The stream starts with `task_start`, includes the current task's conversation records, and ends with `task_complete`.
+The stream starts with `task_start`, includes the current task's hook and conversation records, and ends with `task_complete`.
 
 It never emits `session_meta`. It also does not replay prior tasks when used with `--continue`, `--resume`, or `--fork`.
 
@@ -101,6 +101,36 @@ Roles are `system`, `user`, `assistant`, or `tool`. `id`, `status`, and `timesta
 
 Each `content` item has a required `type` string and an optional `text` string.
 
+### Hook Event
+
+```json
+{"type":"hook_event","timestamp":"2026-05-03T12:00:02Z","task_id":"2b15f29d-8c42-4c53-9bdf-35c8f2390d3e","event":"PreToolUse","source":"Bash","call_id":"call_xyz789","tool_name":"Bash","tool_input_summary":"ls","source_file":"/Users/user/project/.cake/hooks.json","command":"./check-tool.sh","exit_code":0,"duration_ms":21,"decision":"none","resolved_decision":"allow","fail_closed":false,"stdout":"","stderr":""}
+```
+
+Hook events are emitted live in execution order. Session and user-prompt hooks appear before the task/model records they precede. Tool hooks appear around the associated tool call: pre-tool hooks before the tool result, and post-tool or failure hooks after the tool output or failure they observe.
+
+  | Field                | Type   | Required | Description                                                                 |
+  | -------------------- | ------ | -------- | --------------------------------------------------------------------------- |
+  | `type`               | string | yes      | Always `hook_event`                                                         |
+  | `timestamp`          | string | yes      | Record creation time                                                        |
+  | `task_id`            | string | yes      | UUID for the invocation that ran the hook                                    |
+  | `event`              | string | yes      | Hook lifecycle event, such as `PreToolUse` or `PostToolUse`                 |
+  | `source`             | string | no       | Hook matcher source, such as a tool name                                    |
+  | `call_id`            | string | no       | Tool call id for tool hooks; matches `function_call.call_id`                |
+  | `tool_name`          | string | no       | Tool name for tool hooks                                                    |
+  | `tool_input_summary` | string | no       | Compact, capped tool input summary for quick inspection                     |
+  | `source_file`        | string | yes      | Hook configuration file that defined the command                            |
+  | `command`            | string | yes      | Hook shell command                                                          |
+  | `exit_code`          | number | no       | Process exit code when available                                            |
+  | `duration_ms`        | number | yes      | Hook process duration in milliseconds                                       |
+  | `decision`           | string | yes      | Historical coarse decision label preserved for compatibility                |
+  | `resolved_decision`  | string | no       | Effective parsed decision, such as `allow`, `deny`, `stop`, `error`, `none` |
+  | `fail_closed`        | bool   | yes      | Whether a hook execution error blocks the associated action                 |
+  | `stdout`             | string | yes      | Captured hook stdout, capped at 64 KiB                                      |
+  | `stderr`             | string | yes      | Captured hook stderr, capped at 64 KiB                                      |
+
+Hook stdout and stderr may include local paths, policy diagnostics, or other project-specific details produced by hook commands.
+
 ### Task Complete
 
 ```json
@@ -128,7 +158,9 @@ Each `content` item has a required `type` string and an optional `text` string.
 
 ## Consumer Guidance
 
-Consumers should treat records as an event stream and should not assume a `task_complete` record will arrive after crashes, process termination, or broken pipes. Use `task_id` to group events from one invocation and `call_id` to join tool calls to tool outputs.
+Consumers should treat records as an event stream and should not assume a `task_complete` record will arrive after crashes, process termination, or broken pipes. Use `task_id` to group events from one invocation and `call_id` to join tool calls, hook events, and tool outputs.
+
+Consumers must ignore unknown `type` values and unknown fields for forward compatibility.
 
 Do not use redirected stream-json output as a session archive. Persisted sessions are the files under `~/.local/share/cake/sessions/` or `$CAKE_DATA_DIR/sessions/`.
 
@@ -138,6 +170,7 @@ Do not use redirected stream-json output as a session archive. Persisted session
 {"type":"task_start","session_id":"550e8400-e29b-41d4-a716-446655440000","task_id":"2b15f29d-8c42-4c53-9bdf-35c8f2390d3e","timestamp":"2026-05-03T12:00:01Z"}
 {"type":"message","role":"user","content":"List files in the current directory"}
 {"type":"function_call","id":"fc_001","call_id":"call_001","name":"bash","arguments":"{\"command\":\"ls\"}"}
+{"type":"hook_event","timestamp":"2026-05-03T12:00:02Z","task_id":"2b15f29d-8c42-4c53-9bdf-35c8f2390d3e","event":"PreToolUse","source":"Bash","call_id":"call_001","tool_name":"bash","tool_input_summary":"ls","source_file":"/Users/user/project/.cake/hooks.json","command":"./check-tool.sh","exit_code":0,"duration_ms":21,"decision":"none","resolved_decision":"allow","fail_closed":false,"stdout":"","stderr":""}
 {"type":"function_call_output","call_id":"call_001","output":"Cargo.toml\nsrc"}
 {"type":"message","role":"assistant","content":"The current directory contains Cargo.toml and src.","id":"msg_001","status":"completed"}
 {"type":"task_complete","subtype":"success","is_error":false,"duration_ms":1523,"turn_count":2,"tool_call_count":1,"session_id":"550e8400-e29b-41d4-a716-446655440000","task_id":"2b15f29d-8c42-4c53-9bdf-35c8f2390d3e","result":"The current directory contains Cargo.toml and src.","usage":{"input_tokens":150,"input_tokens_details":{"cached_tokens":50},"output_tokens":320,"output_tokens_details":{"reasoning_tokens":120},"total_tokens":470}}

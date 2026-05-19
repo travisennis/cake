@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
@@ -9,6 +10,7 @@ use tokio::process::Command;
 use tokio::time::timeout;
 
 use crate::clients::SessionRecord;
+use crate::clients::types::{HookEventData, StreamRecord};
 use crate::config::SessionWriter;
 use crate::config::hooks::{HookCommand, HookEvent, HookSource, LoadedHooks};
 
@@ -26,6 +28,7 @@ pub struct HookContext {
     pub task_id: uuid::Uuid,
     pub transcript_path: Option<PathBuf>,
     pub session_writer: Option<SessionWriter>,
+    pub hook_event_sink: Option<Arc<dyn Fn(StreamRecord) + Send + Sync>>,
     pub cwd: PathBuf,
     pub model: String,
 }
@@ -550,10 +553,7 @@ impl HookRunner {
             );
         }
 
-        let Some(writer) = &self.context.session_writer else {
-            return;
-        };
-        let record = SessionRecord::HookEvent {
+        let record = HookEventData {
             timestamp: chrono::Utc::now(),
             task_id: self.context.task_id.to_string(),
             event: event.as_str().to_string(),
@@ -572,6 +572,15 @@ impl HookRunner {
             stderr: outcome.stderr.clone(),
         };
 
+        if let Some(sink) = &self.context.hook_event_sink {
+            sink(StreamRecord::HookEvent(record));
+            return;
+        }
+
+        let Some(writer) = &self.context.session_writer else {
+            return;
+        };
+        let record = SessionRecord::HookEvent(record);
         if let Err(error) = writer.append_record(&record) {
             tracing::warn!(
                 target: "cake::hooks",
@@ -881,6 +890,7 @@ mod tests {
                 task_id: uuid::Uuid::new_v4(),
                 transcript_path: None,
                 session_writer: None,
+                hook_event_sink: None,
                 cwd,
                 model: "test-model".to_string(),
             },
@@ -984,6 +994,7 @@ mod tests {
                 task_id: uuid::Uuid::new_v4(),
                 transcript_path: Some(session_path.clone()),
                 session_writer: Some(writer.clone()),
+                hook_event_sink: None,
                 cwd: dir.path().to_path_buf(),
                 model: "test-model".to_string(),
             },
@@ -1012,6 +1023,66 @@ mod tests {
         assert!(content.contains(r#""tool_input_summary":"printf ok""#));
         assert!(content.contains(r#""resolved_decision":"allow""#));
         drop(writer);
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn post_tool_use_emits_hook_record_to_sink_without_session_writer() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured_clone = Arc::clone(&captured);
+
+        let source_path = dir.path().join("hooks.json");
+        let command = HookCommand {
+            command: r#"printf '{"permission":"allow"}'"#.to_string(),
+            timeout: Duration::from_secs(2),
+            fail_closed: false,
+            status_message: None,
+            source_path,
+        };
+        let loaded = LoadedHooks {
+            groups: vec![HookGroup {
+                event: HookEvent::PostToolUse,
+                matcher: HookMatcher::All,
+                hooks: vec![command],
+            }],
+        };
+        let runner = HookRunner::new(
+            loaded,
+            HookContext {
+                session_id: uuid::Uuid::new_v4(),
+                task_id: uuid::Uuid::new_v4(),
+                transcript_path: None,
+                session_writer: None,
+                hook_event_sink: Some(Arc::new(move |record| {
+                    captured_clone.lock().unwrap().push(record);
+                })),
+                cwd: dir.path().to_path_buf(),
+                model: "test-model".to_string(),
+            },
+        );
+
+        runner
+            .post_tool_use(
+                "Bash",
+                "call-1",
+                r#"{"command":"printf ok"}"#,
+                &Ok("ok".to_string()),
+            )
+            .await
+            .unwrap();
+
+        let captured = captured.lock().unwrap();
+        assert_eq!(captured.len(), 1);
+        match &captured[0] {
+            StreamRecord::HookEvent(record) => {
+                assert_eq!(record.event, "PostToolUse");
+                assert_eq!(record.call_id.as_deref(), Some("call-1"));
+                assert_eq!(record.tool_name.as_deref(), Some("Bash"));
+                assert_eq!(record.resolved_decision.as_deref(), Some("allow"));
+            },
+            other => panic!("expected hook_event stream record, got {other:?}"),
+        }
     }
 
     #[tokio::test]

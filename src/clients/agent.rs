@@ -1872,6 +1872,7 @@ mod error_tests {
                 task_id: uuid::Uuid::new_v4(),
                 transcript_path: None,
                 session_writer: None,
+                hook_event_sink: None,
                 cwd: tmp.path().to_path_buf(),
                 model: "test-model".to_string(),
             },

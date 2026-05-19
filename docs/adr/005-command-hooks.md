@@ -23,7 +23,7 @@ Hooks receive a JSON event payload on stdin and may return JSON on stdout. Suppo
 
 `PreToolUse` hooks can allow, deny, or update a tool call before execution. Session and post-tool hooks can return additional context for the model. Hook failures are fail-open by default, with per-command `fail_closed` support when policy enforcement requires blocking behavior.
 
-Hook activity is recorded through tracing and appended to session JSONL as `hook_event` records when sessions are enabled. Tool hook records include the associated tool `call_id`, tool name, and a compact tool input summary so audit tools can join each hook invocation to the matching `function_call` record without relying on transcript order. Hook records also store a parsed `resolved_decision` in addition to raw stdout/stderr and the historical coarse `decision` label.
+Hook activity is recorded through tracing and appended to session JSONL as `hook_event` records when sessions are enabled. The same record shape is emitted live through `--output-format stream-json` so integrations can observe hook effects without reading persisted session files. Tool hook records include the associated tool `call_id`, tool name, and a compact tool input summary so audit tools can join each hook invocation to the matching `function_call` record without relying on transcript order. Hook records also store a parsed `resolved_decision` in addition to raw stdout/stderr and the historical coarse `decision` label.
 
 ## Rationale
 

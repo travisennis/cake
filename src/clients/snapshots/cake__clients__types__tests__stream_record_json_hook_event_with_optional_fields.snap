@@ -1,0 +1,23 @@
+---
+source: src/clients/types.rs
+expression: "serde_json::to_value(record).unwrap()"
+---
+{
+  "call_id": "call-1",
+  "command": "./post-tool-use.sh",
+  "decision": "none",
+  "duration_ms": 42,
+  "event": "post_tool_use",
+  "exit_code": 0,
+  "fail_closed": false,
+  "resolved_decision": "allow",
+  "source": "Bash",
+  "source_file": "/workspace/cake/.cake/hooks/post-tool-use.sh",
+  "stderr": "",
+  "stdout": "ok",
+  "task_id": "550e8400-e29b-41d4-a716-446655440001",
+  "timestamp": "2026-05-10T12:34:56Z",
+  "tool_input_summary": "just ci",
+  "tool_name": "Bash",
+  "type": "hook_event"
+}

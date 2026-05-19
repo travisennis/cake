@@ -99,7 +99,7 @@ All events can return `additional_context`, which cake adds as developer context
 
 ## Observability
 
-Hook activity is logged with the `cake::hooks` tracing target. When sessions are enabled, each hook invocation also appends a `hook_event` record to the session JSONL transcript with event name, source, command, exit code, duration, decision, resolved decision, stdout, and stderr. Stdout and stderr stored by hook records are capped at 64 KiB each.
+Hook activity is logged with the `cake::hooks` tracing target. When sessions are enabled, each hook invocation also appends a `hook_event` record to the session JSONL transcript with event name, source, command, exit code, duration, decision, resolved decision, stdout, and stderr. With `--output-format stream-json`, the same `hook_event` record is emitted live even when session persistence is disabled. Stdout and stderr stored by hook records are capped at 64 KiB each.
 
 Tool hook records also include `call_id`, `tool_name`, and `tool_input_summary`. `call_id` matches the associated `function_call.call_id`, so analyzers can join hook activity to the tool call without relying on line ordering. `tool_input_summary` is a compact, capped summary for inspection; raw hook stdout and stderr remain available for debugging.
 

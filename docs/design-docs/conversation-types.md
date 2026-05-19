@@ -153,9 +153,9 @@ These track token consumption across the conversation, including cached tokens a
 
 ## Persisted and Streamed Records
 
-`SessionRecord` is the persisted JSONL schema for files in `~/.local/share/cake/sessions/`. It wraps conversation items with `session_meta`, `task_start`, and `task_complete` records.
+`SessionRecord` is the persisted JSONL schema for files in `~/.local/share/cake/sessions/`. It wraps conversation items with `session_meta`, `task_start`, hook, prompt-context, skill-activation, and `task_complete` records.
 
-`StreamRecord` is the `--output-format stream-json` schema for the current task. It has the same task and conversation records as `SessionRecord`, but intentionally excludes `session_meta`.
+`StreamRecord` is the `--output-format stream-json` schema for the current task. It has the same task, hook, and conversation records as `SessionRecord`, but intentionally excludes `session_meta` and session-only audit records such as `prompt_context` and `skill_activated`.
 
 The detailed field-level contracts are documented in:
 
