@@ -10,7 +10,7 @@ Completed tasks are retained for history and stable task-id lookup.
 - Pending: 0
 - Blocked: 0
 - Tracking: 0
-- Completed: 132
+- Completed: 133
 - Cancelled: 0
 
 ## Tasks
@@ -34,6 +34,7 @@ Completed tasks are retained for history and stable task-id lookup.
 | [027](027.md) | Clean Up Pre-Existing Dead Code | Completed | - | - | - | - | - |
 | [028](028.md) | Warn (Don't Silently Swallow) StreamRecord Serialization Failures | Completed | - | - | - | - | - |
 | [029](029.md) | Reduce SessionRecord / StreamRecord Boilerplate | Completed | - | - | - | - | - |
+| [030](030.md) | Investigate Session-Level Hook Observability | Completed | - | - | - | - | - |
 | [031](031.md) | Fix rm -rf Safety Checks for Multiple Targets | Completed | P0 | M | - | - | - |
 | [032](032.md) | Stop Treating Literal TMPDIR as Safe rm Target | Completed | P0 | S | - | - | - |
 | [033](033.md) | Remove Bypass-Prone Bash Data Context Skips | Completed | P0 | M | - | - | - |
