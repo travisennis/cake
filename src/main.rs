@@ -1339,7 +1339,11 @@ async fn main() -> std::process::ExitCode {
             // For --help/--version, clap returns exit_code() == 0 and the
             // formatted output goes to stdout. For actual errors (bad flags,
             // missing required args), it goes to stderr with exit_code() != 0.
-            _ = e.print();
+            #[expect(
+                clippy::unused_result_ok,
+                reason = "best-effort error printing; we already exit non-zero"
+            )]
+            e.print().ok();
             let exit = if e.exit_code() == 0 {
                 std::process::ExitCode::from(exit_code::code::SUCCESS)
             } else {

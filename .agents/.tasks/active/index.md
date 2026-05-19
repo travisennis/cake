@@ -7,7 +7,7 @@ Active tasks include open, pending, blocked, and tracking work.
 ## Status Summary
 
 - Open: 1
-- Pending: 34
+- Pending: 33
 - Blocked: 5
 - Tracking: 0
 - Completed: 0
@@ -39,7 +39,6 @@ Active tasks include open, pending, blocked, and tracking work.
 | [118](118.md) | Profile and Optimize Cake Performance | Pending | P2 | L | - | `.agents/exec-plans/active/performance-improvements.md` | - |
 | [120](120.md) | Add OSC 9;4 Terminal Progress Indicator | Pending | P3 | S | - | `.agents/exec-plans/active/progress-bar-plan.md` | - |
 | [121](121.md) | Implement User-Defined Toolbox Tools | Pending | P2 | XL | - | `.agents/exec-plans/active/toolboxes-plan.md` | 050 (Backend abstraction, completed), 051 (Tool abstraction, completed) |
-| [129](129.md) | Restore `e.print().ok()` With Localized `unused_result_ok` Expect | Pending | P3 | XS | - | - | From code review of 110/3cc2e73 |
 | [135](135.md) | Prefer Focused Checks Before Final CI in Deslop Guidance | Pending | P3 | XS | - | - | - |
 | [139](139.md) | Add Structured Bulk Edit Support for Mechanical Transformations | Pending | P2 | M | - | - | - |
 | [140](140.md) | Harden Edit Schema Guidance Against Malformed Arguments | Pending | P2 | S | - | - | - |
