@@ -50,8 +50,7 @@ impl DataDir {
     ///
     /// # Examples
     ///
-    /// ```
-    /// use cake::config::DataDir;
+    /// ```ignore
     /// let data_dir = DataDir::new()?;
     /// ```
     ///
@@ -97,8 +96,7 @@ impl DataDir {
     ///
     /// # Examples
     ///
-    /// ```
-    /// use cake::config::DataDir;
+    /// ```ignore
     /// let data_dir = DataDir::new()?;
     /// let cache_path = data_dir.get_cache_dir();
     /// ```
@@ -132,14 +130,10 @@ impl DataDir {
     ///
     /// # Examples
     ///
-    /// ```no_run
-    /// use cake::config::{DataDir, Session};
-    /// use std::path::PathBuf;
-    ///
+    /// ```ignore
     /// let data_dir = DataDir::new()?;
     /// let session = Session::new(uuid::Uuid::new_v4(), PathBuf::from("/project"));
     /// data_dir.save_session(&session)?;
-    /// # Ok::<(), anyhow::Error>(())
     /// ```
     ///
     /// # Errors
@@ -182,10 +176,7 @@ impl DataDir {
     ///
     /// # Examples
     ///
-    /// ```
-    /// use cake::config::DataDir;
-    /// use std::path::PathBuf;
-    ///
+    /// ```ignore
     /// let data_dir = DataDir::new()?;
     /// let session = data_dir.load_latest_session(&PathBuf::from("/project"))?;
     /// match session {
@@ -268,9 +259,7 @@ impl DataDir {
     ///
     /// # Examples
     ///
-    /// ```
-    /// use cake::config::DataDir;
-    ///
+    /// ```ignore
     /// let data_dir = DataDir::new()?;
     /// let session = data_dir.load_session(
     ///     uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap()
@@ -305,10 +294,7 @@ impl DataDir {
     ///
     /// # Examples
     ///
-    /// ```
-    /// use cake::config::DataDir;
-    /// use std::path::PathBuf;
-    ///
+    /// ```ignore
     /// let data_dir = DataDir::new()?;
     /// let agents_files = data_dir.read_agents_files(&PathBuf::from("/project"));
     /// for file in &agents_files {

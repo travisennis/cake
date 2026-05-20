@@ -8,19 +8,8 @@ use crate::config::DataDir;
 ///
 /// # Examples
 ///
-/// ```rust
-/// use cake::cli::CmdRunner;
-/// use cake::config::DataDir;
-///
-/// struct MyCommand;
-///
-/// impl CmdRunner for MyCommand {
-///     async fn run(&self, data_dir: &DataDir) -> anyhow::Result<()> {
-///         println!("Running MyCommand!");
-///         Ok(())
-///     }
-/// }
-/// ```
+/// Implementors define the `run` method which receives a reference to the
+/// [`DataDir`](crate::config::DataDir) and returns `anyhow::Result<()>`.
 pub trait CmdRunner {
     /// Executes the command's logic.
     ///

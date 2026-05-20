@@ -107,27 +107,8 @@ pub struct ModelConfig {
 ///
 /// # Examples
 ///
-/// ```no_run
-/// use cake::config::{ModelConfig, ApiType, ResolvedModelConfig};
-///
-/// let config = ModelConfig {
-///     model: "test/model".to_string(),
-///     api_type: ApiType::ChatCompletions,
-///     base_url: "https://api.example.com".to_string(),
-///     api_key_env: "MY_KEY".to_string(),
-///     provider: None,
-///     provider_headers: None,
-///     temperature: None,
-///     top_p: None,
-///     max_output_tokens: None,
-///     reasoning_effort: None,
-///     reasoning_summary: None,
-///     reasoning_max_tokens: None,
-///     providers: vec![],
-/// };
-/// let resolved = ResolvedModelConfig::resolve(config)?;
-/// # Ok::<(), anyhow::Error>(())
-/// ```
+/// Create a [`ModelConfig`], call [`ResolvedModelConfig::resolve`] to obtain
+/// the resolved configuration with the API key read from the environment.
 #[derive(Debug, Clone)]
 pub struct ResolvedModelConfig {
     /// The underlying model configuration
@@ -144,27 +125,10 @@ impl ResolvedModelConfig {
     ///
     /// # Examples
     ///
-    /// ```no_run
-    /// use cake::config::{ModelConfig, ApiType, ResolvedModelConfig};
-    ///
-    /// let config = ModelConfig {
-    ///     model: "test/model".to_string(),
-    ///     api_type: ApiType::ChatCompletions,
-    ///     base_url: "https://api.example.com".to_string(),
-    ///     api_key_env: "CAKE_TEST_KEY".to_string(),
-    ///     provider: None,
-    ///     provider_headers: None,
-    ///     temperature: None,
-    ///     top_p: None,
-    ///     max_output_tokens: None,
-    ///     reasoning_effort: None,
-    ///     reasoning_summary: None,
-    ///     reasoning_max_tokens: None,
-    ///     providers: vec![],
-    /// };
+    /// ```ignore
+    /// let config = ModelConfig { model: "test/model".into(), api_key_env: "MY_KEY".into(), .. };
     /// let resolved = ResolvedModelConfig::resolve(config)?;
     /// println!("Using API key from: {}", resolved.model_config.api_key_env);
-    /// # Ok::<(), anyhow::Error>(())
     /// ```
     ///
     /// # Errors

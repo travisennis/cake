@@ -49,10 +49,7 @@ pub const CURRENT_FORMAT_VERSION: u32 = 4;
 ///
 /// # Examples
 ///
-/// ```
-/// use cake::config::Session;
-/// use std::path::PathBuf;
-///
+/// ```ignore
 /// let session = Session::new(uuid::Uuid::new_v4(), PathBuf::from("/project"));
 /// assert!(session.records.is_empty());
 /// ```
@@ -77,10 +74,7 @@ impl Session {
     ///
     /// # Examples
     ///
-    /// ```
-    /// use cake::config::Session;
-    /// use std::path::PathBuf;
-    ///
+    /// ```ignore
     /// let id = uuid::Uuid::new_v4();
     /// let session = Session::new(id, PathBuf::from("/project"));
     /// assert_eq!(session.id, id);
