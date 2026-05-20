@@ -409,6 +409,11 @@ impl SandboxConfig {
                 PathBuf::from("/sbin"),
                 PathBuf::from("/Library"),
                 PathBuf::from("/System/Library"),
+                // macOS exposes command-line shims and sealed-system content
+                // through Cryptex paths. npm's script runner may touch this
+                // path while resolving its shell, even when the final shell is
+                // /bin/sh.
+                PathBuf::from("/System/Cryptexes"),
                 PathBuf::from("/Applications"),
                 PathBuf::from("/opt/homebrew"),
                 PathBuf::from("/opt/local"),
@@ -634,6 +639,19 @@ mod tests {
                 );
             }
         });
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_system_paths_include_cryptexes() {
+        let paths = SandboxConfig::get_system_paths();
+
+        if PathBuf::from("/System/Cryptexes").exists() {
+            assert!(
+                paths.contains(&PathBuf::from("/System/Cryptexes")),
+                "expected read access for macOS Cryptex command resolution paths"
+            );
+        }
     }
 
     /// Smoke test that every major toolchain category from the safehouse
