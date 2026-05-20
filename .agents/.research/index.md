@@ -50,6 +50,7 @@ Synthesized notes that describe an area, direction, or durable project idea.
 - `topics/block-destructive-commands.md` - Destructive-command blocking notes.
 - `topics/context-compaction.md` - Context compaction notes.
 - `topics/context-management.md` - Context management notes.
+- `topics/harness-anchored-editing.md` - Research on view-backed line/range edit protocols for safer agent editing.
 - `topics/hooks.md` - Hook system research and synthesis.
 - `topics/proptest-idea.md` - Property-testing idea.
 - `topics/provers.md` - Prover-related notes.
