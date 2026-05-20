@@ -7,9 +7,9 @@ Active tasks include open, pending, blocked, and tracking work.
 ## Status Summary
 
 - Open: 1
-- Pending: 24
+- Pending: 30
 - Blocked: 5
-- Tracking: 0
+- Tracking: 1
 - Completed: 0
 - Cancelled: 0
 
@@ -22,7 +22,14 @@ Active tasks include open, pending, blocked, and tracking work.
 | [009](009.md) | Add Session Browsing Commands | Blocked | - | - | - | - | - |
 | [012](012.md) | Add Template Prompts from .cake/prompts/ | Blocked | - | - | - | - | - |
 | [016](016.md) | Refactor send() and execute_bash() into Smaller Functions | Blocked | - | - | - | - | - |
-| [101](101.md) | Review Module Size and Ownership Boundaries | Pending | P3 | XL | - | Required before implementation | 047 (ToolContext), 049 (Split Agent), 050 (Backend abstraction), 051 (Tool abstraction), 052 (Provider strategy), 053 (Typed SessionMode), 054 (Refactor run), 064 (build_messages refactor). Do this after behavior-oriented refactors land. |
+| [101](101.md) | Review Module Size and Ownership Boundaries | Tracking | P3 | XL | - | Required before implementation | - |
+| [101a](101a.md) | Extract Skill Dedup from agent.rs | Pending | P3 | S | type:refactor, area:agent | - | - |
+| [101b](101b.md) | Extract CliOutputSink, RunMode, and Session Construction from main.rs | Pending | P3 | M | type:refactor, area:cli | - | - |
+| [101c](101c.md) | Convert bash_safety.rs to Subdirectory with Separated Parsing | Pending | P3 | S | type:refactor, area:tools | - | - |
+| [101d](101d.md) | Extract Inline Tests from edit.rs | Pending | P3 | S | type:refactor, area:tools | - | - |
+| [101e](101e.md) | Extract Inline Tests from chat_completions.rs | Pending | P3 | S | type:refactor, area:chat | - | - |
+| [101f](101f.md) | Extract Inline Tests from settings.rs | Pending | P3 | S | type:refactor, area:config | - | - |
+| [101g](101g.md) | Add Module Size Lint Script and just Recipe | Pending | P3 | S | type:task, area:ci | - | - |
 | [103](103.md) | Add Builder or Fixture Infrastructure for Agent Tests | Pending | P3 | M | - | - | 066 (Encapsulate Agent fields) |
 | [105](105.md) | Improve Unknown or Missing API Field Diagnostics | Pending | P3 | M | - | - | - |
 | [108](108.md) | Track Manual Review Findings Without Losing Original Numbers | Pending | P3 | S | - | - | - |
