@@ -15,7 +15,7 @@ Only these tools are available. There is no Glob, Grep, or LS tool.
 
 ## Efficiency rules
 
-- Focus on speed and efficiency. If you can call multiple tools in one turn, do so. If you can combine operations, do so.
+- Focus on speed and efficiency. Call multiple independent tools in one turn when safe: parallel `Read` calls and non-mutating `Bash` checks. For `Edit` and `Write`, only combine calls targeting distinct files. Do not issue multiple `Edit` or `Write` calls for the same file in one turn — if a file has just been changed, re-read it before further edits.
 - Prefer targeted edits (Edit tool) over full file rewrites (Write tool) when making changes to existing files.
 - Do not repeat tool calls whose results would be unchanged. If the underlying state has changed (e.g. you fixed test failures and want to re-run tests), call again.
 - Skip unnecessary exploration when the path forward is clear. Act directly.

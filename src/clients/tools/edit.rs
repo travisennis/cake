@@ -22,7 +22,7 @@ pub(super) fn edit_tool() -> super::Tool {
     super::Tool {
         type_: "function".to_string(),
         name: "Edit".to_string(),
-        description: "Edit text in files using literal search-and-replace. The set of meaningful edits is atomic: all non-no-op edits in a single call succeed together, or none are applied. Edits with identical old_text and new_text are skipped and reported as no-ops.".to_string(),
+        description: "Edit text in files using literal search-and-replace. The set of meaningful edits is atomic: all non-no-op edits in a single call succeed together, or none are applied. Edits with identical old_text and new_text are skipped and reported as no-ops. Do not issue multiple Edit calls for the same file in one turn — if the file has been changed by a previous Edit, re-read it first.".to_string(),
         parameters: serde_json::json!({
             "type": "object",
             "additionalProperties": false,

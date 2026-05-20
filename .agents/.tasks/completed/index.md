@@ -10,7 +10,7 @@ Completed tasks are retained for history and stable task-id lookup.
 - Pending: 0
 - Blocked: 0
 - Tracking: 0
-- Completed: 135
+- Completed: 136
 - Cancelled: 0
 
 ## Tasks
@@ -152,3 +152,4 @@ Completed tasks are retained for history and stable task-id lookup.
 | [152](152.md) | Prevent shell command-substitution in Bash-tool git commit messages | Completed | P2 | S | type:bug, area:tools | - | - |
 | [156](156.md) | Correlate Hook Event Records With Tool Calls | Completed | P2 | M | type:feature, area:session, area:agent | - | - |
 | [157](157.md) | Update Session Evaluation Skills For Current Task Completion Schema | Completed | P3 | S | type:docs, area:session, area:dev-env | - | - |
+| [164](164.md) | Clarify Parallel Tool Guidance for Mutating Writes | Completed | P1 | S | type:docs, area:prompts, area:tools | - | - |

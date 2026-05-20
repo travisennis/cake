@@ -13,7 +13,8 @@ pub(super) fn write_tool() -> super::Tool {
         name: "Write".to_string(),
         description: "Create a new file or overwrite an existing file with the given content. \
             Use this for creating new files. For modifying existing files, prefer the Edit tool \
-            instead — it makes targeted changes without rewriting the entire file."
+            instead — it makes targeted changes without rewriting the entire file. \
+            Do not issue multiple Write calls for the same file in one turn; combine changes into one Write or use Edit."
             .to_string(),
         parameters: serde_json::json!({
             "type": "object",
