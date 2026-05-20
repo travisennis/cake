@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::cli::CmdRunner;
-use crate::clients::{Agent, ConversationItem, TaskOutcome, ToolContext};
+use crate::clients::{Agent, ToolContext};
 use crate::config::settings::LoadedSettings;
 use crate::config::skills::Skill;
 use crate::config::{
@@ -31,7 +31,7 @@ use crate::session_telemetry::{
     SessionTelemetryRecord, SessionTelemetryRunMode, SessionTelemetryWriter,
 };
 use crate::time_format::{format_duration_tenths, format_seconds_tenths};
-use crate::types::{Role, StreamRecord};
+use crate::types::{ConversationItem, Role, SessionRecord, StreamRecord, TaskOutcome};
 use clap::{ArgGroup, Parser, ValueEnum};
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::Serialize;
@@ -125,7 +125,7 @@ struct RunSession {
     agent: Agent,
     session: Session,
     storage: SessionStorage,
-    seed_records: Option<Vec<crate::clients::SessionRecord>>,
+    seed_records: Option<Vec<SessionRecord>>,
 }
 
 struct PreparedRun {
@@ -660,13 +660,13 @@ impl CodingAssistant {
             .iter()
             .filter_map(|record| match record {
                 record if record.to_conversation_item().is_some() => Some(record.clone()),
-                crate::clients::SessionRecord::SkillActivated {
+                SessionRecord::SkillActivated {
                     task_id,
                     timestamp,
                     name,
                     path,
                     ..
-                } => Some(crate::clients::SessionRecord::SkillActivated {
+                } => Some(SessionRecord::SkillActivated {
                     session_id: new_id.to_string(),
                     task_id: task_id.clone(),
                     timestamp: *timestamp,
@@ -1114,7 +1114,7 @@ impl CodingAssistant {
 
         Some(Arc::new(move |record| {
             if let Some(writer) = &session_writer {
-                let session_record = crate::clients::SessionRecord::from(record.clone());
+                let session_record = SessionRecord::from(record.clone());
                 if let Err(error) = writer.append_record(&session_record) {
                     tracing::warn!(
                         target: "cake::hooks",
@@ -1407,12 +1407,12 @@ mod tests {
             PathBuf::from("/work"),
         );
         session.records = vec![
-            crate::clients::SessionRecord::FunctionCallOutput(FunctionCallOutputData {
+            SessionRecord::FunctionCallOutput(FunctionCallOutputData {
                 call_id: "call-1".to_string(),
                 output: "echoed text: Skill 'fake-skill' activated".to_string(),
                 timestamp: None,
             }),
-            crate::clients::SessionRecord::SkillActivated {
+            SessionRecord::SkillActivated {
                 session_id: session.id.to_string(),
                 task_id: "task-1".to_string(),
                 timestamp: chrono::Utc::now(),
@@ -1838,7 +1838,7 @@ mod tests {
             .expect("fork should produce seed records");
         assert!(seed_records.iter().any(|record| matches!(
             record,
-            crate::clients::SessionRecord::SkillActivated { name, .. }
+            SessionRecord::SkillActivated { name, .. }
                 if name == "real-skill"
         )));
     }

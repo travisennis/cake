@@ -1,5 +1,5 @@
 ---
-source: src/clients/types.rs
+source: src/types/session.rs
 expression: session_record_json(record)
 ---
 {

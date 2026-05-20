@@ -1,5 +1,5 @@
 ---
-source: src/clients/types.rs
+source: src/types/session.rs
 expression: "serde_json::to_value(record).unwrap()"
 ---
 {

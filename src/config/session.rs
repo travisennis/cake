@@ -9,7 +9,7 @@ use std::{
 use anyhow::Context;
 use fs4::{FileExt, TryLockError};
 
-use crate::clients::{ConversationItem, GitState, SessionRecord};
+use crate::types::{ConversationItem, GitState, SessionRecord};
 
 /// Shared writer that holds the locked append handle for a session JSONL file.
 ///

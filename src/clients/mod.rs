@@ -22,9 +22,6 @@ mod responses_types;
 pub mod retry;
 mod tools;
 
-#[doc(inline)]
-pub use crate::types::{ConversationItem, GitState, SessionRecord, TaskOutcome};
-#[doc(inline)]
 pub use agent::Agent;
 #[doc(inline)]
 pub use tools::{ToolContext, summarize_tool_args};

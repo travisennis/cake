@@ -1,6 +1,5 @@
 ---
-source: src/clients/types.rs
-assertion_line: 1568
+source: src/types/session.rs
 expression: session_json_for(&item)
 ---
 {

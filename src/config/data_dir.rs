@@ -8,8 +8,8 @@ use std::{
 use anyhow::{Context, anyhow};
 use serde::Deserialize;
 
-use crate::clients::{GitState, SessionRecord};
 use crate::config::{Session, session::CURRENT_FORMAT_VERSION};
+use crate::types::{GitState, SessionRecord};
 
 /// Represents an AGENTS.md file with its path and content.
 ///

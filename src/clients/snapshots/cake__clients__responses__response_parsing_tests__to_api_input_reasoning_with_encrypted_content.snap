@@ -1,6 +1,6 @@
 ---
-source: src/clients/types.rs
-expression: item.to_api_input()
+source: src/clients/responses.rs
+expression: to_api_input_json(&item)
 ---
 {
   "encrypted_content": "gAAAAABencrypted...",
