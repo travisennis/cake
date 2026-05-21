@@ -6,9 +6,9 @@ Active tasks include open, pending, blocked, and tracking work.
 
 ## Status Summary
 
-- Open: 1
-- Pending: 31
-- Blocked: 5
+- Open: 5
+- Pending: 18
+- Blocked: 13
 - Tracking: 1
 - Completed: 0
 - Cancelled: 0
@@ -32,26 +32,25 @@ Active tasks include open, pending, blocked, and tracking work.
 | [101g](101g.md) | Add Module Size Lint Script and just Recipe | Pending | P3 | S | type:task, area:ci | - | - |
 | [103](103.md) | Add Builder or Fixture Infrastructure for Agent Tests | Pending | P3 | M | - | - | 066 (Encapsulate Agent fields) |
 | [105](105.md) | Improve Unknown or Missing API Field Diagnostics | Pending | P3 | M | - | - | - |
-| [108](108.md) | Track Manual Review Findings Without Losing Original Numbers | Pending | P3 | S | - | - | - |
-| [117](117.md) | Strengthen Edit Tool Semantics via Lean-Assisted Testing | Pending | P2 | XL | - | `.agents/exec-plans/active/edit-tool-lean.md` | - |
-| [118](118.md) | Profile and Optimize Cake Performance | Pending | P2 | L | - | `.agents/exec-plans/active/performance-improvements.md` | - |
-| [120](120.md) | Add OSC 9;4 Terminal Progress Indicator | Pending | P3 | S | - | `.agents/exec-plans/active/progress-bar-plan.md` | - |
-| [121](121.md) | Implement User-Defined Toolbox Tools | Pending | P2 | XL | - | `.agents/exec-plans/active/toolboxes-plan.md` | 050 (Backend abstraction, completed), 051 (Tool abstraction, completed) |
+| [117](117.md) | Strengthen Edit Tool Semantics via Lean-Assisted Testing | Blocked | P2 | XL | - | `.agents/exec-plans/active/edit-tool-lean.md` | - |
+| [118](118.md) | Profile and Optimize Cake Performance | Blocked | P2 | L | - | `.agents/exec-plans/active/performance-improvements.md` | - |
+| [120](120.md) | Add OSC 9;4 Terminal Progress Indicator | Blocked | P3 | S | - | `.agents/exec-plans/active/progress-bar-plan.md` | - |
+| [121](121.md) | Implement User-Defined Toolbox Tools | Blocked | P2 | XL | - | `.agents/exec-plans/active/toolboxes-plan.md` | 050 (Backend abstraction, completed), 051 (Tool abstraction, completed) |
 | [135](135.md) | Prefer Focused Checks Before Final CI in Deslop Guidance | Pending | P3 | XS | - | - | - |
-| [139](139.md) | Add Structured Bulk Edit Support for Mechanical Transformations | Pending | P2 | M | - | - | - |
-| [142](142.md) | Add Bash Command Lint Hints for Common Agent Footguns | Pending | P2 | M | type:bug, area:tools | - | - |
+| [139](139.md) | Add Structured Bulk Edit Support for Mechanical Transformations | Blocked | P2 | M | - | - | - |
+| [142](142.md) | Add Bash Command Lint Hints for Common Agent Footguns | Blocked | P2 | M | type:bug, area:tools | - | - |
 | [145](145.md) | Add Platform Verification Guidance for cfg-Sensitive Changes | Pending | P2 | M | - | - | - |
-| [146](146.md) | Compact Large Tool Outputs Before Adding to Model Context | Pending | P2 | L | type:feature, area:agent, area:tools, area:session | - | - |
+| [146](146.md) | Compact Large Tool Outputs Before Adding to Model Context | Blocked | P2 | L | type:feature, area:agent, area:tools, area:session | - | - |
 | [147](147.md) | Clarify Hook Event Decision Semantics in Session Records | Pending | P3 | S | - | - | - |
 | [148](148.md) | Make Deslop Passes Produce Evidence-Backed Results | Pending | P3 | S | type:docs, area:dev-env | - | 135 |
 | [151](151.md) | Add Settings-Based and Profile-Based System Prompt Configuration | Open | P3 | M | - | - | 150 |
-| [153](153.md) | Disambiguate Bash-tool output for empty rg/grep no-match results | Pending | P3 | S | type:bug, area:tools | - | - |
+| [153](153.md) | Disambiguate Bash-tool output for empty rg/grep no-match results | Blocked | P3 | S | type:bug, area:tools | - | - |
 | [154](154.md) | Surface Bash Stderr Warnings Separately From Successful Exit Status | Pending | P2 | M | type:bug, area:tools, area:session | - | - |
-| [155](155.md) | Track Skill And Workflow Checklist Obligations In Sessions | Pending | P2 | L | type:feature, area:agent, area:session, area:prompts | - | - |
-| [158](158.md) | Fix Skill Activation Reads And Consider Dedicated Skill Tool | Pending | P2 | L | type:feature, area:tools, area:agent, area:prompts | - | - |
+| [155](155.md) | Track Skill And Workflow Checklist Obligations In Sessions | Open | P2 | L | type:feature, area:agent, area:session, area:prompts | - | - |
+| [158](158.md) | Fix Skill Activation Reads And Consider Dedicated Skill Tool | Open | P2 | L | type:feature, area:tools, area:agent, area:prompts | - | - |
 | [159](159.md) | Record Hook-Blocked Tool Calls As Permission Denials | Pending | P2 | M | type:bug, area:agent, area:session, area:tools | - | - |
 | [160](160.md) | Guard Git Add All When Untracked Files Are Present | Pending | P2 | M | type:bug, area:tools, area:agent | - | - |
-| [161](161.md) | Align Self-Reflection Note Instructions With Tool Write Permissions | Pending | P3 | S | type:bug, area:prompts, area:tools, area:config | - | - |
-| [162](162.md) | Prevent Clean Worktree Claims When Untracked Files Remain | Pending | P3 | XS | type:bug, area:prompts, area:cli | - | - |
+| [161](161.md) | Align Self-Reflection Note Instructions With Tool Write Permissions | Open | P3 | S | type:bug, area:prompts, area:tools, area:config | - | - |
+| [162](162.md) | Prevent Clean Worktree Claims When Untracked Files Remain | Open | P3 | XS | type:bug, area:prompts, area:cli | - | - |
 | [163](163.md) | Prevent Concurrent Same-File Mutating Tool Calls | Pending | P1 | L | type:bug, area:agent, area:tools | - | - |
 | [167](167.md) | Make reasoning summary Optional on Chat Completions path | Pending | P3 | S | type:refactor, area:chat, area:session, area:model | - | - |
