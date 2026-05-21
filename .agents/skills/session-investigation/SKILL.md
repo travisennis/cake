@@ -34,9 +34,44 @@ Current persisted cake sessions use append-only JSONL format version 4:
    `function_call_output`.
 5. The invocation should end with `task_complete`.
 
-Only conversation records are restored into model history. `prompt_context`
-records are audit records for mutable context such as AGENTS.md, skills,
-environment details, cwd, and date.
+### LLM-Visible vs. Audit-Only Records
+
+When investigating a session, it is crucial to distinguish records that are
+restored into model history (and thus affect LLM context) from records that are
+purely diagnostic metadata.
+
+**LLM-visible records** (restored into model history via `--continue` / `--resume`):
+
+| Type | Purpose |
+|------|---------|
+| `message` | User, assistant, system, or developer text |
+| `reasoning` | Model reasoning traces (echoed back to the API) |
+| `function_call` | Tool invocation request |
+| `function_call_output` | Tool execution result |
+
+**Metadata / audit-only records** (NOT restored into model history):
+
+| Type | Purpose |
+|------|---------|
+| `session_meta` | Session metadata, first line of every session |
+| `task_start` | CLI invocation boundary |
+| `task_complete` | Task result, duration, turn count, token usage |
+| `prompt_context` | Audit record of mutable prompt context (AGENTS.md, skills, env) |
+| `hook_event` | Hook execution diagnostic trail (timing, decisions, output) |
+| `skill_activated` | Skill usage audit record |
+
+Critical implications for investigation:
+
+- **`hook_event` records** contain hook execution diagnostics (command, exit
+  code, duration, decision, stdout/stderr). They are not seen by the LLM and
+  do not consume context window budget. Recommendations about "session bloat
+  from hooks" must account for this — hook events add session file size but
+  zero LLM context.
+- **`prompt_context` records** are audit-only — the LLM receives fresh prompt
+  context rebuilt from current AGENTS.md, skills, and environment on every
+  invocation, not from these records.
+- **`task_start` / `task_complete`** are boundary markers used for session
+  segmentation and task summary. They are not part of the conversation.
 
 Treat files beginning with `session_start`, `init`, or `result` as legacy or
 unsupported unless compatibility is the target of the investigation. Redirected

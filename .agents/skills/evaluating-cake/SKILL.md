@@ -37,6 +37,32 @@ Before evaluating, understand what tools the cake CLI has available. This ensure
 
 ## Phase 1: Locate and Read the Session
 
+### Understanding Session Records vs. LLM Message History
+
+The session file is an append-only audit log of everything cake did during a session. **Not every record type is sent to the LLM** when a session is restored (via --continue or --resume). It is critical to distinguish these two categories to avoid making recommendations about "LLM context bloat" from records that are never seen by the model.
+
+**LLM-visible records** (restored into the model's conversation history):
+
+| Type | Content |
+|------|--------|
+| `message` | User, assistant, system, or developer text |
+| `reasoning` | Model reasoning traces (echoed back to the API) |
+| `function_call` | Tool invocation requests |
+| `function_call_output` | Tool execution results |
+
+**Metadata / audit-only records** (NOT sent to the LLM):
+
+| Type | Content |
+|------|--------|
+| `session_meta` | Session metadata, first line only |
+| `task_start` | CLI invocation boundary |
+| `task_complete` | Task result, duration, turn count, usage |
+| `prompt_context` | Audit record of mutable prompt context |
+| `hook_event` | Hook execution diagnostic trail |
+| `skill_activated` | Skill usage audit record |
+
+Hook events, task boundaries, and prompt context records are purely diagnostic metadata. They occupy session file space but do not contribute to LLM context windows. When evaluating session quality, treat "records in the file" and "tokens sent to the model" as different things.
+
 ### Finding Sessions
 
 Sessions are stored in `~/.local/share/cake/sessions/` as flat `.jsonl` files, or in `$CAKE_DATA_DIR/sessions/` when that override is set:
@@ -134,6 +160,15 @@ Look for:
 - **Appropriate planning** - Was there a logical sequence?
 - **Self-correction** - Did the agent recognize and fix mistakes?
 - **Stuck patterns** - Did the agent get stuck or loop?
+
+> **Note on the `summary` field:** The `summary` field on reasoning records is
+> a protocol artifact, not a human-crafted summary of the model's thinking.
+> On the Chat Completions backend, cake hardcodes `["Thinking..."]` because
+> that API has no summary concept — the summary placeholder is never sent to
+> the LLM. On the Responses API backend, the summary comes from the API router
+> and is echoed back for multi-turn conversations, but its informativeness
+> depends on the provider. Do not evaluate reasoning quality by the `summary`
+> field; use the `content` field (the actual reasoning text) instead.
 
 ### Tool Usage Analysis
 

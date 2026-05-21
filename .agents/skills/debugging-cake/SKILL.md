@@ -178,18 +178,39 @@ Current persisted sessions use append-only JSON Lines (`.jsonl`) format version 
 {"type":"task_complete","subtype":"success","is_error":false,"duration_ms":1000,"turn_count":1,"num_turns":1,"session_id":"uuid-v4","task_id":"task-uuid","result":"Hi","usage":{"input_tokens":0,"input_tokens_details":{"cached_tokens":0},"output_tokens":0,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":0}}
 ```
 
-Each task starts with `task_start` and should end with `task_complete`. `prompt_context` records are audit entries for AGENTS.md, skills, environment, cwd, and date. Only conversation records (`message`, `function_call`, `function_call_output`, `reasoning`) are restored into model history.
+Each task starts with `task_start` and should end with `task_complete`.
 
-### Message Types
+### LLM-Visible vs. Audit-Only Records
 
-- `message` - User or assistant text messages
-- `reasoning` - Model's internal reasoning (if supported by model)
-- `function_call` - Tool invocation request
-- `function_call_output` - Result of tool execution
-- `session_meta` - Session metadata, first record only
-- `task_start` - CLI invocation boundary
-- `prompt_context` - Prompt/context audit record for one invocation
-- `task_complete` - CLI invocation result, duration, turns, usage, and permission denials
+It is important to distinguish records restored into model history (which
+consume LLM context window) from records that are purely diagnostic metadata.
+
+**LLM-visible records** (restored into model history via `--continue` / `--resume`):
+
+| Type | Purpose |
+|------|---------|
+| `message` | User, assistant, system, or developer text |
+| `reasoning` | Model reasoning traces (echoed back to the API) |
+| `function_call` | Tool invocation request |
+| `function_call_output` | Tool execution result |
+
+**Metadata / audit-only records** (NOT restored into model history, do not affect
+LLM context):
+
+| Type | Purpose |
+|------|---------|
+| `session_meta` | Session metadata, first line of every session |
+| `task_start` | CLI invocation boundary |
+| `task_complete` | Task result, duration, turn count, token usage, permission denials |
+| `prompt_context` | Audit record of mutable prompt context (AGENTS.md, skills, env) |
+| `hook_event` | Hook execution diagnostic trail (timing, decisions, output) |
+| `skill_activated` | Skill usage audit record |
+
+Records like `hook_event`, `prompt_context`, `skill_activated`, and the task
+boundary markers occupy session file space but do not contribute to the LLM
+context window. When debugging, focus on the four LLM-visible types for
+conversation-flow issues; use the audit-only types for operational diagnostics
+(hook timing, tool denials, prompt context at invocation time).
 
 ## Common Debugging Patterns
 
