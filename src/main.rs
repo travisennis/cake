@@ -212,6 +212,7 @@ impl CliOutputSink {
         current_dir: &Path,
         data_dir: &DataDir,
         session: &Session,
+        persists_session: bool,
     ) -> anyhow::Result<()> {
         let TurnResult {
             result,
@@ -228,6 +229,7 @@ impl CliOutputSink {
                     current_dir,
                     data_dir,
                     session,
+                    persists_session,
                 );
                 Self::write_json_value(&json)?;
                 result.map(|_| ())
@@ -253,12 +255,23 @@ impl CliOutputSink {
         current_dir: &Path,
         data_dir: &DataDir,
         session: &Session,
+        persists_session: bool,
     ) -> serde_json::Value {
+        let session_file = if persists_session {
+            serde_json::Value::String(
+                data_dir
+                    .session_path(session.id)
+                    .to_string_lossy()
+                    .to_string(),
+            )
+        } else {
+            serde_json::Value::Null
+        };
         let mut json = serde_json::json!({
             "session_id": client.session_id().to_string(),
             "usage": client.total_usage(),
             "cwd": current_dir.to_string_lossy(),
-            "session_file": data_dir.session_path(session.id).to_string_lossy(),
+            "session_file": session_file,
             "turns": client.turn_count(),
             "elapsed_time": duration_ms,
         });
@@ -1272,7 +1285,14 @@ impl CmdRunner for CodingAssistant {
             turn.result.as_ref().err().map(ToString::to_string),
         );
         output.finish_progress(spinner, turn.duration_ms, &client);
-        output.render_turn(turn, &client, &prepared.current_dir, data_dir, &session)?;
+        output.render_turn(
+            turn,
+            &client,
+            &prepared.current_dir,
+            data_dir,
+            &session,
+            run_mode.persists_session(),
+        )?;
 
         if let Some(ref wt) = prepared.worktree {
             Self::cleanup_worktree(wt, &prepared.original_dir);
@@ -2076,6 +2096,7 @@ mod tests {
                 Path::new("/work"),
                 &data_dir,
                 &session,
+                true,
             );
 
             assert_eq!(json["result"], "done");
@@ -2084,6 +2105,7 @@ mod tests {
             assert_eq!(json["elapsed_time"], 1500);
             assert_eq!(json["usage"]["input_tokens"], 12);
             assert!(json.get("error").is_none());
+            assert!(json["session_file"].is_string());
         });
     }
 
@@ -2114,11 +2136,53 @@ mod tests {
                 Path::new("/work"),
                 &data_dir,
                 &session,
+                true,
             );
 
             assert_eq!(json["result"], serde_json::Value::Null);
             assert_eq!(json["error"], "provider failed");
             assert_eq!(json["elapsed_time"], 250);
+            assert!(json["session_file"].is_string());
+        });
+    }
+
+    #[test]
+    fn output_sink_no_session_suppresses_session_file() {
+        temp_env::with_var("CAKE_TEST_VALID_KEY", Some("sk-test-123"), || {
+            let agent = Agent::new(
+                test_resolved_model_config(),
+                &[(Role::System, "test system prompt".to_string())],
+            )
+            .with_session_id(uuid::uuid!("550e8400-e29b-41d4-a716-446655440000"));
+            let session = Session::new(agent.session_id(), PathBuf::from("/work"));
+            let dir = match tempfile::tempdir() {
+                Ok(dir) => dir,
+                Err(err) => panic!("temp dir should be created: {err}"),
+            };
+            let data_dir = match temp_env::with_var("CAKE_DATA_DIR", Some(dir.path()), DataDir::new)
+            {
+                Ok(data_dir) => data_dir,
+                Err(err) => panic!("data dir should be created: {err}"),
+            };
+            let result = Ok(Some("ephemeral result".to_string()));
+
+            let json = CliOutputSink::turn_result_json(
+                &result,
+                300,
+                &agent,
+                Path::new("/work"),
+                &data_dir,
+                &session,
+                false,
+            );
+
+            assert_eq!(json["result"], "ephemeral result");
+            assert_eq!(json["session_id"], agent.session_id().to_string());
+            assert!(
+                json["session_file"].is_null(),
+                "session_file should be null when session persistence is disabled"
+            );
+            assert_eq!(json["elapsed_time"], 300);
         });
     }
 
