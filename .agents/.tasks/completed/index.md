@@ -10,7 +10,7 @@ Completed tasks are retained for history and stable task-id lookup.
 - Pending: 0
 - Blocked: 0
 - Tracking: 0
-- Completed: 136
+- Completed: 137
 - Cancelled: 0
 
 ## Tasks
@@ -153,3 +153,4 @@ Completed tasks are retained for history and stable task-id lookup.
 | [156](156.md) | Correlate Hook Event Records With Tool Calls | Completed | P2 | M | type:feature, area:session, area:agent | - | - |
 | [157](157.md) | Update Session Evaluation Skills For Current Task Completion Schema | Completed | P3 | S | type:docs, area:session, area:dev-env | - | - |
 | [164](164.md) | Clarify Parallel Tool Guidance for Mutating Writes | Completed | P1 | S | type:docs, area:prompts, area:tools | - | - |
+| [165](165.md) | Debug ast-grep exit 255 under Bash sandbox | Completed | P1 | M | type:bug, area:sandbox, area:tools | - | - |
