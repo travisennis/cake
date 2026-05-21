@@ -41,6 +41,7 @@ Notes from external documentation, tools, articles, or open source repositories.
 - `sources/pi-settings.md` - External settings notes.
 - `sources/rust-docs.md` - Rust documentation notes.
 - `sources/clippy-stricter-config.md` - Analysis of stricter Clippy config approaches from external articles (Schwartz 2026, Levin 2026).
+- `sources/fff-search-integration.md` - Notes on integrating `fff_search` as native Find/Search tools.
 
 ## Topics
 
