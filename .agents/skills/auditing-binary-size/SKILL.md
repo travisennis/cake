@@ -69,17 +69,47 @@ ls -lh target/release/cake
 cargo bloat --release --crates | head -20
 ```
 
+**What counts as a regression?** This project does not currently track a
+committed binary-size baseline, so judgment is required. Sensible heuristics
+(not measured from this project — treat as starting points to discuss with
+the maintainer, not hard gates):
+
+- A noticeable relative jump (rule of thumb: more than a few percent) in
+  one change usually signals a new dependency or a wider feature set.
+- A noticeable absolute jump (rule of thumb: hundreds of KB or more) is
+  worth investigating even if relative growth is small.
+- A single crate moving meaningfully up the `cargo bloat --crates` list
+  warrants checking whether new features were enabled or a heavier
+  dependency was pulled in.
+
+If the project later commits a `binary-size-baseline.txt` or similar
+artifact, prefer comparing against it over these heuristics.
+
+Capture a local baseline before starting work so the comparison is
+meaningful:
+
+```bash
+cargo build --release
+ls -lh target/release/cake > /tmp/cake-size-before.txt
+cargo bloat --release --crates | head -20 > /tmp/cake-bloat-before.txt
+# ... make changes ...
+cargo build --release
+diff /tmp/cake-size-before.txt <(ls -lh target/release/cake)
+diff /tmp/cake-bloat-before.txt <(cargo bloat --release --crates | head -20)
+```
+
 ## Current Release Profile
 
-The release profile in `Cargo.toml` should include these optimizations:
+The release profile lives in [`Cargo.toml`](../../../Cargo.toml). Inspect it
+directly rather than relying on a copy here:
 
-```toml
-[profile.release]
-lto = true          # Link-time optimization (slower build, smaller/faster binary)
-codegen-units = 1   # Single codegen unit (slower build, better optimization)
-panic = "abort"     # Smaller binary; panics abort instead of unwinding
-strip = true        # Strip symbols (free size reduction, ~1.3 MB savings)
+```bash
+awk '/^\[profile.release\]/,/^$/' Cargo.toml
 ```
+
+At time of writing it includes `lto`, `codegen-units`, `panic`, and `strip`
+settings. If any of those are missing or changed unexpectedly, that is the
+first place to look for size regressions or easy wins.
 
 ## Key Tradeoffs to Be Aware Of
 
