@@ -147,7 +147,8 @@ pub enum ConversationItem {
     },
     Reasoning {
         id: String,
-        summary: Vec<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        summary: Option<Vec<String>>,
         /// Opaque encrypted reasoning content that must be echoed back to the
         /// API for multi-turn conversations with reasoning models.
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -273,7 +274,7 @@ mod tests {
             },
             ConversationItem::Reasoning {
                 id: "r".to_string(),
-                summary: vec!["s".to_string()],
+                summary: Some(vec!["s".to_string()]),
                 encrypted_content: None,
                 content: None,
                 timestamp: None,

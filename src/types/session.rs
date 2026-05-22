@@ -184,7 +184,8 @@ pub struct FunctionCallOutputData {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ReasoningData {
     pub id: String,
-    pub summary: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub encrypted_content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -667,7 +668,7 @@ mod tests {
     fn stream_record_json_reasoning_uses_plain_summary() {
         let item = ConversationItem::Reasoning {
             id: "r-1".to_string(),
-            summary: vec!["step 1".to_string()],
+            summary: Some(vec!["step 1".to_string()]),
             encrypted_content: None,
             content: None,
             timestamp: None,
@@ -741,14 +742,14 @@ mod tests {
             },
             ConversationItem::Reasoning {
                 id: "reasoning-encrypted".to_string(),
-                summary: vec!["step 1".to_string()],
+                summary: Some(vec!["step 1".to_string()]),
                 encrypted_content: Some("gAAAAABencrypted...".to_string()),
                 content: None,
                 timestamp: Some(timestamp_at("2026-05-10T00:00:04Z")),
             },
             ConversationItem::Reasoning {
                 id: "reasoning-content".to_string(),
-                summary: vec!["step 1".to_string(), "step 2".to_string()],
+                summary: Some(vec!["step 1".to_string(), "step 2".to_string()]),
                 encrypted_content: None,
                 content: Some(vec![ReasoningContent {
                     content_type: ReasoningContentKind::ReasoningText,
@@ -758,7 +759,7 @@ mod tests {
             },
             ConversationItem::Reasoning {
                 id: "reasoning-both".to_string(),
-                summary: vec!["step 1".to_string()],
+                summary: Some(vec!["step 1".to_string()]),
                 encrypted_content: Some("gAAAAABencrypted...".to_string()),
                 content: Some(vec![
                     ReasoningContent {
@@ -819,7 +820,7 @@ mod tests {
     fn snapshot_stream_record_json_reasoning_plain_summary() {
         let item = ConversationItem::Reasoning {
             id: "r-1".to_string(),
-            summary: vec!["step 1".to_string(), "step 2".to_string()],
+            summary: Some(vec!["step 1".to_string(), "step 2".to_string()]),
             encrypted_content: None,
             content: None,
             timestamp: None,
@@ -874,7 +875,7 @@ mod tests {
     fn snapshot_session_json_reasoning_with_content() {
         let item = ConversationItem::Reasoning {
             id: "r-1".to_string(),
-            summary: vec!["step 1".to_string()],
+            summary: Some(vec!["step 1".to_string()]),
             encrypted_content: Some("gAAAAABencrypted...".to_string()),
             content: Some(vec![ReasoningContent {
                 content_type: ReasoningContentKind::ReasoningText,

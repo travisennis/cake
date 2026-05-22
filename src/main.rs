@@ -1415,7 +1415,7 @@ mod tests {
     fn test_format_spinner_message_reasoning() {
         let item = ConversationItem::Reasoning {
             id: "r-1".to_string(),
-            summary: vec!["thinking...".to_string()],
+            summary: Some(vec!["thinking...".to_string()]),
             encrypted_content: None,
             content: None,
             timestamp: None,

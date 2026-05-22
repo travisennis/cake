@@ -224,6 +224,8 @@ impl<'a> From<&'a ConversationItem> for ResponsesApiInputItem<'a> {
             } => Self::Reasoning {
                 id,
                 summary: summary
+                    .as_deref()
+                    .unwrap_or_default()
                     .iter()
                     .map(|text| ResponsesReasoningSummary {
                         summary_type: "summary_text",
@@ -282,7 +284,7 @@ fn parse_output_items(api_response: &ApiResponse) -> anyhow::Result<Vec<Conversa
                     let timestamp = chrono::Utc::now();
                     items.push(ConversationItem::Reasoning {
                         id: id.clone(),
-                        summary,
+                        summary: Some(summary),
                         encrypted_content: output.encrypted_content.clone(),
                         content,
                         timestamp: Some(timestamp),
@@ -661,6 +663,7 @@ mod tests {
             ..
         } = &items[0]
         {
+            let summary = summary.as_ref().unwrap();
             assert_eq!(summary.len(), 2);
             assert_eq!(summary[0], "step 1");
             assert_eq!(encrypted_content.as_deref(), Some("gAAAAABencrypted..."));
@@ -1105,6 +1108,7 @@ mod tests {
         let items = parse_output_items(&response).unwrap();
         assert_eq!(items.len(), 1);
         if let ConversationItem::Reasoning { summary, .. } = &items[0] {
+            let summary = summary.as_ref().unwrap();
             assert_eq!(summary.len(), 2);
             assert_eq!(summary[0], "step 1");
         } else {
@@ -1136,6 +1140,7 @@ mod tests {
         let items = parse_output_items(&response).unwrap();
         assert_eq!(items.len(), 1);
         if let ConversationItem::Reasoning { summary, .. } = &items[0] {
+            let summary = summary.as_ref().unwrap();
             // Summary should be derived from content
             assert_eq!(summary.len(), 1);
             assert_eq!(summary[0], "thinking...");
@@ -1476,7 +1481,7 @@ mod response_parsing_tests {
     fn to_api_input_reasoning() {
         let item = ConversationItem::Reasoning {
             id: "r-1".to_string(),
-            summary: vec!["thinking...".to_string()],
+            summary: Some(vec!["thinking...".to_string()]),
             encrypted_content: None,
             content: None,
             timestamp: None,
@@ -1492,7 +1497,7 @@ mod response_parsing_tests {
     fn to_api_input_reasoning_multiple_summaries() {
         let item = ConversationItem::Reasoning {
             id: "r-2".to_string(),
-            summary: vec!["step 1".to_string(), "step 2".to_string()],
+            summary: Some(vec!["step 1".to_string(), "step 2".to_string()]),
             encrypted_content: None,
             content: None,
             timestamp: None,
@@ -1505,7 +1510,7 @@ mod response_parsing_tests {
     fn to_api_input_reasoning_with_encrypted_content() {
         let item = ConversationItem::Reasoning {
             id: "r-1".to_string(),
-            summary: vec!["thinking...".to_string()],
+            summary: Some(vec!["thinking...".to_string()]),
             encrypted_content: Some("gAAAAABencrypted...".to_string()),
             content: None,
             timestamp: None,
@@ -1519,7 +1524,7 @@ mod response_parsing_tests {
     fn to_api_input_reasoning_without_encrypted_content_omits_field() {
         let item = ConversationItem::Reasoning {
             id: "r-1".to_string(),
-            summary: vec!["thinking...".to_string()],
+            summary: Some(vec!["thinking...".to_string()]),
             encrypted_content: None,
             content: None,
             timestamp: None,
@@ -1532,7 +1537,7 @@ mod response_parsing_tests {
     fn to_api_input_reasoning_with_content() {
         let item = ConversationItem::Reasoning {
             id: "r-1".to_string(),
-            summary: vec!["thinking...".to_string()],
+            summary: Some(vec!["thinking...".to_string()]),
             encrypted_content: None,
             timestamp: None,
             content: Some(vec![crate::types::ReasoningContent {
@@ -1613,7 +1618,7 @@ mod response_parsing_tests {
     fn snapshot_reasoning_with_summary() {
         let item = ConversationItem::Reasoning {
             id: "r-1".to_string(),
-            summary: vec!["thinking...".to_string()],
+            summary: Some(vec!["thinking...".to_string()]),
             encrypted_content: None,
             content: None,
             timestamp: None,
@@ -1628,7 +1633,7 @@ mod response_parsing_tests {
     fn snapshot_reasoning_with_encrypted_content() {
         let item = ConversationItem::Reasoning {
             id: "r-1".to_string(),
-            summary: vec!["thinking...".to_string()],
+            summary: Some(vec!["thinking...".to_string()]),
             encrypted_content: Some("gAAAAABencrypted...".to_string()),
             content: None,
             timestamp: None,
@@ -1643,7 +1648,7 @@ mod response_parsing_tests {
     fn snapshot_reasoning_with_content_array() {
         let item = ConversationItem::Reasoning {
             id: "r-1".to_string(),
-            summary: vec!["thinking...".to_string()],
+            summary: Some(vec!["thinking...".to_string()]),
             encrypted_content: None,
             content: Some(vec![crate::types::ReasoningContent {
                 content_type: ReasoningContentKind::ReasoningText,

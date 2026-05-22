@@ -240,7 +240,7 @@ fn build_messages_preserves_reasoning_content_for_assistant_messages() {
         },
         ConversationItem::Reasoning {
             id: "r-1".to_string(),
-            summary: vec!["thinking...".to_string()],
+            summary: Some(vec!["thinking...".to_string()]),
             encrypted_content: None,
             content: Some(vec![ReasoningContent {
                 content_type: ReasoningContentKind::ReasoningText,
@@ -278,7 +278,7 @@ fn build_messages_preserves_reasoning_content_for_assistant_tool_calls() {
         },
         ConversationItem::Reasoning {
             id: "r-1".to_string(),
-            summary: vec!["thinking...".to_string()],
+            summary: Some(vec!["thinking...".to_string()]),
             encrypted_content: None,
             content: Some(vec![ReasoningContent {
                 content_type: ReasoningContentKind::ReasoningText,
@@ -383,7 +383,7 @@ fn kimi_strategy_preserves_existing_reasoning_content() {
         },
         ConversationItem::Reasoning {
             id: "r-1".to_string(),
-            summary: vec!["thinking...".to_string()],
+            summary: Some(vec!["thinking...".to_string()]),
             encrypted_content: None,
             content: Some(vec![ReasoningContent {
                 content_type: ReasoningContentKind::ReasoningText,
@@ -716,7 +716,7 @@ fn snapshot_reasoning_with_assistant_text() {
         },
         ConversationItem::Reasoning {
             id: "r-1".to_string(),
-            summary: vec!["thinking...".to_string()],
+            summary: Some(vec!["thinking...".to_string()]),
             encrypted_content: None,
             content: Some(vec![ReasoningContent {
                 content_type: ReasoningContentKind::ReasoningText,
@@ -748,7 +748,7 @@ fn snapshot_reasoning_with_tool_calls() {
         },
         ConversationItem::Reasoning {
             id: "r-1".to_string(),
-            summary: vec!["thinking...".to_string()],
+            summary: Some(vec!["thinking...".to_string()]),
             encrypted_content: None,
             content: Some(vec![ReasoningContent {
                 content_type: ReasoningContentKind::ReasoningText,

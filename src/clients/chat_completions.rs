@@ -321,7 +321,7 @@ fn parse_choices(response: &ChatResponse) -> anyhow::Result<Vec<ConversationItem
     if let Some(reasoning_content) = &message.reasoning_content {
         items.push(ConversationItem::Reasoning {
             id: response_id.clone(),
-            summary: vec!["Thinking...".to_string()],
+            summary: None,
             encrypted_content: None,
             content: Some(vec![crate::types::ReasoningContent {
                 content_type: ReasoningContentKind::ReasoningText,

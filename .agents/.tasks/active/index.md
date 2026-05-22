@@ -7,7 +7,7 @@ Active tasks include open, pending, blocked, and tracking work.
 ## Status Summary
 
 - Open: 5
-- Pending: 11
+- Pending: 10
 - Blocked: 13
 - Tracking: 0
 - Completed: 0
@@ -45,4 +45,3 @@ Active tasks include open, pending, blocked, and tracking work.
 | [161](161.md) | Align Self-Reflection Note Instructions With Tool Write Permissions | Open | P3 | S | type:bug, area:prompts, area:tools, area:config | - | - |
 | [162](162.md) | Prevent Clean Worktree Claims When Untracked Files Remain | Open | P3 | XS | type:bug, area:prompts, area:cli | - | - |
 | [163](163.md) | Prevent Concurrent Same-File Mutating Tool Calls | Pending | P1 | L | type:bug, area:agent, area:tools | - | - |
-| [167](167.md) | Make reasoning summary Optional on Chat Completions path | Pending | P3 | S | type:refactor, area:chat, area:session, area:model | - | - |

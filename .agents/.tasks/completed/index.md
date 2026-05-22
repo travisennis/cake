@@ -10,7 +10,7 @@ Completed tasks are retained for history and stable task-id lookup.
 - Pending: 0
 - Blocked: 0
 - Tracking: 0
-- Completed: 146
+- Completed: 147
 - Cancelled: 0
 
 ## Tasks
@@ -163,3 +163,4 @@ Completed tasks are retained for history and stable task-id lookup.
 | [164](164.md) | Clarify Parallel Tool Guidance for Mutating Writes | Completed | P1 | S | type:docs, area:prompts, area:tools | - | - |
 | [165](165.md) | Debug ast-grep exit 255 under Bash sandbox | Completed | P1 | M | type:bug, area:sandbox, area:tools | - | - |
 | [166](166.md) | Suppress Session File Path When Sessions Are Disabled | Completed | P2 | S | type:bug, area:cli, area:session | - | - |
+| [167](167.md) | Make reasoning summary Optional on Chat Completions path | Completed | P3 | S | type:refactor, area:chat, area:session, area:model | - | - |

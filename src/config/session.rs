@@ -480,7 +480,7 @@ mod tests {
             }),
             SessionRecord::Reasoning(ReasoningData {
                 id: "r-1".to_string(),
-                summary: vec!["thinking...".to_string()],
+                summary: Some(vec!["thinking...".to_string()]),
                 encrypted_content: None,
                 content: None,
                 timestamp: None,
@@ -648,7 +648,7 @@ mod tests {
             &mut file,
             &SessionRecord::Reasoning(ReasoningData {
                 id: "r-1".to_string(),
-                summary: vec!["thinking...".to_string()],
+                summary: Some(vec!["thinking...".to_string()]),
                 encrypted_content: Some("gAAAAABencrypted...".to_string()),
                 content: Some(vec![ReasoningContent {
                     content_type: ReasoningContentKind::ReasoningText,
