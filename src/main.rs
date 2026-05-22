@@ -14,26 +14,29 @@ mod types;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use crate::cli::CmdRunner;
+#[cfg(test)]
+use std::time::Duration;
+
+use crate::cli::{CliOutputSink, CmdRunner, RunMode, SessionStorage, TurnResult};
 use crate::clients::{Agent, ToolContext};
 use crate::config::settings::LoadedSettings;
-use crate::config::skills::Skill;
 use crate::config::{
     AgentsFile, DataDir, DiagnosticLevel, HookSource, HooksLoader, ModelConfig, ModelDefinition,
     ReasoningEffort, ResolvedModelConfig, Session, SettingsLoader, SkillCatalog, discover_skills,
     discover_skills_with_paths, parse_skill_path_list, worktree,
 };
 use crate::hooks::{HookContext, HookRunner};
-use crate::prompts::build_initial_prompt_messages;
-use crate::session_telemetry::{
-    SessionTelemetryRecord, SessionTelemetryRunMode, SessionTelemetryWriter,
-};
-use crate::time_format::{format_duration_tenths, format_seconds_tenths};
-use crate::types::{ConversationItem, Role, SessionRecord, StreamRecord, TaskOutcome};
+
+use crate::session_telemetry::{SessionTelemetryRecord, SessionTelemetryWriter};
+
+use crate::types::{SessionRecord, StreamRecord, TaskOutcome};
+
+#[cfg(test)]
+use crate::types::{ConversationItem, Role};
 use clap::{ArgGroup, Parser, ValueEnum};
-use indicatif::{ProgressBar, ProgressStyle};
+
 use serde::Serialize;
 use tracing::info;
 
@@ -58,7 +61,7 @@ pub enum OutputFormat {
         .args(["continue_session", "resume", "fork", "no_session"])
         .multiple(false)
 ))]
-struct CodingAssistant {
+pub(crate) struct CodingAssistant {
     /// The prompt to send to the AI (use `-` to read from stdin)
     #[arg(value_name = "PROMPT")]
     pub prompt: Option<String>,
@@ -121,13 +124,6 @@ struct CodingAssistant {
     pub skills: Option<String>,
 }
 
-struct RunSession {
-    agent: Agent,
-    session: Session,
-    storage: SessionStorage,
-    seed_records: Option<Vec<SessionRecord>>,
-}
-
 struct PreparedRun {
     original_dir: PathBuf,
     current_dir: PathBuf,
@@ -141,243 +137,6 @@ struct RunResources {
     agents_files: Vec<AgentsFile>,
     skill_catalog: SkillCatalog,
     tool_context: Arc<ToolContext>,
-}
-
-struct TurnResult {
-    result: anyhow::Result<Option<String>>,
-    duration_ms: u64,
-}
-
-#[derive(Clone, Copy)]
-struct CliOutputSink {
-    format: OutputFormat,
-}
-
-impl CliOutputSink {
-    const fn new(format: OutputFormat) -> Self {
-        Self { format }
-    }
-
-    fn attach_callbacks(self, mut client: Agent) -> (Agent, Option<ProgressBar>) {
-        if self.format == OutputFormat::StreamJson {
-            client = client.with_streaming_json(Self::write_stream_record);
-        }
-
-        match self.format {
-            OutputFormat::Text => {
-                let (client, spinner) = Self::attach_text_progress(client);
-                (client, Some(spinner))
-            },
-            OutputFormat::StreamJson | OutputFormat::Json => (client, None),
-        }
-    }
-
-    /// Attach text-mode progress reporting to the agent and return its spinner.
-    fn attach_text_progress(client: Agent) -> (Agent, ProgressBar) {
-        let spinner = ProgressBar::new_spinner();
-        let style = ProgressStyle::with_template("{spinner:.cyan} {msg}")
-            .unwrap_or_else(|_| ProgressStyle::default_spinner());
-        spinner.set_style(style);
-        spinner.enable_steady_tick(Duration::from_millis(80));
-        spinner.set_message("Thinking...");
-
-        let spinner_clone = spinner.clone();
-        let retry_spinner = spinner.clone();
-        let client = client.with_progress_callback(move |item| {
-            let msg = format_spinner_message(item);
-            if let Some(msg) = msg {
-                spinner_clone.set_message(msg);
-            }
-        });
-        let client = client.with_retry_callback(move |status| {
-            retry_spinner.set_message(format_retry_message(status));
-        });
-
-        (client, spinner)
-    }
-
-    fn finish_progress(self, spinner: Option<ProgressBar>, duration_ms: u64, client: &Agent) {
-        if self.format == OutputFormat::Text
-            && let Some(spinner) = spinner
-        {
-            let summary = format_done_summary(duration_ms, client);
-            spinner.finish_with_message(format!("Done: {summary}"));
-        }
-    }
-
-    fn render_turn(
-        self,
-        turn: TurnResult,
-        client: &Agent,
-        current_dir: &Path,
-        data_dir: &DataDir,
-        session: &Session,
-        persists_session: bool,
-    ) -> anyhow::Result<()> {
-        let TurnResult {
-            result,
-            duration_ms,
-        } = turn;
-
-        match self.format {
-            OutputFormat::Text => Self::render_text_result(result),
-            OutputFormat::Json => {
-                let json = Self::turn_result_json(
-                    &result,
-                    duration_ms,
-                    client,
-                    current_dir,
-                    data_dir,
-                    session,
-                    persists_session,
-                );
-                Self::write_json_value(&json)?;
-                result.map(|_| ())
-            },
-            OutputFormat::StreamJson => Ok(()),
-        }
-    }
-
-    fn render_text_result(result: anyhow::Result<Option<String>>) -> anyhow::Result<()> {
-        let response = result?;
-        if let Some(response_text) = response {
-            Self::write_text_response(&response_text);
-        } else {
-            Self::write_warning("No response received from the model. The task may be incomplete.");
-        }
-        Ok(())
-    }
-
-    fn turn_result_json(
-        result: &anyhow::Result<Option<String>>,
-        duration_ms: u64,
-        client: &Agent,
-        current_dir: &Path,
-        data_dir: &DataDir,
-        session: &Session,
-        persists_session: bool,
-    ) -> serde_json::Value {
-        let session_file = if persists_session {
-            serde_json::Value::String(
-                data_dir
-                    .session_path(session.id)
-                    .to_string_lossy()
-                    .to_string(),
-            )
-        } else {
-            serde_json::Value::Null
-        };
-        let mut json = serde_json::json!({
-            "session_id": client.session_id().to_string(),
-            "usage": client.total_usage(),
-            "cwd": current_dir.to_string_lossy(),
-            "session_file": session_file,
-            "turns": client.turn_count(),
-            "elapsed_time": duration_ms,
-        });
-
-        match result {
-            Ok(response_text) => {
-                let result_text = response_text.as_deref().unwrap_or("");
-                json["result"] = serde_json::json!(result_text);
-            },
-            Err(e) => {
-                json["result"] = serde_json::Value::Null;
-                json["error"] = serde_json::json!(e.to_string());
-            },
-        }
-
-        json
-    }
-
-    fn write_stream_record(json: &str) {
-        println!("{json}");
-    }
-
-    fn write_text_response(content: &str) {
-        println!("{content}");
-    }
-
-    fn write_json_value(value: &serde_json::Value) -> anyhow::Result<()> {
-        println!("{}", serde_json::to_string(value)?);
-        Ok(())
-    }
-
-    fn write_warning(message: &str) {
-        eprintln!("Warning: {message}");
-    }
-
-    fn write_error(error: &anyhow::Error) {
-        eprintln!("Error: {error}");
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum RunMode {
-    NewSession,
-    Ephemeral,
-    ContinueLatest,
-    Resume { session_id: uuid::Uuid },
-    ForkLatest,
-    Fork { session_id: uuid::Uuid },
-}
-
-impl RunMode {
-    fn from_cli(args: &CodingAssistant) -> anyhow::Result<Self> {
-        if args.no_session {
-            return Ok(Self::Ephemeral);
-        }
-        if args.continue_session {
-            return Ok(Self::ContinueLatest);
-        }
-        if let Some(session_id) = args.resume.as_deref() {
-            let id = uuid::Uuid::parse_str(session_id).map_err(|_e| {
-                anyhow::anyhow!(
-                    "Invalid session UUID '{session_id}'. Expected format: e.g., 550e8400-e29b-41d4-a716-446655440000"
-                )
-            })?;
-            return Ok(Self::Resume { session_id: id });
-        }
-        if let Some(fork_id) = args.fork.as_deref() {
-            if fork_id.is_empty() {
-                return Ok(Self::ForkLatest);
-            }
-            let id = uuid::Uuid::parse_str(fork_id).map_err(|_e| {
-                anyhow::anyhow!(
-                    "Invalid session UUID '{fork_id}'. Expected format: e.g., 550e8400-e29b-41d4-a716-446655440000"
-                )
-            })?;
-            return Ok(Self::Fork { session_id: id });
-        }
-
-        Ok(Self::NewSession)
-    }
-
-    const fn persists_session(&self) -> bool {
-        !matches!(self, Self::Ephemeral)
-    }
-
-    const fn session_start_source(&self) -> &'static str {
-        match self {
-            Self::ForkLatest | Self::Fork { .. } => "fork",
-            Self::ContinueLatest | Self::Resume { .. } => "resume",
-            Self::NewSession | Self::Ephemeral => "startup",
-        }
-    }
-
-    const fn telemetry_mode(&self) -> SessionTelemetryRunMode {
-        match self {
-            Self::NewSession | Self::Ephemeral => SessionTelemetryRunMode::New,
-            Self::ContinueLatest => SessionTelemetryRunMode::Continue,
-            Self::Resume { .. } => SessionTelemetryRunMode::Resume,
-            Self::ForkLatest | Self::Fork { .. } => SessionTelemetryRunMode::Fork,
-        }
-    }
-}
-
-enum SessionStorage {
-    New,
-    Append,
 }
 
 impl CodingAssistant {
@@ -575,245 +334,6 @@ impl CodingAssistant {
             resolved.model_config.reasoning_max_tokens = Some(budget);
         }
         resolved
-    }
-
-    /// Build a map of skill file paths to skills for activation deduplication.
-    fn skill_locations(skill_catalog: &SkillCatalog) -> HashMap<PathBuf, Skill> {
-        skill_catalog
-            .skills
-            .iter()
-            .map(|s| {
-                let skill = skill_catalog
-                    .get_skill_by_location(&s.location)
-                    .unwrap_or(s);
-                let location = s
-                    .location
-                    .canonicalize()
-                    .unwrap_or_else(|_| s.location.clone());
-                (location, skill.clone())
-            })
-            .collect()
-    }
-
-    /// Convert a restored session into the agent/session pair used for a continued run.
-    fn restored_client_and_session(
-        restored: Session,
-        resolved: ResolvedModelConfig,
-        initial_messages: &[(Role, String)],
-        skill_locations: &HashMap<PathBuf, Skill>,
-        tool_context: Arc<ToolContext>,
-        task_id: uuid::Uuid,
-    ) -> anyhow::Result<RunSession> {
-        let messages = restored.messages();
-        let prior_skills = restored.activated_skills();
-
-        let agent = Agent::new(resolved.clone(), initial_messages)
-            .with_session_id(restored.id)
-            .with_task_id(task_id)
-            .with_tool_context(tool_context)
-            .with_history(messages)?
-            .with_skill_locations(skill_locations.clone())
-            .with_activated_skills(prior_skills);
-        let mut session = Session::new(restored.id, restored.working_dir);
-        session.model = Some(resolved.model_config.model);
-        Ok(RunSession {
-            agent,
-            session,
-            storage: SessionStorage::Append,
-            seed_records: None,
-        })
-    }
-
-    /// Build the agent/session pair for a new run using the agent-generated session id.
-    fn new_client_and_session(
-        resolved: ResolvedModelConfig,
-        current_dir: PathBuf,
-        initial_messages: &[(Role, String)],
-        skill_locations: HashMap<PathBuf, Skill>,
-        tool_context: Arc<ToolContext>,
-        task_id: uuid::Uuid,
-    ) -> RunSession {
-        let agent = Agent::new(resolved.clone(), initial_messages)
-            .with_task_id(task_id)
-            .with_tool_context(tool_context)
-            .with_skill_locations(skill_locations);
-        let new_id = agent.session_id();
-        info!(target: "cake", "New session: {new_id}");
-        let mut session = Session::new(new_id, current_dir);
-        session.model = Some(resolved.model_config.model);
-        session.system_prompt = initial_messages.first().map(|(_, content)| content.clone());
-        RunSession {
-            agent,
-            session,
-            storage: SessionStorage::New,
-            seed_records: None,
-        }
-    }
-
-    /// Build the agent/session pair for a forked run using a fresh agent session id.
-    fn forked_client_and_session(
-        restored: &Session,
-        resolved: ResolvedModelConfig,
-        current_dir: PathBuf,
-        initial_messages: &[(Role, String)],
-        skill_locations: HashMap<PathBuf, Skill>,
-        tool_context: Arc<ToolContext>,
-        task_id: uuid::Uuid,
-    ) -> anyhow::Result<RunSession> {
-        let prior_skills = restored.activated_skills();
-        let agent = Agent::new(resolved.clone(), initial_messages)
-            .with_task_id(task_id)
-            .with_tool_context(tool_context)
-            .with_history(restored.messages())?
-            .with_skill_locations(skill_locations)
-            .with_activated_skills(prior_skills);
-        let new_id = agent.session_id();
-        let seed_records: Vec<_> = restored
-            .records
-            .iter()
-            .filter_map(|record| match record {
-                record if record.to_conversation_item().is_some() => Some(record.clone()),
-                SessionRecord::SkillActivated {
-                    task_id,
-                    timestamp,
-                    name,
-                    path,
-                    ..
-                } => Some(SessionRecord::SkillActivated {
-                    session_id: new_id.to_string(),
-                    task_id: task_id.clone(),
-                    timestamp: *timestamp,
-                    name: name.clone(),
-                    path: path.clone(),
-                }),
-                _ => None,
-            })
-            .collect();
-        info!(target: "cake", "New forked session: {new_id}");
-        let mut session = Session::new(new_id, current_dir);
-        session.model = Some(resolved.model_config.model);
-        session.system_prompt = initial_messages.first().map(|(_, content)| content.clone());
-        Ok(RunSession {
-            agent,
-            session,
-            storage: SessionStorage::New,
-            seed_records: Some(seed_records),
-        })
-    }
-
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "session construction naturally requires many parameters"
-    )]
-    fn build_client_and_session(
-        &self,
-        run_mode: &RunMode,
-        data_dir: &DataDir,
-        current_dir: PathBuf,
-        config_dir: &Path,
-        agents_files: &[AgentsFile],
-        models: &HashMap<String, ModelDefinition>,
-        default_model: Option<&str>,
-        skill_catalog: &SkillCatalog,
-        tool_context: &Arc<ToolContext>,
-        task_id: uuid::Uuid,
-    ) -> anyhow::Result<RunSession> {
-        let initial_messages =
-            build_initial_prompt_messages(&current_dir, config_dir, agents_files, skill_catalog);
-        let skill_locations = Self::skill_locations(skill_catalog);
-
-        match run_mode {
-            RunMode::ContinueLatest => {
-                info!(target: "cake", "Continuing latest session for directory: {}", current_dir.display());
-                let Some(restored) = data_dir.load_latest_session(&current_dir)? else {
-                    if let Some(latest) = data_dir.load_latest_session_any_directory()? {
-                        anyhow::bail!(
-                            "Cannot continue: latest session was created in '{}' but current directory is '{}'. Run from the original directory or start a new session.",
-                            latest.working_dir.display(),
-                            current_dir.display()
-                        );
-                    }
-                    anyhow::bail!("No previous session found for this directory");
-                };
-                info!(target: "cake", "Continuing session: {}", restored.id);
-                let resolved = self.resolve_model_for_session(
-                    models,
-                    default_model,
-                    restored.model.as_deref(),
-                )?;
-                Self::restored_client_and_session(
-                    restored,
-                    resolved,
-                    &initial_messages,
-                    &skill_locations,
-                    Arc::clone(tool_context),
-                    task_id,
-                )
-            },
-            RunMode::Resume { session_id } => {
-                let restored = data_dir
-                    .load_session(*session_id)?
-                    .ok_or_else(|| anyhow::anyhow!("Session {session_id} not found"))?;
-                info!(target: "cake", "Resumed session: {}", restored.id);
-
-                let resolved = self.resolve_model_for_session(
-                    models,
-                    default_model,
-                    restored.model.as_deref(),
-                )?;
-                Self::restored_client_and_session(
-                    restored,
-                    resolved,
-                    &initial_messages,
-                    &skill_locations,
-                    Arc::clone(tool_context),
-                    task_id,
-                )
-            },
-            RunMode::ForkLatest | RunMode::Fork { .. } => {
-                info!(target: "cake", "Forking session");
-                let restored = match run_mode {
-                    RunMode::ForkLatest => {
-                        data_dir.load_latest_session(&current_dir)?.ok_or_else(|| {
-                            anyhow::anyhow!("No previous session found for this directory")
-                        })?
-                    },
-                    RunMode::Fork { session_id } => data_dir
-                        .load_session(*session_id)?
-                        .ok_or_else(|| anyhow::anyhow!("Session {session_id} not found"))?,
-                    _ => unreachable!("fork arm only handles fork modes"),
-                };
-
-                info!(target: "cake", "Forking from session: {}", restored.id);
-                let resolved = self.resolve_model_for_session(
-                    models,
-                    default_model,
-                    restored.model.as_deref(),
-                )?;
-                Self::forked_client_and_session(
-                    &restored,
-                    resolved,
-                    current_dir,
-                    &initial_messages,
-                    skill_locations,
-                    Arc::clone(tool_context),
-                    task_id,
-                )
-            },
-            RunMode::NewSession | RunMode::Ephemeral => {
-                let resolved = ResolvedModelConfig::resolve(
-                    self.resolve_model_config(models, default_model)?,
-                )?;
-                Ok(Self::new_client_and_session(
-                    resolved,
-                    current_dir,
-                    &initial_messages,
-                    skill_locations,
-                    Arc::clone(tool_context),
-                    task_id,
-                ))
-            },
-        }
     }
 
     /// Set up a worktree if `--worktree` was provided.
@@ -1031,7 +551,7 @@ impl CodingAssistant {
         mut client: Agent,
         data_dir: &DataDir,
         session: &Session,
-        storage: &SessionStorage,
+        storage: SessionStorage,
         persists_session: bool,
     ) -> anyhow::Result<(Agent, Option<crate::config::SessionWriter>)> {
         if !persists_session {
@@ -1245,7 +765,7 @@ impl CmdRunner for CodingAssistant {
             run_session.agent,
             data_dir,
             &session,
-            &run_session.storage,
+            run_session.storage,
             run_mode.persists_session(),
         )?;
         let client = Self::attach_session_telemetry(
@@ -1302,54 +822,6 @@ impl CmdRunner for CodingAssistant {
     }
 }
 
-/// Format a completion summary with elapsed time, turns, and token usage.
-fn format_done_summary(duration_ms: u64, client: &Agent) -> String {
-    let secs = format_seconds_tenths(u128::from(duration_ms));
-    let turns = client.turn_count();
-    let usage = client.total_usage();
-    let input_tokens = usage.input_tokens;
-    let output_tokens = usage.output_tokens;
-    let cached_reads_tokens = usage.input_tokens_details.cached_tokens;
-    format!(
-        "session {}, {secs}s, {turns} turns, {input_tokens} input tokens, {cached_reads_tokens} cached reads, {output_tokens} output tokens",
-        client.session_id()
-    )
-}
-
-/// Format a conversation item as a short spinner message for normal mode.
-///
-/// Returns `Some(message)` for items worth showing, `None` otherwise.
-fn format_spinner_message(item: &ConversationItem) -> Option<String> {
-    match item {
-        ConversationItem::FunctionCall {
-            name, arguments, ..
-        } => {
-            let summary = clients::summarize_tool_args(name, arguments);
-            Some(format!("{name}: {summary}"))
-        },
-        ConversationItem::Reasoning { .. } => Some("Thinking...".to_string()),
-        ConversationItem::Message { role, .. } if *role == Role::Assistant => {
-            Some("Responding...".to_string())
-        },
-        _ => None,
-    }
-}
-
-fn format_retry_message(status: &crate::clients::retry::RetryStatus) -> String {
-    if status.reason == crate::clients::retry::RetryReason::ContextOverflow {
-        return format!(
-            "Retrying once with {} after context overflow",
-            status.detail
-        );
-    }
-
-    let delay = format_duration_tenths(status.delay);
-    format!(
-        "Retrying in {delay}s after {} (attempt {}/{})",
-        status.detail, status.attempt, status.max_retries
-    )
-}
-
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
     let data_dir = match DataDir::new() {
@@ -1397,6 +869,7 @@ async fn main() -> std::process::ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::{format_done_summary, format_retry_message, format_spinner_message};
     use crate::config::model::ApiType;
     use crate::types::session::FunctionCallOutputData;
 
