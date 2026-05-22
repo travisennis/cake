@@ -7,7 +7,7 @@ Active tasks include open, pending, blocked, and tracking work.
 ## Status Summary
 
 - Open: 5
-- Pending: 13
+- Pending: 12
 - Blocked: 13
 - Tracking: 1
 - Completed: 0
@@ -23,7 +23,6 @@ Active tasks include open, pending, blocked, and tracking work.
 | [012](012.md) | Add Template Prompts from .cake/prompts/ | Blocked | - | - | - | - | - |
 | [016](016.md) | Refactor send() and execute_bash() into Smaller Functions | Blocked | - | - | - | - | - |
 | [101](101.md) | Review Module Size and Ownership Boundaries | Tracking | P3 | XL | - | Required before implementation | - |
-| [101f](101f.md) | Extract Inline Tests from settings.rs | Pending | P3 | S | type:refactor, area:config | - | - |
 | [101g](101g.md) | Add Module Size Lint Script and just Recipe | Pending | P3 | S | type:task, area:ci | - | - |
 | [103](103.md) | Add Builder or Fixture Infrastructure for Agent Tests | Pending | P3 | M | - | - | 066 (Encapsulate Agent fields) |
 | [105](105.md) | Improve Unknown or Missing API Field Diagnostics | Pending | P3 | M | - | - | - |
