@@ -679,6 +679,35 @@ mod tests {
     }
 
     #[test]
+    fn reasoning_without_summary_omits_summary_and_roundtrips() {
+        let item = ConversationItem::Reasoning {
+            id: "r-1".to_string(),
+            summary: None,
+            encrypted_content: None,
+            content: Some(vec![ReasoningContent {
+                content_type: ReasoningContentKind::ReasoningText,
+                text: Some("preserved reasoning".to_string()),
+            }]),
+            timestamp: None,
+        };
+
+        let stream_json = stream_json_for(&item);
+        assert_eq!(stream_json["type"], "reasoning");
+        assert!(stream_json.get("summary").is_none());
+
+        let stream_record: StreamRecord = serde_json::from_value(stream_json).unwrap();
+        let session_record = SessionRecord::from(stream_record);
+        let session_json = serde_json::to_value(&session_record).unwrap();
+        assert!(session_json.get("summary").is_none());
+
+        let restored = serde_json::from_value::<SessionRecord>(session_json)
+            .unwrap()
+            .to_conversation_item()
+            .unwrap();
+        assert_eq!(restored, item);
+    }
+
+    #[test]
     fn stream_record_json_function_call() {
         let item = ConversationItem::FunctionCall {
             id: "fc-1".to_string(),
