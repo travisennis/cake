@@ -7,9 +7,9 @@ Active tasks include open, pending, blocked, and tracking work.
 ## Status Summary
 
 - Open: 5
-- Pending: 12
+- Pending: 11
 - Blocked: 13
-- Tracking: 1
+- Tracking: 0
 - Completed: 0
 - Cancelled: 0
 
@@ -22,8 +22,6 @@ Active tasks include open, pending, blocked, and tracking work.
 | [009](009.md) | Add Session Browsing Commands | Blocked | - | - | - | - | - |
 | [012](012.md) | Add Template Prompts from .cake/prompts/ | Blocked | - | - | - | - | - |
 | [016](016.md) | Refactor send() and execute_bash() into Smaller Functions | Blocked | - | - | - | - | - |
-| [101](101.md) | Review Module Size and Ownership Boundaries | Tracking | P3 | XL | - | Required before implementation | - |
-| [101g](101g.md) | Add Module Size Lint Script and just Recipe | Pending | P3 | S | type:task, area:ci | - | - |
 | [103](103.md) | Add Builder or Fixture Infrastructure for Agent Tests | Pending | P3 | M | - | - | 066 (Encapsulate Agent fields) |
 | [105](105.md) | Improve Unknown or Missing API Field Diagnostics | Pending | P3 | M | - | - | - |
 | [117](117.md) | Strengthen Edit Tool Semantics via Lean-Assisted Testing | Blocked | P2 | XL | - | `.agents/exec-plans/active/edit-tool-lean.md` | - |

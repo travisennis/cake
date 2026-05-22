@@ -72,11 +72,16 @@ lint-imports:
 
 # Run all checks (use in CI)
 ci: task-index-check rust-version-check fmt-check clippy-strict test lint-imports
+    # TODO: add lint-module-size here once 101a-101f subtask refactors are complete
     echo "All checks passed!"
 
 # Recreate full CI pipeline locally (matches GitHub Actions)
 ci-full: task-index-check fmt-check clippy-strict test lint-imports deny doc build
     echo "Full CI pipeline passed!"
+
+# Check module sizes against thresholds (informational, always passes)
+lint-module-size:
+    python3 scripts/lint-module-size.py
 
 # Check for denied/advisory dependencies (requires cargo-deny)
 deny:

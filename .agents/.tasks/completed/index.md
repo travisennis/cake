@@ -10,7 +10,7 @@ Completed tasks are retained for history and stable task-id lookup.
 - Pending: 0
 - Blocked: 0
 - Tracking: 0
-- Completed: 144
+- Completed: 146
 - Cancelled: 0
 
 ## Tasks
@@ -110,12 +110,14 @@ Completed tasks are retained for history and stable task-id lookup.
 | [098](098.md) | Reorganize Type Modules | Completed | P3 | XL | - | .agents/exec-plans/completed/reorganize-type-modules.md | 049 (Split Agent), 050 (Backend abstraction), 051 (Tool abstraction), 058 (Typed reasoning content), 061 (Consolidate serialization), 062 (DateTime types), 063 (Optional field normalization). Do this last. |
 | [099](099.md) | Remove Library-Style Doctests From Binary-Only Crate | Completed | P3 | S | - | - | - |
 | [100](100.md) | Decide Linux Landlock Default Feature Policy | Completed | P3 | M | type:task, area:sandbox, area:ci, area:docs, risk:security-sensitive | - | - |
+| [101](101.md) | Review Module Size and Ownership Boundaries | Completed | P3 | XL | - | Required before implementation | - |
 | [101a](101a.md) | Extract Skill Dedup from agent.rs | Completed | P3 | S | type:refactor, area:agent | - | - |
 | [101b](101b.md) | Extract CliOutputSink, RunMode, and Session Construction from main.rs | Completed | P3 | M | type:refactor, area:cli | - | - |
 | [101c](101c.md) | Convert bash_safety.rs to Subdirectory with Separated Parsing | Completed | P3 | S | type:refactor, area:tools | - | - |
 | [101d](101d.md) | Extract Inline Tests from edit.rs | Completed | P3 | S | type:refactor, area:tools | - | - |
 | [101e](101e.md) | Extract Inline Tests from chat_completions.rs | Completed | P3 | S | type:refactor, area:chat | - | - |
 | [101f](101f.md) | Extract Inline Tests from settings.rs | Completed | P3 | S | type:refactor, area:config | - | - |
+| [101g](101g.md) | Add Module Size Lint Script and just Recipe | Completed | P3 | S | type:task, area:ci | - | - |
 | [102](102.md) | Validate Stream Hook Record Contract | Completed | P3 | M | - | - | 030 (existing - see notes), 059 (Output sink; completed, does not supersede this task). |
 | [104](104.md) | Add Structured Provider Header Configuration | Completed | P3 | M | - | - | 050 (Backend abstraction), 052 (Provider strategy) |
 | [106](106.md) | Audit Public Module Visibility in Tools | Completed | P3 | S | - | - | 051 (Tool abstraction) |
