@@ -94,6 +94,21 @@ doc:
 coverage:
     cargo llvm-cov --html
 
+# Print coverage summary (requires cargo-llvm-cov)
+coverage-summary:
+    cargo llvm-cov --summary-only
+
+# Check coverage against the CI threshold (requires cargo-llvm-cov)
+coverage-check:
+    @OUTPUT="$(cargo llvm-cov --summary-only)"; \
+    printf '%s\n' "$OUTPUT"; \
+    COVERAGE="$(printf '%s\n' "$OUTPUT" | grep "^TOTAL" | grep -oE '[0-9]+\.[0-9]+%' | tail -1 | tr -d '%')"; \
+    echo "Coverage: ${COVERAGE}%"; \
+    if [ "$(echo "$COVERAGE < 90" | bc -l)" = "1" ]; then \
+        echo "Coverage below 90%"; \
+        exit 1; \
+    fi
+
 # Run coverage and open report
 coverage-open:
     cargo llvm-cov --html --open

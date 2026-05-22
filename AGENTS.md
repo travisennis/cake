@@ -35,6 +35,7 @@ cake is an AI coding assistant CLI that:
   1. Run the narrowest useful check first, such as `cargo check --tests`, `cargo test <module_or_test_name>`, or `cargo test`.
   2. Run `cargo fmt` after code edits.
   3. Run `just ci` before final handoff or commit.
+- Run `just coverage-check` when a change adds or removes meaningful Rust code, changes tests, or touches coverage-sensitive areas. It mirrors the CI coverage gate and catches drops below the 90% project threshold before pushing.
 - When changing test fixtures, test-only code, struct literals used in tests, or `#[cfg(test)]` modules, run `cargo check --tests` before relying on `cargo build` or `cargo check`. Plain `cargo build` and `cargo check` do not validate this project's test code.
 - This is a binary-only crate. Do not run `cargo test --lib`; there is no library target. Use `cargo test <module_or_test_name>` for targeted tests, or `cargo test` for the full test suite.
 - Do not commit or push code unless explicitly asked to.
@@ -61,6 +62,12 @@ cargo check --tests
 
 # Run tests with coverage
 just coverage
+
+# Print coverage summary
+just coverage-summary
+
+# Check coverage against the 90% CI threshold
+just coverage-check
 
 # Run coverage and open HTML report
 just coverage-open

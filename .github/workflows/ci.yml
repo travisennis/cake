@@ -18,6 +18,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  COVERAGE_THRESHOLD: 90
 
 permissions:
   contents: read
@@ -102,8 +103,8 @@ jobs:
           cargo llvm-cov --summary-only | tee coverage.txt
           COVERAGE=$(grep "^TOTAL" coverage.txt | grep -oE '[0-9]+\.[0-9]+%' | tail -1 | tr -d '%')
           echo "Coverage: $COVERAGE%"
-          if [ "$(echo "$COVERAGE < 30" | bc -l)" = "1" ]; then
-            echo "Coverage below 30%"
+          if [ "$(echo "$COVERAGE < $COVERAGE_THRESHOLD" | bc -l)" = "1" ]; then
+            echo "Coverage below ${COVERAGE_THRESHOLD}%"
             exit 1
           fi
       
