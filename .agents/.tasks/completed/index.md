@@ -10,7 +10,7 @@ Completed tasks are retained for history and stable task-id lookup.
 - Pending: 0
 - Blocked: 0
 - Tracking: 0
-- Completed: 141
+- Completed: 142
 - Cancelled: 0
 
 ## Tasks
@@ -113,6 +113,7 @@ Completed tasks are retained for history and stable task-id lookup.
 | [101a](101a.md) | Extract Skill Dedup from agent.rs | Completed | P3 | S | type:refactor, area:agent | - | - |
 | [101b](101b.md) | Extract CliOutputSink, RunMode, and Session Construction from main.rs | Completed | P3 | M | type:refactor, area:cli | - | - |
 | [101c](101c.md) | Convert bash_safety.rs to Subdirectory with Separated Parsing | Completed | P3 | S | type:refactor, area:tools | - | - |
+| [101d](101d.md) | Extract Inline Tests from edit.rs | Completed | P3 | S | type:refactor, area:tools | - | - |
 | [102](102.md) | Validate Stream Hook Record Contract | Completed | P3 | M | - | - | 030 (existing - see notes), 059 (Output sink; completed, does not supersede this task). |
 | [104](104.md) | Add Structured Provider Header Configuration | Completed | P3 | M | - | - | 050 (Backend abstraction), 052 (Provider strategy) |
 | [106](106.md) | Audit Public Module Visibility in Tools | Completed | P3 | S | - | - | 051 (Tool abstraction) |
