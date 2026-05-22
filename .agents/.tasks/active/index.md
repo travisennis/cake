@@ -7,7 +7,7 @@ Active tasks include open, pending, blocked, and tracking work.
 ## Status Summary
 
 - Open: 5
-- Pending: 18
+- Pending: 17
 - Blocked: 13
 - Tracking: 1
 - Completed: 0
@@ -23,7 +23,6 @@ Active tasks include open, pending, blocked, and tracking work.
 | [012](012.md) | Add Template Prompts from .cake/prompts/ | Blocked | - | - | - | - | - |
 | [016](016.md) | Refactor send() and execute_bash() into Smaller Functions | Blocked | - | - | - | - | - |
 | [101](101.md) | Review Module Size and Ownership Boundaries | Tracking | P3 | XL | - | Required before implementation | - |
-| [101a](101a.md) | Extract Skill Dedup from agent.rs | Pending | P3 | S | type:refactor, area:agent | - | - |
 | [101b](101b.md) | Extract CliOutputSink, RunMode, and Session Construction from main.rs | Pending | P3 | M | type:refactor, area:cli | - | - |
 | [101c](101c.md) | Convert bash_safety.rs to Subdirectory with Separated Parsing | Pending | P3 | S | type:refactor, area:tools | - | - |
 | [101d](101d.md) | Extract Inline Tests from edit.rs | Pending | P3 | S | type:refactor, area:tools | - | - |

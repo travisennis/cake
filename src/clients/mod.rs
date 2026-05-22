@@ -20,6 +20,7 @@ mod provider_strategy;
 mod responses;
 mod responses_types;
 pub mod retry;
+mod skill_dedup;
 mod tools;
 
 pub use agent::Agent;

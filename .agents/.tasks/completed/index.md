@@ -10,7 +10,7 @@ Completed tasks are retained for history and stable task-id lookup.
 - Pending: 0
 - Blocked: 0
 - Tracking: 0
-- Completed: 138
+- Completed: 139
 - Cancelled: 0
 
 ## Tasks
@@ -110,6 +110,7 @@ Completed tasks are retained for history and stable task-id lookup.
 | [098](098.md) | Reorganize Type Modules | Completed | P3 | XL | - | .agents/exec-plans/completed/reorganize-type-modules.md | 049 (Split Agent), 050 (Backend abstraction), 051 (Tool abstraction), 058 (Typed reasoning content), 061 (Consolidate serialization), 062 (DateTime types), 063 (Optional field normalization). Do this last. |
 | [099](099.md) | Remove Library-Style Doctests From Binary-Only Crate | Completed | P3 | S | - | - | - |
 | [100](100.md) | Decide Linux Landlock Default Feature Policy | Completed | P3 | M | type:task, area:sandbox, area:ci, area:docs, risk:security-sensitive | - | - |
+| [101a](101a.md) | Extract Skill Dedup from agent.rs | Completed | P3 | S | type:refactor, area:agent | - | - |
 | [102](102.md) | Validate Stream Hook Record Contract | Completed | P3 | M | - | - | 030 (existing - see notes), 059 (Output sink; completed, does not supersede this task). |
 | [104](104.md) | Add Structured Provider Header Configuration | Completed | P3 | M | - | - | 050 (Backend abstraction), 052 (Provider strategy) |
 | [106](106.md) | Audit Public Module Visibility in Tools | Completed | P3 | S | - | - | 051 (Tool abstraction) |
