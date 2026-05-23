@@ -7,7 +7,7 @@ Active tasks include open, pending, blocked, and tracking work.
 ## Status Summary
 
 - Open: 5
-- Pending: 16
+- Pending: 15
 - Blocked: 13
 - Tracking: 0
 - Completed: 0
@@ -45,7 +45,6 @@ Active tasks include open, pending, blocked, and tracking work.
 | [161](161.md) | Align Self-Reflection Note Instructions With Tool Write Permissions | Open | P3 | S | type:bug, area:prompts, area:tools, area:config | - | - |
 | [162](162.md) | Prevent Clean Worktree Claims When Untracked Files Remain | Open | P3 | XS | type:bug, area:prompts, area:cli | - | - |
 | [163](163.md) | Prevent Concurrent Same-File Mutating Tool Calls | Pending | P1 | L | type:bug, area:agent, area:tools | - | - |
-| [168](168.md) | Add Focused Unit Tests for Bash Safety Parser Helpers | Pending | P2 | S | type:test, area:tools | - | - |
 | [169](169.md) | Extract Bash Safety Check Rules into a Checks Module | Pending | P3 | M | type:refactor, area:tools | - | - |
 | [170](170.md) | Move Chat Response Parsing Tests into Extracted Test Module | Pending | P3 | S | type:refactor, area:chat | - | - |
 | [171](171.md) | Extract Inline Tests from Remaining Large Modules | Pending | P3 | L | type:refactor, area:agent, area:chat, area:tools, area:session, area:config, area:cli | - | - |
