@@ -7,7 +7,7 @@ Active tasks include open, pending, blocked, and tracking work.
 ## Status Summary
 
 - Open: 5
-- Pending: 13
+- Pending: 12
 - Blocked: 13
 - Tracking: 0
 - Completed: 0
@@ -46,5 +46,4 @@ Active tasks include open, pending, blocked, and tracking work.
 | [162](162.md) | Prevent Clean Worktree Claims When Untracked Files Remain | Open | P3 | XS | type:bug, area:prompts, area:cli | - | - |
 | [163](163.md) | Prevent Concurrent Same-File Mutating Tool Calls | Pending | P1 | L | type:bug, area:agent, area:tools | - | - |
 | [171](171.md) | Extract Inline Tests from Remaining Large Modules | Pending | P3 | L | type:refactor, area:agent, area:chat, area:tools, area:session, area:config, area:cli | - | - |
-| [172](172.md) | Verify Responses Reasoning Summary Empty Array Semantics | Pending | P3 | S | type:task, area:responses, risk:external-service | - | - |
 | [173](173.md) | Document Module Size Linter Parsing Limitations | Pending | P4 | XS | type:docs, area:ci | - | - |

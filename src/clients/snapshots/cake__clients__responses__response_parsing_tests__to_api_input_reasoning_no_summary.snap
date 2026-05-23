@@ -1,0 +1,9 @@
+---
+source: src/clients/responses.rs
+expression: to_api_input_json(&item)
+---
+{
+  "id": "r-3",
+  "summary": [],
+  "type": "reasoning"
+}

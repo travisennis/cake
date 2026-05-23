@@ -221,19 +221,27 @@ impl<'a> From<&'a ConversationItem> for ResponsesApiInputItem<'a> {
                 encrypted_content,
                 content,
                 ..
-            } => Self::Reasoning {
-                id,
-                summary: summary
-                    .as_deref()
-                    .unwrap_or_default()
-                    .iter()
-                    .map(|text| ResponsesReasoningSummary {
-                        summary_type: "summary_text",
-                        text,
-                    })
-                    .collect(),
-                encrypted_content: encrypted_content.as_deref(),
-                content: content.as_deref(),
+            } => {
+                // When `summary` is `None`, we produce an empty array (`"summary": []`)
+                // rather than omitting the field. This maps the domain type's `Option`
+                // into the API DTO's non-optional `Vec`. The Responses API accepts
+                // `"summary": []` equivalently to an absent field — it is treated as
+                // "no summaries to echo". This behavior predates `summary` becoming
+                // optional and has been in production use without issues.
+                Self::Reasoning {
+                    id,
+                    summary: summary
+                        .as_deref()
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|text| ResponsesReasoningSummary {
+                            summary_type: "summary_text",
+                            text,
+                        })
+                        .collect(),
+                    encrypted_content: encrypted_content.as_deref(),
+                    content: content.as_deref(),
+                }
             },
         }
     }
@@ -1551,6 +1559,29 @@ mod response_parsing_tests {
     }
 
     #[test]
+    fn to_api_input_reasoning_no_summary() {
+        // When `summary` is `None`, the conversion produces an empty array
+        // (`"summary": []`) rather than omitting the field. This is accepted
+        // by the Responses API — see the comment in `From<&ConversationItem>`
+        // for the rationale.
+        let item = ConversationItem::Reasoning {
+            id: "r-3".to_string(),
+            summary: None,
+            encrypted_content: None,
+            content: None,
+            timestamp: None,
+        };
+        let json = to_api_input_json(&item);
+        assert_eq!(json["type"], "reasoning");
+        assert_eq!(json["id"], "r-3");
+        let summary_array = json["summary"].as_array().unwrap();
+        assert!(
+            summary_array.is_empty(),
+            "expected empty summary array, got {summary_array:?}"
+        );
+    }
+
+    #[test]
     fn snapshot_user_message() {
         let item = ConversationItem::Message {
             role: Role::User,
@@ -1658,6 +1689,23 @@ mod response_parsing_tests {
         };
         insta::assert_json_snapshot!(
             "to_api_input_reasoning_with_content_array",
+            to_api_input_json(&item)
+        );
+    }
+
+    #[test]
+    fn snapshot_reasoning_no_summary() {
+        // When `summary` is `None`, the conversion produces `"summary": []`.
+        // See the comment in `From<&ConversationItem>` for the rationale.
+        let item = ConversationItem::Reasoning {
+            id: "r-3".to_string(),
+            summary: None,
+            encrypted_content: None,
+            content: None,
+            timestamp: None,
+        };
+        insta::assert_json_snapshot!(
+            "to_api_input_reasoning_no_summary",
             to_api_input_json(&item)
         );
     }

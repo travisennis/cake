@@ -10,7 +10,7 @@ Completed tasks are retained for history and stable task-id lookup.
 - Pending: 0
 - Blocked: 0
 - Tracking: 0
-- Completed: 150
+- Completed: 151
 - Cancelled: 0
 
 ## Tasks
@@ -167,3 +167,4 @@ Completed tasks are retained for history and stable task-id lookup.
 | [168](168.md) | Add Focused Unit Tests for Bash Safety Parser Helpers | Completed | P2 | S | type:test, area:tools | - | - |
 | [169](169.md) | Extract Bash Safety Check Rules into a Checks Module | Completed | P3 | M | type:refactor, area:tools | - | - |
 | [170](170.md) | Move Chat Response Parsing Tests into Extracted Test Module | Completed | P3 | S | type:refactor, area:chat | - | - |
+| [172](172.md) | Verify Responses Reasoning Summary Empty Array Semantics | Completed | P3 | S | type:task, area:responses, risk:external-service | - | - |
