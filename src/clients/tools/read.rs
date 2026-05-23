@@ -16,25 +16,21 @@ pub(super) fn read_tool() -> super::Tool {
     super::Tool {
         type_: "function".to_string(),
         name: "Read".to_string(),
-        description: "Read a file's contents or list a directory's entries. \
-            Returns line-numbered content for files, or a list of entries for directories. \
-            Supports reading specific line ranges to avoid loading entire large files. \
-            Use this instead of cat/head/tail/ls via Bash."
-            .to_string(),
+        description: include_str!("read-description.txt").to_string(),
         parameters: serde_json::json!({
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Absolute path to the file or directory to read."
+                    "description": "Absolute path to the file or directory to read"
                 },
                 "start_line": {
                     "type": "integer",
-                    "description": "First line to read (1-indexed, inclusive). Defaults to 1."
+                    "description": "First line to read (1-indexed, inclusive). Default: 1"
                 },
                 "end_line": {
                     "type": "integer",
-                    "description": "Last line to read (1-indexed, inclusive). Defaults to 200 when start_line is not provided, or start_line+199 when start_line is provided but end_line is not. Use to limit output for large files."
+                    "description": "Last line to read (1-indexed, inclusive). Default: 200 (or start_line+199 when start_line given)"
                 }
             },
             "required": ["path"]

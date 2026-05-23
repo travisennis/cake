@@ -1,0 +1,8 @@
+Edit text in files using literal search-and-replace. All non-no-op edits in a single call succeed atomically or none are applied. Edits with identical old_text and new_text are skipped.
+
+Guidance:
+- Always Read the file first before editing.
+- old_text must match exactly once in the file. Include 3+ surrounding lines for uniqueness.
+- For multi-line matches, preserve exact whitespace and indentation.
+- Special characters in JSON (backticks, quotes, backslashes) must be escaped.
+- Do not issue multiple Edit calls for the same file in one turn — re-read first.

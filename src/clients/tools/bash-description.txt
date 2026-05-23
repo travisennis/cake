@@ -1,0 +1,10 @@
+Execute a shell command in the host machine's terminal. Returns stdout and stderr with a footer showing exit code and elapsed time. The working directory persists between commands; shell state does not. Does not support interactive commands.
+
+Guidance:
+- File search: Use Read (directory listing), not Bash
+- Content search: Use commands via Bash
+- Read files: Use Read tool, not cat/head/tail
+- Edit files: Use Edit tool, not sed/awk
+- Write files: Use Write tool, not echo/cat
+
+Note: Shell interprets backticks (`) and $() inside double-quoted arguments as command substitution.

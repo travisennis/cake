@@ -22,14 +22,14 @@ pub(super) fn edit_tool() -> super::Tool {
     super::Tool {
         type_: "function".to_string(),
         name: "Edit".to_string(),
-        description: "Edit text in files using literal search-and-replace. The set of meaningful edits is atomic: all non-no-op edits in a single call succeed together, or none are applied. Edits with identical old_text and new_text are skipped and reported as no-ops. Do not issue multiple Edit calls for the same file in one turn — if the file has been changed by a previous Edit, re-read it first with the Read.".to_string(),
+        description: include_str!("edit-description.txt").to_string(),
         parameters: serde_json::json!({
             "type": "object",
             "additionalProperties": false,
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "The path of the file to edit."
+                    "description": "The path of the file to edit"
                 },
                 "edits": {
                     "type": "array",
@@ -42,11 +42,11 @@ pub(super) fn edit_tool() -> super::Tool {
                         "properties": {
                             "old_text": {
                                 "type": "string",
-                                "description": "Text to search for - must match exactly. The old_text must uniquely identify the location - include enough surrounding context (e.g., 3+ lines or function/class names) to ensure only ONE match exists in the file. Special characters require JSON escaping: backticks (`\\``...\\``), quotes, backslashes. For multi-line content, include exact newlines and indentation."
+                                "description": "Exact text to replace. Must be unique in the file"
                             },
                             "new_text": {
                                 "type": "string",
-                                "description": "Text to replace with"
+                                "description": "Replacement text. Use empty string to delete"
                             }
                         },
                         "required": ["old_text", "new_text"]
