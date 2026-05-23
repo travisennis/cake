@@ -10,7 +10,7 @@ Completed tasks are retained for history and stable task-id lookup.
 - Pending: 0
 - Blocked: 0
 - Tracking: 0
-- Completed: 148
+- Completed: 149
 - Cancelled: 0
 
 ## Tasks
@@ -165,3 +165,4 @@ Completed tasks are retained for history and stable task-id lookup.
 | [166](166.md) | Suppress Session File Path When Sessions Are Disabled | Completed | P2 | S | type:bug, area:cli, area:session | - | - |
 | [167](167.md) | Make reasoning summary Optional on Chat Completions path | Completed | P3 | S | type:refactor, area:chat, area:session, area:model | - | - |
 | [168](168.md) | Add Focused Unit Tests for Bash Safety Parser Helpers | Completed | P2 | S | type:test, area:tools | - | - |
+| [169](169.md) | Extract Bash Safety Check Rules into a Checks Module | Completed | P3 | M | type:refactor, area:tools | - | - |
