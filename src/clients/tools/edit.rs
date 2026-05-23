@@ -9,7 +9,7 @@ use crate::clients::tools::{ToolContext, validate_path_for_write};
 // =============================================================================
 
 /// Maximum number of edits allowed in a single call
-const MAX_EDITS_PER_CALL: usize = 10;
+const MAX_EDITS_PER_CALL: usize = 20;
 /// Maximum per-edit status lines included in a failed multi-edit preflight.
 const MAX_PREFLIGHT_STATUS_LINES: usize = 6;
 
@@ -22,7 +22,7 @@ pub(super) fn edit_tool() -> super::Tool {
     super::Tool {
         type_: "function".to_string(),
         name: "Edit".to_string(),
-        description: "Edit text in files using literal search-and-replace. The set of meaningful edits is atomic: all non-no-op edits in a single call succeed together, or none are applied. Edits with identical old_text and new_text are skipped and reported as no-ops. Do not issue multiple Edit calls for the same file in one turn — if the file has been changed by a previous Edit, re-read it first.".to_string(),
+        description: "Edit text in files using literal search-and-replace. The set of meaningful edits is atomic: all non-no-op edits in a single call succeed together, or none are applied. Edits with identical old_text and new_text are skipped and reported as no-ops. Do not issue multiple Edit calls for the same file in one turn — if the file has been changed by a previous Edit, re-read it first with the Read.".to_string(),
         parameters: serde_json::json!({
             "type": "object",
             "additionalProperties": false,
@@ -33,7 +33,7 @@ pub(super) fn edit_tool() -> super::Tool {
                 },
                 "edits": {
                     "type": "array",
-                    "description": "The edits to make to the file. Edits with identical old_text and new_text are no-ops; they are skipped and reported without changing the file.",
+                    "description": "The edits to make to the file. Edits with identical old_text and new_text are no-ops; they are skipped and reported without changing the file. The max number of edits you can do at once is 20.",
                     "minItems": 1,
                     "maxItems": MAX_EDITS_PER_CALL,
                     "items": {

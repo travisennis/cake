@@ -136,7 +136,7 @@ fn error_on_too_many_edits() {
     let file_path = temp_dir.path().join("test.txt");
     fs::write(&file_path, "Hello world").unwrap();
 
-    let edits: Vec<_> = (0..15)
+    let edits: Vec<_> = (0..25)
         .map(|i| serde_json::json!({ "old_text": format!("text{i}"), "new_text": format!("new{i}") }))
         .collect();
 
@@ -154,7 +154,7 @@ fn error_on_too_many_edits() {
         "Error should mention too many edits: {err}"
     );
     assert!(
-        err.contains("Maximum 10"),
+        err.contains("Maximum 20"),
         "Error should mention max: {err}"
     );
 }
