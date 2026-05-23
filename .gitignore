@@ -6,3 +6,5 @@ target/
 # Coverage output
 lcov.info
 target/llvm-cov/
+
+.local.justfile
