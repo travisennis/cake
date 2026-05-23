@@ -44,11 +44,11 @@ Showing 10 of 12 ready tasks. See [active/index.md](active/index.md) for the ful
 | [009](active/009.md) | Add Session Browsing Commands | Blocked | - | - | - | - | - |
 | [012](active/012.md) | Add Template Prompts from .cake/prompts/ | Blocked | - | - | - | - | - |
 | [016](active/016.md) | Refactor send() and execute_bash() into Smaller Functions | Blocked | - | - | - | - | - |
-| [117](active/117.md) | Strengthen Edit Tool Semantics via Lean-Assisted Testing | Blocked | P2 | XL | - | `.agents/exec-plans/active/edit-tool-lean.md` | - |
+| [117](active/117.md) | Strengthen Edit Tool Semantics via Lean-Assisted Testing | Blocked | P2 | XL | type:test, area:tools | `.agents/exec-plans/active/edit-tool-lean.md` | 163 |
 | [118](active/118.md) | Profile and Optimize Cake Performance | Blocked | P2 | L | - | `.agents/exec-plans/active/performance-improvements.md` | - |
 | [120](active/120.md) | Add OSC 9;4 Terminal Progress Indicator | Blocked | P3 | S | - | `.agents/exec-plans/active/progress-bar-plan.md` | - |
 | [121](active/121.md) | Implement User-Defined Toolbox Tools | Blocked | P2 | XL | - | `.agents/exec-plans/active/toolboxes-plan.md` | 050 (Backend abstraction, completed), 051 (Tool abstraction, completed) |
-| [139](active/139.md) | Add Structured Bulk Edit Support for Mechanical Transformations | Blocked | P2 | M | - | - | - |
+| [139](active/139.md) | Add Structured Bulk Edit Support for Mechanical Transformations | Blocked | P2 | M | type:feature, area:tools, area:agent | - | 117, 163 |
 | [142](active/142.md) | Add Bash Command Lint Hints for Common Agent Footguns | Blocked | P2 | M | type:bug, area:tools | - | - |
 | [146](active/146.md) | Compact Large Tool Outputs Before Adding to Model Context | Blocked | P2 | L | type:feature, area:agent, area:tools, area:session | - | - |
 | [151](active/151.md) | Add Settings-Based and Profile-Based System Prompt Configuration | Open | P3 | M | - | - | 150 |
