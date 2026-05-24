@@ -7,7 +7,7 @@ Active tasks include open, pending, blocked, and tracking work.
 ## Status Summary
 
 - Open: 5
-- Pending: 16
+- Pending: 15
 - Blocked: 13
 - Tracking: 0
 - Completed: 0
@@ -48,6 +48,5 @@ Active tasks include open, pending, blocked, and tracking work.
 | [173](173.md) | Document Module Size Linter Parsing Limitations | Pending | P4 | XS | type:docs, area:ci | - | - |
 | [174](174.md) | Remove Directory Reading Support from the Read Tool | Pending | P2 | S | type:refactor, area:tools | - | - |
 | [176](176.md) | Include Problematic Input in Edit Tool Parse Error Messages | Pending | P3 | XS | type:bug, area:tools | - | - |
-| [177](177.md) | Resolve Relative Add-Dir Paths Before Worktree Cwd Changes | Pending | P3 | S | type:bug, area:cli, area:sandbox | - | - |
 | [178](178.md) | Ensure Worktree Cleanup Runs After Early Failures | Pending | P2 | M | type:bug, area:cli, area:session | - | - |
 | [179](179.md) | Reassess Linux Landlock Default Build Policy | Open | P2 | M | type:security, area:sandbox, area:ci, area:deps, risk:security-sensitive | - | - |

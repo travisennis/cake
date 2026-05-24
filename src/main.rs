@@ -391,18 +391,23 @@ impl CodingAssistant {
     }
 
     /// Resolve `--add-dir` values against the startup directory.
+    ///
+    /// Returns absolute, canonical paths that remain valid even when the
+    /// process cwd changes later (e.g., via `--worktree`).
     fn resolve_additional_dirs(&self, base_dir: &Path) -> Vec<PathBuf> {
         self.add_dir
             .iter()
             .filter_map(|dir| {
                 let path = PathBuf::from(dir);
                 let path_to_check = if path.is_absolute() {
-                    path.clone()
+                    path
                 } else {
                     base_dir.join(&path)
                 };
                 if path_to_check.exists() && path_to_check.is_dir() {
-                    Some(path)
+                    // Canonicalize to produce a stable absolute path that
+                    // remains valid even if the process cwd changes later.
+                    Some(std::fs::canonicalize(&path_to_check).unwrap_or(path_to_check))
                 } else {
                     tracing::warn!(
                         "--add-dir path '{dir}' does not exist or is not a directory, ignoring"
@@ -1080,6 +1085,48 @@ mod tests {
     fn test_cli_parsing_add_dir_none() {
         let args = CodingAssistant::parse_from(["cake", "test prompt"]);
         assert!(args.add_dir.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_additional_dirs_relative_becomes_absolute() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sub = dir.path().join("mydir");
+        std::fs::create_dir(&sub).expect("create subdir");
+
+        let assistant = CodingAssistant::parse_from(["cake", "--add-dir", "mydir", "test prompt"]);
+        let resolved = assistant.resolve_additional_dirs(dir.path());
+        assert_eq!(resolved.len(), 1);
+        let expected = std::fs::canonicalize(&sub).expect("canonicalize");
+        assert_eq!(resolved[0], expected);
+    }
+
+    #[test]
+    fn test_resolve_additional_dirs_absolute_stays_absolute() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sub = dir.path().join("sub");
+        std::fs::create_dir(&sub).expect("create subdir");
+
+        // Use the canonicalized absolute path as the --add-dir argument
+        let abs_path = std::fs::canonicalize(&sub).expect("canonicalize");
+        let assistant = CodingAssistant::parse_from([
+            "cake",
+            "--add-dir",
+            &abs_path.to_string_lossy(),
+            "test prompt",
+        ]);
+        let resolved = assistant.resolve_additional_dirs(dir.path());
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0], abs_path);
+    }
+
+    #[test]
+    fn test_resolve_additional_dirs_non_existent_filtered() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let assistant =
+            CodingAssistant::parse_from(["cake", "--add-dir", "nonexistent", "test prompt"]);
+        let resolved = assistant.resolve_additional_dirs(dir.path());
+        assert!(resolved.is_empty());
     }
 
     #[test]

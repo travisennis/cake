@@ -10,7 +10,7 @@ Completed tasks are retained for history and stable task-id lookup.
 - Pending: 0
 - Blocked: 0
 - Tracking: 0
-- Completed: 152
+- Completed: 153
 - Cancelled: 0
 
 ## Tasks
@@ -169,3 +169,4 @@ Completed tasks are retained for history and stable task-id lookup.
 | [170](170.md) | Move Chat Response Parsing Tests into Extracted Test Module | Completed | P3 | S | type:refactor, area:chat | - | - |
 | [172](172.md) | Verify Responses Reasoning Summary Empty Array Semantics | Completed | P3 | S | type:task, area:responses, risk:external-service | - | - |
 | [175](175.md) | Enrich Environment Developer Message with Platform, Architecture, and Shell Info | Completed | P2 | S | type:feature, area:prompts | - | - |
+| [177](177.md) | Resolve Relative Add-Dir Paths Before Worktree Cwd Changes | Completed | P3 | S | type:bug, area:cli, area:sandbox | - | - |
