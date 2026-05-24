@@ -1,6 +1,7 @@
-Read a file's contents or list a directory's entries. Returns line-numbered content for files, or a sorted list of entries for directories. Supports reading specific line ranges to avoid loading large files entirely. Use this instead of cat/head/tail/ls via Bash.
+Read a file's contents. Returns line-numbered content. Supports reading specific line ranges to avoid loading large files entirely.
 
 Behavior:
 - Defaults to reading lines 1-200. Provide start_line/end_line for large files.
 - Returns a "N more lines" note when the file extends beyond the requested range.
 - Rejects binary files (null-byte detection).
+- Rejects directory paths (use Bash with ls, find, or tree for directory listings).

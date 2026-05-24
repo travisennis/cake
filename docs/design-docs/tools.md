@@ -7,7 +7,7 @@ The `clients::tools` module provides the tool execution framework that enables A
 Cake provides four built-in tools:
 
 1. **Bash**: Execute shell commands with sandboxing
-2. **Read**: Read file contents or list directories
+2. **Read**: Read file contents
 3. **Edit**: Make targeted text replacements in files
 4. **Write**: Create new files or overwrite existing ones
 
@@ -37,7 +37,7 @@ pub(super) fn read_tool() -> Tool {
     Tool {
         type_: "function".to_string(),
         name: "Read".to_string(),
-        description: "Read a file's contents or list a directory's entries...",
+        description: "Read a file's contents...",
         parameters: serde_json::json!({
             "type": "object",
             "properties": {
@@ -243,18 +243,18 @@ Tip: <safe alternative>
 
 ### Read Tool
 
-**Purpose**: Read file contents or list directory entries.
+**Purpose**: Read file contents.
 
 **Parameters**:
 
-- `path`: Absolute path to file or directory (required)
+- `path`: Absolute path to the file (required)
 - `start_line`: First line to read (1-indexed, default: 1)
 - `end_line`: Last line to read (1-indexed, default: 500)
 
 **Features**:
 
 - Line-numbered output for files
-- Directory listing with trailing `/` for subdirectories
+- Directory path rejection (clear error message when path is a directory)
 - Binary file detection (rejects files with null bytes)
 - Automatic truncation at 100KB
 - Pagination hints ("... X more lines")
@@ -389,7 +389,7 @@ Examples:
 Each tool has comprehensive tests:
 
 - **Bash**: Output streaming, timeout, sandbox blocking, stderr capture, metadata footer formatting, binary output detection, destructive command blocking (git operations, filesystem operations, wrapper detection, command chaining, false positive avoidance)
-- **Read**: Small files, line ranges, directories, binary detection
+- **Read**: Small files, line ranges, binary detection, directory rejection
 - **Edit**: Multiple edits, overlap detection, line ending preservation, BOM handling, binary files, no-op detection, path validation
 - **Write**: Create, overwrite, nested directories, path validation
 

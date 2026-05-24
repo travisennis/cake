@@ -22,7 +22,7 @@ pub(super) fn read_tool() -> super::Tool {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Absolute path to the file or directory to read"
+                    "description": "Absolute path to the file to read"
                 },
                 "start_line": {
                     "type": "integer",
@@ -90,36 +90,16 @@ pub(super) fn execute_read(
         return Err(format!("Path not found: {}", path.display()));
     }
 
-    // Handle directory
+    // Reject directories
     if path.is_dir() {
-        return read_directory(&path);
+        return Err(format!(
+            "Path is a directory, not a file: {}",
+            path.display()
+        ));
     }
 
     // Handle file
     read_file(&path, args.start_line, args.end_line)
-}
-
-/// Read and format a directory listing
-fn read_directory(path: &Path) -> Result<super::ToolResult, String> {
-    let entries: Vec<_> = std::fs::read_dir(path)
-        .map_err(|e| format!("Failed to read directory '{}': {e}", path.display()))?
-        .filter_map(std::result::Result::ok)
-        .map(|entry| {
-            let name = entry.file_name().to_string_lossy().to_string();
-            let is_dir = entry.file_type().is_ok_and(|ft| ft.is_dir());
-            if is_dir { format!("{name}/") } else { name }
-        })
-        .collect();
-
-    if entries.is_empty() {
-        return Ok(super::ToolResult {
-            output: format!("Directory: {}\n(empty)", path.display()),
-        });
-    }
-
-    let output = format!("Directory: {}\n{}", path.display(), entries.join("\n"));
-
-    Ok(super::ToolResult { output })
 }
 
 /// Check the first 8KB of a file for null bytes (binary detection)
@@ -274,25 +254,6 @@ mod tests {
     }
 
     #[test]
-    fn read_directory_listing() {
-        let temp_dir = TempDir::new().unwrap();
-        fs::create_dir(temp_dir.path().join("subdir")).unwrap();
-        fs::write(temp_dir.path().join("file1.txt"), "content").unwrap();
-        fs::write(temp_dir.path().join("file2.txt"), "content").unwrap();
-
-        let args = serde_json::json!({
-            "path": temp_dir.path().to_str().unwrap()
-        })
-        .to_string();
-
-        let result = execute_read(&ToolContext::from_current_process(), &args).unwrap();
-        assert!(result.output.contains("Directory:"));
-        assert!(result.output.contains("file1.txt"));
-        assert!(result.output.contains("file2.txt"));
-        assert!(result.output.contains("subdir/"));
-    }
-
-    #[test]
     fn error_on_nonexistent_path() {
         let args = serde_json::json!({
             "path": "/nonexistent/path/xyz123"
@@ -342,7 +303,7 @@ mod tests {
     }
 
     #[test]
-    fn read_empty_directory() {
+    fn error_on_directory_path() {
         let temp_dir = TempDir::new().unwrap();
 
         let args = serde_json::json!({
@@ -350,8 +311,9 @@ mod tests {
         })
         .to_string();
 
-        let result = execute_read(&ToolContext::from_current_process(), &args).unwrap();
-        assert!(result.output.contains("(empty)"));
+        let result = execute_read(&ToolContext::from_current_process(), &args);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("is a directory, not a file"));
     }
 
     #[test]
