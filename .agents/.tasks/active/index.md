@@ -7,7 +7,7 @@ Active tasks include open, pending, blocked, and tracking work.
 ## Status Summary
 
 - Open: 5
-- Pending: 15
+- Pending: 16
 - Blocked: 13
 - Tracking: 0
 - Completed: 0
@@ -50,3 +50,4 @@ Active tasks include open, pending, blocked, and tracking work.
 | [176](176.md) | Include Problematic Input in Edit Tool Parse Error Messages | Pending | P3 | XS | type:bug, area:tools | - | - |
 | [178](178.md) | Ensure Worktree Cleanup Runs After Early Failures | Pending | P2 | M | type:bug, area:cli, area:session | - | - |
 | [179](179.md) | Reassess Linux Landlock Default Build Policy | Open | P2 | M | type:security, area:sandbox, area:ci, area:deps, risk:security-sensitive | - | - |
+| [180](180.md) | Clarify Commit/Task-Complete Ordering in Workflow Guidance | Pending | P3 | XS | type:docs, area:prompts | - | - |
