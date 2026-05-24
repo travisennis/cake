@@ -115,10 +115,22 @@ pub fn build_initial_prompt_messages(
 
     let today = Local::now().format("%Y-%m-%d").to_string();
     let working_dir_str = working_dir.to_string_lossy();
-    messages.push((
-        Role::Developer,
-        format!("Current working directory: {working_dir_str}\nToday's date: {today}"),
-    ));
+    let platform = std::env::consts::OS;
+    let arch = std::env::consts::ARCH;
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "unknown".to_string());
+    let terminal = std::env::var("TERM_PROGRAM")
+        .or_else(|_| std::env::var("TERM"))
+        .unwrap_or_else(|_| "unknown".to_string());
+
+    let env_message = format!(
+        "Current working directory: {working_dir_str}\n\
+         Today's date: {today}\n\
+         Platform: {platform}\n\
+         Architecture: {arch}\n\
+         Shell: {shell}\n\
+         Terminal: {terminal}"
+    );
+    messages.push((Role::Developer, env_message));
 
     messages
 }
@@ -171,7 +183,13 @@ mod tests {
     fn assert_prompt_snapshot(name: &str, messages: &[(Role, String)]) {
         let prompt = render_messages(messages);
         insta::with_settings!({
-            filters => vec![(r"Today's date: \d{4}-\d{2}-\d{2}", "Today's date: [DATE]")]
+            filters => vec![
+                (r"Today's date: \d{4}-\d{2}-\d{2}", "Today's date: [DATE]"),
+                (r"Platform: .+", "Platform: [PLATFORM]"),
+                (r"Architecture: .+", "Architecture: [ARCH]"),
+                (r"Shell: .+", "Shell: [SHELL]"),
+                (r"Terminal: .+", "Terminal: [TERMINAL]"),
+            ]
         }, {
             insta::assert_snapshot!(name, prompt);
         });
