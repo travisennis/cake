@@ -6,7 +6,7 @@ Active tasks include open, pending, blocked, and tracking work.
 
 ## Status Summary
 
-- Open: 5
+- Open: 4
 - Pending: 14
 - Blocked: 13
 - Tracking: 0
@@ -42,7 +42,6 @@ Active tasks include open, pending, blocked, and tracking work.
 | [158](158.md) | Fix Skill Activation Reads And Consider Dedicated Skill Tool | Open | P2 | L | type:feature, area:tools, area:agent, area:prompts | - | - |
 | [159](159.md) | Record Hook-Blocked Tool Calls As Permission Denials | Pending | P2 | M | type:bug, area:agent, area:session, area:tools | - | - |
 | [160](160.md) | Guard Git Add All When Untracked Files Are Present | Pending | P2 | M | type:bug, area:tools, area:agent | - | - |
-| [161](161.md) | Align Self-Reflection Note Instructions With Tool Write Permissions | Open | P3 | S | type:bug, area:prompts, area:tools, area:config | - | - |
 | [162](162.md) | Prevent Clean Worktree Claims When Untracked Files Remain | Open | P3 | XS | type:bug, area:prompts, area:cli | - | - |
 | [163](163.md) | Prevent Concurrent Same-File Mutating Tool Calls | Pending | P1 | L | type:bug, area:agent, area:tools | - | - |
 | [171](171.md) | Extract Inline Tests from Remaining Large Modules | Pending | P3 | L | type:refactor, area:agent, area:chat, area:tools, area:session, area:config, area:cli | - | - |
