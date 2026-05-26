@@ -7,13 +7,13 @@ Use `.agents/.tasks/index.md` as the generated queue. Create non-completed task 
 After changing task files or task front matter, regenerate indexes with:
 
 ```bash
-just task-index
+ahm index
 ```
 
-To check that generated indexes are current without rewriting them, run:
+To preview which generated indexes would be rewritten, run:
 
 ```bash
-just task-index-check
+ahm --dry-run index
 ```
 
 Do not edit generated indexes by hand. Update task files and regenerate.

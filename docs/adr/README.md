@@ -1,6 +1,6 @@
 # Architecture Decision Records
 
-This directory contains Architecture Decision Records for cake. ADRs capture durable technical decisions, their context, and the tradeoffs accepted at the time. They are not implementation plans; use ExecPlans for step-by-step delivery planning.
+This directory contains Architecture Decision Records for this project. ADRs capture durable technical decisions, their context, and the tradeoffs accepted at the time. They are not implementation plans; use ExecPlans for step-by-step delivery planning.
 
 ## When to Write an ADR
 
@@ -51,7 +51,7 @@ When superseding an ADR, keep the old file and add a note that links to the repl
 ```markdown
 # ADR NNN: Short Decision Title
 
-**Status:** Proposed  
+**Status:** Proposed
 **Date:** YYYY-MM-DD
 
 ## Context
@@ -64,7 +64,7 @@ State the chosen approach clearly. Include the stable contracts, ownership bound
 
 ## Rationale
 
-- Explain why this approach fits cake.
+- Explain why this approach fits this project.
 - Record the most important tradeoffs.
 - Note any constraints that made other choices less suitable.
 

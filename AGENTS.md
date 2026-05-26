@@ -109,9 +109,9 @@ cargo test --lib
 - When a task includes committing and task-status updates, commit the intended code/task changes together unless the user asks for separate commits. After committing and moving or regenerating task files, run `git status --short` before the final response and report any remaining uncommitted or untracked files.
 - When asked to create, choose, update, or work on a task, first read `.agents/TASKS.md`, then use `.agents/.tasks/index.md` as the task queue and open the specific task file before acting.
 - Use task labels to filter work by type, area, and risk when the user asks for focused work.
-- Do not edit generated task indexes by hand; update task files and run `just task-index` (never invoke the underlying Python script directly).
-- When marking a task as Completed, use `just task-complete <id>`. It updates the task front matter, moves the file from `.agents/.tasks/active/` to `.agents/.tasks/completed/`, and regenerates the indexes in one step. Do not leave Completed tasks in `active/`.
-- When marking a task as Cancelled, use `just task-cancel <id>`. It updates the task front matter, moves the file from `.agents/.tasks/active/` to `.agents/.tasks/cancelled/`, and regenerates the indexes in one step. Do not leave Cancelled tasks in `active/`.
+- Do not edit generated task indexes by hand; update task files and run `ahm index`.
+- When marking a task as Completed, use `ahm task complete <id>`. It updates the task front matter, moves the file from `.agents/.tasks/active/` to `.agents/.tasks/completed/`, and regenerates the indexes in one step. Do not leave Completed tasks in `active/`.
+- When marking a task as Cancelled, use `ahm task cancel <id>`. It updates the task front matter, moves the file from `.agents/.tasks/active/` to `.agents/.tasks/cancelled/`, and regenerates the indexes in one step. Do not leave Cancelled tasks in `active/`.
 
 --------------------------------------------------------------------------------
 
@@ -205,7 +205,7 @@ When a task introduces or changes a durable architectural decision, write or upd
 
 - `cargo build` does not validate test-only code.
 - Do not edit `.agents/.tasks/index.md` directly.
-- Completed and Cancelled tasks must be moved with `just task-complete` or `just task-cancel`.
+- Completed and Cancelled tasks must be moved with `ahm task complete` or `ahm task cancel`.
 - This crate has no library target.
 - Do not introduce `#[allow(dead_code)]`.
 

@@ -35,21 +35,24 @@ rust-version-check:
 
 # Regenerate task indexes from task file metadata
 task-index:
-    python3 .agents/scripts/generate-task-indexes.py
+    ahm index
 
 # Verify generated task indexes are current
 task-index-check:
-    python3 .agents/scripts/generate-task-indexes.py --check
+    @OUT="$(ahm --dry-run index)"; \
+    if [ -n "$OUT" ]; then \
+        printf '%s\n' "Task indexes are stale. Regenerate with \`ahm index\`."; \
+        printf '%s\n' "$OUT"; \
+        exit 1; \
+    fi
 
 # Mark a task as Completed, move active/<id>.md to completed/, and refresh indexes
 task-complete id:
-    python3 .agents/scripts/complete-task.py {{id}}
-    @just task-index
+    ahm task complete {{id}}
 
 # Mark a task as Cancelled, move active/<id>.md to cancelled/, and refresh indexes
 task-cancel id:
-    python3 .agents/scripts/cancel-task.py {{id}}
-    @just task-index
+    ahm task cancel {{id}}
 
 # Clippy against the Linux target so local macOS checks cover CI-only cfg paths
 clippy-linux:

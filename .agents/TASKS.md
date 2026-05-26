@@ -18,13 +18,13 @@ The generated indexes are:
 Do not edit generated indexes by hand. After changing task metadata, moving tasks between `active/`, `completed/`, and `cancelled/`, or creating tasks, run:
 
 ```bash
-just task-index
+ahm index
 ```
 
-To check that generated indexes are current without rewriting them, run:
+To preview which generated indexes would be rewritten, run:
 
 ```bash
-just task-index-check
+ahm --dry-run index
 ```
 
 ## Choosing Work
@@ -32,7 +32,7 @@ just task-index-check
 If the user names a task id or title, work from that task even if another task is higher in the queue. If the user asks for the next task, choose from `.agents/.tasks/index.md` using these rules:
 
 1. Prefer the lowest priority number first: `P0`, then `P1`, `P2`, `P3`, and `P4`.
-2. Skip tasks marked `Completed`, `Cancelled`, `Blocked`, `Open`, or `Tracking`.
+2. Skip tasks marked `Completed`, `Cancelled`, `Blocked`, `Open`, `In Progress`, or `Tracking`.
 3. Check dependencies before starting. If a dependency is incomplete, do the dependency first or tell the user why the requested task is blocked.
 4. Treat parent tracker tasks as planning references. Work their child tasks in the order stated by the parent tracker or the index.
 5. Use task labels to filter work by type, area, and risk when the user asks for focused work.
@@ -96,6 +96,7 @@ Use this standard status set:
 
 - `Open` means newly captured work that still needs triage before it is ready for the queue.
 - `Pending` means ready backlog work that can be picked up when its priority and dependencies allow.
+- `In Progress` means the task is currently being worked. `ahm task start <id>` sets this status.
 - `Blocked` means the task is not ready because it is underspecified, waiting on another task, or needs a product or design decision.
 - `Tracking` means a parent task whose implementation happens through child tasks.
 - `Completed` means the work is finished.
@@ -103,7 +104,7 @@ Use this standard status set:
 
 ## Updating Tasks
 
-Tasks are working records. When you complete a task, discover it is blocked, change its priority, add or finish dependencies, or split it into subtasks, update the task file front matter and regenerate indexes with `just task-index`.
+Tasks are working records. When you complete a task, discover it is blocked, change its priority, add or finish dependencies, or split it into subtasks, update the task file front matter and regenerate indexes with `ahm index`.
 
 Keep task storage consistent with status:
 
@@ -113,11 +114,11 @@ Keep task storage consistent with status:
 - When moving a task, keep the same filename so the stable task id is preserved.
 - After moving or editing task metadata, regenerate the indexes.
 
-To mark a task as Completed, prefer `just task-complete <id>`. It sets the front-matter `status:` to `Completed`, moves the file from `.agents/.tasks/active/<id>.md` to `.agents/.tasks/completed/<id>.md` (using `git mv` when the file is tracked), and regenerates the indexes in one step. Do not leave Completed tasks in `active/`.
+To mark a task as Completed, prefer `ahm task complete <id>`. It sets the front-matter `status:` to `Completed`, moves the file from `.agents/.tasks/active/<id>.md` to `.agents/.tasks/completed/<id>.md`, and regenerates the indexes in one step. Do not leave Completed tasks in `active/`.
 
-To mark a task as Cancelled, prefer `just task-cancel <id>`. It sets the front-matter `status:` to `Cancelled`, moves the file from `.agents/.tasks/active/<id>.md` to `.agents/.tasks/cancelled/<id>.md` (using `git mv` when the file is tracked), and regenerates the indexes in one step. Do not leave Cancelled tasks in `active/`. Before cancelling, note in the task body why it is being cancelled so future readers understand the decision.
+To mark a task as Cancelled, prefer `ahm task cancel <id>`. It sets the front-matter `status:` to `Cancelled`, moves the file from `.agents/.tasks/active/<id>.md` to `.agents/.tasks/cancelled/<id>.md`, and regenerates the indexes in one step. Do not leave Cancelled tasks in `active/`. Before cancelling, note in the task body why it is being cancelled so future readers understand the decision.
 
-If a generated index is stale, do not patch the index directly. Fix the task file metadata or location, then rerun `just task-index`. Always go through the `just` recipes; do not invoke the underlying Python scripts directly.
+If a generated index is stale, do not patch the index directly. Fix the task file metadata or location, then rerun `ahm index`. Always go through `ahm`; do not invoke legacy scaffold scripts directly.
 
 ## Working a Task
 

@@ -1,6 +1,6 @@
 ---
 name: deslop
-description: Run a focused review-readiness pass on a nearly finished change before commit. Scales the review to change size (XS/S = one pass, M = two passes, L/XL = three sequential passes covering rules conformance, type safety, and overengineering). Then synthesize and apply the worthwhile fixes.
+description: Run a focused review-readiness pass on a nearly finished change before commit. Scales the review to change size (XS/S = one pass, M = two passes, L/XL = three sequential passes covering rules conformance, correctness/source-of-truth, and overengineering). Then synthesize and apply the worthwhile fixes.
 ---
 
 # Deslop
@@ -13,7 +13,7 @@ already-deslopped code.
 
 Leave the smallest clear diff that still solves the issue. Run focused
 review passes instead of one subjective read. Preserve behavior while
-improving readability, type safety, and alignment with repo rules.
+improving readability, correctness, and alignment with repo rules.
 
 ## Scale the review to the change size
 
@@ -28,7 +28,7 @@ git diff --stat
 | **XS** (docs/skill/config only, ≤2 files)       | Root AGENTS.md if relevant | One combined pass    | One line        |
 | **S** (single module, ≤~50 LOC, no public API)  | Root AGENTS.md, nearest nested AGENTS.md | One combined pass    | One line        |
 | **M** (multi-file, ≤~200 LOC, no cross-module)  | + active task file, ExecPlan if one exists | Pass 1 + Pass 2      | Short block     |
-| **L/XL** (cross-module, public API, agent loop, sandbox, sessions, API backends, tool execution) | + design docs and ADRs in the changed area | All three passes     | Full block      |
+| **L/XL** (cross-module, public API, agent loop, persistence, concurrency, external integrations, security boundaries) | + design docs and ADRs in the changed area | All three passes     | Full block      |
 
 Only read context items that are relevant to the changed surface. Discover
 them with targeted commands, e.g. `rg --files -g AGENTS.md`,
@@ -60,30 +60,34 @@ across passes.
 - Did we update task, ExecPlan, design doc, or ADR notes when the change
   discovered something durable?
 
-### Pass 2: Type safety and source of truth
+### Pass 2: Correctness and source of truth
 
-This pass is about *Rust-level* code quality at the changed surface.
-The repo-wide rules (`anyhow`/`thiserror` split, no `unwrap` in
-production paths, no `#[allow(dead_code)]`, dead-code suppression policy,
-binary-only crate shape) are documented in `AGENTS.md` — defer to that
-file rather than restating it here.
+This pass is about project-native correctness at the changed surface.
+Before reviewing, infer the project's language, framework, runtime, data
+modeling style, and validation tools from the changed files plus nearby
+manifests and scripts. Prefer explicit repo instructions in `AGENTS.md`,
+package manifests, lockfiles, CI config, `Makefile`, `justfile`, and
+existing tests over generic language advice.
 
 Focus questions:
 
-- Are we preserving canonical types, or did we clone, stringify, parse, or
-  convert instead of carrying the existing typed value?
-- Did we introduce stringly typed sentinels or `serde_json::Value` plumbing
-  where a typed struct or enum should be used?
-- Are fallible APIs explicit about failure, with useful context and without
-  swallowing serialization, session, sandbox, or tool execution errors?
-- Are async boundaries clear, with no blocking filesystem or process work
-  added inside latency-sensitive Tokio paths unless nearby code already
-  accepts it?
-- Are OpenAI-compatible API boundaries, tool argument parsing, session
-  records, and config files validated at the boundary and then represented
-  with repo-owned types downstream?
-- Could a mistake slip to runtime that Rust, serde, or a narrower
-  enum/struct could catch at compile time?
+- Are we preserving canonical domain models, schemas, identifiers, and
+  state machines, or did we stringify, parse, duplicate, or reshape data
+  instead of carrying the project-owned representation?
+- Did we introduce stringly typed sentinels, unvalidated dictionaries/maps,
+  loosely shaped JSON, global state, or duplicated constants where the
+  project normally uses a schema, class, struct, enum, type alias, database
+  constraint, or shared config?
+- Are fallible boundaries explicit about failure, with useful context and
+  without swallowing parse, validation, network, filesystem, process,
+  persistence, auth, or external-service errors?
+- Are concurrency, async, transaction, lifecycle, and resource boundaries
+  consistent with nearby code and the runtime in use?
+- Are CLI/API/UI/database/config/external-integration boundaries validated
+  at the edge and then represented with project-owned shapes downstream?
+- Could an existing compiler, type checker, linter, schema validator,
+  migration check, test helper, or narrower data model catch a mistake
+  earlier than this implementation currently does?
 
 ### Pass 3: Overengineering and simplification
 
@@ -100,13 +104,18 @@ Ground each pass in narrow local evidence. Use the smallest check that fits
 the change:
 
 - `git diff --stat` and `git diff -- <paths>` to keep review anchored
-- `cargo fmt --check` or `cargo fmt` when formatting is affected
-- `cargo test <module_or_test_name>` for focused tests in the changed area
-- `cargo clippy --all-targets --all-features -- -D warnings` or
-  `just clippy-strict` when lint behavior, public types, or shared code
-  changed
-- `just ci` after code/config/dependency changes are complete, per
-  `AGENTS.md`
+- formatters when formatting is affected, chosen from repo tooling
+  (`gofmt`, `prettier`, `ruff format`, language-native formatters, or a
+  documented script)
+- focused tests in the changed area using the repo's normal runner
+  (`go test`, `pytest`, `npm test`, `cargo test`, `bundle exec`, `make`,
+  `just`, or the relevant framework command)
+- type checks, linters, schema checks, migrations, generated-code checks, or
+  build steps when public types, shared code, config, API contracts, database
+  shape, or dependency behavior changed
+- the repo's final validation command after code/config/dependency changes
+  are complete, when one is documented in `AGENTS.md`, CI config, `Makefile`,
+  `justfile`, package scripts, or project docs
 
 For docs-only or skill-only edits, verify rendered Markdown and links by
 inspection or `rg --files`; full CI is not required.
@@ -131,9 +140,10 @@ commit. Prioritize:
 - type drift, unnecessary cloning/string conversion, duplicated type defs
 - violations of documented repo boundaries or design documents
 - dead helpers, dead code, debug leftovers, placeholder text
-- new `unwrap`, `expect`, `todo!`, `dbg!`, or broad lint suppressions
-- errors lacking actionable context at CLI/API/session/sandbox/tool
-  boundaries
+- new panic/abort paths, placeholder exceptions, debug prints, commented-out
+  code, broad lint suppressions, or ignored errors in production paths
+- errors lacking actionable context at CLI/API/UI/database/config/process/
+  network/external-service boundaries
 - unnecessary wrappers or indirection removable locally without widening
   scope
 
@@ -179,8 +189,9 @@ design-doc surface.
    between them.
 4. Synthesize findings into the balanced report.
 5. Apply worthwhile feedback that is clearly in scope.
-6. Rerun the narrowest affected validation, then `just ci` when the
-   finished work changed code, config, or dependencies.
+6. Rerun the narrowest affected validation, then the repo's documented
+   final validation command when the finished work changed code, config, or
+   dependencies.
 7. Update task notes, ExecPlan notes, commit text, and PR/final response to
    describe the post-deslop state.
 
@@ -192,6 +203,7 @@ design-doc surface.
 - If a cleanup is subjective and not clearly better, leave it alone.
 - Do not blindly apply every finding from every pass.
 - Do not run broad or slow checks repeatedly when a focused test already
-  covers the current pass; save `just ci` for final validation.
+  covers the current pass; save the repo's broad validation command for
+  final validation.
 - Do not escalate the scale beyond what the diff justifies just to feel
   thorough.

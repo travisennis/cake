@@ -248,7 +248,7 @@ The change is complete when all of the following are true:
 3. `src/types/` contains three sub-modules: `conversation.rs`, `session.rs`, `usage.rs`, with selective re-exports in `mod.rs`.
 4. `src/clients/responses_types.rs` contains all Responses API DTOs. `src/clients/chat_types.rs` is unchanged.
 5. `Message` struct no longer exists. `Agent::send()` takes a `String` and returns `anyhow::Result<Option<String>>`.
-6. `just ci` passes: `cargo check --tests`, `cargo test`, `cargo fmt --check`, `just clippy-strict`, `just task-index-check`.
+6. `just ci` passes: `cargo check --tests`, `cargo test`, `cargo fmt --check`, `just clippy-strict`, and `ahm --dry-run index` reports no stale indexes.
 7. No `pub(crate)` visibility additions — `pub` for module interfaces, `pub(super)` for internal DTOs, matching existing convention.
 8. `clients/mod.rs` re-exports `ConversationItem`, `GitState`, `SessionRecord`, and `TaskOutcome` from `crate::types`.
 

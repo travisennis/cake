@@ -9,12 +9,12 @@ Research lives in `.agents/.research/`. The directory is intentionally lightweig
 Use these subdirectories:
 
 - `inbox/` for raw ideas, pasted notes, and thin captures that have not been triaged.
-- `investigations/` for cake-specific findings from debugging, profiling, code reading, session analysis, or behavior checks.
+- `investigations/` for project-specific findings from debugging, profiling, code reading, session analysis, or behavior checks.
 - `sources/` for notes from external articles, papers, documentation, tools, or open source repositories.
-- `topics/` for synthesized, durable notes about an area of cake or an idea that may feed several tasks or plans.
+- `topics/` for synthesized, durable notes about an area of this project or an idea that may feed several tasks or plans.
 - `archived/` for stale or superseded notes kept for historical reference.
 
-The file `.agents/.research/index.md` is the manually maintained map. Update it when adding, moving, archiving, or renaming research files.
+The file `.agents/.research/index.md` is the generated research map. Use it to orient yourself, but always open the source research file before relying on a note.
 
 ## Creating Research
 
@@ -36,7 +36,7 @@ Confidence: low | medium | high
 
 ## Notes / Evidence
 
-## Implications for cake
+## Implications for this project
 
 ## Follow-ups
 ```
@@ -57,4 +57,4 @@ inbox note -> investigation/source/topic synthesis -> task or ExecPlan -> comple
 
 When a note becomes stale, do not silently delete useful context. Mark it `superseded` or move it to `archived/`, and add a short note explaining what replaced it.
 
-When moving files between research categories, update `.agents/.research/index.md` in the same change.
+When adding, moving, archiving, or renaming research files, regenerate the indexes with `ahm index`.
