@@ -94,6 +94,7 @@ jobs:
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-llvm-cov
+      - run: cargo install cargo-crap --version 0.2.2 --locked
       
       - name: Generate coverage
         run: cargo llvm-cov --lcov --output-path lcov.info
@@ -107,6 +108,9 @@ jobs:
             echo "Coverage below ${COVERAGE_THRESHOLD}%"
             exit 1
           fi
+
+      - name: Check change-risk regression
+        run: cargo crap --lcov lcov.info --baseline ci/cargo-crap-baseline.json --fail-regression --format github
       
       - name: Upload to Codecov
         uses: codecov/codecov-action@v6

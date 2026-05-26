@@ -7,6 +7,7 @@ setup:
     cargo install cargo-deny --quiet 2>/dev/null || true
     cargo install cargo-insta --quiet 2>/dev/null || true
     cargo install cargo-llvm-cov --quiet 2>/dev/null || true
+    cargo install cargo-crap --version 0.2.2 --locked --quiet 2>/dev/null || true
     cargo install panache --quiet 2>/dev/null || true
     cargo install prek --quiet 2>/dev/null || true
     cargo install --locked cocogitto --quiet 2>/dev/null || true
@@ -116,6 +117,22 @@ coverage-open:
 # Generate coverage in lcov format for CI
 coverage-lcov:
     cargo llvm-cov --lcov --output-path lcov.info
+
+# Regenerate the cargo-crap baseline from current coverage
+change-risk-baseline:
+    mkdir -p ci
+    cargo llvm-cov --lcov --output-path lcov.info
+    cargo crap --lcov lcov.info --format json --output ci/cargo-crap-baseline.json
+
+# Fail if untested complexity regresses from the checked-in cargo-crap baseline
+change-risk-check:
+    cargo llvm-cov --lcov --output-path lcov.info
+    cargo crap --lcov lcov.info --baseline ci/cargo-crap-baseline.json --fail-regression --summary
+
+# Print a reviewer-friendly cargo-crap regression report
+change-risk-report:
+    cargo llvm-cov --lcov --output-path lcov.info
+    cargo crap --lcov lcov.info --baseline ci/cargo-crap-baseline.json --format markdown
 
 update-dependencies:
     cargo upgrade -i allow && cargo update    
