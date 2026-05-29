@@ -47,6 +47,16 @@ pub fn summarize_args(arguments: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Return the validated canonical path this Write call would mutate.
+pub(super) fn mutating_target(
+    context: &ToolContext,
+    arguments: &str,
+) -> Result<std::path::PathBuf, String> {
+    let args: WriteArgs =
+        serde_json::from_str(arguments).map_err(|e| format!("Invalid write arguments: {e}"))?;
+    validate_path_for_write(context, &args.path)
+}
+
 /// Execute a write command
 pub(super) fn execute_write(
     context: &ToolContext,

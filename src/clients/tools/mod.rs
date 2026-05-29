@@ -257,6 +257,20 @@ impl ToolRegistry {
             .map_or_else(String::new, |entry| (entry.summarize)(arguments))
     }
 
+    /// Return the canonical path a mutating path-aware tool would write.
+    pub(super) fn mutating_target(
+        &self,
+        context: &ToolContext,
+        name: &str,
+        arguments: &str,
+    ) -> Option<Result<PathBuf, String>> {
+        match self.find(name)?.definition.name.as_str() {
+            "Edit" => Some(edit::mutating_target(context, arguments)),
+            "Write" => Some(write::mutating_target(context, arguments)),
+            _ => None,
+        }
+    }
+
     fn find(&self, name: &str) -> Option<&ToolEntry> {
         self.entries
             .iter()

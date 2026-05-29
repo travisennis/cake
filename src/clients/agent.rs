@@ -43,9 +43,59 @@ struct ToolRunResult {
     telemetry: ToolCallTelemetry,
 }
 
+#[derive(Debug)]
+enum ScheduledToolPlan {
+    Hook(ToolHookPlan),
+    RejectedDuplicateMutation { output: String },
+}
+
 struct AgentTelemetry {
     context: SessionTelemetryContext,
     writer: SessionTelemetryWriter,
+}
+
+fn reject_duplicate_mutating_tool_calls(
+    tools: &ToolRegistry,
+    context: &ToolContext,
+    tool_plans: Vec<(String, String, ToolHookPlan)>,
+) -> Vec<(String, String, ScheduledToolPlan)> {
+    let mut seen_mutating_paths: HashMap<PathBuf, String> = HashMap::new();
+
+    tool_plans
+        .into_iter()
+        .map(|(call_id, name, plan)| {
+            let ToolHookPlan::Execute { arguments, .. } = &plan else {
+                return (call_id, name, ScheduledToolPlan::Hook(plan));
+            };
+
+            let Some(Ok(path)) = tools.mutating_target(context, &name, arguments) else {
+                return (call_id, name, ScheduledToolPlan::Hook(plan));
+            };
+
+            if let Some(first_tool_name) = seen_mutating_paths.get(&path) {
+                let output = duplicate_mutation_rejection_output(&name, first_tool_name, &path);
+                return (
+                    call_id,
+                    name,
+                    ScheduledToolPlan::RejectedDuplicateMutation { output },
+                );
+            }
+
+            seen_mutating_paths.insert(path, name.clone());
+            (call_id, name, ScheduledToolPlan::Hook(plan))
+        })
+        .collect()
+}
+
+fn duplicate_mutation_rejection_output(
+    tool_name: &str,
+    first_tool_name: &str,
+    path: &std::path::Path,
+) -> String {
+    format!(
+        "Error: Rejected this {tool_name} call because another {first_tool_name} call for the same file was already issued in this assistant turn: {}. Wait for the previous tool result, re-read the file, and then issue one follow-up Edit or Write call if more changes are needed.",
+        path.display()
+    )
 }
 
 // =============================================================================
@@ -527,6 +577,11 @@ impl Agent {
             for result in pre_results {
                 tool_plans.push(result?);
             }
+            let tool_plans = reject_duplicate_mutating_tool_calls(
+                &self.tools,
+                self.tool_context.as_ref(),
+                tool_plans,
+            );
 
             let skill_locations = Arc::clone(&self.skill_locations);
             let skill_activations = Arc::clone(&self.skill_activations);
@@ -539,10 +594,29 @@ impl Agent {
                 let tool_context = Arc::clone(&tool_context);
                 let hook_runner = self.hook_runner.clone();
                 match plan {
-                    ToolHookPlan::Block {
+                    ScheduledToolPlan::RejectedDuplicateMutation { output } => async move {
+                        let start = Instant::now();
+                        let duration_ms =
+                            start.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+                        ToolRunResult {
+                            telemetry: ToolCallTelemetry {
+                                turn_index,
+                                call_id: call_id.clone(),
+                                name,
+                                duration_ms,
+                                output_bytes: output.len(),
+                                was_error: true,
+                            },
+                            call_id,
+                            output,
+                            skill_activation: None,
+                        }
+                    }
+                    .boxed(),
+                    ScheduledToolPlan::Hook(ToolHookPlan::Block {
                         reason,
                         additional_context,
-                    } => async move {
+                    }) => async move {
                         let start = Instant::now();
                         let output = format!("Hook blocked tool execution: {reason}");
                         let output = append_hook_context(output, &additional_context);
@@ -563,11 +637,11 @@ impl Agent {
                         }
                     }
                     .boxed(),
-                    ToolHookPlan::Execute {
+                    ScheduledToolPlan::Hook(ToolHookPlan::Execute {
                         arguments,
                         prefix_notice,
                         additional_context,
-                    } => async move {
+                    }) => async move {
                         let start = Instant::now();
                         let result = execute_tool_with_skill_dedup(
                             tools,
@@ -810,6 +884,215 @@ mod tests {
             location,
             scope: SkillScope::Project,
         }
+    }
+
+    fn execute_plan(arguments: String) -> ToolHookPlan {
+        ToolHookPlan::Execute {
+            arguments,
+            prefix_notice: None,
+            additional_context: Vec::new(),
+        }
+    }
+
+    fn duplicate_guard_fixture() -> (TempDir, ToolContext, PathBuf, PathBuf) {
+        let dir = TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+        let first_path = dir.path().join("first.txt");
+        let second_path = dir.path().join("second.txt");
+        std::fs::write(&first_path, "first").unwrap();
+        std::fs::write(&second_path, "second").unwrap();
+        let context = ToolContext::with_temp_dirs(
+            dir.path().canonicalize().unwrap(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+
+        (dir, context, first_path, second_path)
+    }
+
+    fn reject_duplicate_plans(
+        context: &ToolContext,
+        tool_plans: Vec<(String, String, ToolHookPlan)>,
+    ) -> Vec<(String, String, ScheduledToolPlan)> {
+        reject_duplicate_mutating_tool_calls(&default_tool_registry(), context, tool_plans)
+    }
+
+    #[test]
+    fn duplicate_guard_rejects_second_edit_for_same_file() {
+        let (_dir, context, path, _) = duplicate_guard_fixture();
+        let edit_arguments = serde_json::json!({
+            "path": path,
+            "edits": [{ "old_text": "first", "new_text": "updated" }]
+        })
+        .to_string();
+
+        let plans = reject_duplicate_plans(
+            &context,
+            vec![
+                (
+                    "call-1".to_string(),
+                    "Edit".to_string(),
+                    execute_plan(edit_arguments.clone()),
+                ),
+                (
+                    "call-2".to_string(),
+                    "Edit".to_string(),
+                    execute_plan(edit_arguments),
+                ),
+            ],
+        );
+
+        assert!(matches!(plans[0].2, ScheduledToolPlan::Hook(_)));
+        assert!(
+            matches!(&plans[1].2, ScheduledToolPlan::RejectedDuplicateMutation { output } if
+                output.contains("Rejected this Edit call")
+                    && output.contains("same file")
+                    && output.contains("re-read the file"))
+        );
+    }
+
+    #[test]
+    fn duplicate_guard_rejects_write_after_edit_for_same_file() {
+        let (_dir, context, path, _) = duplicate_guard_fixture();
+        let edit_arguments = serde_json::json!({
+            "path": path,
+            "edits": [{ "old_text": "first", "new_text": "updated" }]
+        })
+        .to_string();
+        let write_arguments = serde_json::json!({
+            "path": path,
+            "content": "replacement"
+        })
+        .to_string();
+
+        let plans = reject_duplicate_plans(
+            &context,
+            vec![
+                (
+                    "call-1".to_string(),
+                    "Edit".to_string(),
+                    execute_plan(edit_arguments),
+                ),
+                (
+                    "call-2".to_string(),
+                    "Write".to_string(),
+                    execute_plan(write_arguments),
+                ),
+            ],
+        );
+
+        assert!(matches!(plans[0].2, ScheduledToolPlan::Hook(_)));
+        assert!(
+            matches!(&plans[1].2, ScheduledToolPlan::RejectedDuplicateMutation { output } if
+                output.contains("Rejected this Write call")
+                    && output.contains("another Edit call"))
+        );
+    }
+
+    #[test]
+    fn duplicate_guard_rejects_relative_and_absolute_paths_for_same_file() {
+        let (_dir, context, path, _) = duplicate_guard_fixture();
+        let current_dir = std::env::current_dir().unwrap();
+        let relative_path = path.strip_prefix(current_dir).unwrap();
+        let absolute_arguments = serde_json::json!({
+            "path": path,
+            "edits": [{ "old_text": "first", "new_text": "updated" }]
+        })
+        .to_string();
+        let relative_arguments = serde_json::json!({
+            "path": relative_path,
+            "content": "replacement"
+        })
+        .to_string();
+
+        let plans = reject_duplicate_plans(
+            &context,
+            vec![
+                (
+                    "call-1".to_string(),
+                    "Edit".to_string(),
+                    execute_plan(absolute_arguments),
+                ),
+                (
+                    "call-2".to_string(),
+                    "Write".to_string(),
+                    execute_plan(relative_arguments),
+                ),
+            ],
+        );
+
+        assert!(matches!(plans[0].2, ScheduledToolPlan::Hook(_)));
+        assert!(
+            matches!(&plans[1].2, ScheduledToolPlan::RejectedDuplicateMutation { output } if
+                output.contains("Rejected this Write call")
+                    && output.contains("same file"))
+        );
+    }
+
+    #[test]
+    fn duplicate_guard_allows_mutations_to_different_files() {
+        let (_dir, context, first_path, second_path) = duplicate_guard_fixture();
+        let first_arguments = serde_json::json!({
+            "path": first_path,
+            "edits": [{ "old_text": "first", "new_text": "updated" }]
+        })
+        .to_string();
+        let second_arguments = serde_json::json!({
+            "path": second_path,
+            "content": "replacement"
+        })
+        .to_string();
+
+        let plans = reject_duplicate_plans(
+            &context,
+            vec![
+                (
+                    "call-1".to_string(),
+                    "Edit".to_string(),
+                    execute_plan(first_arguments),
+                ),
+                (
+                    "call-2".to_string(),
+                    "Write".to_string(),
+                    execute_plan(second_arguments),
+                ),
+            ],
+        );
+
+        assert!(
+            plans
+                .iter()
+                .all(|(_, _, plan)| matches!(plan, ScheduledToolPlan::Hook(_)))
+        );
+    }
+
+    #[test]
+    fn duplicate_guard_allows_repeated_reads_for_same_file() {
+        let (_dir, context, path, _) = duplicate_guard_fixture();
+        let read_arguments = serde_json::json!({ "path": path }).to_string();
+
+        let plans = reject_duplicate_plans(
+            &context,
+            vec![
+                (
+                    "call-1".to_string(),
+                    "Read".to_string(),
+                    execute_plan(read_arguments.clone()),
+                ),
+                (
+                    "call-2".to_string(),
+                    "Read".to_string(),
+                    execute_plan(read_arguments),
+                ),
+            ],
+        );
+
+        assert!(
+            plans
+                .iter()
+                .all(|(_, _, plan)| matches!(plan, ScheduledToolPlan::Hook(_)))
+        );
     }
 
     #[test]

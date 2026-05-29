@@ -84,6 +84,16 @@ struct EditSummaryArgs {
     path: String,
 }
 
+/// Return the validated canonical path this Edit call would mutate.
+pub(super) fn mutating_target(
+    context: &ToolContext,
+    arguments: &str,
+) -> Result<std::path::PathBuf, String> {
+    let args: EditSummaryArgs =
+        serde_json::from_str(arguments).map_err(|e| format!("Invalid edit arguments: {e}"))?;
+    validate_path_for_write(context, &args.path)
+}
+
 /// Summarize edit arguments for display
 pub fn summarize_args(arguments: &str) -> String {
     serde_json::from_str::<EditSummaryArgs>(arguments)
