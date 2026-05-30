@@ -445,7 +445,7 @@ impl Agent {
             tool_call_count: self.tool_call_count,
             session_id: self.session_id.to_string(),
             task_id: self.task_id.to_string(),
-            usage: self.total_usage.clone(),
+            usage: self.total_usage,
             permission_denials: None,
         });
 
@@ -469,7 +469,7 @@ impl Agent {
             success,
             duration_ms,
             turn_count: self.turn_count,
-            usage: self.total_usage.clone(),
+            usage: self.total_usage,
             error,
         };
         self.append_telemetry_record(&record);

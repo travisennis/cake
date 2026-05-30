@@ -86,10 +86,7 @@ impl AgentRunner {
                         let parse_result = self.backend.parse_response(response).await;
                         let parse_ms = elapsed_ms(parse_start);
                         let total_ms = elapsed_ms(total_start);
-                        let usage = parse_result
-                            .as_ref()
-                            .ok()
-                            .and_then(|turn| turn.usage.clone());
+                        let usage = parse_result.as_ref().ok().and_then(|turn| turn.usage);
                         let error = parse_result.as_ref().err().map(ToString::to_string);
                         report_telemetry(AgentRunnerTelemetryEvent::ApiAttempt(
                             ApiAttemptTelemetry {

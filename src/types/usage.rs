@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Usage statistics for API calls.
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default)]
 pub struct Usage {
     pub input_tokens: u64,
     pub input_tokens_details: InputTokensDetails,
@@ -17,13 +17,13 @@ pub struct Usage {
 }
 
 /// Details about input tokens.
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default)]
 pub struct InputTokensDetails {
     pub cached_tokens: u64,
 }
 
 /// Details about output tokens.
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default)]
 pub struct OutputTokensDetails {
     pub reasoning_tokens: u64,
 }
