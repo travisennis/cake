@@ -1,11 +1,8 @@
-# Consolidated CI workflow
-# 
-# Key optimizations:
-# 1. Merged coverage into single job (was duplicate in coverage.yml)
-# 2. Added "check" job as fast gate to fail early
-# 3. Removed expensive jobs (macOS builds, udeps, msrv, outdated)
-# 4. Security/deny moved to scheduled workflow
-# 5. Release builds moved to release.yml (tags only)
+# Primary CI workflow.
+#
+# macOS is the primary development and validation platform for cake. Linux is
+# currently an aspirational compatibility target, so CI keeps Linux blocking at
+# compile level only and runs full correctness checks on macOS.
 
 name: CI
 
@@ -24,10 +21,40 @@ permissions:
   contents: read
   checks: write
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  # Fast smoke test - gates all other jobs (fail fast)
-  check:
-    name: Quick Check
+  changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    outputs:
+      coverage: ${{ steps.filter.outputs.coverage }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - id: filter
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+            HEAD="${{ github.event.pull_request.head.sha }}"
+            CHANGED="$(git diff --name-only "$BASE...$HEAD")"
+          else
+            CHANGED="$(git diff --name-only "${{ github.event.before }}" "${{ github.sha }}" 2>/dev/null || git diff --name-only HEAD~1 HEAD)"
+          fi
+
+          if printf '%s\n' "$CHANGED" | grep -Eq '^(src/|tests/|Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|\.cargo/|\.github/workflows/ci\.yml|justfile|ci/)'; then
+            echo "coverage=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "coverage=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  linux-check:
+    name: Linux Check
+    needs: changes
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -39,8 +66,8 @@ jobs:
 
   fmt:
     name: Format
-    needs: check
-    runs-on: ubuntu-latest
+    needs: linux-check
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -51,8 +78,8 @@ jobs:
 
   clippy:
     name: Clippy (${{ matrix.features.name }})
-    needs: check
-    runs-on: ubuntu-latest
+    needs: linux-check
+    runs-on: macos-latest
     strategy:
       fail-fast: false
       matrix:
@@ -72,8 +99,8 @@ jobs:
 
   test:
     name: Test
-    needs: check
-    runs-on: ubuntu-latest
+    needs: linux-check
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -84,8 +111,9 @@ jobs:
 
   coverage:
     name: Coverage
-    needs: check
-    runs-on: ubuntu-latest
+    needs: [changes, linux-check]
+    if: github.event_name == 'push' || needs.changes.outputs.coverage == 'true'
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable

@@ -69,11 +69,19 @@ lint-imports:
     @! grep -rn 'use self::' src/ --include='*.rs' | grep -q . || true
     @echo "Import lint passed!"
 
-# Run all checks (use in CI)
+# Run the primary local checks for macOS development
 ci: task-index-check rust-version-check fmt-check clippy-strict test lint-imports lint-module-size
     echo "All checks passed!"
 
-# Recreate full CI pipeline locally (matches GitHub Actions)
+# Run the macOS correctness path used by GitHub Actions
+ci-macos: rust-version-check fmt-check clippy-strict test
+    echo "macOS CI checks passed!"
+
+# Run the Linux compatibility gate used by GitHub Actions
+ci-linux-check:
+    cargo check --all-features
+
+# Recreate the extended local validation pipeline
 ci-full: task-index-check fmt-check clippy-strict test lint-imports deny doc build
     echo "Full CI pipeline passed!"
 
@@ -116,18 +124,18 @@ coverage-open:
 coverage-lcov:
     cargo llvm-cov --lcov --output-path lcov.info
 
-# Regenerate the cargo-crap baseline from current coverage
+# Regenerate the macOS cargo-crap baseline from current coverage
 change-risk-baseline:
     mkdir -p ci
     cargo llvm-cov --lcov --output-path lcov.info
     cargo crap --lcov lcov.info --format json --output ci/cargo-crap-baseline.json
 
-# Fail if untested complexity regresses from the checked-in cargo-crap baseline
+# Fail if untested complexity regresses from the checked-in macOS cargo-crap baseline
 change-risk-check:
     cargo llvm-cov --lcov --output-path lcov.info
     cargo crap --lcov lcov.info --baseline ci/cargo-crap-baseline.json --fail-regression --summary
 
-# Print a reviewer-friendly cargo-crap regression report
+# Print a reviewer-friendly macOS cargo-crap regression report
 change-risk-report:
     cargo llvm-cov --lcov --output-path lcov.info
     cargo crap --lcov lcov.info --baseline ci/cargo-crap-baseline.json --format markdown

@@ -27,6 +27,7 @@ cake is a minimal coding harness for headless usage in the terminal. It's not a 
 - [Options](#options)
 - [Architecture](#architecture)
 - [Contributing](#contributing)
+- [Platform Support](#platform-support)
 - [Testing](#testing)
 - [License](#license)
 - [Acknowledgements](#acknowledgements)
@@ -471,6 +472,12 @@ For detailed architecture documentation, see [ARCHITECTURE.md](ARCHITECTURE.md).
 ## Contributing
 
 Contributions to cake are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, build commands, code style guidelines, commit conventions, and the pull request process.
+
+## Platform Support
+
+cake is developed and primarily validated on macOS. Linux support is intended,
+but currently CI treats Linux as a compile-level compatibility target rather
+than a fully tested runtime platform.
 
 ## Testing
 
