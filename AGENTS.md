@@ -195,6 +195,14 @@ Keep `.agents/exec-plans/active/index.md` current when creating, completing, or 
 
 --------------------------------------------------------------------------------
 
+## Documentation Workflow
+
+Before auditing or updating documentation, read `.agents/DOCS.md`.
+Prefer the repository's existing documentation conventions over adding
+new structures.
+
+--------------------------------------------------------------------------------
+
 ## Architecture Decision Records
 
 When a task introduces or changes a durable architectural decision, write or update an ADR under `docs/adr/` before implementation. Follow `docs/adr/README.md` for ADR triggers, numbering, naming, and template rules.
