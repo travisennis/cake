@@ -37,14 +37,9 @@ rust-version-check:
 task-index:
     ahm index
 
-# Verify generated task indexes are current
+# Verify generated task indexes are current (no ahm dependency)
 task-index-check:
-    @OUT="$(ahm --dry-run index)"; \
-    if [ -n "$OUT" ]; then \
-        printf '%s\n' "Task indexes are stale. Regenerate with \`ahm index\`."; \
-        printf '%s\n' "$OUT"; \
-        exit 1; \
-    fi
+    @python3 scripts/check-indexes.py
 
 # Mark a task as Completed, move active/<id>.md to completed/, and refresh indexes
 task-complete id:
