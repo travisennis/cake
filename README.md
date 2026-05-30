@@ -60,6 +60,16 @@ To install cake, you'll need Rust and Cargo installed on your system. Then, foll
 
 3. The binary will be available in `target/release/cake`
 
+4. (Optional) For development work (testing, linting, coverage, commit conventions),
+   install the required cargo tools:
+
+   ```bash
+   just setup
+   ```
+
+   This step is only needed if you plan to run `just ci`, `just test`, or
+   contribute to the project.
+
 ## Usage
 
 ```bash
