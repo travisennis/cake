@@ -1,5 +1,9 @@
 # GLM-5.1 Model Error Investigation
 
+Status: archived
+Archived: 2026-05-31
+Reason: The glm-5.1 model is no longer the default or in active use. The investigation findings (server-side error with reqwest vs curl) are no longer relevant to current configuration.
+
 ## Summary
 
 The default `glm-5.1` model fails when used through acai but works correctly when the same request is sent via curl. The server returns a 500 Internal Server Error with a JavaScript error message.

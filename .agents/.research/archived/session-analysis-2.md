@@ -1,3 +1,7 @@
+Status: archived
+Archived: 2026-05-31
+Reason: Session-specific analysis from earlier project state. Findings (command verification, exit-255 diagnostics, instruction following) have been addressed or superseded by later improvements in the agent loop.
+
 **Executive Summary**
 Session `2b7aac41-7880-4a8d-aaa2-1bfecb72d52d` is structurally healthy: valid v4 JSONL, one completed task, 37 tool calls with 37 matching outputs, no orphan calls, no permission denials.
 

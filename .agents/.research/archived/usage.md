@@ -1,5 +1,9 @@
 # Usage Patterns - cake CLI
 
+Status: archived
+Archived: 2026-05-31
+Reason: Session-specific usage observations from March 2026. Superseded by later session analyses and general improvements in the agent loop.
+
 ## Session: 2026-03-24 - Documentation Update Task
 
 ### Task Type: Documentation Maintenance

@@ -1,5 +1,9 @@
 # Agent Readiness Report: cake
 
+Status: archived
+Archived: 2026-05-31
+Reason: Readiness assessment from April 2026. Score of 56/93 (L2 — Managed) provides a snapshot but is superseded by ongoing improvements. Keep file for historical reference.
+
 **Date**: 2026-04-09
 **Overall Score**: 56/93 (60% pass rate)
 **Maturity Level**: L2 --- Managed

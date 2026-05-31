@@ -1,3 +1,7 @@
+Status: archived
+Archived: 2026-05-31
+Reason: Session-specific analysis from earlier project state. Findings (bash exit-code semantics, provider error handling, repeated search patterns) have been addressed or superseded by later improvements in the agent loop.
+
 **Executive Summary**
 I investigated [session 5195b3a9](/Users/travisennis/.local/share/cake/sessions/5195b3a9-27cc-4870-be2f-e555a9428635.jsonl:1). The file is valid v4 JSONL and structurally healthy: no malformed JSON, no missing tool outputs, no orphan outputs, and all three tasks have `task_complete`.
 

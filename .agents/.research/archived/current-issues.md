@@ -1,5 +1,9 @@
 # Current Issues - Acai CLI Evaluation
 
+Status: archived
+Archived: 2026-05-31
+Reason: Session-specific evaluation from March 2026. Findings (search efficiency, targeted reads, task completion signals) are superseded by later session analyses and general improvements in the agent loop.
+
 ## Session: 2026-03-24 - Documentation Update Task
 
 ### Task Summary
