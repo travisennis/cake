@@ -43,6 +43,28 @@ struct ToolRunResult {
     telemetry: ToolCallTelemetry,
 }
 
+/// Build a synchronous error `ToolRunResult` (no tool execution, immediate).
+fn immediate_tool_error_result(
+    name: &str,
+    call_id: &str,
+    output: String,
+    turn_index: u32,
+) -> ToolRunResult {
+    ToolRunResult {
+        telemetry: ToolCallTelemetry {
+            turn_index,
+            call_id: call_id.to_string(),
+            name: name.to_string(),
+            duration_ms: 0,
+            output_bytes: output.len(),
+            was_error: true,
+        },
+        call_id: call_id.to_string(),
+        output,
+        skill_activation: None,
+    }
+}
+
 #[derive(Debug)]
 enum ScheduledToolPlan {
     Hook(ToolHookPlan),
@@ -594,46 +616,16 @@ impl Agent {
                 let hook_runner = self.hook_runner.clone();
                 match plan {
                     ScheduledToolPlan::RejectedDuplicateMutation { output } => async move {
-                        let start = Instant::now();
-                        let duration_ms =
-                            start.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
-                        ToolRunResult {
-                            telemetry: ToolCallTelemetry {
-                                turn_index,
-                                call_id: call_id.clone(),
-                                name,
-                                duration_ms,
-                                output_bytes: output.len(),
-                                was_error: true,
-                            },
-                            call_id,
-                            output,
-                            skill_activation: None,
-                        }
+                        immediate_tool_error_result(&name, &call_id, output, turn_index)
                     }
                     .boxed(),
                     ScheduledToolPlan::Hook(ToolHookPlan::Block {
                         reason,
                         additional_context,
                     }) => async move {
-                        let start = Instant::now();
                         let output = format!("Hook blocked tool execution: {reason}");
                         let output = append_hook_context(output, &additional_context);
-                        let duration_ms =
-                            start.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
-                        ToolRunResult {
-                            telemetry: ToolCallTelemetry {
-                                turn_index,
-                                call_id: call_id.clone(),
-                                name,
-                                duration_ms,
-                                output_bytes: output.len(),
-                                was_error: true,
-                            },
-                            call_id,
-                            output,
-                            skill_activation: None,
-                        }
+                        immediate_tool_error_result(&name, &call_id, output, turn_index)
                     }
                     .boxed(),
                     ScheduledToolPlan::Hook(ToolHookPlan::Execute {
