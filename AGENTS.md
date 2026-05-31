@@ -20,7 +20,7 @@ cake is an AI coding assistant CLI that:
 ## Start Here
 
 1. Read this file fully before making changes.
-2. For task work, read `.agents/TASKS.md`, then `.agents/.tasks/index.md`, then the specific task file.
+2. For the first task in a session, read `.agents/TASKS.md`, then `.agents/.tasks/index.md`, then the specific task file. For later tasks in the same session, reread only the task index and specific task file unless `.agents/TASKS.md` changed or the task changes task workflow semantics.
 3. Prefer narrow checks first, then `cargo fmt`, then `just ci` before final handoff.
 4. Do not commit or push unless explicitly asked.
 5. Never edit generated task indexes by hand.
@@ -112,7 +112,7 @@ cargo test --lib
 - When a task includes committing and task-status updates, commit the intended code/task changes together unless the user asks for separate commits. After committing and moving or regenerating task files, run `git status --short` before the final response and report any remaining uncommitted or untracked files.
 - When asked to create, choose, update, or work on a task, first read `.agents/TASKS.md`, then use `.agents/.tasks/index.md` as the task queue and open the specific task file before acting.
 - Use task labels to filter work by type, area, and risk when the user asks for focused work.
-- Do not edit generated task indexes by hand; update task files and run `ahm index`.
+- Do not edit generated indexes by hand. Update source task, research, or ExecPlan files and run `ahm index`. Do not run `ahm index` after `ahm task start`, `ahm task complete`, or `ahm task cancel` unless you edit metadata by hand afterward; those commands already regenerate indexes.
 - When marking a task as Completed, use `ahm task complete <id>`. It updates the task front matter, moves the file from `.agents/.tasks/active/` to `.agents/.tasks/completed/`, and regenerates the indexes in one step. Do not leave Completed tasks in `active/`.
 - When marking a task as Cancelled, use `ahm task cancel <id>`. It updates the task front matter, moves the file from `.agents/.tasks/active/` to `.agents/.tasks/cancelled/`, and regenerates the indexes in one step. Do not leave Cancelled tasks in `active/`.
 
@@ -209,6 +209,12 @@ new structures.
 ## Architecture Decision Records
 
 When a task introduces or changes a durable architectural decision, write or update an ADR under `docs/adr/` before implementation. Follow `docs/adr/README.md` for ADR triggers, numbering, naming, and template rules.
+
+--------------------------------------------------------------------------------
+
+## Implementation Documentation
+
+When moving implementation between files or packages, update repository code maps and implementation-location references even if user-facing behavior is unchanged.
 
 --------------------------------------------------------------------------------
 
