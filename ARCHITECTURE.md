@@ -1,6 +1,6 @@
 # Cake Architecture
 
-Cake is an AI coding assistant CLI that integrates with language models via the OpenRouter API. It provides a conversation-based interface with tool execution capabilities for file manipulation, code editing, and shell command execution.
+Cake is an AI coding assistant CLI that integrates with language models through OpenAI-compatible Chat Completions and Responses API backends. It provides a conversation-based interface with tool execution capabilities for file manipulation, code editing, and shell command execution. OpenRouter is one supported provider (selected automatically when the configured `base_url` is an `openrouter.ai` host, or via the `provider` setting), but any OpenAI-compatible endpoint works.
 
 ## Overview
 
@@ -16,29 +16,48 @@ Key design decisions:
 
 ## Codemap
 
-### Layer 4: CLI (`cli` module)
+### Layer 4: CLI (`cli` module) and entry point (`main.rs`)
 
-Entry point for user interaction. Parses command-line arguments using clap, validates flag combinations, and dispatches to command implementations.
+Entry point for user interaction. `main.rs` defines the top-level clap struct `CodingAssistant`, parses arguments, validates flag combinations, classifies clap errors into structured exit codes, and dispatches to a `CmdRunner` implementation.
 
-Key types: `CmdRunner` trait (the interface all commands implement), `instruct::Cmd` (the main command).
+Submodules under [`src/cli/`](file:///Users/travisennis/Projects/cake/src/cli/):
 
-The CLI layer is intentionally thin---it delegates all business logic to lower layers.
+- **`cmd_runner`**: The `CmdRunner` trait — the single interface every command implements: `async fn run(&self, data_dir: &DataDir) -> anyhow::Result<()>`.
+- **`output`**: `CliOutputSink`, formatting helpers for spinner messages, retry notices, and the done-summary line. Centralizes user-facing output formatting.
+- **`run_mode`**: `RunMode` and `SessionStorage` enums describing whether a run is `New`/`Continue`/`Resume`/`Fork` and where its session is persisted.
+- **`session_factory`**: Constructs the appropriate `Session` for the resolved `RunMode`.
+
+The main `CodingAssistant` command lives in `src/main.rs` (not in a separate `instruct` module). The CLI layer is intentionally thin — it delegates all business logic to lower layers.
 
 ### Layer 3: Clients (`clients` module)
 
-The bridge to external AI services and the orchestration layer for tool execution.
+The bridge to external AI services and the orchestration layer for tool execution. The current module layout (see [src/clients/mod.rs](file:///Users/travisennis/Projects/cake/src/clients/mod.rs)):
 
-**`agent`**: The `Agent` struct orchestrates the conversation loop, tool execution, streaming, and retry logic. It dispatches API calls to backends based on `ApiType` (Responses or Chat Completions). This is the public-facing type (`clients::Agent`).
+**`agent`**: The public-facing `Agent` struct. Owns the user-visible API (`Agent::new`, `with_*` builders, `send`, telemetry emitters) and the high-level conversation loop. Delegates the per-turn HTTP work to `AgentRunner`, the rolling state to `ConversationState`, and the callback fan-out to `AgentObserver`. Exported as `clients::Agent`.
 
-**`responses`**: Backend for the Responses API. Provides `send_request()` and `parse_response()` functions that handle the Responses API wire format. No longer contains orchestration logic.
+**`agent_runner`**: `AgentRunner` performs one API turn — building the HTTP client, calling the chosen `Backend`, handling retries via `retry::RetryPolicy`, and emitting per-attempt telemetry events.
+
+**`agent_state`**: `ConversationState` (the running `Vec<ConversationItem>` history plus developer-context append helpers) and `accumulate_usage` for combining `Usage` across turns.
+
+**`agent_observer`**: `AgentObserver` holds the optional streaming-JSON, persist, progress, and retry callbacks supplied by the CLI, and fans events out to them.
+
+**`backend`**: The `Backend` enum (`Responses` | `ChatCompletions`) abstracts the wire-format choice. `Backend::from_api_type` maps `ApiType` to a backend; `send_request` and `parse_response` dispatch to the matching module. This is what replaces the older "Agent dispatches by `ApiType`" wiring.
+
+**`responses`**: Backend for the Responses API. Provides `send_request()` and `parse_response()` functions that handle the Responses API wire format.
+
+**`responses_types`**: Request/response DTOs for the Responses API, including `ProviderConfig`.
 
 **`chat_completions`**: Backend for the Chat Completions API. Provides `send_request()` and `parse_response()` functions. Translates `ConversationItem` to/from chat completions format: groups consecutive `FunctionCall` items into assistant messages with `tool_calls`, maps `System` role to `"system"`, and skips `Reasoning` items.
 
 **`chat_types`**: Request/response DTOs for the Chat Completions API (`ChatRequest`, `ChatResponse`, `ChatMessage`, `ChatTool`, `ChatToolCall`, etc.).
 
-**`types`**: Core conversation abstraction. The `ConversationItem` enum represents all possible items in a conversation: user messages, assistant messages, tool calls, tool outputs, and reasoning traces. This is the fundamental data structure that flows through the entire system.
+**`provider_strategy`**: `ProviderStrategy` applies provider-specific request shaping. Infers the provider from `base_url` (e.g. OpenRouter for `openrouter.ai` hosts), applies provider-specific HTTP headers (the OpenRouter `HTTP-Referer`/`X-Title` headers by default), and patches outbound messages where needed (e.g. the Kimi reasoning-content placeholder).
 
-**`tools`**: Tool definitions and execution. Each tool (Bash, Read, Edit, Write) defines its JSON schema for the API and its execution logic. The `execute_tool` function dispatches to the appropriate implementation. Tools validate that paths are within the working directory or allowed temp directories before operating. The Bash tool also performs pre-execution command safety checks that block known-destructive commands (destructive git operations and dangerous `rm -rf`) before they reach the shell.
+**`retry`**: `RetryPolicy`, `RequestOverrides`, `RetryStatus`, `RetryReason`, and `HttpFailure` types implementing the backoff/jitter logic, context-overflow recovery via `max_output_tokens` shrinking, and `Retry-After` / `x-should-retry` header handling.
+
+**`skill_dedup`**: Wraps tool execution to detect when a Read of a `SKILL.md` activates a skill, deduplicates activations within a session, and tracks pending vs. active skills.
+
+**`tools`**: Tool definitions and execution. Each tool (Bash, Read, Edit, Write) defines its JSON schema for the API and its execution logic. The `execute_tool` function dispatches to the appropriate implementation. Tools validate that paths are within the working directory or allowed temp directories before operating. The Bash tool also performs pre-execution command safety checks that block known-destructive commands (destructive git operations and dangerous `rm -rf`) before they reach the shell. Exported helpers: `ToolContext`, `summarize_tool_args`, `read_extract_path`.
 
 **`tools::sandbox`**: Cross-platform sandboxing abstraction. Provides `SandboxConfig` and `SandboxStrategy` for restricting filesystem and network access. Platform-specific implementations use sandbox-exec (macOS) or Landlock LSM (Linux).
 
@@ -48,13 +67,13 @@ Foundation modules that provide data persistence, core types, and prompt generat
 
 **`config`**:
 
-- `DataDir`: Manages cache directory (`~/.cache/cake/`), session directory (`~/.local/share/cake/sessions/`), both overridable via `CAKE_DATA_DIR`, plus AGENTS.md discovery
-- `Session`: In-memory session state with JSONL serialization
-- `worktree`: Git worktree utilities for isolated execution environments
-- `model`: Contains `ApiType` enum (`Responses`/`ChatCompletions`), `ModelConfig` struct (model, api_type, base_url, api_key_env, temperature, top_p, max_output_tokens, reasoning_effort, reasoning_summary, reasoning_max_tokens, providers), and `ResolvedModelConfig` (resolves API key from env var)
-- `settings`: TOML-based configuration loading from `settings.toml` files. Supports loading from XDG-style global (`~/.config/cake/settings.toml`) and project-level (`.cake/settings.toml`) locations, with project settings overriding global settings for the same model name. Includes a `[skills]` section for controlling skill discovery and configured skill paths, plus a `directories` key for declaring additional read-write directories (merged across global and project files).
-- `skills`: Skill discovery, parsing, and catalog management. Discovers `SKILL.md` files from project, configured, and user skill directories, parses YAML frontmatter, and builds an XML catalog for the system prompt. Skills are activated lazily via the Read tool and deduplicated within a session.
-- `defaults`: Default values for model, base URL, API key env var, and providers
+- `data_dir` (`DataDir`, `AgentsFile`): Manages cache directory (`~/.cache/cake/`), session directory (`~/.local/share/cake/sessions/`), both overridable via `CAKE_DATA_DIR`, plus AGENTS.md discovery.
+- `session` (`Session`, `SessionWriter`): In-memory session state with JSONL serialization, plus the writer that performs atomic append/rename.
+- `worktree`: Git worktree utilities for isolated execution environments.
+- `model`: Contains `ApiType` enum (`Responses`/`ChatCompletions`), `ModelConfig` struct (model, api_type, base_url, api_key_env, temperature, top_p, max_output_tokens, reasoning_effort, reasoning_summary, reasoning_max_tokens, provider/providers), `ModelProvider`, `ProviderHeaders`, `ReasoningEffort`, and `ResolvedModelConfig` (resolves API key from env var). Defaults for model, base URL, API key env var, and providers live alongside these types — there is no separate `defaults` module.
+- `settings` (`SettingsLoader`, `ModelDefinition`): TOML-based configuration loading from `settings.toml` files. Supports XDG-style global (`~/.config/cake/settings.toml`) and project-level (`.cake/settings.toml`) locations, with project settings overriding global settings for the same model name. Includes a `[skills]` section for controlling skill discovery and configured skill paths, plus a `directories` key for declaring additional read-write directories (merged across global and project files).
+- `skills` (`Skill`, catalog builder): Skill discovery, parsing, and catalog management. Discovers `SKILL.md` files from project, configured, and user skill directories, parses YAML frontmatter, and builds an XML catalog for the system prompt. Skills are activated lazily via the Read tool and deduplicated within a session.
+- `hooks` (`HooksLoader`, `HookSource`, `LoadedHooks`, `HookEvent`, `HookCommand`): TOML loading of user-defined hook commands from global and project `hooks.toml` files. The runtime that executes them lives in the top-level [`hooks`](file:///Users/travisennis/Projects/cake/src/hooks.rs) module (Layer 1).
 
 Sessions are stored as flat `{uuid}.jsonl` files under `~/.local/share/cake/sessions/`. Each file's header contains the working directory, so `--continue` filters by matching the current directory.
 
@@ -70,11 +89,19 @@ API wire-format DTOs live next to the backend that owns them: `clients::chat_typ
 
 ### Layer 1: Foundation
 
+Top-level modules in [`src/`](file:///Users/travisennis/Projects/cake/src/) that sit beneath the other layers:
+
 **`exit_code`**: Classifies `anyhow::Error` values into structured exit codes (0=success, 1=agent error, 2=API error, 3=input error). The `main()` function uses this to return `std::process::ExitCode` instead of relying on the default Rust behavior of exiting 1 on any `Err`.
 
 **`logger`**: File-only logging using tracing with daily rotation and 7-day retention. Defaults to INFO level, with debug/trace available via `RUST_LOG` environment variable.
 
-External crates: `anyhow` for error handling, `tokio` for async runtime, `serde` for serialization, `reqwest` for HTTP.
+**`hooks`**: The hook execution runtime. `HookRunner` and `HookContext` wrap the `LoadedHooks` value produced by `config::hooks` and execute matching user commands at well-defined points (e.g. before/after tool calls), forwarding stdin payloads and capturing stdout/stderr with a `HOOK_OUTPUT_LIMIT`. `ToolHookPlan` describes the action to take for a scheduled tool call (execute, mutate args, append context, or block).
+
+**`session_telemetry`**: Optional structured per-run telemetry. Defines `SessionTelemetryWriter`, `SessionTelemetryContext`, `SessionTelemetrySettings`, `SessionTelemetryRecord`, `SessionTelemetryRunMode`, and the per-attempt event types (`AgentRunnerTelemetryEvent`, `ApiAttemptTelemetry`, `RequestOverridesSnapshot`, `RetryScheduledTelemetry`, `ToolCallTelemetry`) written by the agent.
+
+**`time_format`**: Small formatting helpers (`format_seconds_tenths`, `format_duration_tenths`) shared by CLI output and telemetry so timing strings stay consistent.
+
+External crates: `anyhow` for error handling, `tokio` for async runtime, `serde` for serialization, `reqwest` for HTTP, `tracing` for logging, `clap` for CLI parsing.
 
 ## Architectural Invariants
 
@@ -161,20 +188,29 @@ When `--output-format json` is specified, a single JSON summary object is printe
 
 Use symbol search to locate specific implementations:
 
-- **Agent loop**: Search for `Agent` struct and its `send` method in `agent.rs`
-- **Tool execution**: Search for `execute_tool` function in `tools/mod.rs`
-- **API dispatch**: Search for `complete_turn` method in `agent.rs`
-- **Chat Completions translation**: Search for `build_messages` in `chat_completions.rs`
-- **Model configuration**: Search for `ModelConfig` in `config/model.rs`
-- **Session loading**: Search for `Session::load` or `DataDir::load_latest_session`
-- **Path validation**: Search for `validate_path_in_cwd`
-- **Sandbox profiles**: Search for `SandboxConfig` and platform-specific implementations
-- **Conversation types**: Search for `ConversationItem` enum definition
-- **Exit code classification**: Search for `classify` function in `exit_code.rs`
+- **Agent public API and loop entry**: `Agent::send` in `clients/agent.rs`
+- **Per-turn HTTP + retry**: `AgentRunner::complete_turn` in `clients/agent_runner.rs` (the high-level wrapper is `Agent::complete_turn` in `clients/agent.rs`)
+- **API dispatch**: `Backend::send_request` / `Backend::parse_response` in `clients/backend.rs`
+- **Conversation state**: `ConversationState` and `accumulate_usage` in `clients/agent_state.rs`
+- **Provider-specific headers/shaping**: `ProviderStrategy` in `clients/provider_strategy.rs`
+- **Retry policy and overrides**: `RetryPolicy`, `RequestOverrides`, `RetryStatus` in `clients/retry.rs`
+- **Skill activation dedup**: `execute_tool_with_skill_dedup` in `clients/skill_dedup.rs`
+- **Tool execution**: `execute_tool` function in `clients/tools/mod.rs`
+- **Chat Completions translation**: `build_messages` in `clients/chat_completions.rs`
+- **Bash safety checks**: `clients/tools/bash_safety/`
+- **Model configuration**: `ModelConfig`, `ApiType`, `ResolvedModelConfig` in `config/model.rs`
+- **Session loading**: `Session::load` or `DataDir::load_latest_session`
+- **Path validation**: `validate_path_in_cwd`
+- **Sandbox profiles**: `SandboxConfig` and platform-specific implementations in `clients/tools/sandbox/`
+- **Conversation types**: `ConversationItem` in `types/conversation.rs`
+- **Session record types**: `SessionRecord`, `StreamRecord` in `types/session.rs`
+- **Hook runtime**: `HookRunner`, `ToolHookPlan` in `src/hooks.rs`; loading in `config/hooks.rs`
+- **Telemetry**: `SessionTelemetryWriter` and friends in `src/session_telemetry.rs`
+- **Exit code classification**: `classify` function in `exit_code.rs`
 
 ## Reading List
 
-For deeper understanding of specific subsystems:
+For deeper understanding of specific subsystems (see [docs/design-docs/index.md](file:///Users/travisennis/Projects/cake/docs/design-docs/index.md) for the full list):
 
 - `docs/design-docs/cli.md` - Command-line interface and command dispatch
 - `docs/design-docs/conversation-types.md` - ConversationItem enum and API types
@@ -184,4 +220,10 @@ For deeper understanding of specific subsystems:
 - `docs/design-docs/streaming-json-output.md` - Machine-readable output format
 - `docs/design-docs/logging.md` - Logging configuration and troubleshooting
 - `docs/design-docs/tools.md` - Tool framework (Bash, Read, Edit, Write)
-- `docs/references/responses-api.md` - OpenRouter Responses API integration
+- `docs/design-docs/settings.md` - `settings.toml` loading and precedence
+- `docs/design-docs/skills.md` - Skill discovery, catalog, and activation
+- `docs/design-docs/hooks.md` - User-defined hook commands and lifecycle
+- `docs/design-docs/api-retry-strategy.md` - Retry policy, backoff, and context-overflow recovery
+- `docs/design-docs/edit-tool-session-analysis.md` - Analysis of edit-tool behavior across sessions
+- `docs/references/responses-api.md` - Responses API integration notes
+- `docs/references/chat-completions-api.md` - Chat Completions API integration notes
