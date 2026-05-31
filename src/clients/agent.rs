@@ -498,9 +498,26 @@ impl Agent {
 
             // Accumulate usage
             self.accumulate_usage(usage.as_ref());
-            let has_tool_calls = items
+
+            // Extract owned function call data before moving items into history
+            let function_calls: Vec<(String, String, String)> = items
                 .iter()
-                .any(|item| matches!(item, ConversationItem::FunctionCall { .. }));
+                .filter_map(|item| {
+                    if let ConversationItem::FunctionCall {
+                        call_id,
+                        name,
+                        arguments,
+                        ..
+                    } = item
+                    {
+                        Some((call_id.clone(), name.clone(), arguments.clone()))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            let has_tool_calls = !function_calls.is_empty();
 
             // Stream each item as JSON if callback is set
             for item in &items {
@@ -526,25 +543,7 @@ impl Agent {
             }
 
             // Move items into history
-            let turn_start = self.conversation.history().len();
             self.conversation.extend_turn_items(items);
-
-            let function_calls: Vec<_> = self.conversation.history()[turn_start..]
-                .iter()
-                .filter_map(|item| {
-                    if let ConversationItem::FunctionCall {
-                        call_id,
-                        name,
-                        arguments,
-                        ..
-                    } = item
-                    {
-                        Some((call_id.as_str(), name.as_str(), arguments.as_str()))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
 
             // If no function calls, resolve and return the message
             if function_calls.is_empty() {
@@ -561,15 +560,15 @@ impl Agent {
                     let hook_runner = hook_runner.clone();
                     async move {
                         let plan = if let Some(runner) = hook_runner {
-                            runner.pre_tool_use(name, call_id, arguments).await?
+                            runner.pre_tool_use(&name, &call_id, &arguments).await?
                         } else {
                             ToolHookPlan::Execute {
-                                arguments: arguments.to_owned(),
+                                arguments,
                                 prefix_notice: None,
                                 additional_context: Vec::new(),
                             }
                         };
-                        anyhow::Ok((call_id.to_owned(), name.to_owned(), plan))
+                        anyhow::Ok((call_id, name, plan))
                     }
                 });
             let pre_results = futures::future::join_all(pre_futures).await;
