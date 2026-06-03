@@ -29,6 +29,10 @@ clippy:
 clippy-strict:
     cargo clippy --all-targets --all-features -- -D warnings
 
+# Ultra-strict clippy without default features, matching the CI matrix
+clippy-no-default-features:
+    cargo clippy --all-targets --no-default-features -- -D warnings
+
 # Verify Rust toolchain pins stay synchronized
 rust-version-check:
     sh scripts/check-rust-toolchain.sh
@@ -59,6 +63,10 @@ clippy-linux:
 test:
     cargo test --quiet
 
+# Run tests with all features enabled, matching CI
+test-all-features:
+    cargo test --all-features --quiet
+
 # Run insta snapshot tests (requires cargo-insta; installed by `just setup`)
 snapshots:
     cargo insta test
@@ -69,15 +77,16 @@ lint-imports:
     @! grep -rn 'use self::' src/ --include='*.rs' | grep -q . || true
     @echo "Import lint passed!"
 
-# Run the primary local checks for macOS development
-ci: task-index-check rust-version-check fmt-check clippy-strict test lint-imports lint-module-size
+# Run the primary local checks, including the always-on CI command set
+ci: task-index-check rust-version-check ci-linux-check fmt-check clippy-strict clippy-no-default-features test-all-features lint-imports lint-module-size
     echo "All checks passed!"
 
 # Run the macOS correctness path used by GitHub Actions
-ci-macos: rust-version-check fmt-check clippy-strict test
+ci-macos: rust-version-check fmt-check clippy-strict clippy-no-default-features test-all-features
     echo "macOS CI checks passed!"
 
-# Run the Linux compatibility gate used by GitHub Actions
+# Run the Linux compatibility gate command used by GitHub Actions.
+# On macOS this checks the same Cargo feature set, but not Linux-only cfg paths.
 ci-linux-check:
     cargo check --all-features
 
