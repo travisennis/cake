@@ -12,9 +12,18 @@ The CLI layer is intentionally thin---it delegates all business logic to lower l
 
 ## Architecture
 
-### CodingAssistant Struct
+### Command Structure
 
-The main CLI is implemented as a single struct using `clap`'s derive macro:
+The primary prompt-running CLI is implemented by `CodingAssistant` using
+`clap`'s derive macro. It also accepts optional top-level subcommands for
+introspection commands that should exit before agent/session setup:
+
+```text
+cake [OPTIONS] [PROMPT]
+cake debug models
+```
+
+The prompt path remains the default when no subcommand is provided:
 
 ```rust
 #[derive(Parser)]
@@ -72,8 +81,21 @@ pub struct CodingAssistant {
     /// Add a directory to the sandbox config (read-only access). Can be repeated.
     #[arg(long, value_name = "DIR")]
     pub add_dir: Vec<String>,
+
+    #[command(subcommand)]
+    pub command: Option<Commands>,
 }
 ```
+
+Top-level subcommands live under `src/cli/` and implement `CmdRunner` so they
+can reuse the main command dispatch without running an agent turn.
+
+### Debug Models
+
+`cake debug models` loads merged settings for the current directory and prints
+configured model metadata to stdout. It displays the configured API key
+environment variable name (`api_key_env`) but does not resolve or display API
+key values.
 
 ### Model Configuration
 

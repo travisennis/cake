@@ -19,7 +19,7 @@ use std::time::Instant;
 #[cfg(test)]
 use std::time::Duration;
 
-use crate::cli::{CliOutputSink, CmdRunner, RunMode, SessionStorage, TurnResult};
+use crate::cli::{CliOutputSink, CmdRunner, Commands, RunMode, SessionStorage, TurnResult};
 use crate::clients::{Agent, ToolContext};
 use crate::config::settings::LoadedSettings;
 use crate::config::{
@@ -122,6 +122,9 @@ pub(crate) struct CodingAssistant {
     /// Only load specific skills (comma-separated list of skill names)
     #[arg(long, value_name = "NAMES")]
     pub skills: Option<String>,
+
+    #[command(subcommand)]
+    pub command: Option<Commands>,
 }
 
 struct PreparedRun {
@@ -732,6 +735,10 @@ impl CodingAssistant {
 
 impl CmdRunner for CodingAssistant {
     async fn run(&self, data_dir: &DataDir) -> anyhow::Result<()> {
+        if let Some(command) = &self.command {
+            return command.run(data_dir).await;
+        }
+
         let prepared = self.prepare_run()?;
         let resources =
             self.load_run_resources(data_dir, &prepared.current_dir, prepared.additional_dirs)?;
