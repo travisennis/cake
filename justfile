@@ -78,28 +78,27 @@ lint-imports:
     @echo "Import lint passed!"
 
 # Run the primary local checks, including the always-on CI command set
-ci: task-index-check rust-version-check ci-linux-check fmt-check clippy-strict clippy-no-default-features test-all-features lint-imports lint-module-size
+ci: task-index-check rust-version-check check-linux fmt-check clippy-strict clippy-no-default-features test-all-features lint-imports lint-module-size
     echo "All checks passed!"
 
 # Run the macOS correctness path used by GitHub Actions
 ci-macos: rust-version-check fmt-check clippy-strict clippy-no-default-features test-all-features
     echo "macOS CI checks passed!"
 
-# Run the Linux compatibility gate command used by GitHub Actions.
-# On macOS this checks the same Cargo feature set, but not Linux-only cfg paths.
-ci-linux-check:
+# Run the Linux compatibility gate command used by GitHub Actions
+check-linux:
     cargo check --all-features
 
-# Recreate the extended local validation pipeline
-ci-full: task-index-check fmt-check clippy-strict test lint-imports deny doc build
-    echo "Full CI pipeline passed!"
+# Run the broad local validation suite
+check-full: ci check-coverage check-deps doc build
+    echo "Full check suite passed!"
 
 # Check module sizes against thresholds (informational, always passes)
 lint-module-size:
     python3 scripts/lint-module-size.py
 
 # Check for denied/advisory dependencies (requires cargo-deny)
-deny:
+check-deps:
     cargo deny check advisories
 
 # Build documentation with warnings denied
@@ -114,8 +113,8 @@ coverage:
 coverage-summary:
     cargo llvm-cov --summary-only
 
-# Check coverage against the CI threshold (requires cargo-llvm-cov)
-coverage-check:
+# Check coverage threshold and untested-complexity regression
+check-coverage:
     @OUTPUT="$(cargo llvm-cov --summary-only)"; \
     printf '%s\n' "$OUTPUT"; \
     COVERAGE="$(printf '%s\n' "$OUTPUT" | grep "^TOTAL" | grep -oE '[0-9]+\.[0-9]+%' | tail -1 | tr -d '%')"; \
@@ -123,7 +122,9 @@ coverage-check:
     if [ "$(echo "$COVERAGE < 90" | bc -l)" = "1" ]; then \
         echo "Coverage below 90%"; \
         exit 1; \
-    fi
+    fi; \
+    cargo llvm-cov --lcov --output-path lcov.info; \
+    cargo crap --lcov lcov.info --baseline ci/cargo-crap-baseline.json --fail-regression --summary
 
 # Run coverage and open report
 coverage-open:
@@ -138,11 +139,6 @@ change-risk-baseline:
     mkdir -p ci
     cargo llvm-cov --lcov --output-path lcov.info
     cargo crap --lcov lcov.info --format json --output ci/cargo-crap-baseline.json
-
-# Fail if untested complexity regresses from the checked-in macOS cargo-crap baseline
-change-risk-check:
-    cargo llvm-cov --lcov --output-path lcov.info
-    cargo crap --lcov lcov.info --baseline ci/cargo-crap-baseline.json --fail-regression --summary
 
 # Print a reviewer-friendly macOS cargo-crap regression report
 change-risk-report:

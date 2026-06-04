@@ -35,8 +35,10 @@ cake is an AI coding assistant CLI that:
   1. Run the narrowest useful check first, such as `cargo check --tests`, `cargo test <module_or_test_name>`, or `cargo test`.
   2. Run `cargo fmt` after code edits.
   3. Run `just ci` before final handoff or commit.
-- Run `just coverage-check` when a change adds or removes meaningful Rust code, changes tests, or touches coverage-sensitive areas. It mirrors the CI coverage gate and catches drops below the 90% project threshold before pushing.
+- Run `just check-coverage` before final handoff when a change adds or removes meaningful Rust code, changes tests or fixtures, changes coverage-related configuration or baselines under `ci/`, or changes dependency/feature selection in a way that can affect compiled code. It mirrors the CI coverage threshold and cargo-crap change-risk gates. It is not required for docs-only changes or task metadata changes.
 - When changing test fixtures, test-only code, struct literals used in tests, or `#[cfg(test)]` modules, run `cargo check --tests` before relying on `cargo build` or `cargo check`. Plain `cargo build` and `cargo check` do not validate this project's test code.
+- For dependency work, do not update dependencies unless explicitly asked or required by the task. Use `just update-dependencies` for broad dependency refreshes. When adding, removing, updating, or changing Cargo features for dependencies, keep `Cargo.toml` and `Cargo.lock` consistent, prefer the smallest feature set that solves the problem, run `just check-deps`, run the Rust verification sequence above, and run `just check-coverage` if compiled code or feature selection changes. New major runtime dependencies that affect behavior, security posture, binary size, licensing, or platform support may require an ADR; check `docs/adr/README.md`.
+- Run `just check-deps` before final handoff for dependency updates, dependency additions/removals, Cargo feature changes, or edits to dependency audit configuration. It is not part of `just ci`; GitHub runs dependency audit separately on the scheduled workflow.
 - This is a binary-only crate. Do not run `cargo test --lib`; there is no library target. Use `cargo test <module_or_test_name>` for targeted tests, or `cargo test` for the full test suite.
 - Do not commit or push code unless explicitly asked to.
 
@@ -69,8 +71,11 @@ just coverage
 # Print coverage summary
 just coverage-summary
 
-# Check coverage against the 90% CI threshold
-just coverage-check
+# Check coverage threshold and untested-complexity regression
+just check-coverage
+
+# Check dependency advisories
+just check-deps
 
 # Run coverage and open HTML report
 just coverage-open
@@ -86,6 +91,9 @@ just update-dependencies
 
 # Full CI check
 just ci
+
+# Broad local validation suite
+just check-full
 
 # Verify Rust toolchain pins are synchronized
 just rust-version-check
