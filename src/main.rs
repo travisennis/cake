@@ -577,6 +577,20 @@ impl CodingAssistant {
         Ok((client, Some(writer)))
     }
 
+    fn prepare_seeded_session(
+        data_dir: &DataDir,
+        run_session: &mut crate::cli::RunSession,
+    ) -> anyhow::Result<()> {
+        if let Some(seed_records) = run_session.seed_records.take() {
+            let mut file = data_dir
+                .create_session_file(&run_session.session, run_session.agent.tool_names())?;
+            crate::config::Session::append_records(&mut file, &seed_records)?;
+            run_session.storage = SessionStorage::Append;
+        }
+
+        Ok(())
+    }
+
     fn attach_session_telemetry(
         client: Agent,
         data_dir: &DataDir,
@@ -761,14 +775,7 @@ impl CmdRunner for CodingAssistant {
             task_id,
         )?;
 
-        // For fork mode: create the session file and write seed records
-        // upfront, converting the fork into a normal append scenario.
-        if let Some(seed_records) = run_session.seed_records.take() {
-            let mut file = data_dir
-                .create_session_file(&run_session.session, run_session.agent.tool_names())?;
-            crate::config::Session::append_records(&mut file, &seed_records)?;
-            run_session.storage = SessionStorage::Append;
-        }
+        Self::prepare_seeded_session(data_dir, &mut run_session)?;
 
         let session_start_source =
             HookSource::SessionStart(run_mode.session_start_source().to_owned());

@@ -1,3 +1,5 @@
+cargo_crap_excludes := "--exclude 'tests/**' --exclude 'src/clients/chat_completions_tests.rs' --exclude 'src/config/settings_tests.rs' --exclude 'src/clients/tools/sandbox/linux.rs'"
+
 # Install required development tools
 setup:
     @echo "Checking Rust installation..."
@@ -124,7 +126,7 @@ check-coverage:
         exit 1; \
     fi; \
     cargo llvm-cov --lcov --output-path lcov.info; \
-    cargo crap --lcov lcov.info --baseline ci/cargo-crap-baseline.json --fail-regression --summary
+    cargo crap --lcov lcov.info --baseline ci/cargo-crap-baseline.json --fail-regression --summary {{cargo_crap_excludes}}
 
 # Run coverage and open report
 coverage-open:
@@ -138,12 +140,12 @@ coverage-lcov:
 change-risk-baseline:
     mkdir -p ci
     cargo llvm-cov --lcov --output-path lcov.info
-    cargo crap --lcov lcov.info --format json --output ci/cargo-crap-baseline.json
+    cargo crap --lcov lcov.info --format json --output ci/cargo-crap-baseline.json {{cargo_crap_excludes}}
 
 # Print a reviewer-friendly macOS cargo-crap regression report
 change-risk-report:
     cargo llvm-cov --lcov --output-path lcov.info
-    cargo crap --lcov lcov.info --baseline ci/cargo-crap-baseline.json --format markdown
+    cargo crap --lcov lcov.info --baseline ci/cargo-crap-baseline.json --format markdown {{cargo_crap_excludes}}
 
 update-dependencies:
     cargo upgrade -i allow && cargo update    

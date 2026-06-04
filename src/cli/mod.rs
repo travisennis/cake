@@ -21,6 +21,7 @@ pub use output::{CliOutputSink, TurnResult};
 #[cfg(test)]
 pub use output::{format_done_summary, format_retry_message, format_spinner_message};
 pub use run_mode::{RunMode, SessionStorage};
+pub use session_factory::RunSession;
 
 /// Top-level CLI subcommands.
 #[derive(Clone, Debug, clap::Subcommand)]

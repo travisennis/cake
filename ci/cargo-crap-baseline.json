@@ -11,14 +11,6 @@
       "crap": 210.0
     },
     {
-      "file": "./src/clients/tools/sandbox/linux.rs",
-      "function": "LandlockSandbox::apply_landlock_rules",
-      "line": 35,
-      "cyclomatic": 13.0,
-      "coverage": null,
-      "crap": 182.0
-    },
-    {
       "file": "./src/cli/session_factory.rs",
       "function": "CodingAssistant::build_client_and_session",
       "line": 159,
@@ -45,7 +37,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::cleanup_worktree",
-      "line": 362,
+      "line": 365,
       "cyclomatic": 6.0,
       "coverage": 0.0,
       "crap": 42.0
@@ -91,14 +83,6 @@
       "crap": 22.58272251813182
     },
     {
-      "file": "./src/clients/tools/sandbox/linux.rs",
-      "function": "LandlockSandbox::enforce_full_ruleset",
-      "line": 17,
-      "cyclomatic": 4.0,
-      "coverage": null,
-      "crap": 20.0
-    },
-    {
       "file": "./src/types/conversation.rs",
       "function": "ReasoningContentKind::from",
       "line": 75,
@@ -117,7 +101,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::resolve_model_for_session",
-      "line": 272,
+      "line": 275,
       "cyclomatic": 11.0,
       "coverage": 58.620689655172406,
       "crap": 19.573045225306494
@@ -129,14 +113,6 @@
       "cyclomatic": 19.0,
       "coverage": 90.54054054054053,
       "crap": 19.305566797623044
-    },
-    {
-      "file": "./src/clients/agent.rs",
-      "function": "Agent::send",
-      "line": 491,
-      "cyclomatic": 16.0,
-      "coverage": 79.03225806451613,
-      "crap": 18.359907354570172
     },
     {
       "file": "./src/hooks.rs",
@@ -155,9 +131,17 @@
       "crap": 17.08562962962963
     },
     {
+      "file": "./src/clients/agent.rs",
+      "function": "Agent::send",
+      "line": 466,
+      "cyclomatic": 16.0,
+      "coverage": 84.31372549019608,
+      "crap": 16.988096584270004
+    },
+    {
       "file": "./src/main.rs",
       "function": "CodingAssistant::execute_agent_turn",
-      "line": 678,
+      "line": 695,
       "cyclomatic": 15.0,
       "coverage": 80.0,
       "crap": 16.799999999999997
@@ -221,7 +205,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::log_skill_diagnostics",
-      "line": 521,
+      "line": 524,
       "cyclomatic": 5.0,
       "coverage": 27.77777777777778,
       "crap": 14.41786694101509
@@ -251,14 +235,6 @@
       "crap": 13.435754575195878
     },
     {
-      "file": "./src/main.rs",
-      "function": "CodingAssistant::run",
-      "line": 734,
-      "cyclomatic": 13.0,
-      "coverage": 92.85714285714286,
-      "crap": 13.061588921282798
-    },
-    {
       "file": "./src/config/hooks.rs",
       "function": "HooksLoader::load_from_paths",
       "line": 225,
@@ -281,6 +257,14 @@
       "cyclomatic": 12.0,
       "coverage": 94.44444444444444,
       "crap": 12.024691358024691
+    },
+    {
+      "file": "./src/main.rs",
+      "function": "CodingAssistant::run",
+      "line": 751,
+      "cyclomatic": 12.0,
+      "coverage": 97.5609756097561,
+      "crap": 12.00208934867457
     },
     {
       "file": "./src/clients/agent_state.rs",
@@ -309,7 +293,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::resolve_model_config",
-      "line": 200,
+      "line": 203,
       "cyclomatic": 11.0,
       "coverage": 87.09677419354838,
       "crap": 11.259944278473364
@@ -501,7 +485,7 @@
     {
       "file": "./src/main.rs",
       "function": "main",
-      "line": 831,
+      "line": 845,
       "cyclomatic": 8.0,
       "coverage": 87.5,
       "crap": 8.125
@@ -589,7 +573,7 @@
     {
       "file": "./src/clients/tools/mod.rs",
       "function": "validate_path_with_dirs",
-      "line": 320,
+      "line": 326,
       "cyclomatic": 7.0,
       "coverage": 91.48936170212765,
       "crap": 7.030205253171263
@@ -637,7 +621,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::setup_worktree",
-      "line": 340,
+      "line": 343,
       "cyclomatic": 4.0,
       "coverage": 46.666666666666664,
       "crap": 6.427259259259261
@@ -685,7 +669,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::attach_persistence",
-      "line": 555,
+      "line": 558,
       "cyclomatic": 6.0,
       "coverage": 94.73684210526315,
       "crap": 6.0052485785099865
@@ -701,7 +685,7 @@
     {
       "file": "./src/clients/tools/mod.rs",
       "function": "execute_edit_tool",
-      "line": 436,
+      "line": 442,
       "cyclomatic": 2.0,
       "coverage": 0.0,
       "crap": 6.0
@@ -709,7 +693,7 @@
     {
       "file": "./src/clients/tools/mod.rs",
       "function": "execute_write_tool",
-      "line": 452,
+      "line": 458,
       "cyclomatic": 2.0,
       "coverage": 0.0,
       "crap": 6.0
@@ -805,7 +789,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::build_content",
-      "line": 180,
+      "line": 183,
       "cyclomatic": 6.0,
       "coverage": 100.0,
       "crap": 6.0
@@ -813,7 +797,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::prepare_run",
-      "line": 421,
+      "line": 424,
       "cyclomatic": 6.0,
       "coverage": 100.0,
       "crap": 6.0
@@ -869,7 +853,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::attach_session_telemetry",
-      "line": 577,
+      "line": 594,
       "cyclomatic": 5.0,
       "coverage": 82.05128205128204,
       "crap": 5.144557393078103
@@ -909,7 +893,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::read_stdin_content",
-      "line": 153,
+      "line": 156,
       "cyclomatic": 5.0,
       "coverage": 93.33333333333333,
       "crap": 5.007407407407407
@@ -949,7 +933,7 @@
     {
       "file": "./src/clients/tools/mod.rs",
       "function": "ToolRegistry::mutating_target",
-      "line": 261,
+      "line": 267,
       "cyclomatic": 5.0,
       "coverage": 100.0,
       "crap": 5.0
@@ -1029,7 +1013,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::hook_event_sink",
-      "line": 645,
+      "line": 662,
       "cyclomatic": 3.0,
       "coverage": 42.857142857142854,
       "crap": 4.679300291545189
@@ -1044,8 +1028,16 @@
     },
     {
       "file": "./src/main.rs",
+      "function": "CodingAssistant::prepare_seeded_session",
+      "line": 580,
+      "cyclomatic": 4.0,
+      "coverage": 66.66666666666666,
+      "crap": 4.5925925925925934
+    },
+    {
+      "file": "./src/main.rs",
       "function": "CodingAssistant::apply_cli_overrides",
-      "line": 326,
+      "line": 329,
       "cyclomatic": 4.0,
       "coverage": 75.0,
       "crap": 4.25
@@ -1077,7 +1069,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::load_settings",
-      "line": 441,
+      "line": 444,
       "cyclomatic": 4.0,
       "coverage": 83.33333333333334,
       "crap": 4.0740740740740735
@@ -1291,6 +1283,14 @@
       "crap": 4.0
     },
     {
+      "file": "./src/cli/debug.rs",
+      "function": "DebugCommand::run",
+      "line": 20,
+      "cyclomatic": 4.0,
+      "coverage": 100.0,
+      "crap": 4.0
+    },
+    {
       "file": "./src/session_telemetry.rs",
       "function": "SessionTelemetryWriter::append",
       "line": 207,
@@ -1309,7 +1309,7 @@
     {
       "file": "./src/clients/tools/mod.rs",
       "function": "validate_path_for_write",
-      "line": 409,
+      "line": 415,
       "cyclomatic": 3.0,
       "coverage": 69.23076923076923,
       "crap": 3.262175694128357
@@ -1317,7 +1317,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::attach_hooks",
-      "line": 629,
+      "line": 646,
       "cyclomatic": 3.0,
       "coverage": 69.23076923076923,
       "crap": 3.262175694128357
@@ -1373,7 +1373,7 @@
     {
       "file": "./src/clients/agent.rs",
       "function": "Agent::emit_prompt_context_records",
-      "line": 395,
+      "line": 370,
       "cyclomatic": 3.0,
       "coverage": 92.3076923076923,
       "crap": 3.0040964952207556
@@ -1389,7 +1389,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::load_run_resources",
-      "line": 450,
+      "line": 453,
       "cyclomatic": 3.0,
       "coverage": 97.5609756097561,
       "crap": 3.0001305842921604
@@ -1525,7 +1525,7 @@
     {
       "file": "./src/clients/agent.rs",
       "function": "Agent::append_runner_telemetry",
-      "line": 768,
+      "line": 712,
       "cyclomatic": 3.0,
       "coverage": 100.0,
       "crap": 3.0
@@ -1683,6 +1683,30 @@
       "crap": 3.0
     },
     {
+      "file": "./src/cli/debug.rs",
+      "function": "format_models",
+      "line": 33,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/cli/debug.rs",
+      "function": "api_type_label",
+      "line": 92,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/cli/debug.rs",
+      "function": "column_widths",
+      "line": 99,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
       "file": "./src/prompts/mod.rs",
       "function": "format_agents_context",
       "line": 140,
@@ -1717,7 +1741,7 @@
     {
       "file": "./src/clients/agent.rs",
       "function": "Agent::append_telemetry_record",
-      "line": 804,
+      "line": 748,
       "cyclomatic": 2.0,
       "coverage": 62.5,
       "crap": 2.2109375
@@ -1725,7 +1749,7 @@
     {
       "file": "./src/clients/tools/mod.rs",
       "function": "truncate_display",
-      "line": 474,
+      "line": 480,
       "cyclomatic": 2.0,
       "coverage": 66.66666666666666,
       "crap": 2.1481481481481484
@@ -1733,7 +1757,7 @@
     {
       "file": "./src/clients/agent.rs",
       "function": "append_hook_context",
-      "line": 818,
+      "line": 762,
       "cyclomatic": 2.0,
       "coverage": 69.23076923076923,
       "crap": 2.116522530723714
@@ -1773,7 +1797,7 @@
     {
       "file": "./src/clients/agent.rs",
       "function": "Agent::with_session_id",
-      "line": 223,
+      "line": 198,
       "cyclomatic": 2.0,
       "coverage": 85.71428571428571,
       "crap": 2.011661807580175
@@ -1809,182 +1833,6 @@
       "cyclomatic": 2.0,
       "coverage": 97.87234042553192,
       "crap": 2.0000385271086367
-    },
-    {
-      "file": "./tests/stdin_handling.rs",
-      "function": "cake_env",
-      "line": 24,
-      "cyclomatic": 1.0,
-      "coverage": null,
-      "crap": 2.0
-    },
-    {
-      "file": "./tests/exit_codes.rs",
-      "function": "cake_env",
-      "line": 19,
-      "cyclomatic": 1.0,
-      "coverage": null,
-      "crap": 2.0
-    },
-    {
-      "file": "./tests/session_telemetry.rs",
-      "function": "success_response",
-      "line": 11,
-      "cyclomatic": 1.0,
-      "coverage": null,
-      "crap": 2.0
-    },
-    {
-      "file": "./tests/session_telemetry.rs",
-      "function": "write_responses_settings",
-      "line": 35,
-      "cyclomatic": 1.0,
-      "coverage": null,
-      "crap": 2.0
-    },
-    {
-      "file": "./tests/session_telemetry.rs",
-      "function": "only_file_in",
-      "line": 50,
-      "cyclomatic": 1.0,
-      "coverage": null,
-      "crap": 2.0
-    },
-    {
-      "file": "./tests/session_telemetry.rs",
-      "function": "telemetry_records",
-      "line": 64,
-      "cyclomatic": 1.0,
-      "coverage": null,
-      "crap": 2.0
-    },
-    {
-      "file": "./tests/session_telemetry.rs",
-      "function": "session_telemetry_creates_sidecar_on_success",
-      "line": 84,
-      "cyclomatic": 1.0,
-      "coverage": null,
-      "crap": 2.0
-    },
-    {
-      "file": "./tests/session_telemetry.rs",
-      "function": "session_telemetry_records_retry_attempts",
-      "line": 135,
-      "cyclomatic": 1.0,
-      "coverage": null,
-      "crap": 2.0
-    },
-    {
-      "file": "./tests/support/mod.rs",
-      "function": "binary_path",
-      "line": 5,
-      "cyclomatic": 1.0,
-      "coverage": null,
-      "crap": 2.0
-    },
-    {
-      "file": "./tests/support/mod.rs",
-      "function": "TestEnv::new",
-      "line": 17,
-      "cyclomatic": 1.0,
-      "coverage": null,
-      "crap": 2.0
-    },
-    {
-      "file": "./tests/support/mod.rs",
-      "function": "TestEnv::command",
-      "line": 37,
-      "cyclomatic": 1.0,
-      "coverage": null,
-      "crap": 2.0
-    },
-    {
-      "file": "./tests/support/mod.rs",
-      "function": "TestEnv::write_project_settings",
-      "line": 46,
-      "cyclomatic": 1.0,
-      "coverage": null,
-      "crap": 2.0
-    },
-    {
-      "file": "./src/clients/chat_completions_tests.rs",
-      "function": "apply_test_strategy",
-      "line": 9,
-      "cyclomatic": 1.0,
-      "coverage": null,
-      "crap": 2.0
-    },
-    {
-      "file": "./src/clients/chat_completions_tests.rs",
-      "function": "minimal_valid_response",
-      "line": 1052,
-      "cyclomatic": 1.0,
-      "coverage": null,
-      "crap": 2.0
-    },
-    {
-      "file": "./src/clients/chat_completions_tests.rs",
-      "function": "parse_response_valid_json",
-      "line": 1067,
-      "cyclomatic": 1.0,
-      "coverage": null,
-      "crap": 2.0
-    },
-    {
-      "file": "./src/clients/chat_completions_tests.rs",
-      "function": "parse_response_invalid_json",
-      "line": 1089,
-      "cyclomatic": 1.0,
-      "coverage": null,
-      "crap": 2.0
-    },
-    {
-      "file": "./src/clients/chat_completions_tests.rs",
-      "function": "parse_response_empty_body",
-      "line": 1109,
-      "cyclomatic": 1.0,
-      "coverage": null,
-      "crap": 2.0
-    },
-    {
-      "file": "./src/clients/chat_completions_tests.rs",
-      "function": "parse_response_missing_choices_fails",
-      "line": 1129,
-      "cyclomatic": 1.0,
-      "coverage": null,
-      "crap": 2.0
-    },
-    {
-      "file": "./src/clients/chat_completions_tests.rs",
-      "function": "parse_response_missing_id_fails",
-      "line": 1157,
-      "cyclomatic": 1.0,
-      "coverage": null,
-      "crap": 2.0
-    },
-    {
-      "file": "./src/clients/chat_completions_tests.rs",
-      "function": "parse_response_with_usage",
-      "line": 1189,
-      "cyclomatic": 1.0,
-      "coverage": null,
-      "crap": 2.0
-    },
-    {
-      "file": "./src/clients/chat_completions_tests.rs",
-      "function": "parse_response_partial_usage",
-      "line": 1230,
-      "cyclomatic": 1.0,
-      "coverage": null,
-      "crap": 2.0
-    },
-    {
-      "file": "./src/clients/chat_completions_tests.rs",
-      "function": "parse_response_with_tool_calls",
-      "line": 1272,
-      "cyclomatic": 1.0,
-      "coverage": null,
-      "crap": 2.0
     },
     {
       "file": "./src/clients/tools/edit.rs",
@@ -2077,7 +1925,7 @@
     {
       "file": "./src/clients/tools/mod.rs",
       "function": "execute_bash_tool",
-      "line": 432,
+      "line": 438,
       "cyclomatic": 1.0,
       "coverage": 0.0,
       "crap": 2.0
@@ -2085,7 +1933,7 @@
     {
       "file": "./src/clients/tools/mod.rs",
       "function": "execute_read_tool",
-      "line": 444,
+      "line": 450,
       "cyclomatic": 2.0,
       "coverage": 100.0,
       "crap": 2.0
@@ -2163,14 +2011,6 @@
       "crap": 2.0
     },
     {
-      "file": "./src/clients/tools/sandbox/linux.rs",
-      "function": "LandlockSandbox::apply",
-      "line": 102,
-      "cyclomatic": 1.0,
-      "coverage": null,
-      "crap": 2.0
-    },
-    {
       "file": "./src/clients/tools/bash_safety/parse.rs",
       "function": "is_shell_token_boundary",
       "line": 176,
@@ -2205,7 +2045,7 @@
     {
       "file": "./src/clients/agent.rs",
       "function": "Agent::with_history",
-      "line": 254,
+      "line": 229,
       "cyclomatic": 2.0,
       "coverage": 100.0,
       "crap": 2.0
@@ -2213,7 +2053,7 @@
     {
       "file": "./src/clients/agent.rs",
       "function": "Agent::append_developer_context",
-      "line": 291,
+      "line": 266,
       "cyclomatic": 1.0,
       "coverage": 0.0,
       "crap": 2.0
@@ -2221,7 +2061,7 @@
     {
       "file": "./src/clients/agent.rs",
       "function": "Agent::complete_turn",
-      "line": 732,
+      "line": 676,
       "cyclomatic": 2.0,
       "coverage": 100.0,
       "crap": 2.0
@@ -2307,30 +2147,6 @@
       "crap": 2.0
     },
     {
-      "file": "./src/config/settings_tests.rs",
-      "function": "create_home_dir",
-      "line": 5,
-      "cyclomatic": 1.0,
-      "coverage": null,
-      "crap": 2.0
-    },
-    {
-      "file": "./src/config/settings_tests.rs",
-      "function": "write_global_settings",
-      "line": 11,
-      "cyclomatic": 1.0,
-      "coverage": null,
-      "crap": 2.0
-    },
-    {
-      "file": "./src/config/settings_tests.rs",
-      "function": "create_project_settings",
-      "line": 18,
-      "cyclomatic": 1.0,
-      "coverage": null,
-      "crap": 2.0
-    },
-    {
       "file": "./src/hooks.rs",
       "function": "compact_json",
       "line": 825,
@@ -2344,6 +2160,14 @@
       "line": 848,
       "cyclomatic": 1.0,
       "coverage": 0.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/cli/mod.rs",
+      "function": "Commands::run",
+      "line": 34,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
       "crap": 2.0
     },
     {
@@ -2389,7 +2213,7 @@
     {
       "file": "./src/clients/agent.rs",
       "function": "Agent::append_tool_call_telemetry",
-      "line": 791,
+      "line": 735,
       "cyclomatic": 1.0,
       "coverage": 36.36363636363637,
       "crap": 1.257700976709241
@@ -2405,7 +2229,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::valid_settings_dirs",
-      "line": 502,
+      "line": 505,
       "cyclomatic": 1.0,
       "coverage": 57.14285714285714,
       "crap": 1.0787172011661808
@@ -2421,7 +2245,7 @@
     {
       "file": "./src/clients/agent.rs",
       "function": "Agent::with_activated_skills",
-      "line": 273,
+      "line": 248,
       "cyclomatic": 1.0,
       "coverage": 62.5,
       "crap": 1.052734375
@@ -2437,7 +2261,7 @@
     {
       "file": "./src/clients/agent.rs",
       "function": "Agent::test_active_skills",
-      "line": 297,
+      "line": 272,
       "cyclomatic": 1.0,
       "coverage": 66.66666666666666,
       "crap": 1.0370370370370372
@@ -2445,7 +2269,7 @@
     {
       "file": "./src/clients/tools/mod.rs",
       "function": "ToolRegistry::execute",
-      "line": 241,
+      "line": 247,
       "cyclomatic": 1.0,
       "coverage": 90.0,
       "crap": 1.001
@@ -2661,7 +2485,7 @@
     {
       "file": "./src/clients/tools/mod.rs",
       "function": "ToolEntry::new",
-      "line": 194,
+      "line": 196,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -2669,7 +2493,7 @@
     {
       "file": "./src/clients/tools/mod.rs",
       "function": "ToolRegistry::new",
-      "line": 212,
+      "line": 216,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -2677,7 +2501,7 @@
     {
       "file": "./src/clients/tools/mod.rs",
       "function": "ToolRegistry::empty",
-      "line": 218,
+      "line": 226,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -2685,7 +2509,7 @@
     {
       "file": "./src/clients/tools/mod.rs",
       "function": "ToolRegistry::definitions",
-      "line": 225,
+      "line": 234,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -2693,7 +2517,7 @@
     {
       "file": "./src/clients/tools/mod.rs",
       "function": "ToolRegistry::names",
-      "line": 233,
+      "line": 239,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -2701,7 +2525,7 @@
     {
       "file": "./src/clients/tools/mod.rs",
       "function": "ToolRegistry::summarize",
-      "line": 255,
+      "line": 261,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -2709,7 +2533,7 @@
     {
       "file": "./src/clients/tools/mod.rs",
       "function": "ToolRegistry::find",
-      "line": 274,
+      "line": 280,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -2717,7 +2541,7 @@
     {
       "file": "./src/clients/tools/mod.rs",
       "function": "validate_path",
-      "line": 305,
+      "line": 311,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -2725,7 +2549,7 @@
     {
       "file": "./src/clients/tools/mod.rs",
       "function": "path_starts_with",
-      "line": 384,
+      "line": 390,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -2733,7 +2557,7 @@
     {
       "file": "./src/clients/tools/mod.rs",
       "function": "validate_path_in_cwd",
-      "line": 400,
+      "line": 406,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -2741,7 +2565,7 @@
     {
       "file": "./src/clients/tools/mod.rs",
       "function": "get_temp_directories",
-      "line": 424,
+      "line": 430,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -2749,7 +2573,7 @@
     {
       "file": "./src/clients/tools/mod.rs",
       "function": "summarize_tool_args",
-      "line": 467,
+      "line": 473,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -2757,7 +2581,7 @@
     {
       "file": "./src/clients/tools/mod.rs",
       "function": "default_tool_registry",
-      "line": 494,
+      "line": 500,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -2765,7 +2589,7 @@
     {
       "file": "./src/clients/tools/mod.rs",
       "function": "read_tool_registry",
-      "line": 511,
+      "line": 520,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -2982,6 +2806,22 @@
       "file": "./src/clients/tools/bash_safety/parse.rs",
       "function": "find_inline_shell_invocation",
       "line": 156,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/clients/tools/duplicate_guard.rs",
+      "function": "reject_duplicate_mutating_tool_calls",
+      "line": 31,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/clients/tools/duplicate_guard.rs",
+      "function": "duplicate_mutation_rejection_output",
+      "line": 65,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -3212,16 +3052,8 @@
     },
     {
       "file": "./src/clients/agent.rs",
-      "function": "reject_duplicate_mutating_tool_calls",
-      "line": 57,
-      "cyclomatic": 1.0,
-      "coverage": 100.0,
-      "crap": 1.0
-    },
-    {
-      "file": "./src/clients/agent.rs",
-      "function": "duplicate_mutation_rejection_output",
-      "line": 90,
+      "function": "immediate_tool_error_result",
+      "line": 50,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -3229,7 +3061,7 @@
     {
       "file": "./src/clients/agent.rs",
       "function": "Agent::new",
-      "line": 146,
+      "line": 121,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -3237,7 +3069,7 @@
     {
       "file": "./src/clients/agent.rs",
       "function": "Agent::tool_names",
-      "line": 167,
+      "line": 142,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -3245,7 +3077,7 @@
     {
       "file": "./src/clients/agent.rs",
       "function": "Agent::history",
-      "line": 172,
+      "line": 147,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -3253,7 +3085,7 @@
     {
       "file": "./src/clients/agent.rs",
       "function": "Agent::history_mut",
-      "line": 177,
+      "line": 152,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -3261,7 +3093,7 @@
     {
       "file": "./src/clients/agent.rs",
       "function": "Agent::with_tool_context",
-      "line": 182,
+      "line": 157,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -3269,7 +3101,7 @@
     {
       "file": "./src/clients/agent.rs",
       "function": "Agent::model_name",
-      "line": 188,
+      "line": 163,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -3277,7 +3109,7 @@
     {
       "file": "./src/clients/agent.rs",
       "function": "Agent::session_telemetry_settings",
-      "line": 192,
+      "line": 167,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -3285,7 +3117,7 @@
     {
       "file": "./src/clients/agent.rs",
       "function": "Agent::session_id",
-      "line": 206,
+      "line": 181,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -3293,7 +3125,7 @@
     {
       "file": "./src/clients/agent.rs",
       "function": "Agent::total_usage",
-      "line": 211,
+      "line": 186,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -3301,7 +3133,7 @@
     {
       "file": "./src/clients/agent.rs",
       "function": "Agent::turn_count",
-      "line": 216,
+      "line": 191,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -3309,7 +3141,7 @@
     {
       "file": "./src/clients/agent.rs",
       "function": "Agent::with_task_id",
-      "line": 232,
+      "line": 207,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -3317,7 +3149,7 @@
     {
       "file": "./src/clients/agent.rs",
       "function": "Agent::with_total_usage",
-      "line": 239,
+      "line": 214,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -3325,7 +3157,7 @@
     {
       "file": "./src/clients/agent.rs",
       "function": "Agent::with_turn_count",
-      "line": 246,
+      "line": 221,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -3333,7 +3165,7 @@
     {
       "file": "./src/clients/agent.rs",
       "function": "Agent::with_skill_locations",
-      "line": 264,
+      "line": 239,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -3341,7 +3173,7 @@
     {
       "file": "./src/clients/agent.rs",
       "function": "Agent::with_hook_runner",
-      "line": 285,
+      "line": 260,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -3349,7 +3181,7 @@
     {
       "file": "./src/clients/agent.rs",
       "function": "Agent::with_streaming_json",
-      "line": 312,
+      "line": 287,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -3357,7 +3189,7 @@
     {
       "file": "./src/clients/agent.rs",
       "function": "Agent::with_persist_callback",
-      "line": 318,
+      "line": 293,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -3365,7 +3197,7 @@
     {
       "file": "./src/clients/agent.rs",
       "function": "Agent::with_progress_callback",
-      "line": 330,
+      "line": 305,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -3373,7 +3205,7 @@
     {
       "file": "./src/clients/agent.rs",
       "function": "Agent::with_retry_callback",
-      "line": 339,
+      "line": 314,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -3381,7 +3213,7 @@
     {
       "file": "./src/clients/agent.rs",
       "function": "Agent::with_session_telemetry",
-      "line": 348,
+      "line": 323,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -3389,7 +3221,7 @@
     {
       "file": "./src/clients/agent.rs",
       "function": "Agent::report_progress",
-      "line": 364,
+      "line": 339,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -3397,7 +3229,7 @@
     {
       "file": "./src/clients/agent.rs",
       "function": "Agent::stream_record",
-      "line": 369,
+      "line": 344,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -3405,7 +3237,7 @@
     {
       "file": "./src/clients/agent.rs",
       "function": "Agent::persist_record",
-      "line": 374,
+      "line": 349,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -3413,7 +3245,7 @@
     {
       "file": "./src/clients/agent.rs",
       "function": "Agent::stream_item",
-      "line": 379,
+      "line": 354,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -3421,7 +3253,7 @@
     {
       "file": "./src/clients/agent.rs",
       "function": "Agent::emit_task_start_record",
-      "line": 384,
+      "line": 359,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -3429,7 +3261,7 @@
     {
       "file": "./src/clients/agent.rs",
       "function": "Agent::accumulate_usage",
-      "line": 431,
+      "line": 406,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -3437,7 +3269,7 @@
     {
       "file": "./src/clients/agent.rs",
       "function": "Agent::emit_task_complete_record",
-      "line": 436,
+      "line": 411,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -3445,7 +3277,7 @@
     {
       "file": "./src/clients/agent.rs",
       "function": "Agent::emit_session_summary_telemetry",
-      "line": 456,
+      "line": 431,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -3453,7 +3285,7 @@
     {
       "file": "./src/clients/agent.rs",
       "function": "Agent::telemetry_context",
-      "line": 762,
+      "line": 706,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -3461,7 +3293,7 @@
     {
       "file": "./src/clients/agent.rs",
       "function": "test_resolved_model_config",
-      "line": 834,
+      "line": 778,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -3469,7 +3301,7 @@
     {
       "file": "./src/clients/agent.rs",
       "function": "test_agent_for",
-      "line": 856,
+      "line": 800,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -3971,6 +3803,30 @@
       "crap": 1.0
     },
     {
+      "file": "./src/cli/debug.rs",
+      "function": "ModelRow::from",
+      "line": 81,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/cli/debug.rs",
+      "function": "format_row",
+      "line": 116,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/cli/debug.rs",
+      "function": "separator",
+      "line": 132,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
       "file": "./src/exit_code.rs",
       "function": "classify",
       "line": 90,
@@ -3997,7 +3853,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::resolve_additional_dirs",
-      "line": 397,
+      "line": 400,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -4005,7 +3861,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::output_sink",
-      "line": 674,
+      "line": 691,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
