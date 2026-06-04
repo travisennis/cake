@@ -15,15 +15,47 @@ cake is an AI coding assistant CLI that:
 
 **Core mechanism**: The agent loop lets the model execute tools, receive results, and continue until it returns a final response.
 
+Treat CLI behavior, tool execution semantics, sandbox boundaries, session file formats, configuration shape, provider/backend behavior, streaming/output formats, and task workflow metadata as compatibility surfaces. Preserve them unless the task explicitly asks for a breaking change.
+
+--------------------------------------------------------------------------------
+
+## Documentation Map
+
+- Use this file for agent operating rules, golden path workflows, and safety constraints.
+- Use [CONTRIBUTING.md](CONTRIBUTING.md) for contributor onboarding, development setup, common command invocations, and PR workflow guidance for humans and agents.
+- Use `docs/design-docs/` for durable implementation and architecture details.
+- Use `.agents/` for task, research, ExecPlan, and documentation workflow records.
+
+--------------------------------------------------------------------------------
+
+## Operating Loop
+
+1. Classify the change before editing.
+2. Gather the minimum context required for that change class.
+3. State assumptions and ask before making risky guesses.
+4. Make the smallest change that satisfies the request.
+5. Run the narrowest useful verification first.
+6. Finish with the required project checks and a concise handoff.
+
+--------------------------------------------------------------------------------
+
+## Workflow Routing
+
+- Agent loop, tool execution, hooks, sandboxing, sessions, API backends, model/provider behavior, prompts, or configuration changes may affect durable behavior or security boundaries. Check the relevant `docs/design-docs/` file and consider whether an ADR or ExecPlan is required.
+- CLI, output, streaming JSON, settings, or task workflow changes should preserve documented user-facing contracts. Update matching docs when behavior, flags, file formats, or workflow metadata change.
+- Dependency, feature, build, CI, or release changes must keep `Cargo.toml` and `Cargo.lock` consistent, use the smallest feature set that solves the problem, and follow the dependency checks below.
+- Documentation-only changes should verify Markdown and links. Rust tests and `just ci` may be skipped when no code, tests, config, fixtures, generated task indexes, dependency files, or build metadata changed; explain the skip in the handoff.
+
 --------------------------------------------------------------------------------
 
 ## Start Here
 
 1. Read this file fully before making changes.
-2. For the first task in a session, read `.agents/TASKS.md`, then `.agents/.tasks/index.md`, then the specific task file. For later tasks in the same session, reread only the task index and specific task file unless `.agents/TASKS.md` changed or the task changes task workflow semantics.
-3. Prefer narrow checks first, then `cargo fmt`, then `just ci` before final handoff.
-4. Do not commit or push unless explicitly asked.
-5. Never edit generated task indexes by hand.
+2. Read [CONTRIBUTING.md](CONTRIBUTING.md) when you need setup, command, or PR workflow details.
+3. For the first task in a session, read `.agents/TASKS.md`, then `.agents/.tasks/index.md`, then the specific task file. For later tasks in the same session, reread only the task index and specific task file unless `.agents/TASKS.md` changed or the task changes task workflow semantics.
+4. Prefer narrow checks first, then `cargo fmt`, then `just ci` before final handoff.
+5. Do not commit or push unless explicitly asked.
+6. Never edit generated task indexes by hand.
 
 --------------------------------------------------------------------------------
 
@@ -39,6 +71,7 @@ cake is an AI coding assistant CLI that:
 - When changing test fixtures, test-only code, struct literals used in tests, or `#[cfg(test)]` modules, run `cargo check --tests` before relying on `cargo build` or `cargo check`. Plain `cargo build` and `cargo check` do not validate this project's test code.
 - For dependency work, do not update dependencies unless explicitly asked or required by the task. Use `just update-dependencies` for broad dependency refreshes. When adding, removing, updating, or changing Cargo features for dependencies, keep `Cargo.toml` and `Cargo.lock` consistent, prefer the smallest feature set that solves the problem, run `just check-deps`, run the Rust verification sequence above, and run `just check-coverage` if compiled code or feature selection changes. New major runtime dependencies that affect behavior, security posture, binary size, licensing, or platform support may require an ADR; check `docs/adr/README.md`.
 - Run `just check-deps` before final handoff for dependency updates, dependency additions/removals, Cargo feature changes, or edits to dependency audit configuration. It is not part of `just ci`; GitHub runs dependency audit separately on the scheduled workflow.
+- For documentation-only changes, run the narrowest useful Markdown or link checks instead of `just ci` when the Workflow Routing docs-only conditions apply.
 - This is a binary-only crate. Do not run `cargo test --lib`; there is no library target. Use `cargo test <module_or_test_name>` for targeted tests, or `cargo test` for the full test suite.
 - Do not commit or push code unless explicitly asked to.
 

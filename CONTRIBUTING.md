@@ -1,6 +1,8 @@
 # Contributing to Cake
 
-Thank you for your interest in contributing to Cake! This document provides all the information you need to get started.
+Thank you for your interest in contributing to Cake! This document provides contributor onboarding, development setup, common command invocations, and pull request workflow guidance for humans and agents.
+
+Agent-specific operating rules live in [AGENTS.md](AGENTS.md). Follow AGENTS.md first when working as an agent; use this file for the shared development workflow.
 
 ## Development Setup
 
@@ -119,8 +121,8 @@ cargo insta review
 # Open HTML coverage report
 just coverage-open
 
-# Run the full CI pipeline locally
-just ci-full
+# Run the broad local validation suite
+just check-full
 ```
 
 Tests live alongside source files:
