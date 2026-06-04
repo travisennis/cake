@@ -105,7 +105,7 @@ pub(super) struct Request<'a> {
     pub(super) temperature: Option<f32>,
     pub(super) top_p: Option<f32>,
     pub(super) max_output_tokens: Option<u32>,
-    pub(super) tools: Option<Vec<super::tools::Tool>>,
+    pub(super) tools: Option<&'a [super::tools::Tool]>,
     pub(super) tool_choice: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) provider: Option<ProviderConfig>,

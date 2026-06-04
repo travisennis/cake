@@ -206,13 +206,19 @@ impl ToolEntry {
 #[derive(Clone)]
 pub(super) struct ToolRegistry {
     entries: Vec<ToolEntry>,
+    /// Cached model-facing tool definitions, computed once at construction.
+    definitions: Vec<Tool>,
 }
 
 impl ToolRegistry {
     /// Build a registry from explicit entries.
     #[cfg(test)]
-    pub(super) const fn new(entries: Vec<ToolEntry>) -> Self {
-        Self { entries }
+    pub(super) fn new(entries: Vec<ToolEntry>) -> Self {
+        let definitions = entries.iter().map(|e| e.definition.clone()).collect();
+        Self {
+            entries,
+            definitions,
+        }
     }
 
     /// Return an empty registry, useful for tests that do not expose tools.
@@ -220,15 +226,13 @@ impl ToolRegistry {
     pub(super) const fn empty() -> Self {
         Self {
             entries: Vec::new(),
+            definitions: Vec::new(),
         }
     }
 
-    /// Return the model-facing tool definitions.
-    pub(super) fn definitions(&self) -> Vec<Tool> {
-        self.entries
-            .iter()
-            .map(|entry| entry.definition.clone())
-            .collect()
+    /// Return the cached model-facing tool definitions.
+    pub(super) fn definitions(&self) -> &[Tool] {
+        &self.definitions
     }
 
     /// Return the enabled tool names.
@@ -494,17 +498,20 @@ fn truncate_display(s: &str, max: usize) -> String {
 
 /// Returns the default tool registry.
 pub(super) fn default_tool_registry() -> ToolRegistry {
+    let entries = vec![
+        ToolEntry::new(bash::bash_tool(), execute_bash_tool, bash::summarize_args),
+        ToolEntry::new(edit::edit_tool(), execute_edit_tool, edit::summarize_args),
+        ToolEntry::new(read::read_tool(), execute_read_tool, read::summarize_args),
+        ToolEntry::new(
+            write::write_tool(),
+            execute_write_tool,
+            write::summarize_args,
+        ),
+    ];
+    let definitions = entries.iter().map(|e| e.definition.clone()).collect();
     ToolRegistry {
-        entries: vec![
-            ToolEntry::new(bash::bash_tool(), execute_bash_tool, bash::summarize_args),
-            ToolEntry::new(edit::edit_tool(), execute_edit_tool, edit::summarize_args),
-            ToolEntry::new(read::read_tool(), execute_read_tool, read::summarize_args),
-            ToolEntry::new(
-                write::write_tool(),
-                execute_write_tool,
-                write::summarize_args,
-            ),
-        ],
+        entries,
+        definitions,
     }
 }
 
@@ -679,6 +686,54 @@ mod tests {
         let result_b =
             validate_path_with_dirs(file_b.to_str().unwrap(), &cwd, &[], &[], &[], &skill_dirs);
         assert!(result_b.is_ok());
+    }
+
+    #[test]
+    fn definitions_returns_same_slice_on_repeated_calls() {
+        let registry = default_tool_registry();
+        let first = registry.definitions();
+        let second = registry.definitions();
+
+        // Same pointer confirms caching, not cloning on every call
+        assert!(
+            std::ptr::eq(first, second),
+            "definitions() must return the same slice on repeated calls"
+        );
+
+        // Verify definitions contain the expected tools
+        let names: Vec<&str> = first.iter().map(|t| t.name.as_str()).collect();
+        assert!(names.contains(&"Bash"), "should contain Bash");
+        assert!(names.contains(&"Read"), "should contain Read");
+        assert!(names.contains(&"Edit"), "should contain Edit");
+        assert!(names.contains(&"Write"), "should contain Write");
+    }
+
+    #[test]
+    fn empty_registry_returns_empty_slice() {
+        let registry = ToolRegistry::empty();
+        assert!(registry.definitions().is_empty());
+    }
+
+    #[test]
+    fn read_tool_registry_definitions_match() {
+        let registry = read_tool_registry();
+        let defs = registry.definitions();
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].name, "Read");
+    }
+
+    #[test]
+    fn definitions_are_stable_across_clone() {
+        let registry = default_tool_registry();
+        let cloned = registry.clone();
+        let orig_defs = registry.definitions();
+        let cloned_defs = cloned.definitions();
+        assert_eq!(orig_defs.len(), cloned_defs.len());
+        for (a, b) in orig_defs.iter().zip(cloned_defs.iter()) {
+            assert_eq!(a.name, b.name);
+            assert_eq!(a.description, b.description);
+            assert_eq!(a.parameters, b.parameters);
+        }
     }
 
     #[test]

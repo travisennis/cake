@@ -688,7 +688,7 @@ impl Agent {
                 session_id,
                 turn_index,
                 history,
-                &tool_definitions,
+                tool_definitions,
                 |status| {
                     observer.report_retry(status);
                 },

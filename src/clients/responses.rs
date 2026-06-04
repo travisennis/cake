@@ -23,11 +23,11 @@ use crate::types::{
 /// # Errors
 ///
 /// Returns an error if the HTTP request fails.
-pub(super) async fn send_request(
+pub(super) async fn send_request<'a>(
     client: &reqwest::Client,
     config: &ResolvedModelConfig,
-    history: &[ConversationItem],
-    tools: &[Tool],
+    history: &'a [ConversationItem],
+    tools: &'a [Tool],
     overrides: &RequestOverrides,
 ) -> anyhow::Result<reqwest::Response> {
     let strategy = ProviderStrategy::from_config(config);
@@ -60,7 +60,7 @@ pub(super) async fn send_request(
         temperature: config.model_config.temperature,
         top_p: config.model_config.top_p,
         max_output_tokens,
-        tools: Some(tools.to_vec()),
+        tools: Some(tools),
         tool_choice: Some("auto".to_string()),
         provider: provider_config,
         reasoning,
@@ -955,7 +955,7 @@ mod tests {
             temperature: Some(0.3),
             top_p: Some(0.95),
             max_output_tokens: Some(2048),
-            tools: Some(tools),
+            tools: Some(&tools),
             tool_choice: Some("auto".to_string()),
             provider: Some(ProviderConfig {
                 only: vec!["OpenAI".to_string(), "Anthropic".to_string()],

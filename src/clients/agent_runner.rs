@@ -51,13 +51,13 @@ impl AgentRunner {
         clippy::too_many_lines,
         reason = "retry loop keeps request, parse, retry, and telemetry sequencing together"
     )]
-    pub(super) async fn complete_turn(
+    pub(super) async fn complete_turn<'a>(
         &mut self,
         config: &ResolvedModelConfig,
         session_id: uuid::Uuid,
         turn_index: u32,
-        history: &[ConversationItem],
-        tools: &[Tool],
+        history: &'a [ConversationItem],
+        tools: &'a [Tool],
         report_retry: impl Fn(&RetryStatus) + Send + Sync,
         mut report_telemetry: impl FnMut(AgentRunnerTelemetryEvent),
     ) -> anyhow::Result<TurnResult> {

@@ -19,12 +19,12 @@ impl Backend {
         }
     }
 
-    pub(super) async fn send_request(
+    pub(super) async fn send_request<'a>(
         self,
         client: &reqwest::Client,
         config: &ResolvedModelConfig,
-        history: &[ConversationItem],
-        tools: &[Tool],
+        history: &'a [ConversationItem],
+        tools: &'a [Tool],
         overrides: &RequestOverrides,
     ) -> anyhow::Result<reqwest::Response> {
         match self {
