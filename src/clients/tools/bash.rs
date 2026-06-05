@@ -18,6 +18,7 @@ const BINARY_NULL_BYTE_THRESHOLD: usize = 8;
 const BINARY_RATIO_THRESHOLD_PERCENT: usize = 30;
 const BYTES_PER_KIB: u128 = 1024;
 const TENTHS_PER_KIB: u128 = 10;
+const EXIT_ZERO_STDERR_WARNING: &str = "[stderr output present despite exit 0]";
 
 /// Maximum number of bytes the Bash tool will return inline.
 /// Output exceeding this limit is written to a temporary file and the agent
@@ -119,6 +120,10 @@ fn is_sandbox_initialization_failure(stderr: &str) -> bool {
     stderr.contains("sandbox-exec: sandbox_apply")
 }
 
+const fn should_warn_exit_zero_stderr(success: bool, stderr: &str) -> bool {
+    success && !stderr.is_empty()
+}
+
 /// Check if raw bytes appear to be binary data rather than text.
 /// Returns true if the data contains:
 /// - Multiple null bytes (common in binary files)
@@ -176,7 +181,12 @@ fn format_kib_tenths(size_bytes: usize) -> String {
 }
 
 /// Create a result message for binary output, saving the data to a temp file.
-fn handle_binary_output(data: &[u8], exit_code: i32, elapsed_ms: u128) -> String {
+fn handle_binary_output(
+    data: &[u8],
+    exit_code: i32,
+    elapsed_ms: u128,
+    warn_exit_zero_stderr: bool,
+) -> String {
     let size_bytes = data.len();
     let size_kb = format_kib_tenths(size_bytes);
 
@@ -191,7 +201,7 @@ fn handle_binary_output(data: &[u8], exit_code: i32, elapsed_ms: u128) -> String
 
     match std::fs::write(&tmp_path, data) {
         Ok(()) => {
-            let footer = format_metadata_footer(exit_code, elapsed_ms);
+            let footer = format_metadata_suffix(exit_code, elapsed_ms, warn_exit_zero_stderr);
             format!(
                 "[Binary output detected - {size_bytes} bytes ({size_kb} KB)]\n\
                  Detected type: {}\n\
@@ -205,7 +215,7 @@ fn handle_binary_output(data: &[u8], exit_code: i32, elapsed_ms: u128) -> String
             )
         },
         Err(e) => {
-            let footer = format_metadata_footer(exit_code, elapsed_ms);
+            let footer = format_metadata_suffix(exit_code, elapsed_ms, warn_exit_zero_stderr);
             format!(
                 "[Binary output detected - {size_bytes} bytes ({size_kb} KB)]\n\
                  Detected type: {}\n\
@@ -236,9 +246,23 @@ fn format_metadata_footer(exit_code: i32, elapsed_ms: u128) -> String {
     }
 }
 
-/// Append metadata footer to output
-fn append_metadata(output: &str, exit_code: i32, elapsed_ms: u128) -> String {
+fn format_metadata_suffix(exit_code: i32, elapsed_ms: u128, warn_exit_zero_stderr: bool) -> String {
     let footer = format_metadata_footer(exit_code, elapsed_ms);
+    if warn_exit_zero_stderr {
+        format!("{EXIT_ZERO_STDERR_WARNING}\n{footer}")
+    } else {
+        footer
+    }
+}
+
+/// Append metadata footer to output
+fn append_metadata(
+    output: &str,
+    exit_code: i32,
+    elapsed_ms: u128,
+    warn_exit_zero_stderr: bool,
+) -> String {
+    let footer = format_metadata_suffix(exit_code, elapsed_ms, warn_exit_zero_stderr);
     if output.is_empty() {
         footer
     } else {
@@ -366,21 +390,21 @@ async fn execute_bash_with_args(
     }
     let status = child.wait().await.ok();
     let elapsed_ms = start_time.elapsed().as_millis();
-
-    // Check for binary data before converting to string
-    if is_binary_data(&buf) {
-        let exit_code = status.and_then(|s| s.code()).unwrap_or(-1);
-        return Ok(super::ToolResult {
-            output: handle_binary_output(&buf, exit_code, elapsed_ms),
-        });
-    }
-
-    let output_str = String::from_utf8_lossy(&buf);
     let stderr_str = String::from_utf8_lossy(&stderr_buf);
     let success = status
         .as_ref()
         .is_some_and(std::process::ExitStatus::success);
     let exit_code = status.and_then(|s| s.code()).unwrap_or(-1);
+    let warn_exit_zero_stderr = should_warn_exit_zero_stderr(success, &stderr_str);
+
+    // Check for binary data before converting to string
+    if is_binary_data(&buf) {
+        return Ok(super::ToolResult {
+            output: handle_binary_output(&buf, exit_code, elapsed_ms, warn_exit_zero_stderr),
+        });
+    }
+
+    let output_str = String::from_utf8_lossy(&buf);
 
     if args.use_sandbox && is_sandbox_initialization_failure(&stderr_str) {
         return Err(format!(
@@ -412,7 +436,7 @@ async fn execute_bash_with_args(
         output_str.into_owned()
     };
 
-    let result = truncate_output(&result, exit_code, elapsed_ms);
+    let result = truncate_output(&result, exit_code, elapsed_ms, warn_exit_zero_stderr);
 
     Ok(super::ToolResult { output: result })
 }
@@ -429,12 +453,17 @@ async fn execute_bash_unsandboxed(arguments: &str) -> Result<super::ToolResult, 
 /// the output with the metadata footer appended. The temp file receives only
 /// the raw command output (no footer); the footer is included in the inline
 /// summary so it is always visible in the tool response.
-pub(super) fn truncate_output(output: &str, exit_code: i32, elapsed_ms: u128) -> String {
+pub(super) fn truncate_output(
+    output: &str,
+    exit_code: i32,
+    elapsed_ms: u128,
+    warn_exit_zero_stderr: bool,
+) -> String {
     if output.len() <= BASH_OUTPUT_MAX_BYTES {
-        return append_metadata(output, exit_code, elapsed_ms);
+        return append_metadata(output, exit_code, elapsed_ms, warn_exit_zero_stderr);
     }
 
-    let footer = format_metadata_footer(exit_code, elapsed_ms);
+    let footer = format_metadata_suffix(exit_code, elapsed_ms, warn_exit_zero_stderr);
     let total_bytes = output.len();
     let total_lines = output.lines().count();
 
@@ -513,7 +542,7 @@ mod tests {
     #[test]
     fn truncate_output_passes_through_small_output() {
         let small = "hello world";
-        let result = truncate_output(small, 0, 100);
+        let result = truncate_output(small, 0, 100, false);
         assert!(result.contains(small));
         assert!(result.contains("[exit:0 | 100ms]"));
     }
@@ -521,7 +550,7 @@ mod tests {
     #[test]
     fn truncate_output_passes_through_at_limit() {
         let exact = "a".repeat(BASH_OUTPUT_MAX_BYTES);
-        let result = truncate_output(&exact, 0, 50);
+        let result = truncate_output(&exact, 0, 50, false);
         assert!(result.contains(&exact));
         assert!(result.contains("[exit:0 | 50ms]"));
     }
@@ -529,7 +558,7 @@ mod tests {
     #[test]
     fn truncate_output_truncates_large_output() {
         let large = "x".repeat(BASH_OUTPUT_MAX_BYTES + 1000);
-        let result = truncate_output(&large, 0, 500);
+        let result = truncate_output(&large, 0, 500, false);
         assert!(result.len() < large.len());
         assert!(result.contains("[Output too long"));
         assert!(result.contains("Full output saved to:"));
@@ -540,7 +569,7 @@ mod tests {
     fn truncate_output_handles_multibyte_chars() {
         // Create output with multi-byte UTF-8 characters that exceeds the limit
         let large = "é".repeat(BASH_OUTPUT_MAX_BYTES); // each 'é' is 2 bytes
-        let result = truncate_output(&large, 1, 2000);
+        let result = truncate_output(&large, 1, 2000, false);
         assert!(result.contains("[Output too long"));
         assert!(result.contains("[exit:1 | 2.0s]"));
     }
@@ -548,7 +577,7 @@ mod tests {
     #[test]
     fn truncate_output_temp_file_has_no_footer() {
         let large = "x".repeat(BASH_OUTPUT_MAX_BYTES + 1000);
-        let result = truncate_output(&large, 0, 100);
+        let result = truncate_output(&large, 0, 100, false);
         // Extract the temp file path from the result
         let path_line = result
             .lines()
@@ -660,7 +689,18 @@ mod tests {
         let args = r#"{"command": "echo err >&2"}"#;
         let result = Box::pin(execute_bash_unsandboxed(args)).await.unwrap();
         assert!(result.output.contains("err"));
+        assert!(result.output.contains(EXIT_ZERO_STDERR_WARNING));
         assert!(result.output.contains("[exit:0 |"));
+    }
+
+    #[tokio::test]
+    async fn failed_command_stderr_does_not_get_exit_zero_warning() {
+        let args = r#"{"command": "echo err >&2; exit 1"}"#;
+        let result = Box::pin(execute_bash_unsandboxed(args)).await.unwrap();
+
+        assert!(result.output.contains("err"));
+        assert!(!result.output.contains(EXIT_ZERO_STDERR_WARNING));
+        assert!(result.output.contains("[exit:1 |"));
     }
 
     // ===========================================================================
@@ -993,6 +1033,16 @@ mod tests {
             "Expected gzip detection, got: {}",
             result.output
         );
+    }
+
+    #[tokio::test]
+    async fn binary_output_with_exit_zero_stderr_includes_warning() {
+        let args = r#"{"command": "printf '\\0%.0s' {1..16}; echo err >&2"}"#;
+        let result = Box::pin(execute_bash_unsandboxed(args)).await.unwrap();
+
+        assert!(result.output.contains("[Binary output detected"));
+        assert!(result.output.contains(EXIT_ZERO_STDERR_WARNING));
+        assert!(result.output.contains("[exit:0 |"));
     }
 
     #[tokio::test]
