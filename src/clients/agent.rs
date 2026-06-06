@@ -107,6 +107,10 @@ pub struct Agent {
     /// Names of active and in-progress skill activations.
     /// Shared between tool executions for concurrent access.
     skill_activations: Arc<Mutex<SkillActivations>>,
+    /// Accumulated permission/policy denials encountered during this task.
+    /// Hook-blocked tool calls are recorded here so the task completion
+    /// record can report them as structured `permission_denials`.
+    permission_denials: Vec<String>,
     /// Optional user-configured command hook runner.
     hook_runner: Option<Arc<HookRunner>>,
     /// Optional best-effort telemetry sidecar writer.
@@ -133,6 +137,7 @@ impl Agent {
             tool_call_count: 0,
             skill_locations: Arc::new(HashMap::new()),
             skill_activations: Arc::new(Mutex::new(SkillActivations::default())),
+            permission_denials: Vec::new(),
             hook_runner: None,
             telemetry: None,
         }
@@ -413,6 +418,11 @@ impl Agent {
         outcome: TaskOutcome,
         duration_ms: u64,
     ) -> anyhow::Result<()> {
+        let permission_denials = if self.permission_denials.is_empty() {
+            None
+        } else {
+            Some(std::mem::take(&mut self.permission_denials))
+        };
         let record = StreamRecord::TaskComplete(TaskCompleteData {
             outcome,
             duration_ms,
@@ -421,7 +431,7 @@ impl Agent {
             session_id: self.session_id.to_string(),
             task_id: self.task_id.to_string(),
             usage: self.total_usage,
-            permission_denials: None,
+            permission_denials,
         });
 
         self.stream_record(record)
@@ -556,6 +566,15 @@ impl Agent {
                 self.tool_context.as_ref(),
                 tool_plans,
             );
+
+            // Record hook-blocked tool calls as permission denials before
+            // spawning the async execution futures.
+            for (call_id, name, plan) in &tool_plans {
+                if let ScheduledToolPlan::Hook(ToolHookPlan::Block { reason, .. }) = plan {
+                    self.permission_denials
+                        .push(format!("{name}({call_id}): {reason}"));
+                }
+            }
 
             let skill_locations = Arc::clone(&self.skill_locations);
             let skill_activations = Arc::clone(&self.skill_activations);
@@ -927,6 +946,29 @@ mod tests {
         agent
             .emit_task_complete_record(TaskOutcome::Success { result: None }, 1000)
             .unwrap();
+    }
+
+    #[test]
+    fn emit_task_complete_record_with_permission_denials() {
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let captured_clone = captured.clone();
+        let mut agent = test_agent().with_streaming_json(move |json| {
+            *captured_clone.lock().unwrap() = json.to_string();
+        });
+        // Pre-populate permission denials to simulate blocked tool calls.
+        agent
+            .permission_denials
+            .push("Bash(call-1): blocked by hook".to_string());
+        agent
+            .emit_task_complete_record(TaskOutcome::Success { result: None }, 1000)
+            .unwrap();
+        drop(agent);
+        let json: serde_json::Value = serde_json::from_str(&captured.lock().unwrap()).unwrap();
+        assert_eq!(json["type"], "task_complete");
+        assert_eq!(
+            json["permission_denials"],
+            serde_json::json!(["Bash(call-1): blocked by hook"])
+        );
     }
 
     #[test]
@@ -1730,6 +1772,11 @@ mod error_tests {
                 if output.starts_with("Hook blocked tool execution:")
                     && output.contains("blocked")
         )));
+
+        // Verify the blocked tool call was recorded as a permission denial.
+        assert_eq!(agent.permission_denials.len(), 1);
+        assert!(agent.permission_denials[0].contains("Bash(call-1):"));
+        assert!(agent.permission_denials[0].contains("blocked"));
     }
 
     // =========================================================================
