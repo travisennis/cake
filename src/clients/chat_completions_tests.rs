@@ -12,7 +12,7 @@ use crate::types::{ReasoningContent, ReasoningContentKind};
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
-fn apply_test_strategy(model: &str, messages: &mut [ChatMessage<'_>]) {
+fn apply_test_strategy(model: &str, messages: &mut Vec<ChatMessage<'_>>) {
     let config = ResolvedModelConfig {
         model_config: ModelConfig {
             model: model.to_string(),
@@ -79,10 +79,6 @@ fn assert_json_snapshot_with_environment_filters(name: &str, value: &serde_json:
     insta::with_settings!({
         filters => vec![
             (
-                r"Today's date: \d{4}-\d{2}-\d{2}\\nPlatform: .*?\\nArchitecture: .*?\\nShell: .*?\\nTerminal: .*?\\n\\nUser message:",
-                "Today's date: [DATE]\\nPlatform: [PLATFORM]\\nArchitecture: [ARCH]\\nShell: [SHELL]\\nTerminal: [TERMINAL]\\n\\nUser message:"
-            ),
-            (
                 r#"Today's date: \d{4}-\d{2}-\d{2}\\nPlatform: .*?\\nArchitecture: .*?\\nShell: .*?\\nTerminal: [^"]+""#,
                 "Today's date: [DATE]\\nPlatform: [PLATFORM]\\nArchitecture: [ARCH]\\nShell: [SHELL]\\nTerminal: [TERMINAL]\""
             ),
@@ -119,7 +115,7 @@ fn build_messages_simple_conversation() {
 }
 
 #[test]
-fn build_messages_folds_developer_context_into_first_user_message() {
+fn build_messages_preserves_developer_messages_separately() {
     let history = vec![
         ConversationItem::Message {
             role: Role::System,
@@ -152,17 +148,19 @@ fn build_messages_folds_developer_context_into_first_user_message() {
     ];
 
     let msgs = build_messages(&history);
-    assert_eq!(msgs.len(), 2);
+    assert_eq!(msgs.len(), 4);
     assert_eq!(msgs[0].role, "system");
-    assert_eq!(msgs[1].role, "user");
-    assert_eq!(
-        msgs[1].content.as_deref(),
-        Some("AGENTS.md context\n\nEnvironment context\n\nUser message:\nHello")
-    );
+    assert_eq!(msgs[0].content.as_deref(), Some("You are cake."));
+    assert_eq!(msgs[1].role, "developer");
+    assert_eq!(msgs[1].content.as_deref(), Some("AGENTS.md context"));
+    assert_eq!(msgs[2].role, "developer");
+    assert_eq!(msgs[2].content.as_deref(), Some("Environment context"));
+    assert_eq!(msgs[3].role, "user");
+    assert_eq!(msgs[3].content.as_deref(), Some("Hello"));
 }
 
 #[test]
-fn build_messages_keeps_developer_context_until_next_user_message() {
+fn build_messages_keeps_developer_messages_before_assistant() {
     let history = vec![
         ConversationItem::Message {
             role: Role::Developer,
@@ -188,14 +186,13 @@ fn build_messages_keeps_developer_context_until_next_user_message() {
     ];
 
     let msgs = build_messages(&history);
-    assert_eq!(msgs.len(), 2);
-    assert_eq!(msgs[0].role, "assistant");
-    assert_eq!(msgs[0].content.as_deref(), Some("Ready."));
-    assert_eq!(msgs[1].role, "user");
-    assert_eq!(
-        msgs[1].content.as_deref(),
-        Some("Project context\n\nUser message:\nStart now")
-    );
+    assert_eq!(msgs.len(), 3);
+    assert_eq!(msgs[0].role, "developer");
+    assert_eq!(msgs[0].content.as_deref(), Some("Project context"));
+    assert_eq!(msgs[1].role, "assistant");
+    assert_eq!(msgs[1].content.as_deref(), Some("Ready."));
+    assert_eq!(msgs[2].role, "user");
+    assert_eq!(msgs[2].content.as_deref(), Some("Start now"));
 }
 
 #[test]

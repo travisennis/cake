@@ -1,5 +1,6 @@
 ---
 source: src/clients/chat_completions_tests.rs
+assertion_line: 87
 expression: value
 ---
 {
@@ -9,7 +10,19 @@ expression: value
       "role": "system"
     },
     {
-      "content": "## Additional Context\n\nProject and user instructions are shown below. Be sure to adhere to these instructions. IMPORTANT: These instructions OVERRIDE any default behavior and you MUST follow them exactly as written.\n\n### ./AGENTS.md\n\n<instructions>\nProject instructions for contributors.\nPrefer small, focused changes.\n</instructions>\n\n\n\n## Skills\n\n<skill_instructions>\nThe following skills provide specialized instructions for specific tasks.\nWhen a task matches a skill's description, use your file-read tool to load\nthe SKILL.md at the listed location before proceeding.\nWhen a skill references relative paths, resolve them against the skill's\ndirectory (the parent of SKILL.md) and use absolute paths in tool calls.\n</skill_instructions>\n\n<available_skills>\n  <skill>\n    <name>debugging</name>\n    <description>Debug failing Rust tests</description>\n    <location>/project/.agents/skills/debugging/SKILL.md</location>\n  </skill>\n</available_skills>\n\nCurrent working directory: /project\nToday's date: [DATE]\nPlatform: [PLATFORM]\nArchitecture: [ARCH]\nShell: [SHELL]\nTerminal: [TERMINAL]\n\nUser message:\nList the files in the project root.",
+      "content": "## Additional Context\n\nProject and user instructions are shown below. Be sure to adhere to these instructions. IMPORTANT: These instructions OVERRIDE any default behavior and you MUST follow them exactly as written.\n\n### ./AGENTS.md\n\n<instructions>\nProject instructions for contributors.\nPrefer small, focused changes.\n</instructions>\n\n",
+      "role": "developer"
+    },
+    {
+      "content": "## Skills\n\n<skill_instructions>\nThe following skills provide specialized instructions for specific tasks.\nWhen a task matches a skill's description, use your file-read tool to load\nthe SKILL.md at the listed location before proceeding.\nWhen a skill references relative paths, resolve them against the skill's\ndirectory (the parent of SKILL.md) and use absolute paths in tool calls.\n</skill_instructions>\n\n<available_skills>\n  <skill>\n    <name>debugging</name>\n    <description>Debug failing Rust tests</description>\n    <location>/project/.agents/skills/debugging/SKILL.md</location>\n  </skill>\n</available_skills>",
+      "role": "developer"
+    },
+    {
+      "content": "Current working directory: /project\nToday's date: [DATE]\nPlatform: [PLATFORM]\nArchitecture: [ARCH]\nShell: [SHELL]\nTerminal: [TERMINAL]",
+      "role": "developer"
+    },
+    {
+      "content": "List the files in the project root.",
       "role": "user"
     }
   ],

@@ -134,7 +134,6 @@ struct ChatMessageBuilder<'a> {
     messages: Vec<ChatMessage<'a>>,
     pending_tool_calls: Vec<ChatToolCallRef<'a>>,
     pending_reasoning_content: Option<Cow<'a, str>>,
-    pending_developer_context: Vec<&'a str>,
 }
 
 impl<'a> ChatMessageBuilder<'a> {
@@ -143,7 +142,6 @@ impl<'a> ChatMessageBuilder<'a> {
             messages: Vec::new(),
             pending_tool_calls: Vec::new(),
             pending_reasoning_content: None,
-            pending_developer_context: Vec::new(),
         }
     }
 
@@ -172,16 +170,11 @@ impl<'a> ChatMessageBuilder<'a> {
     }
 
     fn push_message(&mut self, role: Role, content: &'a str) {
-        let Some(role_str) = chat_role_name(role) else {
-            self.pending_developer_context.push(content);
-            return;
-        };
-
-        let content = self.content_with_developer_context(role, content);
+        let role_str = chat_role_name(role);
 
         if matches!(role, Role::Assistant) && !self.pending_tool_calls.is_empty() {
             let tool_calls = self.take_pending_tool_calls();
-            self.push_assistant_message(Some(content), Some(tool_calls));
+            self.push_assistant_message(Some(Cow::Borrowed(content)), Some(tool_calls));
             return;
         }
 
@@ -192,7 +185,7 @@ impl<'a> ChatMessageBuilder<'a> {
             .flatten();
         self.messages.push(ChatMessage {
             role: Cow::Borrowed(role_str),
-            content: Some(content),
+            content: Some(Cow::Borrowed(content)),
             reasoning_content,
             tool_calls: None,
             tool_call_id: None,
@@ -224,24 +217,6 @@ impl<'a> ChatMessageBuilder<'a> {
 
     fn remember_reasoning(&mut self, content: Option<&'a [crate::types::ReasoningContent]>) {
         self.pending_reasoning_content = extract_reasoning_content(content).map(Cow::Borrowed);
-    }
-
-    fn content_with_developer_context(&mut self, role: Role, content: &'a str) -> Cow<'a, str> {
-        if !matches!(role, Role::User) {
-            return Cow::Borrowed(content);
-        }
-
-        if self.pending_developer_context.is_empty() {
-            return Cow::Borrowed(content);
-        }
-
-        let content = Cow::Owned(format!(
-            "{}\n\nUser message:\n{}",
-            self.pending_developer_context.join("\n\n"),
-            content
-        ));
-        self.pending_developer_context.clear();
-        content
     }
 
     fn flush_pending_tool_calls(&mut self) {
@@ -277,13 +252,13 @@ impl<'a> ChatMessageBuilder<'a> {
     }
 }
 
-const fn chat_role_name(role: Role) -> Option<&'static str> {
+const fn chat_role_name(role: Role) -> &'static str {
     match role {
-        Role::System => Some("system"),
-        Role::Developer => None,
-        Role::Assistant => Some("assistant"),
-        Role::User => Some("user"),
-        Role::Tool => Some("tool"),
+        Role::System => "system",
+        Role::Developer => "developer",
+        Role::Assistant => "assistant",
+        Role::User => "user",
+        Role::Tool => "tool",
     }
 }
 

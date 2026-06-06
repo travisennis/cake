@@ -12,7 +12,7 @@ The initial prompt is sent as multiple conversation messages:
 4. **Developer context**: Environment context such as working directory and date
 5. **Capabilities**: Implicitly defined by the available tools
 
-For the Responses API, mutable context is sent as individual `developer` role messages in the input array. For Chat Completions, mutable context is folded into the first user message for compatibility with OpenAI-compatible providers that do not support developer role messages consistently.
+For both the Responses API and Chat Completions, mutable context is represented as individual `developer`-role messages in the conversation model. Chat Completions emits each developer context piece as a separate message with `"role": "developer"` via `build_messages()`, but `ProviderStrategy::transform_chat_messages` demotes the role to `"user"` for providers that don't support `developer` (e.g. DeepSeek via OpenCode Zen). Each context piece keeps its own content; no concatenation occurs. The Responses API input array keeps them as separate `developer`-role entries.
 
 Each invocation also appends `prompt_context` audit records to the session file
 for the mutable context it used. Those records are not replayed on

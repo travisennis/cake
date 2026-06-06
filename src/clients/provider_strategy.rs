@@ -44,7 +44,11 @@ impl<'a> ProviderStrategy<'a> {
         provider_routing_config(&self.config.model_config.providers)
     }
 
-    pub(super) fn transform_chat_messages(&self, messages: &mut [ChatMessage<'_>]) {
+    pub(super) fn transform_chat_messages(&self, messages: &mut Vec<ChatMessage<'_>>) {
+        // Demote developer messages to user role for Chat Completions
+        // providers that don't support the `developer` role.
+        demote_developer_to_user(messages);
+
         if !requires_reasoning_content_tool_call_fallback(&self.config.model_config.model) {
             return;
         }
@@ -111,6 +115,21 @@ fn provider_routing_config(providers: &[String]) -> Option<ProviderConfig> {
 
 fn requires_reasoning_content_tool_call_fallback(model: &str) -> bool {
     model.to_ascii_lowercase().contains("kimi")
+}
+
+/// Rewrite `developer` role messages to `user` role for providers that don't
+/// support the `developer` role in Chat Completions.
+///
+/// The `developer` role is standard in the `OpenAI` Chat Completions API but not
+/// universally supported (e.g. `DeepSeek` via `OpenCode` Zen rejects it). This
+/// preserves each context piece as its own message with role `user` rather
+/// than concatenating them, keeping context boundaries intact.
+fn demote_developer_to_user(messages: &mut Vec<ChatMessage<'_>>) {
+    for msg in messages.iter_mut() {
+        if msg.role == "developer" {
+            msg.role = Cow::Borrowed("user");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -313,5 +332,103 @@ mod tests {
             kimi_messages[0].reasoning_content.as_deref(),
             Some("actual reasoning")
         );
+    }
+
+    #[test]
+    fn demote_developer_changes_role_to_user() {
+        let mut messages = vec![
+            ChatMessage {
+                role: Cow::Borrowed("system"),
+                content: Some(Cow::Borrowed("system")),
+                reasoning_content: None,
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            ChatMessage {
+                role: Cow::Borrowed("developer"),
+                content: Some(Cow::Borrowed("AGENTS.md context")),
+                reasoning_content: None,
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            ChatMessage {
+                role: Cow::Borrowed("developer"),
+                content: Some(Cow::Borrowed("Environment context")),
+                reasoning_content: None,
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            ChatMessage {
+                role: Cow::Borrowed("user"),
+                content: Some(Cow::Borrowed("Hello")),
+                reasoning_content: None,
+                tool_calls: None,
+                tool_call_id: None,
+            },
+        ];
+
+        demote_developer_to_user(&mut messages);
+
+        // Each developer message keeps its content, just becomes "user" role
+        assert_eq!(messages.len(), 4);
+        assert_eq!(messages[0].role, "system");
+        assert_eq!(messages[1].role, "user");
+        assert_eq!(messages[1].content.as_deref(), Some("AGENTS.md context"));
+        assert_eq!(messages[2].role, "user");
+        assert_eq!(messages[2].content.as_deref(), Some("Environment context"));
+        assert_eq!(messages[3].role, "user");
+        assert_eq!(messages[3].content.as_deref(), Some("Hello"));
+    }
+
+    #[test]
+    fn demote_developer_works_without_preceding_user_message() {
+        let mut messages = vec![
+            ChatMessage {
+                role: Cow::Borrowed("developer"),
+                content: Some(Cow::Borrowed("context")),
+                reasoning_content: None,
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            ChatMessage {
+                role: Cow::Borrowed("assistant"),
+                content: Some(Cow::Borrowed("response")),
+                reasoning_content: None,
+                tool_calls: None,
+                tool_call_id: None,
+            },
+        ];
+
+        demote_developer_to_user(&mut messages);
+
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].role, "user");
+        assert_eq!(messages[0].content.as_deref(), Some("context"));
+    }
+
+    #[test]
+    fn demote_developer_no_developer_messages_is_noop() {
+        let mut messages = vec![
+            ChatMessage {
+                role: Cow::Borrowed("system"),
+                content: Some(Cow::Borrowed("system")),
+                reasoning_content: None,
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            ChatMessage {
+                role: Cow::Borrowed("user"),
+                content: Some(Cow::Borrowed("Hello")),
+                reasoning_content: None,
+                tool_calls: None,
+                tool_call_id: None,
+            },
+        ];
+
+        demote_developer_to_user(&mut messages);
+
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].role, "system");
+        assert_eq!(messages[1].role, "user");
     }
 }
