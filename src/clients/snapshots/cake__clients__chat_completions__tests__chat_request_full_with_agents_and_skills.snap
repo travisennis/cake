@@ -1,0 +1,141 @@
+---
+source: src/clients/chat_completions_tests.rs
+expression: value
+---
+{
+  "messages": [
+    {
+      "content": "You are cake. You are running as a coding agent in a CLI on the user's computer.\n\n## Available tools\n\n- **Bash**: Execute shell commands. Use this for search and file discovery with commands such as `rg` and `fd`.\n- **Read**: Read file contents.\n- **Edit**: Make targeted literal search-and-replace edits to files.\n- **Write**: Create or overwrite files.\n\nOnly these tools are available. There is no Glob, Grep, or LS tool.\n\n## Behavior\n\n- Before any tool calls for a multi-step task, send a short user-visible update that acknowledges the request and states the first step. Keep it to one or two sentences.\n\n## Efficiency rules\n\n- Focus on speed and efficiency. Call multiple independent tools in one turn when safe: parallel `Read` calls and non-mutating `Bash` checks. For `Edit` and `Write`, only combine calls targeting distinct files. Do not issue multiple `Edit` or `Write` calls for the same file in one turn — if a file has just been changed, re-read it before further edits.\n- Prefer targeted edits (Edit tool) over full file rewrites (Write tool) when making changes to existing files.\n- Do not repeat tool calls whose results would be unchanged. If the underlying state has changed (e.g. you fixed test failures and want to re-run tests), call again.\n- Skip unnecessary exploration when the path forward is clear. Act directly.\n- Read only the lines you need. When using the Read tool, prefer start_line and end_line over reading entire files when you know the relevant region.\n- Do not narrate your plan before acting. Act, then summarize concisely.",
+      "role": "system"
+    },
+    {
+      "content": "## Additional Context\n\nProject and user instructions are shown below. Be sure to adhere to these instructions. IMPORTANT: These instructions OVERRIDE any default behavior and you MUST follow them exactly as written.\n\n### ./AGENTS.md\n\n<instructions>\nProject instructions for contributors.\nPrefer small, focused changes.\n</instructions>\n\n\n\n## Skills\n\n<skill_instructions>\nThe following skills provide specialized instructions for specific tasks.\nWhen a task matches a skill's description, use your file-read tool to load\nthe SKILL.md at the listed location before proceeding.\nWhen a skill references relative paths, resolve them against the skill's\ndirectory (the parent of SKILL.md) and use absolute paths in tool calls.\n</skill_instructions>\n\n<available_skills>\n  <skill>\n    <name>debugging</name>\n    <description>Debug failing Rust tests</description>\n    <location>/project/.agents/skills/debugging/SKILL.md</location>\n  </skill>\n</available_skills>\n\nCurrent working directory: /project\nToday's date: [DATE]\nPlatform: [PLATFORM]\nArchitecture: [ARCH]\nShell: [SHELL]\nTerminal: [TERMINAL]\n\nUser message:\nList the files in the project root.",
+      "role": "user"
+    }
+  ],
+  "model": "test-chat-model",
+  "temperature": 0.20000000298023224,
+  "tool_choice": "auto",
+  "tools": [
+    {
+      "function": {
+        "description": "Execute a shell command in the host machine's terminal. Returns stdout and stderr with a footer showing exit code and elapsed time. The working directory persists between commands; shell state does not. Does not support interactive commands.\n\nGuidance:\n- File search: Read file contents with Read, explore directories with Bash commands (ls, find, tree)\n- Content search: Use commands via Bash\n- Read files: Use Read tool, not cat/head/tail\n- Edit files: Use Edit tool, not sed/awk\n- Write files: Use Write tool, not echo/cat\n\nNote: Shell interprets backticks (`) and $() inside double-quoted arguments as command substitution.\n",
+        "name": "Bash",
+        "parameters": {
+          "properties": {
+            "command": {
+              "description": "The command to execute",
+              "type": "string"
+            },
+            "timeout": {
+              "description": "Timeout in seconds (default: 60)",
+              "type": "number"
+            }
+          },
+          "required": [
+            "command"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Edit text in files using literal search-and-replace. All non-no-op edits in a single call succeed atomically or none are applied. Edits with identical old_text and new_text are skipped.\n\nGuidance:\n- Always Read the file first before editing.\n- old_text must match exactly once in the file. Include 3+ surrounding lines for uniqueness.\n- For multi-line matches, preserve exact whitespace and indentation.\n- Special characters in JSON (backticks, quotes, backslashes) must be escaped.\n- Do not issue multiple Edit calls for the same file in one turn — re-read first.\n",
+        "name": "Edit",
+        "parameters": {
+          "additionalProperties": false,
+          "properties": {
+            "edits": {
+              "description": "The edits to make to the file. Edits with identical old_text and new_text are no-ops; they are skipped and reported without changing the file. The max number of edits you can do at once is 20.",
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "new_text": {
+                    "description": "Replacement text. Use empty string to delete",
+                    "type": "string"
+                  },
+                  "old_text": {
+                    "description": "Exact text to replace. Must be unique in the file",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "old_text",
+                  "new_text"
+                ],
+                "type": "object"
+              },
+              "maxItems": 20,
+              "minItems": 1,
+              "type": "array"
+            },
+            "path": {
+              "description": "The path of the file to edit",
+              "type": "string"
+            }
+          },
+          "required": [
+            "path",
+            "edits"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Read a file's contents. Returns line-numbered content. Supports reading specific line ranges to avoid loading large files entirely.\n\nBehavior:\n- Defaults to reading lines 1-200. Provide start_line/end_line for large files.\n- Returns a \"N more lines\" note when the file extends beyond the requested range.\n- Rejects binary files (null-byte detection).\n- Rejects directory paths (use Bash with ls, find, or tree for directory listings).\n",
+        "name": "Read",
+        "parameters": {
+          "properties": {
+            "end_line": {
+              "description": "Last line to read (1-indexed, inclusive). Default: 200 (or start_line+199 when start_line given)",
+              "type": "integer"
+            },
+            "path": {
+              "description": "Absolute path to the file to read",
+              "type": "string"
+            },
+            "start_line": {
+              "description": "First line to read (1-indexed, inclusive). Default: 1",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Create a new file or overwrite an existing one with the given content. Automatically creates parent directories if they don't exist. Prefer the Edit tool for targeted modifications to existing files — it sends only the diff.\n\nGuidance:\n- Use for new files and complete rewrites.\n- Do not issue multiple Write calls for the same file in one turn; combine changes into one Write or use Edit.\n",
+        "name": "Write",
+        "parameters": {
+          "properties": {
+            "content": {
+              "description": "The full content to write to the file",
+              "type": "string"
+            },
+            "path": {
+              "description": "Absolute path to the file to create or overwrite",
+              "type": "string"
+            }
+          },
+          "required": [
+            "path",
+            "content"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    }
+  ],
+  "top_p": 0.8999999761581421
+}

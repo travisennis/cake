@@ -415,6 +415,12 @@ fn malformed_function_call_error(
 mod tests {
     use super::*;
     use crate::clients::responses_types::{OutputContent, OutputMessage, ProviderConfig};
+    use crate::clients::tools::default_tool_registry;
+    use crate::config::skills::{Skill, SkillScope};
+    use crate::config::{AgentsFile, SkillCatalog};
+    use crate::prompts::build_initial_prompt_messages;
+    use std::path::{Path, PathBuf};
+    use tempfile::TempDir;
 
     fn to_api_input_json(item: &ConversationItem) -> serde_json::Value {
         serde_json::to_value(ResponsesApiInputItem::from(item))
@@ -426,6 +432,64 @@ mod tests {
             .into_iter()
             .map(|item| serde_json::to_value(item).unwrap())
             .collect()
+    }
+
+    fn full_prompt_history() -> Vec<ConversationItem> {
+        let config_dir = TempDir::new().unwrap();
+        let agents_files = vec![AgentsFile {
+            path: "./AGENTS.md".to_string(),
+            content: "Project instructions for contributors.\nPrefer small, focused changes."
+                .to_string(),
+        }];
+        let mut skill_catalog = SkillCatalog::empty();
+        skill_catalog.skills.push(Skill {
+            name: "debugging".to_string(),
+            description: "Debug failing Rust tests".to_string(),
+            location: PathBuf::from("/project/.agents/skills/debugging/SKILL.md"),
+            base_directory: PathBuf::from("/project/.agents/skills/debugging"),
+            scope: SkillScope::Project,
+        });
+
+        let mut history = build_initial_prompt_messages(
+            Path::new("/project"),
+            config_dir.path(),
+            &agents_files,
+            &skill_catalog,
+        )
+        .into_iter()
+        .map(|(role, content)| ConversationItem::Message {
+            role,
+            content,
+            id: None,
+            status: None,
+            timestamp: None,
+        })
+        .collect::<Vec<_>>();
+        history.push(ConversationItem::Message {
+            role: Role::User,
+            content: "List the files in the project root.".to_string(),
+            id: None,
+            status: None,
+            timestamp: None,
+        });
+        history
+    }
+
+    fn assert_json_snapshot_with_environment_filters(name: &str, value: &serde_json::Value) {
+        insta::with_settings!({
+            filters => vec![
+                (
+                    r"Today's date: \d{4}-\d{2}-\d{2}\\nPlatform: .*?\\nArchitecture: .*?\\nShell: .*?\\nTerminal: .*?\\n\\nUser message:",
+                    "Today's date: [DATE]\\nPlatform: [PLATFORM]\\nArchitecture: [ARCH]\\nShell: [SHELL]\\nTerminal: [TERMINAL]\\n\\nUser message:"
+                ),
+                (
+                    r#"Today's date: \d{4}-\d{2}-\d{2}\\nPlatform: .*?\\nArchitecture: .*?\\nShell: .*?\\nTerminal: [^"]+""#,
+                    "Today's date: [DATE]\\nPlatform: [PLATFORM]\\nArchitecture: [ARCH]\\nShell: [SHELL]\\nTerminal: [TERMINAL]\""
+                ),
+            ]
+        }, {
+            insta::assert_json_snapshot!(name, value);
+        });
     }
 
     #[test]
@@ -970,6 +1034,30 @@ mod tests {
         insta::assert_json_snapshot!(
             "responses_request_with_tools_provider_and_reasoning",
             serde_json::to_value(&request).unwrap()
+        );
+    }
+
+    #[test]
+    fn snapshot_responses_request_full_with_agents_and_skills() {
+        let history = full_prompt_history();
+        let registry = default_tool_registry();
+        let (instructions, non_system_history) = extract_instructions(&history).unwrap();
+        let request = Request {
+            model: "test-responses-model",
+            input: build_input(non_system_history),
+            instructions,
+            temperature: Some(0.2),
+            top_p: Some(0.9),
+            max_output_tokens: None,
+            tools: Some(registry.definitions()),
+            tool_choice: Some("auto".to_string()),
+            provider: None,
+            reasoning: None,
+        };
+
+        assert_json_snapshot_with_environment_filters(
+            "responses_request_full_with_agents_and_skills",
+            &serde_json::to_value(&request).unwrap(),
         );
     }
 
