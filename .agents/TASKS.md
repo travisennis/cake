@@ -29,7 +29,7 @@ ahm --dry-run index
 
 A clean repository immediately after `ahm index` produces no dry-run output.
 
-Do not run `ahm index` after `ahm task create`, `ahm task start <id>`, `ahm task complete <id>`, `ahm task cancel <id>`, or `ahm task reopen <id>` unless you edited task or ExecPlan metadata by hand afterward. Those commands already regenerate task, research, and ExecPlan indexes.
+Do not run `ahm index` after `ahm task create`, `ahm task start <id>`, `ahm task complete <id>`, `ahm task cancel <id>`, `ahm task accept <id>`, or `ahm task reopen <id>` unless you edited task or ExecPlan metadata by hand afterward. Those commands already regenerate task, research, and ExecPlan indexes.
 
 ## Choosing Work
 
@@ -55,7 +55,7 @@ Available flags include:
 - `--priority <value>`, `-p <value>` — set priority (default P2)
 - `--effort <value>` — set effort (default S)
 - `--labels <value>` — set labels (default `type:task, area:cli`)
-- `--status <value>` — set initial status (default Pending)
+- `--status <value>` — set initial status (default Open)
 - `--description <text>`, `-d <text>` — set summary text
 - `--body-file <path>` — read the full Markdown body from a file, or `-` for stdin
 
@@ -94,7 +94,7 @@ Use this front matter shape so the indexes can be generated:
 ---
 id: 136
 title: Short Imperative Task Title
-status: Pending
+status: Open
 priority: P2
 effort: S
 labels: type:task, area:cli
