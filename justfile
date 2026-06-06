@@ -1,4 +1,4 @@
-cargo_crap_excludes := "--exclude 'tests/**' --exclude 'src/clients/chat_completions_tests.rs' --exclude 'src/config/settings_tests.rs' --exclude 'src/clients/tools/sandbox/linux.rs'"
+cargo_crap_excludes := "--exclude 'tests/**' --exclude 'src/clients/agent/agent_tests.rs' --exclude 'src/clients/chat_completions_tests.rs' --exclude 'src/config/settings_tests.rs' --exclude 'src/clients/tools/sandbox/linux.rs'"
 
 # Install required development tools
 setup:

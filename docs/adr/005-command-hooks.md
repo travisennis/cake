@@ -58,5 +58,5 @@ Hook activity is recorded through tracing and appended to session JSONL as `hook
 - `.cake/hooks.json.example` - Example project hook configuration
 - `src/config/hooks.rs` - Hook config loading, validation, and matcher handling
 - `src/hooks.rs` - Hook runner, payloads, decisions, and session records
-- `src/clients/agent.rs` - Tool-loop integration for pre-tool and post-tool hooks
+- `src/clients/agent/agent_loop.rs` - Tool-loop integration for pre-tool and post-tool hooks
 - `src/main.rs` - Session lifecycle hook integration

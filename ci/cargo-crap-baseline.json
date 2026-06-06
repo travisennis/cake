@@ -3269,10 +3269,10 @@
     {
       "file": "./src/clients/agent.rs",
       "function": "Agent::emit_task_complete_record",
-      "line": 411,
-      "cyclomatic": 1.0,
+      "line": 379,
+      "cyclomatic": 2.0,
       "coverage": 100.0,
-      "crap": 1.0
+      "crap": 2.0
     },
     {
       "file": "./src/clients/agent.rs",
@@ -3286,22 +3286,6 @@
       "file": "./src/clients/agent.rs",
       "function": "Agent::telemetry_context",
       "line": 706,
-      "cyclomatic": 1.0,
-      "coverage": 100.0,
-      "crap": 1.0
-    },
-    {
-      "file": "./src/clients/agent.rs",
-      "function": "test_resolved_model_config",
-      "line": 778,
-      "cyclomatic": 1.0,
-      "coverage": 100.0,
-      "crap": 1.0
-    },
-    {
-      "file": "./src/clients/agent.rs",
-      "function": "test_agent_for",
-      "line": 800,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0

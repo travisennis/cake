@@ -188,8 +188,9 @@ When `--output-format json` is specified, a single JSON summary object is printe
 
 Use symbol search to locate specific implementations:
 
-- **Agent public API and loop entry**: `Agent::send` in `clients/agent.rs`
-- **Per-turn HTTP + retry**: `AgentRunner::complete_turn` in `clients/agent_runner.rs` (the high-level wrapper is `Agent::complete_turn` in `clients/agent.rs`)
+- **Agent public API**: `Agent` in `clients/agent.rs`
+- **Agent loop entry**: `Agent::send` in `clients/agent/agent_loop.rs`
+- **Per-turn HTTP + retry**: `AgentRunner::complete_turn` in `clients/agent_runner.rs` (the high-level wrapper is `Agent::complete_turn` in `clients/agent/agent_loop.rs`)
 - **API dispatch**: `Backend::send_request` / `Backend::parse_response` in `clients/backend.rs`
 - **Conversation state**: `ConversationState` and `accumulate_usage` in `clients/agent_state.rs`
 - **Provider-specific headers/shaping**: `ProviderStrategy` in `clients/provider_strategy.rs`
