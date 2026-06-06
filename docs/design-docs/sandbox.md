@@ -42,16 +42,13 @@ On Linux, cake uses [Landlock](https://landlock.io/), a Linux Security Module av
 
 The Landlock sandbox is applied via `pre_exec`, so rules take effect in the child process after `fork()` but before `exec()`.
 
-Official Linux release binaries include Landlock support. Source builds should
-compile it in explicitly:
+All Linux builds include Landlock support by default. No special feature flag
+is needed --- `cargo build --release` on Linux automatically compiles with
+Landlock.
 
-```bash
-cargo build --release --features landlock
-```
-
-With sandboxing enabled, Linux fails closed if cake was built without Landlock
-support or if Landlock reports anything less than a fully enforced ruleset.
-Use `CAKE_SANDBOX=off` as the explicit opt-out for unsandboxed Bash execution.
+With sandboxing enabled, Linux fails closed if Landlock reports anything less
+than a fully enforced ruleset. Use `CAKE_SANDBOX=off` as the explicit opt-out
+for unsandboxed Bash execution.
 
 System paths on Linux include `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64`, `/etc/alternatives`, and `/snap`.
 
@@ -179,17 +176,14 @@ to apply another Seatbelt profile. Bash commands fail closed. Run cake from a
 normal terminal to preserve sandbox enforcement, or set `CAKE_SANDBOX=off` when
 intentionally running without cake's filesystem sandbox.
 
-### "Landlock feature not enabled" error (Linux)
+### "Landlock not enforced" error (Linux)
 
-Rebuild with the Landlock feature:
-
-```bash
-cargo build --release --features landlock
-```
-
-### Sandbox not enforced on older Linux kernels
-
-Landlock requires kernel 5.13 or later. On older kernels, Landlock reports `NotEnforced` status and Bash commands fail closed unless sandboxing is explicitly disabled with `CAKE_SANDBOX=off`. Cake also fails closed when Landlock reports `PartiallyEnforced`, because the filesystem sandbox is treated as unavailable unless the ruleset is fully enforced. Check your kernel version with `uname -r`.
+Landlock requires kernel 5.13 or later. On older kernels, Landlock reports
+`NotEnforced` status and Bash commands fail closed unless sandboxing is
+explicitly disabled with `CAKE_SANDBOX=off`. Cake also fails closed when
+Landlock reports `PartiallyEnforced`, because the filesystem sandbox is treated
+as unavailable unless the ruleset is fully enforced. Check your kernel version
+with `uname -r`.
 
 ### SSH git operations fail with host key verification
 

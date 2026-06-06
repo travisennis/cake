@@ -7,11 +7,11 @@ name: Release Build
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to build'
+        description: "Version to build"
         required: false
 
 permissions:
@@ -40,19 +40,14 @@ jobs:
           toolchain: 1.96.0
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
-      
+
       - name: Build
-        run: |
-          if [ "${{ matrix.target }}" = "x86_64-unknown-linux-gnu" ]; then
-            cargo build --release --target ${{ matrix.target }} --features landlock
-          else
-            cargo build --release --target ${{ matrix.target }}
-          fi
-      
+        run: cargo build --release --target ${{ matrix.target }}
+
       - name: Prepare artifact
         run: |
           mv target/${{ matrix.target }}/release/cake ${{ matrix.artifact }}
-      
+
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
@@ -68,7 +63,7 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           path: artifacts
-      
+
       - name: Create Release
         uses: softprops/action-gh-release@v3
         with:

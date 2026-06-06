@@ -1,13 +1,14 @@
 # ADR 006: Linux Landlock Release Artifacts
 
-**Status:** Accepted  
-**Date:** 2026-05-18
+**Status:** Superseded by [ADR 007](./007-linux-landlock-default-dependency.md)  
+**Date:** 2026-05-18 (accepted), 2026-06-06 (superseded)
 
 ## Context
 
 Cake treats the Bash tool's OS filesystem sandbox as the enforcement boundary for
-model-requested shell commands. On Linux, that sandbox uses Landlock, which is
-implemented as an optional Cargo feature because the dependency is Linux-only.
+model-requested shell commands. On Linux, that sandbox uses Landlock, which was
+originally implemented as an optional Cargo feature because the dependency is
+Linux-only.
 
 Before this decision, Linux release artifacts were built with the default feature
 set. Those binaries failed closed when sandboxing was enabled because Landlock
@@ -55,9 +56,17 @@ CI must continue to cover both feature modes on Linux:
   would continue to fail closed for normal Bash usage unless users disabled
   sandboxing or rebuilt cake themselves.
 
+## Superseded By
+
+This ADR was superseded by [ADR 007](./007-linux-landlock-default-dependency.md),
+which makes Landlock a target-specific non-optional dependency on Linux so that
+all Linux builds (including `cargo install`) automatically include Landlock
+without requiring a feature flag.
+
 ## References
 
 - Task 100: Decide Linux Landlock Default Feature Policy
+- Task 179: Reassess Linux Landlock Default Build Policy
 - `Cargo.toml`
 - `.github/workflows/release.yml`
 - `docs/design-docs/sandbox.md`

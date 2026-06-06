@@ -13,7 +13,6 @@ use crate::clients::tools::sandbox::{SandboxConfig, SandboxStrategy};
 pub struct LandlockSandbox;
 
 impl LandlockSandbox {
-    #[cfg(feature = "landlock")]
     fn enforce_full_ruleset(status: &landlock::RulesetStatus) -> Result<(), std::io::Error> {
         match status {
             landlock::RulesetStatus::FullyEnforced => Ok(()),
@@ -31,7 +30,6 @@ impl LandlockSandbox {
     }
 
     /// Apply Landlock rules in the current process (to be called in `pre_exec`)
-    #[cfg(feature = "landlock")]
     fn apply_landlock_rules(config: &SandboxConfig) -> Result<(), std::io::Error> {
         use landlock::{ABI, Access, AccessFs, Ruleset, RulesetAttr, RulesetCreatedAttr};
 
@@ -104,29 +102,14 @@ impl SandboxStrategy for LandlockSandbox {
         command: &mut tokio::process::Command,
         config: &SandboxConfig,
     ) -> Result<(), String> {
-        #[cfg(feature = "landlock")]
-        {
-            let config = config.clone();
-            // SAFETY: `pre_exec` runs in the child process immediately before
-            // `exec`; this closure only installs Landlock rules for that child.
-            unsafe {
-                command.pre_exec(move || Self::apply_landlock_rules(&config));
-            }
-
-            Ok(())
+        let config = config.clone();
+        // SAFETY: `pre_exec` runs in the child process immediately before
+        // `exec`; this closure only installs Landlock rules for that child.
+        unsafe {
+            command.pre_exec(move || Self::apply_landlock_rules(&config));
         }
 
-        #[cfg(not(feature = "landlock"))]
-        {
-            let _ = (&config.writable, &config.system_paths, &config.readable);
-            let _ = command;
-            Err(
-                "Linux sandbox unavailable: cake was built without Landlock support. Rebuild \
-                 with --features landlock, or set CAKE_SANDBOX=off to run Bash commands without \
-                 filesystem sandboxing."
-                    .to_string(),
-            )
-        }
+        Ok(())
     }
 }
 
@@ -134,29 +117,7 @@ impl SandboxStrategy for LandlockSandbox {
 mod tests {
     use super::*;
 
-    #[cfg(all(target_os = "linux", not(feature = "landlock")))]
-    #[test]
-    fn apply_fails_closed_without_landlock_feature() {
-        let sandbox = LandlockSandbox;
-        let context = crate::clients::tools::ToolContext::with_temp_dirs(
-            std::path::PathBuf::from("/tmp"),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-        );
-        let config = SandboxConfig::build(&context);
-        let mut command = tokio::process::Command::new("bash");
-
-        let Err(error) = sandbox.apply(&mut command, &config) else {
-            panic!("Linux sandboxing should fail closed without Landlock support");
-        };
-
-        assert!(error.contains("built without Landlock support"));
-        assert!(error.contains("CAKE_SANDBOX=off"));
-    }
-
-    #[cfg(all(target_os = "linux", feature = "landlock"))]
+    #[cfg(target_os = "linux")]
     #[test]
     fn landlock_status_must_be_fully_enforced() {
         use landlock::RulesetStatus;
