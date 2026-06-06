@@ -134,4 +134,4 @@ See [Compaction](pi-compaction.md) for branch summarization internals and extens
 
 Session files are JSONL and contain message entries, model changes, thinking-level changes, labels, compactions, branch summaries, and extension entries.
 
-For parsers, extensions, SDK usage, and the full SessionManager API, see [Session Format](pip-session-format.md).
+For parsers, extensions, SDK usage, and the full SessionManager API, see Session Format (see pi-session-format.md).

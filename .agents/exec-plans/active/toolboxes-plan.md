@@ -31,7 +31,6 @@ The behavior will be observable by creating a tiny executable toolbox script, ru
 
 ## Outcomes & Retrospective
 
-No implementation has started. At completion, update this section with the final protocol decisions, the test commands run, user-facing docs added, and any deviations from the Amp-inspired design retained below.
 
 ## What Amp Toolboxes Are
 

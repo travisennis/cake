@@ -35,7 +35,6 @@ The behavior is observable by running cake from an interactive terminal that sup
 
 ## Outcomes & Retrospective
 
-No OSC 9;4 implementation has started. At completion, update this section with the final lifecycle integration, test results, and whether stdout or stderr was used for the escape sequence after validating JSON-output behavior.
 
 ## Background
 

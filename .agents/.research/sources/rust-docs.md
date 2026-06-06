@@ -61,7 +61,7 @@ fn copy(src: File, dst: File) {}
 When publicly re-exporting crate items via `pub use foo::Foo` or `pub use foo::*`, they show up in an opaque re-export block. In most cases, this is not
 helpful to the reader:
 
-![TEXT](M-DOC-INLINE_BAD.png)
+TEXT
 
 Instead, you should annotate them with `#[doc(inline)]` at the `use` site, for them to be inlined organically:
 
@@ -76,7 +76,7 @@ pub use foo::*;
 pub use foo::Foo;
 ```
 
-![TEXT](M-DOC-INLINE_GOOD.png)
+TEXT
 
 This does not apply to `std` or 3rd party types; these should always be re-exported without inlining to make it clear they are external.
 
@@ -106,11 +106,11 @@ exceed to keep things tidy on most screens.
 
 If you keep things in a line, your docs will become easily skimmable. Compare, for example, the standard library:
 
-![TEXT](M-FIRST-DOC-SENTENCE_GOOD.png)
+TEXT
 
 Otherwise, you might end up with _widows_ and a generally unpleasant reading flow:
 
-![TEXT](M-FIRST-DOC-SENTENCE_BAD.png)
+TEXT
 
 As a rule of thumb, the first sentence should not exceed **15 words**.
 

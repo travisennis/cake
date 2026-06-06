@@ -32,11 +32,6 @@ The behavior is observable by running documented profiling commands, collecting 
 
 ## Outcomes & Retrospective
 
-This performance plan is still open. At completion, update this section with the profiled workloads, concrete measurements, source changes made or rejected, benchmark results, and the final `just ci` outcome.
-
-Systematic plan for profiling and optimizing cake, adapted from the [seqpacker profiling article](https://alphakhaw.com/blog/seqpacker-profiling-rust-flamegraph-pgo-bolt).
-
---------------------------------------------------------------------------------
 
 ## Context
 

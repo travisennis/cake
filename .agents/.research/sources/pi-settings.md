@@ -228,7 +228,7 @@ Object form filters which resources to load:
 }
 ```
 
-See [packages.md](packages.md) for package management details.
+See packages.md for package management details.
 
 ## Example
 
