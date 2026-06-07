@@ -249,7 +249,7 @@ fn format_metadata_footer(exit_code: i32, elapsed_ms: u128) -> String {
 fn format_metadata_suffix(exit_code: i32, elapsed_ms: u128, warn_exit_zero_stderr: bool) -> String {
     let footer = format_metadata_footer(exit_code, elapsed_ms);
     if warn_exit_zero_stderr {
-        format!("{EXIT_ZERO_STDERR_WARNING}\n{footer}")
+        format!("{EXIT_ZERO_STDERR_WARNING}\n\n{footer}")
     } else {
         footer
     }
@@ -266,7 +266,7 @@ fn append_metadata(
     if output.is_empty() {
         footer
     } else {
-        format!("{}\n{footer}", output.trim_end())
+        format!("{}\n\n{footer}", output.trim_end())
     }
 }
 

@@ -129,7 +129,7 @@ This allows creating new files in new subdirectories while maintaining security.
 - Binary output: Written to temp file with helpful message and MIME type detection
 - Timeout: Command killed, timeout error returned
 - Read cap: Up to 100KB (2× the inline limit) is read from the process; output beyond this is discarded and marked with `[... output truncated at 100000 bytes ...]`
-- Stderr on success: If a command exits 0 but writes to stderr, the returned output includes `[stderr output present despite exit 0]` immediately before the metadata footer. Cake flags any non-empty stderr this way because the tool cannot reliably distinguish harmless progress output from diagnostics.
+- Stderr on success: If a command exits 0 but writes to stderr, the returned output includes `[stderr output present despite exit 0]` separated from the metadata footer by a blank line. Cake flags any non-empty stderr this way because the tool cannot reliably distinguish harmless progress output from diagnostics.
 
 **Truncated Output**:
 
@@ -146,6 +146,7 @@ Consider reformulating the command to produce less output.
 
 --- last ~12500 bytes ---
 <last ~12.5KB of output>
+
 [exit:0 | 1.2s]
 ```
 
@@ -159,6 +160,7 @@ If the temp file cannot be written (e.g., disk full), a fallback inline truncati
 
 --- last ~25000 bytes ---
 <last ~25KB of output>
+
 [exit:0 | 1.2s]
 ```
 
@@ -170,11 +172,12 @@ All Bash tool output includes a metadata footer showing exit code and execution 
 [exit:0 | 12ms]
 ```
 
-When a successful command writes to stderr, the warning marker appears before the footer:
+When a successful command writes to stderr, the warning marker appears before the footer, separated by a blank line:
 
 ```
 <stdout and stderr output>
 [stderr output present despite exit 0]
+
 [exit:0 | 12ms]
 ```
 
@@ -204,6 +207,7 @@ Detected type: image/png
 Binary data saved to: /tmp/cake/bash_binary_abc123
 The command produced binary output which cannot be displayed as text.
 You can inspect the file with appropriate tools (e.g., `file`, `hexdump`, `xxd`).
+
 [exit:0 | 15ms]
 ```
 
@@ -244,7 +248,6 @@ When a command is blocked, the tool returns a `BLOCKED` message with structured 
 ```
 ⚠️ BLOCKED: <summary>
 Reason: <why the command is dangerous>
-Command: <the matched command fragment>
 Tip: <safe alternative>
 ```
 

@@ -11,11 +11,10 @@
 // =============================================================================
 
 /// `git reset --hard` / `git reset --merge`
-pub(super) fn check_git_reset(lower: &str, original: &str) -> Result<(), String> {
+pub(super) fn check_git_reset(lower: &str) -> Result<(), String> {
     if lower.contains("git reset --hard") || lower.contains("git reset --merge") {
         return Err(super::blocked(
             "git reset --hard/--merge destroys uncommitted changes",
-            original,
             "Use 'git stash' to save changes first, or 'git reset --soft' to preserve them.",
         ));
     }
@@ -23,7 +22,7 @@ pub(super) fn check_git_reset(lower: &str, original: &str) -> Result<(), String>
 }
 
 /// `git checkout -- <file>`
-pub(super) fn check_git_checkout(lower: &str, original: &str) -> Result<(), String> {
+pub(super) fn check_git_checkout(lower: &str) -> Result<(), String> {
     if lower.contains("git checkout --") {
         // Verify there's a path after `--`
         if let Some(pos) = lower.find("git checkout --") {
@@ -34,7 +33,6 @@ pub(super) fn check_git_checkout(lower: &str, original: &str) -> Result<(), Stri
             if !after.is_empty() && !after.starts_with('-') {
                 return Err(super::blocked(
                     "git checkout -- <file> discards uncommitted file changes",
-                    original,
                     "Use 'git restore --staged <file>' to unstage, or 'git stash' to save changes.",
                 ));
             }
@@ -45,7 +43,7 @@ pub(super) fn check_git_checkout(lower: &str, original: &str) -> Result<(), Stri
 
 /// `git restore <file>` without `--staged`, or with `--worktree`
 /// `git restore -b <branch>` is allowed (creates a branch).
-pub(super) fn check_git_restore(lower: &str, original: &str) -> Result<(), String> {
+pub(super) fn check_git_restore(lower: &str) -> Result<(), String> {
     if !lower.contains("git restore") {
         return Ok(());
     }
@@ -54,7 +52,6 @@ pub(super) fn check_git_restore(lower: &str, original: &str) -> Result<(), Strin
     if lower.contains("--worktree") {
         return Err(super::blocked(
             "git restore --worktree discards uncommitted changes",
-            original,
             "Use 'git restore --staged <file>' to only unstage, or 'git stash' to save changes.",
         ));
     }
@@ -78,7 +75,6 @@ pub(super) fn check_git_restore(lower: &str, original: &str) -> Result<(), Strin
         if !after.is_empty() {
             return Err(super::blocked(
                 "git restore <file> without --staged discards uncommitted changes",
-                original,
                 "Use 'git restore --staged <file>' to only unstage, or 'git stash' to save changes.",
             ));
         }
@@ -88,7 +84,7 @@ pub(super) fn check_git_restore(lower: &str, original: &str) -> Result<(), Strin
 }
 
 /// `git clean -f` / `--force` — includes combined flags like `-fd`, `-fdx`
-pub(super) fn check_git_clean(lower: &str, original: &str) -> Result<(), String> {
+pub(super) fn check_git_clean(lower: &str) -> Result<(), String> {
     if !lower.contains("git clean") {
         return Ok(());
     }
@@ -96,7 +92,6 @@ pub(super) fn check_git_clean(lower: &str, original: &str) -> Result<(), String>
     if lower.contains("git clean --force") || lower.contains("git clean -f") {
         return Err(super::blocked(
             "git clean -f permanently deletes untracked files",
-            original,
             "Use 'git clean -n' to preview what would be deleted first.",
         ));
     }
@@ -112,7 +107,6 @@ pub(super) fn check_git_clean(lower: &str, original: &str) -> Result<(), String>
             if token.starts_with('-') && !token.starts_with("--") && token.contains('f') {
                 return Err(super::blocked(
                     "git clean -f permanently deletes untracked files",
-                    original,
                     "Use 'git clean -n' to preview what would be deleted first.",
                 ));
             }
@@ -123,7 +117,7 @@ pub(super) fn check_git_clean(lower: &str, original: &str) -> Result<(), String>
 }
 
 /// `git push --force` / `-f` — allows `--force-with-lease`
-pub(super) fn check_git_push(lower: &str, original: &str) -> Result<(), String> {
+pub(super) fn check_git_push(lower: &str) -> Result<(), String> {
     if !lower.contains("git push") {
         return Ok(());
     }
@@ -136,7 +130,6 @@ pub(super) fn check_git_push(lower: &str, original: &str) -> Result<(), String> 
     if lower.contains("git push --force") {
         return Err(super::blocked(
             "git push --force overwrites remote commit history",
-            original,
             "Use 'git push --force-with-lease' for safer force pushes.",
         ));
     }
@@ -151,7 +144,6 @@ pub(super) fn check_git_push(lower: &str, original: &str) -> Result<(), String> 
             if token == "-f" {
                 return Err(super::blocked(
                     "git push -f overwrites remote commit history",
-                    original,
                     "Use 'git push --force-with-lease' for safer force pushes.",
                 ));
             }
@@ -163,7 +155,6 @@ pub(super) fn check_git_push(lower: &str, original: &str) -> Result<(), String> 
             {
                 return Err(super::blocked(
                     "git push -f overwrites remote commit history",
-                    original,
                     "Use 'git push --force-with-lease' for safer force pushes.",
                 ));
             }
@@ -175,7 +166,7 @@ pub(super) fn check_git_push(lower: &str, original: &str) -> Result<(), String> 
 
 /// `git branch -D` — uppercase D only (force delete without merge check).
 /// Uses the original (case-preserved, whitespace-normalized) string.
-pub(super) fn check_git_branch_delete(normalized: &str, original: &str) -> Result<(), String> {
+pub(super) fn check_git_branch_delete(normalized: &str) -> Result<(), String> {
     // Match "git branch" case-insensitively, then inspect the original flag
     // spelling so lowercase `-d` remains allowed while uppercase `-D` blocks.
     let mut tokens = normalized.split_whitespace();
@@ -199,7 +190,6 @@ pub(super) fn check_git_branch_delete(normalized: &str, original: &str) -> Resul
         {
             return Err(super::blocked(
                 "git branch -D force-deletes branches without checking merge status",
-                original,
                 "Use 'git branch -d' (lowercase) to safely delete only merged branches.",
             ));
         }
@@ -209,11 +199,10 @@ pub(super) fn check_git_branch_delete(normalized: &str, original: &str) -> Resul
 }
 
 /// `git stash drop` / `git stash clear`
-pub(super) fn check_git_stash(lower: &str, original: &str) -> Result<(), String> {
+pub(super) fn check_git_stash(lower: &str) -> Result<(), String> {
     if lower.contains("git stash drop") || lower.contains("git stash clear") {
         return Err(super::blocked(
             "git stash drop/clear permanently deletes stashed changes",
-            original,
             "Use 'git stash list' to review stashes, or 'git stash pop' to apply and remove.",
         ));
     }
@@ -273,7 +262,6 @@ pub(super) fn check_git_commit_backticks(original: &str) -> Result<(), String> {
                     if has_unsafe_message_flag(original, i) {
                         return Err(super::blocked(
                             "git commit -m/--message with backticks or $() in double-quoted message",
-                            original,
                             "Use 'git commit -F -' with a heredoc to pass the message via stdin, \
                              or use single quotes around the message instead of double quotes.",
                         ));
@@ -395,7 +383,7 @@ fn has_unsafe_message_flag(command: &str, start: usize) -> bool {
 
 /// Block `rm -rf` targeting obviously dangerous paths.
 /// Allowed: `/tmp/*`, `/var/tmp/*`.
-pub(super) fn check_dangerous_rm(normalized: &str, original: &str) -> Result<(), String> {
+pub(super) fn check_dangerous_rm(normalized: &str) -> Result<(), String> {
     let lower = normalized.to_lowercase();
     if !lower.contains("rm ") {
         return Ok(());
@@ -443,7 +431,6 @@ pub(super) fn check_dangerous_rm(normalized: &str, original: &str) -> Result<(),
                     if !is_allowed_rm_target(target) {
                         return Err(super::blocked(
                             "rm -rf outside of temporary directories can cause permanent data loss",
-                            original,
                             "rm -rf is only allowed for literal /tmp/* or /var/tmp/* paths.",
                         ));
                     }
@@ -891,7 +878,6 @@ mod tests {
         };
         assert!(err.contains("BLOCKED"), "Missing BLOCKED header");
         assert!(err.contains("Reason:"), "Missing reason");
-        assert!(err.contains("Command:"), "Missing command");
         assert!(err.contains("Tip:"), "Missing tip");
     }
 }

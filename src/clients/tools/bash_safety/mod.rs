@@ -42,15 +42,15 @@ pub(super) fn validate_command_safety(command: &str) -> Result<(), String> {
         let normalized = parse::normalize_whitespace(&inspection_segment);
         let lower = normalized.to_lowercase();
 
-        checks::check_git_reset(&lower, seg)?;
-        checks::check_git_checkout(&lower, seg)?;
-        checks::check_git_restore(&lower, seg)?;
-        checks::check_git_clean(&lower, seg)?;
-        checks::check_git_push(&lower, seg)?;
-        checks::check_git_branch_delete(&normalized, seg)?;
-        checks::check_git_stash(&lower, seg)?;
+        checks::check_git_reset(&lower)?;
+        checks::check_git_checkout(&lower)?;
+        checks::check_git_restore(&lower)?;
+        checks::check_git_clean(&lower)?;
+        checks::check_git_push(&lower)?;
+        checks::check_git_branch_delete(&normalized)?;
+        checks::check_git_stash(&lower)?;
         checks::check_git_commit_backticks(seg)?;
-        checks::check_dangerous_rm(&normalized, seg)?;
+        checks::check_dangerous_rm(&normalized)?;
     }
 
     Ok(())
@@ -61,6 +61,6 @@ pub(super) fn validate_command_safety(command: &str) -> Result<(), String> {
 // =============================================================================
 
 /// Format a blocked-command error message.
-pub(super) fn blocked(reason: &str, command: &str, tip: &str) -> String {
-    format!("BLOCKED\n\nReason: {reason}\n\nCommand: {command}\n\nTip: {tip}")
+pub(super) fn blocked(reason: &str, tip: &str) -> String {
+    format!("BLOCKED\n\nReason: {reason}\n\nTip: {tip}")
 }
