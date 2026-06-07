@@ -115,6 +115,7 @@ This allows creating new files in new subdirectories while maintaining security.
 
 **Features**:
 
+- Commands run in the project's current working directory (`ToolContext.cwd`) via an explicit `current_dir()` setting on the spawned process
 - OS-level sandboxing (Seatbelt on macOS, Landlock on Linux)
 - Configurable via `CAKE_SANDBOX=0` environment variable
 - Output streaming with 100KB read cap

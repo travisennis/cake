@@ -1,6 +1,5 @@
 ---
 source: src/clients/chat_completions_tests.rs
-assertion_line: 87
 expression: value
 ---
 {
@@ -32,7 +31,7 @@ expression: value
   "tools": [
     {
       "function": {
-        "description": "Execute a shell command in the host machine's terminal. Returns stdout and stderr with a footer showing exit code and elapsed time. The working directory persists between commands; shell state does not. Does not support interactive commands.\n\nGuidance:\n- File search: Read file contents with Read, explore directories with Bash commands (ls, find, tree)\n- Content search: Use commands via Bash\n- Read files: Use Read tool, not cat/head/tail\n- Edit files: Use Edit tool, not sed/awk\n- Write files: Use Write tool, not echo/cat\n\nNote: Shell interprets backticks (`) and $() inside double-quoted arguments as command substitution.\n",
+        "description": "Execute a shell command in the host machine's terminal. Commands run in the current working directory by default. Returns stdout and stderr with a footer showing exit code and elapsed time. The working directory persists between commands; shell state does not. Does not support interactive commands.\n\nGuidance:\n- File search: Read file contents with Read, explore directories with Bash commands (ls, find, tree)\n- Content search: Use commands via Bash\n- Read files: Use Read tool, not cat/head/tail\n- Edit files: Use Edit tool, not sed/awk\n- Write files: Use Write tool, not echo/cat\n\nNote: Shell interprets backticks (`) and $() inside double-quoted arguments as command substitution.\n",
         "name": "Bash",
         "parameters": {
           "properties": {

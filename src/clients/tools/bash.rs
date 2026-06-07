@@ -307,6 +307,7 @@ async fn execute_bash_with_args(
     command
         .arg("-c")
         .arg(&args.command)
+        .current_dir(&context.cwd)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);

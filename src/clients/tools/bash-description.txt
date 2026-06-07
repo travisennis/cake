@@ -1,4 +1,4 @@
-Execute a shell command in the host machine's terminal. Returns stdout and stderr with a footer showing exit code and elapsed time. The working directory persists between commands; shell state does not. Does not support interactive commands.
+Execute a shell command in the host machine's terminal. Commands run in the current working directory by default. Returns stdout and stderr with a footer showing exit code and elapsed time. The working directory persists between commands; shell state does not. Does not support interactive commands.
 
 Guidance:
 - File search: Read file contents with Read, explore directories with Bash commands (ls, find, tree)
