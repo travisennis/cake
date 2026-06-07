@@ -1,6 +1,6 @@
 use anyhow::{bail, ensure};
 use std::borrow::Cow;
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 
 use crate::config::model::ResolvedModelConfig;
 
@@ -86,24 +86,60 @@ pub(super) async fn parse_response(response: reqwest::Response) -> anyhow::Resul
     let chat_response = response.json::<ChatResponse>().await?;
     trace!(target: "cake", "{chat_response:?}");
 
-    let usage = chat_response.usage.as_ref().map(|u| Usage {
-        input_tokens: u.prompt_tokens.unwrap_or(0),
-        output_tokens: u.completion_tokens.unwrap_or(0),
-        total_tokens: u.total_tokens.unwrap_or(0),
-        input_tokens_details: InputTokensDetails {
-            cached_tokens: u
-                .prompt_tokens_details
-                .as_ref()
-                .and_then(|d| d.cached_tokens)
-                .unwrap_or(0),
-        },
-        output_tokens_details: OutputTokensDetails {
-            reasoning_tokens: u
-                .completion_tokens_details
-                .as_ref()
-                .and_then(|d| d.reasoning_tokens)
-                .unwrap_or(0),
-        },
+    let response_id = chat_response.id.as_deref().unwrap_or("<missing id>");
+
+    if chat_response.usage.is_none() {
+        warn!(
+            target: "cake",
+            response_id,
+            "Chat Completions response missing 'usage' field; token accounting will be unavailable"
+        );
+    }
+
+    let usage = chat_response.usage.as_ref().map(|u| {
+        if u.prompt_tokens.is_none() {
+            warn!(
+                target: "cake",
+                response_id,
+                field = "prompt_tokens",
+                "Chat Completions usage missing field, defaulting to 0"
+            );
+        }
+        if u.completion_tokens.is_none() {
+            warn!(
+                target: "cake",
+                response_id,
+                field = "completion_tokens",
+                "Chat Completions usage missing field, defaulting to 0"
+            );
+        }
+        if u.total_tokens.is_none() {
+            warn!(
+                target: "cake",
+                response_id,
+                field = "total_tokens",
+                "Chat Completions usage missing field, defaulting to 0"
+            );
+        }
+        Usage {
+            input_tokens: u.prompt_tokens.unwrap_or(0),
+            output_tokens: u.completion_tokens.unwrap_or(0),
+            total_tokens: u.total_tokens.unwrap_or(0),
+            input_tokens_details: InputTokensDetails {
+                cached_tokens: u
+                    .prompt_tokens_details
+                    .as_ref()
+                    .and_then(|d| d.cached_tokens)
+                    .unwrap_or(0),
+            },
+            output_tokens_details: OutputTokensDetails {
+                reasoning_tokens: u
+                    .completion_tokens_details
+                    .as_ref()
+                    .and_then(|d| d.reasoning_tokens)
+                    .unwrap_or(0),
+            },
+        }
     });
 
     let items = parse_choices(&chat_response)?;
@@ -287,6 +323,11 @@ fn parse_choices(response: &ChatResponse) -> anyhow::Result<Vec<ConversationItem
     let response_id = required_response_id(response)?;
 
     let Some(choice) = response.choices.first() else {
+        warn!(
+            target: "cake",
+            response_id = response_id,
+            "Chat Completions response has no choices; returning empty turn"
+        );
         return Ok(items);
     };
 
@@ -336,6 +377,11 @@ fn parse_choices(response: &ChatResponse) -> anyhow::Result<Vec<ConversationItem
     // will execute the tools and continue. But if we got neither, add an
     // empty assistant message so the caller knows the model responded.
     if items.is_empty() {
+        warn!(
+            target: "cake",
+            response_id = response_id,
+            "Chat Completions response has no content, tool_calls, or reasoning_content; returning empty assistant message"
+        );
         items.push(ConversationItem::Message {
             role: Role::Assistant,
             content: String::new(),

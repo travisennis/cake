@@ -1,4 +1,4 @@
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 
 use crate::config::model::ResolvedModelConfig;
 
@@ -94,14 +94,51 @@ pub(super) async fn parse_response(response: reqwest::Response) -> anyhow::Resul
     let api_response = response.json::<ApiResponse>().await?;
     trace!(target: "cake", "{api_response:?}");
 
-    let usage = api_response.usage.as_ref().map(map_usage);
+    if api_response.id.is_none() {
+        warn!(
+            target: "cake",
+            "Responses API response is missing 'id' field; this may indicate a provider incompatibility"
+        );
+    }
+
+    let usage = api_response
+        .usage
+        .as_ref()
+        .map(|u| map_usage(u, &api_response));
     let items = parse_output_items(&api_response)?;
 
     Ok(TurnResult { items, usage })
 }
 
 /// Map API-level usage to the canonical `Usage` type.
-fn map_usage(api_usage: &ApiUsage) -> Usage {
+fn map_usage(api_usage: &ApiUsage, api_response: &ApiResponse) -> Usage {
+    let response_id = api_response.id.as_deref().unwrap_or("<missing id>");
+
+    if api_usage.input_tokens.is_none() {
+        warn!(
+            target: "cake",
+            response_id = response_id,
+            field = "input_tokens",
+            "Responses API usage missing field, defaulting to 0"
+        );
+    }
+    if api_usage.output_tokens.is_none() {
+        warn!(
+            target: "cake",
+            response_id = response_id,
+            field = "output_tokens",
+            "Responses API usage missing field, defaulting to 0"
+        );
+    }
+    if api_usage.total_tokens.is_none() {
+        warn!(
+            target: "cake",
+            response_id = response_id,
+            field = "total_tokens",
+            "Responses API usage missing field, defaulting to 0"
+        );
+    }
+
     Usage {
         input_tokens: api_usage.input_tokens.unwrap_or(0),
         output_tokens: api_usage.output_tokens.unwrap_or(0),
@@ -255,6 +292,7 @@ impl<'a> From<&'a ConversationItem> for ResponsesApiInputItem<'a> {
 fn parse_output_items(api_response: &ApiResponse) -> anyhow::Result<Vec<ConversationItem>> {
     let mut items = Vec::new();
     let mut unknown_output_types = Vec::new();
+    let response_id = api_response.id.as_deref().unwrap_or("<missing id>");
 
     for (index, output) in api_response.output.iter().enumerate() {
         match output.msg_type.as_str() {
@@ -297,6 +335,13 @@ fn parse_output_items(api_response: &ApiResponse) -> anyhow::Result<Vec<Conversa
                         content,
                         timestamp: Some(timestamp),
                     });
+                } else {
+                    warn!(
+                        target: "cake",
+                        response_id = response_id,
+                        output_index = index,
+                        "Skipping Responses API reasoning output with missing 'id'"
+                    );
                 }
             },
             "function_call" => {
@@ -308,7 +353,16 @@ fn parse_output_items(api_response: &ApiResponse) -> anyhow::Result<Vec<Conversa
                     .as_ref()
                     .and_then(|c| c.iter().find(|item| item.content_type == "output_text"))
                     .and_then(|item| item.text.clone())
-                    .unwrap_or_default();
+                    .unwrap_or_else(|| {
+                        warn!(
+                            target: "cake",
+                            response_id = response_id,
+                            output_index = index,
+                            output_id = output.id.as_deref(),
+                            "Responses API message output has no 'output_text' content block; returning empty text"
+                        );
+                        String::new()
+                    });
 
                 let timestamp = chrono::Utc::now();
                 items.push(ConversationItem::Message {
@@ -321,7 +375,7 @@ fn parse_output_items(api_response: &ApiResponse) -> anyhow::Result<Vec<Conversa
             },
             unknown_type => {
                 tracing::warn!(
-                    response_id = api_response.id.as_deref().unwrap_or("<missing id>"),
+                    response_id,
                     output_index = index,
                     output_id = output.id.as_deref(),
                     output_type = unknown_type,
