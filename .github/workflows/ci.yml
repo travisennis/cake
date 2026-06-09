@@ -141,7 +141,7 @@ jobs:
         run: cargo crap --lcov lcov.info --baseline ci/cargo-crap-baseline.json --fail-regression --format github
       
       - name: Upload to Codecov
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           files: lcov.info
           fail_ci_if_error: false
