@@ -1,43 +1,32 @@
 {
-  "version": 1,
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "./.cake/hooks/block-cargo-test-lib.sh",
-            "timeout": 5,
-            "fail_closed": true,
-            "status_message": "Checking for blocked cargo test --lib"
-          }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "./.cake/hooks/rust-command-failure-context.sh",
-            "timeout": 5,
-            "status_message": "Adding Rust failure context"
-          }
-        ]
-      },
-      {
-        "matcher": "Edit|Write",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "./.cake/hooks/format-edited-file.sh",
-            "timeout": 15,
-            "status_message": "Formatting edited file"
-          }
-        ]
-      }
-    ]
-  }
+	"version": 1,
+	"hooks": {
+		"PreToolUse": [
+			{
+				"matcher": "Bash",
+				"hooks": [
+					{
+						"type": "command",
+						"command": "./.cake/hooks/block-cargo-test-lib.sh",
+						"timeout": 5,
+						"fail_closed": true,
+						"status_message": "Checking for blocked cargo test --lib"
+					}
+				]
+			}
+		],
+		"PostToolUse": [
+			{
+				"matcher": "Edit|Write",
+				"hooks": [
+					{
+						"type": "command",
+						"command": "./.cake/hooks/format-edited-file.sh",
+						"timeout": 15,
+						"status_message": "Formatting edited file"
+					}
+				]
+			}
+		]
+	}
 }
