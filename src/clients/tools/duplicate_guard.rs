@@ -288,4 +288,107 @@ mod tests {
                 .all(|(_, _, plan)| matches!(plan, ScheduledToolPlan::Hook(_)))
         );
     }
+
+    #[test]
+    fn duplicate_guard_rejects_second_write_for_same_existing_file() {
+        let (_dir, context, path, _) = duplicate_guard_fixture();
+        let arguments = serde_json::json!({ "path": path, "content": "overwrite" }).to_string();
+
+        let plans = reject_duplicate_plans(
+            &context,
+            vec![
+                (
+                    "call-1".to_string(),
+                    "Write".to_string(),
+                    execute_plan(arguments.clone()),
+                ),
+                (
+                    "call-2".to_string(),
+                    "Write".to_string(),
+                    execute_plan(arguments),
+                ),
+            ],
+        );
+
+        assert!(matches!(plans[0].2, ScheduledToolPlan::Hook(_)));
+        assert!(
+            matches!(&plans[1].2, ScheduledToolPlan::RejectedDuplicateMutation { output } if
+                output.contains("Rejected this Write call")
+                    && output.contains("another Write call")
+                    && output.contains("same file"))
+        );
+    }
+
+    #[test]
+    fn duplicate_guard_rejects_second_write_for_same_nonexistent_file() {
+        let (dir, context, _, _) = duplicate_guard_fixture();
+        let path = dir.path().join("nonexistent.txt");
+        assert!(!path.exists());
+        let arguments =
+            serde_json::json!({ "path": path, "content": "new file content" }).to_string();
+
+        let plans = reject_duplicate_plans(
+            &context,
+            vec![
+                (
+                    "call-1".to_string(),
+                    "Write".to_string(),
+                    execute_plan(arguments.clone()),
+                ),
+                (
+                    "call-2".to_string(),
+                    "Write".to_string(),
+                    execute_plan(arguments),
+                ),
+            ],
+        );
+
+        assert!(matches!(plans[0].2, ScheduledToolPlan::Hook(_)));
+        assert!(
+            matches!(&plans[1].2, ScheduledToolPlan::RejectedDuplicateMutation { output } if
+                output.contains("Rejected this Write call")
+                    && output.contains("another Write call")
+                    && output.contains("same file"))
+        );
+    }
+
+    fn blocked_plan(reason: String) -> ToolHookPlan {
+        ToolHookPlan::Block {
+            reason,
+            additional_context: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn duplicate_guard_allows_executable_after_hook_blocked_for_same_path() {
+        let (_dir, context, path, _) = duplicate_guard_fixture();
+        let edit_arguments = serde_json::json!({
+            "path": path,
+            "edits": [{ "old_text": "first", "new_text": "updated" }]
+        })
+        .to_string();
+
+        let plans = reject_duplicate_plans(
+            &context,
+            vec![
+                (
+                    "call-1".to_string(),
+                    "Edit".to_string(),
+                    blocked_plan("Blocked by pre-tool hook".to_string()),
+                ),
+                (
+                    "call-2".to_string(),
+                    "Edit".to_string(),
+                    execute_plan(edit_arguments),
+                ),
+            ],
+        );
+
+        // Hook-blocked plan passes through unchanged
+        assert!(
+            matches!(&plans[0].2, ScheduledToolPlan::Hook(plan) if matches!(plan, ToolHookPlan::Block { .. }))
+        );
+        // Subsequent executable same-path mutation is NOT rejected
+        assert!(matches!(plans[1].2, ScheduledToolPlan::Hook(_)));
+    }
 }
