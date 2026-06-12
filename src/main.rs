@@ -14,6 +14,7 @@ mod types;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 #[cfg(test)]
@@ -748,6 +749,10 @@ impl CodingAssistant {
 }
 
 impl CmdRunner for CodingAssistant {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "run() orchestrates all CLI setup and turn lifecycle"
+    )]
     async fn run(&self, data_dir: &DataDir) -> anyhow::Result<()> {
         if let Some(command) = &self.command {
             return command.run(data_dir).await;
@@ -811,13 +816,48 @@ impl CmdRunner for CodingAssistant {
         let output = self.output_sink();
         let (mut client, spinner) = output.attach_callbacks(client);
 
-        let turn = Self::execute_agent_turn(
-            &mut client,
-            hook_runner.as_ref(),
-            session_start_source,
-            &prepared.content,
-        )
-        .await?;
+        // Race Ctrl-C against the agent turn so we can emit a clean
+        // TaskComplete record even when interrupted.
+        let interrupted = AtomicBool::new(false);
+        let turn_start = Instant::now();
+
+        let turn: TurnResult = tokio::select! {
+            biased;
+            result = async {
+                Self::execute_agent_turn(
+                    &mut client,
+                    hook_runner.as_ref(),
+                    session_start_source,
+                    &prepared.content,
+                )
+                .await
+            } => match result {
+                Ok(t) => t,
+                Err(e) => return Err(e),
+            },
+            _ = tokio::signal::ctrl_c() => {
+                interrupted.store(true, Ordering::SeqCst);
+                // Dummy value — the flag check below short-circuits
+                // before `turn` is used when interrupted is true.
+                TurnResult {
+                    result: Ok(None),
+                    duration_ms: 0,
+                }
+            },
+        };
+
+        if interrupted.load(Ordering::SeqCst) {
+            return Self::handle_interrupt(
+                &mut client,
+                turn_start,
+                prepared.worktree.as_ref(),
+                &prepared.original_dir,
+                output,
+                spinner,
+            );
+        }
+
+        // The agent turn completed normally.
         client.emit_session_summary_telemetry(
             turn.result.is_ok(),
             turn.duration_ms,
@@ -840,6 +880,80 @@ impl CmdRunner for CodingAssistant {
         Ok(())
     }
 }
+
+impl CodingAssistant {
+    /// Handle a user interrupt (Ctrl-C) during an agent turn.
+    ///
+    /// Emits a `TaskComplete` record with an `Interrupted` outcome, writes
+    /// the telemetry summary, cleans up the worktree, and returns an
+    /// `Interrupted` error that `main()` maps to exit code 130.
+    fn handle_interrupt(
+        client: &mut Agent,
+        turn_start: Instant,
+        worktree: Option<&worktree::Worktree>,
+        original_dir: &Path,
+        output: CliOutputSink,
+        spinner: Option<indicatif::ProgressBar>,
+    ) -> anyhow::Result<()> {
+        // Set up a second Ctrl-C handler that force-exits immediately
+        // in case the graceful shutdown hangs.
+        let second_ctrlc = tokio::spawn(async {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                std::process::exit(exit_code::code::INTERRUPTED.into());
+            }
+        });
+
+        let elapsed: u64 = turn_start
+            .elapsed()
+            .as_millis()
+            .try_into()
+            .unwrap_or(u64::MAX);
+
+        // Emit a TaskComplete record with interrupted outcome so the
+        // session file always has a matching end for the TaskStart.
+        if let Err(e) = client.emit_task_complete_record(TaskOutcome::Interrupted, elapsed) {
+            tracing::warn!(
+                target: "cake",
+                "Failed to emit interrupted TaskComplete record: {e}"
+            );
+        }
+
+        // Write the telemetry summary with success=false.
+        client.emit_session_summary_telemetry(
+            false,
+            elapsed,
+            Some("Interrupted by user".to_string()),
+        );
+
+        // Finish the progress spinner if active.
+        output.finish_progress(spinner, elapsed, client);
+
+        // Clean up the worktree (if any) matching normal-exit policy.
+        if let Some(wt) = worktree {
+            Self::cleanup_worktree(wt, original_dir);
+        }
+
+        // Abort the second-Ctrl-C listener since cleanup finished.
+        second_ctrlc.abort();
+
+        Err(Interrupted.into())
+    }
+}
+
+/// Error returned when the user interrupts a run with Ctrl-C.
+///
+/// `main()` maps this to exit code 130 instead of classifying it through
+/// the normal error pipeline.
+#[derive(Debug)]
+struct Interrupted;
+
+impl std::fmt::Display for Interrupted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Interrupted by user")
+    }
+}
+
+impl std::error::Error for Interrupted {}
 
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
@@ -879,6 +993,9 @@ async fn main() -> std::process::ExitCode {
     match args.run(&data_dir).await {
         Ok(()) => std::process::ExitCode::from(exit_code::code::SUCCESS),
         Err(e) => {
+            if e.is::<Interrupted>() {
+                return std::process::ExitCode::from(exit_code::code::INTERRUPTED);
+            }
             CliOutputSink::write_error(&e);
             exit_code::classify(&e)
         },

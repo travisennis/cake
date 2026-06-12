@@ -26,6 +26,7 @@ pub struct GitState {
 pub enum TaskCompleteSubtype {
     Success,
     ErrorDuringExecution,
+    Interrupted,
 }
 
 /// Outcome of a completed task.
@@ -33,6 +34,7 @@ pub enum TaskCompleteSubtype {
 pub enum TaskOutcome {
     Success { result: Option<String> },
     ErrorDuringExecution { error: String },
+    Interrupted,
 }
 
 impl TaskOutcome {
@@ -40,6 +42,7 @@ impl TaskOutcome {
         match self {
             Self::Success { .. } => TaskCompleteSubtype::Success,
             Self::ErrorDuringExecution { .. } => TaskCompleteSubtype::ErrorDuringExecution,
+            Self::Interrupted => TaskCompleteSubtype::Interrupted,
         }
     }
 
@@ -89,6 +92,12 @@ impl Serialize for TaskOutcome {
                 result: None,
                 error: Some(error),
             },
+            Self::Interrupted => TaskOutcomeFields {
+                subtype: self.subtype(),
+                is_error: self.is_error(),
+                result: None,
+                error: None,
+            },
         };
 
         fields.serialize(serializer)
@@ -131,6 +140,7 @@ impl<'de> Deserialize<'de> for TaskOutcome {
                     )
                 })?,
             }),
+            TaskCompleteSubtype::Interrupted => Ok(Self::Interrupted),
         }
     }
 }
@@ -563,6 +573,52 @@ mod tests {
         assert_eq!(json["result"], "done");
         assert!(json.get("success").is_none());
         assert!(json.get("error").is_none());
+    }
+
+    #[test]
+    fn task_outcome_serializes_interrupted() {
+        let record = StreamRecord::TaskComplete(TaskCompleteData {
+            outcome: TaskOutcome::Interrupted,
+            duration_ms: 500,
+            turn_count: 1,
+            tool_call_count: 0,
+            session_id: "session-1".to_string(),
+            task_id: "task-1".to_string(),
+            usage: Usage::default(),
+            permission_denials: None,
+        });
+
+        let json = serde_json::to_value(&record).unwrap();
+        assert_eq!(json["type"], "task_complete");
+        assert_eq!(json["subtype"], "interrupted");
+        assert_eq!(json["is_error"], true);
+        assert!(json.get("result").is_none() || json["result"].is_null());
+        assert!(json.get("error").is_none() || json["error"].is_null());
+        assert!(json.get("success").is_none());
+    }
+
+    #[test]
+    fn task_outcome_deserializes_interrupted() {
+        let json = serde_json::json!({
+            "type": "task_complete",
+            "subtype": "interrupted",
+            "is_error": true,
+            "duration_ms": 500,
+            "turn_count": 1,
+            "tool_call_count": 0,
+            "session_id": "session-1",
+            "task_id": "task-1",
+            "usage": Usage::default()
+        });
+
+        let record = serde_json::from_value::<StreamRecord>(json).unwrap();
+        assert!(matches!(
+            record,
+            StreamRecord::TaskComplete(TaskCompleteData {
+                outcome: TaskOutcome::Interrupted,
+                ..
+            })
+        ));
     }
 
     #[test]

@@ -10,6 +10,7 @@
 //! | `1`  | Agent error   | The model or a tool encountered an error during execution|
 //! | `2`  | API error     | Rate limit, auth failure, or network error               |
 //! | `3`  | Input error   | No prompt provided, invalid flags, missing API key       |
+//! | `130`| Interrupted   | User interrupted the run with Ctrl-C                     |
 
 use std::process::ExitCode;
 
@@ -26,6 +27,8 @@ pub mod code {
     pub const API_ERROR: u8 = 2;
     /// Input error (no prompt, invalid flags, missing API key).
     pub const INPUT_ERROR: u8 = 3;
+    /// Interrupted by user (Ctrl-C).
+    pub const INTERRUPTED: u8 = 130;
 }
 
 /// A structured API error that preserves the HTTP status code.
