@@ -763,10 +763,7 @@ impl CmdRunner for CodingAssistant {
             self.load_run_resources(data_dir, &prepared.current_dir, prepared.additional_dirs)?;
         let task_id = uuid::Uuid::new_v4();
         let run_mode = RunMode::from_cli(self)?;
-        let config_dir = dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".config")
-            .join("cake");
+        let config_dir = crate::config::config_dir().join("cake");
         let mut run_session = self.build_client_and_session(
             &run_mode,
             data_dir,

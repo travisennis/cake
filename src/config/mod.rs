@@ -11,6 +11,7 @@
 //! - [`ModelConfig`] - Model provider configuration
 //! - [`SettingsLoader`] - Loads settings from TOML files
 
+mod config_dir;
 mod data_dir;
 pub mod hooks;
 pub mod model;
@@ -19,6 +20,8 @@ pub mod settings;
 pub mod skills;
 pub mod worktree;
 
+#[doc(inline)]
+pub use config_dir::config_dir;
 #[doc(inline)]
 pub use data_dir::{AgentsFile, DataDir};
 #[doc(inline)]

@@ -212,8 +212,7 @@ pub struct HooksLoader;
 
 impl HooksLoader {
     pub fn load(project_dir: &Path) -> Result<LoadedHooks, HooksError> {
-        let global_path =
-            dirs::home_dir().map(|home| home.join(".config").join("cake").join("hooks.json"));
+        let global_path = Some(crate::config::config_dir().join("cake").join("hooks.json"));
         let paths = [
             global_path,
             Some(project_dir.join(".cake").join("hooks.json")),

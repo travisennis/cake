@@ -371,19 +371,19 @@ impl SettingsLoader {
         let mut profiles: HashMap<String, Vec<ProfileSettings>> = HashMap::new();
 
         // Load global settings first.
-        if let Some(home_dir) = dirs::home_dir() {
-            let global_path = home_dir.join(".config").join("cake").join("settings.toml");
-            if let Some(settings) = Self::load_file(&global_path)? {
-                Self::validate_profiles(&settings.profiles)?;
-                Self::merge_settings(
-                    settings,
-                    &mut models,
-                    &mut default_model,
-                    &mut directories,
-                    &mut skills,
-                    &mut profiles,
-                )?;
-            }
+        let global_path = crate::config::config_dir()
+            .join("cake")
+            .join("settings.toml");
+        if let Some(settings) = Self::load_file(&global_path)? {
+            Self::validate_profiles(&settings.profiles)?;
+            Self::merge_settings(
+                settings,
+                &mut models,
+                &mut default_model,
+                &mut directories,
+                &mut skills,
+                &mut profiles,
+            )?;
         }
 
         // Load project settings last so they override global settings.

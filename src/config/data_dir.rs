@@ -319,14 +319,17 @@ impl DataDir {
             });
         }
 
-        // XDG config AGENTS.md: ~/.config/AGENTS.md
-        let xdg_agents_path = dirs::home_dir().map(|h| h.join(".config").join("AGENTS.md"));
+        // XDG config AGENTS.md: ~/.config/AGENTS.md (or $XDG_CONFIG_HOME/AGENTS.md)
+        let xdg_agents_path = crate::config::config_dir().join("AGENTS.md");
 
-        if let Some(ref path) = xdg_agents_path
-            && let Ok(content) = fs::read_to_string(path)
-        {
+        if let Ok(content) = fs::read_to_string(&xdg_agents_path) {
+            let display_path = if std::env::var("XDG_CONFIG_HOME").is_ok_and(|d| !d.is_empty()) {
+                "$XDG_CONFIG_HOME/AGENTS.md".to_string()
+            } else {
+                "~/.config/AGENTS.md".to_string()
+            };
             files.push(AgentsFile {
-                path: "~/.config/AGENTS.md".to_string(),
+                path: display_path,
                 content,
             });
         }
