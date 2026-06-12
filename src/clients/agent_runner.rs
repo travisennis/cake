@@ -112,10 +112,13 @@ impl AgentRunner {
                         return parse_result;
                     }
 
+                    let headers = response.headers().clone();
+                    let body = response.text().await.unwrap_or_default();
+
                     let failure = HttpFailure {
                         status: status_code,
-                        headers: response.headers().clone(),
-                        body: response.text().await?,
+                        headers,
+                        body,
                     };
                     report_telemetry(AgentRunnerTelemetryEvent::ApiAttempt(ApiAttemptTelemetry {
                         turn_index,
