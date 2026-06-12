@@ -44,6 +44,8 @@ When asked to create, choose, update, or work on a task, read
 `.agents/TASKS.md`, then `.agents/.tasks/index.md`, then the specific task
 file. Do not edit generated indexes by hand; use `ahm` commands or regenerate
 with `ahm index` when source metadata changes.
+Use `ahm task complete <id>` and `ahm task cancel <id> --reason <text>` for
+task state moves.
 
 ### Research
 
@@ -122,7 +124,11 @@ full test suite.
 - Before broad edits, inspect `git status --short`.
 - Before final handoff, report remaining uncommitted or untracked files when
   relevant.
-- Do not edit generated task, research, or ExecPlan indexes by hand.
+- Do not edit generated task, research, or ExecPlan indexes by hand. Update
+  the source records and run the appropriate `ahm` command.
+- Treat `.agents/*` workflow guides and `docs/adr/README.md` as ahm-managed
+  templates. Change canonical guidance in the AHM repository, not through local
+  consumer edits.
 - When moving implementation between files or modules, update repository code
   maps and implementation-location references even if user-facing behavior is
   unchanged.
