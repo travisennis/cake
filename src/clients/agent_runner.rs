@@ -44,10 +44,6 @@ impl AgentRunner {
     }
 
     #[expect(
-        clippy::too_many_arguments,
-        reason = "runner needs config, state, callbacks, and telemetry context at the API boundary"
-    )]
-    #[expect(
         clippy::too_many_lines,
         reason = "retry loop keeps request, parse, retry, and telemetry sequencing together"
     )]
@@ -58,7 +54,6 @@ impl AgentRunner {
         turn_index: u32,
         history: &'a [ConversationItem],
         tools: &'a [Tool],
-        report_retry: impl Fn(&RetryStatus) + Send + Sync,
         mut report_telemetry: impl FnMut(AgentRunnerTelemetryEvent),
     ) -> anyhow::Result<TurnResult> {
         let mut attempt = 1;
@@ -149,7 +144,7 @@ impl AgentRunner {
                                     &request_overrides,
                                 ),
                             ));
-                            wait_for_retry(&status, &report_retry).await;
+                            wait_for_retry(&status).await;
                             attempt += 1;
                         },
                         retry::RetryDecision::RetryWithOverrides { status, overrides } => {
@@ -159,7 +154,7 @@ impl AgentRunner {
                                 ),
                             ));
                             request_overrides = overrides;
-                            wait_for_retry(&status, &report_retry).await;
+                            wait_for_retry(&status).await;
                             attempt += 1;
                         },
                         retry::RetryDecision::DoNotRetry => {
@@ -206,7 +201,7 @@ impl AgentRunner {
                                     &request_overrides,
                                 ),
                             ));
-                            wait_for_retry(&status, &report_retry).await;
+                            wait_for_retry(&status).await;
                             attempt += 1;
                         },
                         retry::RetryDecision::RetryWithOverrides { status, overrides } => {
@@ -216,7 +211,7 @@ impl AgentRunner {
                                 ),
                             ));
                             request_overrides = overrides;
-                            wait_for_retry(&status, &report_retry).await;
+                            wait_for_retry(&status).await;
                             attempt += 1;
                         },
                         retry::RetryDecision::DoNotRetry => return Err(error),
@@ -231,11 +226,7 @@ fn elapsed_ms(start: Instant) -> u64 {
     start.elapsed().as_millis().try_into().unwrap_or(u64::MAX)
 }
 
-async fn wait_for_retry(
-    status: &RetryStatus,
-    report_retry: &(impl Fn(&RetryStatus) + Send + Sync),
-) {
-    report_retry(status);
+async fn wait_for_retry(status: &RetryStatus) {
     debug!(
         target: "cake",
         reason = ?status.reason,

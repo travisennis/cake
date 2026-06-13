@@ -59,21 +59,6 @@ pub fn extract_path(arguments: &str) -> Option<String> {
         .ok()
 }
 
-/// Summarize read arguments for display
-pub fn summarize_args(arguments: &str) -> String {
-    serde_json::from_str::<ReadArgs>(arguments)
-        .map(|args| {
-            let effective_start = args.start_line.unwrap_or(1);
-            let end = match args.end_line {
-                Some(e) => e,
-                None if args.start_line.is_some() => effective_start + DEFAULT_END_LINE - 1,
-                None => DEFAULT_END_LINE,
-            };
-            format!("{} [{}-{}]", args.path, effective_start, end)
-        })
-        .unwrap_or_default()
-}
-
 /// Execute a read command
 pub(super) fn execute_read(
     context: &ToolContext,

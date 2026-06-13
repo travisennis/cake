@@ -1,17 +1,12 @@
-use crate::clients::retry::RetryStatus;
 use crate::types::{ConversationItem, SessionRecord, StreamRecord};
 
 type StreamingCallback = Box<dyn Fn(&str) + Send + Sync>;
 type PersistCallback = Box<dyn FnMut(&SessionRecord) -> anyhow::Result<()> + Send + Sync>;
-type ProgressCallback = Box<dyn Fn(&ConversationItem) + Send + Sync>;
-type RetryCallback = Box<dyn Fn(&RetryStatus) + Send + Sync>;
 
 #[derive(Default)]
 pub(super) struct AgentObserver {
     streaming: Option<StreamingCallback>,
     persist: Option<PersistCallback>,
-    progress: Option<ProgressCallback>,
-    retry: Option<RetryCallback>,
 }
 
 impl AgentObserver {
@@ -24,32 +19,6 @@ impl AgentObserver {
         callback: impl FnMut(&SessionRecord) -> anyhow::Result<()> + Send + Sync + 'static,
     ) {
         self.persist = Some(Box::new(callback));
-    }
-
-    pub(super) fn set_progress_callback(
-        &mut self,
-        callback: impl Fn(&ConversationItem) + Send + Sync + 'static,
-    ) {
-        self.progress = Some(Box::new(callback));
-    }
-
-    pub(super) fn set_retry_callback(
-        &mut self,
-        callback: impl Fn(&RetryStatus) + Send + Sync + 'static,
-    ) {
-        self.retry = Some(Box::new(callback));
-    }
-
-    pub(super) fn report_progress(&self, item: &ConversationItem) {
-        if let Some(ref callback) = self.progress {
-            callback(item);
-        }
-    }
-
-    pub(super) fn report_retry(&self, status: &RetryStatus) {
-        if let Some(ref callback) = self.retry {
-            callback(status);
-        }
     }
 
     pub(super) fn stream_record(&mut self, record: StreamRecord) -> anyhow::Result<()> {

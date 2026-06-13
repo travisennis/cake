@@ -7,19 +7,6 @@ use tempfile::TempDir;
 // =========================================================================
 
 #[test]
-fn summarize_args_only_requires_path() {
-    let args = serde_json::json!({
-        "path": "src/main.rs",
-        "edits": [
-            { "old_text": 123, "new_text": ["not", "summary", "data"] }
-        ]
-    })
-    .to_string();
-
-    assert_eq!(summarize_args(&args), "src/main.rs");
-}
-
-#[test]
 fn invalid_edit_arguments_report_expected_shape() {
     let err = parse_edit_args(r#"{"path":"src/main.rs","edits":[{"new_text":"replacement"}]}"#)
         .unwrap_err();

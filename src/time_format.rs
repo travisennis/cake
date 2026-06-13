@@ -1,7 +1,5 @@
 //! Shared time formatting helpers for CLI-facing output.
 
-use std::time::Duration;
-
 const MILLIS_PER_TENTH_SECOND: u128 = 100;
 const TENTHS_PER_SECOND: u128 = 10;
 
@@ -14,11 +12,6 @@ pub fn format_seconds_tenths(elapsed_ms: u128) -> String {
         rounded_tenths / TENTHS_PER_SECOND,
         rounded_tenths % TENTHS_PER_SECOND
     )
-}
-
-/// Format a duration as seconds with one decimal place using integer rounding.
-pub fn format_duration_tenths(duration: Duration) -> String {
-    format_seconds_tenths(duration.as_millis())
 }
 
 #[cfg(test)]
@@ -36,11 +29,6 @@ mod tests {
         assert_eq!(format_seconds_tenths(1_234), "1.2");
         assert_eq!(format_seconds_tenths(1_499), "1.5");
         assert_eq!(format_seconds_tenths(1_500), "1.5");
-    }
-
-    #[test]
-    fn duration_tenths_formats_milliseconds_as_seconds() {
-        assert_eq!(format_duration_tenths(Duration::from_millis(1_250)), "1.3");
     }
 
     #[test]

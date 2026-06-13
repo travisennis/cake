@@ -17,9 +17,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
-#[cfg(test)]
-use std::time::Duration;
-
 use crate::cli::{CliOutputSink, CmdRunner, Commands, RunMode, SessionStorage, TurnResult};
 use crate::clients::{Agent, ToolContext};
 use crate::config::settings::LoadedSettings;
@@ -35,7 +32,7 @@ use crate::session_telemetry::{SessionTelemetryRecord, SessionTelemetryWriter};
 use crate::types::{SessionRecord, StreamRecord, TaskOutcome};
 
 #[cfg(test)]
-use crate::types::{ConversationItem, Role};
+use crate::types::Role;
 use clap::{ArgGroup, Parser, ValueEnum};
 
 use serde::Serialize;
@@ -776,7 +773,7 @@ impl CmdRunner for CodingAssistant {
         let (client, hook_runner) =
             Self::attach_hooks(client, &prepared.current_dir, hook_context)?;
         let output = self.output_sink();
-        let (mut client, spinner) = output.attach_callbacks(client);
+        let mut client = output.attach_callbacks(client);
 
         // Race Ctrl-C against the agent turn so we can emit a clean
         // TaskComplete record even when interrupted.
@@ -809,7 +806,7 @@ impl CmdRunner for CodingAssistant {
         };
 
         if interrupted.load(Ordering::SeqCst) {
-            return Self::handle_interrupt(&mut client, turn_start, output, spinner);
+            return Self::handle_interrupt(&mut client, turn_start);
         }
 
         // The agent turn completed normally.
@@ -818,7 +815,6 @@ impl CmdRunner for CodingAssistant {
             turn.duration_ms,
             turn.result.as_ref().err().map(ToString::to_string),
         );
-        output.finish_progress(spinner, turn.duration_ms, &client);
         output.render_turn(
             turn,
             &client,
@@ -841,12 +837,7 @@ impl CodingAssistant {
     /// the telemetry summary, and returns an `Interrupted` error that
     /// `main()` maps to exit code 130. Worktree cleanup is handled by
     /// [`WorktreeGuard`]'s `Drop`.
-    fn handle_interrupt(
-        client: &mut Agent,
-        turn_start: Instant,
-        output: CliOutputSink,
-        spinner: Option<indicatif::ProgressBar>,
-    ) -> anyhow::Result<()> {
+    fn handle_interrupt(client: &mut Agent, turn_start: Instant) -> anyhow::Result<()> {
         // Set up a second Ctrl-C handler that force-exits immediately
         // in case the graceful shutdown hangs.
         let second_ctrlc = tokio::spawn(async {
@@ -876,9 +867,6 @@ impl CodingAssistant {
             elapsed,
             Some("Interrupted by user".to_string()),
         );
-
-        // Finish the progress spinner if active.
-        output.finish_progress(spinner, elapsed, client);
 
         // Abort the second-Ctrl-C listener. Worktree cleanup runs
         // later via WorktreeGuard's Drop when `prepared` goes out of
@@ -1009,7 +997,7 @@ async fn main() -> std::process::ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::{format_done_summary, format_retry_message, format_spinner_message};
+
     use crate::config::model::ApiType;
     use crate::types::session::FunctionCallOutputData;
 
@@ -1574,148 +1562,6 @@ mod tests {
             result.unwrap(),
             "User request:\nprompt line 1\nprompt line 2\n\nStdin:\nstdin line 1\nstdin line 2"
         );
-    }
-
-    // Tests for format_spinner_message
-    #[test]
-    fn test_format_spinner_message_function_call() {
-        let item = ConversationItem::FunctionCall {
-            id: "fc-1".to_string(),
-            call_id: "call-1".to_string(),
-            name: "Bash".to_string(),
-            arguments: r#"{"command":"ls -la"}"#.to_string(),
-            timestamp: None,
-        };
-        let msg = format_spinner_message(&item);
-        assert!(msg.is_some());
-        let msg = msg.unwrap_or_default();
-        assert!(msg.contains("Bash:"));
-        assert!(msg.contains("ls -la"));
-    }
-
-    #[test]
-    fn test_format_spinner_message_reasoning() {
-        let item = ConversationItem::Reasoning {
-            id: "r-1".to_string(),
-            summary: Some(vec!["thinking...".to_string()]),
-            encrypted_content: None,
-            content: None,
-            timestamp: None,
-        };
-        let msg = format_spinner_message(&item);
-        assert_eq!(msg, Some("Thinking...".to_string()));
-    }
-
-    #[test]
-    fn test_format_spinner_message_assistant() {
-        let item = ConversationItem::Message {
-            role: Role::Assistant,
-            content: "Here is the answer".to_string(),
-            id: Some("msg-1".to_string()),
-            status: Some("completed".to_string()),
-            timestamp: None,
-        };
-        let msg = format_spinner_message(&item);
-        assert_eq!(msg, Some("Responding...".to_string()));
-    }
-
-    #[test]
-    fn test_format_spinner_message_user_returns_none() {
-        let item = ConversationItem::Message {
-            role: Role::User,
-            content: "Hello".to_string(),
-            id: None,
-            status: None,
-            timestamp: None,
-        };
-        assert!(format_spinner_message(&item).is_none());
-    }
-
-    #[test]
-    fn test_format_spinner_message_function_output_returns_none() {
-        let item = ConversationItem::FunctionCallOutput {
-            call_id: "call-1".to_string(),
-            output: "result".to_string(),
-            timestamp: None,
-        };
-        assert!(format_spinner_message(&item).is_none());
-    }
-
-    #[test]
-    fn test_format_retry_message_http_retry() {
-        let status = crate::clients::retry::RetryStatus {
-            attempt: 2,
-            max_retries: 5,
-            delay: Duration::from_millis(1_250),
-            reason: crate::clients::retry::RetryReason::RateLimit,
-            detail: "429 rate limit".to_string(),
-        };
-
-        assert_eq!(
-            format_retry_message(&status),
-            "Retrying in 1.3s after 429 rate limit (attempt 2/5)"
-        );
-    }
-
-    #[test]
-    fn test_format_retry_message_context_overflow() {
-        let status = crate::clients::retry::RetryStatus {
-            attempt: 2,
-            max_retries: 5,
-            delay: Duration::ZERO,
-            reason: crate::clients::retry::RetryReason::ContextOverflow,
-            detail: "max_output_tokens=3584".to_string(),
-        };
-
-        assert_eq!(
-            format_retry_message(&status),
-            "Retrying once with max_output_tokens=3584 after context overflow"
-        );
-    }
-
-    #[test]
-    fn test_format_done_summary() {
-        temp_env::with_var("CAKE_TEST_VALID_KEY", Some("sk-test-123"), || {
-            let config = ModelConfig {
-                model: "test/model".to_string(),
-                api_type: ApiType::ChatCompletions,
-                base_url: "https://api.example.com".to_string(),
-                api_key_env: "CAKE_TEST_VALID_KEY".to_string(),
-                provider: None,
-                provider_headers: None,
-                temperature: None,
-                top_p: None,
-                max_output_tokens: None,
-                reasoning_effort: None,
-                reasoning_summary: None,
-                reasoning_max_tokens: None,
-                providers: vec![],
-            };
-            let resolved = match ResolvedModelConfig::resolve(config) {
-                Ok(resolved) => resolved,
-                Err(err) => panic!("test config should resolve: {err}"),
-            };
-            let agent = Agent::new(
-                resolved,
-                &[(Role::System, "test system prompt".to_string())],
-            )
-            .with_session_id(uuid::uuid!("550e8400-e29b-41d4-a716-446655440000"))
-            .with_turn_count(3)
-            .with_total_usage(crate::types::Usage {
-                input_tokens: 1000,
-                input_tokens_details: crate::types::InputTokensDetails { cached_tokens: 250 },
-                output_tokens: 500,
-                ..Default::default()
-            });
-
-            let summary = format_done_summary(1500, &agent);
-            assert!(summary.contains("session 550e8400-e29b-41d4-a716-446655440000"));
-            assert!(summary.contains("1.5s"));
-            assert!(summary.contains("3 turns"));
-            assert!(summary.contains("1000 input tokens"));
-            assert!(summary.contains("250 cached reads"));
-            assert!(summary.contains("500 output tokens"));
-        });
     }
 
     #[test]

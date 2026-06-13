@@ -5,16 +5,10 @@
 //! struct used to carry a single agent-turn outcome and its duration.
 
 use std::path::Path;
-use std::time::Duration;
-
-use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::OutputFormat;
-use crate::clients::retry::{RetryReason, RetryStatus};
-use crate::clients::{Agent, summarize_tool_args};
+use crate::clients::Agent;
 use crate::config::{DataDir, Session};
-use crate::time_format::{format_duration_tenths, format_seconds_tenths};
-use crate::types::{ConversationItem, Role};
 
 /// Outcome of a single agent turn, bundling the result with its elapsed time.
 pub struct TurnResult {
@@ -25,7 +19,7 @@ pub struct TurnResult {
 /// Pure-rendering sink for CLI output.
 ///
 /// Dispatches responses to the appropriate output format (text, JSON, or
-/// stream-JSON) and manages text-mode progress reporting.
+/// stream-JSON).
 #[derive(Clone, Copy)]
 pub struct CliOutputSink {
     format: OutputFormat,
@@ -36,56 +30,12 @@ impl CliOutputSink {
         Self { format }
     }
 
-    pub(crate) fn attach_callbacks(self, mut client: Agent) -> (Agent, Option<ProgressBar>) {
+    pub(crate) fn attach_callbacks(self, mut client: Agent) -> Agent {
         if self.format == OutputFormat::StreamJson {
             client = client.with_streaming_json(Self::write_stream_record);
         }
 
-        match self.format {
-            OutputFormat::Text => {
-                let (client, spinner) = Self::attach_text_progress(client);
-                (client, Some(spinner))
-            },
-            OutputFormat::StreamJson | OutputFormat::Json => (client, None),
-        }
-    }
-
-    /// Attach text-mode progress reporting to the agent and return its spinner.
-    fn attach_text_progress(client: Agent) -> (Agent, ProgressBar) {
-        let spinner = ProgressBar::new_spinner();
-        let style = ProgressStyle::with_template("{spinner:.cyan} {msg}")
-            .unwrap_or_else(|_| ProgressStyle::default_spinner());
-        spinner.set_style(style);
-        spinner.enable_steady_tick(Duration::from_millis(80));
-        spinner.set_message("Thinking...");
-
-        let spinner_clone = spinner.clone();
-        let retry_spinner = spinner.clone();
-        let client = client.with_progress_callback(move |item| {
-            let msg = format_spinner_message(item);
-            if let Some(msg) = msg {
-                spinner_clone.set_message(msg);
-            }
-        });
-        let client = client.with_retry_callback(move |status| {
-            retry_spinner.set_message(format_retry_message(status));
-        });
-
-        (client, spinner)
-    }
-
-    pub(crate) fn finish_progress(
-        self,
-        spinner: Option<ProgressBar>,
-        duration_ms: u64,
-        client: &Agent,
-    ) {
-        if self.format == OutputFormat::Text
-            && let Some(spinner) = spinner
-        {
-            let summary = format_done_summary(duration_ms, client);
-            spinner.finish_with_message(format!("Done: {summary}"));
-        }
+        client
     }
 
     pub(crate) fn render_turn(
@@ -193,52 +143,4 @@ impl CliOutputSink {
     pub(crate) fn write_error(error: &anyhow::Error) {
         eprintln!("Error: {error}");
     }
-}
-
-/// Format a completion summary with elapsed time, turns, and token usage.
-pub fn format_done_summary(duration_ms: u64, client: &Agent) -> String {
-    let secs = format_seconds_tenths(u128::from(duration_ms));
-    let turns = client.turn_count();
-    let usage = client.total_usage();
-    let input_tokens = usage.input_tokens;
-    let output_tokens = usage.output_tokens;
-    let cached_reads_tokens = usage.input_tokens_details.cached_tokens;
-    format!(
-        "session {}, {secs}s, {turns} turns, {input_tokens} input tokens, {cached_reads_tokens} cached reads, {output_tokens} output tokens",
-        client.session_id()
-    )
-}
-
-/// Format a conversation item as a short spinner message for normal mode.
-///
-/// Returns `Some(message)` for items worth showing, `None` otherwise.
-pub fn format_spinner_message(item: &ConversationItem) -> Option<String> {
-    match item {
-        ConversationItem::FunctionCall {
-            name, arguments, ..
-        } => {
-            let summary = summarize_tool_args(name, arguments);
-            Some(format!("{name}: {summary}"))
-        },
-        ConversationItem::Reasoning { .. } => Some("Thinking...".to_string()),
-        ConversationItem::Message { role, .. } if *role == Role::Assistant => {
-            Some("Responding...".to_string())
-        },
-        _ => None,
-    }
-}
-
-pub fn format_retry_message(status: &RetryStatus) -> String {
-    if status.reason == RetryReason::ContextOverflow {
-        return format!(
-            "Retrying once with {} after context overflow",
-            status.detail
-        );
-    }
-
-    let delay = format_duration_tenths(status.delay);
-    format!(
-        "Retrying in {delay}s after {} (attempt {}/{})",
-        status.detail, status.attempt, status.max_retries
-    )
 }

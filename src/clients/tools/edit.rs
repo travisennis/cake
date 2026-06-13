@@ -94,13 +94,6 @@ pub(super) fn mutating_target(
     validate_path_for_write(context, &args.path)
 }
 
-/// Summarize edit arguments for display
-pub fn summarize_args(arguments: &str) -> String {
-    serde_json::from_str::<EditSummaryArgs>(arguments)
-        .map(|args| args.path)
-        .unwrap_or_default()
-}
-
 /// A matched edit with position information
 #[derive(Debug, Clone)]
 struct MatchedEdit {

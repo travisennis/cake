@@ -17,9 +17,6 @@ pub use cmd_runner::CmdRunner;
 pub use debug::DebugCommand;
 pub use output::{CliOutputSink, TurnResult};
 
-// Re-exported for test assertions; unused in production builds.
-#[cfg(test)]
-pub use output::{format_done_summary, format_retry_message, format_spinner_message};
 pub use run_mode::{RunMode, SessionStorage};
 pub use session_factory::RunSession;
 

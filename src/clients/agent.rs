@@ -266,27 +266,6 @@ impl Agent {
         self
     }
 
-    /// Enables progress reporting for tool execution.
-    ///
-    /// The callback receives conversation items as they occur, useful for
-    /// displaying human-readable progress during long-running operations.
-    pub fn with_progress_callback(
-        mut self,
-        callback: impl Fn(&ConversationItem) + Send + Sync + 'static,
-    ) -> Self {
-        self.observer.set_progress_callback(callback);
-        self
-    }
-
-    /// Enables retry wait reporting.
-    pub fn with_retry_callback(
-        mut self,
-        callback: impl Fn(&crate::clients::retry::RetryStatus) + Send + Sync + 'static,
-    ) -> Self {
-        self.observer.set_retry_callback(callback);
-        self
-    }
-
     /// Enables best-effort session telemetry sidecar writing.
     pub fn with_session_telemetry(
         mut self,
@@ -301,11 +280,6 @@ impl Agent {
             writer,
         });
         self
-    }
-
-    /// Report a conversation item via the progress callback, if set.
-    fn report_progress(&self, item: &ConversationItem) {
-        self.observer.report_progress(item);
     }
 
     /// Emit a task record to persistence and streaming sinks.

@@ -40,13 +40,6 @@ struct WriteArgs {
     content: String,
 }
 
-/// Summarize write arguments for display
-pub fn summarize_args(arguments: &str) -> String {
-    serde_json::from_str::<WriteArgs>(arguments)
-        .map(|args| args.path)
-        .unwrap_or_default()
-}
-
 /// Return the validated canonical path this Write call would mutate.
 pub(super) fn mutating_target(
     context: &ToolContext,

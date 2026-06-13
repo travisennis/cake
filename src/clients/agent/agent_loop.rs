@@ -8,7 +8,7 @@ use crate::clients::skill_dedup::{SkillActivation, execute_tool_with_skill_dedup
 use crate::clients::tools::{ScheduledToolPlan, reject_duplicate_mutating_tool_calls};
 use crate::hooks::ToolHookPlan;
 use crate::session_telemetry::ToolCallTelemetry;
-use crate::types::{ConversationItem, Role, SessionRecord};
+use crate::types::{ConversationItem, SessionRecord};
 
 type FunctionCall = (String, String, String);
 
@@ -70,9 +70,7 @@ impl Agent {
             // Extract owned function call data before moving items into history
             let function_calls = Self::function_calls_from_items(&items);
 
-            let has_tool_calls = !function_calls.is_empty();
-
-            self.stream_and_report_turn_items(&items, has_tool_calls)?;
+            self.stream_turn_items(&items)?;
 
             // Move items into history
             self.conversation.extend_turn_items(items);
@@ -244,7 +242,6 @@ impl Agent {
         let config = &self.config;
         let session_id = self.session_id;
         let history = self.conversation.history();
-        let observer = &self.observer;
         let turn_index = self.turn_count.saturating_add(1);
         let mut telemetry_events = Vec::new();
         let result = self
@@ -255,9 +252,6 @@ impl Agent {
                 turn_index,
                 history,
                 tool_definitions,
-                |status| {
-                    observer.report_retry(status);
-                },
                 |event| {
                     telemetry_events.push(event);
                 },
@@ -288,33 +282,10 @@ impl Agent {
             .collect()
     }
 
-    fn stream_and_report_turn_items(
-        &mut self,
-        items: &[ConversationItem],
-        has_tool_calls: bool,
-    ) -> anyhow::Result<()> {
-        // Stream each item as JSON if callback is set.
+    fn stream_turn_items(&mut self, items: &[ConversationItem]) -> anyhow::Result<()> {
         for item in items {
             self.stream_item(item)?;
         }
-
-        // Report progress for items, but skip assistant messages on the final turn
-        // because those are already printed to stdout.
-        for item in items {
-            if !has_tool_calls
-                && matches!(
-                    item,
-                    ConversationItem::Message {
-                        role: Role::Assistant,
-                        ..
-                    }
-                )
-            {
-                continue;
-            }
-            self.report_progress(item);
-        }
-
         Ok(())
     }
 }

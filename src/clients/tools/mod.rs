@@ -179,25 +179,22 @@ pub struct ToolResult {
 
 type ToolFuture = Pin<Box<dyn Future<Output = Result<ToolResult, String>> + Send>>;
 type ToolExecutor = fn(Arc<ToolContext>, String) -> ToolFuture;
-type ToolSummarizer = fn(&str) -> String;
 
 /// Registered behavior for a callable tool.
 ///
-/// This keeps the model-facing definition, execution entry point, and display
-/// summary together so adding a tool only requires one registry entry.
+/// This keeps the model-facing definition and execution entry point together
+/// so adding a tool only requires one registry entry.
 #[derive(Clone)]
 pub(super) struct ToolEntry {
     definition: Tool,
     execute: ToolExecutor,
-    summarize: ToolSummarizer,
 }
 
 impl ToolEntry {
-    fn new(definition: Tool, execute: ToolExecutor, summarize: ToolSummarizer) -> Self {
+    fn new(definition: Tool, execute: ToolExecutor) -> Self {
         Self {
             definition,
             execute,
-            summarize,
         }
     }
 }
@@ -255,12 +252,6 @@ impl ToolRegistry {
         };
 
         (entry.execute)(context, arguments.to_string()).await
-    }
-
-    /// Summarize registered tool arguments for display.
-    pub(super) fn summarize(&self, name: &str, arguments: &str) -> String {
-        self.find(name)
-            .map_or_else(String::new, |entry| (entry.summarize)(arguments))
     }
 
     /// Return the canonical path a mutating path-aware tool would write.
@@ -464,49 +455,16 @@ fn execute_write_tool(context: Arc<ToolContext>, arguments: String) -> ToolFutur
 }
 
 // =============================================================================
-// Tool Argument Summarization
-// =============================================================================
-
-/// Summarize tool arguments for display.
-/// This function uses the same typed argument structs as the tool execution,
-/// ensuring that parameter names stay in sync.
-pub fn summarize_tool_args(tool_name: &str, arguments: &str) -> String {
-    let raw = default_tool_registry().summarize(tool_name, arguments);
-
-    truncate_display(&raw, 120)
-}
-
-/// Truncate a string for display, appending "..." if needed.
-fn truncate_display(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        #[expect(
-            clippy::string_slice,
-            reason = "boundary is computed via floor_char_boundary which guarantees a UTF-8 character boundary"
-        )]
-        {
-            let boundary = s.floor_char_boundary(max);
-            format!("{}...", &s[..boundary])
-        }
-    }
-}
-
-// =============================================================================
 // Tool Registry
 // =============================================================================
 
 /// Returns the default tool registry.
 pub(super) fn default_tool_registry() -> ToolRegistry {
     let entries = vec![
-        ToolEntry::new(bash::bash_tool(), execute_bash_tool, bash::summarize_args),
-        ToolEntry::new(edit::edit_tool(), execute_edit_tool, edit::summarize_args),
-        ToolEntry::new(read::read_tool(), execute_read_tool, read::summarize_args),
-        ToolEntry::new(
-            write::write_tool(),
-            execute_write_tool,
-            write::summarize_args,
-        ),
+        ToolEntry::new(bash::bash_tool(), execute_bash_tool),
+        ToolEntry::new(edit::edit_tool(), execute_edit_tool),
+        ToolEntry::new(read::read_tool(), execute_read_tool),
+        ToolEntry::new(write::write_tool(), execute_write_tool),
     ];
     let definitions = entries.iter().map(|e| e.definition.clone()).collect();
     ToolRegistry {
@@ -518,11 +476,7 @@ pub(super) fn default_tool_registry() -> ToolRegistry {
 /// Returns a registry containing only the Read tool.
 #[cfg(test)]
 pub(super) fn read_tool_registry() -> ToolRegistry {
-    ToolRegistry::new(vec![ToolEntry::new(
-        read::read_tool(),
-        execute_read_tool,
-        read::summarize_args,
-    )])
+    ToolRegistry::new(vec![ToolEntry::new(read::read_tool(), execute_read_tool)])
 }
 
 // =============================================================================

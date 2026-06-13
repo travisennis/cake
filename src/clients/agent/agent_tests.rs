@@ -1173,12 +1173,7 @@ mod error_tests {
             .mount(&mock_server)
             .await;
 
-        let captured = Arc::new(Mutex::new(Vec::new()));
-        let captured_clone = Arc::clone(&captured);
-        let mut agent =
-            test_agent_with_url(&mock_server.uri()).with_retry_callback(move |status| {
-                captured_clone.lock().unwrap().push(status.clone());
-            });
+        let mut agent = test_agent_with_url(&mock_server.uri());
         agent.history_mut().push(ConversationItem::Message {
             role: Role::User,
             content: "test".to_string(),
@@ -1193,14 +1188,6 @@ mod error_tests {
 
         assert!(result.is_ok());
         assert!(elapsed >= Duration::from_millis(900));
-        let status = {
-            let statuses = captured.lock().unwrap();
-            assert_eq!(statuses.len(), 1);
-            statuses[0].clone()
-        };
-        assert_eq!(status.delay, Duration::from_secs(1));
-        assert_eq!(status.detail, "429 rate limit");
-        assert_eq!(status.attempt, 2);
     }
 
     #[tokio::test]

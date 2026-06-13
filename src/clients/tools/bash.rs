@@ -270,13 +270,6 @@ fn append_metadata(
     }
 }
 
-/// Summarize bash arguments for display
-pub fn summarize_args(arguments: &str) -> String {
-    BashExecutionArgs::from_json(arguments)
-        .map(|args| args.command)
-        .unwrap_or_default()
-}
-
 /// Execute a bash command
 pub(super) async fn execute_bash(
     context: &super::ToolContext,

@@ -25,4 +25,4 @@ mod tools;
 
 pub use agent::Agent;
 #[doc(inline)]
-pub use tools::{ToolContext, summarize_tool_args};
+pub use tools::ToolContext;
