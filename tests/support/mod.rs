@@ -8,7 +8,7 @@ fn binary_path() -> PathBuf {
 
 pub struct TestEnv {
     _root: TempDir,
-    workspace_dir: PathBuf,
+    pub workspace_dir: PathBuf,
     home_dir: PathBuf,
     pub data_dir: PathBuf,
 }

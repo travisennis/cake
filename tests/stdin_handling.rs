@@ -129,6 +129,133 @@ fn test_dash_prompt_parsing() {
 }
 
 #[test]
+fn test_worktree_stdin_error_no_worktree_created() {
+    // `--worktree= -` with no stdin: the reordering fix validates
+    // stdin content BEFORE creating the worktree, so no worktree
+    // should ever be created.
+    let env = cake_env();
+
+    // Init a git repo.
+    init_git_repo(&env.workspace_dir);
+
+    // Count worktrees before.
+    let before = count_worktrees(&env.workspace_dir);
+
+    let output = env
+        .command()
+        .arg("--worktree=")
+        .arg("-")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("Failed to execute command");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        !output.status.success(),
+        "--worktree with no stdin should fail. Stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("No input provided via stdin"),
+        "Should show 'No input provided via stdin'. Stderr: {stderr}"
+    );
+
+    // No worktree should have been created (stdin fails first).
+    let after = count_worktrees(&env.workspace_dir);
+    assert_eq!(
+        before, after,
+        "No worktree should be created when stdin validation fails"
+    );
+}
+
+#[test]
+fn test_worktree_early_failure_cleans_up() {
+    // WorktreeGuard's Drop must clean up when an error occurs after
+    // worktree creation. Use `--worktree= hello` with no model
+    // configured so the prompt passes validation but model resolution
+    // fails after worktree setup.
+    let env = cake_env();
+
+    // Init a git repo.
+    init_git_repo(&env.workspace_dir);
+
+    // Count worktrees before.
+    let before = count_worktrees(&env.workspace_dir);
+
+    // Run `cake --worktree= hello` without any model configured.
+    let output = env
+        .command()
+        .arg("--worktree=")
+        .arg("hello")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("Failed to execute command");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        !output.status.success(),
+        "--worktree with no model should fail. Stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("No model specified"),
+        "Should fail with model error. Stderr: {stderr}"
+    );
+
+    // The guard should have removed the unused worktree.
+    let after = count_worktrees(&env.workspace_dir);
+    assert_eq!(
+        before, after,
+        "Worktree count should not increase after a failed --worktree run"
+    );
+}
+
+/// Init a minimal git repo with an initial commit at `dir`.
+fn init_git_repo(dir: &std::path::Path) {
+    let init = std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(dir)
+        .output()
+        .expect("failed to init git repo");
+    assert!(init.status.success(), "git init should succeed");
+    std::process::Command::new("git")
+        .args(["config", "user.email", "test@test"])
+        .current_dir(dir)
+        .output()
+        .expect("failed to set user.email");
+    std::process::Command::new("git")
+        .args(["config", "user.name", "test"])
+        .current_dir(dir)
+        .output()
+        .expect("failed to set user.name");
+    std::fs::write(dir.join("initial"), "content").expect("failed to write initial file");
+    let add = std::process::Command::new("git")
+        .args(["add", "."])
+        .current_dir(dir)
+        .output()
+        .expect("failed to git add");
+    assert!(add.status.success(), "git add should succeed");
+    let commit = std::process::Command::new("git")
+        .args(["commit", "-m", "initial"])
+        .current_dir(dir)
+        .output()
+        .expect("failed to git commit");
+    assert!(commit.status.success(), "git commit should succeed");
+}
+
+/// Count registered git worktrees in `dir`.
+fn count_worktrees(dir: &std::path::Path) -> usize {
+    let output = std::process::Command::new("git")
+        .args(["worktree", "list"])
+        .current_dir(dir)
+        .output()
+        .expect("failed to list worktrees");
+    String::from_utf8_lossy(&output.stdout).lines().count()
+}
+
+#[test]
 fn test_dash_waits_for_delayed_stdin() {
     let env = cake_env();
     let mut child = env

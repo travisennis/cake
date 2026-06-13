@@ -129,10 +129,9 @@ pub(crate) struct CodingAssistant {
 }
 
 struct PreparedRun {
-    original_dir: PathBuf,
     current_dir: PathBuf,
     additional_dirs: Vec<PathBuf>,
-    worktree: Option<worktree::Worktree>,
+    _worktree: WorktreeGuard,
     content: String,
 }
 
@@ -362,38 +361,6 @@ impl CodingAssistant {
         Ok(Some(wt))
     }
 
-    /// Clean up a worktree after the session ends.
-    fn cleanup_worktree(wt: &worktree::Worktree, original_dir: &std::path::Path) {
-        if let Err(e) = std::env::set_current_dir(original_dir) {
-            tracing::warn!(
-                "Failed to restore original directory '{}': {e}",
-                original_dir.display()
-            );
-        }
-
-        match worktree::has_changes(&wt.path) {
-            Ok(false) => {
-                eprintln!("No changes in worktree '{}', removing.", wt.name);
-                if let Err(e) = worktree::remove(original_dir, &wt.name, false) {
-                    tracing::warn!("Failed to clean up worktree '{}': {e}", wt.name);
-                }
-            },
-            Ok(true) => {
-                eprintln!(
-                    "Worktree '{}' has changes, keeping at {}",
-                    wt.name,
-                    wt.path.display()
-                );
-            },
-            Err(e) => {
-                tracing::warn!(
-                    "Could not check worktree '{}' for changes, keeping it: {e}",
-                    wt.name
-                );
-            },
-        }
-    }
-
     /// Resolve `--add-dir` values against the startup directory.
     ///
     /// Returns absolute, canonical paths that remain valid even when the
@@ -425,19 +392,21 @@ impl CodingAssistant {
     fn prepare_run(&self) -> anyhow::Result<PreparedRun> {
         let original_dir = std::env::current_dir()?;
         let additional_dirs = self.resolve_additional_dirs(&original_dir);
-        let worktree = self.setup_worktree(&original_dir)?;
 
+        // Validate stdin/content before creating the worktree so that
+        // input errors don't leave a stale registered worktree.
         let stdin_content = Self::read_stdin_content()?;
         let content = Self::build_content(self.prompt.as_deref(), stdin_content)?;
 
+        // Set up the worktree after input validation (if requested).
+        let worktree = self.setup_worktree(&original_dir)?;
         let current_dir = std::env::current_dir()
             .map_err(|e| anyhow::anyhow!("Failed to get current directory: {e}"))?;
 
         Ok(PreparedRun {
-            original_dir,
             current_dir,
             additional_dirs,
-            worktree,
+            _worktree: WorktreeGuard::new(worktree, original_dir),
             content,
         })
     }
@@ -749,10 +718,6 @@ impl CodingAssistant {
 }
 
 impl CmdRunner for CodingAssistant {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "run() orchestrates all CLI setup and turn lifecycle"
-    )]
     async fn run(&self, data_dir: &DataDir) -> anyhow::Result<()> {
         if let Some(command) = &self.command {
             return command.run(data_dir).await;
@@ -844,14 +809,7 @@ impl CmdRunner for CodingAssistant {
         };
 
         if interrupted.load(Ordering::SeqCst) {
-            return Self::handle_interrupt(
-                &mut client,
-                turn_start,
-                prepared.worktree.as_ref(),
-                &prepared.original_dir,
-                output,
-                spinner,
-            );
+            return Self::handle_interrupt(&mut client, turn_start, output, spinner);
         }
 
         // The agent turn completed normally.
@@ -870,9 +828,7 @@ impl CmdRunner for CodingAssistant {
             run_mode.persists_session(),
         )?;
 
-        if let Some(ref wt) = prepared.worktree {
-            Self::cleanup_worktree(wt, &prepared.original_dir);
-        }
+        // Worktree cleanup is handled by WorktreeGuard's Drop.
 
         Ok(())
     }
@@ -882,13 +838,12 @@ impl CodingAssistant {
     /// Handle a user interrupt (Ctrl-C) during an agent turn.
     ///
     /// Emits a `TaskComplete` record with an `Interrupted` outcome, writes
-    /// the telemetry summary, cleans up the worktree, and returns an
-    /// `Interrupted` error that `main()` maps to exit code 130.
+    /// the telemetry summary, and returns an `Interrupted` error that
+    /// `main()` maps to exit code 130. Worktree cleanup is handled by
+    /// [`WorktreeGuard`]'s `Drop`.
     fn handle_interrupt(
         client: &mut Agent,
         turn_start: Instant,
-        worktree: Option<&worktree::Worktree>,
-        original_dir: &Path,
         output: CliOutputSink,
         spinner: Option<indicatif::ProgressBar>,
     ) -> anyhow::Result<()> {
@@ -925,12 +880,9 @@ impl CodingAssistant {
         // Finish the progress spinner if active.
         output.finish_progress(spinner, elapsed, client);
 
-        // Clean up the worktree (if any) matching normal-exit policy.
-        if let Some(wt) = worktree {
-            Self::cleanup_worktree(wt, original_dir);
-        }
-
-        // Abort the second-Ctrl-C listener since cleanup finished.
+        // Abort the second-Ctrl-C listener. Worktree cleanup runs
+        // later via WorktreeGuard's Drop when `prepared` goes out of
+        // scope.
         second_ctrlc.abort();
 
         Err(Interrupted.into())
@@ -951,6 +903,61 @@ impl std::fmt::Display for Interrupted {
 }
 
 impl std::error::Error for Interrupted {}
+
+/// RAII guard that ensures a git worktree is cleaned up on early-exit paths.
+///
+/// On drop, restores the original working directory and removes the worktree
+/// if it has no changes. This covers early failures, Ctrl-C interrupts, and
+/// normal completion, so callers never need to manually clean up.
+struct WorktreeGuard {
+    inner: Option<worktree::Worktree>,
+    original_dir: PathBuf,
+}
+
+impl WorktreeGuard {
+    const fn new(inner: Option<worktree::Worktree>, original_dir: PathBuf) -> Self {
+        Self {
+            inner,
+            original_dir,
+        }
+    }
+}
+
+impl Drop for WorktreeGuard {
+    fn drop(&mut self) {
+        let Some(ref wt) = self.inner else { return };
+
+        // Restore the original working directory first.
+        if let Err(e) = std::env::set_current_dir(&self.original_dir) {
+            tracing::warn!(
+                "Failed to restore original directory '{}': {e}",
+                self.original_dir.display()
+            );
+        }
+
+        match worktree::has_changes(&wt.path) {
+            Ok(false) => {
+                eprintln!("No changes in worktree '{}', removing.", wt.name);
+                if let Err(e) = worktree::remove(&self.original_dir, &wt.name, false) {
+                    tracing::warn!("Failed to clean up worktree '{}': {e}", wt.name);
+                }
+            },
+            Ok(true) => {
+                eprintln!(
+                    "Worktree '{}' has changes, keeping at {}",
+                    wt.name,
+                    wt.path.display()
+                );
+            },
+            Err(e) => {
+                tracing::warn!(
+                    "Could not check worktree '{}' for changes, keeping it: {e}",
+                    wt.name
+                );
+            },
+        }
+    }
+}
 
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
