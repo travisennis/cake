@@ -56,7 +56,7 @@ impl Agent {
         clippy::too_many_lines,
         reason = "agent send loop orchestrates tool execution and retry logic"
     )]
-    pub async fn send(&mut self, content: String) -> anyhow::Result<Option<String>> {
+    pub async fn send(&mut self, content: String) -> anyhow::Result<String> {
         let user_item = self.conversation.push_user_message(content);
         self.stream_item(&user_item)?;
 
@@ -78,7 +78,7 @@ impl Agent {
 
             // If no function calls, resolve and return the message
             if function_calls.is_empty() {
-                return Ok(Some(self.conversation.resolve_assistant_message()));
+                return Ok(self.conversation.resolve_assistant_message());
             }
 
             self.tool_call_count += u32::try_from(function_calls.len()).unwrap_or(u32::MAX);

@@ -12,7 +12,7 @@ use crate::config::{DataDir, Session};
 
 /// Outcome of a single agent turn, bundling the result with its elapsed time.
 pub struct TurnResult {
-    pub(crate) result: anyhow::Result<Option<String>>,
+    pub(crate) result: anyhow::Result<String>,
     pub(crate) duration_ms: u64,
 }
 
@@ -71,18 +71,14 @@ impl CliOutputSink {
         }
     }
 
-    fn render_text_result(result: anyhow::Result<Option<String>>) -> anyhow::Result<()> {
-        let response = result?;
-        if let Some(response_text) = response {
-            Self::write_text_response(&response_text);
-        } else {
-            Self::write_warning("No response received from the model. The task may be incomplete.");
-        }
+    fn render_text_result(result: anyhow::Result<String>) -> anyhow::Result<()> {
+        let response_text = result?;
+        Self::write_text_response(&response_text);
         Ok(())
     }
 
     pub(crate) fn turn_result_json(
-        result: &anyhow::Result<Option<String>>,
+        result: &anyhow::Result<String>,
         duration_ms: u64,
         client: &Agent,
         current_dir: &Path,
@@ -111,8 +107,7 @@ impl CliOutputSink {
 
         match result {
             Ok(response_text) => {
-                let result_text = response_text.as_deref().unwrap_or("");
-                json["result"] = serde_json::json!(result_text);
+                json["result"] = serde_json::json!(response_text);
             },
             Err(e) => {
                 json["result"] = serde_json::Value::Null;
@@ -134,10 +129,6 @@ impl CliOutputSink {
     pub(crate) fn write_json_value(value: &serde_json::Value) -> anyhow::Result<()> {
         println!("{}", serde_json::to_string(value)?);
         Ok(())
-    }
-
-    pub(crate) fn write_warning(message: &str) {
-        eprintln!("Warning: {message}");
     }
 
     pub(crate) fn write_error(error: &anyhow::Error) {

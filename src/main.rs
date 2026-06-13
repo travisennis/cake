@@ -681,15 +681,14 @@ impl CodingAssistant {
 
         match &result {
             Ok(response_text) => {
-                let result_text = response_text.clone();
                 if let Some(runner) = hook_runner
-                    && let Some(context) = runner.stop(result_text.as_deref()).await?
+                    && let Some(context) = runner.stop(response_text).await?
                 {
                     tracing::info!(target: "cake::hooks", additional_context = %context, "Stop hook returned additional context");
                 }
                 client.emit_task_complete_record(
                     TaskOutcome::Success {
-                        result: result_text,
+                        result: Some(response_text.clone()),
                     },
                     duration_ms,
                 )?;
@@ -799,7 +798,7 @@ impl CmdRunner for CodingAssistant {
                 // Dummy value — the flag check below short-circuits
                 // before `turn` is used when interrupted is true.
                 TurnResult {
-                    result: Ok(None),
+                    result: Ok(String::new()),
                     duration_ms: 0,
                 }
             },
@@ -1588,7 +1587,7 @@ mod tests {
                 Ok(data_dir) => data_dir,
                 Err(err) => panic!("data dir should be created: {err}"),
             };
-            let result = Ok(Some("done".to_string()));
+            let result = Ok("done".to_string());
 
             let json = CliOutputSink::turn_result_json(
                 &result,
@@ -1665,7 +1664,7 @@ mod tests {
                 Ok(data_dir) => data_dir,
                 Err(err) => panic!("data dir should be created: {err}"),
             };
-            let result = Ok(Some("ephemeral result".to_string()));
+            let result = Ok("ephemeral result".to_string());
 
             let json = CliOutputSink::turn_result_json(
                 &result,

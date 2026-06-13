@@ -906,7 +906,7 @@ mod error_tests {
 
         let result = agent.send("run a command".to_string()).await.unwrap();
 
-        assert_eq!(result.as_deref(), Some("done"));
+        assert_eq!(result, "done");
         assert_eq!(agent.turn_count, 2);
         assert_eq!(agent.total_usage.input_tokens, 7);
         assert_eq!(agent.total_usage.output_tokens, 3);
@@ -968,7 +968,7 @@ mod error_tests {
 
         let result = agent.send("run a command".to_string()).await.unwrap();
 
-        assert_eq!(result.as_deref(), Some("Hello!"));
+        assert_eq!(result, "Hello!");
         assert!(agent.history().iter().any(|item| matches!(
             item,
             ConversationItem::FunctionCallOutput { output, .. }

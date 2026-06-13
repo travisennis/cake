@@ -347,7 +347,7 @@ impl HookRunner {
         Ok(join_context(&result.additional_context))
     }
 
-    pub async fn stop(&self, result: Option<&str>) -> anyhow::Result<Option<String>> {
+    pub async fn stop(&self, result: &str) -> anyhow::Result<Option<String>> {
         let payload = self.payload(HookEvent::Stop, json!({ "result": result }));
         let result = self
             .run_and_aggregate(HookEvent::Stop, &HookSource::None, payload, None)
