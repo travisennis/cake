@@ -56,6 +56,16 @@ impl SkillActivations {
     }
 }
 
+/// Lock the skill activations mutex, recovering from poison.
+pub(super) fn lock_skill_activations(
+    lock: &Mutex<SkillActivations>,
+) -> std::sync::MutexGuard<'_, SkillActivations> {
+    lock.lock().unwrap_or_else(|e| {
+        tracing::error!("skill_activations mutex poisoned, recovering: {e}");
+        e.into_inner()
+    })
+}
+
 pub(super) async fn execute_tool_output(
     tools: &ToolRegistry,
     context: Arc<ToolContext>,
@@ -113,13 +123,7 @@ pub(super) async fn execute_tool_with_skill_dedup(
     };
     let skill_name = &skill.name;
 
-    let reservation = skill_activations
-        .lock()
-        .unwrap_or_else(|e| {
-            tracing::error!("skill_activations mutex poisoned, recovering: {e}");
-            e.into_inner()
-        })
-        .reserve(skill_name);
+    let reservation = lock_skill_activations(skill_activations).reserve(skill_name);
     match reservation {
         SkillReservation::Reserved => {},
         SkillReservation::AlreadyActive => {
@@ -147,26 +151,14 @@ pub(super) async fn execute_tool_with_skill_dedup(
     let output = match skill.load_body() {
         Ok(output) => output,
         Err(error) => {
-            skill_activations
-                .lock()
-                .unwrap_or_else(|e| {
-                    tracing::error!("skill_activations mutex poisoned, recovering: {e}");
-                    e.into_inner()
-                })
-                .fail(skill_name);
+            lock_skill_activations(skill_activations).fail(skill_name);
             return Err(format!(
                 "Failed to load skill '{}': {error}",
                 skill.location.display()
             ));
         },
     };
-    skill_activations
-        .lock()
-        .unwrap_or_else(|e| {
-            tracing::error!("skill_activations mutex poisoned, recovering: {e}");
-            e.into_inner()
-        })
-        .complete(skill_name);
+    lock_skill_activations(skill_activations).complete(skill_name);
     tracing::info!("Skill '{}' activated", skill_name);
     Ok(ToolExecutionOutput {
         output,

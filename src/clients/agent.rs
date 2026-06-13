@@ -10,7 +10,7 @@ use crate::clients::agent_observer::AgentObserver;
 use crate::clients::agent_runner::AgentRunner;
 use crate::clients::agent_state::{ConversationState, accumulate_usage};
 use crate::clients::backend::Backend;
-use crate::clients::skill_dedup::SkillActivations;
+use crate::clients::skill_dedup::{SkillActivations, lock_skill_activations};
 use crate::clients::tools::{ToolContext, ToolRegistry, default_tool_registry};
 use crate::config::model::ResolvedModelConfig;
 use crate::config::skills::Skill;
@@ -215,10 +215,7 @@ impl Agent {
     /// re-read during the resumed session.
     pub fn with_activated_skills(self, skills: HashSet<String>) -> Self {
         {
-            let mut guard = self.skill_activations.lock().unwrap_or_else(|e| {
-                tracing::error!("skill_activations mutex poisoned, recovering: {e}");
-                e.into_inner()
-            });
+            let mut guard = lock_skill_activations(&self.skill_activations);
             guard.replace_active(skills);
         }
         self
@@ -238,12 +235,7 @@ impl Agent {
     /// Returns the names of skills that have been activated in this session.
     #[cfg(test)]
     pub(crate) fn test_active_skills(&self) -> HashSet<String> {
-        self.skill_activations
-            .lock()
-            .unwrap_or_else(|e| {
-                tracing::error!("skill_activations mutex poisoned, recovering: {e}");
-                e.into_inner()
-            })
+        lock_skill_activations(&self.skill_activations)
             .active
             .clone()
     }
@@ -311,35 +303,40 @@ impl Agent {
     /// Emit append-only audit records for mutable prompt context used by this task.
     pub fn emit_prompt_context_records(&mut self) -> anyhow::Result<()> {
         let timestamp = chrono::Utc::now();
-        let prompt_context: Vec<_> = self
-            .conversation
-            .history()
-            .iter()
-            .take_while(|item| {
-                matches!(
-                    item,
-                    ConversationItem::Message {
-                        role: Role::System | Role::Developer,
-                        ..
-                    }
-                )
-            })
-            .filter_map(|item| {
-                let ConversationItem::Message { role, content, .. } = item else {
-                    return None;
-                };
-                (!matches!(role, Role::System)).then(|| SessionRecord::PromptContext {
-                    session_id: self.session_id.to_string(),
-                    task_id: self.task_id.to_string(),
-                    role: *role,
+        let Self {
+            conversation,
+            session_id,
+            task_id,
+            observer,
+            ..
+        } = &mut *self;
+
+        let session_id = session_id.to_string();
+        let task_id = task_id.to_string();
+
+        for item in conversation.history().iter().take_while(|item| {
+            matches!(
+                item,
+                ConversationItem::Message {
+                    role: Role::System | Role::Developer,
+                    ..
+                }
+            )
+        }) {
+            if let ConversationItem::Message {
+                role: Role::Developer,
+                content,
+                ..
+            } = item
+            {
+                observer.persist_record(&SessionRecord::PromptContext {
+                    session_id: session_id.clone(),
+                    task_id: task_id.clone(),
+                    role: Role::Developer,
                     content: content.clone(),
                     timestamp,
-                })
-            })
-            .collect();
-
-        for record in &prompt_context {
-            self.persist_record(record)?;
+                })?;
+            }
         }
         Ok(())
     }
