@@ -103,11 +103,7 @@ impl ConversationState {
     }
 }
 
-pub(super) const fn accumulate_usage(
-    total_usage: &mut Usage,
-    turn_count: &mut u32,
-    turn_usage: Option<&Usage>,
-) {
+pub(super) const fn accumulate_usage(total_usage: &mut Usage, turn_usage: Option<&Usage>) {
     if let Some(usage) = turn_usage {
         total_usage.input_tokens += usage.input_tokens;
         total_usage.input_tokens_details.cached_tokens += usage.input_tokens_details.cached_tokens;
@@ -115,7 +111,6 @@ pub(super) const fn accumulate_usage(
         total_usage.output_tokens_details.reasoning_tokens +=
             usage.output_tokens_details.reasoning_tokens;
         total_usage.total_tokens += usage.total_tokens;
-        *turn_count += 1;
     }
 }
 

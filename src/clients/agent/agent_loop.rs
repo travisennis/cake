@@ -64,7 +64,8 @@ impl Agent {
         loop {
             let TurnResult { items, usage } = self.complete_turn().await?;
 
-            // Accumulate usage
+            // Count every completed API turn unconditionally; accumulate usage separately.
+            self.turn_count += 1;
             self.accumulate_usage(usage.as_ref());
 
             // Extract owned function call data before moving items into history

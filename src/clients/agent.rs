@@ -344,9 +344,9 @@ impl Agent {
         Ok(())
     }
 
-    /// Accumulate usage from an API turn
+    /// Accumulate usage from an API turn.
     const fn accumulate_usage(&mut self, turn_usage: Option<&Usage>) {
-        accumulate_usage(&mut self.total_usage, &mut self.turn_count, turn_usage);
+        accumulate_usage(&mut self.total_usage, turn_usage);
     }
 
     /// Emit the task completion record with success/error and usage stats.
