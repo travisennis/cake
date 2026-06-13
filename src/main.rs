@@ -949,18 +949,6 @@ impl Drop for WorktreeGuard {
 
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
-    let data_dir = match DataDir::new() {
-        Ok(d) => d,
-        Err(e) => {
-            CliOutputSink::write_error(&e);
-            return exit_code::classify(&e);
-        },
-    };
-
-    _ = logger::configure(&data_dir.get_cache_dir());
-
-    info!("data dir: {}", data_dir.get_cache_dir().display());
-
     let args = match CodingAssistant::try_parse() {
         Ok(a) => a,
         Err(e) => {
@@ -981,6 +969,18 @@ async fn main() -> std::process::ExitCode {
             return exit;
         },
     };
+
+    let data_dir = match DataDir::new() {
+        Ok(d) => d,
+        Err(e) => {
+            CliOutputSink::write_error(&e);
+            return exit_code::classify(&e);
+        },
+    };
+
+    _ = logger::configure(&data_dir.get_cache_dir());
+
+    info!("data dir: {}", data_dir.get_cache_dir().display());
 
     match args.run(&data_dir).await {
         Ok(()) => std::process::ExitCode::from(exit_code::code::SUCCESS),
