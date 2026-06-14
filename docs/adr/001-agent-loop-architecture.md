@@ -2,6 +2,7 @@
 status: accepted
 date: 2024-01-15
 ---
+
 # Agent Loop Architecture
 
 ## Context
@@ -40,4 +41,3 @@ We use an iterative agent loop with tool execution:
 
 - OpenAI Tool Use documentation
 - Anthropic Model Context Protocol
-

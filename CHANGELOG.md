@@ -14,7 +14,7 @@ All notable changes to this project will be documented in this file.
 ### 🚀 Features
 
 - Initial implementation
-- Store app data in ~/./config/coding-assistant
+- Store app data in \~/./config/coding-assistant
 - Move model definitions into their own file
 - Refactor code and add claude models
 - Add justfile

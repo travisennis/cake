@@ -1,4 +1,6 @@
 exclude = [".agents/.tasks/"]
 
+line-width = 1000
+
 [format]
-wrap = "preserve"
+wrap = "reflow"

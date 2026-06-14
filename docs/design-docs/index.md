@@ -11,7 +11,7 @@ See the [../adr/](../adr/) directory for architectural decision records (ADRs).
   | Document                                                       | Description                                                                        |
   | -------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
   | [api-retry-strategy.md](api-retry-strategy.md)                 | API retry classification, backoff, and verification strategy                       |
-  | [domain.md](../DOMAIN.md)                                       | Core concepts, glossary, and mental model of the cake system                        |
+  | [domain.md](../DOMAIN.md)                                      | Core concepts, glossary, and mental model of the cake system                       |
   | [cli.md](cli.md)                                               | CLI design and command structure                                                   |
   | [conversation-types.md](conversation-types.md)                 | Conversation type system and patterns                                              |
   | [edit-tool-session-analysis.md](edit-tool-session-analysis.md) | Methodology for assessing Edit tool failures and underperformance in session JSONL |
@@ -27,10 +27,6 @@ See the [../adr/](../adr/) directory for architectural decision records (ADRs).
 
 ## Purpose
 
-Design documents capture:
-- Architectural decisions and their rationale
-- System design patterns and conventions
-- Feature specifications and behavior
-- Integration points and boundaries
+Design documents capture: - Architectural decisions and their rationale - System design patterns and conventions - Feature specifications and behavior - Integration points and boundaries
 
 These documents are living references that evolve with the codebase.

@@ -33,10 +33,7 @@ Settings are merged with the following rules:
 4. **No in-file duplicates**: A single file cannot define the same model name twice (error)
 5. **Profiles overlay behavior**: selected profiles can override `default_model`, `skills`, and `directories`, but cannot define models
 
-This allows you to:
-- Define base models globally
-- Override specific models per-project
-- Add project-specific models without affecting global config
+This allows you to: - Define base models globally - Override specific models per-project - Add project-specific models without affecting global config
 
 ## TOML Format
 
@@ -203,7 +200,7 @@ Model names must:
 
 Valid examples: `zen`, `deepseek-chat`, `model-123`
 
-Invalid examples: `My Model`, `deepseek_chat`, `model.123`, ``
+Invalid examples: `My Model`, `deepseek_chat`, `model.123`, \`\`
 
 ## CLI Integration
 

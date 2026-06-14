@@ -102,9 +102,7 @@ All timestamps are UTC RFC 3339 strings. `session_id` and `task_id` are UUID str
   | `system_prompt`     | string           | no       | Stable system prompt used when the session was created        |
   | `git`               | object           | yes      | Git repository state at session creation                      |
 
-The `git` object contains `repository_url`, `branch`, and `commit_hash`. Each
-property is `null` when cake cannot determine that value, such as outside a git
-repository or in a detached HEAD state.
+The `git` object contains `repository_url`, `branch`, and `commit_hash`. Each property is `null` when cake cannot determine that value, such as outside a git repository or in a detached HEAD state.
 
 ### `task_start`
 
@@ -119,9 +117,7 @@ repository or in a detached HEAD state.
 
 ### `prompt_context`
 
-`prompt_context` records the mutable prompt context used for one CLI invocation.
-These records are session-file audit entries and are not restored as conversation
-history.
+`prompt_context` records the mutable prompt context used for one CLI invocation. These records are session-file audit entries and are not restored as conversation history.
 
   | Field        | Type   | Required | Description                                           |
   | ------------ | ------ | -------- | ----------------------------------------------------- |
@@ -134,9 +130,7 @@ history.
 
 ### `message`
 
-`message` stores user, assistant, or tool text. Older sessions may contain
-system or developer messages; current prompt context is stored separately in
-`session_meta.system_prompt` and `prompt_context`.
+`message` stores user, assistant, or tool text. Older sessions may contain system or developer messages; current prompt context is stored separately in `session_meta.system_prompt` and `prompt_context`.
 
   | Field       | Type   | Required | Description                                                                         |
   | ----------- | ------ | -------- | ----------------------------------------------------------------------------------- |
@@ -193,14 +187,13 @@ Each `content` item has:
 
 ### `hook_event`
 
-`hook_event` stores one command hook invocation for audit and debugging. These
-records are metadata and are not restored into model context.
+`hook_event` stores one command hook invocation for audit and debugging. These records are metadata and are not restored into model context.
 
   | Field                | Type   | Required | Description                                                                 |
   | -------------------- | ------ | -------- | --------------------------------------------------------------------------- |
   | `type`               | string | yes      | Always `hook_event`                                                         |
   | `timestamp`          | string | yes      | Record creation time                                                        |
-  | `task_id`            | string | yes      | UUID for the invocation that ran the hook                                    |
+  | `task_id`            | string | yes      | UUID for the invocation that ran the hook                                   |
   | `event`              | string | yes      | Hook lifecycle event, such as `PreToolUse` or `PostToolUse`                 |
   | `source`             | string | no       | Hook matcher source, such as a tool name                                    |
   | `call_id`            | string | no       | Tool call id for tool hooks; matches `function_call.call_id`                |
@@ -216,9 +209,7 @@ records are metadata and are not restored into model context.
   | `stdout`             | string | yes      | Captured hook stdout, capped at 64 KiB                                      |
   | `stderr`             | string | yes      | Captured hook stderr, capped at 64 KiB                                      |
 
-Older `hook_event` records may omit `call_id`, `tool_name`,
-`tool_input_summary`, and `resolved_decision`. Readers must treat missing fields
-as unknown rather than invalid.
+Older `hook_event` records may omit `call_id`, `tool_name`, `tool_input_summary`, and `resolved_decision`. Readers must treat missing fields as unknown rather than invalid.
 
 ### `task_complete`
 
@@ -253,11 +244,7 @@ as unknown rather than invalid.
 
 Session files are append-only. Cake does not rewrite or normalize previous records when continuing or resuming. Conversation records are appended live as the agent emits them, so a crash can still leave a partial task on disk. Loading tolerates a trailing `task_start` without a matching `task_complete`.
 
-When loading a session, cake normalizes missing conversation-record timestamps
-in memory by using the `session_meta.timestamp` value as a compatibility
-fallback. This keeps older v4 files with omitted item timestamps resumable
-without rewriting the append-only JSONL file. Explicit conversation timestamps
-are preserved.
+When loading a session, cake normalizes missing conversation-record timestamps in memory by using the `session_meta.timestamp` value as a compatibility fallback. This keeps older v4 files with omitted item timestamps resumable without rewriting the append-only JSONL file. Explicit conversation timestamps are preserved.
 
 Cake takes an advisory exclusive lock on the session file for the duration of an invocation. A second writer receives:
 

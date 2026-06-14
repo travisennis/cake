@@ -133,15 +133,9 @@ Skill 'debugging-cake' is already active in this session.
 Its instructions are already in the conversation context.
 ```
 
-This prevents token waste and duplicate instructions when:
-- The model reads the same skill multiple times in one session
-- A session is resumed or continued (activated skills are reconstructed from conversation history)
+This prevents token waste and duplicate instructions when: - The model reads the same skill multiple times in one session - A session is resumed or continued (activated skills are reconstructed from conversation history)
 
-Deduplication works by:
-1. Tracking skill locations (path -> name mapping) in the `Agent`
-2. Maintaining an `activated_skills` set shared across concurrent tool executions
-3. Checking the set before executing a Read on a known skill path
-4. Reconstructing the set from session history when resuming/continuing
+Deduplication works by: 1. Tracking skill locations (path -> name mapping) in the `Agent` 2. Maintaining an `activated_skills` set shared across concurrent tool executions 3. Checking the set before executing a Read on a known skill path 4. Reconstructing the set from session history when resuming/continuing
 
 ## Configuration
 

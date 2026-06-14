@@ -113,7 +113,7 @@ Hook events are emitted live in execution order. Session and user-prompt hooks a
   | -------------------- | ------ | -------- | --------------------------------------------------------------------------- |
   | `type`               | string | yes      | Always `hook_event`                                                         |
   | `timestamp`          | string | yes      | Record creation time                                                        |
-  | `task_id`            | string | yes      | UUID for the invocation that ran the hook                                    |
+  | `task_id`            | string | yes      | UUID for the invocation that ran the hook                                   |
   | `event`              | string | yes      | Hook lifecycle event, such as `PreToolUse` or `PostToolUse`                 |
   | `source`             | string | no       | Hook matcher source, such as a tool name                                    |
   | `call_id`            | string | no       | Tool call id for tool hooks; matches `function_call.call_id`                |

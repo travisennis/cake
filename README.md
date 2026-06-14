@@ -18,7 +18,7 @@ cake is a minimal coding harness for headless usage in the terminal. It's not a 
 - [Filesystem Sandbox](#filesystem-sandbox)
   - [Destructive Command Protection](#destructive-command-protection)
   - [Adding Read-Only Directories](#adding-read-only-directories)
-- [AGENTS.md — Per-Project AI Behavior](#agentsmd--per-project-ai-behavior)
+- [AGENTS.md --- Per-Project AI Behavior](#agentsmd--per-project-ai-behavior)
 - [System Prompt Customization](#system-prompt-customization)
 - [Shell Aliases and Functions](#shell-aliases-and-functions)
 - [Streaming JSON Output](#streaming-json-output)
@@ -52,8 +52,7 @@ cargo build --release
 
 The binary will be available at `target/release/cake`.
 
-For contributor setup (testing, linting, coverage, commit hooks),
-see [CONTRIBUTING.md](CONTRIBUTING.md).
+For contributor setup (testing, linting, coverage, commit hooks), see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Usage
 
@@ -90,8 +89,7 @@ cake --max-tokens 4000 "Your prompt here"
 
 ### Shell Pipelines
 
-cake reads from stdin, so it composes naturally with other Unix tools:
-When a prompt argument and stdin are both present, cake sends them as separate labeled sections so the prompt stays distinct from the piped content.
+cake reads from stdin, so it composes naturally with other Unix tools: When a prompt argument and stdin are both present, cake sends them as separate labeled sections so the prompt stays distinct from the piped content.
 
 ```bash
 # Code review from git diff
@@ -288,12 +286,9 @@ When the task finishes, cake automatically removes the worktree if no changes we
 Commands executed by the Bash tool run inside an OS-level filesystem sandbox that restricts access to only the project directory and essential system paths. This prevents LLM-generated commands from reading or writing files outside the allowed set.
 
 - **macOS**: Uses `sandbox-exec` with a deny-default Seatbelt profile
-- **Linux**: Uses Landlock LSM (kernel 5.13+). All Linux builds include
-  Landlock support by default; no feature flag is needed.
+- **Linux**: Uses Landlock LSM (kernel 5.13+). All Linux builds include Landlock support by default; no feature flag is needed.
 
-Linux Bash execution fails closed when sandboxing is enabled but Landlock
-cannot fully enforce the filesystem ruleset. The sandbox can be disabled
-explicitly by setting `CAKE_SANDBOX=off`.
+Linux Bash execution fails closed when sandboxing is enabled but Landlock cannot fully enforce the filesystem ruleset. The sandbox can be disabled explicitly by setting `CAKE_SANDBOX=off`.
 
 #### Destructive Command Protection
 
@@ -328,9 +323,9 @@ For more details, see [Filesystem Sandbox](docs/design-docs/sandbox.md).
 
 cake reads `AGENTS.md` files to shape its behavior without re-prompting every time:
 
-- **`~/.cake/AGENTS.md`** — Global personality, preferences, and conventions applied to all projects.
-- **`~/.config/AGENTS.md`** — XDG-standard location for global instructions.
-- **`./AGENTS.md`** — Project-level instructions: tech stack, coding standards, domain knowledge.
+- **`~/.cake/AGENTS.md`** --- Global personality, preferences, and conventions applied to all projects.
+- **`~/.config/AGENTS.md`** --- XDG-standard location for global instructions.
+- **`./AGENTS.md`** --- Project-level instructions: tech stack, coding standards, domain knowledge.
 
 This is how you make cake a domain expert. For example, a project-level `AGENTS.md` might say:
 
@@ -344,8 +339,8 @@ Never use `unwrap()` in production code.
 
 cake uses a built-in system prompt that tells the model it is a coding agent and how to use its tools. You can replace this prompt with your own by creating a `system.md` file:
 
-- **Project-level**: `.cake/system.md` in your project directory — applies to that project only
-- **User-level**: `~/.config/cake/system.md` — applies to all projects
+- **Project-level**: `.cake/system.md` in your project directory --- applies to that project only
+- **User-level**: `~/.config/cake/system.md` --- applies to all projects
 
 Project-level overrides take precedence over user-level. If neither file exists, the built-in default is used. Custom files **replace** the default prompt entirely; they do not append to it.
 
@@ -446,9 +441,7 @@ Contributions to cake are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ## Platform Support
 
-cake is developed and primarily validated on macOS. Linux support is intended,
-but currently CI treats Linux as a compile-level compatibility target rather
-than a fully tested runtime platform.
+cake is developed and primarily validated on macOS. Linux support is intended, but currently CI treats Linux as a compile-level compatibility target rather than a fully tested runtime platform.
 
 ## Testing
 

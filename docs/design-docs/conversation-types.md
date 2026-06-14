@@ -25,11 +25,7 @@ pub enum ConversationItem {
 }
 ```
 
-Timestamps are stored internally as `Option<DateTime<Utc>>`. When session files
-or stream-json records are serialized, serde writes those values as UTC RFC 3339
-strings. Loaded sessions normalize legacy missing conversation timestamps from
-the required `session_meta.timestamp`, so resumed conversation history has a
-timestamp even when an older JSONL record omitted the field.
+Timestamps are stored internally as `Option<DateTime<Utc>>`. When session files or stream-json records are serialized, serde writes those values as UTC RFC 3339 strings. Loaded sessions normalize legacy missing conversation timestamps from the required `session_meta.timestamp`, so resumed conversation history has a timestamp even when an older JSONL record omitted the field.
 
 ### Message
 
@@ -45,9 +41,7 @@ ConversationItem::Message {
 }
 ```
 
-The content format differs between API input and streaming output:
-- **API input**: Structured as content arrays (`input_text` for user/system, `output_text` for assistant)
-- **Streaming output**: Plain text for readability
+The content format differs between API input and streaming output: - **API input**: Structured as content arrays (`input_text` for user/system, `output_text` for assistant) - **Streaming output**: Plain text for readability
 
 ### FunctionCall
 
@@ -101,17 +95,11 @@ The Responses API backend converts each `ConversationItem` to a typed request DT
 ResponsesApiInputItem::from(item)
 ```
 
-Key transformations:
-- Messages use `input_text`/`output_text` content arrays
-- Reasoning summaries are wrapped in `summary_text` objects
-- Assistant messages include `id` and `status` fields
+Key transformations: - Messages use `input_text`/`output_text` content arrays - Reasoning summaries are wrapped in `summary_text` objects - Assistant messages include `id` and `status` fields
 
 ### build_messages() — Chat Completions API
 
-The Chat Completions backend uses a separate `build_messages()` function in `chat_completions.rs` to translate `Vec<ConversationItem>` into the chat completions message format. Key differences from Responses API input:
-- Consecutive `FunctionCall` items are grouped into a single assistant message with multiple `tool_calls`
-- `Developer` role messages are buffered and folded into the next user message for provider compatibility
-- `Reasoning` text is preserved as provider-specific `reasoning_content` on the next assistant message or assistant tool-call message
+The Chat Completions backend uses a separate `build_messages()` function in `chat_completions.rs` to translate `Vec<ConversationItem>` into the chat completions message format. Key differences from Responses API input: - Consecutive `FunctionCall` items are grouped into a single assistant message with multiple `tool_calls` - `Developer` role messages are buffered and folded into the next user message for provider compatibility - `Reasoning` text is preserved as provider-specific `reasoning_content` on the next assistant message or assistant tool-call message
 
 ### StreamRecord Serialization
 
@@ -121,11 +109,7 @@ The Chat Completions backend uses a separate `build_messages()` function in `cha
 StreamRecord::from_conversation_item(item)
 ```
 
-The resulting `StreamRecord` is serialized with serde. Key differences from
-Responses API input:
-- Message content is plain text (not wrapped in objects)
-- Reasoning summaries are plain strings (not objects)
-- More compact for human consumption
+The resulting `StreamRecord` is serialized with serde. Key differences from Responses API input: - Message content is plain text (not wrapped in objects) - Reasoning summaries are plain strings (not objects) - More compact for human consumption
 
 ## Usage Tracking
 
@@ -194,9 +178,7 @@ The API uses content arrays for flexibility, but this adds complexity. The desig
 
 ### Dual-Backend Translation
 
-Storing plain text internally decouples conversation state from any specific wire format. Each backend translates `ConversationItem` independently:
-- The **Responses API** backend uses `ResponsesApiInputItem::from()` to produce the typed request DTO with content arrays (`input_text`, `output_text`)
-- The **Chat Completions API** backend uses `build_messages()` to produce the chat completions message structure
+Storing plain text internally decouples conversation state from any specific wire format. Each backend translates `ConversationItem` independently: - The **Responses API** backend uses `ResponsesApiInputItem::from()` to produce the typed request DTO with content arrays (`input_text`, `output_text`) - The **Chat Completions API** backend uses `build_messages()` to produce the chat completions message structure
 
 This means adding or changing a backend does not affect the canonical conversation representation or the other backend.
 

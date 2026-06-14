@@ -14,10 +14,7 @@ The initial prompt is sent as multiple conversation messages:
 
 For both the Responses API and Chat Completions, mutable context is represented as individual `developer`-role messages in the conversation model. Chat Completions emits each developer context piece as a separate message with `"role": "developer"` via `build_messages()`, but `ProviderStrategy::transform_chat_messages` demotes the role to `"user"` for providers that don't support `developer` (e.g. DeepSeek via OpenCode Zen). Each context piece keeps its own content; no concatenation occurs. The Responses API input array keeps them as separate `developer`-role entries.
 
-Each invocation also appends `prompt_context` audit records to the session file
-for the mutable context it used. Those records are not replayed on
-continue/resume/fork; fresh context is rebuilt and appended for the new
-invocation.
+Each invocation also appends `prompt_context` audit records to the session file for the mutable context it used. Those records are not replayed on continue/resume/fork; fresh context is rebuilt and appended for the new invocation.
 
 The module provides these public functions:
 
@@ -54,7 +51,7 @@ The built-in default prompt is stored in `src/prompts/system.md` as proper Markd
 
 Edge cases:
 
-- **Empty file**: Valid — the model receives no system prompt content.
+- **Empty file**: Valid --- the model receives no system prompt content.
 - **Whitespace-only file**: Trimmed to empty, same as empty file.
 - **Unreadable file**: Skipped with a warning. Resolution continues to the next source.
 - **Missing file**: Not an error. Resolution continues to the next source.
@@ -76,9 +73,9 @@ Unreadable files produce a warning:
 
 Cake reads instructions from three locations:
 
-1. **User-level**: `~/.cake/AGENTS.md` — Personal preferences applicable to all projects
-2. **XDG config**: `~/.config/AGENTS.md` — XDG-standard location for global instructions
-3. **Project-level**: `./AGENTS.md` — Project-specific instructions
+1. **User-level**: `~/.cake/AGENTS.md` --- Personal preferences applicable to all projects
+2. **XDG config**: `~/.config/AGENTS.md` --- XDG-standard location for global instructions
+3. **Project-level**: `./AGENTS.md` --- Project-specific instructions
 
 All files are optional. If present and non-empty, their contents are injected into a developer context message.
 
@@ -213,24 +210,15 @@ Today's date: 2026-05-03
 
 ### XML-style Tags
 
-Instructions are wrapped in `<instructions>` tags to:
-- Clearly delimit user instructions from system text
-- Help the model distinguish context from conversation
-- Allow for future nested structure if needed
+Instructions are wrapped in `<instructions>` tags to: - Clearly delimit user instructions from system text - Help the model distinguish context from conversation - Allow for future nested structure if needed
 
 ### File Path Display
 
-The `path` field uses display paths like `~/.cake/AGENTS.md` rather than absolute paths:
-- More readable for users
-- Consistent across different machines
-- Indicates the source (user vs. project level)
+The `path` field uses display paths like `~/.cake/AGENTS.md` rather than absolute paths: - More readable for users - Consistent across different machines - Indicates the source (user vs. project level)
 
 ### Empty File Filtering
 
-Files with only whitespace are filtered out to:
-- Avoid empty additional context sections
-- Reduce token usage
-- Keep the prompt clean
+Files with only whitespace are filtered out to: - Avoid empty additional context sections - Reduce token usage - Keep the prompt clean
 
 ## Related Documentation
 

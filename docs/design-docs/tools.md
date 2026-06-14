@@ -134,7 +134,7 @@ This allows creating new files in new subdirectories while maintaining security.
 
 **Truncated Output**:
 
-When command output exceeds the 50KB inline limit, the full output is saved to a temporary file and a head+tail preview is returned. The preview shows the first ~12.5KB and last ~12.5KB of the output:
+When command output exceeds the 50KB inline limit, the full output is saved to a temporary file and a head+tail preview is returned. The preview shows the first \~12.5KB and last \~12.5KB of the output:
 
 ```
 [Output too long — 75000 bytes, 1500 lines.]
@@ -151,7 +151,7 @@ Consider reformulating the command to produce less output.
 [exit:0 | 1.2s]
 ```
 
-If the temp file cannot be written (e.g., disk full), a fallback inline truncation is used with the first ~25KB and last ~25KB:
+If the temp file cannot be written (e.g., disk full), a fallback inline truncation is used with the first \~25KB and last \~25KB:
 
 ```
 [Output too long — 75000 bytes, 1500 lines. The command was too verbose; reformulate with less output (e.g. pipe through `head`, `tail`, or `grep`).]

@@ -34,8 +34,7 @@ Log files rotate **daily** with automatic cleanup:
 YYYY-MM-DD HH:MM:SS | LEVEL | file:line — message
 ```
 
-Example output:
-```
+Example output: ```
 2024-01-15 10:30:45 | INFO | main:42 --- data dir set: /Users/travis/.cache/cake, sessions dir set: /Users/travis/.local/share/cake/sessions
 ```
 

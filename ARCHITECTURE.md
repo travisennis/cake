@@ -22,12 +22,12 @@ Entry point for user interaction. `main.rs` defines the top-level clap struct `C
 
 Submodules under [`src/cli/`](file:///Users/travisennis/Projects/cake/src/cli/):
 
-- **`cmd_runner`**: The `CmdRunner` trait — the single interface every command implements: `async fn run(&self, data_dir: &DataDir) -> anyhow::Result<()>`.
+- **`cmd_runner`**: The `CmdRunner` trait --- the single interface every command implements: `async fn run(&self, data_dir: &DataDir) -> anyhow::Result<()>`.
 - **`output`**: `CliOutputSink`, formatting helpers for spinner messages, retry notices, and the done-summary line. Centralizes user-facing output formatting.
 - **`run_mode`**: `RunMode` and `SessionStorage` enums describing whether a run is `New`/`Continue`/`Resume`/`Fork` and where its session is persisted.
 - **`session_factory`**: Constructs the appropriate `Session` for the resolved `RunMode`.
 
-The main `CodingAssistant` command lives in `src/main.rs` (not in a separate `instruct` module). The CLI layer is intentionally thin — it delegates all business logic to lower layers.
+The main `CodingAssistant` command lives in `src/main.rs` (not in a separate `instruct` module). The CLI layer is intentionally thin --- it delegates all business logic to lower layers.
 
 ### Layer 3: Clients (`clients` module)
 
@@ -35,13 +35,13 @@ The bridge to external AI services and the orchestration layer for tool executio
 
 **`agent`**: The public-facing `Agent` struct. Owns the user-visible API (`Agent::new`, `with_*` builders, `send`, telemetry emitters) and the high-level conversation loop. Delegates the per-turn HTTP work to `AgentRunner`, the rolling state to `ConversationState`, and the callback fan-out to `AgentObserver`. Exported as `clients::Agent`.
 
-**`agent_runner`**: `AgentRunner` performs one API turn — building the HTTP client, calling the chosen `Backend`, handling retries via `retry::RetryPolicy`, and emitting per-attempt telemetry events.
+**`agent_runner`**: `AgentRunner` performs one API turn --- building the HTTP client, calling the chosen `Backend`, handling retries via `retry::RetryPolicy`, and emitting per-attempt telemetry events.
 
 **`agent_state`**: `ConversationState` (the running `Vec<ConversationItem>` history plus developer-context append helpers) and `accumulate_usage` for combining `Usage` across turns.
 
 **`agent_observer`**: `AgentObserver` holds the optional streaming-JSON, persist, progress, and retry callbacks supplied by the CLI, and fans events out to them.
 
-**`backend`**: The `Backend` enum (`Responses` | `ChatCompletions`) abstracts the wire-format choice. `Backend::from_api_type` maps `ApiType` to a backend; `send_request` and `parse_response` dispatch to the matching module. This is what replaces the older "Agent dispatches by `ApiType`" wiring.
+**`backend`**: The `Backend` enum (`Responses` \| `ChatCompletions`) abstracts the wire-format choice. `Backend::from_api_type` maps `ApiType` to a backend; `send_request` and `parse_response` dispatch to the matching module. This is what replaces the older "Agent dispatches by `ApiType`" wiring.
 
 **`responses`**: Backend for the Responses API. Provides `send_request()` and `parse_response()` functions that handle the Responses API wire format.
 
@@ -70,7 +70,7 @@ Foundation modules that provide data persistence, core types, and prompt generat
 - `data_dir` (`DataDir`, `AgentsFile`): Manages cache directory (`~/.cache/cake/`), session directory (`~/.local/share/cake/sessions/`), both overridable via `CAKE_DATA_DIR`, plus AGENTS.md discovery.
 - `session` (`Session`, `SessionWriter`): In-memory session state with JSONL serialization, plus the writer that performs atomic append/rename.
 - `worktree`: Git worktree utilities for isolated execution environments.
-- `model`: Contains `ApiType` enum (`Responses`/`ChatCompletions`), `ModelConfig` struct (model, api_type, base_url, api_key_env, temperature, top_p, max_output_tokens, reasoning_effort, reasoning_summary, reasoning_max_tokens, provider/providers), `ModelProvider`, `ProviderHeaders`, `ReasoningEffort`, and `ResolvedModelConfig` (resolves API key from env var). Defaults for model, base URL, API key env var, and providers live alongside these types — there is no separate `defaults` module.
+- `model`: Contains `ApiType` enum (`Responses`/`ChatCompletions`), `ModelConfig` struct (model, api_type, base_url, api_key_env, temperature, top_p, max_output_tokens, reasoning_effort, reasoning_summary, reasoning_max_tokens, provider/providers), `ModelProvider`, `ProviderHeaders`, `ReasoningEffort`, and `ResolvedModelConfig` (resolves API key from env var). Defaults for model, base URL, API key env var, and providers live alongside these types --- there is no separate `defaults` module.
 - `settings` (`SettingsLoader`, `ModelDefinition`): TOML-based configuration loading from `settings.toml` files. Supports XDG-style global (`~/.config/cake/settings.toml`) and project-level (`.cake/settings.toml`) locations, with project settings overriding global settings for the same model name. Includes a `[skills]` section for controlling skill discovery and configured skill paths, plus a `directories` key for declaring additional read-write directories (merged across global and project files).
 - `skills` (`Skill`, catalog builder): Skill discovery, parsing, and catalog management. Discovers `SKILL.md` files from project, configured, and user skill directories, parses YAML frontmatter, and builds an XML catalog for the system prompt. Skills are activated lazily via the Read tool and deduplicated within a session.
 - `hooks` (`HooksLoader`, `HookSource`, `LoadedHooks`, `HookEvent`, `HookCommand`): TOML loading of user-defined hook commands from global and project `hooks.toml` files. The runtime that executes them lives in the top-level [`hooks`](file:///Users/travisennis/Projects/cake/src/hooks.rs) module (Layer 1).
@@ -81,7 +81,7 @@ Sessions are stored as flat `{uuid}.jsonl` files under `~/.local/share/cake/sess
 
 - `conversation`: `Role` enum (System, Developer, Assistant, User, Tool), `ConversationItem` enum, and `ReasoningContent`/`ReasoningContentKind` for round-tripping reasoning items.
 - `session`: `SessionRecord` and `StreamRecord` enums plus the shared `*Data` structs that back their variants, `GitState`, and `TaskOutcome`/`TaskCompleteSubtype`.
-- `usage`: `Usage`, `InputTokensDetails`, `OutputTokensDetails` — the backend-agnostic token usage shape both Chat Completions and Responses normalize into.
+- `usage`: `Usage`, `InputTokensDetails`, `OutputTokensDetails` --- the backend-agnostic token usage shape both Chat Completions and Responses normalize into.
 
 API wire-format DTOs live next to the backend that owns them: `clients::chat_types` for Chat Completions and `clients::responses_types` for the Responses API.
 
@@ -149,10 +149,10 @@ The sandbox configuration defines a strict boundary between what the host proces
 - Application code uses `anyhow` for context propagation
 - Tool errors are stringified and returned to the model as function call output (the model can decide how to proceed)
 - Exit codes are classified by the `exit_code` module based on error chain inspection:
-  - `0` — success
-  - `1` — agent/tool error (default for unclassified errors)
-  - `2` — API error (HTTP 401/403/429, connection failure, timeout)
-  - `3` — input error (missing API key, no prompt, invalid model name, bad flags)
+  - `0` --- success
+  - `1` --- agent/tool error (default for unclassified errors)
+  - `2` --- API error (HTTP 401/403/429, connection failure, timeout)
+  - `3` --- input error (missing API key, no prompt, invalid model name, bad flags)
 
 ### Logging
 

@@ -61,13 +61,13 @@ Keep existing numbers stable. Do not renumber ADRs after they are created or ref
 
 Use one of these statuses, set in front matter:
 
-| Status | Meaning |
-| ------ | ------- |
-| `proposed` | The decision is being drafted or reviewed. |
-| `accepted` | The decision is approved and should guide implementation. |
-| `rejected` | The decision was considered and declined. |
-| `deprecated` | The decision is retained for history but should no longer guide new work. |
-| `superseded by ADR-NNN` | A later ADR replaces this decision entirely. |
+  | Status                  | Meaning                                                                   |
+  | ----------------------- | ------------------------------------------------------------------------- |
+  | `proposed`              | The decision is being drafted or reviewed.                                |
+  | `accepted`              | The decision is approved and should guide implementation.                 |
+  | `rejected`              | The decision was considered and declined.                                 |
+  | `deprecated`            | The decision is retained for history but should no longer guide new work. |
+  | `superseded by ADR-NNN` | A later ADR replaces this decision entirely.                              |
 
 Use `ahm adr accept <id>`, `ahm adr reject <id>`, or `ahm adr deprecate <id>` to change an ADR's status. Use `ahm adr supersede <old-id> --by <new-id>` for full supersession.
 
@@ -125,16 +125,16 @@ Use `ahm adr create --body-file <path>` for a fully custom body; `ahm` still own
 
 All ADR management commands operate on the `docs/adr/` directory and regenerate `docs/adr/index.md`.
 
-| Command | Purpose |
-| ------- | ------- |
-| `ahm adr create <title> [flags]` | Create a new MADR ADR. Flags: `--status`, `--description`, `--body-file`, `--decision-makers`. |
-| `ahm adr list [--status <value>]` | List ADRs, optionally filtered by status. |
-| `ahm adr show <id>` | Show a single ADR. Accepts `9`, `009`, or `009-madr-slug`. |
-| `ahm adr accept <id>` | Set status to `accepted`. |
-| `ahm adr reject <id>` | Set status to `rejected`. |
-| `ahm adr deprecate <id>` | Set status to `deprecated`. |
-| `ahm adr supersede <old-id> --by <new-id>` | Mark one ADR as superseded by another with bidirectional body references. |
-| `ahm adr migrate` | Convert legacy bold-metadata ADRs to the constrained MADR profile (metadata only). |
+  | Command                                    | Purpose                                                                                        |
+  | ------------------------------------------ | ---------------------------------------------------------------------------------------------- |
+  | `ahm adr create <title> [flags]`           | Create a new MADR ADR. Flags: `--status`, `--description`, `--body-file`, `--decision-makers`. |
+  | `ahm adr list [--status <value>]`          | List ADRs, optionally filtered by status.                                                      |
+  | `ahm adr show <id>`                        | Show a single ADR. Accepts `9`, `009`, or `009-madr-slug`.                                     |
+  | `ahm adr accept <id>`                      | Set status to `accepted`.                                                                      |
+  | `ahm adr reject <id>`                      | Set status to `rejected`.                                                                      |
+  | `ahm adr deprecate <id>`                   | Set status to `deprecated`.                                                                    |
+  | `ahm adr supersede <old-id> --by <new-id>` | Mark one ADR as superseded by another with bidirectional body references.                      |
+  | `ahm adr migrate`                          | Convert legacy bold-metadata ADRs to the constrained MADR profile (metadata only).             |
 
 These commands update only front matter and managed body references (supersession notes). ADR body prose is user-owned and is not rewritten by lifecycle commands.
 

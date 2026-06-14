@@ -19,12 +19,7 @@ Run the automated setup command:
 just setup
 ```
 
-This installs:
-- `cargo-edit` for dependency management
-- `cargo-deny` for security audits
-- `cargo-insta` for snapshot test review
-- `cargo-llvm-cov` for coverage reports
-- `panache` for Markdown formatting
+This installs: - `cargo-edit` for dependency management - `cargo-deny` for security audits - `cargo-insta` for snapshot test review - `cargo-llvm-cov` for coverage reports - `panache` for Markdown formatting
 
 ### Install Development Tools
 
@@ -35,10 +30,7 @@ prek install --hook-type pre-commit --hook-type commit-msg
 
 This installs all required cargo tools (prek, cocogitto, cargo-edit, cargo-deny, cargo-insta, cargo-llvm-cov, panache) and sets up git hooks for formatting, linting, and commit message validation.
 
-Git hooks will automatically run:
-- **pre-commit**: `cargo fmt -- --check` (formatting verification)
-- **pre-commit**: `cargo clippy --all-targets -- -D warnings` (linting)
-- **commit-msg**: `cog verify --file` (conventional commit validation)
+Git hooks will automatically run: - **pre-commit**: `cargo fmt -- --check` (formatting verification) - **pre-commit**: `cargo clippy --all-targets -- -D warnings` (linting) - **commit-msg**: `cog verify --file` (conventional commit validation)
 
 ## Contributor Guides
 
@@ -125,9 +117,7 @@ just coverage-open
 just check-full
 ```
 
-Tests live alongside source files:
-- `src/module/mod.rs` → `tests/module_tests.rs`
-- Inline `#[cfg(test)]` modules are also used
+Tests live alongside source files: - `src/module/mod.rs` → `tests/module_tests.rs` - Inline `#[cfg(test)]` modules are also used
 
 Snapshot tests use `insta`. Run `just snapshots` after changing serialized output, prompts, API request construction, or other snapshot-backed behavior. If `.snap.new` files are created, inspect and accept or reject them with `cargo insta review`; do not leave `.snap.new` files in the worktree.
 
@@ -188,16 +178,11 @@ cargo run --release -- "Your prompt here"
 
 ## Updating Rust Version
 
-The project Rust toolchain is pinned in `rust-toolchain.toml`. When changing it:
-- Update `rust-toolchain.toml`.
-- Update matching project-toolchain pins in `.github/workflows/ci.yml`, `.github/workflows/release.yml`, and non-MSRV Rust jobs in `.github/workflows/scheduled.yml`.
-- Leave the scheduled `MSRV Compatibility` job pinned to the supported minimum Rust version unless intentionally changing MSRV.
-- Run `just rust-version-check` to verify pins are synchronized.
-- Run `just ci` before finishing the change.
+The project Rust toolchain is pinned in `rust-toolchain.toml`. When changing it: - Update `rust-toolchain.toml`. - Update matching project-toolchain pins in `.github/workflows/ci.yml`, `.github/workflows/release.yml`, and non-MSRV Rust jobs in `.github/workflows/scheduled.yml`. - Leave the scheduled `MSRV Compatibility` job pinned to the supported minimum Rust version unless intentionally changing MSRV. - Run `just rust-version-check` to verify pins are synchronized. - Run `just ci` before finishing the change.
 
 ## Git Workflow
 
-- **Never commit directly to the master branch** — verify current branch with `git branch` before committing
+- **Never commit directly to the master branch** --- verify current branch with `git branch` before committing
 - Merge via feature branch + PR. Naming: `feat/xxx`, `fix/xxx`, `refactor/xxx`, `test/xxx`
 
 ## Commit Conventions
@@ -226,8 +211,7 @@ This project uses [Conventional Commits](https://www.conventionalcommits.org/). 
   | `docs`      | Documentation changes                                  |
   | `tests`     | Test files and test infrastructure                     |
 
-**Examples:**
-```
+**Examples:** ```
 feat(cli): add --verbose flag
 fix(agent): handle timeout correctly
 docs: update ARCHITECTURE.md with new module

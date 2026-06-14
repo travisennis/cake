@@ -14,9 +14,7 @@ The CLI layer is intentionally thin---it delegates all business logic to lower l
 
 ### Command Structure
 
-The primary prompt-running CLI is implemented by `CodingAssistant` using
-`clap`'s derive macro. It also accepts optional top-level subcommands for
-introspection commands that should exit before agent/session setup:
+The primary prompt-running CLI is implemented by `CodingAssistant` using `clap`'s derive macro. It also accepts optional top-level subcommands for introspection commands that should exit before agent/session setup:
 
 ```text
 cake [OPTIONS] [PROMPT]
@@ -87,15 +85,11 @@ pub struct CodingAssistant {
 }
 ```
 
-Top-level subcommands live under `src/cli/` and implement `CmdRunner` so they
-can reuse the main command dispatch without running an agent turn.
+Top-level subcommands live under `src/cli/` and implement `CmdRunner` so they can reuse the main command dispatch without running an agent turn.
 
 ### Debug Models
 
-`cake debug models` loads merged settings for the current directory and prints
-configured model metadata to stdout. It displays the configured API key
-environment variable name (`api_key_env`) but does not resolve or display API
-key values.
+`cake debug models` loads merged settings for the current directory and prints configured model metadata to stdout. It displays the configured API key environment variable name (`api_key_env`) but does not resolve or display API key values.
 
 ### Model Configuration
 

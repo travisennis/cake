@@ -29,12 +29,7 @@ On macOS, cake uses `sandbox-exec` with a dynamically generated [Seatbelt profil
 
 Sandbox profiles are written to temporary files under `$TMPDIR/cake/sandbox_profiles/`.
 
-Requires `/usr/bin/sandbox-exec` (present on all standard macOS installations) and a
-process context where macOS allows `sandbox-exec` to apply a Seatbelt profile.
-Cake probes this at runtime. If the binary exists but profile application is
-denied, Bash commands fail closed rather than running without cake's filesystem
-sandbox. This commonly happens when cake itself is already running inside
-another Seatbelt sandbox.
+Requires `/usr/bin/sandbox-exec` (present on all standard macOS installations) and a process context where macOS allows `sandbox-exec` to apply a Seatbelt profile. Cake probes this at runtime. If the binary exists but profile application is denied, Bash commands fail closed rather than running without cake's filesystem sandbox. This commonly happens when cake itself is already running inside another Seatbelt sandbox.
 
 ### Linux — Landlock LSM
 
@@ -42,13 +37,9 @@ On Linux, cake uses [Landlock](https://landlock.io/), a Linux Security Module av
 
 The Landlock sandbox is applied via `pre_exec`, so rules take effect in the child process after `fork()` but before `exec()`.
 
-All Linux builds include Landlock support by default. No special feature flag
-is needed --- `cargo build --release` on Linux automatically compiles with
-Landlock.
+All Linux builds include Landlock support by default. No special feature flag is needed --- `cargo build --release` on Linux automatically compiles with Landlock.
 
-With sandboxing enabled, Linux fails closed if Landlock reports anything less
-than a fully enforced ruleset. Use `CAKE_SANDBOX=off` as the explicit opt-out
-for unsandboxed Bash execution.
+With sandboxing enabled, Linux fails closed if Landlock reports anything less than a fully enforced ruleset. Use `CAKE_SANDBOX=off` as the explicit opt-out for unsandboxed Bash execution.
 
 System paths on Linux include `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64`, `/etc/alternatives`, and `/snap`.
 
@@ -88,15 +79,12 @@ cake --add-dir ~/Documents/specs --add-dir ~/Projects/shared-utils "Analyze the 
 
 **Key points:**
 
-- Directories are added as **read-only** — the agent cannot write to them
+- Directories are added as **read-only** --- the agent cannot write to them
 - The flag can be repeated to add multiple directories
 - Invalid or non-existent directories are logged as warnings and ignored
 - Both the original path and its canonical (symlink-resolved) path are added to ensure access
 
-This is useful when you want the agent to:
-- Reference documentation or specifications stored elsewhere
-- Read shared utility code from another project
-- Access configuration files or templates
+This is useful when you want the agent to: - Reference documentation or specifications stored elsewhere - Read shared utility code from another project - Access configuration files or templates
 
 ### Persistent Read-Write Directories (settings.toml)
 
@@ -116,7 +104,7 @@ directories = ["../shared-libs", "/data/exports"]
 
 **Key points:**
 
-- Directories are added as **read-write** — the agent can create, modify, and delete files
+- Directories are added as **read-write** --- the agent can create, modify, and delete files
 - Lists from global and project settings are **merged** (union with deduplication)
 - Non-existent directories are logged as warnings and ignored
 - Both the original path and its canonical (symlink-resolved) path are added to the sandbox
@@ -163,27 +151,15 @@ The sandbox is blocking access to a path outside the allowed set. Options:
 
 ### "sandbox-exec not found" error (macOS)
 
-The `sandbox-exec` binary is missing from `/usr/bin/`. This is unusual on
-standard macOS installations. Bash commands fail closed unless sandboxing is
-explicitly disabled with `CAKE_SANDBOX=off`.
+The `sandbox-exec` binary is missing from `/usr/bin/`. This is unusual on standard macOS installations. Bash commands fail closed unless sandboxing is explicitly disabled with `CAKE_SANDBOX=off`.
 
 ### "sandbox-exec cannot apply profiles" error (macOS)
 
-The `sandbox-exec` binary exists, but macOS rejected applying a test Seatbelt
-profile in this process context. The most common cause is nested sandboxing:
-cake was started by another sandboxed tool, and macOS does not allow that process
-to apply another Seatbelt profile. Bash commands fail closed. Run cake from a
-normal terminal to preserve sandbox enforcement, or set `CAKE_SANDBOX=off` when
-intentionally running without cake's filesystem sandbox.
+The `sandbox-exec` binary exists, but macOS rejected applying a test Seatbelt profile in this process context. The most common cause is nested sandboxing: cake was started by another sandboxed tool, and macOS does not allow that process to apply another Seatbelt profile. Bash commands fail closed. Run cake from a normal terminal to preserve sandbox enforcement, or set `CAKE_SANDBOX=off` when intentionally running without cake's filesystem sandbox.
 
 ### "Landlock not enforced" error (Linux)
 
-Landlock requires kernel 5.13 or later. On older kernels, Landlock reports
-`NotEnforced` status and Bash commands fail closed unless sandboxing is
-explicitly disabled with `CAKE_SANDBOX=off`. Cake also fails closed when
-Landlock reports `PartiallyEnforced`, because the filesystem sandbox is treated
-as unavailable unless the ruleset is fully enforced. Check your kernel version
-with `uname -r`.
+Landlock requires kernel 5.13 or later. On older kernels, Landlock reports `NotEnforced` status and Bash commands fail closed unless sandboxing is explicitly disabled with `CAKE_SANDBOX=off`. Cake also fails closed when Landlock reports `PartiallyEnforced`, because the filesystem sandbox is treated as unavailable unless the ruleset is fully enforced. Check your kernel version with `uname -r`.
 
 ### SSH git operations fail with host key verification
 
