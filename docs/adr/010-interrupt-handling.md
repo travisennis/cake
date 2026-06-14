@@ -1,7 +1,8 @@
-# ADR 010: Interrupt Handling with Graceful Shutdown
-
-**Status:** Accepted
-**Date:** 2026-06-11
+---
+status: accepted
+date: 2026-06-11
+---
+# Interrupt Handling with Graceful Shutdown
 
 ## Context
 
@@ -117,3 +118,4 @@ cleanup itself hangs (e.g., a slow hook, a stuck telemetry write).
 - `src/main.rs` — `main()`, `CodingAssistant::run`
 - `src/types/session.rs` — `TaskOutcome`, `TaskCompleteSubtype`
 - `src/exit_code.rs` — exit code classification
+

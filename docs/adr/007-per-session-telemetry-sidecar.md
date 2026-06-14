@@ -1,7 +1,8 @@
-# ADR 007: Per-Session Telemetry Sidecar
-
-**Status:** Accepted
-**Date:** 2026-05-18
+---
+status: accepted
+date: 2026-05-18
+---
+# Per-Session Telemetry Sidecar
 
 ## Context
 
@@ -46,3 +47,4 @@ Telemetry sidecars are never resumable session files. `--continue`, `--resume`, 
 - `docs/design-docs/session-management.md` - Session storage and telemetry sidecar documentation
 - `docs/design-docs/logging.md` - Logging and telemetry locations
 - `src/session_telemetry.rs` - Telemetry record schema and writer
+

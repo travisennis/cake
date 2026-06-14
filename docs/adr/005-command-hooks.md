@@ -1,7 +1,8 @@
-# ADR 005: Command Hooks
-
-**Status:** Accepted  
-**Date:** 2026-05-04
+---
+status: accepted
+date: 2026-05-04
+---
+# Command Hooks
 
 ## Context
 
@@ -60,3 +61,4 @@ Hook activity is recorded through tracing and appended to session JSONL as `hook
 - `src/hooks.rs` - Hook runner, payloads, decisions, and session records
 - `src/clients/agent/agent_loop.rs` - Tool-loop integration for pre-tool and post-tool hooks
 - `src/main.rs` - Session lifecycle hook integration
+

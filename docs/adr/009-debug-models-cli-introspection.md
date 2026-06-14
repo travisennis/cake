@@ -1,7 +1,8 @@
-# ADR 009: Debug Models CLI Introspection
-
-**Status:** Accepted
-**Date:** 2026-06-02
+---
+status: accepted
+date: 2026-06-02
+---
+# Debug Models CLI Introspection
 
 ## Context
 
@@ -52,3 +53,4 @@ environment variable name but never reads or displays the API key value.
 - `docs/design-docs/cli.md`
 - `src/cli/debug.rs`
 - `src/config/settings.rs`
+

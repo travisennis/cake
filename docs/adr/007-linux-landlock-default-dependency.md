@@ -1,7 +1,8 @@
-# ADR 007: Linux Landlock As Default Dependency
-
-**Status:** Accepted  
-**Date:** 2026-06-06
+---
+status: accepted
+date: 2026-06-06
+---
+# Linux Landlock As Default Dependency
 
 ## Context
 
@@ -77,3 +78,4 @@ eliminates the `landlock` feature entirely:
 - `Cargo.toml`
 - `.github/workflows/release.yml`
 - `docs/design-docs/sandbox.md`
+

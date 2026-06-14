@@ -1,7 +1,8 @@
-# ADR 008: Structured Provider Headers
-
-**Status:** Accepted  
-**Date:** 2026-05-19
+---
+status: accepted
+date: 2026-05-19
+---
+# Structured Provider Headers
 
 ## Context
 
@@ -45,3 +46,4 @@ provider_headers = { http_referer = "https://example.com", x_title = "my-app" }
 - `src/config/model.rs`
 - `src/config/settings.rs`
 - `src/clients/provider_strategy.rs`
+

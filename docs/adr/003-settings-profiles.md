@@ -1,7 +1,8 @@
-# ADR 003: Settings Profiles
-
-**Status:** Accepted  
-**Date:** 2026-05-02
+---
+status: accepted
+date: 2026-05-02
+---
+# Settings Profiles
 
 ## Context
 
@@ -63,3 +64,4 @@ Profiles may not define model provider configurations. All model configs remain 
 - `docs/design-docs/cli.md` - CLI flag documentation
 - `src/config/settings.rs` - Profile parsing, validation, and merge behavior
 - `src/main.rs` - `--profile` CLI integration
+

@@ -1,7 +1,8 @@
-# ADR 002: Agent Skills System
-
-**Status:** Accepted  
-**Date:** 2025-04-25
+---
+status: accepted
+date: 2025-04-25
+---
+# Agent Skills System
 
 ## Context
 
@@ -48,3 +49,4 @@ We implement a skills system with the following design:
 - `src/config/skills.rs` - Skill discovery and parsing implementation
 - `src/prompts/mod.rs` - System prompt integration
 - `src/clients/agent.rs` - Activation deduplication logic
+
