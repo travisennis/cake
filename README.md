@@ -14,7 +14,6 @@ cake is a minimal coding harness for headless usage in the terminal. It's not a 
   - [Reasoning Configuration](#reasoning-configuration)
   - [Default Model](#default-model)
 - [Session Management](#session-management)
-  - [Branching Conversations](#branching-conversations)
 - [Worktrees](#worktrees)
 - [Filesystem Sandbox](#filesystem-sandbox)
   - [Destructive Command Protection](#destructive-command-protection)
@@ -43,32 +42,18 @@ cake is a minimal coding harness for headless usage in the terminal. It's not a 
 
 ## Installation
 
-To install cake, you'll need Rust and Cargo installed on your system. Then, follow these steps:
+To install cake, you'll need Rust and Cargo installed on your system:
 
-1. Clone the repository:
+```bash
+git clone https://github.com/travisennis/cake.git
+cd cake
+cargo build --release
+```
 
-   ```bash
-   git clone https://github.com/travisennis/cake.git
-   cd cake
-   ```
+The binary will be available at `target/release/cake`.
 
-2. Build the project:
-
-   ```bash
-   cargo build --release
-   ```
-
-3. The binary will be available in `target/release/cake`
-
-4. (Optional) For development work (testing, linting, coverage, commit conventions),
-   install the required cargo tools:
-
-   ```bash
-   just setup
-   ```
-
-   This step is only needed if you plan to run `just ci`, `just test`, or
-   contribute to the project.
+For contributor setup (testing, linting, coverage, commit hooks),
+see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Usage
 
@@ -280,33 +265,9 @@ cake "Remember the number 42"
 
 # Continue the most recent session in the current directory
 cake --continue "What number did I tell you?"
-
-# Resume a specific session by UUID
-cake --resume 550e8400-e29b-41d4-a716-446655440000 "Continue our conversation"
-
-# Fork the latest session (creates new session with same history)
-cake --fork "Let's discuss something different"
-
-# Fork a specific session by UUID
-cake --fork 550e8400-e29b-41d4-a716-446655440000 "New branch of conversation"
 ```
 
-Sessions are saved to `~/.local/share/cake/sessions/` (or `$CAKE_DATA_DIR/sessions/` if set) as flat `{uuid}.jsonl` files. Each file includes full conversation history with metadata. Sessions are saved on both success and error for crash recovery.
-
-Persisted sessions also get a structured telemetry sidecar at `~/.cache/cake/session-telemetry/{uuid}.ndjson` (or `$CAKE_DATA_DIR/session-telemetry/{uuid}.ndjson` if set). The sidecar is newline-delimited JSON for debugging timings, retries, tool durations, and final usage; it is not resumable conversation history. `--no-session` skips both the transcript and telemetry sidecar.
-
-The `--output-format stream-json` output is a live task stream, not a resumable session file. It never emits session metadata; use the persisted session UUID with `--resume <uuid>`. The `--output-format json` mode outputs a single JSON summary object at completion (result, usage, session path, turns, elapsed time) for scripting and CI integration.
-
-For more details, see [Session Management](docs/design-docs/session-management.md).
-
-#### Branching Conversations
-
-Think of session management as branches of thought:
-
-- **`--continue`** is your "keep going" — great for multi-step tasks where cake needs to iterate.
-- **`--fork`** is your "what if?" — try a different approach without losing the original thread.
-- **`--resume <UUID>`** is your "go back to that idea from Tuesday."
-- **`--no-session`** is for throwaway questions that don't pollute your session history.
+Sessions are saved to `~/.local/share/cake/sessions/` (or `$CAKE_DATA_DIR/sessions/` if set) as flat `{uuid}.jsonl` files. For full details on the session lifecycle, storage format, telemetry sidecar, and stream-json output, see [Session Management](docs/design-docs/session-management.md).
 
 ### Worktrees
 

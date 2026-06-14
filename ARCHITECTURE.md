@@ -213,6 +213,7 @@ Use symbol search to locate specific implementations:
 
 For deeper understanding of specific subsystems (see [docs/design-docs/index.md](file:///Users/travisennis/Projects/cake/docs/design-docs/index.md) for the full list):
 
+- `docs/DOMAIN.md` - Core concepts, session model, tool types, sandbox, skills, and settings layering
 - `docs/design-docs/cli.md` - Command-line interface and command dispatch
 - `docs/design-docs/conversation-types.md` - ConversationItem enum and API types
 - `docs/design-docs/prompts.md` - System prompt construction and AGENTS.md integration

@@ -25,27 +25,24 @@ streaming/output formats, and task workflow metadata.
 5. Run the narrowest useful check first, then the required final checks.
 6. Handoff with what changed, what was verified, and any remaining risk.
 
-When root guidance conflicts with a specialized workflow doc, the specialized
-doc controls unless this file says otherwise.
+When this conflicts with a specialized workflow doc, the specialized doc wins.
 
 ## Workflow Routing
 
 ### Code, Behavior, Config, Sessions, Providers, Tools, Sandboxing
 
-Use [ARCHITECTURE.md](ARCHITECTURE.md) for the system codemap, layering, and
-invariants. Check relevant files under `docs/design-docs/` before changing
-durable behavior or security boundaries. Consider whether the change needs an
-ADR or ExecPlan. Preserve documented CLI, output, streaming JSON, settings,
-file-format, and workflow contracts unless the task explicitly changes them.
+Read [ARCHITECTURE.md](ARCHITECTURE.md) for the codemap and invariants.
+Check `docs/design-docs/` before changing behavior or security boundaries.
+Consider whether the change needs an [ADR](docs/adr/README.md) or ExecPlan.
+Preserve documented contracts (CLI, output, settings, sessions, file-format,
+workflow) unless the task explicitly changes them.
 
 ### Tasks
 
-When asked to create, choose, update, or work on a task, read
-`.agents/TASKS.md`, then `.agents/.tasks/index.md`, then the specific task
-file. Do not edit generated indexes by hand; use `ahm` commands or regenerate
-with `ahm index` when source metadata changes.
-Use `ahm task complete <id>` and `ahm task cancel <id> --reason <text>` for
-task state moves.
+Read `.agents/TASKS.md`, then `.agents/.tasks/index.md`, then the task file.
+Do not edit generated indexes — use `ahm index` after metadata changes.
+Use `ahm task complete <id>` and `ahm task cancel <id> --reason <text>`
+for state moves.
 
 ### Research
 
@@ -65,20 +62,17 @@ changes a durable architectural decision.
 
 ### Documentation
 
-Before auditing or updating documentation, read `.agents/DOCS.md`. Prefer the
-repository's existing documentation conventions and update docs when
-user-facing behavior, configuration, architecture, workflow, or compatibility
-changes.
+Read `.agents/DOCS.md` before auditing or updating docs. Follow existing
+conventions; update docs when user-facing behavior, config, architecture,
+workflow, or compatibility changes.
 
 ### Dependencies, Build, CI, Release
 
-Do not update dependencies unless explicitly asked or required. For dependency
-additions, removals, updates, feature changes, or audit config edits, keep
-`Cargo.toml` and `Cargo.lock` consistent and run the dependency checks below.
-Use the smallest feature set that solves the problem.
+Do not update dependencies unless asked. Keep `Cargo.toml` and `Cargo.lock`
+consistent. Use the smallest feature set.
 
-Use [CONTRIBUTING.md](CONTRIBUTING.md) for contributor setup, common commands,
-PR workflow, and commit conventions.
+Use [CONTRIBUTING.md](CONTRIBUTING.md) for setup, commands, PR workflow,
+and commit conventions.
 
 ## Verification
 
