@@ -8,6 +8,10 @@ See the [../adr/](../adr/) directory for architectural decision records (ADRs).
 
 ## Design Documents
 
+For concise agent-facing change rules by risk surface, start with
+[../guardrails/](../guardrails/). Use the documents below for deeper design
+context.
+
   | Document                                                       | Description                                                                        |
   | -------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
   | [api-retry-strategy.md](api-retry-strategy.md)                 | API retry classification, backoff, and verification strategy                       |

@@ -34,6 +34,14 @@ Git hooks will automatically run: - **pre-commit**: `cargo fmt -- --check` (form
 
 ## Contributor Guides
 
+### Code Style
+
+- Use `thiserror` for custom errors and `anyhow` for application errors.
+- Prefer Tokio `async fn` and `?` for error propagation.
+- Default to deleting dead code. Use `#[cfg(test)]` only for test-only items.
+- Use `#[expect(dead_code, reason = "...")]` only for serde fields that must exist for deserialization but are not read by application logic. The reason must say: `field required for serde deserialization; not read by application code`.
+- Never use `#[allow(dead_code)]`.
+
 ### Adding a New Tool
 
 Tools are defined in `src/clients/tools/`.
@@ -122,6 +130,25 @@ Tests live alongside source files: - `src/module/mod.rs` → `tests/module_tests
 Snapshot tests use `insta`. Run `just snapshots` after changing serialized output, prompts, API request construction, or other snapshot-backed behavior. If `.snap.new` files are created, inspect and accept or reject them with `cargo insta review`; do not leave `.snap.new` files in the worktree.
 
 See [docs/design-docs/tools.md](docs/design-docs/tools.md) for testing patterns (tools use `tempfile` for isolation).
+
+### Verification Expectations
+
+For Rust changes:
+
+1. Run the narrowest useful check first, such as `cargo check --tests`, `cargo test <module_or_test_name>`, or `cargo test`.
+2. Run `cargo fmt` after code edits.
+3. Run `just check-coverage` when adding or removing meaningful Rust code, changing tests or fixtures, changing coverage configuration or baselines under `ci/`, or changing dependency features in a way that affects compiled code.
+4. Run `just ci` before final handoff for code, test, config, fixture, or dependency changes.
+
+If `just ci` cannot be run, state the exact reason and list the narrower checks that were run instead.
+
+For cfg-sensitive or platform-specific Rust changes, run the narrowest feasible target check for installed non-host targets affected by the change. On macOS, prefer `just clippy-linux` for Linux-sensitive changes when the target and cross compiler are available; otherwise use the closest feasible `cargo check --target ...` command. State any platform verification gap in the handoff.
+
+For dependency changes, also run `just check-deps`. It is not part of `just ci`.
+
+For documentation-only changes, run the narrowest useful Markdown or link checks instead of `just ci` when no code, tests, config, fixtures, generated task indexes, dependency files, or build metadata changed. Explain the skip in the handoff.
+
+This crate has no library target. Do not run `cargo test --lib`; use `cargo test <module_or_test_name>` for targeted tests or `cargo test` for the full test suite.
 
 ## Build/Lint/Test Commands
 

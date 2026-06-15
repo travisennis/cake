@@ -6,6 +6,13 @@ Cake is an AI coding assistant CLI that integrates with language models through 
 
 The core problem cake solves: provide a safe, sandboxed environment for AI agents to interact with the local filesystem and execute commands, while maintaining conversation context across sessions.
 
+Technology stack:
+
+- Rust 2024 binary-only CLI.
+- Tokio async runtime, clap CLI parsing, anyhow/thiserror errors, tracing logs, reqwest HTTP, and serde/serde_json serialization.
+- OpenAI-compatible Chat Completions and Responses API backends.
+- macOS Seatbelt and Linux Landlock sandbox implementations.
+
 Key design decisions:
 
 - **Agent loop**: The model can request tool executions; results are fed back, and the loop continues until the model returns a final response
