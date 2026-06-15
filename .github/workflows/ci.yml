@@ -123,10 +123,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-llvm-cov
       - run: cargo install cargo-crap --version 0.2.2 --locked
-      
+
       - name: Generate coverage
         run: cargo llvm-cov --lcov --output-path lcov.info
-      
+
       - name: Check coverage threshold
         run: |
           cargo llvm-cov --summary-only | tee coverage.txt
@@ -139,9 +139,9 @@ jobs:
 
       - name: Check change-risk regression
         run: cargo crap --lcov lcov.info --baseline ci/cargo-crap-baseline.json --fail-regression --format github
-      
+
       - name: Upload to Codecov
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           files: lcov.info
           fail_ci_if_error: false
