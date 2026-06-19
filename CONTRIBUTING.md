@@ -8,27 +8,18 @@ Agent-specific operating rules live in [AGENTS.md](AGENTS.md). Follow AGENTS.md 
 
 ### Prerequisites
 
-- Rust and Cargo installed on your system
+- [mise](https://mise.jdx.dev/) (or install Rust and just manually)
 - Git
 
 ### Quick Setup
 
-Run the automated setup command:
-
 ```bash
-just setup
-```
-
-This installs: - `cargo-edit` for dependency management - `cargo-deny` for security audits - `cargo-insta` for snapshot test review - `cargo-llvm-cov` for coverage reports - `panache` for Markdown formatting
-
-### Install Development Tools
-
-```bash
-just setup
+mise install    # installs pinned Rust toolchain and just
+just setup      # installs cargo subcommands
 prek install --hook-type pre-commit --hook-type commit-msg
 ```
 
-This installs all required cargo tools (prek, cocogitto, cargo-edit, cargo-deny, cargo-insta, cargo-llvm-cov, panache) and sets up git hooks for formatting, linting, and commit message validation.
+This installs all required tools: clippy, rustfmt, cargo-edit, cargo-deny, cargo-insta, cargo-llvm-cov, cargo-crap, panache, prek, cocogitto. The `prek install` step configures git hooks.
 
 Git hooks will automatically run: - **pre-commit**: `cargo fmt -- --check` (formatting verification) - **pre-commit**: `cargo clippy --all-targets -- -D warnings` (linting) - **commit-msg**: `cog verify --file` (conventional commit validation)
 
