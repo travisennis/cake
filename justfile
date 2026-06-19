@@ -83,10 +83,6 @@ lint-imports:
 ci: task-index-check rust-version-check check-linux fmt-check clippy-strict clippy-no-default-features test-all-features lint-imports lint-module-size
     echo "All checks passed!"
 
-# Run the integration test suite only (fast binary-level smoke tests)
-smoke:
-    cargo test --test exit_codes --test debug_models --test stdin_handling --test session_telemetry
-
 # Run the macOS correctness path used by GitHub Actions
 ci-macos: rust-version-check fmt-check clippy-strict clippy-no-default-features test-all-features
     echo "macOS CI checks passed!"
