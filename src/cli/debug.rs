@@ -13,17 +13,25 @@ pub struct DebugCommand {
 #[derive(Clone, Debug, Subcommand)]
 enum DebugSubcommand {
     /// Show configured models from settings.toml
-    Models,
+    Models {
+        /// Output model definitions as JSON
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
 }
 
 impl CmdRunner for DebugCommand {
     async fn run(&self, _data_dir: &DataDir) -> anyhow::Result<()> {
-        match self.command {
-            DebugSubcommand::Models => {
+        match &self.command {
+            DebugSubcommand::Models { json } => {
                 let current_dir = std::env::current_dir()
                     .map_err(|e| anyhow::anyhow!("Failed to get current directory: {e}"))?;
                 let loaded = SettingsLoader::load(Some(&current_dir))?;
-                print!("{}", format_models(&loaded.models));
+                if *json {
+                    print!("{}", format_models_json(&loaded.models)?);
+                } else {
+                    print!("{}", format_models(&loaded.models));
+                }
                 Ok(())
             },
         }
@@ -129,6 +137,15 @@ fn format_row(values: &[&str; 5], widths: &[usize; 5]) -> String {
     )
 }
 
+fn format_models_json(
+    models: &std::collections::HashMap<String, ModelDefinition>,
+) -> anyhow::Result<String> {
+    let mut defs: Vec<&ModelDefinition> = models.values().collect();
+    defs.sort_by(|left, right| left.name.cmp(&right.name));
+    serde_json::to_string_pretty(&defs)
+        .map_err(|e| anyhow::anyhow!("Failed to serialize model definitions: {e}"))
+}
+
 fn separator(widths: &[usize; 5]) -> String {
     format!(
         "{}  {}  {}  {}  {}",
@@ -199,5 +216,42 @@ mod tests {
         assert!(output.contains("zen"));
         assert!(output.contains("provider/zen"));
         assert!(output.contains("https://zen.example.com/v1"));
+    }
+
+    #[test]
+    fn format_models_json_empty() {
+        let output = format_models_json(&std::collections::HashMap::new()).unwrap();
+        assert_eq!(output, "[]");
+    }
+
+    #[test]
+    fn format_models_json_non_empty() {
+        let mut models = std::collections::HashMap::new();
+        models.insert("zen".to_string(), model("zen", ApiType::ChatCompletions));
+        models.insert("alpha".to_string(), model("alpha", ApiType::Responses));
+
+        let output = format_models_json(&models).unwrap();
+
+        // Parse and verify it's valid JSON
+        let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
+        let arr = parsed.as_array().expect("output must be a JSON array");
+        assert_eq!(arr.len(), 2);
+
+        // Verify sorted order (alpha before zen)
+        assert_eq!(arr[0]["name"], "alpha");
+        assert_eq!(arr[0]["model"], "provider/alpha");
+        assert_eq!(arr[0]["api_type"], "responses");
+        assert_eq!(arr[1]["name"], "zen");
+        assert_eq!(arr[1]["model"], "provider/zen");
+        assert_eq!(arr[1]["api_type"], "chat_completions");
+
+        // Verify full fields are present (not just the table subset)
+        assert!(arr[0].get("provider").is_some());
+        assert!(arr[0].get("temperature").is_some());
+        assert!(arr[0].get("top_p").is_some());
+
+        // Verify no leaked secrets — only env var names
+        assert_eq!(arr[0]["api_key_env"], "ALPHA_API_KEY");
+        assert_eq!(arr[1]["api_key_env"], "ZEN_API_KEY");
     }
 }
