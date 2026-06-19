@@ -1,51 +1,16 @@
 #![expect(clippy::expect_used, reason = "test code uses expect for assertions")]
 
+mod fixtures;
 mod support;
 
 use std::{fs, process::Stdio};
 
+use fixtures::{responses, settings};
 use support::TestEnv;
 use wiremock::matchers::{method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use wiremock::{Mock, MockServer};
 
-fn success_response() -> serde_json::Value {
-    serde_json::json!({
-        "id": "resp-123",
-        "output": [
-            {
-                "type": "message",
-                "id": "msg-1",
-                "status": "completed",
-                "content": [
-                    {
-                        "type": "output_text",
-                        "text": "Hello!"
-                    }
-                ]
-            }
-        ],
-        "usage": {
-            "input_tokens": 10,
-            "output_tokens": 5,
-            "total_tokens": 15
-        }
-    })
-}
-
-fn write_responses_settings(env: &TestEnv, base_url: &str) {
-    env.write_project_settings(&format!(
-        r#"
-default_model = "test"
-
-[[models]]
-name = "test"
-model = "glm-5.1"
-base_url = "{base_url}"
-api_key_env = "SESSION_TELEMETRY_TEST_KEY"
-api_type = "responses"
-"#
-    ));
-}
+const ENV_KEY: &str = "SESSION_TELEMETRY_TEST_KEY";
 
 fn only_file_in(dir: &std::path::Path) -> std::path::PathBuf {
     let entries = fs::read_dir(dir)
@@ -84,11 +49,11 @@ fn telemetry_records(env: &TestEnv) -> Vec<serde_json::Value> {
 async fn session_telemetry_creates_sidecar_on_success() {
     let env = TestEnv::new("cake-session-telemetry-test");
     let mock_server = MockServer::start().await;
-    write_responses_settings(&env, &mock_server.uri());
+    env.write_project_settings(&settings::responses_api(&mock_server.uri(), ENV_KEY));
 
     Mock::given(method("POST"))
         .and(path("/responses"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(success_response()))
+        .respond_with(responses::success_template())
         .expect(1)
         .mount(&mock_server)
         .await;
@@ -98,7 +63,7 @@ async fn session_telemetry_creates_sidecar_on_success() {
         .arg("--output-format")
         .arg("json")
         .arg("test prompt")
-        .env("SESSION_TELEMETRY_TEST_KEY", "test-token")
+        .env(ENV_KEY, "test-token")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
@@ -135,19 +100,11 @@ async fn session_telemetry_creates_sidecar_on_success() {
 async fn session_telemetry_records_retry_attempts() {
     let env = TestEnv::new("cake-session-telemetry-retry-test");
     let mock_server = MockServer::start().await;
-    write_responses_settings(&env, &mock_server.uri());
+    env.write_project_settings(&settings::responses_api(&mock_server.uri(), ENV_KEY));
 
     Mock::given(method("POST"))
         .and(path("/responses"))
-        .respond_with(
-            ResponseTemplate::new(429)
-                .insert_header("retry-after", "0")
-                .set_body_json(serde_json::json!({
-                    "error": {
-                        "message": "slow down"
-                    }
-                })),
-        )
+        .respond_with(responses::rate_limit_template())
         .expect(1)
         .up_to_n_times(1)
         .mount(&mock_server)
@@ -155,7 +112,7 @@ async fn session_telemetry_records_retry_attempts() {
 
     Mock::given(method("POST"))
         .and(path("/responses"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(success_response()))
+        .respond_with(responses::success_template())
         .expect(1)
         .mount(&mock_server)
         .await;
@@ -165,7 +122,7 @@ async fn session_telemetry_records_retry_attempts() {
         .arg("--output-format")
         .arg("json")
         .arg("test prompt")
-        .env("SESSION_TELEMETRY_TEST_KEY", "test-token")
+        .env(ENV_KEY, "test-token")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
