@@ -1,56 +1,67 @@
 // Destructive-command check rules for the Bash tool safety guard.
 //
-// Each check function matches a specific known-destructive pattern. The
-// functions are called from `validate_command_safety()` in the parent module
-// after shell-data stripping and normalization.
+// Each check function follows a uniform signature:
+//   fn(segment, normalized, lower) -> Option<String>
+//
+// `segment` is the original segment text, `normalized` is the whitespace-
+// collapsed inspection segment (case preserved), and `lower` is the
+// lowercased normalized text.
+//
+// Returns `Some(message)` when the check triggers, `None` when it passes.
 //
 // This module contains no parsing logic; see `parse.rs` for that.
+
+use super::{blocked, warned};
+
+// =============================================================================
+// Check function type (public for use in the CHECKS registry)
+// =============================================================================
+
+pub(super) type CheckFn = fn(segment: &str, normalized: &str, lower: &str) -> Option<String>;
 
 // =============================================================================
 // Git Checks
 // =============================================================================
 
 /// `git reset --hard` / `git reset --merge`
-pub(super) fn check_git_reset(lower: &str) -> Result<(), String> {
+pub(super) fn check_git_reset(_segment: &str, _normalized: &str, lower: &str) -> Option<String> {
     if lower.contains("git reset --hard") || lower.contains("git reset --merge") {
-        return Err(super::blocked(
+        return Some(blocked(
             "git reset --hard/--merge destroys uncommitted changes",
             "Use 'git stash' to save changes first, or 'git reset --soft' to preserve them.",
         ));
     }
-    Ok(())
+    None
 }
 
 /// `git checkout -- <file>`
-pub(super) fn check_git_checkout(lower: &str) -> Result<(), String> {
+pub(super) fn check_git_checkout(_segment: &str, _normalized: &str, lower: &str) -> Option<String> {
     if lower.contains("git checkout --") {
         // Verify there's a path after `--`
         if let Some(pos) = lower.find("git checkout --") {
-            let Some(after) = lower.get(pos + "git checkout --".len()..) else {
-                return Ok(());
-            };
+            let after = lower.get(pos + "git checkout --".len()..)?;
             let after = after.trim();
             if !after.is_empty() && !after.starts_with('-') {
-                return Err(super::blocked(
+                return Some(blocked(
                     "git checkout -- <file> discards uncommitted file changes",
                     "Use 'git restore --staged <file>' to unstage, or 'git stash' to save changes.",
                 ));
             }
         }
     }
-    Ok(())
+    None
 }
 
 /// `git restore <file>` without `--staged`, or with `--worktree`
 /// `git restore -b <branch>` is allowed (creates a branch).
-pub(super) fn check_git_restore(lower: &str) -> Result<(), String> {
+pub(super) fn check_git_restore(_segment: &str, _normalized: &str, lower: &str) -> Option<String> {
     if !lower.contains("git restore") {
-        return Ok(());
+        return None;
     }
 
     // --worktree is always destructive, even with --staged
     if lower.contains("--worktree") {
-        return Err(super::blocked(
+        return Some(blocked(
             "git restore --worktree discards uncommitted changes",
             "Use 'git restore --staged <file>' to only unstage, or 'git stash' to save changes.",
         ));
@@ -58,39 +69,37 @@ pub(super) fn check_git_restore(lower: &str) -> Result<(), String> {
 
     // --staged alone is safe (only unstages)
     if lower.contains("--staged") {
-        return Ok(());
+        return None;
     }
 
     // Find what comes after `git restore`
     if let Some(pos) = lower.find("git restore") {
-        let Some(after) = lower.get(pos + "git restore".len()..) else {
-            return Ok(());
-        };
+        let after = lower.get(pos + "git restore".len()..)?;
         let after = after.trim();
         // -b creates a branch, not destructive
         if after.is_empty() || after.starts_with("-b") || after.starts_with("-b ") {
-            return Ok(());
+            return None;
         }
         // Bare `git restore <file>` without --staged is destructive
         if !after.is_empty() {
-            return Err(super::blocked(
+            return Some(blocked(
                 "git restore <file> without --staged discards uncommitted changes",
                 "Use 'git restore --staged <file>' to only unstage, or 'git stash' to save changes.",
             ));
         }
     }
 
-    Ok(())
+    None
 }
 
 /// `git clean -f` / `--force` — includes combined flags like `-fd`, `-fdx`
-pub(super) fn check_git_clean(lower: &str) -> Result<(), String> {
+pub(super) fn check_git_clean(_segment: &str, _normalized: &str, lower: &str) -> Option<String> {
     if !lower.contains("git clean") {
-        return Ok(());
+        return None;
     }
 
     if lower.contains("git clean --force") || lower.contains("git clean -f") {
-        return Err(super::blocked(
+        return Some(blocked(
             "git clean -f permanently deletes untracked files",
             "Use 'git clean -n' to preview what would be deleted first.",
         ));
@@ -98,14 +107,12 @@ pub(super) fn check_git_clean(lower: &str) -> Result<(), String> {
 
     // Check for combined flags containing 'f', e.g. `-fd`, `-xfd`, `-fdx`
     if let Some(pos) = lower.find("git clean") {
-        let Some(after) = lower.get(pos + "git clean".len()..) else {
-            return Ok(());
-        };
+        let after = lower.get(pos + "git clean".len()..)?;
         let after = after.trim();
         // Look for a dash-flag group containing 'f'
         for token in after.split_whitespace() {
             if token.starts_with('-') && !token.starts_with("--") && token.contains('f') {
-                return Err(super::blocked(
+                return Some(blocked(
                     "git clean -f permanently deletes untracked files",
                     "Use 'git clean -n' to preview what would be deleted first.",
                 ));
@@ -113,22 +120,22 @@ pub(super) fn check_git_clean(lower: &str) -> Result<(), String> {
         }
     }
 
-    Ok(())
+    None
 }
 
 /// `git push --force` / `-f` — allows `--force-with-lease`
-pub(super) fn check_git_push(lower: &str) -> Result<(), String> {
+pub(super) fn check_git_push(_segment: &str, _normalized: &str, lower: &str) -> Option<String> {
     if !lower.contains("git push") {
-        return Ok(());
+        return None;
     }
 
     // --force-with-lease is safe
     if lower.contains("--force-with-lease") {
-        return Ok(());
+        return None;
     }
 
     if lower.contains("git push --force") {
-        return Err(super::blocked(
+        return Some(blocked(
             "git push --force overwrites remote commit history",
             "Use 'git push --force-with-lease' for safer force pushes.",
         ));
@@ -136,13 +143,11 @@ pub(super) fn check_git_push(lower: &str) -> Result<(), String> {
 
     // Check for short flag -f (but not part of a longer flag group that isn't force)
     if let Some(pos) = lower.find("git push") {
-        let Some(after) = lower.get(pos + "git push".len()..) else {
-            return Ok(());
-        };
+        let after = lower.get(pos + "git push".len()..)?;
         let after = after.trim();
         for token in after.split_whitespace() {
             if token == "-f" {
-                return Err(super::blocked(
+                return Some(blocked(
                     "git push -f overwrites remote commit history",
                     "Use 'git push --force-with-lease' for safer force pushes.",
                 ));
@@ -153,7 +158,7 @@ pub(super) fn check_git_push(lower: &str) -> Result<(), String> {
                 && token.len() > 1
                 && token.contains('f')
             {
-                return Err(super::blocked(
+                return Some(blocked(
                     "git push -f overwrites remote commit history",
                     "Use 'git push --force-with-lease' for safer force pushes.",
                 ));
@@ -161,12 +166,16 @@ pub(super) fn check_git_push(lower: &str) -> Result<(), String> {
         }
     }
 
-    Ok(())
+    None
 }
 
 /// `git branch -D` — uppercase D only (force delete without merge check).
 /// Uses the original (case-preserved, whitespace-normalized) string.
-pub(super) fn check_git_branch_delete(normalized: &str) -> Result<(), String> {
+pub(super) fn check_git_branch_delete(
+    _segment: &str,
+    normalized: &str,
+    _lower: &str,
+) -> Option<String> {
     // Match "git branch" case-insensitively, then inspect the original flag
     // spelling so lowercase `-d` remains allowed while uppercase `-D` blocks.
     let mut tokens = normalized.split_whitespace();
@@ -188,25 +197,25 @@ pub(super) fn check_git_branch_delete(normalized: &str) -> Result<(), String> {
             .filter(|flags| !flags.starts_with('-'))
             && flags.chars().any(|c| c == 'D')
         {
-            return Err(super::blocked(
+            return Some(blocked(
                 "git branch -D force-deletes branches without checking merge status",
                 "Use 'git branch -d' (lowercase) to safely delete only merged branches.",
             ));
         }
     }
 
-    Ok(())
+    None
 }
 
 /// `git stash drop` / `git stash clear`
-pub(super) fn check_git_stash(lower: &str) -> Result<(), String> {
+pub(super) fn check_git_stash(_segment: &str, _normalized: &str, lower: &str) -> Option<String> {
     if lower.contains("git stash drop") || lower.contains("git stash clear") {
-        return Err(super::blocked(
+        return Some(blocked(
             "git stash drop/clear permanently deletes stashed changes",
             "Use 'git stash list' to review stashes, or 'git stash pop' to apply and remove.",
         ));
     }
-    Ok(())
+    None
 }
 
 /// `git commit -m` with backticks or `$()` inside double-quoted message.
@@ -215,13 +224,17 @@ pub(super) fn check_git_stash(lower: &str) -> Result<(), String> {
 /// double-quoted arguments passed to `-m`/`--message`. This blocks such calls
 /// and tells the agent to use `git commit -F -` with a heredoc, or single
 /// quotes around the message instead.
-pub(super) fn check_git_commit_backticks(original: &str) -> Result<(), String> {
+pub(super) fn check_git_commit_backticks(
+    segment: &str,
+    _normalized: &str,
+    _lower: &str,
+) -> Option<String> {
     // Quick bail-out: if there's no git commit, skip.
-    if !original.contains("git commit") {
-        return Ok(());
+    if !segment.contains("git commit") {
+        return None;
     }
 
-    let bytes = original.as_bytes();
+    let bytes = segment.as_bytes();
     let len = bytes.len();
     let mut i = 0;
 
@@ -259,8 +272,8 @@ pub(super) fn check_git_commit_backticks(original: &str) -> Result<(), String> {
                 if commit_word.eq_ignore_ascii_case("commit") {
                     // Found "git commit", now scan for -m/--message flags with
                     // double-quoted values containing backticks or $(.
-                    if has_unsafe_message_flag(original, i) {
-                        return Err(super::blocked(
+                    if has_unsafe_message_flag(segment, i) {
+                        return Some(blocked(
                             "git commit -m/--message with backticks or $() in double-quoted message",
                             "Use 'git commit -F -' with a heredoc to pass the message via stdin, \
                              or use single quotes around the message instead of double quotes.",
@@ -271,7 +284,7 @@ pub(super) fn check_git_commit_backticks(original: &str) -> Result<(), String> {
         }
     }
 
-    Ok(())
+    None
 }
 
 /// Scan the remainder of a command (starting at `start`) for `-m`/`--message`
@@ -383,10 +396,10 @@ fn has_unsafe_message_flag(command: &str, start: usize) -> bool {
 
 /// Block `rm -rf` targeting obviously dangerous paths.
 /// Allowed: `/tmp/*`, `/var/tmp/*`.
-pub(super) fn check_dangerous_rm(normalized: &str) -> Result<(), String> {
+pub(super) fn check_dangerous_rm(_segment: &str, normalized: &str, _lower: &str) -> Option<String> {
     let lower = normalized.to_lowercase();
     if !lower.contains("rm ") {
-        return Ok(());
+        return None;
     }
 
     // Find `rm` invocations with recursive + force flags (including combined flags)
@@ -429,7 +442,7 @@ pub(super) fn check_dangerous_rm(normalized: &str) -> Result<(), String> {
             if has_r && has_f {
                 for target in targets {
                     if !is_allowed_rm_target(target) {
-                        return Err(super::blocked(
+                        return Some(blocked(
                             "rm -rf outside of temporary directories can cause permanent data loss",
                             "rm -rf is only allowed for literal /tmp/* or /var/tmp/* paths.",
                         ));
@@ -439,7 +452,7 @@ pub(super) fn check_dangerous_rm(normalized: &str) -> Result<(), String> {
         }
     }
 
-    Ok(())
+    None
 }
 
 /// Check if an `rm -rf` target is in an allowed temporary directory.
@@ -456,6 +469,131 @@ fn is_allowed_rm_target(target: &str) -> bool {
 }
 
 // =============================================================================
+// rg -rn / ripgrep replace-flag footgun (Soft Warning)
+// =============================================================================
+
+/// Detect `rg -rn` where `-rn` sets the replacement string to "n".
+///
+/// The `-r`/`--replace` flag takes the next argument as the replacement
+/// string, so `rg -rn pattern` replaces matches with the literal character
+/// "n" and searches for `pattern`. This is almost certainly a mistake where
+/// `rg -n` (show line numbers) was intended.
+///
+/// This is a soft warning — the command still executes, but the agent is
+/// alerted that the output may not be what they expect.
+pub(super) fn check_rg_replace_flag(
+    segment: &str,
+    _normalized: &str,
+    _lower: &str,
+) -> Option<String> {
+    // Quick bail-out: no `rg` invocation.
+    if !segment.contains("rg") {
+        return None;
+    }
+
+    let bytes = segment.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+
+    while i < len {
+        // Find "rg" as a whitespace-delimited token.
+        while i < len && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= len {
+            break;
+        }
+        let token_start = i;
+        while i < len && !bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        let token_end = i;
+
+        // SAFETY: token_start..token_end spans ASCII whitespace-delimited bytes.
+        let token = std::str::from_utf8(&bytes[token_start..token_end]).unwrap_or("");
+        if token != "rg" {
+            continue;
+        }
+
+        // Found "rg" — scan subsequent tokens for -rn or -r followed by n.
+        let mut prev_was_dash_r = false;
+        while i < len {
+            while i < len && bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            if i >= len {
+                break;
+            }
+
+            // If the next token starts with '-', it's a flag.
+            if bytes[i] == b'-' {
+                let flag_start = i;
+                while i < len && !bytes[i].is_ascii_whitespace() {
+                    i += 1;
+                }
+                let flag_end = i;
+
+                let flag = std::str::from_utf8(&bytes[flag_start..flag_end]).unwrap_or("");
+
+                // Combined short flag where n immediately follows r, e.g. -rn.
+                // -nr (n before r) is a different failure mode — ripgrep errors
+                // that -r requires a value, rather than silently replacing with "n".
+                if flag.starts_with('-') && !flag.starts_with("--") && flag.contains("rn") {
+                    return Some(warned(
+                        "rg -rn sets the replacement string to \"n\". \
+                         Did you mean `rg -n` (line numbers)?",
+                        "The -r/--replace flag in ripgrep takes the next argument as the \
+                         replacement string. `rg -rn pattern` replaces matches with \"n\". \
+                         Use `rg -n` to show line numbers instead.",
+                    ));
+                }
+
+                // Track bare -r so we can catch -r followed by n as separate arg
+                prev_was_dash_r = flag == "-r" || flag == "--replace";
+
+                // Pattern or path — flags end here.
+                if flag == "--" {
+                    break;
+                }
+
+                continue;
+            }
+
+            // Not a flag — could be a positional arg (pattern, path, or replacement).
+            if prev_was_dash_r {
+                let arg_start = i;
+                while i < len && !bytes[i].is_ascii_whitespace() {
+                    i += 1;
+                }
+                let arg_end = i;
+
+                let arg = std::str::from_utf8(&bytes[arg_start..arg_end]).unwrap_or("");
+                // If the argument after -r is exactly "n", it's suspicious.
+                if arg == "n" {
+                    return Some(warned(
+                        "rg -r n sets the replacement string to \"n\". \
+                         Did you mean `rg -n` (line numbers)?",
+                        "The -r/--replace flag in ripgrep takes the next argument as the \
+                         replacement string. `rg -r n pattern` replaces matches with \"n\". \
+                         Use `rg -n` to show line numbers instead.",
+                    ));
+                }
+                prev_was_dash_r = false;
+                continue;
+            }
+
+            // Regular positional arg — skip it.
+            while i < len && !bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            prev_was_dash_r = false;
+        }
+    }
+
+    None
+}
+
+// =============================================================================
 // Tests
 // =============================================================================
 
@@ -463,17 +601,49 @@ fn is_allowed_rm_target(target: &str) -> bool {
 mod tests {
     use super::*;
 
-    // Shorthand: assert command is blocked
-    fn assert_blocked(command: &str) {
-        let result = super::super::validate_command_safety(command);
-        assert!(result.is_err(), "Expected command to be BLOCKED: {command}");
+    // Shorthand: collect all check results for a command
+    // Returns (warnings, blocks). Only the first block is captured since
+    // validation stops at the first hard block.
+    fn collect_results(command: &str) -> (Vec<String>, Vec<String>) {
+        match super::super::validate_command_safety(command) {
+            Ok(warnings) => (warnings, Vec::new()),
+            Err(block) => (Vec::new(), vec![block]),
+        }
     }
 
-    // Shorthand: assert command is allowed
+    // Shorthand: assert command is blocked
+    fn assert_blocked(command: &str) {
+        let (warnings, blocks) = collect_results(command);
+        assert!(
+            !blocks.is_empty(),
+            "Expected command to be BLOCKED: {command}"
+        );
+        // Warnings may also be present alongside blocks, that's fine.
+        _ = warnings;
+    }
+
+    // Shorthand: assert command is allowed (no blocks)
     fn assert_allowed(command: &str) {
-        if let Err(msg) = super::super::validate_command_safety(command) {
-            panic!("Expected command to be ALLOWED: {command}\nGot: {msg}");
+        match super::super::validate_command_safety(command) {
+            Ok(_) => {}, // OK, may have warnings
+            Err(block) => {
+                panic!("Expected command to be ALLOWED: {command}\nGot block: {block}");
+            },
         }
+    }
+
+    // Shorthand: assert command produces a soft warning
+    fn assert_warned(command: &str) {
+        let (warnings, blocks) = collect_results(command);
+        assert!(
+            !warnings.is_empty(),
+            "Expected command to produce WARNING: {command}"
+        );
+        // No blocks expected for soft-warning-only commands.
+        assert!(
+            blocks.is_empty(),
+            "Expected no blocks for warning-only command: {command}\nGot: {blocks:?}"
+        );
     }
 
     // =========================================================================
@@ -852,6 +1022,69 @@ mod tests {
     }
 
     // =========================================================================
+    // rg -rn / ripgrep replace-flag footgun (Soft Warning)
+    // =========================================================================
+
+    #[test]
+    fn warns_rg_rn_combined_flag() {
+        assert_warned("rg -rn pattern");
+        assert_warned("rg -rn 'some pattern'");
+        assert_warned("rg -rn 'pattern' src/");
+    }
+
+    #[test]
+    fn warns_rg_r_with_n_as_separate_arg() {
+        assert_warned("rg -r n pattern");
+        assert_warned("rg --replace n pattern");
+    }
+
+    #[test]
+    fn allows_rg_n_line_numbers() {
+        assert_allowed("rg -n pattern");
+        assert_allowed("rg -n 'some pattern' src/");
+    }
+
+    #[test]
+    fn allows_rg_without_n_flag() {
+        assert_allowed("rg pattern");
+        assert_allowed("rg -i pattern");
+        assert_allowed("rg -l pattern");
+    }
+
+    #[test]
+    fn allows_rg_with_r_replace_not_n() {
+        // rg -r 'replacement' is valid intentional usage
+        assert_allowed("rg -r 'replacement' pattern");
+        assert_allowed("rg --replace 'replacement' pattern");
+    }
+
+    #[test]
+    fn warns_rg_rn_with_n_immediately_after_r() {
+        // -rn sets replacement to "n" — the footgun.
+        assert_warned("rg -rn pattern");
+    }
+
+    #[test]
+    fn allows_rg_nr_flag() {
+        // -nr means -n -r with no replacement arg. Ripgrep errors:
+        //   error: The argument '--replace <ARG> ...' requires a value but none was supplied
+        // This is a different failure mode, not the silent-replace footgun.
+        assert_allowed("rg -nr pattern");
+    }
+
+    #[test]
+    fn warns_rg_rn_in_chain() {
+        assert_warned("echo test && rg -rn pattern");
+    }
+
+    #[test]
+    fn allows_rg_normal_usage() {
+        assert_allowed("rg TODO src/");
+        assert_allowed("rg --type rust fn main");
+        assert_allowed("rg -C 3 pattern");
+    }
+
+    // =========================================================================
     // Whitespace variations
     // =========================================================================
 
@@ -879,5 +1112,25 @@ mod tests {
         assert!(err.contains("BLOCKED"), "Missing BLOCKED header");
         assert!(err.contains("Reason:"), "Missing reason");
         assert!(err.contains("Tip:"), "Missing tip");
+    }
+
+    // =========================================================================
+    // Warning message format
+    // =========================================================================
+
+    #[test]
+    fn warning_message_contains_notice_and_tip() {
+        let (warnings, _blocks) = collect_results("rg -rn pattern");
+        assert!(!warnings.is_empty(), "Expected warning for rg -rn");
+        let warning = &warnings[0];
+        assert!(
+            warning.contains("NOTICE"),
+            "Missing NOTICE header in: {warning}"
+        );
+        assert!(
+            warning.contains("Did you mean"),
+            "Missing guidance in: {warning}"
+        );
+        assert!(warning.contains("Tip:"), "Missing tip in: {warning}");
     }
 }

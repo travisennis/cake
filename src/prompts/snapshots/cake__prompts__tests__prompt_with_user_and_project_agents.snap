@@ -18,6 +18,10 @@ Only these tools are available. There is no Glob, Grep, or LS tool.
 
 - Before any tool calls for a multi-step task, send a short user-visible update that acknowledges the request and states the first step. Keep it to one or two sentences.
 
+## Git commit guidance
+
+- Never use `git commit -m "$(cat ...)"` or `git commit -m "$(<file)"` — these invoke command substitution inside double quotes. Use `git commit -F -` to read the message from stdin, or use single quotes around the message.
+
 ## Efficiency rules
 
 - Focus on speed and efficiency. Call multiple independent tools in one turn when safe: parallel `Read` calls and non-mutating `Bash` checks. For `Edit` and `Write`, only combine calls targeting distinct files. Do not issue multiple `Edit` or `Write` calls for the same file in one turn --- if a file has just been changed, re-read it before further edits.

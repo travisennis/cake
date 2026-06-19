@@ -287,8 +287,9 @@ async fn execute_bash_with_args(
     context: &super::ToolContext,
     args: BashExecutionArgs,
 ) -> Result<super::ToolResult, String> {
-    // Pre-execution safety check: block known-destructive commands
-    super::bash_safety::validate_command_safety(&args.command)?;
+    // Pre-execution safety check: block known-destructive commands,
+    // collect soft warnings to prepend to output.
+    let safety_warnings = super::bash_safety::validate_command_safety(&args.command)?;
 
     let start_time = Instant::now();
 
@@ -432,7 +433,19 @@ async fn execute_bash_with_args(
 
     let result = truncate_output(&result, exit_code, elapsed_ms, warn_exit_zero_stderr);
 
-    Ok(super::ToolResult { output: result })
+    // Prepend any soft safety warnings to the output.
+    let output = if safety_warnings.is_empty() {
+        result
+    } else {
+        let prefix = safety_warnings.join("\n\n");
+        if result.is_empty() {
+            prefix
+        } else {
+            format!("{prefix}\n\n{result}")
+        }
+    };
+
+    Ok(super::ToolResult { output })
 }
 
 #[cfg(test)]
