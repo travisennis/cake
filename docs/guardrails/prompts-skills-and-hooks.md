@@ -19,8 +19,8 @@ deduplication, hook loading, or hook execution.
 - Add tests for prompt assembly, skill catalog changes, or hook lifecycle
   behavior when touched.
 - Snapshot prompt or transcript output when serialized prompt context changes.
-- Keep generated indexes and project workflow docs authoritative for tasks,
-  research, ExecPlans, and ADRs.
+- Keep generated indexes and `ahm context ...` workflow guidance authoritative
+  for tasks, research, ExecPlans, and ADRs.
 
 ## Common Failure Modes
 
@@ -28,14 +28,12 @@ deduplication, hook loading, or hook execution.
   disclosure.
 - Activating a skill more than once per session.
 - Mutating hook arguments without preserving valid tool schemas.
-- Duplicating task, plan, research, or ADR rules already owned by `.agents/`
-  workflow docs.
+- Duplicating task, plan, research, or ADR rules already owned by
+  `ahm context task`, `ahm context plan`, `ahm context research`, or
+  `ahm context adr`.
 
 ## Related Docs
 
 - [prompts.md](../design-docs/prompts.md)
 - [skills.md](../design-docs/skills.md)
 - [hooks.md](../design-docs/hooks.md)
-- [.agents/TASKS.md](../../.agents/TASKS.md)
-- [.agents/PLANS.md](../../.agents/PLANS.md)
-- [.agents/RESEARCH.md](../../.agents/RESEARCH.md)

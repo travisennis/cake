@@ -39,11 +39,11 @@ clippy-no-default-features:
 rust-version-check:
     sh scripts/check-rust-toolchain.sh
 
-# Regenerate task indexes from task file metadata
+# Regenerate generated indexes from ahm-managed metadata
 task-index:
     ahm index
 
-# Verify generated task indexes are current (no ahm dependency)
+# Verify generated indexes are current (legacy script, no ahm dependency)
 task-index-check:
     @python3 scripts/check-indexes.py
 

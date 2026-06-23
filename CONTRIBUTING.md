@@ -137,7 +137,7 @@ For cfg-sensitive or platform-specific Rust changes, run the narrowest feasible 
 
 For dependency changes, also run `just check-deps`. It is not part of `just ci`.
 
-For documentation-only changes, run the narrowest useful Markdown or link checks instead of `just ci` when no code, tests, config, fixtures, generated task indexes, dependency files, or build metadata changed. Explain the skip in the handoff.
+For documentation-only changes, run the narrowest useful Markdown or link checks instead of `just ci` when no code, tests, config, fixtures, generated indexes, dependency files, or build metadata changed. Explain the skip in the handoff.
 
 This crate has no library target. Do not run `cargo test --lib`; use `cargo test <module_or_test_name>` for targeted tests or `cargo test` for the full test suite.
 

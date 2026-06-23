@@ -16,7 +16,7 @@ agent-facing instructions.
 
 ## Required Checks
 
-- Read [.agents/DOCS.md](../../.agents/DOCS.md) before doc work.
+- Run `ahm context docs` before doc work.
 - Do not edit generated indexes by hand.
 - Prefer one authoritative home for each rule; link instead of duplicating.
 - Run the narrowest useful Markdown, link, or generated-index check available.
@@ -28,9 +28,12 @@ agent-facing instructions.
 - Updating behavior docs but missing README examples or design references.
 - Rewriting ADR history instead of adding a new decision or supersession note.
 
+## ahm Workflows
+
+- ahm context docs - for managing docs
+- ahm context adr - for managing ADRs
+
 ## Related Docs
 
-- [.agents/DOCS.md](../../.agents/DOCS.md)
 - [docs/design-docs/index.md](../design-docs/index.md)
-- [docs/adr/README.md](../adr/README.md)
 - [CONTRIBUTING.md](../../CONTRIBUTING.md)
