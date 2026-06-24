@@ -80,7 +80,7 @@ lint-imports:
     @echo "Import lint passed!"
 
 # Run the primary local checks, including the always-on CI command set
-ci: task-index-check rust-version-check check-linux fmt-check clippy-strict clippy-no-default-features test-all-features lint-imports lint-module-size
+ci: task-index-check rust-version-check check-linux fmt-check clippy-strict clippy-no-default-features test-all-features check-coverage lint-imports lint-module-size
     echo "All checks passed!"
 
 # Run the macOS correctness path used by GitHub Actions
@@ -92,7 +92,7 @@ check-linux:
     cargo check --all-features
 
 # Run the broad local validation suite
-check-full: ci check-coverage check-deps doc build
+check-full: ci check-deps doc build
     echo "Full check suite passed!"
 
 # Check module sizes against thresholds (informational, always passes)

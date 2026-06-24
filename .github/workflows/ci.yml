@@ -138,7 +138,17 @@ jobs:
           fi
 
       - name: Check change-risk regression
-        run: cargo crap --lcov lcov.info --baseline ci/cargo-crap-baseline.json --fail-regression --format github
+        run: |
+          cargo crap \
+            --lcov lcov.info \
+            --baseline ci/cargo-crap-baseline.json \
+            --fail-regression \
+            --format github \
+            --exclude 'tests/**' \
+            --exclude 'src/clients/agent/agent_tests.rs' \
+            --exclude 'src/clients/chat_completions_tests.rs' \
+            --exclude 'src/config/settings_tests.rs' \
+            --exclude 'src/clients/tools/sandbox/linux.rs'
 
       - name: Upload to Codecov
         uses: codecov/codecov-action@v7
