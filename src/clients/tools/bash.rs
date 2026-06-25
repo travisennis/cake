@@ -433,17 +433,7 @@ async fn execute_bash_with_args(
 
     let result = truncate_output(&result, exit_code, elapsed_ms, warn_exit_zero_stderr);
 
-    // Prepend any soft safety warnings to the output.
-    let output = if safety_warnings.is_empty() {
-        result
-    } else {
-        let prefix = safety_warnings.join("\n\n");
-        if result.is_empty() {
-            prefix
-        } else {
-            format!("{prefix}\n\n{result}")
-        }
-    };
+    let output = prepend_safety_warnings(result, &safety_warnings);
 
     Ok(super::ToolResult { output })
 }
@@ -515,6 +505,18 @@ pub(super) fn truncate_output(
          --- last ~{preview} bytes ---\n{tail}\n{footer}",
         path = tmp_path.display(),
     )
+}
+
+/// Prepend soft safety warnings to command output, if any.
+///
+/// `truncate_output` always returns a non-empty string (at minimum the
+/// metadata footer), so the warning is safely interleaved with `\n\n`.
+fn prepend_safety_warnings(output: String, warnings: &[String]) -> String {
+    if warnings.is_empty() {
+        output
+    } else {
+        format!("{}\n\n{output}", warnings.join("\n\n"))
+    }
 }
 
 #[cfg(test)]
@@ -1063,5 +1065,144 @@ mod tests {
             result.output
         );
         assert!(result.output.contains("Hello, world!"));
+    }
+
+    #[tokio::test]
+    async fn test_streaming_empty_output() {
+        // A command that produces no stdout or stderr should return empty
+        // output with just the metadata footer.
+        let args = r#"{"command": "true"}"#;
+        let result = Box::pin(execute_bash_unsandboxed(args)).await.unwrap();
+        assert!(
+            result.output.starts_with("[exit:0 |"),
+            "Empty output should produce only the footer, got: {}",
+            result.output
+        );
+        // No command output before the footer
+        assert!(
+            !result.output.contains('\n'),
+            "Empty output should not contain newlines before the footer, got: {}",
+            result.output
+        );
+    }
+
+    #[tokio::test]
+    async fn test_streaming_empty_output_with_stderr() {
+        // A command that produces only stderr output. The output should show
+        // the warning because exit is 0 but stderr is non-empty, then the
+        // metadata footer.
+        let args = r#"{"command": "echo err >&2"}"#;
+        let result = Box::pin(execute_bash_unsandboxed(args)).await.unwrap();
+        assert!(result.output.contains("err"));
+        assert!(result.output.contains(EXIT_ZERO_STDERR_WARNING));
+        assert!(result.output.contains("[exit:0 |"));
+    }
+
+    #[tokio::test]
+    async fn test_streaming_with_soft_warning() {
+        // A command that triggers a soft safety warning (rg -rn footgun check)
+        // should have the warning prepended to the output.
+        let args = r#"{"command": "rg -rn some_pattern ."}"#;
+        let result = Box::pin(execute_bash_unsandboxed(args)).await;
+        // The safety check allows execution (soft warning), but rg itself may
+        // not be installed or may fail. The key assertion is that the warning
+        // text appears in the output.
+        if let Ok(res) = result {
+            assert!(
+                res.output.contains("rg -rn sets the replacement string"),
+                "Soft warning should be prepended. Output: {}",
+                res.output
+            );
+            assert!(res.output.contains("[exit:"));
+        } else {
+            // If rg is missing the command may fail at the shell level, but
+            // the safety check runs before execution, so we should never get
+            // an Err from validate_command_safety.
+            panic!("rg -rn should not be hard-blocked, got error");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_streaming_with_soft_warning_and_empty_result() {
+        // A command with a soft warning that produces no output should show
+        // only the warning text (no extra formatting).
+        let args = r#"{"command": "rg -rn some_pattern 2>/dev/null; true"}"#;
+        let result = Box::pin(execute_bash_unsandboxed(args)).await;
+        if let Ok(res) = result {
+            assert!(
+                res.output.contains("rg -rn sets the replacement string"),
+                "Soft warning should appear. Output: {}",
+                res.output
+            );
+            assert!(
+                res.output.contains("[exit:0 |"),
+                "Output should contain footer: {}",
+                res.output
+            );
+        } else {
+            panic!("rg -rn should not be hard-blocked, got error");
+        }
+    }
+
+    /// Produce large stderr output after stdout closes, hitting `BASH_READ_CAP`
+    /// during the `stdout closed — read remaining stderr` drain loop.
+    #[tokio::test]
+    async fn test_streaming_stderr_drain_after_stdout_close_hits_cap() {
+        // python3: write small stdout, close it, then flood stderr past cap
+        let args = r#"{"command": "python3 -c 'import sys; sys.stdout.write(\"hello\\n\"); sys.stdout.flush(); sys.stdout.close(); sys.stderr.write(\"x\" * 200000)'"}"#;
+        let result = Box::pin(execute_bash_unsandboxed(args)).await;
+        match result {
+            Ok(res) => {
+                assert!(
+                    res.output.contains("[... output truncated at"),
+                    "Expected truncation when stderr fills after stdout closes. Output: {}",
+                    res.output
+                );
+                assert!(
+                    res.output.contains("[exit:"),
+                    "Output should contain footer"
+                );
+            },
+            Err(e)
+                if e.contains("command not found")
+                    || e.contains("python3: cannot open")
+                    || e.contains("python3: not found") =>
+            {
+                // python3 not available on this system — skip
+                eprintln!("skipping: python3 not available");
+            },
+            Err(e) => panic!("Unexpected error: {e}"),
+        }
+    }
+
+    /// Produce large stdout output after stderr closes, hitting `BASH_READ_CAP`
+    /// during the `stderr closed — read remaining stdout` drain loop.
+    #[tokio::test]
+    async fn test_streaming_stdout_drain_after_stderr_close_hits_cap() {
+        // python3: write small stderr, close it, then flood stdout past cap
+        let args = r#"{"command": "python3 -c 'import sys; sys.stderr.write(\"hello\\n\"); sys.stderr.flush(); sys.stderr.close(); sys.stdout.write(\"x\" * 200000)'"}"#;
+        let result = Box::pin(execute_bash_unsandboxed(args)).await;
+        match result {
+            Ok(res) => {
+                assert!(
+                    res.output.contains("[... output truncated at"),
+                    "Expected truncation when stdout fills after stderr closes. Output: {}",
+                    res.output
+                );
+                assert!(
+                    res.output.contains("[exit:"),
+                    "Output should contain footer"
+                );
+            },
+            Err(e)
+                if e.contains("command not found")
+                    || e.contains("python3: cannot open")
+                    || e.contains("python3: not found") =>
+            {
+                // python3 not available on this system — skip
+                eprintln!("skipping: python3 not available");
+            },
+            Err(e) => panic!("Unexpected error: {e}"),
+        }
     }
 }
