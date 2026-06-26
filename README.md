@@ -16,8 +16,6 @@ cake is a minimal coding harness for headless usage in the terminal. It's not a 
 - [Session Management](#session-management)
 - [Worktrees](#worktrees)
 - [Filesystem Sandbox](#filesystem-sandbox)
-  - [Destructive Command Protection](#destructive-command-protection)
-  - [Adding Read-Only Directories](#adding-read-only-directories)
 - [AGENTS.md --- Per-Project AI Behavior](#agentsmd--per-project-ai-behavior)
 - [System Prompt Customization](#system-prompt-customization)
 - [Shell Aliases and Functions](#shell-aliases-and-functions)
@@ -144,24 +142,15 @@ Create a `settings.toml` file to define custom model configurations:
 
 ```toml
 # Example settings.toml
-default_model = "claude"           # Optional; enables running cake without --model
+default_model = "claude"
 
 [[models]]
-name = "claude"                    # Use with --model claude
+name = "claude"
 model = "anthropic/claude-4.6-sonnet"
 base_url = "https://openrouter.ai/api/v1/"
 api_key_env = "OPENROUTER_API_KEY"
 api_type = "responses"
-provider = "openrouter"             # Optional; inferred for openrouter.ai URLs
-provider_headers = { http_referer = "https://github.com/you/project", x_title = "my-cake-client" }
 temperature = 0.7
-
-[[models]]
-name = "deepseek"
-model = "deepseek/deepseek-chat-v3"
-base_url = "https://openrouter.ai/api/v1/"
-api_key_env = "DEEPSEEK_API_KEY"
-top_p = 0.9
 
 [[models]]
 name = "o4-mini"
@@ -169,16 +158,7 @@ model = "openai/o4-mini"
 base_url = "https://api.openai.com/v1/"
 api_key_env = "OPENAI_API_KEY"
 api_type = "responses"
-reasoning_effort = "high"          # none|low|medium|high|xhigh
-reasoning_summary = "concise"      # concise|detailed|auto (Responses API only)
-
-[[models]]
-name = "claude-reasoning"
-model = "anthropic/claude-3.7-sonnet"
-base_url = "https://openrouter.ai/api/v1/"
-api_key_env = "OPENROUTER_API_KEY"
-api_type = "responses"
-reasoning_max_tokens = 8000        # Budget-style for Anthropic via OpenRouter
+reasoning_effort = "high"
 
 [skills]
 path = "~/my-skills:/shared/team-skills"
@@ -199,20 +179,14 @@ See `.cake/settings.toml` for a complete example.
 
 #### Profiles
 
-Profiles are named behavior overlays in `settings.toml`. They can change `default_model`, skill filtering, and persistent read-write directories without redefining model provider configs.
+Profiles are named behavior overlays in `settings.toml` that can change the default model, skill filtering, and persistent directories without redefining model configs:
 
 ```toml
 [profiles.fast]
 default_model = "deepseek"
-
-[profiles.review.skills]
-only = ["debugging-cake", "evaluating-cake"]
-
-[profiles.expanded]
-directories = ["../shared-libs"]
 ```
 
-When `--profile <name>` is passed, cake applies top-level global settings, top-level project settings, then the selected global and project profile. CLI flags such as `--model`, `--skills`, and `--no-skills` still win.
+Pass `--profile <name>` to apply one. CLI flags such as `--model` still take precedence. See [Settings](docs/design-docs/settings.md) for full details on profile layering and merging.
 
 #### Reasoning Configuration
 
@@ -285,39 +259,9 @@ When the task finishes, cake automatically removes the worktree if no changes we
 
 Commands executed by the Bash tool run inside an OS-level filesystem sandbox that restricts access to only the project directory and essential system paths. This prevents LLM-generated commands from reading or writing files outside the allowed set.
 
-- **macOS**: Uses `sandbox-exec` with a deny-default Seatbelt profile
-- **Linux**: Uses Landlock LSM (kernel 5.13+). All Linux builds include Landlock support by default; no feature flag is needed.
+The sandbox can be disabled by setting `CAKE_SANDBOX=off`. Use `--add-dir <DIR>` to grant read-only access to additional directories, or declare persistent read-write directories in `settings.toml`.
 
-Linux Bash execution fails closed when sandboxing is enabled but Landlock cannot fully enforce the filesystem ruleset. The sandbox can be disabled explicitly by setting `CAKE_SANDBOX=off`.
-
-#### Destructive Command Protection
-
-The Bash tool also has a best-effort destructive command guard before execution, covering destructive git operations (`git reset --hard`, `git push --force`, `git clean -f`, etc.) and `rm -rf` outside literal `/tmp` or `/var/tmp` targets. This guard is not a shell security policy engine; the OS sandbox is the filesystem enforcement boundary. A blocked command returns an error explaining the reason and suggesting a safe alternative.
-
-#### Adding Read-Only Directories
-
-Use `--add-dir` to grant the agent read-only access to directories outside the project:
-
-```bash
-# Allow the agent to read from a shared library directory
-cake --add-dir /path/to/shared/libs "Use the utilities in /path/to/shared/libs"
-
-# Multiple directories can be added
-cake --add-dir ~/Documents/references --add-dir ~/Projects/shared "Review the code"
-```
-
-The agent will be able to **read** files from these directories but **not write** to them.
-
-For persistent read-write access, add directories to `settings.toml`:
-
-```toml
-# In ~/.config/cake/settings.toml (global) or .cake/settings.toml (project)
-directories = ["~/Projects", "~/Documents/notes"]
-```
-
-Directories from global and project settings are merged. These directories get full read-write access and persist across sessions.
-
-For more details, see [Filesystem Sandbox](docs/design-docs/sandbox.md).
+For full details on platforms, destructive command protection, directory configuration, and troubleshooting, see [Filesystem Sandbox](docs/design-docs/sandbox.md).
 
 ### AGENTS.md — Per-Project AI Behavior
 
