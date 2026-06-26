@@ -679,7 +679,24 @@ impl CodingAssistant {
         let result = client.send(content.to_string()).await;
         let duration_ms = start.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
 
-        match &result {
+        Self::handle_agent_turn_result(client, hook_runner, &result, duration_ms).await?;
+
+        Ok(TurnResult {
+            result,
+            duration_ms,
+        })
+    }
+
+    /// Handle the result of `client.send()`: invoke stop/error hooks and emit the
+    /// task completion record. Extracted from `execute_agent_turn` for focused
+    /// unit-testing without requiring a real API call.
+    async fn handle_agent_turn_result(
+        client: &mut Agent,
+        hook_runner: Option<&Arc<HookRunner>>,
+        result: &Result<String, anyhow::Error>,
+        duration_ms: u64,
+    ) -> anyhow::Result<()> {
+        match result {
             Ok(response_text) => {
                 if let Some(runner) = hook_runner
                     && let Some(context) = runner.stop(response_text).await?
@@ -705,11 +722,7 @@ impl CodingAssistant {
                 )?;
             },
         }
-
-        Ok(TurnResult {
-            result,
-            duration_ms,
-        })
+        Ok(())
     }
 }
 
@@ -1720,5 +1733,158 @@ mod tests {
                 .unwrap();
             assert_eq!(resolved.model_config.model, "deepseek-v4-pro");
         });
+    }
+
+    // -------------------------------------------------------------------------
+    // handle_agent_turn_result — post-send success/error/hook branching
+    // -------------------------------------------------------------------------
+
+    fn test_agent_for_turn() -> Agent {
+        Agent::new(
+            test_resolved_model_config(),
+            &[(Role::System, "test system prompt".to_string())],
+        )
+    }
+
+    fn test_hook_runner() -> std::sync::Arc<HookRunner> {
+        std::sync::Arc::new(HookRunner::new(
+            crate::config::hooks::LoadedHooks::default(),
+            HookContext {
+                session_id: uuid::Uuid::new_v4(),
+                task_id: uuid::Uuid::new_v4(),
+                transcript_path: None,
+                session_writer: None,
+                hook_event_sink: None,
+                cwd: std::env::temp_dir(),
+                model: "test-model".to_string(),
+            },
+        ))
+    }
+
+    #[tokio::test]
+    async fn handle_agent_turn_success_no_hooks() {
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let captured_clone = captured.clone();
+        let mut agent = test_agent_for_turn().with_streaming_json(move |json| {
+            *captured_clone.lock().unwrap() = json.to_string();
+        });
+
+        let result: Result<String, anyhow::Error> = Ok("test response".to_string());
+
+        CodingAssistant::handle_agent_turn_result(&mut agent, None, &result, 100)
+            .await
+            .unwrap();
+
+        let json: serde_json::Value = serde_json::from_str(&captured.lock().unwrap()).unwrap();
+        assert_eq!(json["type"], "task_complete");
+        assert_eq!(json["subtype"], "success");
+        assert_eq!(json["duration_ms"], 100);
+        assert_eq!(json["is_error"], false);
+    }
+
+    #[tokio::test]
+    async fn handle_agent_turn_success_with_hooks() {
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let captured_clone = captured.clone();
+        let mut agent = test_agent_for_turn().with_streaming_json(move |json| {
+            *captured_clone.lock().unwrap() = json.to_string();
+        });
+
+        let runner = test_hook_runner();
+        let result: Result<String, anyhow::Error> = Ok("test response".to_string());
+
+        CodingAssistant::handle_agent_turn_result(&mut agent, Some(&runner), &result, 100)
+            .await
+            .unwrap();
+
+        let json: serde_json::Value = serde_json::from_str(&captured.lock().unwrap()).unwrap();
+        assert_eq!(json["subtype"], "success");
+    }
+
+    #[tokio::test]
+    async fn handle_agent_turn_error_no_hooks() {
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let captured_clone = captured.clone();
+        let mut agent = test_agent_for_turn().with_streaming_json(move |json| {
+            *captured_clone.lock().unwrap() = json.to_string();
+        });
+
+        let result: Result<String, anyhow::Error> = Err(anyhow::anyhow!("test error"));
+
+        CodingAssistant::handle_agent_turn_result(&mut agent, None, &result, 50)
+            .await
+            .unwrap();
+
+        let json: serde_json::Value = serde_json::from_str(&captured.lock().unwrap()).unwrap();
+        assert_eq!(json["subtype"], "error_during_execution");
+        assert_eq!(json["error"], "test error");
+        assert_eq!(json["is_error"], true);
+    }
+
+    #[tokio::test]
+    async fn handle_agent_turn_error_with_hooks() {
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let captured_clone = captured.clone();
+        let mut agent = test_agent_for_turn().with_streaming_json(move |json| {
+            *captured_clone.lock().unwrap() = json.to_string();
+        });
+
+        let runner = test_hook_runner();
+        let result: Result<String, anyhow::Error> = Err(anyhow::anyhow!("test error"));
+
+        CodingAssistant::handle_agent_turn_result(&mut agent, Some(&runner), &result, 50)
+            .await
+            .unwrap();
+
+        let json: serde_json::Value = serde_json::from_str(&captured.lock().unwrap()).unwrap();
+        assert_eq!(json["subtype"], "error_during_execution");
+        assert_eq!(json["error"], "test error");
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn handle_agent_turn_success_with_stop_context() {
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let captured_clone = captured.clone();
+        let mut agent = test_agent_for_turn().with_streaming_json(move |json| {
+            *captured_clone.lock().unwrap() = json.to_string();
+        });
+
+        let cwd = std::env::temp_dir();
+        let command = crate::config::hooks::HookCommand {
+            command: r#"printf '{"additional_context":"stop context"}'"#.to_string(),
+            timeout: std::time::Duration::from_secs(2),
+            fail_closed: false,
+            status_message: None,
+            source_path: cwd.join("hooks.json"),
+        };
+        let loaded = crate::config::hooks::LoadedHooks {
+            groups: vec![crate::config::hooks::HookGroup {
+                event: crate::config::hooks::HookEvent::Stop,
+                matcher: crate::config::hooks::HookMatcher::All,
+                hooks: vec![command],
+            }],
+        };
+        let runner = std::sync::Arc::new(HookRunner::new(
+            loaded,
+            HookContext {
+                session_id: uuid::Uuid::new_v4(),
+                task_id: uuid::Uuid::new_v4(),
+                transcript_path: None,
+                session_writer: None,
+                hook_event_sink: None,
+                cwd,
+                model: "test-model".to_string(),
+            },
+        ));
+
+        let result: Result<String, anyhow::Error> = Ok("test response".to_string());
+
+        CodingAssistant::handle_agent_turn_result(&mut agent, Some(&runner), &result, 100)
+            .await
+            .unwrap();
+
+        let json: serde_json::Value = serde_json::from_str(&captured.lock().unwrap()).unwrap();
+        assert_eq!(json["subtype"], "success");
     }
 }
