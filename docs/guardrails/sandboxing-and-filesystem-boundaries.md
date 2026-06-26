@@ -31,4 +31,4 @@ Read this before changing Seatbelt, Landlock, sandbox configuration, command saf
 - [tools.md](../design-docs/tools.md)
 - [ARCHITECTURE.md](../../ARCHITECTURE.md)
 - [ADR 006: Linux Landlock Release Artifacts](../adr/006-linux-landlock-release-artifacts.md)
-- [ADR 007: Linux Landlock Default Dependency](../adr/007-linux-landlock-default-dependency.md)
+- [ADR 010: Linux Landlock Default Dependency](../adr/010-linux-landlock-default-dependency.md)

@@ -1,7 +1,9 @@
-# ADR 006: Linux Landlock Release Artifacts
+---
+status: superseded by ADR-010
+date: 2026-05-18
+---
 
-**Status:** Superseded by [ADR 007](./007-linux-landlock-default-dependency.md)\
-**Date:** 2026-05-18 (accepted), 2026-06-06 (superseded)
+# Linux Landlock Release Artifacts
 
 ## Context
 
@@ -38,7 +40,7 @@ CI must continue to cover both feature modes on Linux:
 
 ## Superseded By
 
-This ADR was superseded by [ADR 007](./007-linux-landlock-default-dependency.md), which makes Landlock a target-specific non-optional dependency on Linux so that all Linux builds (including `cargo install`) automatically include Landlock without requiring a feature flag.
+This ADR was superseded by [ADR 010](./010-linux-landlock-default-dependency.md), which makes Landlock a target-specific non-optional dependency on Linux so that all Linux builds (including `cargo install`) automatically include Landlock without requiring a feature flag.
 
 ## References
 
@@ -47,3 +49,7 @@ This ADR was superseded by [ADR 007](./007-linux-landlock-default-dependency.md)
 - `Cargo.toml`
 - `.github/workflows/release.yml`
 - `docs/design-docs/sandbox.md`
+
+## Supersession
+
+Superseded by [ADR-010](010-linux-landlock-default-dependency.md).
