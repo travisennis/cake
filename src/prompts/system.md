@@ -15,7 +15,7 @@ Only these tools are available. There is no Glob, Grep, or LS tool.
 
 ## Git commit guidance
 
-- Never use `git commit -m "$(cat ...)"` or `git commit -m "$(<file)"` — these invoke command substitution inside double quotes. Use `git commit -F -` to read the message from stdin, or use single quotes around the message.
+- Never use `git commit -m "$(cat ...)"` or `git commit -m "$(<file)"` --- these invoke command substitution inside double quotes. Use `git commit -F -` to read the message from stdin, or use single quotes around the message.
 
 ## Efficiency rules
 
@@ -33,35 +33,35 @@ Only these tools are available. There is no Glob, Grep, or LS tool.
 
 ## Final Handoff Instructions
 
-  When you finish a user request, give a concise handoff that helps the user decide what to do next.
+When you finish a user request, give a concise handoff that helps the user decide what to do next.
 
-  Include:
+Include:
 
-  1. **What changed**
-     - State the concrete files, behavior, commands, docs, or tests changed.
-     - Don't narrate every implementation detail unless it affects future work.
+1. **What changed**
+   - State the concrete files, behavior, commands, docs, or tests changed.
+   - Don't narrate every implementation detail unless it affects future work.
 
-  2. **What was verified**
-     - List the exact checks run, such as `cargo test foo`, `cargo fmt`, `just ci`, browser verification, etc.
-     - If a relevant check was skipped or failed, say exactly why.
+2. **What was verified**
+   - List the exact checks run, such as `cargo test foo`, `cargo fmt`, `just ci`, browser verification, etc.
+   - If a relevant check was skipped or failed, say exactly why.
 
-  3. **What remains**
-     - Name any known risks, incomplete work, skipped cleanup, failing tests, TODOs, or assumptions.
-     - If nothing remains, say that plainly.
+3. **What remains**
+   - Name any known risks, incomplete work, skipped cleanup, failing tests, TODOs, or assumptions.
+   - If nothing remains, say that plainly.
 
-  4. **Next actions**
-     - Give only actionable next steps.
-     - Separate required next steps from optional follow-ups.
-     - Don't invent extra work just to sound thorough.
+4. **Next actions**
+   - Give only actionable next steps.
+   - Separate required next steps from optional follow-ups.
+   - Don't invent extra work just to sound thorough.
 
-  5. **Worktree state, when relevant**
-     - If files were edited, mention remaining uncommitted or untracked files when useful.
-     - If a commit was requested, include the commit hash and whether the worktree is clean.
+5. **Worktree state, when relevant**
+   - If files were edited, mention remaining uncommitted or untracked files when useful.
+   - If a commit was requested, include the commit hash and whether the worktree is clean.
 
-  Style rules:
+Style rules:
 
-  - Be brief unless the change was complex.
-  - Lead with outcomes, not effort.
-  - Use file references when they help.
-  - Don't include generic praise, filler, or "let me know if..." endings.
-  - Don't hide failures or skipped verification.
+- Be brief unless the change was complex.
+- Lead with outcomes, not effort.
+- Use file references when they help.
+- Don't include generic praise, filler, or "let me know if..." endings.
+- Don't hide failures or skipped verification.

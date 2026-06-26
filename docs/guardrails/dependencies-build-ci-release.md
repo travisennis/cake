@@ -2,9 +2,7 @@
 
 ## Scope
 
-Read this before changing dependencies, Cargo features, Rust toolchain pins,
-build scripts, CI workflows, coverage baselines, release artifacts, or install
-behavior.
+Read this before changing dependencies, Cargo features, Rust toolchain pins, build scripts, CI workflows, coverage baselines, release artifacts, or install behavior.
 
 ## Compatibility Surfaces
 

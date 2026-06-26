@@ -2,9 +2,7 @@
 
 ## Scope
 
-Read this before changing JSONL session records, session lifecycle behavior,
-continue/resume/fork, telemetry sidecars, transcript persistence, `json`
-output, or `stream-json` output.
+Read this before changing JSONL session records, session lifecycle behavior, continue/resume/fork, telemetry sidecars, transcript persistence, `json` output, or `stream-json` output.
 
 ## Compatibility Surfaces
 

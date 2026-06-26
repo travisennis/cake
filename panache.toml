@@ -1,6 +1,9 @@
-exclude = [".agents/.tasks/"]
+exclude = [".agents/", "docs/adr/index.md"]
 
 line-width = 1000
 
 [format]
 wrap = "reflow"
+
+[lint.rules]
+undefined-references = false

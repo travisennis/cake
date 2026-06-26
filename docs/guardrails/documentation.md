@@ -2,9 +2,7 @@
 
 ## Scope
 
-Read this before auditing or updating durable documentation, generated indexes,
-design docs, references, ADRs, README, CONTRIBUTING, ARCHITECTURE, or
-agent-facing instructions.
+Read this before auditing or updating durable documentation, generated indexes, design docs, references, ADRs, README, CONTRIBUTING, ARCHITECTURE, or agent-facing instructions.
 
 ## Compatibility Surfaces
 

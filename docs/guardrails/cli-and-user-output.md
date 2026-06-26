@@ -2,17 +2,14 @@
 
 ## Scope
 
-Read this before changing clap flags, argument validation, exit codes,
-human-readable output, progress display, help text, logging-visible behavior, or
-shell-facing workflows.
+Read this before changing clap flags, argument validation, exit codes, human-readable output, progress display, help text, logging-visible behavior, or shell-facing workflows.
 
 ## Compatibility Surfaces
 
 - Flag names, aliases, defaults, conflicts, and exit codes.
 - Text printed to stdout/stderr, especially in scripts.
 - Separation of human-readable output from `json` and `stream-json` modes.
-- Progress, retry, and completion summary wording when tests or users depend on
-  it.
+- Progress, retry, and completion summary wording when tests or users depend on it.
 
 ## Required Checks
 

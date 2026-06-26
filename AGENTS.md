@@ -9,11 +9,8 @@ Compatibility surfaces: CLI behavior, tool execution semantics, sandbox boundari
 ## Operating Loop
 
 1. Do managed-work intake first:
-   - If the request is about a task, ExecPlan, ADR, or research note, use `ahm`
-     to understand that managed work item before choosing implementation docs.
-   - If the request is directly about code, CLI behavior, tests, docs, build,
-     release, or repo mechanics, skip `ahm` intake and classify the request
-     directly.
+   - If the request is about a task, ExecPlan, ADR, or research note, use `ahm` to understand that managed work item before choosing implementation docs.
+   - If the request is directly about code, CLI behavior, tests, docs, build, release, or repo mechanics, skip `ahm` intake and classify the request directly.
 2. Classify the concrete work by Workflow Routing.
 3. Load only the routed docs needed for that concrete work.
 4. State the selected route and loaded docs before editing or in handoff.
@@ -63,32 +60,19 @@ For doc work, read `docs/guardrails/documentation.md` first. Also use it when be
 
 ### Managed Work Intake With `ahm`
 
-`ahm` is for understanding and managing higher-order workflow records. It is
-not the implementation route. Use it first when the user asks about a managed
-work item, then return to Workflow Routing and choose the route for the actual
-change.
+`ahm` is for understanding and managing higher-order workflow records. It is not the implementation route. Use it first when the user asks about a managed work item, then return to Workflow Routing and choose the route for the actual change.
 
 Use these entry points:
 
-- Tasks: run `ahm context task`, inspect the relevant task with `ahm task ...`,
-  and open the task file before editing.
-- ExecPlans: run `ahm context plan` when the request or task calls for an
-  ExecPlan.
-- ADRs: run `ahm context adr` when the request or task calls for an ADR, and
-  use `ahm adr` commands for lifecycle changes.
-- Research: run `ahm context research` and use `.agents/.research/index.md` as
-  the map when asked to create, update, organize, or use research.
-- General session briefing: run `ahm context` only when asked for broad project
-  context or when no narrower managed-work context applies.
+- Tasks: run `ahm context task`, inspect the relevant task with `ahm task ...`, and open the task file before editing.
+- ExecPlans: run `ahm context plan` when the request or task calls for an ExecPlan.
+- ADRs: run `ahm context adr` when the request or task calls for an ADR, and use `ahm adr` commands for lifecycle changes.
+- Research: run `ahm context research` and use `.agents/.research/index.md` as the map when asked to create, update, organize, or use research.
+- General session briefing: run `ahm context` only when asked for broad project context or when no narrower managed-work context applies.
 
-After `ahm` intake, re-classify the discovered work under Workflow Routing. For
-example, a task about CLI flags still uses the CLI route; a task about sandbox
-policy still uses the sandboxing route; a task about prompt, skill, or hook
-behavior still uses the prompts, skills, and hooks route.
+After `ahm` intake, re-classify the discovered work under Workflow Routing. For example, a task about CLI flags still uses the CLI route; a task about sandbox policy still uses the sandboxing route; a task about prompt, skill, or hook behavior still uses the prompts, skills, and hooks route.
 
-Never hand-edit generated task, research, ExecPlan, or ADR indexes. Update the
-source records and run the appropriate `ahm` command. Use `ahm task` commands
-for task state moves and `ahm adr` commands for ADR lifecycle changes.
+Never hand-edit generated task, research, ExecPlan, or ADR indexes. Update the source records and run the appropriate `ahm` command. Use `ahm task` commands for task state moves and `ahm adr` commands for ADR lifecycle changes.
 
 Treat `ahm context` output as the canonical workflow guidance.
 

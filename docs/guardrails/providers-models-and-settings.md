@@ -2,9 +2,7 @@
 
 ## Scope
 
-Read this before changing Responses API or Chat Completions backends, provider
-strategy, retry behavior, model config, settings loading, profiles, provider
-headers, API request shaping, or reasoning options.
+Read this before changing Responses API or Chat Completions backends, provider strategy, retry behavior, model config, settings loading, profiles, provider headers, API request shaping, or reasoning options.
 
 ## Compatibility Surfaces
 
@@ -16,11 +14,9 @@ headers, API request shaping, or reasoning options.
 
 ## Required Checks
 
-- Add focused tests for config precedence, request shaping, or retry behavior
-  when touched.
+- Add focused tests for config precedence, request shaping, or retry behavior when touched.
 - Snapshot API request construction when changing serialized backend payloads.
-- Do not update model defaults, provider behavior, or settings shape without
-  explicit scope and docs.
+- Do not update model defaults, provider behavior, or settings shape without explicit scope and docs.
 
 ## Common Failure Modes
 

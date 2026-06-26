@@ -19,7 +19,7 @@ cake is a minimal coding harness for headless usage in the terminal. It's not a 
 - [AGENTS.md --- Per-Project AI Behavior](#agentsmd--per-project-ai-behavior)
 - [System Prompt Customization](#system-prompt-customization)
 - [Shell Aliases and Functions](#shell-aliases-and-functions)
-- [Streaming JSON Output](#streaming-json-output)
+- [Machine-Readable Output](#machine-readable-output)
 - [Exit Codes](#exit-codes)
 - [Options](#options)
 - [Architecture](#architecture)
@@ -118,7 +118,7 @@ EOF
 
 cake requires at least one model configured in `settings.toml`, plus an API key for that model's provider. Set the API key as the environment variable named by the model's `api_key_env` field.
 
-#### Environment Variables
+### Environment Variables
 
   | Variable        | Description                                                                                                              |
   | --------------- | ------------------------------------------------------------------------------------------------------------------------ |

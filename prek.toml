@@ -17,6 +17,14 @@ hooks = [
     files = "\\.rs$",
     pass_filenames = false,
   },
+  {
+    id = "docs-check",
+    name = "panache docs check",
+    language = "system",
+    entry = "panache lint --force-exclude .",
+    files = "\\.md$",
+    pass_filenames = false,
+  },
 ]
 
 [[repos]]

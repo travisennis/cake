@@ -2,9 +2,7 @@
 
 ## Scope
 
-Read this before changing Seatbelt, Landlock, sandbox configuration, command
-safety checks, path validation, allowed directories, tool filesystem access, or
-network policy.
+Read this before changing Seatbelt, Landlock, sandbox configuration, command safety checks, path validation, allowed directories, tool filesystem access, or network policy.
 
 ## Compatibility Surfaces
 
@@ -17,8 +15,7 @@ network policy.
 ## Required Checks
 
 - Test allowed and denied filesystem paths for the affected tool or sandbox.
-- For Linux-sensitive code, run the narrowest feasible Linux target check, or
-  state the platform verification gap.
+- For Linux-sensitive code, run the narrowest feasible Linux target check, or state the platform verification gap.
 - Call out security impact and any boundary relaxation in the handoff.
 
 ## Common Failure Modes

@@ -150,6 +150,15 @@ change-risk-report:
 update-dependencies:
     cargo upgrade -i allow && cargo update    
 
+# Check markdown formatting and lint (requires panache; installed by `just setup`)
+docs-check:
+	panache format --check . --quiet
+	-panache lint . --quiet
+
+# Auto-format all markdown files
+docs-fmt:
+	panache format .
+
 build:
     cargo build --release
 
