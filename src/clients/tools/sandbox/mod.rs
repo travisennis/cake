@@ -529,28 +529,11 @@ pub(super) trait SandboxStrategy: Send + Sync {
 pub(super) fn detect_platform() -> Result<Option<Box<dyn SandboxStrategy>>, String> {
     #[cfg(target_os = "macos")]
     {
-        if !std::path::Path::new("/usr/bin/sandbox-exec").exists() {
-            return Err(
-                "macOS sandbox unavailable: /usr/bin/sandbox-exec was not found. \
-                 Set CAKE_SANDBOX=off to run Bash commands without filesystem sandboxing."
-                    .to_string(),
-            );
-        }
-
-        if !MacOsSandbox::can_apply_profile() {
-            let details = MacOsSandbox::profile_probe_failure()
-                .map(|failure| format!(" Probe failure: {failure}."))
-                .unwrap_or_default();
-            return Err(format!(
-                "macOS sandbox unavailable: sandbox-exec could not apply a Seatbelt profile \
-                 in this process context.{details} This commonly happens when cake is already \
-                 running inside another sandbox. Set CAKE_SANDBOX=off to run Bash commands \
-                 without filesystem sandboxing."
-            ));
-        }
-
-        tracing::debug!("Using macOS sandbox-exec for filesystem sandboxing");
-        Ok(Some(Box::new(MacOsSandbox)))
+        detect_macos_platform(
+            std::path::Path::new("/usr/bin/sandbox-exec").exists(),
+            MacOsSandbox::can_apply_profile(),
+            MacOsSandbox::profile_probe_failure(),
+        )
     }
 
     #[cfg(target_os = "linux")]
@@ -567,6 +550,36 @@ pub(super) fn detect_platform() -> Result<Option<Box<dyn SandboxStrategy>>, Stri
         );
         Ok(None)
     }
+}
+
+#[cfg(target_os = "macos")]
+fn detect_macos_platform(
+    sandbox_exec_exists: bool,
+    can_apply_profile: bool,
+    profile_probe_failure: Option<&str>,
+) -> Result<Option<Box<dyn SandboxStrategy>>, String> {
+    if !sandbox_exec_exists {
+        return Err(
+            "macOS sandbox unavailable: /usr/bin/sandbox-exec was not found. \
+             Set CAKE_SANDBOX=off to run Bash commands without filesystem sandboxing."
+                .to_string(),
+        );
+    }
+
+    if !can_apply_profile {
+        let details = profile_probe_failure
+            .map(|failure| format!(" Probe failure: {failure}."))
+            .unwrap_or_default();
+        return Err(format!(
+            "macOS sandbox unavailable: sandbox-exec could not apply a Seatbelt profile \
+             in this process context.{details} This commonly happens when cake is already \
+             running inside another sandbox. Set CAKE_SANDBOX=off to run Bash commands \
+             without filesystem sandboxing."
+        ));
+    }
+
+    tracing::debug!("Using macOS sandbox-exec for filesystem sandboxing");
+    Ok(Some(Box::new(MacOsSandbox)))
 }
 
 /// Check if sandboxing should be disabled via environment variable
@@ -652,6 +665,51 @@ mod tests {
                 "expected read access for macOS Cryptex command resolution paths"
             );
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_detection_fails_closed_when_sandbox_exec_missing() {
+        let Err(error) = super::detect_macos_platform(false, true, None) else {
+            panic!("missing sandbox-exec must fail closed");
+        };
+
+        assert!(error.contains("macOS sandbox unavailable"));
+        assert!(error.contains("/usr/bin/sandbox-exec was not found"));
+        assert!(error.contains("CAKE_SANDBOX=off"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_detection_fails_closed_with_probe_details() {
+        let Err(error) = super::detect_macos_platform(true, false, Some("sandbox_apply failed"))
+        else {
+            panic!("profile probe failure must fail closed");
+        };
+
+        assert!(error.contains("could not apply a Seatbelt profile"));
+        assert!(error.contains("Probe failure: sandbox_apply failed."));
+        assert!(error.contains("running inside another sandbox"));
+        assert!(error.contains("CAKE_SANDBOX=off"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_detection_fails_closed_without_probe_details() {
+        let Err(error) = super::detect_macos_platform(true, false, None) else {
+            panic!("profile probe failure must fail closed");
+        };
+
+        assert!(error.contains("could not apply a Seatbelt profile"));
+        assert!(!error.contains("Probe failure:"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_detection_uses_sandbox_when_available() {
+        let strategy = super::detect_macos_platform(true, true, None).unwrap();
+
+        assert!(strategy.is_some());
     }
 
     /// Smoke test that every major toolchain category from the safehouse

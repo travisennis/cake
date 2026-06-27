@@ -8,7 +8,7 @@
 use crate::clients::tools::sandbox::{SandboxConfig, SandboxStrategy};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{ExitStatus, Stdio};
+use std::process::{ExitStatus, Output, Stdio};
 use std::sync::OnceLock;
 
 /// macOS sandbox strategy using sandbox-exec
@@ -27,7 +27,11 @@ impl MacOsSandbox {
 
     /// Return the cached probe failure detail, if profile application is unavailable.
     pub(super) fn profile_probe_failure() -> Option<&'static str> {
-        Self::profile_probe().failure.as_deref()
+        Self::probe_failure(Self::profile_probe())
+    }
+
+    fn probe_failure(probe: &SandboxProfileProbe) -> Option<&str> {
+        probe.failure.as_deref()
     }
 
     fn profile_probe() -> &'static SandboxProfileProbe {
@@ -41,7 +45,21 @@ impl MacOsSandbox {
 
     fn probe_can_apply_profile() -> SandboxProfileProbe {
         let tmp_dir = std::env::temp_dir().join("cake").join("sandbox_profiles");
-        if let Err(e) = std::fs::create_dir_all(&tmp_dir) {
+        Self::probe_can_apply_profile_in(&tmp_dir, |profile_path| {
+            std::process::Command::new("/usr/bin/sandbox-exec")
+                .arg("-f")
+                .arg(profile_path)
+                .arg("/bin/echo")
+                .arg("cake-sandbox-probe")
+                .output()
+        })
+    }
+
+    fn probe_can_apply_profile_in(
+        tmp_dir: &Path,
+        run_probe: impl FnOnce(&Path) -> std::io::Result<Output>,
+    ) -> SandboxProfileProbe {
+        if let Err(e) = std::fs::create_dir_all(tmp_dir) {
             let failure = format!("failed to create sandbox profile probe directory: {e}");
             tracing::warn!("{failure}");
             return SandboxProfileProbe::unavailable(failure);
@@ -50,7 +68,7 @@ impl MacOsSandbox {
         let mut temp_file = match tempfile::Builder::new()
             .prefix("cake_sandbox_probe_")
             .suffix(".sb")
-            .tempfile_in(&tmp_dir)
+            .tempfile_in(tmp_dir)
         {
             Ok(file) => file,
             Err(e) => {
@@ -66,14 +84,7 @@ impl MacOsSandbox {
             return SandboxProfileProbe::unavailable(failure);
         }
 
-        let output = std::process::Command::new("/usr/bin/sandbox-exec")
-            .arg("-f")
-            .arg(temp_file.path())
-            .arg("/bin/echo")
-            .arg("cake-sandbox-probe")
-            .output();
-
-        match output {
+        match run_probe(temp_file.path()) {
             Ok(output) if output.status.success() => SandboxProfileProbe::available(),
             Ok(output) => {
                 let failure =
@@ -536,6 +547,70 @@ mod tests {
         let details = MacOsSandbox::format_probe_failure(status, b"stdout fallback\n", b" \n");
 
         assert!(details.contains("stdout: stdout fallback"));
+    }
+
+    #[test]
+    fn sandbox_profile_probe_unavailable_stores_failure_details() {
+        let probe = SandboxProfileProbe::unavailable("probe failed".to_string());
+
+        assert!(!probe.can_apply);
+        assert_eq!(MacOsSandbox::probe_failure(&probe), Some("probe failed"));
+    }
+
+    #[test]
+    fn profile_probe_failure_accessor_is_callable() {
+        let _ = MacOsSandbox::profile_probe_failure();
+    }
+
+    #[test]
+    fn probe_can_apply_profile_reports_success() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let probe = MacOsSandbox::probe_can_apply_profile_in(tmp_dir.path(), |profile_path| {
+            assert!(profile_path.exists());
+            Ok(Output {
+                status: ExitStatus::from_raw(0),
+                stdout: b"cake-sandbox-probe\n".to_vec(),
+                stderr: Vec::new(),
+            })
+        });
+
+        assert!(probe.can_apply);
+        assert!(probe.failure.is_none());
+    }
+
+    #[test]
+    fn probe_can_apply_profile_reports_command_failure_details() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let probe = MacOsSandbox::probe_can_apply_profile_in(tmp_dir.path(), |_| {
+            Ok(Output {
+                status: ExitStatus::from_raw(256),
+                stdout: b"stdout fallback\n".to_vec(),
+                stderr: b"sandbox_apply failed\n".to_vec(),
+            })
+        });
+
+        assert!(!probe.can_apply);
+        assert_eq!(
+            probe.failure.as_deref(),
+            Some("sandbox-exec exited with exit status: 1; stderr: sandbox_apply failed")
+        );
+    }
+
+    #[test]
+    fn probe_can_apply_profile_reports_spawn_failure_details() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let probe = MacOsSandbox::probe_can_apply_profile_in(tmp_dir.path(), |_| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "missing sandbox-exec",
+            ))
+        });
+
+        assert!(!probe.can_apply);
+        assert_eq!(
+            probe.failure.as_deref(),
+            Some("failed to run sandbox-exec probe: missing sandbox-exec")
+        );
     }
 
     #[test]
