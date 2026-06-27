@@ -36,28 +36,19 @@ pub(super) fn check_git_reset(_segment: &str, _normalized: &str, lower: &str) ->
 
 /// `git checkout -- <file>`
 pub(super) fn check_git_checkout(_segment: &str, _normalized: &str, lower: &str) -> Option<String> {
-    if lower.contains("git checkout --") {
-        // Verify there's a path after `--`
-        if let Some(pos) = lower.find("git checkout --") {
-            let after = lower.get(pos + "git checkout --".len()..)?;
-            let after = after.trim();
-            if !after.is_empty() && !after.starts_with('-') {
-                return Some(blocked(
-                    "git checkout -- <file> discards uncommitted file changes",
-                    "Use 'git restore --staged <file>' to unstage, or 'git stash' to save changes.",
-                ));
-            }
-        }
-    }
-    None
+    let after = lower.split_once("git checkout --")?.1.trim();
+    (!after.is_empty() && !after.starts_with('-')).then(|| {
+        blocked(
+            "git checkout -- <file> discards uncommitted file changes",
+            "Use 'git restore --staged <file>' to unstage, or 'git stash' to save changes.",
+        )
+    })
 }
 
 /// `git restore <file>` without `--staged`, or with `--worktree`
 /// `git restore -b <branch>` is allowed (creates a branch).
 pub(super) fn check_git_restore(_segment: &str, _normalized: &str, lower: &str) -> Option<String> {
-    if !lower.contains("git restore") {
-        return None;
-    }
+    let after = lower.split_once("git restore")?.1.trim();
 
     // --worktree is always destructive, even with --staged
     if lower.contains("--worktree") {
@@ -72,101 +63,62 @@ pub(super) fn check_git_restore(_segment: &str, _normalized: &str, lower: &str) 
         return None;
     }
 
-    // Find what comes after `git restore`
-    if let Some(pos) = lower.find("git restore") {
-        let after = lower.get(pos + "git restore".len()..)?;
-        let after = after.trim();
-        // -b creates a branch, not destructive
-        if after.is_empty() || after.starts_with("-b") || after.starts_with("-b ") {
-            return None;
-        }
-        // Bare `git restore <file>` without --staged is destructive
-        if !after.is_empty() {
-            return Some(blocked(
-                "git restore <file> without --staged discards uncommitted changes",
-                "Use 'git restore --staged <file>' to only unstage, or 'git stash' to save changes.",
-            ));
-        }
+    // -b creates a branch, not destructive
+    if after.is_empty() || after.starts_with("-b") {
+        return None;
     }
 
-    None
+    // Bare `git restore <file>` without --staged is destructive
+    Some(blocked(
+        "git restore <file> without --staged discards uncommitted changes",
+        "Use 'git restore --staged <file>' to only unstage, or 'git stash' to save changes.",
+    ))
 }
 
 /// `git clean -f` / `--force` — includes combined flags like `-fd`, `-fdx`
 pub(super) fn check_git_clean(_segment: &str, _normalized: &str, lower: &str) -> Option<String> {
-    if !lower.contains("git clean") {
-        return None;
-    }
+    let after = lower.split_once("git clean")?.1.trim();
+    after
+        .split_whitespace()
+        .any(is_git_clean_force_token)
+        .then(|| {
+            blocked(
+                "git clean -f permanently deletes untracked files",
+                "Use 'git clean -n' to preview what would be deleted first.",
+            )
+        })
+}
 
-    if lower.contains("git clean --force") || lower.contains("git clean -f") {
-        return Some(blocked(
-            "git clean -f permanently deletes untracked files",
-            "Use 'git clean -n' to preview what would be deleted first.",
-        ));
+fn is_git_clean_force_token(token: &str) -> bool {
+    if token.starts_with("--") {
+        return token.starts_with("--force");
     }
-
-    // Check for combined flags containing 'f', e.g. `-fd`, `-xfd`, `-fdx`
-    if let Some(pos) = lower.find("git clean") {
-        let after = lower.get(pos + "git clean".len()..)?;
-        let after = after.trim();
-        // Look for a dash-flag group containing 'f'
-        for token in after.split_whitespace() {
-            if token.starts_with('-') && !token.starts_with("--") && token.contains('f') {
-                return Some(blocked(
-                    "git clean -f permanently deletes untracked files",
-                    "Use 'git clean -n' to preview what would be deleted first.",
-                ));
-            }
-        }
-    }
-
-    None
+    token
+        .strip_prefix('-')
+        .is_some_and(|flags| flags.contains('f'))
 }
 
 /// `git push --force` / `-f` — allows `--force-with-lease`
 pub(super) fn check_git_push(_segment: &str, _normalized: &str, lower: &str) -> Option<String> {
-    if !lower.contains("git push") {
-        return None;
-    }
+    let after = lower.split_once("git push")?.1.trim();
+    after
+        .split_whitespace()
+        .any(is_git_push_force_token)
+        .then(|| {
+            blocked(
+                "git push --force overwrites remote commit history",
+                "Use 'git push --force-with-lease' for safer force pushes.",
+            )
+        })
+}
 
-    // --force-with-lease is safe
-    if lower.contains("--force-with-lease") {
-        return None;
+fn is_git_push_force_token(token: &str) -> bool {
+    if token.starts_with("--") {
+        return token.starts_with("--force") && !token.starts_with("--force-with-lease");
     }
-
-    if lower.contains("git push --force") {
-        return Some(blocked(
-            "git push --force overwrites remote commit history",
-            "Use 'git push --force-with-lease' for safer force pushes.",
-        ));
-    }
-
-    // Check for short flag -f (but not part of a longer flag group that isn't force)
-    if let Some(pos) = lower.find("git push") {
-        let after = lower.get(pos + "git push".len()..)?;
-        let after = after.trim();
-        for token in after.split_whitespace() {
-            if token == "-f" {
-                return Some(blocked(
-                    "git push -f overwrites remote commit history",
-                    "Use 'git push --force-with-lease' for safer force pushes.",
-                ));
-            }
-            // Combined flags like -fu, -uf
-            if token.starts_with('-')
-                && !token.starts_with("--")
-                && token.len() > 1
-                && token.contains('f')
-            {
-                return Some(blocked(
-                    "git push -f overwrites remote commit history",
-                    "Use 'git push --force-with-lease' for safer force pushes.",
-                ));
-            }
-        }
-    }
-
-    None
+    token
+        .strip_prefix('-')
+        .is_some_and(|flags| flags.contains('f'))
 }
 
 /// `git branch -D` — uppercase D only (force delete without merge check).
@@ -646,6 +598,12 @@ mod tests {
         );
     }
 
+    fn run_check(check: CheckFn, command: &str) -> Option<String> {
+        let normalized = super::super::parse::normalize_whitespace(command);
+        let lower = normalized.to_lowercase();
+        check(command, &normalized, &lower)
+    }
+
     // =========================================================================
     // git reset
     // =========================================================================
@@ -681,6 +639,13 @@ mod tests {
     }
 
     #[test]
+    fn allows_git_checkout_dash_dash_without_path() {
+        assert_allowed("git checkout --");
+        assert_allowed("git checkout -- --ours src/main.rs");
+        assert!(run_check(check_git_checkout, "git status").is_none());
+    }
+
+    #[test]
     fn allows_git_checkout_branch() {
         assert_allowed("git checkout main");
         assert_allowed("git checkout -b new-branch");
@@ -697,6 +662,12 @@ mod tests {
     }
 
     #[test]
+    fn allows_git_restore_without_path() {
+        assert_allowed("git restore");
+        assert!(run_check(check_git_restore, "git status").is_none());
+    }
+
+    #[test]
     fn blocks_git_restore_worktree() {
         assert_blocked("git restore --worktree src/main.rs");
         assert_blocked("git restore --staged --worktree src/main.rs");
@@ -705,11 +676,13 @@ mod tests {
     #[test]
     fn allows_git_restore_staged() {
         assert_allowed("git restore --staged src/main.rs");
+        assert_allowed("git restore --staged -- source.txt");
     }
 
     #[test]
     fn allows_git_restore_branch() {
         assert_allowed("git restore -b new-branch");
+        assert_allowed("git restore -b");
     }
 
     // =========================================================================
@@ -723,12 +696,16 @@ mod tests {
         assert_blocked("git clean -fd");
         assert_blocked("git clean -fdx");
         assert_blocked("git clean -xf");
+        assert_blocked("git clean -df .");
     }
 
     #[test]
     fn allows_git_clean_dry_run() {
         assert_allowed("git clean -n");
         assert_allowed("git clean -nd");
+        assert_allowed("git clean --dry-run");
+        assert_allowed("git clean");
+        assert!(run_check(check_git_clean, "git status").is_none());
     }
 
     // =========================================================================
@@ -742,18 +719,24 @@ mod tests {
         assert_blocked("git push -f");
         assert_blocked("git push -f origin main");
         assert_blocked("git push -fu origin main");
+        assert_blocked("git push -uf origin main");
+        assert_blocked("git push --force --force-with-lease origin main");
     }
 
     #[test]
     fn allows_git_push_force_with_lease() {
         assert_allowed("git push --force-with-lease");
         assert_allowed("git push --force-with-lease origin main");
+        assert_allowed("git push --force-with-lease --follow-tags");
     }
 
     #[test]
     fn allows_normal_git_push() {
         assert_allowed("git push");
         assert_allowed("git push origin main");
+        assert_allowed("git push -u origin main");
+        assert_allowed("git push --follow-tags origin main");
+        assert!(run_check(check_git_push, "git status").is_none());
     }
 
     // =========================================================================
