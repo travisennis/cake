@@ -79,6 +79,7 @@ Treat `ahm context` output as the canonical workflow guidance.
 ## Repository Rules
 
 - Do not commit or push unless explicitly asked.
+- Commit on the current branch unless the task or maintainer asks for a branch.
 - Assume uncommitted changes may belong to the user. Do not revert, overwrite, or clean files you did not intentionally change.
 - Use Conventional Commit standard when writing commit messages.
 - Before broad edits, inspect `git status --short`.
