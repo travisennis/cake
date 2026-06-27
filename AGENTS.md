@@ -80,6 +80,7 @@ Treat `ahm context` output as the canonical workflow guidance.
 
 - Do not commit or push unless explicitly asked.
 - Assume uncommitted changes may belong to the user. Do not revert, overwrite, or clean files you did not intentionally change.
+- Use Conventional Commit standard when writing commit messages.
 - Before broad edits, inspect `git status --short`.
 - Before final handoff, report remaining uncommitted or untracked files when relevant.
 - When moving implementation between files or modules, update repository code maps and implementation-location references even if user-facing behavior is unchanged.
