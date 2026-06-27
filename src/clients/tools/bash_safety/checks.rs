@@ -11,7 +11,7 @@
 //
 // This module contains no parsing logic; see `parse.rs` for that.
 
-use super::{blocked, warned};
+use crate::clients::tools::bash_safety::{blocked, warned};
 
 // =============================================================================
 // Check function type (public for use in the CHECKS registry)

@@ -16,12 +16,18 @@ Agent-specific operating rules live in [AGENTS.md](AGENTS.md). Follow AGENTS.md 
 ```bash
 mise install    # installs pinned Rust toolchain and just
 just setup      # installs cargo subcommands
-prek install --hook-type pre-commit --hook-type commit-msg
+prek install --hook-type pre-commit --hook-type pre-push --hook-type commit-msg
 ```
 
 This installs all required tools: clippy, rustfmt, cargo-edit, cargo-deny, cargo-insta, cargo-llvm-cov, cargo-crap, panache, prek, cocogitto. The `prek install` step configures git hooks.
 
-Git hooks will automatically run: - **pre-commit**: `cargo fmt -- --check` (formatting verification) - **pre-commit**: `cargo clippy --all-targets -- -D warnings` (linting) - **commit-msg**: `cog verify --file` (conventional commit validation)
+Git hooks will automatically run:
+
+- **pre-commit**: `cargo fmt -- --check` (formatting verification)
+- **pre-commit**: `cargo clippy --all-targets --all-features -- -D warnings` (linting)
+- **pre-commit**: `panache lint --force-exclude .` for changed Markdown files
+- **pre-push**: `just pre-push`, which runs `just ci`
+- **commit-msg**: `cog verify --file` (conventional commit validation)
 
 ## Contributor Guides
 
@@ -129,9 +135,9 @@ For Rust changes:
 1. Run the narrowest useful check first, such as `cargo check --tests`, `cargo test <module_or_test_name>`, or `cargo test`.
 2. Run `cargo fmt` after code edits.
 3. Run `just check-coverage` when adding or removing meaningful Rust code, changing tests or fixtures, changing coverage configuration or baselines under `ci/`, or changing dependency features in a way that affects compiled code.
-4. Run `just ci` before final handoff for code, test, config, fixture, or dependency changes.
+4. Run `just ci` before final handoff and before pushing code, test, config, CI, fixture, or dependency changes. This is the minimum pre-push gate and includes the coverage threshold and cargo-crap change-risk regression check.
 
-If `just ci` cannot be run, state the exact reason and list the narrower checks that were run instead.
+If `just ci` cannot be run, state the exact reason and list the narrower checks that were run instead. Do not treat a red `master` branch as background noise: check the current GitHub CI status before pushing to `master` or merging, and investigate an existing red Coverage job before stacking new changes on top.
 
 For cfg-sensitive or platform-specific Rust changes, run the narrowest feasible target check for installed non-host targets affected by the change. On macOS, prefer `just clippy-linux` for Linux-sensitive changes when the target and cross compiler are available; otherwise use the closest feasible `cargo check --target ...` command. State any platform verification gap in the handoff.
 
@@ -176,6 +182,9 @@ just update-dependencies
 
 # Full CI check
 just ci
+
+# Pre-push gate; equivalent to `just ci`
+just pre-push
 ```
 
 ## Running the App

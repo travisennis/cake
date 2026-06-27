@@ -1,5 +1,3 @@
-cargo_crap_excludes := "--exclude 'tests/**' --exclude 'src/clients/agent/agent_tests.rs' --exclude 'src/clients/chat_completions_tests.rs' --exclude 'src/config/settings_tests.rs' --exclude 'src/clients/tools/sandbox/linux.rs'"
-
 # Install required development tools
 setup:
     @echo "Checking Rust installation..."
@@ -83,6 +81,9 @@ lint-imports:
 ci: task-index-check rust-version-check check-linux fmt-check clippy-strict clippy-no-default-features test-all-features check-coverage lint-imports lint-module-size
     echo "All checks passed!"
 
+# Run the required pre-push gate for code, config, CI, fixture, and dependency changes
+pre-push: ci
+
 # Run the macOS correctness path used by GitHub Actions
 ci-macos: rust-version-check fmt-check clippy-strict clippy-no-default-features test-all-features
     echo "macOS CI checks passed!"
@@ -117,16 +118,7 @@ coverage-summary:
 
 # Check coverage threshold and untested-complexity regression
 check-coverage:
-    @OUTPUT="$(cargo llvm-cov --summary-only)"; \
-    printf '%s\n' "$OUTPUT"; \
-    COVERAGE="$(printf '%s\n' "$OUTPUT" | grep "^TOTAL" | grep -oE '[0-9]+\.[0-9]+%' | tail -1 | tr -d '%')"; \
-    echo "Coverage: ${COVERAGE}%"; \
-    if [ "$(echo "$COVERAGE < 90" | bc -l)" = "1" ]; then \
-        echo "Coverage below 90%"; \
-        exit 1; \
-    fi; \
-    cargo llvm-cov --lcov --output-path lcov.info; \
-    cargo crap --lcov lcov.info --baseline ci/cargo-crap-baseline.json --fail-regression --summary {{cargo_crap_excludes}}
+    scripts/check-coverage.sh
 
 # Run coverage and open report
 coverage-open:
@@ -140,12 +132,12 @@ coverage-lcov:
 change-risk-baseline:
     mkdir -p ci
     cargo llvm-cov --lcov --output-path lcov.info
-    cargo crap --lcov lcov.info --format json --output ci/cargo-crap-baseline.json {{cargo_crap_excludes}}
+    scripts/cargo-crap.sh --lcov lcov.info --format json --output ci/cargo-crap-baseline.json
 
 # Print a reviewer-friendly macOS cargo-crap regression report
 change-risk-report:
     cargo llvm-cov --lcov --output-path lcov.info
-    cargo crap --lcov lcov.info --baseline ci/cargo-crap-baseline.json --format markdown {{cargo_crap_excludes}}
+    scripts/cargo-crap.sh --lcov lcov.info --baseline ci/cargo-crap-baseline.json --format markdown
 
 update-dependencies:
     cargo upgrade -i allow && cargo update    

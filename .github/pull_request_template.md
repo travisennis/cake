@@ -12,7 +12,7 @@
 
 ## Checklist
 
-- [ ] `just ci` passes locally
+- [ ] `just ci` passes locally, including coverage/change-risk
 - [ ] Tests added/updated for new functionality
 - [ ] Documentation updated if needed (README, ARCHITECTURE.md, AGENTS.md)
 - [ ] Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/)

@@ -140,31 +140,8 @@ jobs:
       - uses: taiki-e/install-action@cargo-llvm-cov
       - run: cargo install cargo-crap --version 0.2.2 --locked
 
-      - name: Generate coverage
-        run: cargo llvm-cov --lcov --output-path lcov.info
-
-      - name: Check coverage threshold
-        run: |
-          cargo llvm-cov --summary-only | tee coverage.txt
-          COVERAGE=$(grep "^TOTAL" coverage.txt | grep -oE '[0-9]+\.[0-9]+%' | tail -1 | tr -d '%')
-          echo "Coverage: $COVERAGE%"
-          if [ "$(echo "$COVERAGE < $COVERAGE_THRESHOLD" | bc -l)" = "1" ]; then
-            echo "Coverage below ${COVERAGE_THRESHOLD}%"
-            exit 1
-          fi
-
-      - name: Check change-risk regression
-        run: |
-          cargo crap \
-            --lcov lcov.info \
-            --baseline ci/cargo-crap-baseline.json \
-            --fail-regression \
-            --format github \
-            --exclude 'tests/**' \
-            --exclude 'src/clients/agent/agent_tests.rs' \
-            --exclude 'src/clients/chat_completions_tests.rs' \
-            --exclude 'src/config/settings_tests.rs' \
-            --exclude 'src/clients/tools/sandbox/linux.rs'
+      - name: Check coverage and change-risk regression
+        run: scripts/check-coverage.sh --cargo-crap-format github
 
       - name: Upload to Codecov
         uses: codecov/codecov-action@v7
