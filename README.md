@@ -263,7 +263,7 @@ The sandbox can be disabled by setting `CAKE_SANDBOX=off`. Use `--add-dir <DIR>`
 
 For full details on platforms, destructive command protection, directory configuration, and troubleshooting, see [Filesystem Sandbox](docs/design-docs/sandbox.md).
 
-### AGENTS.md — Per-Project AI Behavior
+### AGENTS.md --- Per-Project AI Behavior
 
 cake reads `AGENTS.md` files to shape its behavior without re-prompting every time:
 

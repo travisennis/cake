@@ -87,7 +87,7 @@ The `encrypted_content` field preserves reasoning tokens that must be echoed bac
 
 ## Serialization
 
-### ResponsesApiInputItem — Responses API
+### ResponsesApiInputItem --- Responses API
 
 The Responses API backend converts each `ConversationItem` to a typed request DTO:
 
@@ -97,7 +97,7 @@ ResponsesApiInputItem::from(item)
 
 Key transformations: - Messages use `input_text`/`output_text` content arrays - Reasoning summaries are wrapped in `summary_text` objects - Assistant messages include `id` and `status` fields
 
-### build_messages() — Chat Completions API
+### build_messages() --- Chat Completions API
 
 The Chat Completions backend uses a separate `build_messages()` function in `chat_completions.rs` to translate `Vec<ConversationItem>` into the chat completions message format. Key differences from Responses API input: - Consecutive `FunctionCall` items are grouped into a single assistant message with multiple `tool_calls` - `Developer` role messages are buffered and folded into the next user message for provider compatibility - `Reasoning` text is preserved as provider-specific `reasoning_content` on the next assistant message or assistant tool-call message
 

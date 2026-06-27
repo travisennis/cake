@@ -15,7 +15,7 @@ When the Bash tool executes a command, cake wraps it in an OS-level sandbox that
 
 ## Platform Support
 
-### macOS — sandbox-exec (Seatbelt)
+### macOS --- sandbox-exec (Seatbelt)
 
 On macOS, cake uses `sandbox-exec` with a dynamically generated [Seatbelt profile](https://reverse.put.as/wp-content/uploads/2011/09/Apple-Sandbox-Guide-v1.0.pdf). The profile uses a deny-default policy and explicitly allows:
 
@@ -31,7 +31,7 @@ Sandbox profiles are written to temporary files under `$TMPDIR/cake/sandbox_prof
 
 Requires `/usr/bin/sandbox-exec` (present on all standard macOS installations) and a process context where macOS allows `sandbox-exec` to apply a Seatbelt profile. Cake probes this at runtime. If the binary exists but profile application is denied, Bash commands fail closed rather than running without cake's filesystem sandbox. This commonly happens when cake itself is already running inside another Seatbelt sandbox.
 
-### Linux — Landlock LSM
+### Linux --- Landlock LSM
 
 On Linux, cake uses [Landlock](https://landlock.io/), a Linux Security Module available since kernel 5.13. Landlock allows unprivileged processes to sandbox themselves without root access.
 
