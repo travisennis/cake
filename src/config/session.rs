@@ -1,7 +1,7 @@
 use std::{
     collections::HashSet,
     fs::{self, File, OpenOptions},
-    io::Write,
+    io::{BufWriter, Write},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
@@ -16,16 +16,20 @@ use crate::types::{ConversationItem, GitState, SessionRecord};
 /// Both the agent persistence callback and `HookRunner` clone a `SessionWriter`
 /// so all writers append through the same file handle and advisory lock,
 /// avoiding lock contention between hook records and conversation records.
+///
+/// The inner `File` is wrapped in a `BufWriter` so that each JSONL record
+/// serialized by `serde_json::to_writer` issues a single `write()` syscall
+/// instead of many small fragment writes.
 #[derive(Clone)]
 pub struct SessionWriter {
-    file: Arc<Mutex<File>>,
+    file: Arc<Mutex<BufWriter<File>>>,
 }
 
 impl SessionWriter {
     /// Create a writer that owns the locked append handle.
     pub fn new(file: File) -> Self {
         Self {
-            file: Arc::new(Mutex::new(file)),
+            file: Arc::new(Mutex::new(BufWriter::new(file))),
         }
     }
 
@@ -35,7 +39,7 @@ impl SessionWriter {
             .file
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        Session::append_record(&mut guard, record)
+        Session::append_record(&mut *guard, record)
     }
 }
 
@@ -267,14 +271,17 @@ impl Session {
     }
 
     /// Append one JSONL session record and flush it to disk.
-    pub fn append_record(file: &mut File, record: &SessionRecord) -> anyhow::Result<()> {
+    ///
+    /// Accepts any `Write` implementor so callers can pass a `File` directly
+    /// (e.g., during session creation) or a `BufWriter<File>` (shared writer).
+    pub fn append_record(file: &mut impl Write, record: &SessionRecord) -> anyhow::Result<()> {
         serde_json::to_writer(&mut *file, record).context("Failed to serialize session record")?;
         file.write_all(b"\n").context("Failed to write newline")?;
         file.flush().context("Failed to flush session file")
     }
 
     /// Append multiple JSONL session records.
-    pub fn append_records(file: &mut File, records: &[SessionRecord]) -> anyhow::Result<()> {
+    pub fn append_records(file: &mut impl Write, records: &[SessionRecord]) -> anyhow::Result<()> {
         for record in records {
             Self::append_record(file, record)?;
         }
