@@ -27,11 +27,7 @@ impl CmdRunner for DebugCommand {
                 let current_dir = std::env::current_dir()
                     .map_err(|e| anyhow::anyhow!("Failed to get current directory: {e}"))?;
                 let loaded = SettingsLoader::load(Some(&current_dir))?;
-                if *json {
-                    print!("{}", format_models_json(&loaded.models)?);
-                } else {
-                    print!("{}", format_models(&loaded.models));
-                }
+                print!("{}", render_models(&loaded.models, *json)?);
                 Ok(())
             },
         }
@@ -137,6 +133,18 @@ fn format_row(values: &[&str; 5], widths: &[usize; 5]) -> String {
     )
 }
 
+/// Render the configured models as either a JSON document or a formatted table.
+fn render_models(
+    models: &std::collections::HashMap<String, ModelDefinition>,
+    json: bool,
+) -> anyhow::Result<String> {
+    if json {
+        format_models_json(models)
+    } else {
+        Ok(format_models(models))
+    }
+}
+
 fn format_models_json(
     models: &std::collections::HashMap<String, ModelDefinition>,
 ) -> anyhow::Result<String> {
@@ -216,6 +224,29 @@ mod tests {
         assert!(output.contains("zen"));
         assert!(output.contains("provider/zen"));
         assert!(output.contains("https://zen.example.com/v1"));
+    }
+
+    #[test]
+    fn render_models_json_true_returns_json_array() {
+        let mut models = std::collections::HashMap::new();
+        models.insert("zen".to_string(), model("zen", ApiType::ChatCompletions));
+
+        let output = render_models(&models, true).unwrap();
+
+        let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(parsed.as_array().expect("JSON array").len(), 1);
+        assert_eq!(parsed[0]["name"], "zen");
+    }
+
+    #[test]
+    fn render_models_json_false_returns_table() {
+        let mut models = std::collections::HashMap::new();
+        models.insert("zen".to_string(), model("zen", ApiType::ChatCompletions));
+
+        let output = render_models(&models, false).unwrap();
+
+        assert!(output.contains("Configured Models"));
+        assert!(output.contains("provider/zen"));
     }
 
     #[test]
