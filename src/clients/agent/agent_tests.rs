@@ -27,14 +27,13 @@ fn test_resolved_model_config(api_type: ApiType, base_url: &str) -> ResolvedMode
 }
 
 fn test_agent_for(api_type: ApiType, base_url: &str) -> Agent {
-    let mut agent = Agent::new(
+    Agent::new(
         test_resolved_model_config(api_type, base_url),
         &[(Role::System, "test system prompt".to_string())],
-    );
-    agent.session_id = uuid::uuid!("550e8400-e29b-41d4-a716-446655440000");
-    agent.task_id = uuid::uuid!("550e8400-e29b-41d4-a716-446655440001");
-    agent.tools = crate::clients::tools::ToolRegistry::empty();
-    agent
+    )
+    .with_session_id(uuid::uuid!("550e8400-e29b-41d4-a716-446655440000"))
+    .with_task_id(uuid::uuid!("550e8400-e29b-41d4-a716-446655440001"))
+    .with_tools(crate::clients::tools::ToolRegistry::empty())
 }
 
 fn test_agent() -> Agent {
@@ -156,13 +155,11 @@ fn emit_task_complete_record_no_callback() {
 fn emit_task_complete_record_with_permission_denials() {
     let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let captured_clone = captured.clone();
-    let mut agent = test_agent().with_streaming_json(move |json| {
-        *captured_clone.lock().unwrap() = json.to_string();
-    });
-    // Pre-populate permission denials to simulate blocked tool calls.
-    agent
-        .permission_denials
-        .push("Bash(call-1): blocked by hook".to_string());
+    let mut agent = test_agent()
+        .with_streaming_json(move |json| {
+            *captured_clone.lock().unwrap() = json.to_string();
+        })
+        .with_permission_denials(vec!["Bash(call-1): blocked by hook".to_string()]);
     agent
         .emit_task_complete_record(TaskOutcome::Success { result: None }, 1000)
         .unwrap();
@@ -301,8 +298,8 @@ fn skill_activation_records_persist_without_streaming() {
             streamed_clone.lock().unwrap().push(json.to_string());
         });
     let record = SessionRecord::SkillActivated {
-        session_id: agent.session_id.to_string(),
-        task_id: agent.task_id.to_string(),
+        session_id: agent.session_id().to_string(),
+        task_id: agent.task_id().to_string(),
         timestamp: chrono::Utc::now(),
         name: "debugging-cake".to_string(),
         path: PathBuf::from("/work/.agents/skills/debugging-cake/SKILL.md"),
@@ -899,10 +896,11 @@ mod error_tests {
 
         let streamed = Arc::new(Mutex::new(Vec::new()));
         let streamed_clone = Arc::clone(&streamed);
-        let mut agent = test_agent_with_url(&mock_server.uri()).with_streaming_json(move |json| {
-            streamed_clone.lock().unwrap().push(json.to_string());
-        });
-        agent.tools = crate::clients::tools::read_tool_registry();
+        let mut agent = test_agent_with_url(&mock_server.uri())
+            .with_streaming_json(move |json| {
+                streamed_clone.lock().unwrap().push(json.to_string());
+            })
+            .with_tools(crate::clients::tools::read_tool_registry());
 
         let result = agent.send("run a command".to_string()).await.unwrap();
 
@@ -977,9 +975,9 @@ mod error_tests {
         )));
 
         // Verify the blocked tool call was recorded as a permission denial.
-        assert_eq!(agent.permission_denials.len(), 1);
-        assert!(agent.permission_denials[0].contains("Bash(call-1):"));
-        assert!(agent.permission_denials[0].contains("blocked"));
+        assert_eq!(agent.permission_denials().len(), 1);
+        assert!(agent.permission_denials()[0].contains("Bash(call-1):"));
+        assert!(agent.permission_denials()[0].contains("blocked"));
     }
 
     // =========================================================================
@@ -1514,9 +1512,9 @@ mod error_tests {
             .mount(&mock_server)
             .await;
 
-        let mut agent = test_agent_with_url(&mock_server.uri());
-        agent.config.model_config.max_output_tokens = Some(5000);
-        agent.config.model_config.reasoning_max_tokens = Some(4000);
+        let mut agent = test_agent_with_url(&mock_server.uri())
+            .with_max_output_tokens(Some(5000))
+            .with_reasoning_max_tokens(Some(4000));
         agent.history_mut().push(ConversationItem::Message {
             role: Role::User,
             content: "test".to_string(),

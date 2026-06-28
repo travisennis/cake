@@ -127,6 +127,34 @@ impl Agent {
         self
     }
 
+    /// Sets the tool registry (for test fixtures).
+    #[cfg(test)]
+    pub(super) fn with_tools(mut self, tools: ToolRegistry) -> Self {
+        self.tools = tools;
+        self
+    }
+
+    /// Sets the accumulated permission denials (for test fixtures).
+    #[cfg(test)]
+    pub(super) fn with_permission_denials(mut self, denials: Vec<String>) -> Self {
+        self.permission_denials = denials;
+        self
+    }
+
+    /// Sets the max output tokens config value (for test fixtures).
+    #[cfg(test)]
+    pub const fn with_max_output_tokens(mut self, val: Option<u32>) -> Self {
+        self.config.model_config.max_output_tokens = val;
+        self
+    }
+
+    /// Sets the reasoning max tokens config value (for test fixtures).
+    #[cfg(test)]
+    pub const fn with_reasoning_max_tokens(mut self, val: Option<u32>) -> Self {
+        self.config.model_config.reasoning_max_tokens = val;
+        self
+    }
+
     /// Returns the resolved provider model identifier.
     pub fn model_name(&self) -> &str {
         &self.config.model_config.model
@@ -148,6 +176,18 @@ impl Agent {
     /// Returns the session ID.
     pub const fn session_id(&self) -> uuid::Uuid {
         self.session_id
+    }
+
+    /// Returns the task ID.
+    #[cfg(test)]
+    pub const fn task_id(&self) -> uuid::Uuid {
+        self.task_id
+    }
+
+    /// Returns the accumulated permission denials.
+    #[cfg(test)]
+    pub fn permission_denials(&self) -> &[String] {
+        &self.permission_denials
     }
 
     /// Returns accumulated usage across all API calls.
