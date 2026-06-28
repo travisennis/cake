@@ -167,11 +167,22 @@ impl Agent {
                             .map_err(std::clone::Clone::clone);
 
                         let post_context = if let Some(runner) = hook_runner {
-                            runner
+                            match runner
                                 .post_tool_use(&name, &call_id, &arguments, &hook_result)
                                 .await
-                                .ok()
-                                .flatten()
+                            {
+                                Ok(Some(ctx)) => Some(ctx),
+                                Ok(None) => None,
+                                Err(error) => {
+                                    tracing::warn!(
+                                        target: "cake::hooks",
+                                        error = %error,
+                                        tool_name = %name,
+                                        "PostToolUse hook failed (best-effort)"
+                                    );
+                                    None
+                                },
+                            }
                         } else {
                             None
                         };

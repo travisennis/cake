@@ -1096,6 +1096,54 @@ mod tests {
         assert!(matches!(plan, ToolHookPlan::Block { .. }));
     }
 
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn post_tool_use_fail_closed_propagates_error() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let source_path = dir.path().join("hooks.json");
+        let command = HookCommand {
+            command: "exit 1".to_string(),
+            timeout: Duration::from_secs(2),
+            fail_closed: true,
+            status_message: None,
+            source_path,
+        };
+        let loaded = LoadedHooks {
+            groups: vec![HookGroup {
+                event: HookEvent::PostToolUse,
+                matcher: HookMatcher::All,
+                hooks: vec![command],
+            }],
+        };
+        let runner = HookRunner::new(
+            loaded,
+            HookContext {
+                session_id: uuid::Uuid::new_v4(),
+                task_id: uuid::Uuid::new_v4(),
+                transcript_path: None,
+                session_writer: None,
+                hook_event_sink: None,
+                cwd: dir.path().to_path_buf(),
+                model: "test-model".to_string(),
+            },
+        );
+
+        // A fail-closed PostToolUse hook that fails should return an error.
+        let result = runner
+            .post_tool_use(
+                "Bash",
+                "call-1",
+                r#"{"command":"printf ok"}"#,
+                &Ok("ok".to_string()),
+            )
+            .await;
+
+        assert!(
+            result.is_err(),
+            "fail_closed post_tool_use hook should return error"
+        );
+    }
+
     // ── HookDecision::from_raw ──────────────────────────────────────
 
     #[test]

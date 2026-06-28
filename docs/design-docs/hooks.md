@@ -97,6 +97,22 @@ Supported stdout fields beyond the decision:
 
 All events can return `additional_context`, which cake adds as developer context before the next model request. For `PostToolUse` and `PostToolUseFailure` it appends under `Additional hook context:`. For `SessionStart` and `UserPromptSubmit` it is injected into the conversation. `additional_context` can accompany any decision type.
 
+## Error Handling Policy
+
+Hook failures before the model request may abort, since hooks may be gating execution. Hook failures after a result exists are best-effort: they are logged with `tracing::warn!` and never displace the result or prevent the task completion record from being emitted.
+
+  | Event                | When                                | Error behavior       |
+  | -------------------- | ----------------------------------- | -------------------- |
+  | `SessionStart`       | Before the first model request      | Propagates (abort)   |
+  | `UserPromptSubmit`   | Before the model request (per turn) | Propagates (abort)   |
+  | `PreToolUse`         | Before a tool is executed           | Propagates (abort)   |
+  | `PostToolUse`        | After a tool has executed           | Best-effort (logged) |
+  | `PostToolUseFailure` | After a tool has failed             | Best-effort (logged) |
+  | `Stop`               | After a successful model response   | Best-effort (logged) |
+  | `ErrorOccurred`      | After a model or execution error    | Best-effort (logged) |
+
+Hooks configured with `fail_closed: true` that exit with a non-zero status or produce invalid output still respect this policy --- on post-result events the error is logged, not propagated.
+
 ## Observability
 
 Hook activity is logged with the `cake::hooks` tracing target. When sessions are enabled, each hook invocation also appends a `hook_event` record to the session JSONL transcript with event name, source, command, exit code, duration, decision, resolved decision, stdout, and stderr. With `--output-format stream-json`, the same `hook_event` record is emitted live even when session persistence is disabled. Stdout and stderr stored by hook records are capped at 64 KiB each.

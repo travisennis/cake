@@ -698,10 +698,16 @@ impl CodingAssistant {
     ) -> anyhow::Result<()> {
         match result {
             Ok(response_text) => {
-                if let Some(runner) = hook_runner
-                    && let Some(context) = runner.stop(response_text).await?
-                {
-                    tracing::info!(target: "cake::hooks", additional_context = %context, "Stop hook returned additional context");
+                if let Some(runner) = hook_runner {
+                    match runner.stop(response_text).await {
+                        Ok(Some(context)) => {
+                            tracing::info!(target: "cake::hooks", additional_context = %context, "Stop hook returned additional context");
+                        },
+                        Ok(None) => {},
+                        Err(error) => {
+                            tracing::warn!(target: "cake::hooks", error = %error, "Stop hook failed (best-effort)");
+                        },
+                    }
                 }
                 client.emit_task_complete_record(
                     TaskOutcome::Success {
@@ -711,8 +717,10 @@ impl CodingAssistant {
                 )?;
             },
             Err(e) => {
-                if let Some(runner) = hook_runner {
-                    runner.error_occurred(e).await?;
+                if let Some(runner) = hook_runner
+                    && let Err(error) = runner.error_occurred(e).await
+                {
+                    tracing::warn!(target: "cake::hooks", error = %error, "error_occurred hook failed (best-effort)");
                 }
                 client.emit_task_complete_record(
                     TaskOutcome::ErrorDuringExecution {
@@ -1886,5 +1894,106 @@ mod tests {
 
         let json: serde_json::Value = serde_json::from_str(&captured.lock().unwrap()).unwrap();
         assert_eq!(json["subtype"], "success");
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn handle_agent_turn_stop_hook_failure_does_not_discard_result() {
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let captured_clone = captured.clone();
+        let mut agent = test_agent_for_turn().with_streaming_json(move |json| {
+            *captured_clone.lock().unwrap() = json.to_string();
+        });
+
+        // A stop hook that always fails (fail_closed with an invalid exit)
+        let cwd = std::env::temp_dir();
+        let command = crate::config::hooks::HookCommand {
+            command: "exit 1".to_string(),
+            timeout: std::time::Duration::from_secs(2),
+            fail_closed: true,
+            status_message: None,
+            source_path: cwd.join("hooks.json"),
+        };
+        let loaded = crate::config::hooks::LoadedHooks {
+            groups: vec![crate::config::hooks::HookGroup {
+                event: crate::config::hooks::HookEvent::Stop,
+                matcher: crate::config::hooks::HookMatcher::All,
+                hooks: vec![command],
+            }],
+        };
+        let runner = std::sync::Arc::new(HookRunner::new(
+            loaded,
+            HookContext {
+                session_id: uuid::Uuid::new_v4(),
+                task_id: uuid::Uuid::new_v4(),
+                transcript_path: None,
+                session_writer: None,
+                hook_event_sink: None,
+                cwd,
+                model: "test-model".to_string(),
+            },
+        ));
+
+        let result: Result<String, anyhow::Error> = Ok("test response".to_string());
+
+        // Should NOT propagate the hook error — should still emit completion record
+        CodingAssistant::handle_agent_turn_result(&mut agent, Some(&runner), &result, 100)
+            .await
+            .unwrap();
+
+        let json: serde_json::Value = serde_json::from_str(&captured.lock().unwrap()).unwrap();
+        assert_eq!(json["subtype"], "success");
+        assert_eq!(json["duration_ms"], 100);
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn handle_agent_turn_error_occurred_hook_failure_does_not_mask_error() {
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let captured_clone = captured.clone();
+        let mut agent = test_agent_for_turn().with_streaming_json(move |json| {
+            *captured_clone.lock().unwrap() = json.to_string();
+        });
+
+        // An error_occurred hook that always fails (fail_closed with an invalid exit)
+        let cwd = std::env::temp_dir();
+        let command = crate::config::hooks::HookCommand {
+            command: "exit 1".to_string(),
+            timeout: std::time::Duration::from_secs(2),
+            fail_closed: true,
+            status_message: None,
+            source_path: cwd.join("hooks.json"),
+        };
+        let loaded = crate::config::hooks::LoadedHooks {
+            groups: vec![crate::config::hooks::HookGroup {
+                event: crate::config::hooks::HookEvent::ErrorOccurred,
+                matcher: crate::config::hooks::HookMatcher::All,
+                hooks: vec![command],
+            }],
+        };
+        let runner = std::sync::Arc::new(HookRunner::new(
+            loaded,
+            HookContext {
+                session_id: uuid::Uuid::new_v4(),
+                task_id: uuid::Uuid::new_v4(),
+                transcript_path: None,
+                session_writer: None,
+                hook_event_sink: None,
+                cwd,
+                model: "test-model".to_string(),
+            },
+        ));
+
+        let result: Result<String, anyhow::Error> = Err(anyhow::anyhow!("tool error"));
+
+        // Should NOT propagate the hook error — should still emit the error completion record
+        CodingAssistant::handle_agent_turn_result(&mut agent, Some(&runner), &result, 50)
+            .await
+            .unwrap();
+
+        let json: serde_json::Value = serde_json::from_str(&captured.lock().unwrap()).unwrap();
+        assert_eq!(json["subtype"], "error_during_execution");
+        assert_eq!(json["error"], "tool error");
+        assert_eq!(json["duration_ms"], 50);
     }
 }
