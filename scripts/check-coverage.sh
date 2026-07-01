@@ -9,6 +9,7 @@ Usage: scripts/check-coverage.sh [--cargo-crap-format summary|github]
 
 Runs the local/GitHub coverage and cargo-crap change-risk gate.
 Set COVERAGE_THRESHOLD to override the default threshold of 90.
+Set CRAP_REGRESSION_EPSILON to override the default CRAP regression tolerance of 0.5.
 EOF
 }
 
@@ -43,6 +44,7 @@ case "$format" in
 esac
 
 threshold="${COVERAGE_THRESHOLD:-90}"
+crap_epsilon="${CRAP_REGRESSION_EPSILON:-0.5}"
 output="$(cargo llvm-cov --summary-only)"
 printf '%s\n' "$output"
 
@@ -59,6 +61,8 @@ if [ "$(echo "$coverage < $threshold" | bc -l)" = "1" ]; then
 fi
 
 cargo llvm-cov --lcov --output-path lcov.info
+
+echo "CRAP regression epsilon: ${crap_epsilon}"
 
 if [ "$format" = "summary" ]; then
     scripts/cargo-crap.sh \

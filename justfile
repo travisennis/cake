@@ -116,7 +116,8 @@ coverage:
 coverage-summary:
     cargo llvm-cov --summary-only
 
-# Check coverage threshold and untested-complexity regression
+# Check coverage threshold and untested-complexity regression.
+# CRAP_REGRESSION_EPSILON defaults to 0.5 in scripts/cargo-crap.sh to absorb rounding-level coverage noise.
 check-coverage:
     scripts/check-coverage.sh
 
@@ -128,7 +129,8 @@ coverage-open:
 coverage-lcov:
     cargo llvm-cov --lcov --output-path lcov.info
 
-# Regenerate the macOS cargo-crap baseline from current coverage
+# Regenerate the macOS cargo-crap baseline from current coverage.
+# Run this after intentional code or test changes alter coverage/complexity, then commit ci/cargo-crap-baseline.json with the change.
 change-risk-baseline:
     mkdir -p ci
     cargo llvm-cov --lcov --output-path lcov.info
