@@ -60,7 +60,13 @@ if [ "$(echo "$coverage < $threshold" | bc -l)" = "1" ]; then
     exit 1
 fi
 
-cargo llvm-cov --lcov --output-path lcov.info
+# Extracted test modules (*_tests.rs) have no LCOV entries because they
+# contain only test-only code with no instrumented coverage data. The
+# missing-source warning for these files is non-fatal — they are already
+# excluded from CRAP scoring via `--exclude '**/*_tests.rs'` in
+# scripts/cargo-crap.sh (task 226). Use --ignore-filename-regex to
+# suppress the warning for these expected cases.
+cargo llvm-cov --lcov --output-path lcov.info --ignore-filename-regex '_tests\.rs$'
 
 echo "CRAP regression epsilon: ${crap_epsilon}"
 
