@@ -45,10 +45,15 @@ esac
 
 threshold="${COVERAGE_THRESHOLD:-90}"
 crap_epsilon="${CRAP_REGRESSION_EPSILON:-0.5}"
+
+failed=0
+
+# === Gate 1: Total Coverage ===
+echo "=== Total Coverage Gate ==="
 output="$(cargo llvm-cov --summary-only)"
 printf '%s\n' "$output"
 
-coverage="$(printf '%s\n' "$output" | grep "^TOTAL" | grep -oE '[0-9]+\.[0-9]+%' | tail -1 | tr -d '%')"
+coverage="$(printf '%s\n' "$output" | grep "^TOTAL" | grep -oE '[0-9]+\.[0-9]+%' | tail -1 | tr -d '%' || true)"
 if [ -z "$coverage" ]; then
     echo "ERROR: could not read TOTAL coverage from cargo llvm-cov output" >&2
     exit 1
@@ -56,9 +61,15 @@ fi
 
 echo "Coverage: ${coverage}%"
 if [ "$(echo "$coverage < $threshold" | bc -l)" = "1" ]; then
-    echo "Coverage below ${threshold}%"
-    exit 1
+    echo "FAIL: Total coverage (${coverage}%) is below threshold (${threshold}%)"
+    failed=1
+else
+    echo "PASS: Total coverage (${coverage}%) meets threshold (${threshold}%)"
 fi
+
+# === Gate 2: CRAP Regression ===
+echo ""
+echo "=== CRAP Regression Gate ==="
 
 # Extracted test modules (*_tests.rs) have no LCOV entries because they
 # contain only test-only code with no instrumented coverage data. The
@@ -70,16 +81,32 @@ cargo llvm-cov --lcov --output-path lcov.info --ignore-filename-regex '_tests\.r
 
 echo "CRAP regression epsilon: ${crap_epsilon}"
 
+crap_exit=0
 if [ "$format" = "summary" ]; then
     scripts/cargo-crap.sh \
         --lcov lcov.info \
         --baseline ci/cargo-crap-baseline.json \
         --fail-regression \
-        --summary
+        --summary || crap_exit=$?
 else
     scripts/cargo-crap.sh \
         --lcov lcov.info \
         --baseline ci/cargo-crap-baseline.json \
         --fail-regression \
-        --format "$format"
+        --format "$format" || crap_exit=$?
 fi
+
+if [ "$crap_exit" -ne 0 ]; then
+    echo "FAIL: CRAP regression detected (exit code ${crap_exit})"
+    failed=1
+else
+    echo "PASS: No CRAP regression detected"
+fi
+
+# === Summary ===
+echo ""
+if [ "$failed" -eq 1 ]; then
+    echo "FAIL: One or more coverage gates failed" >&2
+    exit 1
+fi
+echo "PASS: All coverage gates passed"
