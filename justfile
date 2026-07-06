@@ -37,6 +37,10 @@ clippy-no-default-features:
 rust-version-check:
     sh scripts/check-rust-toolchain.sh
 
+# Report session metrics from transcripts + telemetry (pass e.g. --days 7, --model X)
+session-metrics *args:
+    @python3 scripts/session-metrics/report.py {{args}}
+
 # Regenerate generated indexes from ahm-managed metadata
 task-index:
     ahm index
