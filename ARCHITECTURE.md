@@ -27,7 +27,7 @@ Key design decisions:
 
 Entry point for user interaction. `main.rs` defines the top-level clap struct `CodingAssistant`, parses arguments, validates flag combinations, classifies clap errors into structured exit codes, and dispatches to a `CmdRunner` implementation.
 
-Submodules under [`src/cli/`](file:///Users/travisennis/Projects/cake/src/cli/):
+Submodules under `src/cli/`:
 
 - **`cmd_runner`**: The `CmdRunner` trait --- the single interface every command implements: `async fn run(&self, data_dir: &DataDir) -> anyhow::Result<()>`.
 - **`output`**: `CliOutputSink`, formatting helpers for spinner messages, retry notices, and the done-summary line. Centralizes user-facing output formatting.
@@ -38,7 +38,7 @@ The main `CodingAssistant` command lives in `src/main.rs` (not in a separate `in
 
 ### Layer 3: Clients (`clients` module)
 
-The bridge to external AI services and the orchestration layer for tool execution. The current module layout (see [src/clients/mod.rs](file:///Users/travisennis/Projects/cake/src/clients/mod.rs)):
+The bridge to external AI services and the orchestration layer for tool execution. The current module layout (see `src/clients/mod.rs`):
 
 **`agent`**: The public-facing `Agent` struct. Owns the user-visible API (`Agent::new`, `with_*` builders, `send`, telemetry emitters) and the high-level conversation loop. Delegates the per-turn HTTP work to `AgentRunner`, the rolling state to `ConversationState`, and the callback fan-out to `AgentObserver`. Exported as `clients::Agent`.
 
@@ -80,7 +80,7 @@ Foundation modules that provide data persistence, core types, and prompt generat
 - `model`: Contains `ApiType` enum (`Responses`/`ChatCompletions`), `ModelConfig` struct (model, api_type, base_url, api_key_env, temperature, top_p, max_output_tokens, reasoning_effort, reasoning_summary, reasoning_max_tokens, provider/providers), `ModelProvider`, `ProviderHeaders`, `ReasoningEffort`, and `ResolvedModelConfig` (resolves API key from env var). Defaults for model, base URL, API key env var, and providers live alongside these types --- there is no separate `defaults` module.
 - `settings` (`SettingsLoader`, `ModelDefinition`): TOML-based configuration loading from `settings.toml` files. Supports XDG-style global (`~/.config/cake/settings.toml`) and project-level (`.cake/settings.toml`) locations, with project settings overriding global settings for the same model name. Includes a `[skills]` section for controlling skill discovery and configured skill paths, plus a `directories` key for declaring additional read-write directories (merged across global and project files).
 - `skills` (`Skill`, catalog builder): Skill discovery, parsing, and catalog management. Discovers `SKILL.md` files from project, configured, and user skill directories, parses YAML frontmatter, and builds an XML catalog for the system prompt. Skills are activated lazily via the Read tool and deduplicated within a session.
-- `hooks` (`HooksLoader`, `HookSource`, `LoadedHooks`, `HookEvent`, `HookCommand`): TOML loading of user-defined hook commands from global and project `hooks.toml` files. The runtime that executes them lives in the top-level [`hooks`](file:///Users/travisennis/Projects/cake/src/hooks.rs) module (Layer 1).
+- `hooks` (`HooksLoader`, `HookSource`, `LoadedHooks`, `HookEvent`, `HookCommand`): TOML loading of user-defined hook commands from global and project `hooks.toml` files. The runtime that executes them lives in the top-level `src/hooks.rs` module (Layer 1).
 
 Sessions are stored as flat `{uuid}.jsonl` files under `~/.local/share/cake/sessions/`. Each file's header contains the working directory, so `--continue` filters by matching the current directory.
 
@@ -96,7 +96,7 @@ API wire-format DTOs live next to the backend that owns them: `clients::chat_typ
 
 ### Layer 1: Foundation
 
-Top-level modules in [`src/`](file:///Users/travisennis/Projects/cake/src/) that sit beneath the other layers:
+Top-level modules in `src/` that sit beneath the other layers:
 
 **`exit_code`**: Classifies `anyhow::Error` values into structured exit codes (0=success, 1=agent error, 2=API error, 3=input error). The `main()` function uses this to return `std::process::ExitCode` instead of relying on the default Rust behavior of exiting 1 on any `Err`.
 
@@ -218,7 +218,7 @@ Use symbol search to locate specific implementations:
 
 ## Reading List
 
-For deeper understanding of specific subsystems (see [docs/design-docs/index.md](file:///Users/travisennis/Projects/cake/docs/design-docs/index.md) for the full list):
+For deeper understanding of specific subsystems (see [docs/design-docs/index.md](docs/design-docs/index.md) for the full list):
 
 - `docs/DOMAIN.md` - Core concepts, session model, tool types, sandbox, skills, and settings layering
 - `docs/design-docs/cli.md` - Command-line interface and command dispatch
