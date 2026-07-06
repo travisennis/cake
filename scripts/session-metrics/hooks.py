@@ -59,16 +59,31 @@ def run(data: cakelib.Dataset) -> None:
     else:
         print("\nNo hook events in window.")
 
+    # A session "has skills available" when a skills catalog (SKILL.md
+    # <location> entries) was disclosed in its prompt context. A skill
+    # activates at most once per session; resumed invocations reuse the
+    # activation without a new record.
+    with_catalog = sum(1 for s in data.sessions if _has_skill_catalog(s))
     skills = [rec for s in data.sessions for rec in s.by_type("skill_activated")]
+    print(f"\nSessions with skills available: {fmt_int(with_catalog)} "
+          f"({fmt_pct(with_catalog, len(data.sessions))} of sessions)")
     if skills:
-        print(f"\nSkill activations: {fmt_int(len(skills))}")
+        print(f"Skill activations: {fmt_int(len(skills))}")
         by_name = Counter(sk.get("name", "?") for sk in skills)
         sessions_using = sum(1 for s in data.sessions if s.by_type("skill_activated"))
         print_table(["skill", "activations"], [[n, c] for n, c in by_name.most_common()])
-        print(f"Sessions using skills: {fmt_int(sessions_using)} "
-              f"({fmt_pct(sessions_using, len(data.sessions))})")
+        print(f"Sessions activating >=1 skill: {fmt_int(sessions_using)} "
+              f"({fmt_pct(sessions_using, with_catalog)} of sessions with skills available)")
     else:
-        print("\nNo skill activations in window.")
+        print("No skill activations in window.")
+
+
+def _has_skill_catalog(session: cakelib.Session) -> bool:
+    for rec in session.records:
+        content = rec.get("content")
+        if isinstance(content, str) and "<location>" in content and "SKILL.md" in content:
+            return True
+    return False
 
 
 def main() -> None:
