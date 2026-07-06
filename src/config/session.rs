@@ -4,6 +4,8 @@ use std::{
     io::{BufWriter, Write},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
+    thread,
+    time::Duration,
 };
 
 use anyhow::Context;
@@ -45,6 +47,8 @@ impl SessionWriter {
 
 /// Session format version for append-only task event logs.
 pub const CURRENT_FORMAT_VERSION: u32 = 4;
+const SESSION_LOCK_RETRY_COUNT: usize = 2;
+const SESSION_LOCK_RETRY_DELAY: Duration = Duration::from_millis(10);
 
 /// In-memory session state reconstructed from a JSONL file.
 ///
@@ -290,17 +294,38 @@ impl Session {
 }
 
 fn lock_session_file(file: &File, path: &Path) -> anyhow::Result<()> {
+    if try_lock_session_file_with_retries(file, path)? {
+        return Ok(());
+    }
+
+    Err(session_lock_conflict_error(path))
+}
+
+fn try_lock_session_file_with_retries(file: &File, path: &Path) -> anyhow::Result<bool> {
+    for _ in 0..SESSION_LOCK_RETRY_COUNT {
+        if try_lock_session_file(file, path)? {
+            return Ok(true);
+        }
+        thread::sleep(SESSION_LOCK_RETRY_DELAY);
+    }
+
+    try_lock_session_file(file, path)
+}
+
+fn session_lock_conflict_error(path: &Path) -> anyhow::Error {
+    let id = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("<unknown>");
+    anyhow::anyhow!(
+        "Another cake invocation is currently writing to session {id}. Wait for it to finish or run in a different directory."
+    )
+}
+
+fn try_lock_session_file(file: &File, path: &Path) -> anyhow::Result<bool> {
     match FileExt::try_lock(file) {
-        Ok(()) => Ok(()),
-        Err(TryLockError::WouldBlock) => {
-            let id = path
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .unwrap_or("<unknown>");
-            anyhow::bail!(
-                "Another cake invocation is currently writing to session {id}. Wait for it to finish or run in a different directory."
-            );
-        },
+        Ok(()) => Ok(true),
+        Err(TryLockError::WouldBlock) => Ok(false),
         Err(TryLockError::Error(error)) => {
             Err(error).with_context(|| format!("Failed to lock session file: {}", path.display()))
         },
