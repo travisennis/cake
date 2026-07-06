@@ -67,6 +67,14 @@
       "crap": 23.29273815870051
     },
     {
+      "file": "./src/clients/tools/bash.rs",
+      "function": "execute_bash_with_args",
+      "line": 286,
+      "cyclomatic": 21.0,
+      "coverage": 83.33333333333334,
+      "crap": 23.04166666666666
+    },
+    {
       "file": "./src/clients/tools/bash_safety/checks.rs",
       "function": "check_dangerous_rm",
       "line": 351,
@@ -75,12 +83,12 @@
       "crap": 22.621558313470864
     },
     {
-      "file": "./src/clients/tools/bash.rs",
-      "function": "execute_bash_with_args",
-      "line": 286,
-      "cyclomatic": 21.0,
-      "coverage": 85.29411764705883,
-      "crap": 22.402529004681455
+      "file": "./src/clients/tools/sandbox/macos.rs",
+      "function": "MacOsSandbox::write_profile_to_temp",
+      "line": 332,
+      "cyclomatic": 4.0,
+      "coverage": 0.0,
+      "crap": 20.0
     },
     {
       "file": "./src/types/conversation.rs",
@@ -129,6 +137,14 @@
       "cyclomatic": 15.0,
       "coverage": 82.25806451612904,
       "crap": 16.256566580510892
+    },
+    {
+      "file": "./src/clients/tools/json_repair.rs",
+      "function": "escape_control_chars_in_strings",
+      "line": 58,
+      "cyclomatic": 13.0,
+      "coverage": 73.33333333333333,
+      "crap": 16.204740740740743
     },
     {
       "file": "./src/clients/tools/bash_safety/checks.rs",
@@ -181,7 +197,7 @@
     {
       "file": "./src/clients/tools/write.rs",
       "function": "validate_path_for_write",
-      "line": 106,
+      "line": 108,
       "cyclomatic": 13.0,
       "coverage": 80.0,
       "crap": 14.351999999999999
@@ -189,7 +205,7 @@
     {
       "file": "./src/clients/tools/edit.rs",
       "function": "execute_edit",
-      "line": 140,
+      "line": 141,
       "cyclomatic": 14.0,
       "coverage": 100.0,
       "crap": 14.0
@@ -241,6 +257,14 @@
       "cyclomatic": 12.0,
       "coverage": 94.44444444444444,
       "crap": 12.024691358024691
+    },
+    {
+      "file": "./src/clients/tools/sandbox/macos.rs",
+      "function": "MacOsSandbox::apply",
+      "line": 379,
+      "cyclomatic": 3.0,
+      "coverage": 0.0,
+      "crap": 12.0
     },
     {
       "file": "./src/clients/agent_state.rs",
@@ -357,7 +381,7 @@
     {
       "file": "./src/clients/tools/edit.rs",
       "function": "nearest_match_hint",
-      "line": 573,
+      "line": 575,
       "cyclomatic": 10.0,
       "coverage": 93.93939393939394,
       "crap": 10.022261179285973
@@ -453,7 +477,7 @@
     {
       "file": "./src/clients/tools/write.rs",
       "function": "execute_write",
-      "line": 54,
+      "line": 55,
       "cyclomatic": 9.0,
       "coverage": 100.0,
       "crap": 9.0
@@ -501,7 +525,7 @@
     {
       "file": "./src/clients/tools/edit.rs",
       "function": "preflight_edits",
-      "line": 257,
+      "line": 259,
       "cyclomatic": 8.0,
       "coverage": 100.0,
       "crap": 8.0
@@ -573,7 +597,7 @@
     {
       "file": "./src/clients/tools/mod.rs",
       "function": "validate_path_with_dirs",
-      "line": 317,
+      "line": 319,
       "cyclomatic": 7.0,
       "coverage": 91.48936170212765,
       "crap": 7.030205253171263
@@ -589,7 +613,7 @@
     {
       "file": "./src/clients/tools/edit.rs",
       "function": "ambiguous_match_contexts",
-      "line": 512,
+      "line": 514,
       "cyclomatic": 7.0,
       "coverage": 97.14285714285714,
       "crap": 7.001142857142857
@@ -597,7 +621,7 @@
     {
       "file": "./src/clients/tools/edit.rs",
       "function": "preflight_failure_summary",
-      "line": 391,
+      "line": 393,
       "cyclomatic": 7.0,
       "coverage": 98.27586206896551,
       "crap": 7.0002511378080285
@@ -677,7 +701,7 @@
     {
       "file": "./src/clients/tools/mod.rs",
       "function": "execute_edit_tool",
-      "line": 433,
+      "line": 435,
       "cyclomatic": 2.0,
       "coverage": 0.0,
       "crap": 6.0
@@ -685,7 +709,7 @@
     {
       "file": "./src/clients/tools/mod.rs",
       "function": "execute_write_tool",
-      "line": 449,
+      "line": 451,
       "cyclomatic": 2.0,
       "coverage": 0.0,
       "crap": 6.0
@@ -835,6 +859,14 @@
       "crap": 5.072886297376093
     },
     {
+      "file": "./src/clients/tools/json_repair.rs",
+      "function": "try_first_complete_value",
+      "line": 108,
+      "cyclomatic": 5.0,
+      "coverage": 88.88888888888889,
+      "crap": 5.034293552812072
+    },
+    {
       "file": "./src/config/skills.rs",
       "function": "Skill::parse_frontmatter_yaml",
       "line": 177,
@@ -891,9 +923,17 @@
       "crap": 5.001422394173874
     },
     {
+      "file": "./src/clients/tools/json_repair.rs",
+      "function": "repair_json_args",
+      "line": 29,
+      "cyclomatic": 5.0,
+      "coverage": 100.0,
+      "crap": 5.0
+    },
+    {
       "file": "./src/clients/tools/mod.rs",
       "function": "ToolRegistry::mutating_target",
-      "line": 258,
+      "line": 260,
       "cyclomatic": 5.0,
       "coverage": 100.0,
       "crap": 5.0
@@ -957,7 +997,7 @@
     {
       "file": "./src/clients/tools/edit.rs",
       "function": "format_edit_index_list",
-      "line": 485,
+      "line": 487,
       "cyclomatic": 4.0,
       "coverage": 61.53846153846154,
       "crap": 4.9103322712790165
@@ -1083,14 +1123,6 @@
       "crap": 4.004740740740741
     },
     {
-      "file": "./src/clients/tools/sandbox/macos.rs",
-      "function": "MacOsSandbox::write_profile_to_temp",
-      "line": 332,
-      "cyclomatic": 4.0,
-      "coverage": 93.75,
-      "crap": 4.00390625
-    },
-    {
       "file": "./src/clients/chat_completions.rs",
       "function": "parse_response",
       "line": 85,
@@ -1117,7 +1149,7 @@
     {
       "file": "./src/clients/tools/edit.rs",
       "function": "normalize_crlf_line_endings",
-      "line": 671,
+      "line": 673,
       "cyclomatic": 4.0,
       "coverage": 100.0,
       "crap": 4.0
@@ -1125,7 +1157,7 @@
     {
       "file": "./src/clients/tools/edit.rs",
       "function": "normalize_bare_lf_to_crlf",
-      "line": 706,
+      "line": 708,
       "cyclomatic": 4.0,
       "coverage": 100.0,
       "crap": 4.0
@@ -1133,7 +1165,7 @@
     {
       "file": "./src/clients/tools/edit.rs",
       "function": "NormalizedContent::original_range",
-      "line": 725,
+      "line": 727,
       "cyclomatic": 4.0,
       "coverage": 100.0,
       "crap": 4.0
@@ -1309,7 +1341,7 @@
     {
       "file": "./src/clients/tools/mod.rs",
       "function": "validate_path_for_write",
-      "line": 406,
+      "line": 408,
       "cyclomatic": 3.0,
       "coverage": 69.23076923076923,
       "crap": 3.262175694128357
@@ -1397,7 +1429,7 @@
     {
       "file": "./src/clients/tools/edit.rs",
       "function": "reject_overlapping_edits",
-      "line": 352,
+      "line": 354,
       "cyclomatic": 3.0,
       "coverage": 100.0,
       "crap": 3.0
@@ -1405,7 +1437,7 @@
     {
       "file": "./src/clients/tools/edit.rs",
       "function": "normalize_replacement_line_endings",
-      "line": 699,
+      "line": 701,
       "cyclomatic": 3.0,
       "coverage": 100.0,
       "crap": 3.0
@@ -1413,7 +1445,7 @@
     {
       "file": "./src/clients/tools/edit.rs",
       "function": "restore_bom",
-      "line": 760,
+      "line": 762,
       "cyclomatic": 3.0,
       "coverage": 100.0,
       "crap": 3.0
@@ -1422,14 +1454,6 @@
       "file": "./src/clients/tools/read.rs",
       "function": "is_binary",
       "line": 91,
-      "cyclomatic": 3.0,
-      "coverage": 100.0,
-      "crap": 3.0
-    },
-    {
-      "file": "./src/clients/tools/sandbox/macos.rs",
-      "function": "MacOsSandbox::apply",
-      "line": 379,
       "cyclomatic": 3.0,
       "coverage": 100.0,
       "crap": 3.0
@@ -1709,7 +1733,7 @@
     {
       "file": "./src/clients/tools/edit.rs",
       "function": "truncate_to_chars",
-      "line": 620,
+      "line": 622,
       "cyclomatic": 2.0,
       "coverage": 50.0,
       "crap": 2.5
@@ -1821,7 +1845,7 @@
     {
       "file": "./src/clients/tools/edit.rs",
       "function": "plural_suffix",
-      "line": 464,
+      "line": 466,
       "cyclomatic": 2.0,
       "coverage": 100.0,
       "crap": 2.0
@@ -1829,7 +1853,7 @@
     {
       "file": "./src/clients/tools/edit.rs",
       "function": "atomic_rollback_notice",
-      "line": 502,
+      "line": 504,
       "cyclomatic": 2.0,
       "coverage": 100.0,
       "crap": 2.0
@@ -1837,7 +1861,7 @@
     {
       "file": "./src/clients/tools/edit.rs",
       "function": "apply_edits_reverse_order",
-      "line": 643,
+      "line": 645,
       "cyclomatic": 2.0,
       "coverage": 100.0,
       "crap": 2.0
@@ -1845,7 +1869,7 @@
     {
       "file": "./src/clients/tools/edit.rs",
       "function": "detect_line_ending",
-      "line": 659,
+      "line": 661,
       "cyclomatic": 2.0,
       "coverage": 100.0,
       "crap": 2.0
@@ -1925,7 +1949,7 @@
     {
       "file": "./src/clients/tools/mod.rs",
       "function": "execute_bash_tool",
-      "line": 429,
+      "line": 431,
       "cyclomatic": 1.0,
       "coverage": 0.0,
       "crap": 2.0
@@ -1933,7 +1957,7 @@
     {
       "file": "./src/clients/tools/mod.rs",
       "function": "execute_read_tool",
-      "line": 441,
+      "line": 443,
       "cyclomatic": 2.0,
       "coverage": 100.0,
       "crap": 2.0
@@ -2253,7 +2277,7 @@
     {
       "file": "./src/clients/tools/edit.rs",
       "function": "NormalizedContent::original_offset",
-      "line": 738,
+      "line": 740,
       "cyclomatic": 1.0,
       "coverage": 60.0,
       "crap": 1.064
@@ -2269,7 +2293,7 @@
     {
       "file": "./src/clients/tools/mod.rs",
       "function": "ToolRegistry::execute",
-      "line": 244,
+      "line": 246,
       "cyclomatic": 1.0,
       "coverage": 90.0,
       "crap": 1.001
@@ -2301,7 +2325,7 @@
     {
       "file": "./src/clients/tools/edit.rs",
       "function": "parse_edit_args",
-      "line": 239,
+      "line": 240,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -2309,7 +2333,7 @@
     {
       "file": "./src/clients/tools/edit.rs",
       "function": "expected_edit_arguments_shape",
-      "line": 248,
+      "line": 250,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -2317,7 +2341,7 @@
     {
       "file": "./src/clients/tools/edit.rs",
       "function": "skipped_noop_summary",
-      "line": 468,
+      "line": 470,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -2325,7 +2349,7 @@
     {
       "file": "./src/clients/tools/edit.rs",
       "function": "skipped_noop_status",
-      "line": 477,
+      "line": 479,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -2333,7 +2357,7 @@
     {
       "file": "./src/clients/tools/edit.rs",
       "function": "line_index_for_offset",
-      "line": 561,
+      "line": 563,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -2341,7 +2365,7 @@
     {
       "file": "./src/clients/tools/edit.rs",
       "function": "common_prefix_len",
-      "line": 630,
+      "line": 632,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -2349,7 +2373,7 @@
     {
       "file": "./src/clients/tools/edit.rs",
       "function": "strip_bom",
-      "line": 750,
+      "line": 752,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -2357,7 +2381,7 @@
     {
       "file": "./src/clients/tools/edit.rs",
       "function": "generate_unified_diff",
-      "line": 772,
+      "line": 774,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -2461,7 +2485,7 @@
     {
       "file": "./src/clients/tools/mod.rs",
       "function": "ToolEntry::new",
-      "line": 194,
+      "line": 196,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -2469,7 +2493,7 @@
     {
       "file": "./src/clients/tools/mod.rs",
       "function": "ToolRegistry::new",
-      "line": 213,
+      "line": 215,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -2477,7 +2501,7 @@
     {
       "file": "./src/clients/tools/mod.rs",
       "function": "ToolRegistry::empty",
-      "line": 223,
+      "line": 225,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -2485,7 +2509,7 @@
     {
       "file": "./src/clients/tools/mod.rs",
       "function": "ToolRegistry::definitions",
-      "line": 231,
+      "line": 233,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -2493,7 +2517,7 @@
     {
       "file": "./src/clients/tools/mod.rs",
       "function": "ToolRegistry::names",
-      "line": 236,
+      "line": 238,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -2501,7 +2525,7 @@
     {
       "file": "./src/clients/tools/mod.rs",
       "function": "ToolRegistry::find",
-      "line": 271,
+      "line": 273,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -2509,7 +2533,7 @@
     {
       "file": "./src/clients/tools/mod.rs",
       "function": "validate_path",
-      "line": 302,
+      "line": 304,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -2517,7 +2541,7 @@
     {
       "file": "./src/clients/tools/mod.rs",
       "function": "path_starts_with",
-      "line": 381,
+      "line": 383,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -2525,7 +2549,7 @@
     {
       "file": "./src/clients/tools/mod.rs",
       "function": "validate_path_in_cwd",
-      "line": 397,
+      "line": 399,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -2533,7 +2557,7 @@
     {
       "file": "./src/clients/tools/mod.rs",
       "function": "get_temp_directories",
-      "line": 421,
+      "line": 423,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -2541,7 +2565,7 @@
     {
       "file": "./src/clients/tools/mod.rs",
       "function": "default_tool_registry",
-      "line": 462,
+      "line": 464,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -2549,7 +2573,7 @@
     {
       "file": "./src/clients/tools/mod.rs",
       "function": "read_tool_registry",
-      "line": 478,
+      "line": 480,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0

@@ -1008,3 +1008,104 @@ fn multiple_edits_with_different_lengths() {
     let content = fs::read_to_string(&file_path).unwrap();
     assert_eq!(content, "s MEDIUM vl");
 }
+
+// =========================================================================
+// JSON Argument Repair Tests
+//
+// These tests verify that recoverable invalid JSON in tool-call arguments is
+// repaired before parsing, so common LLM output errors (raw control chars in
+// strings, trailing garbage) do not cause spurious failures.
+// =========================================================================
+
+#[test]
+fn raw_tab_in_old_text_is_repaired() {
+    // Payload with a literal tab character inside old_text — serde_json would
+    // reject this, but the repair pass escapes it to \t before parsing.
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("test.txt");
+    fs::write(&file_path, "\tHello\n").unwrap();
+
+    let args = "{\"path\":\"".to_string()
+        + file_path.to_str().unwrap()
+        + "\",\"edits\":[{\"old_text\":\"\t\",\"new_text\":\"tab\"}]}";
+
+    let result = execute_edit(&ToolContext::from_current_process(), &args).unwrap();
+    assert!(result.output.contains("Applied 1 edit"));
+    let content = fs::read_to_string(&file_path).unwrap();
+    assert_eq!(content, "tabHello\n");
+}
+
+#[test]
+fn raw_newline_in_old_text_is_repaired() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("test.txt");
+    fs::write(&file_path, "Hello\nworld\n").unwrap();
+
+    // Build payload with a literal newline inside old_text
+    let mut args = String::from("{\"path\":\"");
+    args.push_str(file_path.to_str().unwrap());
+    args.push_str("\",\"edits\":[{\"old_text\":\"Hello\n\",\"new_text\":\"Hi\"}]}");
+
+    let result = execute_edit(&ToolContext::from_current_process(), &args).unwrap();
+    assert!(result.output.contains("Applied 1 edit"));
+    let content = fs::read_to_string(&file_path).unwrap();
+    assert_eq!(content, "Hiworld\n");
+}
+
+#[test]
+fn trailing_curly_brace_is_ignored() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("test.txt");
+    fs::write(&file_path, "Hello world\n").unwrap();
+
+    // Double-closed object: extra } at the end
+    let args = serde_json::json!({
+        "path": file_path.to_str().unwrap(),
+        "edits": [
+            { "old_text": "Hello", "new_text": "Hi" }
+        ]
+    })
+    .to_string()
+        + "}";
+
+    let result = execute_edit(&ToolContext::from_current_process(), &args).unwrap();
+    assert!(result.output.contains("Applied 1 edit"));
+    let content = fs::read_to_string(&file_path).unwrap();
+    assert_eq!(content, "Hi world\n");
+}
+
+#[test]
+fn repaired_but_wrong_content_still_fails_preflight_match() {
+    // Repair succeeds syntactically, but old_text doesn't match file content
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("test.txt");
+    fs::write(&file_path, "Hello world\n").unwrap();
+
+    let args = "{\"path\":\"".to_string()
+        + file_path.to_str().unwrap()
+        + "\",\"edits\":[{\"old_text\":\"	\",\"new_text\":\"Hi\"}]}";
+
+    let err = execute_edit(&ToolContext::from_current_process(), &args).unwrap_err();
+    assert!(
+        err.contains("could not find the exact text to replace"),
+        "Repaired-but-non-matching old_text should fail preflight: {err}"
+    );
+}
+
+#[test]
+fn quote_desync_payload_still_rejected() {
+    // Unrepairable quote-desync should produce the same error as before
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("test.txt");
+    fs::write(&file_path, "Hello\n").unwrap();
+
+    let args = "{\"path\":\"".to_string()
+        + file_path.to_str().unwrap()
+        + "\",\"edits\":[{\"old_text\":\"Hello\",\"new_text\":\"Hi]}";
+
+    let err = execute_edit(&ToolContext::from_current_process(), &args).unwrap_err();
+    assert!(
+        err.contains("Invalid edit arguments"),
+        "Unrepairable payload should produce Invalid edit arguments: {err}"
+    );
+}

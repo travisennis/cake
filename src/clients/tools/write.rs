@@ -45,8 +45,9 @@ pub(super) fn mutating_target(
     context: &ToolContext,
     arguments: &str,
 ) -> Result<std::path::PathBuf, String> {
+    let repaired = super::repair_json_args(arguments);
     let args: WriteArgs =
-        serde_json::from_str(arguments).map_err(|e| format!("Invalid write arguments: {e}"))?;
+        serde_json::from_str(&repaired).map_err(|e| format!("Invalid write arguments: {e}"))?;
     validate_path_for_write(context, &args.path)
 }
 
@@ -55,8 +56,9 @@ pub(super) fn execute_write(
     context: &ToolContext,
     arguments: &str,
 ) -> Result<super::ToolResult, String> {
+    let repaired = super::repair_json_args(arguments);
     let args: WriteArgs =
-        serde_json::from_str(arguments).map_err(|e| format!("Invalid write arguments: {e}"))?;
+        serde_json::from_str(&repaired).map_err(|e| format!("Invalid write arguments: {e}"))?;
 
     // Check if file exists to determine if it's a create or overwrite
     let file_existed = Path::new(&args.path).exists();

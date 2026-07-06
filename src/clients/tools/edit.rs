@@ -2,7 +2,7 @@ use serde::Deserialize;
 use std::fmt::Write as _;
 use std::path::Path;
 
-use crate::clients::tools::{ToolContext, validate_path_for_write};
+use crate::clients::tools::{ToolContext, repair_json_args, validate_path_for_write};
 
 // =============================================================================
 // Constants
@@ -89,8 +89,9 @@ pub(super) fn mutating_target(
     context: &ToolContext,
     arguments: &str,
 ) -> Result<std::path::PathBuf, String> {
+    let repaired = repair_json_args(arguments);
     let args: EditSummaryArgs =
-        serde_json::from_str(arguments).map_err(|e| format!("Invalid edit arguments: {e}"))?;
+        serde_json::from_str(&repaired).map_err(|e| format!("Invalid edit arguments: {e}"))?;
     validate_path_for_write(context, &args.path)
 }
 
@@ -237,7 +238,8 @@ pub(super) fn execute_edit(
 }
 
 fn parse_edit_args(arguments: &str) -> Result<EditArgs, String> {
-    serde_json::from_str(arguments).map_err(|e| {
+    let repaired = repair_json_args(arguments);
+    serde_json::from_str(&repaired).map_err(|e| {
         format!(
             "Invalid edit arguments: {e}\nExpected shape: {}",
             expected_edit_arguments_shape()

@@ -61,10 +61,16 @@ pub(super) async fn execute_tool(name: &str, arguments: &str) -> Result<ToolResu
 
 Execution flow:
 
-1. Parse JSON arguments using serde
-2. Validate inputs (paths, etc.)
-3. Execute the operation
-4. Return `ToolResult` with output or error
+1. Attempt strict JSON argument parsing using serde
+2. If parsing fails, apply a conservative repair pass that handles:
+   - Raw control characters inside string literals (tab, newline, etc.)
+   - Trailing garbage after a balanced top-level JSON value
+3. Re-attempt parsing on the repaired text
+4. Validate inputs (paths, etc.)
+5. Execute the operation
+6. Return `ToolResult` with output or error
+
+See `src/clients/tools/json_repair.rs` for the full repair logic. Repairs are deterministic and lossless --- if a repair produces wrong content, the tool's own preflight validation still catches it.
 
 Results are returned as strings so they can be included in API responses.
 

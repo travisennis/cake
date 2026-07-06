@@ -7,7 +7,7 @@ Read this before changing agent loop control flow, tool definitions, tool-call c
 ## Compatibility Surfaces
 
 - Tool JSON schemas and tool names.
-- Tool execution semantics, including path validation and error strings visible to the model.
+- Tool execution semantics, including path validation, error strings visible to the model, and JSON argument repair behavior.
 - `ConversationItem` representation and backend translation behavior.
 - Transcript ordering and tool-call/result pairing.
 
