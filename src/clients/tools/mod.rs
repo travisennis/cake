@@ -153,8 +153,342 @@ pub(super) use json_repair::repair_json_args;
 pub use read::extract_path as read_extract_path;
 
 // =============================================================================
-// Tool Types
+// JSON Parse Error Formatting
 // =============================================================================
+
+/// Maximum characters of context to show around a parse-failure position.
+const JSON_PARSE_CONTEXT_WIDTH: usize = 80;
+
+/// Format a JSON parse error with a bounded context window, caret marker,
+/// and targeted hint keyed off the error kind.
+///
+/// The serde `line`/`column` is converted to a byte offset in `payload`
+///(which should be the payload after repair, i.e. the string that was
+/// actually fed to the JSON parser).
+pub(super) fn format_json_parse_error(
+    payload: &str,
+    err: &serde_json::Error,
+    tool_name: &str,
+    expected_shape: &str,
+) -> String {
+    let error_msg = err.to_string();
+    let line = err.line();
+    let column = err.column();
+
+    let context = extract_json_error_context(payload, line, column);
+
+    let mut msg = format!("Invalid {tool_name} arguments: {error_msg}");
+
+    if let Some((snippet, caret)) = context {
+        _ = std::fmt::Write::write_fmt(&mut msg, format_args!("\n\nContext:\n{snippet}\n{caret}"));
+    }
+
+    let hint = json_error_hint(&error_msg);
+    _ = std::fmt::Write::write_fmt(&mut msg, format_args!("\nHint: {hint}"));
+    _ = std::fmt::Write::write_fmt(&mut msg, format_args!("\nExpected shape: {expected_shape}"));
+
+    msg
+}
+
+/// Convert a 1-indexed line/column position to a byte offset in `s`.
+fn line_col_to_offset(s: &str, line: usize, column: usize) -> Option<usize> {
+    let bytes = s.as_bytes();
+    let mut current_line: usize = 1;
+    let mut line_start: usize = 0;
+
+    for offset in 0..bytes.len() {
+        if current_line == line {
+            let col_byte_offset = line_start + column.saturating_sub(1);
+            if col_byte_offset <= bytes.len() {
+                return Some(col_byte_offset);
+            }
+            return None;
+        }
+        if bytes[offset] == b'\n' {
+            current_line += 1;
+            line_start = offset + 1;
+        }
+    }
+
+    // The error may be at or past the end of the last line (EOF).
+    if current_line == line {
+        let col_byte_offset = line_start + column.saturating_sub(1);
+        if col_byte_offset <= bytes.len() {
+            return Some(col_byte_offset);
+        }
+    }
+
+    None
+}
+
+/// Extract an escaped context snippet and caret line around `line`/`column`.
+fn extract_json_error_context(
+    payload: &str,
+    line: usize,
+    column: usize,
+) -> Option<(String, String)> {
+    let offset = line_col_to_offset(payload, line, column)?;
+
+    let half = JSON_PARSE_CONTEXT_WIDTH / 2;
+    let start = offset.saturating_sub(half);
+    let mut end = offset + half;
+    if end > payload.len() {
+        end = payload.len();
+    }
+
+    // Use safe string slicing via `.get()` which returns `None` (falling back to
+    // empty) when the range doesn't fall on UTF-8 character boundaries.
+    let before = payload.get(start..offset).unwrap_or_default();
+    let after = payload.get(offset..end).unwrap_or_default();
+
+    let escaped_before = escape_json_context(before);
+    let escaped_after = escape_json_context(after);
+
+    // Show a 4-space indent before the snippet
+    let snippet = format!("    {escaped_before}{escaped_after}");
+    let caret = format!("    {:>width$}", "^", width = escaped_before.len());
+
+    Some((snippet, caret))
+}
+
+/// Escape control characters in a JSON context window for display.
+fn escape_json_context(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\0' => out.push_str("\\0"),
+            '\t' => out.push_str("\\t"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            // Remaining C0 control chars (U+0001-U+001F) not matched above:
+            // vertical tab, form feed, shift-in through unit separator.
+            c if c.is_control() && (c as u32) <= 0x1F => {
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "String write_fmt always succeeds"
+                )]
+                let _ =
+                    std::fmt::Write::write_fmt(&mut out, format_args!("\\u{{{:04X}}}", c as u32));
+            },
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Produce a targeted hint based on the serde error message text.
+fn json_error_hint(error_msg: &str) -> &'static str {
+    // Extract just the message portion before " at line ... column ..."
+    let msg = error_msg.split(" at line ").next().unwrap_or(error_msg);
+
+    if msg.contains("control character") {
+        "A raw control character (tab, newline, etc.) was found inside a JSON string. \
+         Must escape as \\t, \\n, or \\r."
+    } else if msg.contains("trailing characters") || msg.contains("trailing data") {
+        "Content continued after the closing brace of the arguments object. \
+         Check for extra data after the final `}`."
+    } else if msg.contains("missing field `path`") {
+        "The `path` field is required at the top level. Provide `path` before `edits`/`content`."
+    } else if msg.contains("missing field") {
+        "A required field is missing. Double-check the expected shape above."
+    } else if msg.contains("unknown field") {
+        "An unrecognized field name was provided. Check spelling against the expected shape."
+    } else if msg.contains("key must be a string") {
+        "Object keys must be double-quoted strings."
+    } else if msg.contains("EOF while parsing") || msg.contains("end of input") {
+        "The JSON input ended unexpectedly. Check for unclosed braces, brackets, or quotes."
+    } else {
+        "Check the payload structure against the expected shape."
+    }
+}
+
+#[cfg(test)]
+mod json_parse_error_tests {
+    use super::*;
+
+    // ── json_error_hint branch coverage ──
+
+    #[test]
+    fn hint_control_char() {
+        let msg =
+            "control character (\\u0000-\\u001F) found while parsing a string at line 1 column 5";
+        assert!(json_error_hint(msg).contains("raw control character"));
+    }
+
+    #[test]
+    fn hint_trailing_characters() {
+        let msg = "trailing characters at line 1 column 42";
+        assert!(json_error_hint(msg).contains("Content continued"));
+    }
+
+    #[test]
+    fn hint_trailing_data() {
+        let msg = "trailing data at line 1 column 10";
+        assert!(json_error_hint(msg).contains("Content continued"));
+    }
+
+    #[test]
+    fn hint_missing_field_path() {
+        let msg = "missing field `path` at line 1 column 10";
+        assert!(json_error_hint(msg).contains("`path` field is required"));
+    }
+
+    #[test]
+    fn hint_missing_field_other() {
+        let msg = "missing field `old_text` at line 1 column 42";
+        assert!(json_error_hint(msg).contains("A required field is missing"));
+    }
+
+    #[test]
+    fn hint_unknown_field() {
+        let msg = "unknown field `foo` at line 1 column 10";
+        assert!(json_error_hint(msg).contains("unrecognized field name"));
+    }
+
+    #[test]
+    fn hint_key_must_be_string() {
+        let msg = "key must be a string at line 1 column 5";
+        assert!(json_error_hint(msg).contains("double-quoted strings"));
+    }
+
+    #[test]
+    fn hint_eof() {
+        let msg = "EOF while parsing a string at line 1 column 42";
+        assert!(json_error_hint(msg).contains("ended unexpectedly"));
+    }
+
+    #[test]
+    fn hint_eof_end_of_input() {
+        let msg = "end of input at line 1 column 42";
+        assert!(json_error_hint(msg).contains("ended unexpectedly"));
+    }
+
+    #[test]
+    fn hint_default() {
+        let msg = "expected `,` or `}` at line 1 column 10";
+        assert!(json_error_hint(msg).contains("Check the payload structure"));
+    }
+
+    #[test]
+    fn hint_no_line_column() {
+        // Error message without " at line ..." suffix
+        let msg = "some random io error";
+        assert!(json_error_hint(msg).contains("Check the payload structure"));
+    }
+
+    // ── line_col_to_offset coverage ──
+
+    #[test]
+    fn line_col_to_offset_first_line() {
+        let s = "hello";
+        assert_eq!(line_col_to_offset(s, 1, 1), Some(0));
+        assert_eq!(line_col_to_offset(s, 1, 3), Some(2));
+    }
+
+    #[test]
+    fn line_col_to_offset_second_line() {
+        let s = "abc\ndef";
+        assert_eq!(line_col_to_offset(s, 2, 1), Some(4));
+        assert_eq!(line_col_to_offset(s, 2, 3), Some(6));
+    }
+
+    #[test]
+    fn line_col_to_offset_at_eof() {
+        // serde reports column at past-the-end for EOF errors
+        let s = "abc";
+        assert_eq!(line_col_to_offset(s, 1, 4), Some(3));
+    }
+
+    #[test]
+    fn line_col_to_offset_past_eof_returns_none() {
+        let s = "abc";
+        assert_eq!(line_col_to_offset(s, 1, 999), None);
+    }
+
+    #[test]
+    fn line_col_to_offset_line_not_found_returns_none() {
+        let s = "abc";
+        assert_eq!(line_col_to_offset(s, 99, 1), None);
+    }
+
+    // ── escape_json_context coverage ──
+
+    #[test]
+    fn escape_context_escapes_form_feed() {
+        // U+000C (form feed) is ASCII whitespace per Rust; verify it is escaped.
+        assert_eq!(escape_json_context("\x0C"), "\\u{000C}");
+    }
+
+    #[test]
+    fn escape_context_passes_normal_chars() {
+        assert_eq!(escape_json_context("hello world"), "hello world");
+        assert_eq!(escape_json_context("{\"a\":1}"), "{\"a\":1}");
+    }
+
+    #[test]
+    fn escape_context_escapes_control_chars() {
+        assert_eq!(escape_json_context("\0"), "\\0");
+        assert_eq!(escape_json_context("\t"), "\\t");
+        assert_eq!(escape_json_context("\n"), "\\n");
+        assert_eq!(escape_json_context("\r"), "\\r");
+    }
+
+    #[test]
+    fn escape_context_escapes_soh() {
+        // U+0001 is not whitespace, not newline/tab/cr
+        assert_eq!(escape_json_context("\x01"), "\\u{0001}");
+    }
+
+    // ── extract_json_error_context coverage ──
+
+    #[test]
+    fn extract_context_empty_payload() {
+        // Empty payload yields an empty context window
+        let result = extract_json_error_context("", 1, 1);
+        assert!(result.is_some());
+        let (_snippet, caret) = result.unwrap();
+        assert!(caret.contains('^'), "caret should appear in empty payload");
+    }
+
+    #[test]
+    fn extract_context_short_payload() {
+        let (snippet, caret) = extract_json_error_context("{\"a\":1}", 1, 5).unwrap();
+        assert!(snippet.contains("{\"a\":1}"));
+        assert!(caret.contains('^'));
+    }
+
+    #[test]
+    fn extract_context_with_control_char() {
+        // Trailing null byte
+        let payload = "{\"a\":1}\x00";
+        let (snippet, caret) = extract_json_error_context(payload, 1, 9).unwrap();
+        assert!(snippet.contains("\\0"), "null should be escaped: {snippet}");
+        assert!(caret.contains('^'));
+    }
+
+    // ── format_json_parse_error integration ──
+
+    #[test]
+    fn format_error_empty_payload() {
+        // Empty payload: line_col_to_offset returns None, context is skipped
+        let payload = "";
+        let err = serde_json::from_str::<serde_json::Value>(payload).unwrap_err();
+        let msg = format_json_parse_error(payload, &err, "test", "{\"a\":1}");
+        assert!(msg.contains("Invalid test arguments"));
+        assert!(msg.contains("Expected shape"));
+        // No Context: section since context extraction returned None
+    }
+
+    #[test]
+    fn format_error_with_invalid_syntax() {
+        // Payload with a syntax error so serde fails
+        let payload = "{\"a\": }";
+        let err = serde_json::from_str::<serde_json::Value>(payload).unwrap_err();
+        let msg = format_json_parse_error(payload, &err, "test", "{\"a\":1}");
+        assert!(msg.contains("Invalid test arguments"));
+        assert!(msg.contains("Hint:"));
+    }
+}
 
 /// Tool definition sent in API requests.
 ///

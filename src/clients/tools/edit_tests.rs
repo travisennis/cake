@@ -54,6 +54,115 @@ fn invalid_edit_arguments_reject_unknown_field_names() {
     );
 }
 
+// =========================================================================
+// JSON Parse Error Formatting Tests
+// =========================================================================
+
+#[test]
+fn error_message_includes_context_window() {
+    let err = parse_edit_args(r#"{"path":"src/main.rs","edits":[{"new_text":"replacement"}]}"#)
+        .unwrap_err();
+
+    assert!(
+        err.contains("Context:"),
+        "Error should include context section: {err}"
+    );
+    // The context window centers on the failure position (column 57).
+    // "replacement" or "new_text" should be visible in that window.
+    assert!(
+        err.contains("new_text"),
+        "Context should show part of the payload around failure: {err}"
+    );
+    assert!(
+        err.contains('^'),
+        "Context should include a caret marker: {err}"
+    );
+}
+
+#[test]
+fn error_message_missing_field_path_hint() {
+    // Provide edits but omit the top-level `path` field.
+    let err = parse_edit_args(r#"{"edits":[{"old_text":"hello","new_text":"hi"}]}"#).unwrap_err();
+
+    assert!(
+        err.contains("missing field `path`"),
+        "Error should identify missing path field: {err}"
+    );
+    assert!(err.contains("Hint:"), "Error should include a hint: {err}");
+    assert!(
+        err.contains("`path` field is required"),
+        "Hint should mention the path field: {err}"
+    );
+}
+
+#[test]
+fn error_hint_control_char() {
+    // Test the hint logic directly via format_json_parse_error.
+    // Use a payload with a raw control byte inside a string.
+    let corrupted = b"{\"a\": \"hello\x01world\"}";
+    let payload = std::str::from_utf8(corrupted).unwrap();
+    let err = serde_json::from_str::<serde_json::Value>(payload).unwrap_err();
+    let msg =
+        crate::clients::tools::format_json_parse_error(payload, &err, "edit", r#"{"a":"..."}"#);
+
+    assert!(
+        msg.contains("control character"),
+        "Error should mention control character: {msg}"
+    );
+    assert!(msg.contains("Hint:"), "Error should include a hint: {msg}");
+    assert!(
+        msg.contains("raw control character"),
+        "Hint should mention raw control characters: {msg}"
+    );
+}
+
+#[test]
+fn error_hint_trailing_characters() {
+    // Test the hint logic directly.
+    // Use a payload with trailing characters after a complete JSON object.
+    // We use a streaming deserializer to control the error we get.
+    let payload = r#"{"a":1}trailing"#;
+    // serde_json::from_str::<Value> fails with "trailing characters" for this
+    let err = serde_json::from_str::<serde_json::Value>(payload).unwrap_err();
+    let msg = crate::clients::tools::format_json_parse_error(payload, &err, "edit", r#"{"a":1}"#);
+
+    assert!(
+        msg.contains("trailing characters") || msg.contains("trailing data"),
+        "Error should mention trailing content: {msg}"
+    );
+    assert!(msg.contains("Hint:"), "Error should include a hint: {msg}");
+    assert!(
+        msg.contains("Content continued after the closing brace"),
+        "Hint should mention content after closing brace: {msg}"
+    );
+}
+
+#[test]
+fn error_message_large_payload_is_bounded() {
+    // Build a huge payload that fails JSON parse with an invalid escape.
+    let content = "x".repeat(5000);
+    // \\x is not a valid JSON escape, so serde will fail after repair
+    let payload = format!(
+        "{{\"path\":\"x\",\"edits\":[{{\"old_text\":\"{content}\\x\",\"new_text\":\"\"}}]}}",
+    );
+    let err = parse_edit_args(&payload).unwrap_err();
+
+    // The error message should be well under the payload size
+    assert!(
+        err.len() < 3000,
+        "Error message should be bounded, got {} bytes: {err:.80}...",
+        err.len()
+    );
+    assert!(
+        err.contains("Expected shape"),
+        "Bounded error should still include the expected shape: {err:.80}..."
+    );
+    assert!(
+        err.contains("Hint:"),
+        "Bounded error should still include a hint: {err:.80}..."
+    );
+}
+
 #[test]
 fn edit_schema_enforces_required_argument_shape() {
     let tool = edit_tool();

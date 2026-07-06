@@ -296,13 +296,13 @@ Lines 1-100/500
 **Parameters**:
 
 - `path`: Absolute path to the file (required)
-- `edits`: Array of edit operations (required, max 10)
+- `edits`: Array of edit operations (required, max 20)
   - `old_text`: Exact text to find (required)
   - `new_text`: Replacement text (required)
 
 **Features**:
 
-- Multiple edits per call (up to 10)
+- Multiple edits per call (up to 20)
 - Preflight validation (all edits validated before any changes)
 - Overlap detection (prevents conflicting edits)
 - Reverse-order application (prevents position shifting)
@@ -320,7 +320,8 @@ Lines 1-100/500
 - Multiple matches for `old_text` (must be unique; includes candidate contexts)
 - `old_text` == `new_text` (no-op)
 - Overlapping edits (with edit numbers)
-- Too many edits (> 10)
+- Invalid JSON arguments (includes bounded context window around the failure offset with control characters visibly escaped, a caret marker, and a targeted hint for control characters, trailing data, missing fields, unknown fields, unexpected EOF, or key-not-string errors)
+- Too many edits (> 20)
 - No edits provided
 - File is binary
 - Path is outside working directory
@@ -402,6 +403,9 @@ Examples:
 - `"Path '/etc/passwd' is outside the working directory"`
 - `"old_text matches 3 locations but must match exactly 1"` with capped, line-numbered candidate contexts
 - `"Binary file detected: cannot edit"`
+- `"Invalid edit arguments: ..."` with bounded context window (\~80 chars around the failure offset), a caret (`^`) marker, control characters rendered visibly, a targeted hint keyed off the error kind, and the expected JSON shape
+
+JSON parse errors for Edit and Write tool arguments include a context snippet centered on the serde failure offset, with control characters escaped for legibility. Targeted hints cover control characters (`must escape as \\t / \\n`), trailing data, missing fields, unknown fields, unexpected EOF, and key type errors. The context width is bounded to prevent echoing large payloads.
 
 ## Testing
 

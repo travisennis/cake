@@ -90,8 +90,14 @@ pub(super) fn mutating_target(
     arguments: &str,
 ) -> Result<std::path::PathBuf, String> {
     let repaired = repair_json_args(arguments);
-    let args: EditSummaryArgs =
-        serde_json::from_str(&repaired).map_err(|e| format!("Invalid edit arguments: {e}"))?;
+    let args: EditSummaryArgs = serde_json::from_str(&repaired).map_err(|e| {
+        crate::clients::tools::format_json_parse_error(
+            &repaired,
+            &e,
+            "edit",
+            expected_edit_summary_shape(),
+        )
+    })?;
     validate_path_for_write(context, &args.path)
 }
 
@@ -237,18 +243,26 @@ pub(super) fn execute_edit(
     Ok(super::ToolResult { output: result })
 }
 
+/// Expected JSON shape for the Edit tool arguments.
+const fn expected_edit_arguments_shape() -> &'static str {
+    r#"{"path":"file.txt","edits":[{"old_text":"exact text to replace","new_text":"replacement text"}]}"#
+}
+
+/// Expected JSON shape for the Edit tool summary (path-only) arguments.
+const fn expected_edit_summary_shape() -> &'static str {
+    r#"{"path":"file.txt"}"#
+}
+
 fn parse_edit_args(arguments: &str) -> Result<EditArgs, String> {
     let repaired = repair_json_args(arguments);
     serde_json::from_str(&repaired).map_err(|e| {
-        format!(
-            "Invalid edit arguments: {e}\nExpected shape: {}",
-            expected_edit_arguments_shape()
+        crate::clients::tools::format_json_parse_error(
+            &repaired,
+            &e,
+            "edit",
+            expected_edit_arguments_shape(),
         )
     })
-}
-
-const fn expected_edit_arguments_shape() -> &'static str {
-    r#"{"path":"file.txt","edits":[{"old_text":"exact text to replace","new_text":"replacement text"}]}"#
 }
 
 // =============================================================================

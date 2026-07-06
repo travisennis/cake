@@ -34,10 +34,15 @@ pub(super) fn write_tool() -> super::Tool {
 // =============================================================================
 
 /// Arguments for the Write tool
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct WriteArgs {
     path: String,
     content: String,
+}
+
+/// Expected JSON shape for the Write tool arguments.
+const fn expected_write_arguments_shape() -> &'static str {
+    r#"{"path":"file.txt","content":"..."}"#
 }
 
 /// Return the validated canonical path this Write call would mutate.
@@ -46,8 +51,9 @@ pub(super) fn mutating_target(
     arguments: &str,
 ) -> Result<std::path::PathBuf, String> {
     let repaired = super::repair_json_args(arguments);
-    let args: WriteArgs =
-        serde_json::from_str(&repaired).map_err(|e| format!("Invalid write arguments: {e}"))?;
+    let args: WriteArgs = serde_json::from_str(&repaired).map_err(|e| {
+        super::format_json_parse_error(&repaired, &e, "write", expected_write_arguments_shape())
+    })?;
     validate_path_for_write(context, &args.path)
 }
 
@@ -57,8 +63,9 @@ pub(super) fn execute_write(
     arguments: &str,
 ) -> Result<super::ToolResult, String> {
     let repaired = super::repair_json_args(arguments);
-    let args: WriteArgs =
-        serde_json::from_str(&repaired).map_err(|e| format!("Invalid write arguments: {e}"))?;
+    let args: WriteArgs = serde_json::from_str(&repaired).map_err(|e| {
+        super::format_json_parse_error(&repaired, &e, "write", expected_write_arguments_shape())
+    })?;
 
     // Check if file exists to determine if it's a create or overwrite
     let file_existed = Path::new(&args.path).exists();
@@ -281,5 +288,83 @@ mod tests {
         assert!(file_path.exists());
         let content = fs::read_to_string(&file_path).unwrap();
         assert!(content.is_empty());
+    }
+
+    // ── JSON parse error formatting ──
+
+    #[test]
+    fn write_invalid_json_missing_path() {
+        let payload = r#"{"content":"hello"}"#;
+        let err = execute_write(&ToolContext::from_current_process(), payload).unwrap_err();
+
+        assert!(
+            err.contains("Invalid write arguments"),
+            "Error should identify invalid write arguments: {err}"
+        );
+        assert!(
+            err.contains("missing field `path`"),
+            "Error should identify missing path: {err}"
+        );
+        assert!(
+            err.contains("Context:"),
+            "Error should include context window: {err}"
+        );
+        assert!(err.contains("Hint:"), "Error should include a hint: {err}");
+        assert!(
+            err.contains("`path` field is required"),
+            "Hint should mention path field: {err}"
+        );
+        assert!(
+            err.contains("Expected shape"),
+            "Error should include expected shape: {err}"
+        );
+    }
+
+    #[test]
+    fn write_invalid_json_trailing_chars() {
+        // Payload that fails even after repair: trailing data.
+        // Use serde_json::from_str::<WriteArgs> on a payload with extra data.
+        let payload = r#"{"path":"x","content":"hello"}extra"#;
+        // Repair strips trailing data, so this would actually succeed.
+        // Test via `mutating_target` or directly with format_json_parse_error.
+        let err = serde_json::from_str::<WriteArgs>(payload).unwrap_err();
+        let msg = crate::clients::tools::format_json_parse_error(
+            payload,
+            &err,
+            "write",
+            r#"{"path":"file.txt","content":"..."}"#,
+        );
+
+        assert!(
+            msg.contains("trailing characters") || msg.contains("trailing data"),
+            "Error should mention trailing content: {msg}"
+        );
+        assert!(msg.contains("Hint:"), "Error should include a hint: {msg}");
+        assert!(
+            msg.contains("Context:"),
+            "Error should include context: {msg}"
+        );
+    }
+
+    #[test]
+    fn write_invalid_json_control_char_in_string() {
+        let corrupted = b"{\"path\":\"x\",\"content\":\"hello\x01world\"}";
+        let payload = std::str::from_utf8(corrupted).unwrap();
+        let err = serde_json::from_str::<WriteArgs>(payload).unwrap_err();
+        let msg = crate::clients::tools::format_json_parse_error(
+            payload,
+            &err,
+            "write",
+            r#"{"path":"file.txt","content":"..."}"#,
+        );
+
+        assert!(
+            msg.contains("control character"),
+            "Error should mention control character: {msg}"
+        );
+        assert!(
+            msg.contains("raw control character"),
+            "Hint should mention raw control chars: {msg}"
+        );
     }
 }
