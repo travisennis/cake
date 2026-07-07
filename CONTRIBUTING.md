@@ -1,6 +1,6 @@
 # Contributing to Cake
 
-Thank you for your interest in contributing to Cake! This document provides contributor onboarding, development setup, common command invocations, and pull request workflow guidance for humans and agents.
+Thank you for your interest in contributing to Cake! This document provides contributor onboarding, development setup, common command invocations, and verification guidance for humans and agents.
 
 Agent-specific operating rules live in [AGENTS.md](AGENTS.md). Follow AGENTS.md first when working as an agent; use this file for the shared development workflow.
 
@@ -209,8 +209,13 @@ The project Rust toolchain is pinned in `rust-toolchain.toml`. When changing it:
 
 ## Git Workflow
 
-- **Never commit directly to the master branch** --- verify current branch with `git branch` before committing
-- Merge via feature branch + PR. Naming: `feat/xxx`, `fix/xxx`, `refactor/xxx`, `test/xxx`
+This project uses trunk-based development. Commits go directly to the `master` branch, protected by:
+
+- **Pre-commit hooks**: formatting, linting, and Markdown lint (installed via `prek`)
+- **Pre-push gate** (`just pre-push` / `just ci`): full test suite, coverage threshold, and change-risk regression checks
+- **GitHub CI**: acts as a backstop on push
+
+Branch + pull request workflow is optional for risky or experimental changes that benefit from review before merging.
 
 ## Commit Conventions
 
@@ -245,12 +250,11 @@ docs: update ARCHITECTURE.md with new module
 refactor(tools): extract path validation into shared function
 ```
 
-## Pull Request Process
+## Pull Request Process (Optional)
 
-1. Fork the repository
-2. Create a new branch for your feature or bug fix (see Git Workflow naming conventions)
-3. Make your changes and commit them following the commit conventions above
-4. Write tests for new functionality
-5. Ensure all CI checks pass (build, formatting, linting, tests)
-6. Update affected documentation if needed
-7. Submit a pull request
+For risky or experimental changes, a branch + pull request workflow may be used:
+
+1. Create a branch with a descriptive name (e.g., `feat/xxx`, `fix/xxx`, `refactor/xxx`, `test/xxx`)
+2. Make changes and commit following the commit conventions above
+3. Open a pull request targeting `master`
+4. Ensure all CI checks pass before merging

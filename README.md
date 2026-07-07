@@ -381,7 +381,7 @@ For detailed architecture documentation, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Contributing
 
-Contributions to cake are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, build commands, code style guidelines, commit conventions, and the pull request process.
+Contributions to cake are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, build commands, code style guidelines, and commit conventions.
 
 ## Platform Support
 
