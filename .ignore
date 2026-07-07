@@ -1,1 +1,5 @@
 target/
+# .agents is dot-prefixed, so rg/fd skip it as hidden by default; whitelist it
+# (and its dot-prefixed subdirectories) so tasks, plans, and research are searchable.
+!.agents/
+!.agents/**
