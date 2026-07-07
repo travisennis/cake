@@ -5,13 +5,15 @@
 //!
 //! # System prompt resolution
 //!
-//! The system prompt is resolved from three sources in precedence order
+//! The system prompt is resolved from these sources in precedence order
 //! (highest to lowest):
 //!
-//! 1. **Project-level override**: `.cake/system.md` in the working directory
-//! 2. **User-level override**: `system.md` in the user config directory
+//! 1. **`--system-prompt` CLI flag** — explicit user override
+//! 2. **Project-level file**: `.cake/system.md` in the working directory
+//! 3. **Settings `system_prompt`**: path from `settings.toml` (project or profile)
+//! 4. **User-level file**: `system.md` in the user config directory
 //!    (typically `~/.config/cake/system.md`)
-//! 3. **Built-in default**: `system.md` embedded at compile time
+//! 5. **Built-in default**: `system.md` embedded at compile time
 //!
 //! The first readable file found wins. Override files replace the default
 //! prompt entirely. Empty files are valid (intentional blank prompt).
@@ -36,19 +38,41 @@ When a skill references relative paths, resolve them against the skill's
 directory (the parent of SKILL.md) and use absolute paths in tool calls.
 </skill_instructions>";
 
-/// Resolves the system prompt from override files or the built-in default.
+/// Resolves the system prompt from CLI flags, override files, settings, or the built-in default.
 ///
-/// Checks for override files in precedence order:
-/// 1. Project-level: `working_dir/.cake/system.md`
-/// 2. User-level: `config_dir/system.md`
+/// Checks sources in precedence order (highest to lowest):
+/// 1. `--system-prompt` CLI flag (readable file at given path)
+/// 2. Project-level file: `working_dir/.cake/system.md`
+/// 3. Settings `system_prompt`: path from `settings.toml` (project or profile)
+/// 4. User-level file: `config_dir/system.md`
 ///
-/// The first readable file found is used. Empty files are valid.
+/// If none of these sources produce a readable file, the built-in default is used.
+/// The first readable file found wins. Empty files are valid (intentional blank prompt).
 /// Unreadable files produce a warning and are skipped.
-/// If no override is found, the built-in default is used.
-pub fn resolve_system_prompt(working_dir: &Path, config_dir: &Path) -> String {
-    let project_path = working_dir.join(".cake").join("system.md");
-    let user_path = config_dir.join("system.md");
+pub fn resolve_system_prompt(
+    working_dir: &Path,
+    config_dir: &Path,
+    cli_system_prompt: Option<&Path>,
+    settings_system_prompt: Option<&Path>,
+) -> String {
+    // 1. --system-prompt CLI flag
+    if let Some(path) = cli_system_prompt {
+        match std::fs::read_to_string(path) {
+            Ok(content) => {
+                debug!("Using --system-prompt file: {}", path.display());
+                return content.trim().to_string();
+            },
+            Err(e) => {
+                warn!(
+                    "Skipping unreadable --system-prompt file at {}: {e}",
+                    path.display()
+                );
+            },
+        }
+    }
 
+    // 2. Project-level file: .cake/system.md
+    let project_path = working_dir.join(".cake").join("system.md");
     if project_path.exists() {
         match std::fs::read_to_string(&project_path) {
             Ok(content) => {
@@ -67,6 +91,24 @@ pub fn resolve_system_prompt(working_dir: &Path, config_dir: &Path) -> String {
         }
     }
 
+    // 3. Settings system_prompt path
+    if let Some(path) = settings_system_prompt {
+        match std::fs::read_to_string(path) {
+            Ok(content) => {
+                debug!("Using settings system prompt from {}", path.display());
+                return content.trim().to_string();
+            },
+            Err(e) => {
+                warn!(
+                    "Skipping unreadable settings system prompt at {}: {e}",
+                    path.display()
+                );
+            },
+        }
+    }
+
+    // 4. User-level file: ~/.config/cake/system.md
+    let user_path = config_dir.join("system.md");
     if user_path.exists() {
         match std::fs::read_to_string(&user_path) {
             Ok(content) => {
@@ -94,10 +136,20 @@ pub fn resolve_system_prompt(working_dir: &Path, config_dir: &Path) -> String {
 pub fn build_initial_prompt_messages(
     working_dir: &Path,
     config_dir: &Path,
+    cli_system_prompt: Option<&Path>,
+    settings_system_prompt: Option<&Path>,
     agents_files: &[AgentsFile],
     skill_catalog: &SkillCatalog,
 ) -> Vec<(Role, String)> {
-    let mut messages = vec![(Role::System, resolve_system_prompt(working_dir, config_dir))];
+    let mut messages = vec![(
+        Role::System,
+        resolve_system_prompt(
+            working_dir,
+            config_dir,
+            cli_system_prompt,
+            settings_system_prompt,
+        ),
+    )];
     let context = format_agents_context(agents_files);
     if !context.is_empty() {
         messages.push((Role::Developer, context));
@@ -201,7 +253,7 @@ mod tests {
     fn resolve_uses_builtin_when_no_override() {
         let dir = TempDir::new().unwrap();
         let config_dir = TempDir::new().unwrap();
-        let prompt = resolve_system_prompt(dir.path(), config_dir.path());
+        let prompt = resolve_system_prompt(dir.path(), config_dir.path(), None, None);
         assert!(prompt.starts_with("You are cake."));
     }
 
@@ -214,7 +266,7 @@ mod tests {
         std::fs::create_dir_all(&cake_dir).unwrap();
         std::fs::write(cake_dir.join("system.md"), "Project prompt").unwrap();
 
-        let prompt = resolve_system_prompt(working_dir.path(), config_dir.path());
+        let prompt = resolve_system_prompt(working_dir.path(), config_dir.path(), None, None);
         assert_eq!(prompt, "Project prompt");
     }
 
@@ -225,7 +277,7 @@ mod tests {
 
         std::fs::write(config_dir.path().join("system.md"), "User prompt").unwrap();
 
-        let prompt = resolve_system_prompt(working_dir.path(), config_dir.path());
+        let prompt = resolve_system_prompt(working_dir.path(), config_dir.path(), None, None);
         assert_eq!(prompt, "User prompt");
     }
 
@@ -239,7 +291,7 @@ mod tests {
         std::fs::write(cake_dir.join("system.md"), "Project prompt").unwrap();
         std::fs::write(config_dir.path().join("system.md"), "User prompt").unwrap();
 
-        let prompt = resolve_system_prompt(working_dir.path(), config_dir.path());
+        let prompt = resolve_system_prompt(working_dir.path(), config_dir.path(), None, None);
         assert_eq!(prompt, "Project prompt");
     }
 
@@ -252,7 +304,7 @@ mod tests {
         std::fs::create_dir_all(&cake_dir).unwrap();
         std::fs::write(cake_dir.join("system.md"), "").unwrap();
 
-        let prompt = resolve_system_prompt(working_dir.path(), config_dir.path());
+        let prompt = resolve_system_prompt(working_dir.path(), config_dir.path(), None, None);
         assert_eq!(prompt, "");
     }
 
@@ -265,7 +317,7 @@ mod tests {
         std::fs::create_dir_all(&cake_dir).unwrap();
         std::fs::write(cake_dir.join("system.md"), "   \n\n  ").unwrap();
 
-        let prompt = resolve_system_prompt(working_dir.path(), config_dir.path());
+        let prompt = resolve_system_prompt(working_dir.path(), config_dir.path(), None, None);
         assert_eq!(prompt, "");
     }
 
@@ -288,7 +340,7 @@ mod tests {
 
         std::fs::write(config_dir.path().join("system.md"), "User prompt").unwrap();
 
-        let prompt = resolve_system_prompt(working_dir.path(), config_dir.path());
+        let prompt = resolve_system_prompt(working_dir.path(), config_dir.path(), None, None);
 
         #[cfg(unix)]
         {
@@ -331,7 +383,7 @@ mod tests {
             std::fs::set_permissions(&user_file, std::fs::Permissions::from_mode(0o000)).unwrap();
         }
 
-        let prompt = resolve_system_prompt(working_dir.path(), config_dir.path());
+        let prompt = resolve_system_prompt(working_dir.path(), config_dir.path(), None, None);
 
         #[cfg(unix)]
         {
@@ -361,7 +413,7 @@ mod tests {
     fn resolve_builtin_is_trimmed() {
         let dir = TempDir::new().unwrap();
         let config_dir = TempDir::new().unwrap();
-        let prompt = resolve_system_prompt(dir.path(), config_dir.path());
+        let prompt = resolve_system_prompt(dir.path(), config_dir.path(), None, None);
         assert!(!prompt.starts_with('\n'));
         assert!(!prompt.ends_with('\n'));
     }
@@ -378,6 +430,8 @@ mod tests {
         let messages = build_initial_prompt_messages(
             Path::new("/tmp"),
             config_dir.path(),
+            None,
+            None,
             &[],
             &SkillCatalog::empty(),
         );
@@ -407,6 +461,8 @@ mod tests {
         let messages = build_initial_prompt_messages(
             Path::new("/tmp"),
             config_dir.path(),
+            None,
+            None,
             &files,
             &SkillCatalog::empty(),
         );
@@ -431,6 +487,8 @@ mod tests {
         let messages = build_initial_prompt_messages(
             Path::new("/tmp"),
             config_dir.path(),
+            None,
+            None,
             &files,
             &SkillCatalog::empty(),
         );
@@ -458,6 +516,8 @@ mod tests {
         let messages = build_initial_prompt_messages(
             Path::new("/tmp"),
             config_dir.path(),
+            None,
+            None,
             &files,
             &SkillCatalog::empty(),
         );
@@ -481,8 +541,14 @@ mod tests {
             scope: SkillScope::Project,
         });
 
-        let messages =
-            build_initial_prompt_messages(Path::new("/tmp"), config_dir.path(), &[], &catalog);
+        let messages = build_initial_prompt_messages(
+            Path::new("/tmp"),
+            config_dir.path(),
+            None,
+            None,
+            &[],
+            &catalog,
+        );
         let prompt = render_messages(&messages);
         assert!(prompt.contains("## Skills"));
         assert!(prompt.contains("<skill_instructions>"));
@@ -508,8 +574,14 @@ mod tests {
             scope: SkillScope::Project,
         });
 
-        let messages =
-            build_initial_prompt_messages(Path::new("/tmp"), config_dir.path(), &files, &catalog);
+        let messages = build_initial_prompt_messages(
+            Path::new("/tmp"),
+            config_dir.path(),
+            None,
+            None,
+            &files,
+            &catalog,
+        );
         let prompt = render_messages(&messages);
         // AGENTS.md comes before Skills
         let agents_pos = prompt.find("## Additional Context").unwrap();
@@ -523,6 +595,8 @@ mod tests {
         let messages = build_initial_prompt_messages(
             Path::new("/tmp"),
             config_dir.path(),
+            None,
+            None,
             &[],
             &SkillCatalog::empty(),
         );
@@ -539,6 +613,8 @@ mod tests {
         let messages = build_initial_prompt_messages(
             Path::new("/project"),
             config_dir.path(),
+            None,
+            None,
             &files,
             &SkillCatalog::empty(),
         );
@@ -561,6 +637,8 @@ mod tests {
         let messages = build_initial_prompt_messages(
             Path::new("/project"),
             config_dir.path(),
+            None,
+            None,
             &files,
             &SkillCatalog::empty(),
         );
@@ -578,8 +656,14 @@ mod tests {
             base_directory: PathBuf::from("/project/.agents/skills/debugging"),
             scope: SkillScope::Project,
         });
-        let messages =
-            build_initial_prompt_messages(Path::new("/project"), config_dir.path(), &[], &catalog);
+        let messages = build_initial_prompt_messages(
+            Path::new("/project"),
+            config_dir.path(),
+            None,
+            None,
+            &[],
+            &catalog,
+        );
         assert_prompt_snapshot("prompt_with_skill_catalog", &messages);
     }
 
@@ -601,6 +685,8 @@ mod tests {
         let messages = build_initial_prompt_messages(
             Path::new("/project"),
             config_dir.path(),
+            None,
+            None,
             &files,
             &catalog,
         );

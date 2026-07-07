@@ -119,6 +119,10 @@ pub(crate) struct CodingAssistant {
     #[arg(long, value_name = "NAMES")]
     pub skills: Option<String>,
 
+    /// Path to a custom system prompt file (highest precedence)
+    #[arg(long, value_name = "PATH")]
+    pub system_prompt: Option<String>,
+
     #[command(subcommand)]
     pub command: Option<Commands>,
 }
@@ -755,6 +759,7 @@ impl CmdRunner for CodingAssistant {
             &resources.skill_catalog,
             &resources.tool_context,
             task_id,
+            resources.loaded.system_prompt.as_deref(),
         )?;
 
         Self::prepare_seeded_session(data_dir, &mut run_session)?;

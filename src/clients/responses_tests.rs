@@ -38,6 +38,8 @@ fn full_prompt_history() -> Vec<ConversationItem> {
     let mut history = build_initial_prompt_messages(
         Path::new("/project"),
         config_dir.path(),
+        None,
+        None,
         &agents_files,
         &skill_catalog,
     )

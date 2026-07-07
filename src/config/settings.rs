@@ -62,6 +62,9 @@ pub struct ProfileSettings {
     /// Additional directories for read-write access.
     #[serde(default)]
     pub directories: Vec<String>,
+    /// Path to a custom system prompt file for this profile.
+    #[serde(default)]
+    pub system_prompt: Option<String>,
     /// Model definitions are intentionally not supported in profiles.
     #[serde(default)]
     pub models: Option<Vec<ModelDefinition>>,
@@ -92,6 +95,9 @@ pub struct Settings {
     /// Merged from global and project settings.
     #[serde(default)]
     pub directories: Vec<String>,
+    /// Path to a custom system prompt file.
+    #[serde(default)]
+    pub system_prompt: Option<String>,
     /// Named behavior profiles.
     #[serde(default)]
     pub profiles: HashMap<String, ProfileSettings>,
@@ -112,6 +118,10 @@ pub struct LoadedSettings {
     pub directories: Vec<String>,
     /// Effective skill settings (global + project + selected profile)
     pub skills: SkillSettings,
+    /// Resolved system prompt path from settings (global + project + selected profile).
+    /// This is a path to a custom prompt file, checked after `.cake/system.md`
+    /// but before `~/.config/cake/system.md` in the precedence chain.
+    pub system_prompt: Option<String>,
 }
 
 /// Definition of a named model in settings.toml.
@@ -369,6 +379,7 @@ impl SettingsLoader {
         let mut directories: HashSet<String> = HashSet::new();
         let mut skills = SkillSettings::default();
         let mut profiles: HashMap<String, Vec<ProfileSettings>> = HashMap::new();
+        let mut system_prompt: Option<String> = None;
 
         // Load global settings first.
         let global_path = crate::config::config_dir()
@@ -383,6 +394,7 @@ impl SettingsLoader {
                 &mut directories,
                 &mut skills,
                 &mut profiles,
+                &mut system_prompt,
             )?;
         }
 
@@ -398,6 +410,7 @@ impl SettingsLoader {
                     &mut directories,
                     &mut skills,
                     &mut profiles,
+                    &mut system_prompt,
                 )?;
             }
         }
@@ -428,6 +441,7 @@ impl SettingsLoader {
                 if let Some(ref profile_default) = overlay.default_model {
                     default_model = Some(profile_default.clone());
                 }
+                system_prompt.clone_from(&overlay.system_prompt);
                 for dir in &overlay.directories {
                     directories.insert(dir.clone());
                 }
@@ -447,6 +461,7 @@ impl SettingsLoader {
             default_model,
             directories: directories.into_iter().collect(),
             skills,
+            system_prompt,
         })
     }
 
@@ -457,6 +472,7 @@ impl SettingsLoader {
         directories: &mut HashSet<String>,
         skills: &mut SkillSettings,
         profiles: &mut HashMap<String, Vec<ProfileSettings>>,
+        system_prompt: &mut Option<String>,
     ) -> Result<(), SettingsError> {
         Self::add_models_to_map(models, settings.models)?;
         if settings.default_model.is_some() {
@@ -467,6 +483,9 @@ impl SettingsLoader {
         }
         if let Some(settings_skills) = settings.skills {
             *skills = settings_skills;
+        }
+        if settings.system_prompt.is_some() {
+            *system_prompt = settings.system_prompt;
         }
         for (name, profile) in settings.profiles {
             profiles.entry(name).or_default().push(profile);

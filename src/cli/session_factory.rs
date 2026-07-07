@@ -156,6 +156,10 @@ impl crate::CodingAssistant {
         clippy::too_many_arguments,
         reason = "session construction naturally requires many parameters"
     )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "session construction naturally requires many parameters"
+    )]
     pub(crate) fn build_client_and_session(
         &self,
         run_mode: &RunMode,
@@ -168,9 +172,18 @@ impl crate::CodingAssistant {
         skill_catalog: &SkillCatalog,
         tool_context: &Arc<ToolContext>,
         task_id: uuid::Uuid,
+        loaded_system_prompt: Option<&str>,
     ) -> anyhow::Result<RunSession> {
-        let initial_messages =
-            build_initial_prompt_messages(&current_dir, config_dir, agents_files, skill_catalog);
+        let cli_system_prompt = self.system_prompt.as_deref().map(std::path::Path::new);
+        let settings_system_prompt = loaded_system_prompt.map(std::path::Path::new);
+        let initial_messages = build_initial_prompt_messages(
+            &current_dir,
+            config_dir,
+            cli_system_prompt,
+            settings_system_prompt,
+            agents_files,
+            skill_catalog,
+        );
         let locs = skill_locations(skill_catalog);
 
         match run_mode {
