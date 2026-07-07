@@ -109,6 +109,20 @@ The prompt covers:
 
 For details on overriding this prompt, see [System Prompt Resolution](#system-prompt-resolution) above.
 
+### Command Guidance Routing
+
+cake routes command guidance across three layers. Each layer has a distinct role:
+
+  | Layer                           | Role                                                                                                                         | Examples                                                                                      |
+  | ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+  | **System prompt**               | Broad, high-frequency behavior rules that should shape nearly every task                                                     | Tool descriptions, efficiency rules, handoff instructions                                     |
+  | **Built-in Bash safety checks** | Rare but concrete command footguns detectable deterministically at execution time — universal and low-noise                  | `rg -rn` soft warning, git commit command-substitution hard block, destructive git operations |
+  | **Hooks**                       | Local/project/org policy, audit logging, experimentation, checks needing repo-specific state, subjective command preferences | Pre-commit checks, policy enforcement, custom tool guards                                     |
+
+This split avoids an always-on prompt tax for rarely-needed guidance while keeping runtime protections for the most common footguns. Built-in Bash checks are more performant than hooks because they avoid spawning a hook command, serializing JSON, parsing hook stdout, enforcing hook timeout behavior, and recording hook events.
+
+Built-in checks are slated to become user-ownable policy data (see task 241).
+
 ### Skills Section
 
 If any skills were discovered, a "Skills" section is emitted as a developer context message:

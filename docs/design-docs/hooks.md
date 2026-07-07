@@ -122,3 +122,13 @@ Tool hook records also include `call_id`, `tool_name`, and `tool_input_summary`.
 `decision` preserves the historical coarse label. `resolved_decision` is the effective decision after parsing hook stdout and process status. It distinguishes an explicit allow result from a no-op hook by recording values such as `allow`, `deny`, `stop`, `error`, or `none`.
 
 Hooks are trusted local configuration and run outside the model tool sandbox. Do not install project hooks you do not trust.
+
+## Guidance Routing
+
+Hooks are one layer in a three-layer guidance system. The layers are:
+
+1. **System prompt** --- Broad, high-frequency behavior rules that should shape nearly every task (tool descriptions, efficiency rules, handoff instructions).
+2. **Built-in Bash safety checks** --- Rare, deterministic, low-noise footgun detection at execution time (destructive git operations, `rg -rn` footgun, git commit command-substitution). Avoid spawning external processes for universal checks.
+3. **Hooks** (this layer) --- Local/project/org policy, audit logging, experimentation, checks needing repo-specific state, and subjective command preferences.
+
+Prefer built-in checks over hooks when the concern is universal, deterministic, and low-noise. Prefer hooks when the concern is project-specific, subjective, or needs mutable state. Built-in checks are slated to become user-ownable policy data (task 241).
