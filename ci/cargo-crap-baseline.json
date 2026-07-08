@@ -589,10 +589,10 @@
     {
       "file": "./src/prompts/mod.rs",
       "function": "resolve_system_prompt",
-      "line": 48,
-      "cyclomatic": 7.0,
-      "coverage": 88.0,
-      "crap": 7.084672
+      "line": 52,
+      "cyclomatic": 13.0,
+      "coverage": 64.58333333333334,
+      "crap": 20.507749204282398
     },
     {
       "file": "./src/clients/tools/mod.rs",
@@ -765,10 +765,10 @@
     {
       "file": "./src/config/settings.rs",
       "function": "SettingsLoader::merge_settings",
-      "line": 453,
-      "cyclomatic": 6.0,
-      "coverage": 100.0,
-      "crap": 6.0
+      "line": 468,
+      "cyclomatic": 7.0,
+      "coverage": 96.29629629629629,
+      "crap": 7.002489457907839
     },
     {
       "file": "./src/hooks.rs",

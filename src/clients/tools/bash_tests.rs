@@ -640,7 +640,7 @@ async fn test_streaming_with_soft_warning() {
 async fn test_streaming_with_soft_warning_and_empty_result() {
     // A command with a soft warning that produces no output should show
     // only the warning text (no extra formatting).
-    let args = r#"{"command": "rg -rn some_pattern 2>/dev/null; true"}"#;
+    let args = r#"{"command": "rg -rn some_pattern /dev/null 2>/dev/null; true"}"#;
     let result = Box::pin(execute_bash_unsandboxed(args)).await;
     if let Ok(res) = result {
         assert!(
