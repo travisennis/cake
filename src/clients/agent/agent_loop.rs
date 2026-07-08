@@ -1,11 +1,13 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
 use futures::FutureExt;
 
 use crate::clients::agent::{Agent, TurnResult};
-use crate::clients::skill_dedup::{SkillActivation, execute_tool_with_skill_dedup};
-use crate::clients::tools::{ScheduledToolPlan, reject_duplicate_mutating_tool_calls};
+use crate::clients::tools::{
+    ScheduledToolPlan, read_extract_path, reject_duplicate_mutating_tool_calls,
+};
 use crate::hooks::ToolHookPlan;
 use crate::session_telemetry::ToolCallTelemetry;
 use crate::types::{ConversationItem, SessionRecord};
@@ -18,6 +20,13 @@ struct ToolRunResult {
     output: String,
     skill_activation: Option<SkillActivation>,
     telemetry: ToolCallTelemetry,
+}
+
+/// Result of checking whether a Read tool call targeted a known skill path.
+#[derive(Debug, Clone)]
+struct SkillActivation {
+    name: String,
+    path: PathBuf,
 }
 
 /// Build a synchronous error `ToolRunResult` (no tool execution, immediate).
@@ -123,13 +132,13 @@ impl Agent {
             }
 
             let skill_locations = Arc::clone(&self.skill_locations);
-            let skill_activations = Arc::clone(&self.skill_activations);
+            let activated_skills = Arc::clone(&self.activated_skills);
             let tools = &self.tools;
             let tool_context = Arc::clone(&self.tool_context);
             let turn_index = self.turn_count;
             let futures = tool_plans.into_iter().map(|(call_id, name, plan)| {
                 let skill_locations = Arc::clone(&skill_locations);
-                let skill_activations = Arc::clone(&skill_activations);
+                let activated_skills = Arc::clone(&activated_skills);
                 let tool_context = Arc::clone(&tool_context);
                 let hook_runner = self.hook_runner.clone();
                 match plan {
@@ -152,15 +161,9 @@ impl Agent {
                         additional_context,
                     }) => async move {
                         let start = Instant::now();
-                        let result = execute_tool_with_skill_dedup(
-                            tools,
-                            Arc::clone(&tool_context),
-                            &name,
-                            &arguments,
-                            skill_locations.as_ref(),
-                            &skill_activations,
-                        )
-                        .await;
+                        let result = tools
+                            .execute(Arc::clone(&tool_context), &name, &arguments)
+                            .await;
                         let hook_result = result
                             .as_ref()
                             .map(|result| result.output.clone())
@@ -188,9 +191,22 @@ impl Agent {
                         };
 
                         let was_error = result.is_err();
-                        let (mut output, skill_activation) = match result {
-                            Ok(result) => (result.output, result.skill_activation),
-                            Err(error) => (format!("Error: {error}"), None),
+                        let mut output = match result {
+                            Ok(result) => result.output,
+                            Err(error) => format!("Error: {error}"),
+                        };
+
+                        // Path-watch Read calls to known SKILL.md paths to
+                        // emit SkillActivated records once per skill per session.
+                        let skill_activation = if was_error {
+                            None
+                        } else {
+                            detect_skill_activation(
+                                &name,
+                                &arguments,
+                                &skill_locations,
+                                &activated_skills,
+                            )
                         };
                         if let Some(notice) = prefix_notice {
                             output = format!("{notice}{output}");
@@ -315,4 +331,30 @@ fn append_hook_context(mut output: String, contexts: &[String]) -> String {
     output.push_str("\n\nAdditional hook context:\n");
     output.push_str(&contexts.join("\n\n"));
     output
+}
+
+/// Check whether a just-executed tool call targeted a known SKILL.md path and,
+/// if so, emit a `SkillActivated` record once per skill per session.
+fn detect_skill_activation(
+    name: &str,
+    arguments: &str,
+    skill_locations: &std::collections::HashMap<PathBuf, crate::config::skills::Skill>,
+    activated_skills: &std::sync::Mutex<std::collections::HashSet<String>>,
+) -> Option<SkillActivation> {
+    if name != "Read" {
+        return None;
+    }
+    let path_str = read_extract_path(arguments)?;
+    let path = PathBuf::from(&path_str).canonicalize().ok()?;
+    let skill = skill_locations.get(&path)?;
+    let mut activated = activated_skills
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    activated.insert(skill.name.clone()).then(|| {
+        tracing::info!("Skill '{}' activated", skill.name);
+        SkillActivation {
+            name: skill.name.clone(),
+            path,
+        }
+    })
 }

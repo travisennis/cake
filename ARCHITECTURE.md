@@ -62,9 +62,9 @@ The bridge to external AI services and the orchestration layer for tool executio
 
 **`retry`**: `RetryPolicy`, `RequestOverrides`, `RetryStatus`, `RetryReason`, and `HttpFailure` types implementing the backoff/jitter logic, context-overflow recovery via `max_output_tokens` shrinking, and `Retry-After` / `x-should-retry` header handling.
 
-**`skill_dedup`**: Wraps tool execution to detect when a Read of a `SKILL.md` activates a skill, deduplicates activations within a session, and tracks pending vs. active skills.
+**`skill_dedup`** *(deleted 2026-07-07)*: Previously wrapped tool execution to detect Read of `SKILL.md` and deduplicate activations. Replaced by inline path-watching in `agent_loop.rs` that emits `SkillActivated` records without output substitution.
 
-**`tools`**: Tool definitions and execution. Each tool (Bash, Read, Edit, Write) defines its JSON schema for the API and its execution logic. The `execute_tool` function dispatches to the appropriate implementation. Tools validate that paths are within the working directory or allowed temp directories before operating. The Bash tool also performs pre-execution command safety checks that block known-destructive commands (destructive git operations and dangerous `rm -rf`) before they reach the shell. Exported helpers: `ToolContext`, `summarize_tool_args`, `read_extract_path`.
+**`tools`**: Tool definitions and execution. Each tool (Bash, Read, Edit, Write) defines its JSON schema for the API and its execution logic. The `execute_tool` function dispatches to the appropriate implementation. Tools validate that paths are within the working directory or allowed temp directories before operating. The Bash tool also performs pre-execution command safety checks that block known-destructive commands (destructive git operations and dangerous `rm -rf`) before they reach the shell. Exported helpers: `ToolContext`, `summarize_tool_args`, `read_extract_path` (used by agent loop for skill path-watching).
 
 **`tools::sandbox`**: Cross-platform sandboxing abstraction. Provides `SandboxConfig` and `SandboxStrategy` for restricting filesystem and network access. Platform-specific implementations use sandbox-exec (macOS) or Landlock LSM (Linux).
 
@@ -79,7 +79,7 @@ Foundation modules that provide data persistence, core types, and prompt generat
 - `worktree`: Git worktree utilities for isolated execution environments.
 - `model`: Contains `ApiType` enum (`Responses`/`ChatCompletions`), `ModelConfig` struct (model, api_type, base_url, api_key_env, temperature, top_p, max_output_tokens, reasoning_effort, reasoning_summary, reasoning_max_tokens, provider/providers), `ModelProvider`, `ProviderHeaders`, `ReasoningEffort`, and `ResolvedModelConfig` (resolves API key from env var). Defaults for model, base URL, API key env var, and providers live alongside these types --- there is no separate `defaults` module.
 - `settings` (`SettingsLoader`, `ModelDefinition`): TOML-based configuration loading from `settings.toml` files. Supports XDG-style global (`~/.config/cake/settings.toml`) and project-level (`.cake/settings.toml`) locations, with project settings overriding global settings for the same model name. Includes a `[skills]` section for controlling skill discovery and configured skill paths, plus a `directories` key for declaring additional read-write directories (merged across global and project files).
-- `skills` (`Skill`, catalog builder): Skill discovery, parsing, and catalog management. Discovers `SKILL.md` files from project, configured, and user skill directories, parses YAML frontmatter, and builds an XML catalog for the system prompt. Skills are activated lazily via the Read tool and deduplicated within a session.
+- `skills` (`Skill`, catalog builder): Skill discovery, parsing, and catalog management. Discovers `SKILL.md` files from project, configured, and user skill directories, parses YAML frontmatter, and builds an XML catalog for the system prompt. Skills are activated lazily via the Read tool with path-watched `SkillActivated` records.
 - `hooks` (`HooksLoader`, `HookSource`, `LoadedHooks`, `HookEvent`, `HookCommand`): TOML loading of user-defined hook commands from global and project `hooks.toml` files. The runtime that executes them lives in the top-level `src/hooks.rs` module (Layer 1).
 
 Sessions are stored as flat `{uuid}.jsonl` files under `~/.local/share/cake/sessions/`. Each file's header contains the working directory, so `--continue` filters by matching the current directory.
@@ -202,7 +202,7 @@ Use symbol search to locate specific implementations:
 - **Conversation state**: `ConversationState` and `accumulate_usage` in `clients/agent_state.rs`
 - **Provider-specific headers/shaping**: `ProviderStrategy` in `clients/provider_strategy.rs`
 - **Retry policy and overrides**: `RetryPolicy`, `RequestOverrides`, `RetryStatus` in `clients/retry.rs`
-- **Skill activation dedup**: `execute_tool_with_skill_dedup` in `clients/skill_dedup.rs`
+- **Skill activation dedup** *(deleted)*: Formerly `execute_tool_with_skill_dedup` in `clients/skill_dedup.rs`
 - **Tool execution**: `execute_tool` function in `clients/tools/mod.rs`
 - **Chat Completions translation**: `build_messages` in `clients/chat_completions.rs`
 - **Bash safety checks**: `clients/tools/bash_safety/`

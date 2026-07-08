@@ -2,12 +2,12 @@
 
 ## Scope
 
-Read this before changing system prompt construction, AGENTS.md discovery, developer-context assembly, skill discovery, skill activation, skill deduplication, hook loading, or hook execution.
+Read this before changing system prompt construction, AGENTS.md discovery, developer-context assembly, skill discovery, skill activation, skill path-watching and SkillActivated records, hook loading, or hook execution.
 
 ## Compatibility Surfaces
 
 - AGENTS.md and system prompt search order.
-- Skill catalog format, activation trigger, and once-per-session deduplication.
+- Skill catalog format, activation trigger, and once-per-session SkillActivated records (path-watching, not output substitution).
 - Hook TOML shape, merge behavior, stdin payload, and tool plan actions.
 - Tool result and transcript effects from hook mutation, blocking, or appended context.
 

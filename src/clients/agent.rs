@@ -10,7 +10,6 @@ use crate::clients::agent_observer::AgentObserver;
 use crate::clients::agent_runner::AgentRunner;
 use crate::clients::agent_state::{ConversationState, accumulate_usage};
 use crate::clients::backend::Backend;
-use crate::clients::skill_dedup::{SkillActivations, lock_skill_activations};
 use crate::clients::tools::{ToolContext, ToolRegistry, default_tool_registry};
 use crate::config::model::ResolvedModelConfig;
 use crate::config::skills::Skill;
@@ -63,13 +62,13 @@ pub struct Agent {
     turn_count: u32,
     /// Number of tool calls executed
     tool_call_count: u32,
-    /// Maps SKILL.md paths to skills for activation deduplication.
-    /// When the Read tool targets one of these paths, the agent checks if the
-    /// skill has already been activated and returns a lightweight message instead.
+    /// Maps SKILL.md paths to skills for path-watching `SkillActivated` records.
+    /// When the Read tool targets one of these paths, a `SkillActivated`
+    /// record is emitted once per skill per session.
     skill_locations: Arc<HashMap<PathBuf, Skill>>,
-    /// Names of active and in-progress skill activations.
-    /// Shared between tool executions for concurrent access.
-    skill_activations: Arc<Mutex<SkillActivations>>,
+    /// Names of skills that have already had a `SkillActivated` record emitted
+    /// in this session. Shared between concurrent tool executions.
+    activated_skills: Arc<Mutex<HashSet<String>>>,
     /// Accumulated permission/policy denials encountered during this task.
     /// Hook-blocked tool calls are recorded here so the task completion
     /// record can report them as structured `permission_denials`.
@@ -99,7 +98,7 @@ impl Agent {
             turn_count: 0,
             tool_call_count: 0,
             skill_locations: Arc::new(HashMap::new()),
-            skill_activations: Arc::new(Mutex::new(SkillActivations::default())),
+            activated_skills: Arc::new(Mutex::new(HashSet::new())),
             permission_denials: Vec::new(),
             hook_runner: None,
             telemetry: None,
@@ -239,25 +238,13 @@ impl Agent {
         Ok(self)
     }
 
-    /// Set the skill locations for deduplication.
+    /// Set the skill locations for path-watching `SkillActivated` records.
     ///
     /// These paths are checked when the Read tool is used. If the model reads
-    /// a SKILL.md file that was already read in this session, a lightweight
-    /// "already activated" message is returned instead of the full content.
+    /// a SKILL.md that matches a known skill path, a `SkillActivated` record is
+    /// emitted once per skill per session.
     pub fn with_skill_locations(mut self, locations: HashMap<PathBuf, Skill>) -> Self {
         self.skill_locations = Arc::new(locations);
-        self
-    }
-
-    /// Set the initially activated skills (used when resuming a session).
-    ///
-    /// These skills are pre-seeded into the activated set so they are not
-    /// re-read during the resumed session.
-    pub fn with_activated_skills(self, skills: HashSet<String>) -> Self {
-        {
-            let mut guard = lock_skill_activations(&self.skill_activations);
-            guard.replace_active(skills);
-        }
         self
     }
 
@@ -270,14 +257,6 @@ impl Agent {
     /// Append hook-provided developer context before the next provider request.
     pub fn append_developer_context(&mut self, contexts: Vec<String>) {
         self.conversation.append_developer_context(contexts);
-    }
-
-    /// Returns the names of skills that have been activated in this session.
-    #[cfg(test)]
-    pub(crate) fn test_active_skills(&self) -> HashSet<String> {
-        lock_skill_activations(&self.skill_activations)
-            .active
-            .clone()
     }
 
     /// Enables streaming JSON output for each message.

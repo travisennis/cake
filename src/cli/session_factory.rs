@@ -56,15 +56,13 @@ impl crate::CodingAssistant {
         task_id: uuid::Uuid,
     ) -> anyhow::Result<RunSession> {
         let messages = restored.messages();
-        let prior_skills = restored.activated_skills();
 
         let agent = Agent::new(resolved.clone(), initial_messages)
             .with_session_id(restored.id)
             .with_task_id(task_id)
             .with_tool_context(tool_context)
             .with_history(messages)?
-            .with_skill_locations(skill_locations.clone())
-            .with_activated_skills(prior_skills);
+            .with_skill_locations(skill_locations.clone());
         let mut session = Session::new(restored.id, restored.working_dir);
         session.model = Some(resolved.model_config.model);
         Ok(RunSession {
@@ -111,13 +109,11 @@ impl crate::CodingAssistant {
         tool_context: Arc<ToolContext>,
         task_id: uuid::Uuid,
     ) -> anyhow::Result<RunSession> {
-        let prior_skills = restored.activated_skills();
         let agent = Agent::new(resolved.clone(), initial_messages)
             .with_task_id(task_id)
             .with_tool_context(tool_context)
             .with_history(restored.messages())?
-            .with_skill_locations(skill_locations)
-            .with_activated_skills(prior_skills);
+            .with_skill_locations(skill_locations);
         let new_id = agent.session_id();
         let seed_records: Vec<_> = restored
             .records

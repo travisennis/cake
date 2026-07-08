@@ -457,23 +457,6 @@ fn test_build_content_prompt_and_stdin() {
 }
 
 #[test]
-fn restored_session_seeds_skills_from_structured_records_only() {
-    let run_session = CodingAssistant::restored_client_and_session(
-        session_with_skill_records(),
-        test_resolved_model_config(),
-        &[(Role::System, "system".to_string())],
-        &HashMap::new(),
-        Arc::new(ToolContext::from_current_process()),
-        uuid::uuid!("550e8400-e29b-41d4-a716-446655440001"),
-    )
-    .unwrap();
-
-    let activated = run_session.agent.test_active_skills();
-    assert!(activated.contains("real-skill"));
-    assert!(!activated.contains("fake-skill"));
-}
-
-#[test]
 fn forked_session_seeds_skills_from_structured_records() {
     let restored = session_with_skill_records();
     let run_session = CodingAssistant::forked_client_and_session(
@@ -487,12 +470,6 @@ fn forked_session_seeds_skills_from_structured_records() {
     )
     .unwrap();
 
-    assert!(
-        run_session
-            .agent
-            .test_active_skills()
-            .contains("real-skill")
-    );
     assert!(matches!(run_session.storage, SessionStorage::New));
     let seed_records = run_session
         .seed_records

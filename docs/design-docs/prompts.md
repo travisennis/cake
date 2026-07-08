@@ -147,7 +147,7 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
 </available_skills>
 ```
 
-Skills are lazy-loaded: the model reads the `SKILL.md` file via the Read tool when it determines the skill is relevant. Once activated, the skill is deduplicated (subsequent reads return a lightweight "already active" message).
+Skills are lazy-loaded: the model reads the `SKILL.md` file via the Read tool when it determines the skill is relevant. The Read tool always returns the actual file contents. A `SkillActivated` session record is emitted on the first read per skill per session.
 
 For full details on the skills system, see [skills.md](./skills.md).
 

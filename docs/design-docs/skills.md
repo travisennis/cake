@@ -122,20 +122,13 @@ When the model determines a skill is relevant, it calls the `Read` tool with the
 }
 ```
 
-For known skill locations, cake intercepts the Read call and returns the markdown body after frontmatter. The frontmatter metadata is already present in the catalog, so activation gives the model the instruction body it needs without duplicating metadata.
+The Read tool always returns the actual file contents, just like any other file. No interception, no content substitution.
 
-### Deduplication
+### SkillActivated Records
 
-Once a skill is activated in a session, re-reading it returns a lightweight message instead of the full content:
+When the Read tool targets a known skill path, cake emits a `SkillActivated` session record on the first read of that skill in the session. Subsequent reads of the same skill do not produce additional records.
 
-```
-Skill 'debugging-cake' is already active in this session.
-Its instructions are already in the conversation context.
-```
-
-This prevents token waste and duplicate instructions when: - The model reads the same skill multiple times in one session - A session is resumed or continued (activated skills are reconstructed from conversation history)
-
-Deduplication works by: 1. Tracking skill locations (path -> name mapping) in the `Agent` 2. Maintaining an `activated_skills` set shared across concurrent tool executions 3. Checking the set before executing a Read on a known skill path 4. Reconstructing the set from session history when resuming/continuing
+The record is emitted by path-watching (checking the Read path against `skill_locations`) after the Read executes normally. The output is never substituted.
 
 ## Configuration
 
@@ -292,7 +285,7 @@ impl SettingsLoader {
 1. **`main.rs`**: Call `discover_skills()`, apply `SkillConfig`, pass catalog to `build_initial_prompt_messages()`
 2. **`prompts/mod.rs`**: Emit `<available_skills>` XML in a developer context message if skills exist
 3. **`tools/mod.rs`**: Register skill base directories for path validation via `set_skill_dirs()`
-4. **`agent.rs`**: Check Read tool paths against `skill_locations`; deduplicate via `activated_skills`
+4. **`agent.rs`**: Check Read tool paths against `skill_locations`; emit `SkillActivated` records once per skill per session via the `activated_skills` set
 
 ## Testing
 
@@ -302,7 +295,7 @@ The skills system includes tests for:
 - **Discovery**: Project skills, user skills, collision resolution, excluded directories, max depth
 - **XML generation**: Format, escaping, empty catalog
 - **Configuration precedence**: CLI flags override settings
-- **Deduplication**: Same skill read twice returns lightweight message
+- **SkillActivated records**: Records emitted once per skill per session
 
 ## Related Documentation
 

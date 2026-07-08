@@ -274,8 +274,12 @@ impl Skill {
 
     /// Load the full body content of the skill (markdown after frontmatter).
     ///
-    /// This reads from disk at activation time, not during discovery. Per-session
-    /// deduplication is handled by the agent, so this method does not cache.
+    /// This reads from disk at activation time, not during discovery. The
+    /// caller is responsible for any per-session caching or deduplication.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "public API kept for external consumers")
+    )]
     pub fn load_body(&self) -> Result<String, std::io::Error> {
         let content = std::fs::read_to_string(&self.location)?;
 
