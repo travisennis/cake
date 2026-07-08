@@ -422,3 +422,98 @@ fn discover_skills_respects_max_depth() {
     assert_eq!(project_skills.len(), 1);
     assert_eq!(project_skills[0].name, "shallow-skill");
 }
+
+#[test]
+fn discover_skills_with_paths_missing_dir_emits_warning() {
+    let tmp = TempDir::new().unwrap();
+    let missing = tmp.path().join("does-not-exist");
+
+    let catalog = discover_skills_with_paths(tmp.path(), std::slice::from_ref(&missing));
+
+    assert!(catalog.diagnostics.iter().any(|d| {
+        d.level == DiagnosticLevel::Warning
+            && d.file == missing
+            && d.message.contains("does not exist")
+    }));
+}
+
+#[test]
+fn discover_skills_with_paths_empty_dir_emits_warning() {
+    let tmp = TempDir::new().unwrap();
+    let empty_dir = TempDir::new().unwrap();
+
+    let catalog = discover_skills_with_paths(tmp.path(), &[empty_dir.path().to_path_buf()]);
+
+    assert!(catalog.diagnostics.iter().any(|d| {
+        d.level == DiagnosticLevel::Warning
+            && d.file == empty_dir.path()
+            && d.message.contains("resolved to zero skills")
+    }));
+}
+
+#[test]
+fn discover_skills_with_paths_non_empty_dir_does_not_emit_empty_warning() {
+    let tmp = TempDir::new().unwrap();
+    let configured_dir = TempDir::new().unwrap();
+    create_skill_file(configured_dir.path(), "my-skill", "A skill");
+
+    let catalog = discover_skills_with_paths(tmp.path(), &[configured_dir.path().to_path_buf()]);
+
+    assert!(
+        !catalog
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("resolved to zero skills"))
+    );
+}
+
+#[test]
+fn skill_config_apply_only_missing_name_emits_warning() {
+    let mut catalog = SkillCatalog::empty();
+    catalog.skills.push(Skill {
+        name: "existing".to_string(),
+        description: "Exists".to_string(),
+        location: PathBuf::from("/a"),
+        base_directory: PathBuf::from("/"),
+        scope: SkillScope::Project,
+    });
+
+    let result =
+        SkillConfig::Only(vec!["existing".to_string(), "missing".to_string()]).apply(catalog);
+
+    assert_eq!(result.skills.len(), 1);
+    assert_eq!(result.skills[0].name, "existing");
+    assert!(result.diagnostics.iter().any(|d| {
+        d.message
+            .contains("Requested skill 'missing' was not found")
+    }));
+}
+
+#[test]
+fn skill_config_apply_only_all_found_no_diagnostics() {
+    let mut catalog = SkillCatalog::empty();
+    catalog.skills.push(Skill {
+        name: "a".to_string(),
+        description: "A".to_string(),
+        location: PathBuf::from("/a"),
+        base_directory: PathBuf::from("/"),
+        scope: SkillScope::Project,
+    });
+    catalog.skills.push(Skill {
+        name: "b".to_string(),
+        description: "B".to_string(),
+        location: PathBuf::from("/b"),
+        base_directory: PathBuf::from("/"),
+        scope: SkillScope::Project,
+    });
+
+    let result = SkillConfig::Only(vec!["a".to_string(), "b".to_string()]).apply(catalog);
+
+    assert_eq!(result.skills.len(), 2);
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .all(|d| !d.message.contains("not found"))
+    );
+}

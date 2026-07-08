@@ -494,18 +494,26 @@ impl CodingAssistant {
         for diagnostic in &skill_catalog.diagnostics {
             match diagnostic.level {
                 DiagnosticLevel::Warning => {
-                    tracing::warn!(
-                        "Skill diagnostic ({}): {}",
-                        diagnostic.file.display(),
-                        diagnostic.message
-                    );
+                    if diagnostic.file.as_os_str().is_empty() {
+                        tracing::warn!("{}", diagnostic.message);
+                    } else {
+                        tracing::warn!(
+                            "Skill diagnostic ({}): {}",
+                            diagnostic.file.display(),
+                            diagnostic.message
+                        );
+                    }
                 },
                 DiagnosticLevel::Error => {
-                    tracing::error!(
-                        "Skill diagnostic ({}): {}",
-                        diagnostic.file.display(),
-                        diagnostic.message
-                    );
+                    if diagnostic.file.as_os_str().is_empty() {
+                        tracing::error!("{}", diagnostic.message);
+                    } else {
+                        tracing::error!(
+                            "Skill diagnostic ({}): {}",
+                            diagnostic.file.display(),
+                            diagnostic.message
+                        );
+                    }
                 },
             }
         }

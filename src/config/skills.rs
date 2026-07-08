@@ -418,6 +418,7 @@ pub fn discover_skills_with_paths(
     let mut configured_skill_names = HashSet::new();
     for configured_dir in configured_skill_dirs {
         if configured_dir.exists() && configured_dir.is_dir() {
+            let before = configured_skill_names.len();
             scan_directory(
                 configured_dir,
                 SkillScope::Configured,
@@ -426,6 +427,16 @@ pub fn discover_skills_with_paths(
                 &mut scanned_dirs,
                 0,
             );
+            if configured_skill_names.len() == before {
+                catalog.diagnostics.push(SkillDiagnostic {
+                    level: DiagnosticLevel::Warning,
+                    message: format!(
+                        "Configured skills path '{}' resolved to zero skills (directory exists but contains no SKILL.md files)",
+                        configured_dir.display()
+                    ),
+                    file: configured_dir.clone(),
+                });
+            }
         } else {
             catalog.diagnostics.push(SkillDiagnostic {
                 level: DiagnosticLevel::Warning,
@@ -619,11 +630,25 @@ impl SkillConfig {
     /// Apply this configuration to a skill catalog.
     ///
     /// Returns a new catalog with skills filtered according to the configuration.
+    /// Adds diagnostics for any requested skill names that were not found.
     pub fn apply(&self, mut catalog: SkillCatalog) -> SkillCatalog {
         match *self {
             Self::All => catalog,
             Self::Disabled => SkillCatalog::disabled(),
             Self::Only(ref names) => {
+                let resolved: std::collections::HashSet<&str> =
+                    catalog.skills.iter().map(|s| s.name.as_str()).collect();
+                for name in names {
+                    if !resolved.contains(name.as_str()) {
+                        catalog.diagnostics.push(SkillDiagnostic {
+                            level: DiagnosticLevel::Warning,
+                            message: format!(
+                                "Requested skill '{name}' was not found among discovered skills"
+                            ),
+                            file: PathBuf::new(),
+                        });
+                    }
+                }
                 catalog.filter_to(names);
                 catalog
             },
