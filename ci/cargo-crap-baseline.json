@@ -189,10 +189,10 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::log_skill_diagnostics",
-      "line": 489,
-      "cyclomatic": 5.0,
-      "coverage": 27.77777777777778,
-      "crap": 14.41786694101509
+      "line": 493,
+      "cyclomatic": 7.0,
+      "coverage": 22.727272727272727,
+      "crap": 29.60865890308039
     },
     {
       "file": "./src/clients/tools/write.rs",
@@ -1261,10 +1261,10 @@
     {
       "file": "./src/config/skills.rs",
       "function": "SkillConfig::apply",
-      "line": 622,
-      "cyclomatic": 4.0,
+      "line": 634,
+      "cyclomatic": 6.0,
       "coverage": 100.0,
-      "crap": 4.0
+      "crap": 6.0
     },
     {
       "file": "./src/config/settings.rs",
