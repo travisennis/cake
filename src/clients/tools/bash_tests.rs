@@ -133,6 +133,32 @@ fn format_kib_tenths_handles_max_size_without_overflowing() {
     assert!(formatted.contains('.'));
 }
 
+#[test]
+fn empty_rg_no_match_is_annotated() {
+    let result = annotate_empty_search_result("rg definitely_missing src", String::new(), 1, "");
+
+    assert_eq!(result, EMPTY_SEARCH_NO_MATCH_ANNOTATION);
+}
+
+#[test]
+fn empty_non_search_exit_one_is_not_annotated() {
+    let result = annotate_empty_search_result("false", String::new(), 1, "");
+
+    assert_eq!(result, "");
+}
+
+#[test]
+fn search_error_with_stderr_is_not_annotated() {
+    let result = annotate_empty_search_result(
+        "rg definitely_missing src",
+        String::new(),
+        1,
+        "regex parse error",
+    );
+
+    assert_eq!(result, "");
+}
+
 // ===========================================================================
 // Streaming Tests
 // ===========================================================================
@@ -186,6 +212,19 @@ async fn failed_command_stderr_does_not_get_exit_zero_warning() {
 
     assert!(result.output.contains("err"));
     assert!(!result.output.contains(EXIT_ZERO_STDERR_WARNING));
+    assert!(result.output.contains("[exit:1 |"));
+}
+
+#[tokio::test]
+async fn grep_no_match_output_is_disambiguated() {
+    let args = r#"{"command": "grep definitely_missing Cargo.toml"}"#;
+    let result = Box::pin(execute_bash_unsandboxed(args)).await.unwrap();
+
+    assert!(
+        result.output.starts_with(EMPTY_SEARCH_NO_MATCH_ANNOTATION),
+        "empty search miss should be annotated: {}",
+        result.output
+    );
     assert!(result.output.contains("[exit:1 |"));
 }
 

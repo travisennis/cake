@@ -137,6 +137,7 @@ This allows creating new files in new subdirectories while maintaining security.
 - Timeout: Command killed, timeout error returned
 - Read cap: Up to 100KB (2× the inline limit) is read from the process; output beyond this is discarded and marked with `[... output truncated at 100000 bytes ...]`
 - Stderr on success: If a command exits 0 but writes to stderr, the returned output includes `[stderr output present despite exit 0]` separated from the metadata footer by a blank line. Cake flags any non-empty stderr this way because the tool cannot reliably distinguish harmless progress output from diagnostics.
+- Empty search miss: If a command starts with `rg`, `ripgrep`, `grep`, `egrep`, or `fgrep`, exits 1, and produces no stdout or stderr, the returned output includes `(no matches)` before the unchanged exit-status footer. This keeps the original exit code visible while distinguishing an empty search result from a tool or shell error.
 
 **Truncated Output**:
 

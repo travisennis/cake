@@ -19,6 +19,7 @@ const BINARY_RATIO_THRESHOLD_PERCENT: usize = 30;
 const BYTES_PER_KIB: u128 = 1024;
 const TENTHS_PER_KIB: u128 = 10;
 const EXIT_ZERO_STDERR_WARNING: &str = "[stderr output present despite exit 0]";
+const EMPTY_SEARCH_NO_MATCH_ANNOTATION: &str = "(no matches)";
 
 /// Maximum number of bytes the Bash tool will return inline.
 /// Output exceeding this limit is written to a temporary file and the agent
@@ -270,6 +271,31 @@ fn append_metadata(
     }
 }
 
+fn annotate_empty_search_result(
+    command: &str,
+    output: String,
+    exit_code: i32,
+    stderr: &str,
+) -> String {
+    if exit_code == 1
+        && output.is_empty()
+        && stderr.is_empty()
+        && command_starts_with_search(command)
+    {
+        EMPTY_SEARCH_NO_MATCH_ANNOTATION.to_string()
+    } else {
+        output
+    }
+}
+
+fn command_starts_with_search(command: &str) -> bool {
+    let Some(first_token) = command.split_whitespace().next() else {
+        return false;
+    };
+    let command_name = first_token.rsplit('/').next().unwrap_or(first_token);
+    matches!(command_name, "rg" | "ripgrep" | "grep" | "egrep" | "fgrep")
+}
+
 /// Execute a bash command
 pub(super) async fn execute_bash(
     context: &super::ToolContext,
@@ -431,6 +457,7 @@ async fn execute_bash_with_args(
         output_str.into_owned()
     };
 
+    let result = annotate_empty_search_result(&args.command, result, exit_code, &stderr_str);
     let result = truncate_output(&result, exit_code, elapsed_ms, warn_exit_zero_stderr);
 
     let output = prepend_safety_warnings(result, &safety_warnings);
