@@ -16,7 +16,7 @@ cake is a minimal coding harness for headless usage in the terminal. It's not a 
 - [Session Management](#session-management)
 - [Worktrees](#worktrees)
 - [Filesystem Sandbox](#filesystem-sandbox)
-- [AGENTS.md --- Per-Project AI Behavior](#agentsmd--per-project-ai-behavior)
+- [AGENTS.md --- Per-Project AI Behavior](#agents.md----per-project-ai-behavior)
 - [System Prompt Customization](#system-prompt-customization)
 - [Shell Aliases and Functions](#shell-aliases-and-functions)
 - [Machine-Readable Output](#machine-readable-output)
