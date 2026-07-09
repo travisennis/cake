@@ -86,6 +86,23 @@ pub(super) struct ProviderConfig {
     pub(super) only: Vec<String>,
 }
 
+/// Structured-output configuration for correction turns:
+/// `{"format": {"type": "json_schema", ...}}`.
+#[derive(Debug, Serialize)]
+pub(super) struct TextConfig<'a> {
+    pub(super) format: TextFormat<'a>,
+}
+
+/// The `json_schema` format payload inside [`TextConfig`].
+#[derive(Debug, Serialize)]
+pub(super) struct TextFormat<'a> {
+    #[serde(rename = "type")]
+    pub(super) format_type: &'static str,
+    pub(super) name: &'a str,
+    pub(super) strict: bool,
+    pub(super) schema: &'a serde_json::Value,
+}
+
 #[derive(Clone, Serialize)]
 pub(super) struct ReasoningConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -105,12 +122,16 @@ pub(super) struct Request<'a> {
     pub(super) temperature: Option<f32>,
     pub(super) top_p: Option<f32>,
     pub(super) max_output_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) tools: Option<&'a [super::tools::Tool]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) tool_choice: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) provider: Option<ProviderConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) reasoning: Option<ReasoningConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) text: Option<TextConfig<'a>>,
 }
 
 #[derive(Deserialize, Debug)]

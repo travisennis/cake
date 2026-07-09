@@ -2,13 +2,14 @@
 status: accepted
 date: 2026-07-08
 ---
+
 # Schema-Constrained Final Output
 
 ## Context and Problem Statement
 
 ahm is adding delegation commands (`ahm task groom`, `ahm audit`) that hand a procedure prompt to a coding agent and mechanically apply the structured result. cake is ahm's default work agent, so its final response must be a JSON document that is machine-verifiably valid against a caller-supplied JSON Schema. Prompt-only JSON instructions are not reliable enough for this contract.
 
-The constraint applies only to the final response — the `result` of the `task_complete` record. Intermediate reasoning, tool use, and multi-turn agent behavior must remain unchanged. The hard requirement is that a caller must never receive a successful `task_complete.result` that silently contains non-conforming prose.
+The constraint applies only to the final response --- the `result` of the `task_complete` record. Intermediate reasoning, tool use, and multi-turn agent behavior must remain unchanged. The hard requirement is that a caller must never receive a successful `task_complete.result` that silently contains non-conforming prose.
 
 Two facts shape the solution space:
 
@@ -35,11 +36,11 @@ Chosen option: local validation plus native constraint on finalizer turns, becau
 The concrete behavior:
 
 - A new `--output-schema <path>` flag applies to any cake run (cake is a one-shot non-interactive CLI) and composes with every `--output-format` value and with `--continue`, `--resume`, and `--fork`.
-- Before the run starts, cake reads, parses, and compiles the schema. The supported dialect is JSON Schema draft 2020-12 as implemented by the `jsonschema` crate, with remote/file `$ref` resolution disabled — schemas must be self-contained. Unreadable or invalid schema files fail with exit code 3 (input error) before any `task_start` is emitted.
+- Before the run starts, cake reads, parses, and compiles the schema. The supported dialect is JSON Schema draft 2020-12 as implemented by the `jsonschema` crate, with remote/file `$ref` resolution disabled --- schemas must be self-contained. Unreadable or invalid schema files fail with exit code 3 (input error) before any `task_start` is emitted.
 - The agent loop runs unchanged. The schema requirement is injected as developer context so the model aims for conforming output on its own.
-- When the model produces a final message (no tool calls), cake validates it locally against the compiled schema. If it validates, the run succeeds and `result` is exactly the JSON document — no fences, no prose.
+- When the model produces a final message (no tool calls), cake validates it locally against the compiled schema. If it validates, the run succeeds and `result` is exactly the JSON document --- no fences, no prose.
 - If it does not validate, cake runs a bounded corrective loop (2 retry turns): it appends a corrective message containing the validation errors, disables tools for that request (no tools offered), and attaches the native structured-output constraint (Responses API `text.format` with `json_schema`; Chat Completions `response_format` with `json_schema`, both `strict`). If the provider rejects the constrained request with HTTP 400, the turn is retried without the native constraint. Local validation remains authoritative in all cases; native enforcement is best-effort acceleration.
-- On retry exhaustion, refusal, or truncation, the run fails loudly on both channels: a `task_complete` record with new subtype `error_output_schema`, `is_error: true`, and validation detail in `error`; and process exit code 1 (agent error). The new subtype is additive, following the precedent set by `interrupted` in ADR-011 — consumers keying on `is_error` are unaffected.
+- On retry exhaustion, refusal, or truncation, the run fails loudly on both channels: a `task_complete` record with new subtype `error_output_schema`, `is_error: true`, and validation detail in `error`; and process exit code 1 (agent error). The new subtype is additive, following the precedent set by `interrupted` in ADR-011 --- consumers keying on `is_error` are unaffected.
 - With `--output-format json`, the top-level `result` field stays a JSON string containing the document (no shape change). With `--output-format text`, stdout is exactly the JSON document.
 - The schema is per-invocation and is not persisted to the session file. Corrective turns are ordinary conversation items, so resumed sessions replay cleanly.
 
@@ -55,6 +56,6 @@ The concrete behavior:
 ## More Information
 
 - Task 249: Add Schema-Constrained Final Output.
-- ExecPlan: `.agents/exec-plans/active/schema-constrained-final-output.md`.
+- ExecPlan: `.agents/exec-plans/completed/schema-constrained-final-output.md`.
 - ADR-011 established the additive-`TaskCompleteSubtype` precedent (`interrupted`).
 - Key code: `src/clients/agent/agent_loop.rs` (`Agent::send`, final-message branch), `src/clients/responses_types.rs` / `src/clients/chat_types.rs` (request DTOs), `src/types/session.rs` (`TaskOutcome`, `TaskCompleteSubtype`), `src/exit_code.rs` (classification), `src/main.rs` (flag parsing and pre-run validation).

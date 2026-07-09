@@ -5,9 +5,10 @@ use tracing::{debug, trace, warn};
 use crate::config::model::ResolvedModelConfig;
 
 use crate::clients::agent::TurnResult;
+use crate::clients::backend::FinalOutputConstraint;
 use crate::clients::chat_types::{
     ChatFunction, ChatFunctionCallRef, ChatMessage, ChatRequest, ChatResponse, ChatTool,
-    ChatToolCallRef,
+    ChatToolCallRef, ResponseFormat, ResponseFormatJsonSchema,
 };
 use crate::clients::provider_strategy::ProviderStrategy;
 use crate::clients::retry::RequestOverrides;
@@ -25,12 +26,13 @@ use crate::types::{
 /// # Errors
 ///
 /// Returns an error if the HTTP request fails.
-pub(super) async fn send_request(
+pub(super) async fn send_request<'a>(
     client: &reqwest::Client,
     config: &ResolvedModelConfig,
-    history: &[ConversationItem],
-    tools: &[Tool],
+    history: &'a [ConversationItem],
+    tools: &'a [Tool],
     overrides: &RequestOverrides,
+    constraint: Option<FinalOutputConstraint<'a>>,
 ) -> anyhow::Result<reqwest::Response> {
     let strategy = ProviderStrategy::from_config(config);
     let mut messages = build_messages(history);
@@ -56,6 +58,14 @@ pub(super) async fn send_request(
             Some("auto".to_string())
         },
         reasoning_effort: config.model_config.reasoning_effort,
+        response_format: constraint.map(|constraint| ResponseFormat {
+            format_type: "json_schema",
+            json_schema: ResponseFormatJsonSchema {
+                name: constraint.name,
+                strict: true,
+                schema: constraint.schema,
+            },
+        }),
     };
 
     let url = format!(

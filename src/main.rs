@@ -70,6 +70,12 @@ pub(crate) struct CodingAssistant {
     #[arg(long, value_enum, default_value = "text")]
     pub output_format: OutputFormat,
 
+    /// Constrain the final response to a JSON document valid against
+    /// this JSON Schema file (draft 2020-12). Only the final response
+    /// is constrained; tool use and intermediate output are unchanged.
+    #[arg(long, value_name = "PATH")]
+    pub output_schema: Option<String>,
+
     /// Continue the most recent session for this directory
     #[arg(long = "continue")]
     pub continue_session: bool,
@@ -132,6 +138,12 @@ struct PreparedRun {
     additional_dirs: Vec<PathBuf>,
     _worktree: WorktreeGuard,
     content: String,
+    output_schema: Option<Arc<crate::config::OutputSchema>>,
+}
+
+struct RunInputs {
+    content: String,
+    output_schema: Option<Arc<crate::config::OutputSchema>>,
 }
 
 struct RunResources {
@@ -392,10 +404,10 @@ impl CodingAssistant {
         let original_dir = std::env::current_dir()?;
         let additional_dirs = self.resolve_additional_dirs(&original_dir);
 
-        // Validate stdin/content before creating the worktree so that
-        // input errors don't leave a stale registered worktree.
-        let stdin_content = Self::read_stdin_content()?;
-        let content = Self::build_content(self.prompt.as_deref(), stdin_content)?;
+        // Validate stdin/content and the output schema before creating the
+        // worktree so that input errors don't leave a stale registered
+        // worktree.
+        let inputs = self.validate_run_inputs(&original_dir)?;
 
         // Set up the worktree after input validation (if requested).
         let worktree = self.setup_worktree(&original_dir)?;
@@ -406,7 +418,18 @@ impl CodingAssistant {
             current_dir,
             additional_dirs,
             _worktree: WorktreeGuard::new(worktree, original_dir),
+            content: inputs.content,
+            output_schema: inputs.output_schema,
+        })
+    }
+
+    fn validate_run_inputs(&self, original_dir: &Path) -> anyhow::Result<RunInputs> {
+        let stdin_content = Self::read_stdin_content()?;
+        let content = Self::build_content(self.prompt.as_deref(), stdin_content)?;
+        let output_schema = self.load_output_schema(original_dir)?;
+        Ok(RunInputs {
             content,
+            output_schema,
         })
     }
 
@@ -669,6 +692,26 @@ impl CodingAssistant {
         CliOutputSink::new(self.output_format)
     }
 
+    /// Load and compile the `--output-schema` file, if given.
+    ///
+    /// Runs before any run state is created (worktrees, sessions, task
+    /// records) so bad input fails fast with exit code 3 and no `task_start`
+    /// is emitted. The path resolves against the startup directory.
+    fn load_output_schema(
+        &self,
+        base_dir: &Path,
+    ) -> anyhow::Result<Option<Arc<crate::config::OutputSchema>>> {
+        match self.output_schema.as_deref() {
+            Some(path) => {
+                let resolved = base_dir.join(path);
+                Ok(Some(Arc::new(crate::config::OutputSchema::load(
+                    &resolved,
+                )?)))
+            },
+            None => Ok(None),
+        }
+    }
+
     async fn execute_agent_turn(
         client: &mut Agent,
         hook_runner: Option<&Arc<HookRunner>>,
@@ -683,6 +726,7 @@ impl CodingAssistant {
             let contexts = runner.user_prompt_submit(content).await?;
             client.append_developer_context(contexts);
         }
+        client.append_output_schema_context();
         client.emit_prompt_context_records()?;
         client.emit_task_start_record()?;
 
@@ -708,40 +752,83 @@ impl CodingAssistant {
     ) -> anyhow::Result<()> {
         match result {
             Ok(response_text) => {
-                if let Some(runner) = hook_runner {
-                    match runner.stop(response_text).await {
-                        Ok(Some(context)) => {
-                            tracing::info!(target: "cake::hooks", additional_context = %context, "Stop hook returned additional context");
-                        },
-                        Ok(None) => {},
-                        Err(error) => {
-                            tracing::warn!(target: "cake::hooks", error = %error, "Stop hook failed (best-effort)");
-                        },
-                    }
-                }
-                client.emit_task_complete_record(
-                    TaskOutcome::Success {
-                        result: Some(response_text.clone()),
-                    },
-                    duration_ms,
-                )?;
+                Self::emit_successful_agent_turn(client, hook_runner, response_text, duration_ms)
+                    .await?;
             },
-            Err(e) => {
-                if let Some(runner) = hook_runner
-                    && let Err(error) = runner.error_occurred(e).await
-                {
-                    tracing::warn!(target: "cake::hooks", error = %error, "error_occurred hook failed (best-effort)");
-                }
-                client.emit_task_complete_record(
-                    TaskOutcome::ErrorDuringExecution {
-                        error: e.to_string(),
-                    },
-                    duration_ms,
-                )?;
+            Err(error) => {
+                Self::emit_failed_agent_turn(client, hook_runner, error, duration_ms).await?;
             },
         }
         Ok(())
     }
+
+    async fn emit_successful_agent_turn(
+        client: &mut Agent,
+        hook_runner: Option<&Arc<HookRunner>>,
+        response_text: &str,
+        duration_ms: u64,
+    ) -> anyhow::Result<()> {
+        Self::run_stop_hook(hook_runner, response_text).await;
+        client.emit_task_complete_record(
+            TaskOutcome::Success {
+                result: Some(response_text.to_string()),
+            },
+            duration_ms,
+        )
+    }
+
+    async fn emit_failed_agent_turn(
+        client: &mut Agent,
+        hook_runner: Option<&Arc<HookRunner>>,
+        error: &anyhow::Error,
+        duration_ms: u64,
+    ) -> anyhow::Result<()> {
+        Self::run_error_hook(hook_runner, error).await;
+        client.emit_task_complete_record(Self::task_outcome_for_error(error), duration_ms)
+    }
+
+    async fn run_stop_hook(hook_runner: Option<&Arc<HookRunner>>, response_text: &str) {
+        let Some(runner) = hook_runner else {
+            return;
+        };
+        match runner.stop(response_text).await {
+            Ok(Some(context)) => {
+                tracing::info!(target: "cake::hooks", additional_context = %context, "Stop hook returned additional context");
+            },
+            Ok(None) => {},
+            Err(error) => {
+                tracing::warn!(target: "cake::hooks", error = %error, "Stop hook failed (best-effort)");
+            },
+        }
+    }
+
+    async fn run_error_hook(hook_runner: Option<&Arc<HookRunner>>, error: &anyhow::Error) {
+        let Some(runner) = hook_runner else {
+            return;
+        };
+        if let Err(hook_error) = runner.error_occurred(error).await {
+            tracing::warn!(target: "cake::hooks", error = %hook_error, "error_occurred hook failed (best-effort)");
+        }
+    }
+
+    fn task_outcome_for_error(error: &anyhow::Error) -> TaskOutcome {
+        if is_output_schema_exhaustion(error) {
+            TaskOutcome::ErrorOutputSchema {
+                error: error.to_string(),
+            }
+        } else {
+            TaskOutcome::ErrorDuringExecution {
+                error: error.to_string(),
+            }
+        }
+    }
+}
+
+fn is_output_schema_exhaustion(error: &anyhow::Error) -> bool {
+    matches!(
+        error.downcast_ref::<crate::config::OutputSchemaError>(),
+        Some(crate::config::OutputSchemaError::Unsatisfied { .. })
+    )
 }
 
 impl CmdRunner for CodingAssistant {
@@ -769,6 +856,8 @@ impl CmdRunner for CodingAssistant {
             task_id,
             resources.loaded.system_prompt.as_deref(),
         )?;
+
+        run_session.attach_output_schema(prepared.output_schema.as_ref());
 
         Self::prepare_seeded_session(data_dir, &mut run_session)?;
 

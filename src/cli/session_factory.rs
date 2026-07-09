@@ -27,6 +27,18 @@ pub struct RunSession {
     pub(crate) seed_records: Option<Vec<SessionRecord>>,
 }
 
+impl RunSession {
+    /// Attach a compiled `--output-schema` to the agent, if one was given.
+    pub(crate) fn attach_output_schema(
+        &mut self,
+        schema: Option<&Arc<crate::config::OutputSchema>>,
+    ) {
+        if let Some(schema) = schema {
+            self.agent.set_output_schema(Arc::clone(schema));
+        }
+    }
+}
+
 /// Build a map of skill file paths to skills for activation deduplication.
 pub fn skill_locations(skill_catalog: &SkillCatalog) -> HashMap<PathBuf, Skill> {
     skill_catalog

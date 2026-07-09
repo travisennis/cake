@@ -23,6 +23,25 @@ pub(super) struct ChatRequest<'a> {
     pub(super) tool_choice: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) reasoning_effort: Option<ReasoningEffort>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) response_format: Option<ResponseFormat<'a>>,
+}
+
+/// Structured-output configuration for correction turns:
+/// `{"type": "json_schema", "json_schema": {...}}`.
+#[derive(Debug, Serialize)]
+pub(super) struct ResponseFormat<'a> {
+    #[serde(rename = "type")]
+    pub(super) format_type: &'static str,
+    pub(super) json_schema: ResponseFormatJsonSchema<'a>,
+}
+
+/// The named schema payload inside [`ResponseFormat`].
+#[derive(Debug, Serialize)]
+pub(super) struct ResponseFormatJsonSchema<'a> {
+    pub(super) name: &'a str,
+    pub(super) strict: bool,
+    pub(super) schema: &'a serde_json::Value,
 }
 
 /// Request message type that borrows strings from history to avoid cloning.

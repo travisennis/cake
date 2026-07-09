@@ -1,0 +1,32 @@
+---
+source: src/clients/chat_completions_tests.rs
+expression: "serde_json::to_value(&request).unwrap()"
+---
+{
+  "messages": [
+    {
+      "content": "Respond with the JSON document.",
+      "role": "user"
+    }
+  ],
+  "model": "openai/gpt-5",
+  "response_format": {
+    "json_schema": {
+      "name": "final_output",
+      "schema": {
+        "additionalProperties": false,
+        "properties": {
+          "summary": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "summary"
+        ],
+        "type": "object"
+      },
+      "strict": true
+    },
+    "type": "json_schema"
+  }
+}

@@ -15,6 +15,7 @@ mod config_dir;
 mod data_dir;
 pub mod hooks;
 pub mod model;
+pub mod output_schema;
 pub mod session;
 pub mod settings;
 pub mod skills;
@@ -28,6 +29,8 @@ pub use data_dir::{AgentsFile, DataDir};
 pub use hooks::{HookSource, HooksLoader};
 #[doc(inline)]
 pub use model::{ModelConfig, ReasoningEffort, ResolvedModelConfig};
+#[doc(inline)]
+pub use output_schema::{OutputSchema, OutputSchemaError};
 #[doc(inline)]
 pub use session::{Session, SessionWriter};
 #[doc(inline)]

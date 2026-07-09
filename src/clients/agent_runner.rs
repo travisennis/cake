@@ -4,7 +4,7 @@ use tokio::time::sleep;
 use tracing::debug;
 
 use crate::clients::agent::TurnResult;
-use crate::clients::backend::Backend;
+use crate::clients::backend::{Backend, FinalOutputConstraint};
 use crate::clients::retry::{self, HttpFailure, RequestOverrides, RetryPolicy, RetryStatus};
 use crate::clients::tools::Tool;
 use crate::config::model::ResolvedModelConfig;
@@ -47,6 +47,10 @@ impl AgentRunner {
         clippy::too_many_lines,
         reason = "retry loop keeps request, parse, retry, and telemetry sequencing together"
     )]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a turn naturally threads config, identity, history, tools, and constraint"
+    )]
     pub(super) async fn complete_turn<'a>(
         &mut self,
         config: &ResolvedModelConfig,
@@ -54,6 +58,7 @@ impl AgentRunner {
         turn_index: u32,
         history: &'a [ConversationItem],
         tools: &'a [Tool],
+        constraint: Option<FinalOutputConstraint<'a>>,
         mut report_telemetry: impl FnMut(AgentRunnerTelemetryEvent),
     ) -> anyhow::Result<TurnResult> {
         let mut attempt = 1;
@@ -69,7 +74,14 @@ impl AgentRunner {
             let request_start = Instant::now();
             let request_result = self
                 .backend
-                .send_request(&self.client, config, history, tools, &request_overrides)
+                .send_request(
+                    &self.client,
+                    config,
+                    history,
+                    tools,
+                    &request_overrides,
+                    constraint,
+                )
                 .await;
             let request_ms = elapsed_ms(request_start);
 

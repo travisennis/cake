@@ -166,15 +166,17 @@ After each milestone: `cargo fmt`, then the narrowest useful test (`cargo test <
 
 ## Progress
 
-- [ ] Milestone 1: `jsonschema` dependency added (minimal features), `OutputSchema` loader + `OutputSchemaError`, `--output-schema` flag, pre-run validation, exit-3 classification, unit tests.
-- [ ] Milestone 2: `Agent::with_output_schema`, developer-context injection, final-message validation, correction mode (max 2 turns, empty tools), `Unsatisfied` on exhaustion, agent-loop tests.
-- [ ] Milestone 3: `FinalOutputConstraint` threading, `text.format` / `response_format` request shaping, HTTP 400 fallback, request snapshots, wiremock fallback test.
-- [ ] Milestone 4: `error_output_schema` subtype in `TaskOutcome`/`TaskCompleteSubtype`, `handle_agent_turn_result` mapping, classification test, `task_complete` record test.
-- [ ] Milestone 5: cli.md + streaming-json-output.md (+ stale `error_max_turns` row fixed separately), help text verified, end-to-end demo transcripts captured, `just ci` green, binary-size delta recorded.
+- [x] (2026-07-09) Milestone 1: `jsonschema` dependency added with `default-features = false`; `OutputSchema` loader, schema-name sanitization, bounded validation-detail reporting, `OutputSchemaError`, `--output-schema` flag, pre-run validation, exit-3 classification, and unit tests are implemented.
+- [x] (2026-07-09) Milestone 2: `Agent::with_output_schema`, developer-context injection, final-message local validation, correction mode with a 2-turn budget, tool disabling during correction turns, `Unsatisfied` exhaustion, and agent-loop tests are implemented.
+- [x] (2026-07-09) Milestone 3: `FinalOutputConstraint` is threaded through `AgentRunner` and both backends; Responses `text.format` and Chat Completions `response_format` request shaping are snapshot-covered; provider HTTP 400 fallback is tested.
+- [x] (2026-07-09) Milestone 4: `error_output_schema` task-complete subtype, `TaskOutcome::ErrorOutputSchema`, stream/session serialization, `handle_agent_turn_result` mapping, exit-code classification, and task-complete record tests are implemented.
+- [x] (2026-07-09) Milestone 5: CLI, session, and stream-json docs are updated; the stale `error_max_turns` stream-json doc row was corrected; help text and pre-run failure paths were manually verified; `just ci` is green; release binary-size delta is recorded below.
 
 ## Surprises & Discoveries
 
 - (grooming, 2026-07-08) `docs/design-docs/streaming-json-output.md` documents an `error_max_turns` subtype that does not exist in `src/types/session.rs` — pre-existing doc drift, to be corrected in Milestone 5.
+- (implementation, 2026-07-09) The `jsonschema` crate brought a measurable release binary-size increase. A clean `HEAD` archive release build produced `/private/tmp/cake-task249-baseline-5650/target/release/cake` at 6,407,440 bytes; the completed working-tree release build produced `target/release/cake` at 8,542,336 bytes, a delta of 2,134,896 bytes (about 2.0 MiB).
+- (verification, 2026-07-09) Initial `just ci` after the inherited implementation failed only the CRAP regression gate. Focused behavior-preserving extractions in `src/clients/agent/agent_loop.rs`, `src/types/session.rs`, `src/exit_code.rs`, and `src/main.rs` reduced the report from 7 regressions to 0 without regenerating `ci/cargo-crap-baseline.json`.
 
 ## Decision Log
 
@@ -183,7 +185,25 @@ After each milestone: `cargo fmt`, then the narrowest useful test (`cargo test <
 - 2026-07-08 (planning): the corrective message is a user-role conversation item via `push_user_message`, because that path already streams and persists the item and replays on resume.
 - 2026-07-08 (planning): the schema constraint is threaded as a new `Option<FinalOutputConstraint>` parameter, not a `RequestOverrides` field, because `RequestOverrides` drives HTTP retry semantics and is snapshotted into telemetry.
 - 2026-07-08 (planning): no fence-stripping leniency — a fenced JSON document is a validation failure handled by the correction loop, keeping the success contract exact.
+- 2026-07-09 (completion): keep the CRAP baseline unchanged and reduce regressions through small helper extractions.
+  Rationale: the reported regressions were in aggregation functions that had absorbed new branches; extracting existing logic made the risk profile clearer and allowed `just check-coverage` to pass without accepting a broader baseline change.
 
 ## Outcomes & Retrospective
 
-Not started.
+Completed. `cake --output-schema <path>` now loads a self-contained draft 2020-12 JSON Schema before run setup, injects final-output guidance as developer context, validates only the final no-tool-call response locally, runs at most two tool-disabled correction turns, attaches native provider structured-output constraints only to correction turns, falls back from provider HTTP 400 strict-schema rejection, and emits `error_output_schema` plus exit 1 on exhaustion. Pre-run schema file errors fail before `task_start` with exit 3.
+
+Verification completed:
+
+- `cargo test output_schema --all-features`
+- `cargo test task_outcome --all-features`
+- `cargo test classify_output_schema --all-features`
+- `cargo clippy --all-targets --all-features -- -D warnings`
+- `just check-coverage`
+- `just ci`
+- `just check-deps` was run and failed on pre-existing direct dependency `anyhow 1.0.102` advisory RUSTSEC-2026-0190. This task did not change `anyhow`, and the unrelated dependency update was left for a separate decision.
+- Manual help check: `cargo run -- --help | rg -C 2 -- "--output-schema"`
+- Manual unreadable schema check: `cargo run -- --output-schema /private/tmp/cake-task249/missing.schema.json --output-format stream-json hi; printf 'exit:%s\n' $?` printed only the schema read error and `exit:3`.
+- Manual invalid schema check: `cargo run -- --output-schema /private/tmp/cake-task249/invalid.schema.json --output-format stream-json hi; printf 'exit:%s\n' $?` printed only the schema validation error and `exit:3`.
+- Preflight: fixed ADR-012's ExecPlan reference to the completed plan path and verified no stale active-plan reference remains.
+
+The live-model success and resume paths were not exercised against an external provider during completion; they are covered by wiremock-backed agent-loop/backend tests and session tests in the local suite.

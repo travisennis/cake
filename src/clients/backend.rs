@@ -5,6 +5,18 @@ use crate::clients::{chat_completions, responses};
 use crate::config::model::{ApiType, ResolvedModelConfig};
 use crate::types::ConversationItem;
 
+/// Native structured-output constraint attached to correction-turn requests
+/// when `--output-schema` enforcement needs a corrected final message.
+///
+/// Local validation remains authoritative; this is best-effort acceleration.
+/// It is threaded as its own parameter rather than a `RequestOverrides` field
+/// because overrides drive HTTP retry semantics and telemetry snapshots.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct FinalOutputConstraint<'a> {
+    pub(super) name: &'a str,
+    pub(super) schema: &'a serde_json::Value,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(super) enum Backend {
     Responses,
@@ -26,13 +38,17 @@ impl Backend {
         history: &'a [ConversationItem],
         tools: &'a [Tool],
         overrides: &RequestOverrides,
+        constraint: Option<FinalOutputConstraint<'a>>,
     ) -> anyhow::Result<reqwest::Response> {
         match self {
             Self::Responses => {
-                responses::send_request(client, config, history, tools, overrides).await
+                responses::send_request(client, config, history, tools, overrides, constraint).await
             },
             Self::ChatCompletions => {
-                chat_completions::send_request(client, config, history, tools, overrides).await
+                chat_completions::send_request(
+                    client, config, history, tools, overrides, constraint,
+                )
+                .await
             },
         }
     }

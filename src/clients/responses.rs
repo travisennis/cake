@@ -3,10 +3,11 @@ use tracing::{debug, trace, warn};
 use crate::config::model::ResolvedModelConfig;
 
 use crate::clients::agent::TurnResult;
+use crate::clients::backend::FinalOutputConstraint;
 use crate::clients::provider_strategy::ProviderStrategy;
 use crate::clients::responses_types::{
     ApiResponse, ApiUsage, OutputMessage, ReasoningConfig, Request, ResponsesApiInputItem,
-    ResponsesMessageContent, ResponsesReasoningSummary,
+    ResponsesMessageContent, ResponsesReasoningSummary, TextConfig, TextFormat,
 };
 use crate::clients::retry::RequestOverrides;
 use crate::clients::tools::Tool;
@@ -29,6 +30,7 @@ pub(super) async fn send_request<'a>(
     history: &'a [ConversationItem],
     tools: &'a [Tool],
     overrides: &RequestOverrides,
+    constraint: Option<FinalOutputConstraint<'a>>,
 ) -> anyhow::Result<reqwest::Response> {
     let strategy = ProviderStrategy::from_config(config);
     let provider_config = strategy.responses_provider_config();
@@ -60,10 +62,22 @@ pub(super) async fn send_request<'a>(
         temperature: config.model_config.temperature,
         top_p: config.model_config.top_p,
         max_output_tokens,
-        tools: Some(tools),
-        tool_choice: Some("auto".to_string()),
+        tools: if tools.is_empty() { None } else { Some(tools) },
+        tool_choice: if tools.is_empty() {
+            None
+        } else {
+            Some("auto".to_string())
+        },
         provider: provider_config,
         reasoning,
+        text: constraint.map(|constraint| TextConfig {
+            format: TextFormat {
+                format_type: "json_schema",
+                name: constraint.name,
+                strict: true,
+                schema: constraint.schema,
+            },
+        }),
     };
 
     let url = format!(

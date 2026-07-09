@@ -548,6 +548,7 @@ fn snapshot_responses_request_minimal() {
         tool_choice: None,
         provider: None,
         reasoning: None,
+        text: None,
     };
 
     insta::assert_json_snapshot!(
@@ -616,10 +617,56 @@ fn snapshot_responses_request_with_tools_provider_and_reasoning() {
             summary: Some("auto".to_string()),
             max_tokens: Some(512),
         }),
+        text: None,
     };
 
     insta::assert_json_snapshot!(
         "responses_request_with_tools_provider_and_reasoning",
+        serde_json::to_value(&request).unwrap()
+    );
+}
+
+#[test]
+fn snapshot_responses_request_with_output_schema_constraint() {
+    let history = vec![ConversationItem::Message {
+        role: Role::User,
+        content: "Respond with the JSON document.".to_string(),
+        id: None,
+        status: None,
+        timestamp: None,
+    }];
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "summary": { "type": "string" }
+        },
+        "required": ["summary"],
+        "additionalProperties": false
+    });
+    // Correction-turn shape: no tools offered, native constraint attached.
+    let request = Request {
+        model: "openai/gpt-5",
+        input: build_input(&history),
+        instructions: None,
+        temperature: None,
+        top_p: None,
+        max_output_tokens: None,
+        tools: None,
+        tool_choice: None,
+        provider: None,
+        reasoning: None,
+        text: Some(TextConfig {
+            format: TextFormat {
+                format_type: "json_schema",
+                name: "final_output",
+                strict: true,
+                schema: &schema,
+            },
+        }),
+    };
+
+    insta::assert_json_snapshot!(
+        "responses_request_with_output_schema_constraint",
         serde_json::to_value(&request).unwrap()
     );
 }
@@ -640,6 +687,7 @@ fn snapshot_responses_request_full_with_agents_and_skills() {
         tool_choice: Some("auto".to_string()),
         provider: None,
         reasoning: None,
+        text: None,
     };
 
     assert_json_snapshot_with_environment_filters(

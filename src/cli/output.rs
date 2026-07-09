@@ -67,7 +67,30 @@ impl CliOutputSink {
                 Self::write_json_value(&json)?;
                 result.map(|_| ())
             },
-            OutputFormat::StreamJson => Ok(()),
+            OutputFormat::StreamJson => Self::stream_json_exit_result(result),
+        }
+    }
+
+    /// Decide whether a stream-json run's in-stream error also fails the
+    /// process.
+    ///
+    /// Stream-json reports task failure in the `task_complete` record and
+    /// historically exits 0 for in-stream errors. Output-schema exhaustion is
+    /// the exception: its contract requires failure on both channels — the
+    /// `error_output_schema` record and a nonzero exit — so that error
+    /// propagates (mirroring how `Interrupted` propagates exit 130 regardless
+    /// of output format).
+    fn stream_json_exit_result(result: anyhow::Result<String>) -> anyhow::Result<()> {
+        match result {
+            Err(error)
+                if matches!(
+                    error.downcast_ref::<crate::config::OutputSchemaError>(),
+                    Some(crate::config::OutputSchemaError::Unsatisfied { .. })
+                ) =>
+            {
+                Err(error)
+            },
+            _ => Ok(()),
         }
     }
 
@@ -133,5 +156,37 @@ impl CliOutputSink {
 
     pub(crate) fn write_error(error: &anyhow::Error) {
         eprintln!("Error: {error}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::OutputSchemaError;
+
+    #[test]
+    fn stream_json_swallows_generic_errors() {
+        let result: anyhow::Result<String> = Err(anyhow::anyhow!("api failure"));
+        assert!(CliOutputSink::stream_json_exit_result(result).is_ok());
+    }
+
+    #[test]
+    fn stream_json_swallows_success() {
+        let result: anyhow::Result<String> = Ok("done".to_string());
+        assert!(CliOutputSink::stream_json_exit_result(result).is_ok());
+    }
+
+    #[test]
+    fn stream_json_propagates_output_schema_exhaustion() {
+        let result: anyhow::Result<String> = Err(OutputSchemaError::Unsatisfied {
+            attempts: 3,
+            detail: "\"summary\" is a required property".to_string(),
+        }
+        .into());
+        let error = CliOutputSink::stream_json_exit_result(result).unwrap_err();
+        assert_eq!(
+            crate::exit_code::classify_to_u8(&error),
+            crate::exit_code::code::AGENT_ERROR
+        );
     }
 }

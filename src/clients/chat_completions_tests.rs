@@ -936,10 +936,54 @@ fn snapshot_chat_request_kimi_tool_calls() {
         tools: Some(convert_tools(&tools)),
         tool_choice: Some("auto".to_string()),
         reasoning_effort: Some(crate::config::ReasoningEffort::High),
+        response_format: None,
     };
 
     insta::assert_json_snapshot!(
         "chat_request_kimi_tool_calls",
+        serde_json::to_value(&request).unwrap()
+    );
+}
+
+#[test]
+fn snapshot_chat_request_with_output_schema_constraint() {
+    let history = vec![ConversationItem::Message {
+        role: Role::User,
+        content: "Respond with the JSON document.".to_string(),
+        id: None,
+        status: None,
+        timestamp: None,
+    }];
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "summary": { "type": "string" }
+        },
+        "required": ["summary"],
+        "additionalProperties": false
+    });
+    // Correction-turn shape: no tools offered, native constraint attached.
+    let request = ChatRequest {
+        model: "openai/gpt-5",
+        messages: build_messages(&history),
+        temperature: None,
+        top_p: None,
+        max_completion_tokens: None,
+        tools: None,
+        tool_choice: None,
+        reasoning_effort: None,
+        response_format: Some(ResponseFormat {
+            format_type: "json_schema",
+            json_schema: ResponseFormatJsonSchema {
+                name: "final_output",
+                strict: true,
+                schema: &schema,
+            },
+        }),
+    };
+
+    insta::assert_json_snapshot!(
+        "chat_request_with_output_schema_constraint",
         serde_json::to_value(&request).unwrap()
     );
 }
@@ -957,6 +1001,7 @@ fn snapshot_chat_request_full_with_agents_and_skills() {
         tools: Some(convert_tools(registry.definitions())),
         tool_choice: Some("auto".to_string()),
         reasoning_effort: None,
+        response_format: None,
     };
 
     assert_json_snapshot_with_environment_filters(

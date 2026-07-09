@@ -215,20 +215,20 @@ Older `hook_event` records may omit `call_id`, `tool_name`, `tool_input_summary`
 
 `task_complete` records the outcome and aggregate usage for one invocation.
 
-  | Field                | Type             | Required | Description                                                      |
-  | -------------------- | ---------------- | -------- | ---------------------------------------------------------------- |
-  | `type`               | string           | yes      | Always `task_complete`                                           |
-  | `subtype`            | string           | yes      | One of `success`, `error_during_execution`, or `error_max_turns` |
-  | `is_error`           | boolean          | yes      | `false` for successful completion                                |
-  | `duration_ms`        | number           | yes      | Wall-clock task duration in milliseconds                         |
-  | `turn_count`         | number           | yes      | Number of API turns with usage accumulated                       |
-  | `tool_call_count`    | number           | yes      | Number of tool calls executed during the task                    |
-  | `session_id`         | string           | yes      | Session UUID                                                     |
-  | `task_id`            | string           | yes      | Task UUID from the matching `task_start`                         |
-  | `result`             | string           | no       | Final assistant text on success                                  |
-  | `error`              | string           | no       | Error message on failure                                         |
-  | `usage`              | object           | yes      | Aggregate token usage for the task                               |
-  | `permission_denials` | array of strings | no       | Tool permission denial messages when present                     |
+  | Field                | Type             | Required | Description                                                                         |
+  | -------------------- | ---------------- | -------- | ----------------------------------------------------------------------------------- |
+  | `type`               | string           | yes      | Always `task_complete`                                                              |
+  | `subtype`            | string           | yes      | One of `success`, `error_during_execution`, `error_output_schema`, or `interrupted` |
+  | `is_error`           | boolean          | yes      | `false` for successful completion                                                   |
+  | `duration_ms`        | number           | yes      | Wall-clock task duration in milliseconds                                            |
+  | `turn_count`         | number           | yes      | Number of API turns with usage accumulated                                          |
+  | `tool_call_count`    | number           | yes      | Number of tool calls executed during the task                                       |
+  | `session_id`         | string           | yes      | Session UUID                                                                        |
+  | `task_id`            | string           | yes      | Task UUID from the matching `task_start`                                            |
+  | `result`             | string           | no       | Final assistant text on success                                                     |
+  | `error`              | string           | no       | Error message on failure                                                            |
+  | `usage`              | object           | yes      | Aggregate token usage for the task                                                  |
+  | `permission_denials` | array of strings | no       | Tool permission denial messages when present                                        |
 
 `usage` has this shape:
 

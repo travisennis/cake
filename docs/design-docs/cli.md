@@ -39,6 +39,12 @@ pub struct CodingAssistant {
     #[arg(long, value_enum, default_value = "text")]
     pub output_format: OutputFormat,
 
+    /// Constrain the final response to a JSON document valid against
+    /// this JSON Schema file (draft 2020-12). Only the final response
+    /// is constrained; tool use and intermediate output are unchanged.
+    #[arg(long, value_name = "PATH")]
+    pub output_schema: Option<String>,
+
     /// Continue the most recent session for this directory
     #[arg(long = "continue")]
     pub continue_session: bool,
@@ -218,6 +224,29 @@ Three output formats are supported:
 
 When using `stream-json` or `json`, console progress reporting (spinner) is automatically suppressed to avoid polluting stdout.
 
+## Schema-Constrained Final Output
+
+`--output-schema <path>` constrains the final response to a single JSON document that validates against a caller-supplied JSON Schema file (draft 2020-12, as implemented by the `jsonschema` crate). Schemas must be self-contained: external `$ref` resolution is disabled, and a schema referencing remote or file resources fails to compile.
+
+```bash
+cake --output-schema review.schema.json --output-format stream-json "Review this diff"
+```
+
+Only the final response is constrained. The run remains fully agentic --- tool use, reasoning, and intermediate messages are unchanged --- and the schema requirement is injected as developer context so the model aims for conforming output on its own. When the final (no-tool-call) message does not validate, cake runs at most two corrective turns with tools disabled and the provider's native structured-output constraint attached (falling back to unconstrained retries if the provider rejects the constrained request with HTTP 400). Local validation is authoritative in all cases.
+
+On success, the final response is exactly the schema-valid JSON document with no Markdown fences or surrounding prose:
+
+- **`text`**: stdout is exactly the JSON document.
+- **`json`**: the top-level `result` field remains a JSON string containing the document.
+- **`stream-json`**: the `task_complete` record's `result` is the document.
+
+The flag composes with `--continue`, `--resume`, and `--fork`. The schema is per-invocation and is not persisted to the session; corrective turns are ordinary conversation items, so resumed sessions replay cleanly.
+
+Failure behavior:
+
+- An unreadable or invalid schema file fails before the run starts (no `task_start` is emitted, no worktree is created) with a clear error on stderr and exit code 3.
+- A final response that cannot be made schema-valid (refusal, truncation, correction exhaustion) emits a `task_complete` record with subtype `error_output_schema` and `is_error: true`, with validation detail in `error`, and exits 1. Callers never receive a successful `task_complete.result` containing non-conforming prose.
+
 ## Exit Codes
 
 cake returns structured exit codes so that shell scripts and CI pipelines can branch on the reason for failure:
@@ -246,6 +275,7 @@ When using `--output-format stream-json`, the task completion event reports succ
 ```json
 {"type":"task_complete","subtype":"success","is_error":false,...}
 {"type":"task_complete","subtype":"error_during_execution","is_error":true,"error":"...",...}
+{"type":"task_complete","subtype":"error_output_schema","is_error":true,"error":"...",...}
 ```
 
 ### JSON Summary Output

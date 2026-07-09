@@ -1,5 +1,5 @@
 ---
-source: src/clients/responses.rs
+source: src/clients/responses_tests.rs
 expression: "serde_json::to_value(&request).unwrap()"
 ---
 {
@@ -18,7 +18,5 @@ expression: "serde_json::to_value(&request).unwrap()"
   "max_output_tokens": null,
   "model": "openai/gpt-4.1",
   "temperature": null,
-  "tool_choice": null,
-  "tools": null,
   "top_p": null
 }

@@ -51,40 +51,63 @@ pub struct ApiError {
 /// which can be embedded in structured output (e.g. streaming JSON) or
 /// converted to `std::process::ExitCode` via [`classify_to_exit_code`].
 pub fn classify_to_u8(err: &anyhow::Error) -> u8 {
-    // Check for structured ApiError first — this gives us reliable status codes.
-    if let Some(api_err) = err.downcast_ref::<ApiError>() {
-        return match api_err.status {
-            401 | 403 | 429 => code::API_ERROR,
-            _ => code::AGENT_ERROR,
-        };
+    if let Some(code) = classify_typed_error(err) {
+        return code;
     }
 
     // Walk the error chain for reqwest::Error and string-based patterns.
     for cause in err.chain() {
-        // Check for reqwest::Error at each level of the chain.
-        if let Some(req_err) = cause.downcast_ref::<reqwest::Error>()
-            && is_reqwest_api_error(req_err)
-        {
-            return code::API_ERROR;
-        }
-
-        let msg = cause.to_string();
-
-        // --- Input errors (exit 3) ---
-        if is_input_error(&msg) {
-            return code::INPUT_ERROR;
-        }
-
-        // --- API errors (exit 2) via string patterns ---
-        // These cover network/connection errors that appear as string messages
-        // rather than typed reqwest errors (e.g. when re-wrapped by anyhow).
-        if is_api_network_error(&msg) {
-            return code::API_ERROR;
+        if let Some(code) = classify_error_cause(cause) {
+            return code;
         }
     }
 
     // Default: agent/tool error
     code::AGENT_ERROR
+}
+
+fn classify_typed_error(err: &anyhow::Error) -> Option<u8> {
+    // Check for structured ApiError first — this gives us reliable status codes.
+    if let Some(api_err) = err.downcast_ref::<ApiError>() {
+        return Some(match api_err.status {
+            401 | 403 | 429 => code::API_ERROR,
+            _ => code::AGENT_ERROR,
+        });
+    }
+
+    // Typed output-schema errors: pre-run schema file problems are input
+    // errors; a run that cannot satisfy the schema is an agent error.
+    if let Some(schema_err) = err.downcast_ref::<crate::config::OutputSchemaError>() {
+        return Some(match schema_err {
+            crate::config::OutputSchemaError::Unreadable { .. }
+            | crate::config::OutputSchemaError::InvalidJson { .. }
+            | crate::config::OutputSchemaError::InvalidSchema { .. } => code::INPUT_ERROR,
+            crate::config::OutputSchemaError::Unsatisfied { .. } => code::AGENT_ERROR,
+        });
+    }
+
+    None
+}
+
+fn classify_error_cause(cause: &(dyn std::error::Error + 'static)) -> Option<u8> {
+    if let Some(req_err) = cause.downcast_ref::<reqwest::Error>()
+        && is_reqwest_api_error(req_err)
+    {
+        return Some(code::API_ERROR);
+    }
+
+    let msg = cause.to_string();
+    if is_input_error(&msg) {
+        return Some(code::INPUT_ERROR);
+    }
+
+    // These cover network/connection errors that appear as string messages
+    // rather than typed reqwest errors (e.g. when re-wrapped by anyhow).
+    if is_api_network_error(&msg) {
+        return Some(code::API_ERROR);
+    }
+
+    None
 }
 
 /// Classify an `anyhow::Error` into an `ExitCode`.
@@ -330,6 +353,57 @@ mod tests {
     fn classify_session_not_found() {
         let err = anyhow::anyhow!("Session abc123 not found");
         assert_eq!(classify_to_u8(&err), code::INPUT_ERROR);
+    }
+
+    // --- Output schema error classification ---
+
+    #[test]
+    fn classify_output_schema_unreadable_as_input_error() {
+        let err = anyhow::Error::new(crate::config::OutputSchemaError::Unreadable {
+            path: "/tmp/missing.json".into(),
+            source: std::io::Error::new(std::io::ErrorKind::NotFound, "not found"),
+        });
+        assert_eq!(classify_to_u8(&err), code::INPUT_ERROR);
+    }
+
+    #[test]
+    fn classify_output_schema_invalid_json_as_input_error() {
+        let source = serde_json::from_str::<serde_json::Value>("not json").unwrap_err();
+        let err = anyhow::Error::new(crate::config::OutputSchemaError::InvalidJson {
+            path: "/tmp/schema.json".into(),
+            source,
+        });
+        assert_eq!(classify_to_u8(&err), code::INPUT_ERROR);
+    }
+
+    #[test]
+    fn classify_output_schema_invalid_schema_as_input_error() {
+        let err = anyhow::Error::new(crate::config::OutputSchemaError::InvalidSchema {
+            path: "/tmp/schema.json".into(),
+            detail: "123 is not of type 'string'".to_string(),
+        });
+        assert_eq!(classify_to_u8(&err), code::INPUT_ERROR);
+    }
+
+    #[test]
+    fn classify_output_schema_unsatisfied_as_agent_error() {
+        let err = anyhow::Error::new(crate::config::OutputSchemaError::Unsatisfied {
+            attempts: 3,
+            detail: "\"summary\" is a required property".to_string(),
+        });
+        assert_eq!(classify_to_u8(&err), code::AGENT_ERROR);
+    }
+
+    #[test]
+    fn classify_output_schema_unsatisfied_with_context_as_agent_error() {
+        // The typed downcast must win even when the error is wrapped with
+        // context whose message could pattern-match string-based rules.
+        let err = anyhow::Error::new(crate::config::OutputSchemaError::Unsatisfied {
+            attempts: 3,
+            detail: "connection refused is a required property".to_string(),
+        })
+        .context("agent run failed");
+        assert_eq!(classify_to_u8(&err), code::AGENT_ERROR);
     }
 
     // --- API error classification via structured ApiError ---

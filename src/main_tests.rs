@@ -803,6 +803,44 @@ async fn handle_agent_turn_error_with_hooks() {
 }
 
 #[tokio::test]
+async fn handle_agent_turn_output_schema_exhaustion_emits_error_output_schema() {
+    let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let captured_clone = captured.clone();
+    let mut agent = test_agent_for_turn().with_streaming_json(move |json| {
+        *captured_clone.lock().unwrap() = json.to_string();
+    });
+
+    let result: Result<String, anyhow::Error> =
+        Err(crate::config::OutputSchemaError::Unsatisfied {
+            attempts: 3,
+            detail: "\"summary\" is a required property".to_string(),
+        }
+        .into());
+
+    CodingAssistant::handle_agent_turn_result(&mut agent, None, &result, 50)
+        .await
+        .unwrap();
+
+    let json: serde_json::Value = serde_json::from_str(&captured.lock().unwrap()).unwrap();
+    assert_eq!(json["type"], "task_complete");
+    assert_eq!(json["subtype"], "error_output_schema");
+    assert_eq!(json["is_error"], true);
+    assert!(
+        json["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("summary")),
+        "error field: {json}"
+    );
+    assert!(json.get("result").is_none() || json["result"].is_null());
+
+    // The same error must classify to exit code 1 (agent error).
+    assert_eq!(
+        crate::exit_code::classify_to_u8(result.as_ref().unwrap_err()),
+        crate::exit_code::code::AGENT_ERROR
+    );
+}
+
+#[tokio::test]
 #[cfg(unix)]
 async fn handle_agent_turn_success_with_stop_context() {
     let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));

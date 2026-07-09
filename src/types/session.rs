@@ -26,28 +26,39 @@ pub struct GitState {
 pub enum TaskCompleteSubtype {
     Success,
     ErrorDuringExecution,
+    ErrorOutputSchema,
     Interrupted,
 }
 
 /// Outcome of a completed task.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaskOutcome {
-    Success { result: Option<String> },
-    ErrorDuringExecution { error: String },
+    Success {
+        result: Option<String>,
+    },
+    ErrorDuringExecution {
+        error: String,
+    },
+    /// The final response could not be made valid against the caller's
+    /// `--output-schema` (refusal, truncation, or correction exhaustion).
+    ErrorOutputSchema {
+        error: String,
+    },
     Interrupted,
 }
 
 impl TaskOutcome {
-    pub const fn subtype(&self) -> TaskCompleteSubtype {
-        match self {
-            Self::Success { .. } => TaskCompleteSubtype::Success,
-            Self::ErrorDuringExecution { .. } => TaskCompleteSubtype::ErrorDuringExecution,
-            Self::Interrupted => TaskCompleteSubtype::Interrupted,
-        }
-    }
-
     pub const fn is_error(&self) -> bool {
         !matches!(self, Self::Success { .. })
+    }
+}
+
+const fn task_outcome_subtype(outcome: &TaskOutcome) -> TaskCompleteSubtype {
+    match outcome {
+        TaskOutcome::Success { .. } => TaskCompleteSubtype::Success,
+        TaskOutcome::ErrorDuringExecution { .. } => TaskCompleteSubtype::ErrorDuringExecution,
+        TaskOutcome::ErrorOutputSchema { .. } => TaskCompleteSubtype::ErrorOutputSchema,
+        TaskOutcome::Interrupted => TaskCompleteSubtype::Interrupted,
     }
 }
 
@@ -81,19 +92,21 @@ impl Serialize for TaskOutcome {
     {
         let fields = match self {
             Self::Success { result } => TaskOutcomeFields {
-                subtype: self.subtype(),
+                subtype: task_outcome_subtype(self),
                 is_error: self.is_error(),
                 result: result.as_deref(),
                 error: None,
             },
-            Self::ErrorDuringExecution { error } => TaskOutcomeFields {
-                subtype: self.subtype(),
-                is_error: self.is_error(),
-                result: None,
-                error: Some(error),
+            Self::ErrorDuringExecution { error } | Self::ErrorOutputSchema { error } => {
+                TaskOutcomeFields {
+                    subtype: task_outcome_subtype(self),
+                    is_error: self.is_error(),
+                    result: None,
+                    error: Some(error),
+                }
             },
             Self::Interrupted => TaskOutcomeFields {
-                subtype: self.subtype(),
+                subtype: task_outcome_subtype(self),
                 is_error: self.is_error(),
                 result: None,
                 error: None,
@@ -104,41 +117,52 @@ impl Serialize for TaskOutcome {
     }
 }
 
+impl OwnedTaskOutcomeFields {
+    fn validate_consistency<E: serde::de::Error>(&self) -> Result<(), E> {
+        let expected_success = matches!(self.subtype, TaskCompleteSubtype::Success);
+        let expected_is_error = !expected_success;
+        if self
+            .is_error
+            .is_some_and(|is_error| is_error != expected_is_error)
+            || self
+                .success
+                .is_some_and(|success| success != expected_success)
+        {
+            return Err(E::custom(
+                "task completion outcome fields do not match subtype",
+            ));
+        }
+        if self.is_error.is_none() && self.success.is_none() {
+            return Err(E::custom("task completion outcome requires is_error"));
+        }
+        Ok(())
+    }
+}
+
+fn required_task_error<E: serde::de::Error>(
+    error: Option<String>,
+    subtype: &str,
+) -> Result<String, E> {
+    error.ok_or_else(|| E::custom(format!("task completion {subtype} outcome requires error")))
+}
+
 impl<'de> Deserialize<'de> for TaskOutcome {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         let fields = OwnedTaskOutcomeFields::deserialize(deserializer)?;
-        let expected_success = matches!(fields.subtype, TaskCompleteSubtype::Success);
-        let expected_is_error = !expected_success;
-        if fields
-            .is_error
-            .is_some_and(|is_error| is_error != expected_is_error)
-            || fields
-                .success
-                .is_some_and(|success| success != expected_success)
-        {
-            return Err(serde::de::Error::custom(
-                "task completion outcome fields do not match subtype",
-            ));
-        }
-        if fields.is_error.is_none() && fields.success.is_none() {
-            return Err(serde::de::Error::custom(
-                "task completion outcome requires is_error",
-            ));
-        }
+        fields.validate_consistency::<D::Error>()?;
 
         match fields.subtype {
             TaskCompleteSubtype::Success => Ok(Self::Success {
                 result: fields.result,
             }),
             TaskCompleteSubtype::ErrorDuringExecution => Ok(Self::ErrorDuringExecution {
-                error: fields.error.ok_or_else(|| {
-                    serde::de::Error::custom(
-                        "task completion error_during_execution outcome requires error",
-                    )
-                })?,
+                error: required_task_error::<D::Error>(fields.error, "error_during_execution")?,
+            }),
+            TaskCompleteSubtype::ErrorOutputSchema => Ok(Self::ErrorOutputSchema {
+                error: required_task_error::<D::Error>(fields.error, "error_output_schema")?,
             }),
             TaskCompleteSubtype::Interrupted => Ok(Self::Interrupted),
         }

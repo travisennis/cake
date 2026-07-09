@@ -137,24 +137,32 @@ Hook stdout and stderr may include local paths, policy diagnostics, or other pro
 {"type":"task_complete","subtype":"success","is_error":false,"duration_ms":1523,"turn_count":2,"tool_call_count":3,"session_id":"550e8400-e29b-41d4-a716-446655440000","task_id":"2b15f29d-8c42-4c53-9bdf-35c8f2390d3e","result":"Done","usage":{"input_tokens":150,"input_tokens_details":{"cached_tokens":50},"output_tokens":320,"output_tokens_details":{"reasoning_tokens":120},"total_tokens":470}}
 ```
 
-`subtype` is one of `success`, `error_during_execution`, or `error_max_turns`. On failure, `error` contains the error message and `result` is omitted.
+`subtype` is one of `success`, `error_during_execution`, `error_output_schema`, or `interrupted`. On failure, `error` contains the error message and `result` is omitted.
 
-  | Field                | Type             | Required | Description                                                      |
-  | -------------------- | ---------------- | -------- | ---------------------------------------------------------------- |
-  | `type`               | string           | yes      | Always `task_complete`                                           |
-  | `subtype`            | string           | yes      | One of `success`, `error_during_execution`, or `error_max_turns` |
-  | `is_error`           | boolean          | yes      | `false` for successful completion                                |
-  | `duration_ms`        | number           | yes      | Wall-clock task duration in milliseconds                         |
-  | `turn_count`         | number           | yes      | Number of API turns with usage accumulated                       |
-  | `tool_call_count`    | number           | yes      | Number of tool calls executed during the task                    |
-  | `session_id`         | string           | yes      | Session UUID                                                     |
-  | `task_id`            | string           | yes      | Task UUID from the matching `task_start`                         |
-  | `result`             | string           | no       | Final assistant text on success                                  |
-  | `error`              | string           | no       | Error message on failure                                         |
-  | `usage`              | object           | yes      | Aggregate token usage for the task                               |
-  | `permission_denials` | array of strings | no       | Tool permission denial messages when present                     |
+  | Field                | Type             | Required | Description                                                                         |
+  | -------------------- | ---------------- | -------- | ----------------------------------------------------------------------------------- |
+  | `type`               | string           | yes      | Always `task_complete`                                                              |
+  | `subtype`            | string           | yes      | One of `success`, `error_during_execution`, `error_output_schema`, or `interrupted` |
+  | `is_error`           | boolean          | yes      | `false` for successful completion                                                   |
+  | `duration_ms`        | number           | yes      | Wall-clock task duration in milliseconds                                            |
+  | `turn_count`         | number           | yes      | Number of API turns with usage accumulated                                          |
+  | `tool_call_count`    | number           | yes      | Number of tool calls executed during the task                                       |
+  | `session_id`         | string           | yes      | Session UUID                                                                        |
+  | `task_id`            | string           | yes      | Task UUID from the matching `task_start`                                            |
+  | `result`             | string           | no       | Final assistant text on success                                                     |
+  | `error`              | string           | no       | Error message on failure                                                            |
+  | `usage`              | object           | yes      | Aggregate token usage for the task                                                  |
+  | `permission_denials` | array of strings | no       | Tool permission denial messages when present                                        |
 
 `usage` contains `input_tokens`, `input_tokens_details.cached_tokens`, `output_tokens`, `output_tokens_details.reasoning_tokens`, and `total_tokens`.
+
+With `--output-schema`, a final response that cannot be made valid against the schema (refusal, truncation, or correction exhaustion) fails with subtype `error_output_schema` and process exit code 1. The validation detail is in `error` and `result` is omitted:
+
+```json
+{"type":"task_complete","subtype":"error_output_schema","is_error":true,"duration_ms":6100,"turn_count":3,"tool_call_count":0,"session_id":"550e8400-e29b-41d4-a716-446655440000","task_id":"2b15f29d-8c42-4c53-9bdf-35c8f2390d3e","error":"Final response did not conform to the output schema after 3 attempt(s): \"summary\" is a required property","usage":{"input_tokens":150,"input_tokens_details":{"cached_tokens":50},"output_tokens":320,"output_tokens_details":{"reasoning_tokens":120},"total_tokens":470}}
+```
+
+The subtype is additive: consumers keying on `is_error` are unaffected, and consumers that distinguish schema exhaustion from other agent errors can match `subtype == "error_output_schema"`.
 
 ## Consumer Guidance
 

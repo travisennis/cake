@@ -12,6 +12,7 @@ use crate::clients::agent_state::{ConversationState, accumulate_usage};
 use crate::clients::backend::Backend;
 use crate::clients::tools::{ToolContext, ToolRegistry, default_tool_registry};
 use crate::config::model::ResolvedModelConfig;
+use crate::config::output_schema::OutputSchema;
 use crate::config::skills::Skill;
 use crate::hooks::HookRunner;
 use crate::session_telemetry::{
@@ -77,6 +78,13 @@ pub struct Agent {
     hook_runner: Option<Arc<HookRunner>>,
     /// Optional best-effort telemetry sidecar writer.
     telemetry: Option<AgentTelemetry>,
+    /// Optional compiled JSON Schema constraining the final response
+    /// (`--output-schema`). Intermediate turns run unconstrained.
+    output_schema: Option<Arc<OutputSchema>>,
+    /// Whether correction turns may attach the provider's native
+    /// structured-output constraint. Cleared for the rest of the run when the
+    /// provider rejects the constrained request (HTTP 400); never reset.
+    native_constraint_enabled: bool,
 }
 
 impl Agent {
@@ -102,6 +110,8 @@ impl Agent {
             permission_denials: Vec::new(),
             hook_runner: None,
             telemetry: None,
+            output_schema: None,
+            native_constraint_enabled: true,
         }
     }
 
@@ -254,9 +264,41 @@ impl Agent {
         self
     }
 
+    /// Constrains the final response to validate against a compiled JSON
+    /// Schema. Intermediate tool-use turns are unaffected.
+    pub fn set_output_schema(&mut self, schema: Arc<OutputSchema>) {
+        self.output_schema = Some(schema);
+    }
+
+    /// Builder form of [`Self::set_output_schema`] (for test fixtures).
+    #[cfg(test)]
+    pub(super) fn with_output_schema(mut self, schema: Arc<OutputSchema>) -> Self {
+        self.set_output_schema(schema);
+        self
+    }
+
     /// Append hook-provided developer context before the next provider request.
     pub fn append_developer_context(&mut self, contexts: Vec<String>) {
         self.conversation.append_developer_context(contexts);
+    }
+
+    /// Append developer context stating the output-schema requirement for the
+    /// final response. No-op when no schema is attached.
+    pub fn append_output_schema_context(&mut self) {
+        let Some(schema) = &self.output_schema else {
+            return;
+        };
+        let schema_json =
+            serde_json::to_string_pretty(&schema.raw).unwrap_or_else(|_| schema.raw.to_string());
+        let message = format!(
+            "The final response for this task (the last assistant message, \
+             after all tool use is complete) must be a single JSON document \
+             that validates against the following JSON Schema (draft 2020-12). \
+             Respond with only the JSON document: no Markdown code fences and \
+             no surrounding prose. Intermediate tool use and reasoning are \
+             unaffected by this requirement.\n\n{schema_json}"
+        );
+        self.conversation.append_developer_context(vec![message]);
     }
 
     /// Enables streaming JSON output for each message.

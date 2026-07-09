@@ -1,0 +1,41 @@
+---
+source: src/clients/responses_tests.rs
+expression: "serde_json::to_value(&request).unwrap()"
+---
+{
+  "input": [
+    {
+      "content": [
+        {
+          "text": "Respond with the JSON document.",
+          "type": "input_text"
+        }
+      ],
+      "role": "user",
+      "type": "message"
+    }
+  ],
+  "max_output_tokens": null,
+  "model": "openai/gpt-5",
+  "temperature": null,
+  "text": {
+    "format": {
+      "name": "final_output",
+      "schema": {
+        "additionalProperties": false,
+        "properties": {
+          "summary": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "summary"
+        ],
+        "type": "object"
+      },
+      "strict": true,
+      "type": "json_schema"
+    }
+  },
+  "top_p": null
+}

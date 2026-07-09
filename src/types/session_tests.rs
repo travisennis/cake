@@ -112,6 +112,73 @@ fn task_outcome_serializes_interrupted() {
 }
 
 #[test]
+fn task_outcome_serializes_error_output_schema() {
+    let record = StreamRecord::TaskComplete(TaskCompleteData {
+        outcome: TaskOutcome::ErrorOutputSchema {
+            error: "\"summary\" is a required property".to_string(),
+        },
+        duration_ms: 500,
+        turn_count: 3,
+        tool_call_count: 0,
+        session_id: "session-1".to_string(),
+        task_id: "task-1".to_string(),
+        usage: Usage::default(),
+        permission_denials: None,
+    });
+
+    let json = serde_json::to_value(&record).unwrap();
+    assert_eq!(json["type"], "task_complete");
+    assert_eq!(json["subtype"], "error_output_schema");
+    assert_eq!(json["is_error"], true);
+    assert_eq!(json["error"], "\"summary\" is a required property");
+    assert!(json.get("result").is_none() || json["result"].is_null());
+    assert!(json.get("success").is_none());
+}
+
+#[test]
+fn task_outcome_deserializes_error_output_schema() {
+    let json = serde_json::json!({
+        "type": "task_complete",
+        "subtype": "error_output_schema",
+        "is_error": true,
+        "error": "validation detail",
+        "duration_ms": 500,
+        "turn_count": 3,
+        "tool_call_count": 0,
+        "session_id": "session-1",
+        "task_id": "task-1",
+        "usage": Usage::default()
+    });
+
+    let record = serde_json::from_value::<StreamRecord>(json).unwrap();
+    assert!(matches!(
+        record,
+        StreamRecord::TaskComplete(TaskCompleteData {
+            outcome: TaskOutcome::ErrorOutputSchema { error },
+            ..
+        }) if error == "validation detail"
+    ));
+}
+
+#[test]
+fn task_outcome_error_output_schema_requires_error() {
+    let json = serde_json::json!({
+        "type": "task_complete",
+        "subtype": "error_output_schema",
+        "is_error": true,
+        "duration_ms": 500,
+        "turn_count": 3,
+        "tool_call_count": 0,
+        "session_id": "session-1",
+        "task_id": "task-1",
+        "usage": Usage::default()
+    });
+
+    let error = serde_json::from_value::<StreamRecord>(json).unwrap_err();
+    assert!(error.to_string().contains("requires error"));
+}
+
+#[test]
 fn task_outcome_deserializes_interrupted() {
     let json = serde_json::json!({
         "type": "task_complete",

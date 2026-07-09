@@ -788,7 +788,7 @@ mod error_tests {
             timestamp: None,
         });
 
-        let result = agent.complete_turn().await;
+        let result = agent.complete_turn(false).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("test-model"));
@@ -818,7 +818,7 @@ mod error_tests {
             timestamp: None,
         });
 
-        let result = agent.complete_turn().await;
+        let result = agent.complete_turn(false).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("test-model"));
@@ -848,7 +848,7 @@ mod error_tests {
             timestamp: None,
         });
 
-        let result = agent.complete_turn().await;
+        let result = agent.complete_turn(false).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("test-model"));
@@ -878,7 +878,7 @@ mod error_tests {
             timestamp: None,
         });
 
-        let result = agent.complete_turn().await;
+        let result = agent.complete_turn(false).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("test-model"));
@@ -921,7 +921,7 @@ mod error_tests {
             timestamp: None,
         });
 
-        let result = agent.complete_turn().await;
+        let result = agent.complete_turn(false).await;
         assert!(result.is_ok());
         let turn_result = result.unwrap();
         assert_eq!(turn_result.items.len(), 1);
@@ -963,7 +963,7 @@ mod error_tests {
         });
 
         let start = Instant::now();
-        let result = agent.complete_turn().await;
+        let result = agent.complete_turn(false).await;
         let elapsed = start.elapsed();
 
         assert!(result.is_ok());
@@ -1003,7 +1003,7 @@ mod error_tests {
             timestamp: None,
         });
 
-        let result = agent.complete_turn().await;
+        let result = agent.complete_turn(false).await;
         assert!(result.is_ok());
     }
 
@@ -1040,7 +1040,7 @@ mod error_tests {
             timestamp: None,
         });
 
-        let result = agent.complete_turn().await;
+        let result = agent.complete_turn(false).await;
         assert!(result.is_ok());
     }
 
@@ -1077,7 +1077,7 @@ mod error_tests {
             timestamp: None,
         });
 
-        let result = agent.complete_turn().await;
+        let result = agent.complete_turn(false).await;
         assert!(result.is_ok());
     }
 
@@ -1116,7 +1116,7 @@ mod error_tests {
             timestamp: None,
         });
 
-        let result = agent.complete_turn().await;
+        let result = agent.complete_turn(false).await;
         assert!(result.is_err());
     }
 
@@ -1151,7 +1151,7 @@ mod error_tests {
             timestamp: None,
         });
 
-        let result = agent.complete_turn().await;
+        let result = agent.complete_turn(false).await;
         assert!(result.is_ok());
     }
 
@@ -1186,7 +1186,7 @@ mod error_tests {
             timestamp: None,
         });
 
-        let result = agent.complete_turn().await;
+        let result = agent.complete_turn(false).await;
         assert!(result.is_ok());
     }
 
@@ -1223,7 +1223,7 @@ mod error_tests {
             timestamp: None,
         });
 
-        let result = agent.complete_turn().await;
+        let result = agent.complete_turn(false).await;
         assert!(result.is_ok());
     }
 
@@ -1252,7 +1252,7 @@ mod error_tests {
             timestamp: None,
         });
 
-        let result = agent.complete_turn().await;
+        let result = agent.complete_turn(false).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("test-model"));
@@ -1303,7 +1303,7 @@ mod error_tests {
             timestamp: None,
         });
 
-        let result = agent.complete_turn().await;
+        let result = agent.complete_turn(false).await;
         assert!(result.is_ok());
     }
 
@@ -1335,7 +1335,7 @@ mod error_tests {
             timestamp: None,
         });
 
-        let result = agent.complete_turn().await;
+        let result = agent.complete_turn(false).await;
         assert!(result.is_err());
     }
 
@@ -1372,7 +1372,7 @@ mod error_tests {
             timestamp: None,
         });
 
-        let result = agent.complete_turn().await;
+        let result = agent.complete_turn(false).await;
         assert!(result.is_ok());
     }
 
@@ -1399,7 +1399,7 @@ mod error_tests {
             timestamp: None,
         });
 
-        let result = agent.complete_turn().await;
+        let result = agent.complete_turn(false).await;
         assert!(result.is_ok());
         let turn_result = result.unwrap();
         assert_eq!(turn_result.items.len(), 1);
@@ -1433,7 +1433,7 @@ mod error_tests {
             timestamp: None,
         });
 
-        let result = agent.complete_turn().await;
+        let result = agent.complete_turn(false).await;
         assert!(result.is_ok());
         let turn_result = result.unwrap();
         assert_eq!(turn_result.items.len(), 1);
@@ -1442,5 +1442,496 @@ mod error_tests {
         content,
         ..
     } if content == "Hello!"));
+    }
+}
+
+/// Output-schema enforcement tests using wiremock for HTTP mocking.
+#[cfg(test)]
+mod output_schema_tests {
+    use super::*;
+    use crate::config::OutputSchema;
+    use crate::config::model::ApiType;
+    use crate::config::output_schema::OutputSchemaError;
+    use std::sync::{Arc, Mutex};
+
+    use wiremock::matchers::{method, path};
+    use wiremock::{Match, Mock, MockServer, Request, ResponseTemplate};
+
+    fn test_schema() -> Arc<OutputSchema> {
+        let raw = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "summary": {"type": "string"}
+            },
+            "required": ["summary"],
+            "additionalProperties": false
+        });
+        let validator = jsonschema::draft202012::new(&raw).unwrap();
+        Arc::new(OutputSchema {
+            name: "final_output".to_string(),
+            raw,
+            validator,
+        })
+    }
+
+    fn text_response(text: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": "resp-1",
+            "output": [
+                {
+                    "type": "message",
+                    "id": "msg-1",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": text}]
+                }
+            ],
+            "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+        })
+    }
+
+    fn function_call_response() -> serde_json::Value {
+        serde_json::json!({
+            "id": "resp-fc",
+            "output": [
+                {
+                    "type": "function_call",
+                    "id": "fc-1",
+                    "call_id": "call-1",
+                    "name": "Read",
+                    "arguments": "{\"path\":\"/tmp/x\"}"
+                }
+            ],
+            "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+        })
+    }
+
+    /// Matches the initial request of a run: tools are offered.
+    #[derive(Debug)]
+    struct RequestWithTools;
+
+    impl Match for RequestWithTools {
+        fn matches(&self, request: &Request) -> bool {
+            serde_json::from_slice::<serde_json::Value>(&request.body)
+                .is_ok_and(|body| body.get("tools").is_some())
+        }
+    }
+
+    /// Matches a correction-mode request: the corrective user message is in
+    /// the input and no tools are offered.
+    #[derive(Debug)]
+    struct CorrectionRequest;
+
+    impl Match for CorrectionRequest {
+        fn matches(&self, request: &Request) -> bool {
+            let Ok(body) = serde_json::from_slice::<serde_json::Value>(&request.body) else {
+                return false;
+            };
+            let has_corrective_message = body["input"].as_array().is_some_and(|items| {
+                items.iter().any(|item| {
+                    item["type"] == "message"
+                        && item["role"] == "user"
+                        && item["content"][0]["text"]
+                            .as_str()
+                            .is_some_and(|text| text.contains("failed output schema validation"))
+                })
+            });
+            has_corrective_message
+                && body.get("tools").is_none()
+                && body.get("tool_choice").is_none()
+        }
+    }
+
+    #[tokio::test]
+    async fn conforming_final_message_passes_through_trimmed() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(text_response("\n{\"summary\": \"ok\"}\n")),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let mut agent = test_agent_for(ApiType::Responses, &mock_server.uri())
+            .with_output_schema(test_schema());
+
+        let result = agent.send("go".to_string()).await.unwrap();
+
+        assert_eq!(result, "{\"summary\": \"ok\"}");
+        assert_eq!(agent.turn_count(), 1);
+        // No corrective items were added: system, user, assistant.
+        assert_eq!(agent.history().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn fenced_answer_is_corrected_on_a_toolless_turn() {
+        let mock_server = MockServer::start().await;
+
+        // Initial request offers tools and returns a fenced (non-conforming)
+        // document.
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .and(RequestWithTools)
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(text_response("```json\n{\"summary\": \"ok\"}\n```")),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        // The correction request must carry the corrective user message and
+        // offer no tools.
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .and(CorrectionRequest)
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(text_response("{\"summary\": \"ok\"}")),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let streamed = Arc::new(Mutex::new(Vec::new()));
+        let streamed_clone = Arc::clone(&streamed);
+        let mut agent = test_agent_for(ApiType::Responses, &mock_server.uri())
+            .with_tools(crate::clients::tools::read_tool_registry())
+            .with_output_schema(test_schema())
+            .with_streaming_json(move |json| {
+                streamed_clone.lock().unwrap().push(json.to_string());
+            });
+
+        let result = agent.send("go".to_string()).await.unwrap();
+
+        assert_eq!(result, "{\"summary\": \"ok\"}");
+        assert_eq!(agent.turn_count(), 2);
+        // The corrective message is an ordinary user item in the transcript.
+        assert!(agent.history().iter().any(|item| matches!(
+            item,
+            ConversationItem::Message { role: Role::User, content, .. }
+                if content.contains("failed output schema validation")
+        )));
+        // And it streamed like any other item.
+        let streamed_records: Vec<serde_json::Value> = streamed
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|json| serde_json::from_str(json).unwrap())
+            .collect();
+        assert!(streamed_records.iter().any(|record| {
+            record["type"] == "message"
+                && record["role"] == "user"
+                && record["content"]
+                    .as_str()
+                    .is_some_and(|content| content.contains("failed output schema validation"))
+        }));
+    }
+
+    #[tokio::test]
+    async fn persistent_non_conformance_exhausts_with_unsatisfied() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(text_response("not json at all")),
+            )
+            .expect(3)
+            .mount(&mock_server)
+            .await;
+
+        let mut agent = test_agent_for(ApiType::Responses, &mock_server.uri())
+            .with_output_schema(test_schema());
+
+        let error = agent.send("go".to_string()).await.unwrap_err();
+
+        let schema_error = error.downcast_ref::<OutputSchemaError>().unwrap();
+        assert!(matches!(
+            schema_error,
+            OutputSchemaError::Unsatisfied { attempts: 3, .. }
+        ));
+        assert!(
+            error
+                .to_string()
+                .contains("not a single valid JSON document"),
+            "error: {error}"
+        );
+        assert_eq!(agent.turn_count(), 3);
+    }
+
+    #[tokio::test]
+    async fn schema_invalid_json_reports_validation_detail_on_exhaustion() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(text_response("{\"other\": 1}")))
+            .expect(3)
+            .mount(&mock_server)
+            .await;
+
+        let mut agent = test_agent_for(ApiType::Responses, &mock_server.uri())
+            .with_output_schema(test_schema());
+
+        let error = agent.send("go".to_string()).await.unwrap_err();
+
+        assert!(error.to_string().contains("summary"), "error: {error}");
+    }
+
+    #[tokio::test]
+    async fn correction_turn_tool_calls_are_not_executed() {
+        let mock_server = MockServer::start().await;
+
+        // Turn 1: non-conforming text. Turn 2 (correction): a misbehaving
+        // provider returns a tool call anyway. Turn 3 (correction): conforming.
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(text_response("not json")))
+            .up_to_n_times(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(function_call_response()))
+            .up_to_n_times(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(text_response("{\"summary\": \"ok\"}")),
+            )
+            .up_to_n_times(1)
+            .mount(&mock_server)
+            .await;
+
+        let mut agent = test_agent_for(ApiType::Responses, &mock_server.uri())
+            .with_tools(crate::clients::tools::read_tool_registry())
+            .with_output_schema(test_schema());
+
+        let result = agent.send("go".to_string()).await.unwrap();
+
+        assert_eq!(result, "{\"summary\": \"ok\"}");
+        assert_eq!(agent.turn_count(), 3);
+        // The tool call was recorded in history but never executed.
+        assert!(
+            agent
+                .history()
+                .iter()
+                .all(|item| !matches!(item, ConversationItem::FunctionCallOutput { .. }))
+        );
+        assert_eq!(agent.tool_call_count, 0);
+    }
+}
+
+/// Milestone 3 tests: native structured-output constraint on correction turns.
+#[cfg(test)]
+mod output_schema_constraint_tests {
+    use super::*;
+    use crate::config::OutputSchema;
+    use crate::config::model::ApiType;
+    use std::sync::Arc;
+
+    use wiremock::matchers::{method, path};
+    use wiremock::{Match, Mock, MockServer, Request, ResponseTemplate};
+
+    fn test_schema() -> Arc<OutputSchema> {
+        let raw = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "summary": {"type": "string"}
+            },
+            "required": ["summary"],
+            "additionalProperties": false
+        });
+        let validator = jsonschema::draft202012::new(&raw).unwrap();
+        Arc::new(OutputSchema {
+            name: "final_output".to_string(),
+            raw,
+            validator,
+        })
+    }
+
+    fn responses_text_response(text: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": "resp-1",
+            "output": [
+                {
+                    "type": "message",
+                    "id": "msg-1",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": text}]
+                }
+            ],
+            "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+        })
+    }
+
+    fn chat_text_response(text: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": "chatcmpl-1",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": text},
+                    "finish_reason": "stop"
+                }
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        })
+    }
+
+    /// Matches a Responses API request whose body has no correction state.
+    #[derive(Debug)]
+    struct InitialResponsesRequest;
+
+    impl Match for InitialResponsesRequest {
+        fn matches(&self, request: &Request) -> bool {
+            serde_json::from_slice::<serde_json::Value>(&request.body)
+                .is_ok_and(|body| body.get("text").is_none())
+        }
+    }
+
+    /// Matches a Responses API correction request carrying the native
+    /// `json_schema` constraint with the expected shape.
+    #[derive(Debug)]
+    struct ConstrainedResponsesRequest;
+
+    impl Match for ConstrainedResponsesRequest {
+        fn matches(&self, request: &Request) -> bool {
+            let Ok(body) = serde_json::from_slice::<serde_json::Value>(&request.body) else {
+                return false;
+            };
+            body["text"]["format"]["type"] == "json_schema"
+                && body["text"]["format"]["name"] == "final_output"
+                && body["text"]["format"]["strict"] == true
+                && body["text"]["format"]["schema"]["required"][0] == "summary"
+                && body.get("tools").is_none()
+        }
+    }
+
+    /// Matches a Chat Completions correction request carrying the native
+    /// `response_format` constraint with the expected shape.
+    #[derive(Debug)]
+    struct ConstrainedChatRequest;
+
+    impl Match for ConstrainedChatRequest {
+        fn matches(&self, request: &Request) -> bool {
+            let Ok(body) = serde_json::from_slice::<serde_json::Value>(&request.body) else {
+                return false;
+            };
+            body["response_format"]["type"] == "json_schema"
+                && body["response_format"]["json_schema"]["name"] == "final_output"
+                && body["response_format"]["json_schema"]["strict"] == true
+                && body.get("tools").is_none()
+        }
+    }
+
+    #[tokio::test]
+    async fn responses_correction_turn_attaches_native_constraint() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .and(InitialResponsesRequest)
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(responses_text_response("not json")),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .and(ConstrainedResponsesRequest)
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(responses_text_response("{\"summary\": \"ok\"}")),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let mut agent = test_agent_for(ApiType::Responses, &mock_server.uri())
+            .with_output_schema(test_schema());
+
+        let result = agent.send("go".to_string()).await.unwrap();
+
+        assert_eq!(result, "{\"summary\": \"ok\"}");
+        assert_eq!(agent.turn_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn chat_completions_correction_turn_attaches_native_constraint() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(ConstrainedChatRequest)
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(chat_text_response("{\"summary\": \"ok\"}")),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(chat_text_response("not json")))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let mut agent = test_agent_for(ApiType::ChatCompletions, &mock_server.uri())
+            .with_output_schema(test_schema());
+
+        let result = agent.send("go".to_string()).await.unwrap();
+
+        assert_eq!(result, "{\"summary\": \"ok\"}");
+        assert_eq!(agent.turn_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn provider_400_on_constraint_falls_back_to_unconstrained_retry() {
+        let mock_server = MockServer::start().await;
+
+        // The constrained correction request is rejected by the provider.
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .and(ConstrainedResponsesRequest)
+            .respond_with(ResponseTemplate::new(400).set_body_string("unsupported schema feature"))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        // Initial turn and the unconstrained correction retry share this
+        // matcher; the first response is non-conforming, the second conforms.
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .and(InitialResponsesRequest)
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(responses_text_response("not json")),
+            )
+            .up_to_n_times(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .and(InitialResponsesRequest)
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(responses_text_response("{\"summary\": \"ok\"}")),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let mut agent = test_agent_for(ApiType::Responses, &mock_server.uri())
+            .with_output_schema(test_schema());
+
+        let result = agent.send("go".to_string()).await.unwrap();
+
+        assert_eq!(result, "{\"summary\": \"ok\"}");
+        // The 400 turn errored before being counted: initial turn plus the
+        // successful unconstrained correction retry.
+        assert_eq!(agent.turn_count(), 2);
     }
 }
