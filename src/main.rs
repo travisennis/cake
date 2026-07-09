@@ -93,7 +93,11 @@ pub(crate) struct CodingAssistant {
     #[arg(long)]
     pub no_session: bool,
 
-    /// Run in an isolated git worktree (optionally provide a name)
+    /// Run in an isolated git worktree (optionally provide a name).
+    ///
+    /// When creating a worktree, a `.worktreeinclude` file in the project
+    /// root can list glob patterns of files (e.g. `.env`, `secrets.json`) to
+    /// copy into the new worktree automatically.
     #[arg(short, long, num_args = 0..=1, default_missing_value = "", value_name = "NAME")]
     pub worktree: Option<String>,
 
