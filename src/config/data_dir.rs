@@ -55,6 +55,30 @@ impl DataDir {
     /// let data_dir = DataDir::new()?;
     /// ```
     ///
+    /// Create a `DataDir` at an arbitrary path (for testing).
+    ///
+    /// This avoids filesystem access and environment dependencies,
+    /// making it suitable for unit tests that need a controlled directory layout.
+    #[cfg(test)]
+    pub fn new_in_dir(dir: &Path) -> Self {
+        Self {
+            data_dir: dir.to_path_buf(),
+            sessions_dir: dir.join("sessions"),
+        }
+    }
+
+    /// Creates a new data directory instance for session storage.
+    ///
+    /// If `CAKE_DATA_DIR` is set, uses that path for both cache and sessions.
+    /// Otherwise, cache defaults to `~/.cache/cake/` and sessions to
+    /// `~/.local/share/cake/sessions/`. Directories are created if they do not exist.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let data_dir = DataDir::new()?;
+    /// ```
+    ///
     /// # Errors
     ///
     /// Returns an error if the home directory cannot be determined (when
@@ -108,7 +132,7 @@ impl DataDir {
     /// Returns the sessions directory path.
     ///
     /// Defaults to `~/.local/share/cake/sessions/` or `{CAKE_DATA_DIR}/sessions`.
-    fn sessions_dir(&self) -> PathBuf {
+    pub fn sessions_dir(&self) -> PathBuf {
         self.sessions_dir.clone()
     }
 

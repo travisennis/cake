@@ -19,6 +19,7 @@ The primary prompt-running CLI is implemented by `CodingAssistant` using `clap`'
 ```text
 cake [OPTIONS] [PROMPT]
 cake debug models
+cake sessions list
 ```
 
 The prompt path remains the default when no subcommand is provided:

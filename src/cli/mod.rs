@@ -11,11 +11,13 @@ mod debug;
 mod output;
 mod run_mode;
 mod session_factory;
+mod sessions;
 
 #[doc(inline)]
 pub use cmd_runner::CmdRunner;
 pub use debug::DebugCommand;
 pub use output::{CliOutputSink, TurnResult};
+pub use sessions::SessionsCommand;
 
 pub use run_mode::{RunMode, SessionStorage};
 pub use session_factory::RunSession;
@@ -25,12 +27,15 @@ pub use session_factory::RunSession;
 pub enum Commands {
     /// Debug and introspection commands
     Debug(DebugCommand),
+    /// Session browsing commands
+    Sessions(SessionsCommand),
 }
 
 impl CmdRunner for Commands {
     async fn run(&self, data_dir: &crate::config::DataDir) -> anyhow::Result<()> {
         match self {
             Self::Debug(command) => command.run(data_dir).await,
+            Self::Sessions(command) => command.run(data_dir).await,
         }
     }
 }
