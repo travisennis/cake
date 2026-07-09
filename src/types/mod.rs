@@ -13,8 +13,8 @@ mod usage;
 pub use conversation::{ConversationItem, ReasoningContent, ReasoningContentKind, Role};
 #[doc(inline)]
 pub use session::{
-    GitState, HookEventData, SessionRecord, StreamRecord, TaskCompleteData, TaskOutcome,
-    TaskStartData,
+    CutOffError, GitState, HookEventData, SessionRecord, StreamRecord, TaskCompleteData,
+    TaskOutcome, TaskStartData,
 };
 #[doc(inline)]
 pub use usage::{InputTokensDetails, OutputTokensDetails, Usage};

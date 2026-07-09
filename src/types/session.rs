@@ -4,6 +4,7 @@
 //! and the live stream-json output. They are backend-agnostic and live with
 //! the other domain types in `crate::types`.
 
+use std::fmt;
 use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
@@ -28,6 +29,7 @@ pub enum TaskCompleteSubtype {
     ErrorDuringExecution,
     ErrorOutputSchema,
     Interrupted,
+    CutOff,
 }
 
 /// Outcome of a completed task.
@@ -45,6 +47,12 @@ pub enum TaskOutcome {
         error: String,
     },
     Interrupted,
+    /// The model's response was cut off or incomplete — no final assistant
+    /// message was produced (e.g. truncated during reasoning, empty response,
+    /// or the model stopped without a concluding message).
+    CutOff {
+        detail: String,
+    },
 }
 
 impl TaskOutcome {
@@ -59,6 +67,7 @@ const fn task_outcome_subtype(outcome: &TaskOutcome) -> TaskCompleteSubtype {
         TaskOutcome::ErrorDuringExecution { .. } => TaskCompleteSubtype::ErrorDuringExecution,
         TaskOutcome::ErrorOutputSchema { .. } => TaskCompleteSubtype::ErrorOutputSchema,
         TaskOutcome::Interrupted => TaskCompleteSubtype::Interrupted,
+        TaskOutcome::CutOff { .. } => TaskCompleteSubtype::CutOff,
     }
 }
 
@@ -97,13 +106,13 @@ impl Serialize for TaskOutcome {
                 result: result.as_deref(),
                 error: None,
             },
-            Self::ErrorDuringExecution { error } | Self::ErrorOutputSchema { error } => {
-                TaskOutcomeFields {
-                    subtype: task_outcome_subtype(self),
-                    is_error: self.is_error(),
-                    result: None,
-                    error: Some(error),
-                }
+            Self::ErrorDuringExecution { error }
+            | Self::ErrorOutputSchema { error }
+            | Self::CutOff { detail: error } => TaskOutcomeFields {
+                subtype: task_outcome_subtype(self),
+                is_error: self.is_error(),
+                result: None,
+                error: Some(error),
             },
             Self::Interrupted => TaskOutcomeFields {
                 subtype: task_outcome_subtype(self),
@@ -165,13 +174,34 @@ impl<'de> Deserialize<'de> for TaskOutcome {
                 error: required_task_error::<D::Error>(fields.error, "error_output_schema")?,
             }),
             TaskCompleteSubtype::Interrupted => Ok(Self::Interrupted),
+            TaskCompleteSubtype::CutOff => Ok(Self::CutOff {
+                detail: required_task_error::<D::Error>(fields.error, "cut_off")?,
+            }),
         }
     }
 }
 
-// =============================================================================
-// Shared inner structs for SessionRecord / StreamRecord variant data
-// =============================================================================
+/// Error returned when the agent loop completes without a final assistant
+/// message (e.g. cut off during reasoning, empty response, or the model
+/// stopped without a concluding message).
+#[derive(Debug, Clone)]
+pub struct CutOffError {
+    pub detail: String,
+}
+
+impl CutOffError {
+    pub const fn new(detail: String) -> Self {
+        Self { detail }
+    }
+}
+
+impl fmt::Display for CutOffError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.detail)
+    }
+}
+
+impl std::error::Error for CutOffError {}
 
 /// Shared data for `TaskStart` records in both `StreamRecord` and `SessionRecord`.
 #[derive(Serialize, Deserialize, Debug, Clone)]

@@ -93,7 +93,7 @@ impl ConversationState {
         item
     }
 
-    pub(super) fn resolve_assistant_message(&self) -> String {
+    pub(super) fn resolve_assistant_message(&self) -> Option<String> {
         resolve_assistant_message(&self.history)
     }
 
@@ -114,8 +114,8 @@ pub(super) const fn accumulate_usage(total_usage: &mut Usage, turn_usage: Option
     }
 }
 
-fn resolve_assistant_message(items: &[ConversationItem]) -> String {
-    if let Some(content) = items.iter().rev().find_map(|item| {
+fn resolve_assistant_message(items: &[ConversationItem]) -> Option<String> {
+    items.iter().rev().find_map(|item| {
         if let ConversationItem::Message {
             role: Role::Assistant,
             content,
@@ -126,20 +126,7 @@ fn resolve_assistant_message(items: &[ConversationItem]) -> String {
         } else {
             None
         }
-    }) {
-        return content;
-    }
-
-    if items.is_empty() {
-        "No response was received from the model.".to_string()
-    } else if items
-        .iter()
-        .any(|item| matches!(item, ConversationItem::Reasoning { .. }))
-    {
-        "The model's response was incomplete. The task may have been partially completed but was cut off during reasoning.".to_string()
-    } else {
-        "The model's response was incomplete. No final message was received.".to_string()
-    }
+    })
 }
 
 #[cfg(test)]
@@ -156,7 +143,7 @@ mod tests {
             timestamp: None,
         }];
         let content = resolve_assistant_message(&items);
-        assert_eq!(content, "Hello!");
+        assert_eq!(content, Some("Hello!".to_string()));
     }
 
     #[test]
@@ -169,14 +156,14 @@ mod tests {
             timestamp: None,
         }];
         let content = resolve_assistant_message(&items);
-        assert!(content.contains("cut off during reasoning"));
+        assert!(content.is_none());
     }
 
     #[test]
     fn resolve_assistant_message_no_output_items() {
         let items: Vec<ConversationItem> = vec![];
         let content = resolve_assistant_message(&items);
-        assert_eq!(content, "No response was received from the model.");
+        assert!(content.is_none());
     }
 
     #[test]
@@ -189,9 +176,6 @@ mod tests {
             timestamp: None,
         }];
         let content = resolve_assistant_message(&items);
-        assert_eq!(
-            content,
-            "The model's response was incomplete. No final message was received."
-        );
+        assert!(content.is_none());
     }
 }

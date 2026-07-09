@@ -29,7 +29,7 @@ use crate::hooks::{HookContext, HookRunner};
 
 use crate::session_telemetry::{SessionTelemetryRecord, SessionTelemetryWriter};
 
-use crate::types::{SessionRecord, StreamRecord, TaskOutcome};
+use crate::types::{CutOffError, SessionRecord, StreamRecord, TaskOutcome};
 
 use clap::{ArgGroup, Parser, ValueEnum};
 
@@ -733,10 +733,21 @@ impl CodingAssistant {
         let result = client.send(content.to_string()).await;
         let duration_ms = start.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
 
+        // Check for cut-off before handle_agent_turn_result borrows result.
+        let cut_off_detail = result
+            .as_ref()
+            .err()
+            .and_then(|e| e.downcast_ref::<CutOffError>())
+            .map(|c| c.detail.clone());
+
         Self::handle_agent_turn_result(client, hook_runner, &result, duration_ms).await?;
 
+        // For rendering, convert cut-off to Ok(detail) since the outcome was
+        // already emitted by handle_agent_turn_result.
+        let render_result = cut_off_detail.map_or(result, Ok);
+
         Ok(TurnResult {
-            result,
+            result: render_result,
             duration_ms,
         })
     }
@@ -756,7 +767,11 @@ impl CodingAssistant {
                     .await?;
             },
             Err(error) => {
-                Self::emit_failed_agent_turn(client, hook_runner, error, duration_ms).await?;
+                if let Some(cutoff) = error.downcast_ref::<CutOffError>() {
+                    Self::emit_cut_off_agent_turn(client, hook_runner, cutoff, duration_ms).await?;
+                } else {
+                    Self::emit_failed_agent_turn(client, hook_runner, error, duration_ms).await?;
+                }
             },
         }
         Ok(())
@@ -787,6 +802,21 @@ impl CodingAssistant {
         client.emit_task_complete_record(Self::task_outcome_for_error(error), duration_ms)
     }
 
+    async fn emit_cut_off_agent_turn(
+        client: &mut Agent,
+        hook_runner: Option<&Arc<HookRunner>>,
+        cutoff: &CutOffError,
+        duration_ms: u64,
+    ) -> anyhow::Result<()> {
+        Self::run_stop_hook(hook_runner, &cutoff.detail).await;
+        client.emit_task_complete_record(
+            TaskOutcome::CutOff {
+                detail: cutoff.detail.clone(),
+            },
+            duration_ms,
+        )
+    }
+
     async fn run_stop_hook(hook_runner: Option<&Arc<HookRunner>>, response_text: &str) {
         let Some(runner) = hook_runner else {
             return;
@@ -812,6 +842,11 @@ impl CodingAssistant {
     }
 
     fn task_outcome_for_error(error: &anyhow::Error) -> TaskOutcome {
+        if let Some(cutoff) = error.downcast_ref::<CutOffError>() {
+            return TaskOutcome::CutOff {
+                detail: cutoff.detail.clone(),
+            };
+        }
         if is_output_schema_exhaustion(error) {
             TaskOutcome::ErrorOutputSchema {
                 error: error.to_string(),

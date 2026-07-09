@@ -203,6 +203,76 @@ fn task_outcome_deserializes_interrupted() {
 }
 
 #[test]
+fn task_outcome_serializes_cut_off() {
+    let record = StreamRecord::TaskComplete(TaskCompleteData {
+        outcome: TaskOutcome::CutOff {
+            detail: "The model's response was cut off during reasoning.".to_string(),
+        },
+        duration_ms: 500,
+        turn_count: 1,
+        tool_call_count: 0,
+        session_id: "session-1".to_string(),
+        task_id: "task-1".to_string(),
+        usage: Usage::default(),
+        permission_denials: None,
+    });
+
+    let json = serde_json::to_value(&record).unwrap();
+    assert_eq!(json["type"], "task_complete");
+    assert_eq!(json["subtype"], "cut_off");
+    assert_eq!(json["is_error"], true);
+    assert_eq!(
+        json["error"],
+        "The model's response was cut off during reasoning."
+    );
+    assert!(json.get("result").is_none() || json["result"].is_null());
+    assert!(json.get("success").is_none());
+}
+
+#[test]
+fn task_outcome_deserializes_cut_off() {
+    let json = serde_json::json!({
+        "type": "task_complete",
+        "subtype": "cut_off",
+        "is_error": true,
+        "error": "The model's response was cut off during reasoning.",
+        "duration_ms": 500,
+        "turn_count": 1,
+        "tool_call_count": 0,
+        "session_id": "session-1",
+        "task_id": "task-1",
+        "usage": Usage::default()
+    });
+
+    let record = serde_json::from_value::<StreamRecord>(json).unwrap();
+    assert!(matches!(
+        record,
+        StreamRecord::TaskComplete(TaskCompleteData {
+            outcome: TaskOutcome::CutOff { detail },
+            ..
+        }) if detail == "The model's response was cut off during reasoning."
+    ));
+}
+
+#[test]
+fn task_outcome_cut_off_requires_error() {
+    let json = serde_json::json!({
+        "type": "task_complete",
+        "subtype": "cut_off",
+        "is_error": true,
+        "duration_ms": 500,
+        "turn_count": 1,
+        "tool_call_count": 0,
+        "session_id": "session-1",
+        "task_id": "task-1",
+        "usage": Usage::default()
+    });
+
+    let err = serde_json::from_value::<StreamRecord>(json).unwrap_err();
+    assert!(err.to_string().contains("requires error"));
+}
+
+#[test]
 fn task_outcome_deserializes_legacy_success_field() {
     let json = serde_json::json!({
         "type": "task_complete",

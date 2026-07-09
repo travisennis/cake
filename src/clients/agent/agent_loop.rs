@@ -8,7 +8,7 @@ use crate::clients::tools::{Tool, ToolRegistry, read_extract_path, schedule_tool
 use crate::config::output_schema::{OutputSchema, OutputSchemaError};
 use crate::hooks::{HookRunner, ToolHookPlan};
 use crate::session_telemetry::ToolCallTelemetry;
-use crate::types::{ConversationItem, SessionRecord};
+use crate::types::{ConversationItem, CutOffError, SessionRecord};
 
 /// Maximum number of corrective turns after a final message fails
 /// output-schema validation.
@@ -334,7 +334,9 @@ impl Agent {
         corrections_used: &mut u32,
         in_correction_mode: &mut bool,
     ) -> anyhow::Result<Option<String>> {
-        let message = self.conversation.resolve_assistant_message();
+        let Some(message) = self.conversation.resolve_assistant_message() else {
+            return Err(cut_off_error(self.conversation.history()).into());
+        };
         let Some(schema) = self.output_schema.clone() else {
             return Ok(Some(message));
         };
@@ -570,4 +572,19 @@ fn detect_skill_activation(
             path,
         }
     })
+}
+
+/// Build a [`CutOffError`] describing why no assistant message was produced.
+fn cut_off_error(history: &[ConversationItem]) -> CutOffError {
+    let detail = if history.is_empty() {
+        "No response was received from the model.".to_string()
+    } else if history
+        .iter()
+        .any(|item| matches!(item, ConversationItem::Reasoning { .. }))
+    {
+        "The model's response was cut off during reasoning.".to_string()
+    } else {
+        "The model's response was incomplete. No final message was received.".to_string()
+    };
+    CutOffError::new(detail)
 }
