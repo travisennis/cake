@@ -163,4 +163,4 @@ build:
 install:
     cargo build --release
     mkdir -p ~/bin
-    cp target/release/cake ~/bin/cake
+    tmp="$HOME/bin/.cake-install-$$" && cp target/release/cake "$tmp" && chmod 755 "$tmp" && mv -f "$tmp" "$HOME/bin/cake"
