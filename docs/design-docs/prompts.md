@@ -103,11 +103,43 @@ const BUILTIN_SYSTEM_PROMPT: &str = include_str!("system.md");
 The prompt covers:
 
 1. **Identity**: "You are cake. You are running as a coding agent in a CLI on the user's computer."
-2. **Available tools**: Bash, Read, Edit, Write
+2. **Available tools**: Generated dynamically from the tool registry at prompt construction time (see [Tool List Generation](#tool-list-generation) below)
 3. **Efficiency rules**: Prefer targeted edits, batch tool calls, skip unnecessary exploration
 4. **Self-reflection notes**: Record mistakes, desires, and learnings in `~/.cake/` files
 
 For details on overriding this prompt, see [System Prompt Resolution](#system-prompt-resolution) above.
+
+### Tool List Generation
+
+The `## Available tools` section in the built-in system prompt is generated dynamically from the tool registry rather than being hard-coded in `system.md`. This ensures that adding or removing a registered tool automatically updates the prompt without editing the prompt template.
+
+#### Mechanism
+
+1. The built-in prompt template (`src/prompts/system.md`) contains a `{{AVAILABLE_TOOLS}}` placeholder where the tool list should appear.
+2. At prompt construction time, `resolve_system_prompt` substitutes the placeholder with the output of [`format_tool_list_section`](../../src/clients/tools/mod.rs), which:
+   - Builds the default tool registry via `default_tool_registry()`
+   - Iterates each registered tool definition
+   - Extracts each tool's one-line summary as the first sentence (up to the first `.`) of its full description
+   - Formats the list as Markdown bullet points under an `## Available tools` heading
+   - Appends the disclaimer "Only these tools are available. There is no Glob, Grep, or LS tool."
+3. The substitution only applies to the **built-in** prompt. User override files (`.cake/system.md`, `settings.toml system_prompt`, `--system-prompt` flag) are used verbatim without template processing --- users who override the prompt take full control of its content.
+
+#### Format
+
+The generated section looks like:
+
+```markdown
+## Available tools
+
+- **Bash**: Execute a shell command in the host machine's terminal.
+- **Edit**: Edit text in files using literal search-and-replace.
+- **Read**: Read a file's contents.
+- **Write**: Create a new file or overwrite an existing one with the given content.
+
+Only these tools are available. There is no Glob, Grep, or LS tool.
+```
+
+Tool order follows registration order in `default_tool_registry()`. Each tool's summary is its canonical first sentence from its `*-description.txt` file.
 
 ### Command Guidance Routing
 

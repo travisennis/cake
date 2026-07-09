@@ -24,6 +24,7 @@ use std::path::Path;
 use chrono::Local;
 use tracing::{debug, warn};
 
+use crate::clients::format_tool_list_section;
 use crate::config::{AgentsFile, SkillCatalog};
 use crate::types::Role;
 
@@ -125,7 +126,12 @@ pub fn resolve_system_prompt(
     }
 
     debug!("Using built-in system prompt (no override found)");
-    BUILTIN_SYSTEM_PROMPT.trim().to_string()
+    let builtin = BUILTIN_SYSTEM_PROMPT.trim().to_string();
+    if builtin.contains("{{AVAILABLE_TOOLS}}") {
+        builtin.replace("{{AVAILABLE_TOOLS}}", &format_tool_list_section())
+    } else {
+        builtin
+    }
 }
 
 /// Builds all initial prompt messages for the AI agent.

@@ -25,3 +25,4 @@ mod tools;
 pub use agent::Agent;
 #[doc(inline)]
 pub use tools::ToolContext;
+pub use tools::format_tool_list_section;

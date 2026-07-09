@@ -18,6 +18,7 @@
 //! in the working directory and temp directories.
 
 use serde::Serialize;
+use std::fmt::Write as _;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -794,6 +795,28 @@ fn execute_write_tool(context: Arc<ToolContext>, arguments: String) -> ToolFutur
 // Tool Registry
 // =============================================================================
 
+/// Generate the "Available tools" section for the built-in system prompt.
+///
+/// This is derived from the tool registry so that prompt text stays in sync
+/// with the actual set of registered tools. Each tool's one-line summary is
+/// its first sentence (up to the first `.`).
+pub fn format_tool_list_section() -> String {
+    let registry = default_tool_registry();
+    let mut s = String::from("## Available tools\n\n");
+    for def in registry.definitions() {
+        let desc = &def.description;
+        let first_sentence = desc
+            .split('.')
+            .next()
+            .unwrap_or(desc)
+            .trim()
+            .trim_end_matches('.');
+        _ = writeln!(s, "- **{}**: {}.", def.name, first_sentence);
+    }
+    s.push_str("\nOnly these tools are available. There is no Glob, Grep, or LS tool.");
+    s
+}
+
 /// Returns the default tool registry.
 pub(super) fn default_tool_registry() -> ToolRegistry {
     let entries = vec![
@@ -1070,5 +1093,17 @@ mod tests {
             assert_eq!(handle_a.join().unwrap(), (PathAccess::ReadOnly, true));
             assert_eq!(handle_b.join().unwrap(), (PathAccess::ReadOnly, true));
         });
+    }
+
+    #[test]
+    fn format_tool_list_section_includes_all_tools() {
+        let result = format_tool_list_section();
+        assert!(result.starts_with("## Available tools"));
+        assert!(result.contains("- **Bash**:"));
+        assert!(result.contains("- **Read**:"));
+        assert!(result.contains("- **Edit**:"));
+        assert!(result.contains("- **Write**:"));
+        assert!(result.contains("Only these tools are available."));
+        assert!(result.contains("no Glob, Grep, or LS tool"));
     }
 }
