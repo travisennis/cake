@@ -6,6 +6,7 @@ use std::{
 };
 
 use anyhow::{Context, anyhow};
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
 use crate::config::{Session, session::CURRENT_FORMAT_VERSION};
@@ -126,7 +127,8 @@ impl DataDir {
     /// Saves a session to disk with atomic write.
     ///
     /// The session is saved to `~/.local/share/cake/sessions/{session_id}.jsonl`.
-    /// The most recent session is determined by file modification time (no symlink needed).
+    /// The most recent session is determined by the session creation timestamp
+    /// in the first JSONL record (no symlink needed).
     ///
     /// # Examples
     ///
@@ -170,8 +172,9 @@ impl DataDir {
 
     /// Loads the most recent session for a given working directory.
     ///
-    /// Scans all session files and finds the newest `.jsonl` file by modification
-    /// time whose `working_directory` header field matches the given directory.
+    /// Scans all session files and finds the newest `.jsonl` file by the session
+    /// creation timestamp in its `session_meta` record whose `working_directory`
+    /// header field matches the given directory.
     /// Returns `None` if no matching sessions exist.
     ///
     /// # Examples
@@ -210,11 +213,10 @@ impl DataDir {
             .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "jsonl"))
             .filter_map(|entry| {
                 let path = entry.path();
-                let modified = entry.metadata().ok()?.modified().ok()?;
                 let header = read_session_header(&path).ok()?;
-                (header.working_directory == working_dir).then_some((path, modified))
+                (header.working_directory == working_dir).then_some((path, header.timestamp))
             })
-            .max_by_key(|(_, modified)| *modified)
+            .max_by_key(|(_, timestamp)| *timestamp)
             .map(|(path, _)| Session::load(&path))
             .transpose()?;
 
@@ -227,7 +229,7 @@ impl DataDir {
         Ok(result)
     }
 
-    /// Loads the most recently modified session regardless of working directory.
+    /// Loads the most recently created session regardless of working directory.
     pub fn load_latest_session_any_directory(&self) -> anyhow::Result<Option<Session>> {
         let session_dir = self.sessions_dir();
         if !session_dir.exists() {
@@ -245,10 +247,10 @@ impl DataDir {
             .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "jsonl"))
             .filter_map(|entry| {
                 let path = entry.path();
-                let modified = entry.metadata().ok()?.modified().ok()?;
-                Some((path, modified))
+                let header = read_session_header(&path).ok()?;
+                Some((path, header.timestamp))
             })
-            .max_by_key(|(_, modified)| *modified)
+            .max_by_key(|(_, timestamp)| *timestamp)
             .map(|(path, _)| Session::load(&path))
             .transpose()
     }
@@ -353,6 +355,8 @@ impl DataDir {
 struct SessionFileHeader {
     format_version: u32,
     working_directory: PathBuf,
+    /// Timestamp from the `session_meta` record, used instead of filesystem mtime.
+    timestamp: DateTime<Utc>,
 }
 
 /// Reads only the first line of a session file to extract its header.
