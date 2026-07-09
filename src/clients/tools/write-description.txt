@@ -2,4 +2,3 @@ Create a new file or overwrite an existing one with the given content. Automatic
 
 Guidance:
 - Use for new files and complete rewrites.
-- Do not issue multiple Write calls for the same file in one turn; combine changes into one Write or use Edit.

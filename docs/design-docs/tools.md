@@ -74,6 +74,21 @@ See `src/clients/tools/json_repair.rs` for the full repair logic. Repairs are de
 
 Results are returned as strings so they can be included in API responses.
 
+## Tool-Call Scheduling
+
+Tool calls issued in one assistant turn execute concurrently, with one exception: calls that would mutate the same file are serialized (see ADR-013).
+
+Before execution, the agent loop partitions the turn's tool calls into groups by canonical mutating target path (`ToolRegistry::mutating_target`, implemented for Edit and Write). Groups run concurrently with each other and with all non-mutating calls; calls within a group run sequentially in the order the model issued them, so each call observes the previous call's effects. Two Edits targeting the same file in one turn therefore both execute, and the second operates on the first's result.
+
+Scheduling rules:
+
+- Only Edit and Write calls with a determinable canonical target path are serialized. Relative and absolute paths to the same file resolve to the same group.
+- Calls whose arguments fail to parse or whose path fails validation are not serialized; they execute as scheduled and surface their own errors.
+- Hook-blocked calls resolve to immediate error results and never join a group. A blocked or failed call does not abort later calls in its group; each subsequent call runs against whatever state prior calls left and succeeds or fails on its own.
+- Bash commands are never serialized against Edit/Write calls, even when they touch the same file.
+
+Regardless of grouping, tool results are recorded and streamed in the model's issue order with per-call attribution, so transcript ordering, session records, and `stream-json` output are unaffected by scheduling.
+
 ## Path Validation
 
 All filesystem tools validate paths before operating:

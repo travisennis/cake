@@ -64,7 +64,7 @@ The bridge to external AI services and the orchestration layer for tool executio
 
 **`skill_dedup`** *(deleted 2026-07-07)*: Previously wrapped tool execution to detect Read of `SKILL.md` and deduplicate activations. Replaced by inline path-watching in `agent_loop.rs` that emits `SkillActivated` records without output substitution.
 
-**`tools`**: Tool definitions and execution. Each tool (Bash, Read, Edit, Write) defines its JSON schema for the API and its execution logic. The `execute_tool` function dispatches to the appropriate implementation. Tools validate that paths are within the working directory or allowed temp directories before operating. The Bash tool also performs pre-execution command safety checks that block known-destructive commands (destructive git operations and dangerous `rm -rf`) before they reach the shell. Exported helpers: `ToolContext`, `summarize_tool_args`, `read_extract_path` (used by agent loop for skill path-watching).
+**`tools`**: Tool definitions and execution. Each tool (Bash, Read, Edit, Write) defines its JSON schema for the API and its execution logic. The `execute_tool` function dispatches to the appropriate implementation. Tools validate that paths are within the working directory or allowed temp directories before operating. The Bash tool also performs pre-execution command safety checks that block known-destructive commands (destructive git operations and dangerous `rm -rf`) before they reach the shell. The `scheduling` module partitions a turn's tool calls into execution groups so same-path Edit/Write calls run sequentially in issue order while everything else runs concurrently (ADR-013); it replaced the `duplicate_guard` module *(deleted 2026-07-09)*, which rejected the second same-file mutation instead. Exported helpers: `ToolContext`, `summarize_tool_args`, `read_extract_path` (used by agent loop for skill path-watching).
 
 **`tools::sandbox`**: Cross-platform sandboxing abstraction. Provides `SandboxConfig` and `SandboxStrategy` for restricting filesystem and network access. Platform-specific implementations use sandbox-exec (macOS) or Landlock LSM (Linux).
 
@@ -138,7 +138,7 @@ The CLI layer owns argument parsing and user-facing error messages. The client l
 
 ### Client ↔ Tool Boundary
 
-Tools are pure functions from JSON arguments to `ToolResult`. The client owns the orchestration (concurrent execution, timeout handling, result aggregation). Tools own the validation and side effects.
+Tools are pure functions from JSON arguments to `ToolResult`. The client owns the orchestration (concurrent execution with same-path mutations serialized, timeout handling, result aggregation). Tools own the validation and side effects.
 
 ### Config ↔ Filesystem Boundary
 

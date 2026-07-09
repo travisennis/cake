@@ -2,13 +2,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use futures::FutureExt;
-
 use crate::clients::agent::{Agent, TurnResult};
 use crate::clients::backend::FinalOutputConstraint;
-use crate::clients::tools::{
-    ScheduledToolPlan, Tool, ToolRegistry, read_extract_path, reject_duplicate_mutating_tool_calls,
-};
+use crate::clients::tools::{Tool, ToolRegistry, read_extract_path, schedule_tool_calls};
 use crate::config::output_schema::{OutputSchema, OutputSchemaError};
 use crate::hooks::{HookRunner, ToolHookPlan};
 use crate::session_telemetry::ToolCallTelemetry;
@@ -138,7 +134,7 @@ impl Agent {
     async fn plan_tool_calls(
         &self,
         function_calls: Vec<FunctionCall>,
-    ) -> anyhow::Result<Vec<(String, String, ScheduledToolPlan)>> {
+    ) -> anyhow::Result<Vec<(String, String, ToolHookPlan)>> {
         let hook_runner = self.hook_runner.clone();
         let pre_futures = function_calls
             .into_iter()
@@ -162,120 +158,129 @@ impl Agent {
         for result in pre_results {
             tool_plans.push(result?);
         }
-        Ok(reject_duplicate_mutating_tool_calls(
-            &self.tools,
-            self.tool_context.as_ref(),
-            tool_plans,
-        ))
+        Ok(tool_plans)
     }
 
-    fn record_hook_blocked_denials(&mut self, tool_plans: &[(String, String, ScheduledToolPlan)]) {
+    fn record_hook_blocked_denials(&mut self, tool_plans: &[(String, String, ToolHookPlan)]) {
         for (call_id, name, plan) in tool_plans {
-            if let ScheduledToolPlan::Hook(ToolHookPlan::Block { reason, .. }) = plan {
+            if let ToolHookPlan::Block { reason, .. } = plan {
                 self.permission_denials
                     .push(format!("{name}({call_id}): {reason}"));
             }
         }
     }
 
+    /// Execute a turn's tool calls.
+    ///
+    /// Calls mutating the same canonical path run sequentially in issue order
+    /// so each sees the previous call's effects; all other calls run
+    /// concurrently. Results are returned in the model's issue order
+    /// regardless of grouping.
     async fn run_tool_plans(
         &self,
-        tool_plans: Vec<(String, String, ScheduledToolPlan)>,
+        tool_plans: Vec<(String, String, ToolHookPlan)>,
     ) -> Vec<ToolRunResult> {
-        let skill_locations = Arc::clone(&self.skill_locations);
-        let activated_skills = Arc::clone(&self.activated_skills);
-        let tools = &self.tools;
-        let tool_context = Arc::clone(&self.tool_context);
-        let turn_index = self.turn_count;
-        let futures = tool_plans.into_iter().map(|(call_id, name, plan)| {
-            let skill_locations = Arc::clone(&skill_locations);
-            let activated_skills = Arc::clone(&activated_skills);
-            let tool_context = Arc::clone(&tool_context);
-            let hook_runner = self.hook_runner.clone();
-            match plan {
-                ScheduledToolPlan::RejectedDuplicateMutation { output } => {
-                    async move { immediate_tool_error_result(&name, &call_id, output, turn_index) }
-                        .boxed()
-                },
-                ScheduledToolPlan::Hook(ToolHookPlan::Block {
-                    reason,
-                    additional_context,
-                }) => async move {
-                    let output = format!("Hook blocked tool execution: {reason}");
-                    let output = append_hook_context(output, &additional_context);
-                    immediate_tool_error_result(&name, &call_id, output, turn_index)
-                }
-                .boxed(),
-                ScheduledToolPlan::Hook(ToolHookPlan::Execute {
-                    arguments,
-                    prefix_notice,
-                    additional_context,
-                }) => async move {
-                    let start = Instant::now();
-                    let result = tools
-                        .execute(Arc::clone(&tool_context), &name, &arguments)
-                        .await;
-                    let hook_result = result
-                        .as_ref()
-                        .map(|result| result.output.clone())
-                        .map_err(std::clone::Clone::clone);
-
-                    let post_context = post_tool_context(
-                        hook_runner.as_ref(),
-                        &name,
-                        &call_id,
-                        &arguments,
-                        &hook_result,
-                    )
-                    .await;
-
-                    let was_error = result.is_err();
-                    let mut output = match result {
-                        Ok(result) => result.output,
-                        Err(error) => format!("Error: {error}"),
-                    };
-
-                    let skill_activation = if was_error {
-                        None
-                    } else {
-                        detect_skill_activation(
-                            &name,
-                            &arguments,
-                            &skill_locations,
-                            &activated_skills,
-                        )
-                    };
-                    if let Some(notice) = prefix_notice {
-                        output = format!("{notice}{output}");
-                    }
-                    if let Some(context) = post_context
-                        && !context.is_empty()
-                    {
-                        output.push_str("\n\nAdditional hook context:\n");
-                        output.push_str(&context);
-                    }
-                    output = append_hook_context(output, &additional_context);
-
-                    let duration_ms = start.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
-                    ToolRunResult {
-                        telemetry: ToolCallTelemetry {
-                            turn_index,
-                            call_id: call_id.clone(),
-                            name,
-                            duration_ms,
-                            output_bytes: output.len(),
-                            was_error,
-                        },
-                        call_id,
-                        output,
-                        skill_activation,
-                    }
-                }
-                .boxed(),
+        let groups = schedule_tool_calls(&self.tools, self.tool_context.as_ref(), tool_plans);
+        let group_futures = groups.into_iter().map(|group| async move {
+            let mut results = Vec::with_capacity(group.len());
+            for call in group {
+                let result = self.run_tool_call(call.call_id, call.name, call.plan).await;
+                results.push((call.index, result));
             }
+            results
         });
+        let mut results: Vec<(usize, ToolRunResult)> = futures::future::join_all(group_futures)
+            .await
+            .into_iter()
+            .flatten()
+            .collect();
+        results.sort_unstable_by_key(|(index, _)| *index);
+        results.into_iter().map(|(_, result)| result).collect()
+    }
 
-        futures::future::join_all(futures).await
+    async fn run_tool_call(
+        &self,
+        call_id: String,
+        name: String,
+        plan: ToolHookPlan,
+    ) -> ToolRunResult {
+        let turn_index = self.turn_count;
+        match plan {
+            ToolHookPlan::Block {
+                reason,
+                additional_context,
+            } => {
+                let output = format!("Hook blocked tool execution: {reason}");
+                let output = append_hook_context(output, &additional_context);
+                immediate_tool_error_result(&name, &call_id, output, turn_index)
+            },
+            ToolHookPlan::Execute {
+                arguments,
+                prefix_notice,
+                additional_context,
+            } => {
+                let start = Instant::now();
+                let result = self
+                    .tools
+                    .execute(Arc::clone(&self.tool_context), &name, &arguments)
+                    .await;
+                let hook_result = result
+                    .as_ref()
+                    .map(|result| result.output.clone())
+                    .map_err(std::clone::Clone::clone);
+
+                let post_context = post_tool_context(
+                    self.hook_runner.as_ref(),
+                    &name,
+                    &call_id,
+                    &arguments,
+                    &hook_result,
+                )
+                .await;
+
+                let was_error = result.is_err();
+                let mut output = match result {
+                    Ok(result) => result.output,
+                    Err(error) => format!("Error: {error}"),
+                };
+
+                let skill_activation = if was_error {
+                    None
+                } else {
+                    detect_skill_activation(
+                        &name,
+                        &arguments,
+                        &self.skill_locations,
+                        &self.activated_skills,
+                    )
+                };
+                if let Some(notice) = prefix_notice {
+                    output = format!("{notice}{output}");
+                }
+                if let Some(context) = post_context
+                    && !context.is_empty()
+                {
+                    output.push_str("\n\nAdditional hook context:\n");
+                    output.push_str(&context);
+                }
+                output = append_hook_context(output, &additional_context);
+
+                let duration_ms = start.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+                ToolRunResult {
+                    telemetry: ToolCallTelemetry {
+                        turn_index,
+                        call_id: call_id.clone(),
+                        name,
+                        duration_ms,
+                        output_bytes: output.len(),
+                        was_error,
+                    },
+                    call_id,
+                    output,
+                    skill_activation,
+                }
+            },
+        }
     }
 
     fn record_tool_results(&mut self, results: Vec<ToolRunResult>) -> anyhow::Result<()> {

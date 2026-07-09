@@ -8,6 +8,7 @@ Read this before changing agent loop control flow, tool definitions, tool-call c
 
 - Tool JSON schemas and tool names.
 - Tool execution semantics, including path validation, error strings visible to the model, and JSON argument repair behavior.
+- Tool-call scheduling: same-path Edit/Write calls run sequentially in issue order, everything else concurrently, and results are recorded in issue order (ADR-013).
 - `ConversationItem` representation and backend translation behavior.
 - Transcript ordering and tool-call/result pairing.
 

@@ -5,4 +5,3 @@ Guidance:
 - old_text must match exactly once in the file. Include 3+ surrounding lines for uniqueness.
 - For multi-line matches, preserve exact whitespace and indentation.
 - Special characters in JSON (backticks, quotes, backslashes) must be escaped.
-- Do not issue multiple Edit calls for the same file in one turn — re-read first.

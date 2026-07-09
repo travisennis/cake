@@ -698,6 +698,97 @@ mod error_tests {
     }
 
     #[tokio::test]
+    async fn same_file_edits_in_one_turn_run_sequentially_in_issue_order() {
+        let mock_server = MockServer::start().await;
+        let dir = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+        let file_path = dir.path().join("serialized.txt");
+        std::fs::write(&file_path, "alpha\n").unwrap();
+
+        let first_arguments = serde_json::json!({
+            "path": file_path,
+            "edits": [{ "old_text": "alpha", "new_text": "alpha\nbeta" }]
+        })
+        .to_string();
+        // Matches only after the first edit has been applied.
+        let second_arguments = serde_json::json!({
+            "path": file_path,
+            "edits": [{ "old_text": "beta", "new_text": "beta\ngamma" }]
+        })
+        .to_string();
+
+        let two_edit_response = serde_json::json!({
+            "id": "resp-tool",
+            "output": [
+                {
+                    "type": "function_call",
+                    "id": "fc-1",
+                    "call_id": "call-1",
+                    "name": "Edit",
+                    "arguments": first_arguments
+                },
+                {
+                    "type": "function_call",
+                    "id": "fc-2",
+                    "call_id": "call-2",
+                    "name": "Edit",
+                    "arguments": second_arguments
+                }
+            ],
+            "usage": { "input_tokens": 1, "output_tokens": 1, "total_tokens": 2 }
+        });
+
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(two_edit_response))
+            .up_to_n_times(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(loop_final_response()))
+            .mount(&mock_server)
+            .await;
+
+        let mut agent = test_agent_with_url(&mock_server.uri())
+            .with_tools(crate::clients::tools::default_tool_registry());
+
+        let result = agent.send("edit the file twice".to_string()).await.unwrap();
+
+        assert_eq!(result, "done");
+        // The second edit operated on the first edit's result.
+        assert_eq!(
+            std::fs::read_to_string(&file_path).unwrap(),
+            "alpha\nbeta\ngamma\n"
+        );
+
+        // Both calls succeeded and their outputs are recorded in issue order
+        // with per-call attribution.
+        let outputs: Vec<(&str, &str)> = agent
+            .history()
+            .iter()
+            .filter_map(|item| match item {
+                ConversationItem::FunctionCallOutput {
+                    call_id, output, ..
+                } => Some((call_id.as_str(), output.as_str())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(outputs.len(), 2);
+        assert_eq!(outputs[0].0, "call-1");
+        assert_eq!(outputs[1].0, "call-2");
+        assert!(
+            !outputs[0].1.starts_with("Error:"),
+            "first edit should succeed: {}",
+            outputs[0].1
+        );
+        assert!(
+            !outputs[1].1.starts_with("Error:"),
+            "second edit should see the first edit's result: {}",
+            outputs[1].1
+        );
+    }
+
+    #[tokio::test]
     async fn pre_tool_hook_denies_tool_execution() {
         let mock_server = MockServer::start().await;
 

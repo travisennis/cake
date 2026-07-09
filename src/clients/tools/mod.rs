@@ -142,15 +142,15 @@ pub fn get_settings_dirs(context: &ToolContext) -> &[PathBuf] {
 
 mod bash;
 mod bash_safety;
-mod duplicate_guard;
 mod edit;
 mod json_repair;
 mod read;
+mod scheduling;
 mod write;
 
-pub(super) use duplicate_guard::{ScheduledToolPlan, reject_duplicate_mutating_tool_calls};
 pub(super) use json_repair::repair_json_args;
 pub use read::extract_path as read_extract_path;
+pub(super) use scheduling::schedule_tool_calls;
 
 // =============================================================================
 // JSON Parse Error Formatting
