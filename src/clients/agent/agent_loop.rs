@@ -67,6 +67,11 @@ impl Agent {
         let user_item = self.conversation.push_user_message(content);
         self.stream_item(&user_item)?;
 
+        // History index where this turn's items begin. Resumed and multi-turn
+        // histories carry earlier assistant messages; cut-off detection must
+        // only consider items produced by the current turn.
+        let turn_start = self.conversation.history().len();
+
         // Output-schema correction state: when the final message fails
         // validation, the loop re-enters with tools disabled for at most
         // MAX_SCHEMA_CORRECTION_TURNS corrective turns.
@@ -97,6 +102,7 @@ impl Agent {
                 if let Some(document) = self.resolve_final_message_or_correct(
                     &mut corrections_used,
                     &mut in_correction_mode,
+                    turn_start,
                 )? {
                     return Ok(document);
                 }
@@ -333,9 +339,15 @@ impl Agent {
         &mut self,
         corrections_used: &mut u32,
         in_correction_mode: &mut bool,
+        turn_start: usize,
     ) -> anyhow::Result<Option<String>> {
-        let Some(message) = self.conversation.resolve_assistant_message() else {
-            return Err(cut_off_error(self.conversation.history()).into());
+        let Some(message) = self.conversation.resolve_assistant_message_from(turn_start) else {
+            let turn_items = self
+                .conversation
+                .history()
+                .get(turn_start..)
+                .unwrap_or_default();
+            return Err(cut_off_error(turn_items).into());
         };
         let Some(schema) = self.output_schema.clone() else {
             return Ok(Some(message));
@@ -575,10 +587,14 @@ fn detect_skill_activation(
 }
 
 /// Build a [`CutOffError`] describing why no assistant message was produced.
-fn cut_off_error(history: &[ConversationItem]) -> CutOffError {
-    let detail = if history.is_empty() {
+///
+/// `turn_items` must contain only the current turn's items (history after the
+/// turn-start index), so reasoning from earlier turns cannot mislabel a fresh
+/// empty response as cut off during reasoning.
+fn cut_off_error(turn_items: &[ConversationItem]) -> CutOffError {
+    let detail = if turn_items.is_empty() {
         "No response was received from the model.".to_string()
-    } else if history
+    } else if turn_items
         .iter()
         .any(|item| matches!(item, ConversationItem::Reasoning { .. }))
     {

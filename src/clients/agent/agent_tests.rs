@@ -879,6 +879,128 @@ mod error_tests {
     // HTTP Error Response Tests (Non-retryable 4xx errors)
     // =========================================================================
 
+    /// Responses API response whose output contains no items at all.
+    fn empty_output_response() -> serde_json::Value {
+        serde_json::json!({
+            "id": "resp-empty",
+            "output": [],
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 0,
+                "total_tokens": 10
+            }
+        })
+    }
+
+    /// Responses API response with reasoning but no final assistant message.
+    fn reasoning_only_response() -> serde_json::Value {
+        serde_json::json!({
+            "id": "resp-reasoning",
+            "output": [
+                {
+                    "type": "reasoning",
+                    "id": "r-1",
+                    "summary": ["thinking..."]
+                }
+            ],
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "total_tokens": 15
+            }
+        })
+    }
+
+    async fn mount_response(mock_server: &MockServer, body: serde_json::Value) {
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(mock_server)
+            .await;
+    }
+
+    fn prior_turn_history() -> Vec<ConversationItem> {
+        vec![
+            ConversationItem::Message {
+                role: Role::User,
+                content: "earlier question".to_string(),
+                id: None,
+                status: None,
+                timestamp: None,
+            },
+            ConversationItem::Message {
+                role: Role::Assistant,
+                content: "earlier answer".to_string(),
+                id: Some("msg-prior".to_string()),
+                status: Some("completed".to_string()),
+                timestamp: None,
+            },
+        ]
+    }
+
+    #[tokio::test]
+    async fn cut_off_reasoning_only_response_returns_cut_off_error() {
+        let mock_server = MockServer::start().await;
+        mount_response(&mock_server, reasoning_only_response()).await;
+
+        let mut agent = test_agent_with_url(&mock_server.uri());
+        let err = agent.send("hello".to_string()).await.unwrap_err();
+
+        let cutoff = err
+            .downcast_ref::<crate::types::CutOffError>()
+            .expect("expected CutOffError");
+        assert_eq!(
+            cutoff.detail,
+            "The model's response was cut off during reasoning."
+        );
+    }
+
+    #[tokio::test]
+    async fn cut_off_in_resumed_session_is_not_masked_by_prior_assistant_message() {
+        let mock_server = MockServer::start().await;
+        mount_response(&mock_server, empty_output_response()).await;
+
+        let mut agent = test_agent_with_url(&mock_server.uri())
+            .with_history(prior_turn_history())
+            .unwrap();
+        let err = agent.send("follow-up".to_string()).await.unwrap_err();
+
+        let cutoff = err
+            .downcast_ref::<crate::types::CutOffError>()
+            .expect("expected CutOffError, not the prior turn's answer");
+        assert_eq!(cutoff.detail, "No response was received from the model.");
+    }
+
+    #[tokio::test]
+    async fn cut_off_detail_ignores_prior_turn_reasoning() {
+        let mock_server = MockServer::start().await;
+        mount_response(&mock_server, empty_output_response()).await;
+
+        let mut history = prior_turn_history();
+        history.insert(
+            1,
+            ConversationItem::Reasoning {
+                id: "r-prior".to_string(),
+                summary: Some(vec!["earlier thinking".to_string()]),
+                encrypted_content: None,
+                content: None,
+                timestamp: None,
+            },
+        );
+        let mut agent = test_agent_with_url(&mock_server.uri())
+            .with_history(history)
+            .unwrap();
+        let err = agent.send("follow-up".to_string()).await.unwrap_err();
+
+        let cutoff = err
+            .downcast_ref::<crate::types::CutOffError>()
+            .expect("expected CutOffError");
+        assert_eq!(
+            cutoff.detail, "No response was received from the model.",
+            "prior-turn reasoning must not mislabel the detail as cut off during reasoning"
+        );
+    }
+
     #[tokio::test]
     async fn test_400_bad_request_returns_error() {
         let mock_server = MockServer::start().await;

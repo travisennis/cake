@@ -93,8 +93,12 @@ impl ConversationState {
         item
     }
 
-    pub(super) fn resolve_assistant_message(&self) -> Option<String> {
-        resolve_assistant_message(&self.history)
+    /// Resolve the final assistant message among items at or after `start`.
+    ///
+    /// Scoping to the current turn keeps a resumed or multi-turn history's
+    /// earlier assistant messages from masking a cut-off in the current turn.
+    pub(super) fn resolve_assistant_message_from(&self, start: usize) -> Option<String> {
+        resolve_assistant_message(self.history.get(start..).unwrap_or_default())
     }
 
     #[cfg(test)]
@@ -177,5 +181,47 @@ mod tests {
         }];
         let content = resolve_assistant_message(&items);
         assert!(content.is_none());
+    }
+
+    fn assistant_message(content: &str) -> ConversationItem {
+        ConversationItem::Message {
+            role: Role::Assistant,
+            content: content.to_string(),
+            id: Some("msg-1".to_string()),
+            status: Some("completed".to_string()),
+            timestamp: None,
+        }
+    }
+
+    #[test]
+    fn resolve_assistant_message_from_ignores_prior_turn_messages() {
+        let mut state = ConversationState::new(&[(Role::System, "sys".to_string())]);
+        state.extend_turn_items(vec![assistant_message("prior answer")]);
+        let turn_start = state.history().len();
+
+        assert!(state.resolve_assistant_message_from(turn_start).is_none());
+        assert_eq!(
+            state.resolve_assistant_message_from(0),
+            Some("prior answer".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_assistant_message_from_finds_current_turn_message() {
+        let mut state = ConversationState::new(&[(Role::System, "sys".to_string())]);
+        state.extend_turn_items(vec![assistant_message("prior answer")]);
+        let turn_start = state.history().len();
+        state.extend_turn_items(vec![assistant_message("current answer")]);
+
+        assert_eq!(
+            state.resolve_assistant_message_from(turn_start),
+            Some("current answer".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_assistant_message_from_past_end_is_none() {
+        let state = ConversationState::new(&[(Role::System, "sys".to_string())]);
+        assert!(state.resolve_assistant_message_from(10).is_none());
     }
 }
