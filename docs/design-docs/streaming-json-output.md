@@ -137,12 +137,12 @@ Hook stdout and stderr may include local paths, policy diagnostics, or other pro
 {"type":"task_complete","subtype":"success","is_error":false,"duration_ms":1523,"turn_count":2,"tool_call_count":3,"session_id":"550e8400-e29b-41d4-a716-446655440000","task_id":"2b15f29d-8c42-4c53-9bdf-35c8f2390d3e","result":"Done","usage":{"input_tokens":150,"input_tokens_details":{"cached_tokens":50},"output_tokens":320,"output_tokens_details":{"reasoning_tokens":120},"total_tokens":470}}
 ```
 
-`subtype` is one of `success`, `error_during_execution`, `error_output_schema`, or `interrupted`. On failure, `error` contains the error message and `result` is omitted.
+`subtype` is one of `success`, `error_during_execution`, `error_output_schema`, `cut_off`, or `interrupted`. On failure, `error` contains the error message and `result` is omitted.
 
   | Field                | Type             | Required | Description                                                                         |
   | -------------------- | ---------------- | -------- | ----------------------------------------------------------------------------------- |
   | `type`               | string           | yes      | Always `task_complete`                                                              |
-  | `subtype`            | string           | yes      | One of `success`, `error_during_execution`, `error_output_schema`, or `interrupted` |
+  | `subtype`            | string           | yes      | One of `success`, `error_during_execution`, `error_output_schema`, `cut_off`, or `interrupted` |
   | `is_error`           | boolean          | yes      | `false` for successful completion                                                   |
   | `duration_ms`        | number           | yes      | Wall-clock task duration in milliseconds                                            |
   | `turn_count`         | number           | yes      | Number of API turns with usage accumulated                                          |
@@ -163,6 +163,12 @@ With `--output-schema`, a final response that cannot be made valid against the s
 ```
 
 The subtype is additive: consumers keying on `is_error` are unaffected, and consumers that distinguish schema exhaustion from other agent errors can match `subtype == "error_output_schema"`.
+
+A turn that ends without a final assistant message (for example, the model stops mid-reasoning or returns an empty response) fails with subtype `cut_off` and `is_error: true`. The explanation is in `error` and `result` is omitted. Stream-json keeps its in-stream-error policy for cut-offs: the process exits 0. This differs from `json` and `text` output, where a cut-off exits 1:
+
+```json
+{"type":"task_complete","subtype":"cut_off","is_error":true,"duration_ms":4210,"turn_count":3,"tool_call_count":2,"session_id":"550e8400-e29b-41d4-a716-446655440000","task_id":"2b15f29d-8c42-4c53-9bdf-35c8f2390d3e","error":"The model's response was cut off during reasoning.","usage":{"input_tokens":150,"input_tokens_details":{"cached_tokens":50},"output_tokens":320,"output_tokens_details":{"reasoning_tokens":120},"total_tokens":470}}
+```
 
 ## Consumer Guidance
 

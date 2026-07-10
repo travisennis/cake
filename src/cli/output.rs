@@ -135,6 +135,12 @@ impl CliOutputSink {
             Err(e) => {
                 json["result"] = serde_json::Value::Null;
                 json["error"] = serde_json::json!(e.to_string());
+                // Additive discriminator so consumers can tell a cut-off from
+                // other agent errors — parity with stream-json's task_complete
+                // subtype.
+                if e.downcast_ref::<crate::types::CutOffError>().is_some() {
+                    json["subtype"] = serde_json::json!("cut_off");
+                }
             },
         }
 
@@ -174,6 +180,24 @@ mod tests {
     fn stream_json_swallows_success() {
         let result: anyhow::Result<String> = Ok("done".to_string());
         assert!(CliOutputSink::stream_json_exit_result(result).is_ok());
+    }
+
+    #[test]
+    fn stream_json_swallows_cut_off() {
+        // Stream-json reports cut-offs in the task_complete record and keeps
+        // its documented in-stream-error policy of exit 0.
+        let result: anyhow::Result<String> =
+            Err(crate::types::CutOffError::new("cut off".to_string()).into());
+        assert!(CliOutputSink::stream_json_exit_result(result).is_ok());
+    }
+
+    #[test]
+    fn render_text_result_propagates_cut_off_error() {
+        // Text mode must not print the cut-off detail in the assistant-output
+        // position; the error propagates to stderr and a nonzero exit.
+        let result: anyhow::Result<String> =
+            Err(crate::types::CutOffError::new("cut off".to_string()).into());
+        assert!(CliOutputSink::render_text_result(result).is_err());
     }
 
     #[test]

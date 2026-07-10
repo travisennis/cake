@@ -642,6 +642,50 @@ fn output_sink_builds_error_json() {
         assert_eq!(json["error"], "provider failed");
         assert_eq!(json["elapsed_time"], 250);
         assert!(json["session_file"].is_string());
+        assert!(
+            json.get("subtype").is_none(),
+            "generic errors must not carry the cut_off subtype"
+        );
+    });
+}
+
+#[test]
+fn output_sink_builds_cut_off_json() {
+    temp_env::with_var("CAKE_TEST_VALID_KEY", Some("sk-test-123"), || {
+        let agent = Agent::new(
+            test_resolved_model_config(),
+            &[(Role::System, "test system prompt".to_string())],
+        )
+        .with_session_id(uuid::uuid!("550e8400-e29b-41d4-a716-446655440000"));
+        let session = Session::new(agent.session_id(), PathBuf::from("/work"));
+        let dir = match tempfile::tempdir() {
+            Ok(dir) => dir,
+            Err(err) => panic!("temp dir should be created: {err}"),
+        };
+        let data_dir = match temp_env::with_var("CAKE_DATA_DIR", Some(dir.path()), DataDir::new) {
+            Ok(data_dir) => data_dir,
+            Err(err) => panic!("data dir should be created: {err}"),
+        };
+        let detail = "The model's response was cut off during reasoning.";
+        let result = Err(crate::types::CutOffError::new(detail.to_string()).into());
+
+        let json = CliOutputSink::turn_result_json(
+            &result,
+            250,
+            &agent,
+            Path::new("/work"),
+            &data_dir,
+            &session,
+            true,
+        );
+
+        assert_eq!(
+            json["result"],
+            serde_json::Value::Null,
+            "harness prose must not appear in the result position"
+        );
+        assert_eq!(json["error"], detail);
+        assert_eq!(json["subtype"], "cut_off");
     });
 }
 
@@ -858,6 +902,36 @@ async fn handle_agent_turn_output_schema_exhaustion_emits_error_output_schema() 
     assert!(json.get("result").is_none() || json["result"].is_null());
 
     // The same error must classify to exit code 1 (agent error).
+    assert_eq!(
+        crate::exit_code::classify_to_u8(result.as_ref().unwrap_err()),
+        crate::exit_code::code::AGENT_ERROR
+    );
+}
+
+#[tokio::test]
+async fn handle_agent_turn_cut_off_emits_cut_off_subtype() {
+    let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let captured_clone = captured.clone();
+    let mut agent = test_agent_for_turn().with_streaming_json(move |json| {
+        *captured_clone.lock().unwrap() = json.to_string();
+    });
+
+    let detail = "The model's response was cut off during reasoning.";
+    let result: Result<String, anyhow::Error> =
+        Err(crate::types::CutOffError::new(detail.to_string()).into());
+
+    CodingAssistant::handle_agent_turn_result(&mut agent, None, &result, 50)
+        .await
+        .unwrap();
+
+    let json: serde_json::Value = serde_json::from_str(&captured.lock().unwrap()).unwrap();
+    assert_eq!(json["type"], "task_complete");
+    assert_eq!(json["subtype"], "cut_off");
+    assert_eq!(json["is_error"], true);
+    assert_eq!(json["error"], detail);
+    assert!(json.get("result").is_none() || json["result"].is_null());
+
+    // A cut-off classifies to exit code 1 (agent error) in json/text modes.
     assert_eq!(
         crate::exit_code::classify_to_u8(result.as_ref().unwrap_err()),
         crate::exit_code::code::AGENT_ERROR

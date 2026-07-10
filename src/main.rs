@@ -745,21 +745,13 @@ impl CodingAssistant {
         let result = client.send(content.to_string()).await;
         let duration_ms = start.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
 
-        // Check for cut-off before handle_agent_turn_result borrows result.
-        let cut_off_detail = result
-            .as_ref()
-            .err()
-            .and_then(|e| e.downcast_ref::<CutOffError>())
-            .map(|c| c.detail.clone());
-
         Self::handle_agent_turn_result(client, hook_runner, &result, duration_ms).await?;
 
-        // For rendering, convert cut-off to Ok(detail) since the outcome was
-        // already emitted by handle_agent_turn_result.
-        let render_result = cut_off_detail.map_or(result, Ok);
-
+        // Cut-offs stay Err so each render mode and the telemetry summary
+        // report them as failures; the TaskOutcome::CutOff record was already
+        // emitted by handle_agent_turn_result.
         Ok(TurnResult {
-            result: render_result,
+            result,
             duration_ms,
         })
     }

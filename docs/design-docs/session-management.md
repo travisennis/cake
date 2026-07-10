@@ -218,7 +218,7 @@ Older `hook_event` records may omit `call_id`, `tool_name`, `tool_input_summary`
   | Field                | Type             | Required | Description                                                                         |
   | -------------------- | ---------------- | -------- | ----------------------------------------------------------------------------------- |
   | `type`               | string           | yes      | Always `task_complete`                                                              |
-  | `subtype`            | string           | yes      | One of `success`, `error_during_execution`, `error_output_schema`, or `interrupted` |
+  | `subtype`            | string           | yes      | One of `success`, `error_during_execution`, `error_output_schema`, `cut_off`, or `interrupted` |
   | `is_error`           | boolean          | yes      | `false` for successful completion                                                   |
   | `duration_ms`        | number           | yes      | Wall-clock task duration in milliseconds                                            |
   | `turn_count`         | number           | yes      | Number of API turns with usage accumulated                                          |

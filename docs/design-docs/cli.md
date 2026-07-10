@@ -283,6 +283,7 @@ When using `--output-format stream-json`, the task completion event reports succ
 {"type":"task_complete","subtype":"success","is_error":false,...}
 {"type":"task_complete","subtype":"error_during_execution","is_error":true,"error":"...",...}
 {"type":"task_complete","subtype":"error_output_schema","is_error":true,"error":"...",...}
+{"type":"task_complete","subtype":"cut_off","is_error":true,"error":"...",...}
 ```
 
 ### JSON Summary Output
@@ -308,3 +309,16 @@ When using `--output-format json`, a single JSON object is printed at the end of
 ```
 
 On error, `result` is `null` and an `error` field is included with the error message. The error is then propagated to produce a non-zero exit code.
+
+A cut-off turn — the model produced no final assistant message (for example, it stopped mid-reasoning or returned an empty response) — is reported as an error, never as a `result`. The object additionally carries an additive `"subtype": "cut_off"` field so consumers can distinguish cut-offs from other agent errors (parity with stream-json's `task_complete` subtype), and the process exits 1:
+
+```json
+{
+  "result": null,
+  "error": "The model's response was cut off during reasoning.",
+  "subtype": "cut_off",
+  ...
+}
+```
+
+In `text` output, a cut-off prints `Error: <detail>` on stderr and exits 1; the explanation never appears in the assistant-output position on stdout. In `stream-json` output, cut-offs follow the in-stream-error policy and exit 0 (see Streaming JSON Integration above).
