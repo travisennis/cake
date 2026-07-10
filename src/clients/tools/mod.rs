@@ -26,6 +26,8 @@ use std::sync::Arc;
 
 mod sandbox;
 
+pub use sandbox::{SandboxPolicy, resolve_sandbox_policy};
+
 fn compute_temp_directories() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
 
@@ -68,6 +70,8 @@ pub struct ToolContext {
     pub additional_dirs: Vec<PathBuf>,
     pub skill_dirs: Vec<PathBuf>,
     pub settings_dirs: Vec<PathBuf>,
+    /// Resolved sandbox policy applied to model-generated shell commands.
+    pub sandbox_policy: SandboxPolicy,
 }
 
 impl ToolContext {
@@ -78,20 +82,24 @@ impl ToolContext {
         additional_dirs: Vec<PathBuf>,
         skill_dirs: Vec<PathBuf>,
         settings_dirs: Vec<PathBuf>,
+        sandbox_policy: SandboxPolicy,
     ) -> Self {
-        Self::with_temp_dirs(
+        let mut context = Self::with_temp_dirs(
             cwd,
             compute_temp_directories(),
             additional_dirs,
             skill_dirs,
             settings_dirs,
-        )
+        );
+        context.sandbox_policy = sandbox_policy;
+        context
     }
 
     /// Build a tool context with explicitly supplied temp directories.
     ///
     /// This keeps construction testable without depending on process-global
-    /// cache state.
+    /// cache state. The sandbox policy defaults to `WorkspaceWrite` so the
+    /// many existing test call sites need not pass it explicitly.
     pub const fn with_temp_dirs(
         cwd: PathBuf,
         temp_dirs: Vec<PathBuf>,
@@ -105,6 +113,7 @@ impl ToolContext {
             additional_dirs,
             skill_dirs,
             settings_dirs,
+            sandbox_policy: SandboxPolicy::WorkspaceWrite,
         }
     }
 
@@ -118,6 +127,7 @@ impl ToolContext {
             additional_dirs: Vec::new(),
             skill_dirs: Vec::new(),
             settings_dirs: Vec::new(),
+            sandbox_policy: SandboxPolicy::WorkspaceWrite,
         }
     }
 }

@@ -87,6 +87,12 @@ pub struct CodingAssistant {
     #[arg(long, value_name = "DIR")]
     pub add_dir: Vec<String>,
 
+    /// Select the sandbox policy for model-generated shell commands
+    /// (read-only, workspace-write, danger-full-access). Default:
+    /// workspace-write. Takes precedence over CAKE_SANDBOX.
+    #[arg(short, long, value_enum, value_name = "POLICY")]
+    pub sandbox: Option<SandboxPolicy>,
+
     #[command(subcommand)]
     pub command: Option<Commands>,
 }

@@ -30,11 +30,11 @@ pub(super) const BASH_OUTPUT_MAX_BYTES: usize = 50_000;
 /// has enough data for a useful head+tail preview and temp-file dump.
 pub(super) const BASH_READ_CAP: usize = BASH_OUTPUT_MAX_BYTES * 2;
 
-/// Arguments for bash execution, including optional sandboxing
+/// Arguments for bash execution, including the sandbox policy
 struct BashExecutionArgs {
     command: String,
     timeout: u64,
-    use_sandbox: bool,
+    policy: super::sandbox::SandboxPolicy,
 }
 
 impl BashExecutionArgs {
@@ -51,7 +51,8 @@ impl BashExecutionArgs {
         Ok(Self {
             command: args.command,
             timeout: args.timeout.unwrap_or(60),
-            use_sandbox: !super::sandbox::is_sandbox_disabled(),
+            // Default until `execute_bash` overrides from the tool context.
+            policy: super::sandbox::SandboxPolicy::WorkspaceWrite,
         })
     }
 }
@@ -59,7 +60,11 @@ impl BashExecutionArgs {
 #[cfg(test)]
 impl BashExecutionArgs {
     fn with_sandbox(mut self, use_sandbox: bool) -> Self {
-        self.use_sandbox = use_sandbox;
+        self.policy = if use_sandbox {
+            super::sandbox::SandboxPolicy::WorkspaceWrite
+        } else {
+            super::sandbox::SandboxPolicy::DangerFullAccess
+        };
         self
     }
 }
@@ -301,7 +306,8 @@ pub(super) async fn execute_bash(
     context: &super::ToolContext,
     arguments: &str,
 ) -> Result<super::ToolResult, String> {
-    let args = BashExecutionArgs::from_json(arguments)?;
+    let mut args = BashExecutionArgs::from_json(arguments)?;
+    args.policy = context.sandbox_policy;
     Box::pin(execute_bash_with_args(context, args)).await
 }
 
@@ -316,6 +322,8 @@ async fn execute_bash_with_args(
     // Pre-execution safety check: block known-destructive commands,
     // collect soft warnings to prepend to output.
     let safety_warnings = super::bash_safety::validate_command_safety(&args.command)?;
+
+    let use_sandbox = args.policy != super::sandbox::SandboxPolicy::DangerFullAccess;
 
     let start_time = Instant::now();
 
@@ -333,7 +341,7 @@ async fn execute_bash_with_args(
         .kill_on_drop(true);
 
     // Apply sandbox if enabled
-    if args.use_sandbox {
+    if use_sandbox {
         if let Some(strategy) = super::sandbox::detect_platform()? {
             strategy.apply(&mut command, &sandbox_config)?;
         }
@@ -427,7 +435,7 @@ async fn execute_bash_with_args(
 
     let output_str = String::from_utf8_lossy(&buf);
 
-    if args.use_sandbox && is_sandbox_initialization_failure(&stderr_str) {
+    if use_sandbox && is_sandbox_initialization_failure(&stderr_str) {
         return Err(format!(
             "{}\n\n\
             macOS sandbox unavailable: sandbox-exec could not apply a sandbox profile, \
@@ -444,7 +452,7 @@ async fn execute_bash_with_args(
         format!("{output_str}\n[... output truncated at {BASH_READ_CAP} bytes ...]")
     } else if success {
         output_str.into_owned()
-    } else if is_sandbox_violation(args.use_sandbox, success, &output_str) {
+    } else if is_sandbox_violation(use_sandbox, success, &output_str) {
         format!(
             "{output_str}\n\n\
             [Sandbox restriction]: This command was blocked by the filesystem sandbox. \

@@ -1,6 +1,10 @@
 use super::*;
 #[cfg(target_os = "macos")]
 use crate::clients::tools::ToolContext;
+#[cfg(target_os = "macos")]
+use crate::clients::tools::sandbox::SandboxPolicy;
+#[cfg(target_os = "macos")]
+use std::sync::Arc;
 
 #[cfg(target_os = "macos")]
 fn skip_if_sandbox_unavailable() -> bool {
@@ -341,6 +345,96 @@ async fn test_sandbox_blocks_read_outside_cwd() {
         result.output.contains("Operation not permitted")
             || result.output.contains("Permission denied"),
         "Expected sandbox to block read outside cwd, got: {}",
+        result.output
+    );
+}
+
+// ===========================================================================
+// Sandbox Policy Tests (task 195)
+// ===========================================================================
+
+/// Build a `ToolContext` with a resolved sandbox policy for the current
+/// process. `execute_bash` reads `context.sandbox_policy` to override the
+/// args-level default.
+#[cfg(target_os = "macos")]
+fn context_with_policy(policy: SandboxPolicy) -> Arc<ToolContext> {
+    let mut context = ToolContext::from_current_process();
+    context.sandbox_policy = policy;
+    Arc::new(context)
+}
+
+/// Read-only policy denies writes to the project directory.
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn test_sandbox_read_only_blocks_write_in_cwd() {
+    if skip_if_sandbox_unavailable() {
+        return;
+    }
+
+    let target = format!("cake_ro_probe_{}", uuid::Uuid::new_v4());
+    let args = format!(r#"{{"command": "touch {target}"}}"#);
+    let result = Box::pin(execute_bash(
+        &context_with_policy(SandboxPolicy::ReadOnly),
+        &args,
+    ))
+    .await
+    .unwrap();
+    assert!(
+        result.output.contains("Operation not permitted")
+            || result.output.contains("Permission denied"),
+        "read-only policy should block writes to cwd, got: {}",
+        result.output
+    );
+    // Clean up just in case the sandbox did not block it.
+    _ = std::fs::remove_file(&target);
+}
+
+/// Workspace-write policy allows writes to the project directory.
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn test_sandbox_workspace_write_allows_write_in_cwd() {
+    if skip_if_sandbox_unavailable() {
+        return;
+    }
+
+    let target = format!("cake_ww_probe_{}", uuid::Uuid::new_v4());
+    let args = format!(r#"{{"command": "touch {target} && rm -f {target}"}}"#);
+    let result = Box::pin(execute_bash(
+        &context_with_policy(SandboxPolicy::WorkspaceWrite),
+        &args,
+    ))
+    .await
+    .unwrap();
+    assert!(
+        result.output.contains("[exit:0 |"),
+        "workspace-write policy should allow writes to cwd, got: {}",
+        result.output
+    );
+}
+
+/// Danger-full-access policy skips the sandbox entirely.
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn test_sandbox_danger_full_access_allows_write_outside_cwd() {
+    if skip_if_sandbox_unavailable() {
+        return;
+    }
+
+    let outside =
+        path_outside_cwd_for_sandbox_test().expect("should find a parent directory outside cwd");
+    let target = outside.join(format!("cake_dfa_probe_{}", uuid::Uuid::new_v4()));
+    let target_display = target.display();
+    let args = format!(r#"{{"command": "touch {target_display} && rm -f {target_display}"}}"#);
+    let result = Box::pin(execute_bash(
+        &context_with_policy(SandboxPolicy::DangerFullAccess),
+        &args,
+    ))
+    .await
+    .unwrap();
+    // With no sandbox, writing outside cwd must succeed.
+    assert!(
+        result.output.contains("[exit:0 |"),
+        "danger-full-access policy should skip the sandbox and allow writes outside cwd, got: {}",
         result.output
     );
 }

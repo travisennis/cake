@@ -120,10 +120,10 @@ cake requires at least one model configured in `settings.toml`, plus an API key 
 
 ### Environment Variables
 
-  | Variable        | Description                                                                                                              |
-  | --------------- | ------------------------------------------------------------------------------------------------------------------------ |
-  | `CAKE_DATA_DIR` | Override cache and session directories (default: cache at `~/.cache/cake/`, sessions at `~/.local/share/cake/sessions/`) |
-  | `CAKE_SANDBOX`  | Set to `off` to disable filesystem sandboxing                                                                            |
+  | Variable        | Description                                                                                                                 |
+  | --------------- | --------------------------------------------------------------------------------------------------------------------------- |
+  | `CAKE_DATA_DIR` | Override cache and session directories (default: cache at `~/.cache/cake/`, sessions at `~/.local/share/cake/sessions/`)    |
+  | `CAKE_SANDBOX`  | Set to `off` to disable filesystem sandboxing (equivalent to `--sandbox danger-full-access`; the CLI flag takes precedence) |
 
 ### Model Configuration
 
@@ -259,7 +259,20 @@ When the task finishes, cake automatically removes the worktree if no changes we
 
 Commands executed by the Bash tool run inside an OS-level filesystem sandbox that restricts access to only the project directory and essential system paths. This prevents LLM-generated commands from reading or writing files outside the allowed set.
 
-The sandbox can be disabled by setting `CAKE_SANDBOX=off`. Use `--add-dir <DIR>` to grant read-only access to additional directories, or declare persistent read-write directories in `settings.toml`.
+Use the `--sandbox` / `-s` CLI flag to select the sandbox policy:
+
+  | Value                | Behavior                                                                                                 |
+  | -------------------- | -------------------------------------------------------------------------------------------------------- |
+  | `read-only`          | Most restrictive: read access to workspace and system paths, no writes to workspace or toolchain caches. |
+  | `workspace-write`    | Default: read-write workspace with toolchain caches. Equivalent to the historical sandbox behavior.      |
+  | `danger-full-access` | No sandbox restrictions.                                                                                 |
+
+```bash
+cake --sandbox read-only "Audit this repo"
+cake -s danger-full-access "Run setup"
+```
+
+The `CAKE_SANDBOX=off` environment variable is still supported for backward compat (equivalent to `danger-full-access`), but `--sandbox` takes precedence when both are set. Use `--add-dir <DIR>` to grant read-only access to additional directories, or declare persistent read-write directories in `settings.toml`.
 
 For full details on platforms, destructive command protection, directory configuration, and troubleshooting, see [Filesystem Sandbox](docs/design-docs/sandbox.md).
 
@@ -362,6 +375,7 @@ fi
 - `--reasoning-effort <EFFORT>` - Override reasoning effort level (none, low, medium, high, xhigh)
 - `--reasoning-budget <TOKENS>` - Override reasoning token budget
 - `--add-dir <DIR>` - Add a directory to the sandbox config (read-only access). Can be repeated.
+- `--sandbox` (`-s`) - Select the sandbox policy: `read-only`, `workspace-write`, or `danger-full-access` (default: `workspace-write`)
 
 ### Example
 

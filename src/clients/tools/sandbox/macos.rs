@@ -5,7 +5,7 @@
 //! The profile uses a deny-default policy: everything is denied unless
 //! explicitly allowed.
 
-use crate::clients::tools::sandbox::{SandboxConfig, SandboxStrategy};
+use crate::clients::tools::sandbox::{SandboxConfig, SandboxPolicy, SandboxStrategy};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Output, Stdio};
@@ -176,19 +176,27 @@ impl MacOsSandbox {
     }
 
     /// Append SCM CLI (gh, glab) configuration, cache, and state rules to the profile.
-    fn append_scm_cli_rules(profile: &mut SeatbeltProfileBuilder) {
+    ///
+    /// When `read_only` is true, emit read-only rules so the read-only
+    /// sandbox policy cannot write to SCM CLI state/cache directories.
+    fn append_scm_cli_rules(profile: &mut SeatbeltProfileBuilder, read_only: bool) {
         profile.comment("SCM CLIs: GitHub CLI (gh) and GitLab CLI (glab)");
+        let access = if read_only {
+            "file-read*"
+        } else {
+            "file-read* file-write*"
+        };
         if let Some(home) = home_dir() {
             // GitHub CLI
-            profile.allow_subpath("file-read* file-write*", home.join(".config/gh"));
-            profile.allow_subpath("file-read* file-write*", home.join(".cache/gh"));
-            profile.allow_subpath("file-read* file-write*", home.join(".local/share/gh"));
-            profile.allow_subpath("file-read* file-write*", home.join(".local/state/gh"));
+            profile.allow_subpath(access, home.join(".config/gh"));
+            profile.allow_subpath(access, home.join(".cache/gh"));
+            profile.allow_subpath(access, home.join(".local/share/gh"));
+            profile.allow_subpath(access, home.join(".local/state/gh"));
             // GitLab CLI
-            profile.allow_subpath("file-read* file-write*", home.join(".config/glab-cli"));
-            profile.allow_subpath("file-read* file-write*", home.join(".cache/glab-cli"));
-            profile.allow_subpath("file-read* file-write*", home.join(".local/share/glab-cli"));
-            profile.allow_subpath("file-read* file-write*", home.join(".local/state/glab-cli"));
+            profile.allow_subpath(access, home.join(".config/glab-cli"));
+            profile.allow_subpath(access, home.join(".cache/glab-cli"));
+            profile.allow_subpath(access, home.join(".local/share/glab-cli"));
+            profile.allow_subpath(access, home.join(".local/state/glab-cli"));
         }
         profile.blank();
     }
@@ -313,7 +321,7 @@ impl MacOsSandbox {
 
         Self::append_git_rules(&mut profile);
         Self::append_ssh_agent_rules(&mut profile);
-        Self::append_scm_cli_rules(&mut profile);
+        Self::append_scm_cli_rules(&mut profile, config.policy == SandboxPolicy::ReadOnly);
         Self::append_keychain_rules(&mut profile);
         Self::append_device_rules(&mut profile);
 
@@ -508,6 +516,7 @@ mod tests {
             writable: vec![PathBuf::from("/workspace")],
             system_paths: vec![PathBuf::from("/usr"), PathBuf::from("/bin")],
             readable: vec![PathBuf::from("/etc")],
+            policy: SandboxPolicy::WorkspaceWrite,
         }
     }
 
@@ -619,6 +628,7 @@ mod tests {
             writable: vec![PathBuf::from("/workspace"), PathBuf::from("/tmp")],
             system_paths: vec![],
             readable: vec![],
+            policy: SandboxPolicy::WorkspaceWrite,
         };
 
         let profile = MacOsSandbox::generate_profile(&config);
@@ -633,6 +643,7 @@ mod tests {
             writable: vec![],
             system_paths: vec![PathBuf::from("/usr"), PathBuf::from("/bin")],
             readable: vec![],
+            policy: SandboxPolicy::WorkspaceWrite,
         };
 
         let profile = MacOsSandbox::generate_profile(&config);
@@ -647,6 +658,7 @@ mod tests {
             writable: vec![],
             system_paths: vec![],
             readable: vec![PathBuf::from("/etc")],
+            policy: SandboxPolicy::WorkspaceWrite,
         };
 
         let profile = MacOsSandbox::generate_profile(&config);
@@ -847,6 +859,7 @@ mod tests {
             ],
             system_paths: vec![PathBuf::from("/usr")],
             readable: vec![PathBuf::from("/private/etc")],
+            policy: SandboxPolicy::WorkspaceWrite,
         };
 
         let profile = MacOsSandbox::generate_profile(&config);

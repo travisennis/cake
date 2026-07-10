@@ -28,6 +28,46 @@ mod linux;
 #[cfg(target_os = "linux")]
 pub(super) use linux::LandlockSandbox;
 
+//=============================================================================
+// Sandbox Policy
+//=============================================================================
+
+/// The filesystem sandbox policy applied to model-generated shell commands.
+///
+/// `WorkspaceWrite` reproduces the historical default: read-write access to the
+/// project directory, temp directories, and toolchain/runtime caches, with
+/// read-only access to system and config paths. `ReadOnly` is strictly more
+/// restrictive: the project directory and toolchain caches become read-only,
+/// while temp directories stay read-write so commands can still produce
+/// intermediate output. `DangerFullAccess` skips the sandbox entirely.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum SandboxPolicy {
+    /// Read-only: deny writes to the workspace and toolchain dirs.
+    ReadOnly,
+    /// Read-write workspace with toolchain caches (current default).
+    #[default]
+    WorkspaceWrite,
+    /// No sandbox restrictions.
+    DangerFullAccess,
+}
+
+/// Resolve the effective sandbox policy from an optional CLI `--sandbox`
+/// value and the `CAKE_SANDBOX` environment variable.
+///
+/// An explicit CLI value always wins. When no flag is passed, `CAKE_SANDBOX=off`
+/// (and its aliases) maps to `DangerFullAccess` for backward compatibility;
+/// otherwise the policy defaults to `WorkspaceWrite`.
+pub fn resolve_sandbox_policy(cli: Option<SandboxPolicy>) -> SandboxPolicy {
+    if let Some(policy) = cli {
+        return policy;
+    }
+    if is_sandbox_disabled() {
+        SandboxPolicy::DangerFullAccess
+    } else {
+        SandboxPolicy::WorkspaceWrite
+    }
+}
+
 // =============================================================================
 // Core Types
 // =============================================================================
@@ -40,12 +80,18 @@ pub(super) struct SandboxConfig {
     pub system_paths: Vec<PathBuf>,
     /// Directories with read-only access
     pub readable: Vec<PathBuf>,
+    /// The sandbox policy this config was built for. Platform strategies use
+    /// this to adjust rules that are not derived purely from the path lists
+    /// (e.g. macOS SCM CLI read-write grants).
+    pub policy: SandboxPolicy,
 }
 
 impl SandboxConfig {
-    /// Build a sandbox configuration for the current context
+    /// Build a sandbox configuration for the current context, honoring the
+    /// sandbox policy carried by the tool context.
     pub fn build(context: &ToolContext) -> Self {
-        Self::build_with_additional_dirs(
+        Self::build_with_policy(
+            context.sandbox_policy,
             &context.cwd,
             &context.temp_dirs,
             &context.additional_dirs,
@@ -54,12 +100,14 @@ impl SandboxConfig {
         )
     }
 
-    /// Build a sandbox configuration with additional directories.
+    /// Build a sandbox configuration with additional directories and an
+    /// explicit sandbox policy.
     ///
     /// `additional_dirs` are added as read-only (from `--add-dir`).
     /// `settings_dirs` are added as read-write (from `settings.toml`).
     /// `skill_dirs` are added as read-only (parent dirs of SKILL.md files).
-    pub fn build_with_additional_dirs(
+    pub fn build_with_policy(
+        policy: SandboxPolicy,
         cwd: &std::path::Path,
         temp_dirs: &[std::path::PathBuf],
         additional_dirs: &[std::path::PathBuf],
@@ -92,10 +140,24 @@ impl SandboxConfig {
         // Add skill directories as read-only (so scripts like x-fetch.js can execute)
         push_dirs_with_canonical(&mut readable, skill_dirs);
 
+        // Read-only policy: keep only temp directories writable and move the
+        // workspace dir, toolchain caches, and settings dirs into the
+        // read-only set. Temp directories stay read-write so commands can
+        // still produce intermediate output (pipes, mktemp, overflow temp
+        // files).
+        let (writable, readable) = if policy == SandboxPolicy::ReadOnly {
+            Self::partition_read_only(&writable, temp_dirs, readable)
+        } else {
+            // WorkspaceWrite and DangerFullAccess use the same config; only
+            // DangerFullAccess skips applying the sandbox entirely.
+            (writable, readable)
+        };
+
         let config = Self {
             writable,
             system_paths,
             readable,
+            policy,
         };
 
         // On unsupported platforms, no sandbox strategy reads the config
@@ -109,6 +171,42 @@ impl SandboxConfig {
         }
 
         config
+    }
+
+    /// Move every workspace/toolchain/settings path that is not a temp dir
+    /// from `writable` into `readable`, leaving only temp dirs writable.
+    fn partition_read_only(
+        full_writable: &[std::path::PathBuf],
+        temp_dirs: &[std::path::PathBuf],
+        mut readable: Vec<PathBuf>,
+    ) -> (Vec<PathBuf>, Vec<PathBuf>) {
+        // Build the set of temp paths (original and canonical) that must stay
+        // writable so a command can still produce intermediate output.
+        let mut temp_set = std::collections::HashSet::new();
+        for dir in temp_dirs {
+            temp_set.insert(dir.clone());
+            if let Ok(canonical) = dir.canonicalize() {
+                temp_set.insert(canonical);
+            }
+        }
+
+        // Writable shrinks to temp dirs only (deduplicated with canonical
+        // forms), matching the same dedup approach as the workspace-write path.
+        let writable_writable: Vec<PathBuf> = temp_dirs.to_vec();
+        let writable = deduplicated_with_canonical(&writable_writable);
+
+        // Everything that was writable and is not a temp dir becomes read-only.
+        for path in full_writable {
+            if temp_set.contains(path) {
+                continue;
+            }
+            readable.push(path.clone());
+            if let Ok(canonical) = path.canonicalize() {
+                readable.push(canonical);
+            }
+        }
+
+        (writable, dedup_vec(readable))
     }
 
     /// Extend the writable paths with directories needed by common toolchains
@@ -501,6 +599,13 @@ fn deduplicated_with_canonical(paths: &[PathBuf]) -> Vec<PathBuf> {
     result
 }
 
+/// Deduplicate a path vector preserving first-seen order.
+fn dedup_vec(mut paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut seen = std::collections::HashSet::new();
+    paths.retain(|p| seen.insert(p.clone()));
+    paths
+}
+
 /// Platform-specific sandbox strategy trait
 pub(super) trait SandboxStrategy: Send + Sync {
     /// Wrap the given Command with sandbox restrictions.
@@ -606,8 +711,107 @@ pub(super) fn can_enforce_platform_sandbox() -> bool {
 #[cfg(test)]
 mod tests {
     use crate::clients::tools::ToolContext;
-    use crate::clients::tools::sandbox::SandboxConfig;
-    use std::path::PathBuf;
+    use crate::clients::tools::sandbox::{SandboxConfig, SandboxPolicy};
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn resolve_policy_explicit_cli_wins_over_env() {
+        // An explicit CLI policy always wins, even when CAKE_SANDBOX=off.
+        temp_env::with_var("CAKE_SANDBOX", Some("off"), || {
+            assert_eq!(
+                super::resolve_sandbox_policy(Some(SandboxPolicy::ReadOnly)),
+                SandboxPolicy::ReadOnly
+            );
+            assert_eq!(
+                super::resolve_sandbox_policy(Some(SandboxPolicy::WorkspaceWrite)),
+                SandboxPolicy::WorkspaceWrite
+            );
+        });
+    }
+
+    #[test]
+    fn resolve_policy_env_off_maps_to_danger_full_access() {
+        temp_env::with_var("CAKE_SANDBOX", Some("off"), || {
+            assert_eq!(
+                super::resolve_sandbox_policy(None),
+                SandboxPolicy::DangerFullAccess
+            );
+        });
+    }
+
+    #[test]
+    fn resolve_policy_default_is_workspace_write() {
+        temp_env::with_var("CAKE_SANDBOX", None::<&str>, || {
+            assert_eq!(
+                super::resolve_sandbox_policy(None),
+                SandboxPolicy::WorkspaceWrite
+            );
+        });
+    }
+
+    #[test]
+    fn read_only_policy_moves_workspace_and_toolchain_to_readable() {
+        temp_env::with_var("HOME", Some("/tmp/cake-sandbox-test-home"), || {
+            let home = PathBuf::from("/tmp/cake-sandbox-test-home");
+            let temp_dir = PathBuf::from("/tmp/cake-sandbox-ro-temp");
+            let config = SandboxConfig::build_with_policy(
+                SandboxPolicy::ReadOnly,
+                Path::new("/workspace"),
+                std::slice::from_ref(&temp_dir),
+                &[],
+                &[],
+                &[],
+            );
+
+            // The workspace directory must not be writable under read-only.
+            assert!(
+                !config.writable.contains(&PathBuf::from("/workspace")),
+                "read-only policy must not grant writes to the workspace"
+            );
+            assert!(
+                config.readable.contains(&PathBuf::from("/workspace")),
+                "read-only policy must grant reads to the workspace"
+            );
+
+            // A representative toolchain path must be readable, not writable.
+            // Use `.bun` which has no env-var override, unlike `CARGO_HOME`.
+            let bun = home.join(".bun");
+            assert!(
+                !config.writable.contains(&bun),
+                "read-only policy must not grant writes to {}",
+                bun.display()
+            );
+            assert!(
+                config.readable.contains(&bun),
+                "read-only policy must grant reads to {}",
+                bun.display()
+            );
+
+            // Temp directories stay writable so commands can produce output.
+            assert!(
+                config.writable.contains(&temp_dir),
+                "read-only policy must keep temp dirs writable"
+            );
+        });
+    }
+
+    #[test]
+    fn workspace_write_policy_keeps_workspace_writable() {
+        temp_env::with_var("HOME", Some("/tmp/cake-sandbox-test-home"), || {
+            let config = SandboxConfig::build_with_policy(
+                SandboxPolicy::WorkspaceWrite,
+                Path::new("/workspace"),
+                &[],
+                &[],
+                &[],
+                &[],
+            );
+            assert!(
+                config.writable.contains(&PathBuf::from("/workspace")),
+                "workspace-write policy must keep the workspace writable"
+            );
+        });
+    }
 
     #[test]
     fn build_allows_fnm_runtime_manager_paths() {

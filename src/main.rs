@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use crate::cli::{CliOutputSink, CmdRunner, Commands, RunMode, SessionStorage, TurnResult};
-use crate::clients::{Agent, ToolContext};
+use crate::clients::{Agent, SandboxPolicy, ToolContext, resolve_sandbox_policy};
 use crate::config::settings::LoadedSettings;
 use crate::config::{
     AgentsFile, DataDir, DiagnosticLevel, HookSource, HooksLoader, ModelConfig, ModelDefinition,
@@ -120,6 +120,12 @@ pub(crate) struct CodingAssistant {
     /// Add a directory to the sandbox config (read-only access). Can be repeated.
     #[arg(long, value_name = "DIR")]
     pub add_dir: Vec<String>,
+
+    /// Select the sandbox policy for model-generated shell commands
+    /// (read-only, workspace-write, danger-full-access). Default:
+    /// workspace-write. Takes precedence over `CAKE_SANDBOX`.
+    #[arg(short, long, value_enum, value_name = "POLICY")]
+    pub sandbox: Option<SandboxPolicy>,
 
     /// Disable all skills for this session
     #[arg(long)]
@@ -481,11 +487,13 @@ impl CodingAssistant {
             .collect();
 
         let settings_dirs = Self::valid_settings_dirs(&loaded);
+        let sandbox_policy = resolve_sandbox_policy(self.sandbox);
         let tool_context = ToolContext::new(
             current_dir.to_path_buf(),
             additional_dirs,
             skill_base_dirs,
             settings_dirs,
+            sandbox_policy,
         );
 
         Self::log_skill_diagnostics(&skill_catalog);

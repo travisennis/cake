@@ -49,7 +49,27 @@ The sandbox provides OS-level filesystem restriction as the primary enforcement 
 
 ## Configuration
 
-### Disabling the Sandbox
+### Sandbox Policies
+
+Use the `--sandbox` / `-s` CLI flag to select the filesystem sandbox policy applied to model-generated shell commands:
+
+  | Value                | Behavior                                                                                                                                                                                                                                |
+  | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | `read-only`          | Most restrictive. Grants read access to the workspace directory, system paths, and config paths, but denies writes to the workspace and toolchain caches. Temp directories stay read-write so commands can produce intermediate output. |
+  | `workspace-write`    | The default. Read-write access to the project directory, temp directories, and toolchain caches; read-only access to system and config paths. Equivalent to the historical sandbox behavior.                                            |
+  | `danger-full-access` | No sandbox restrictions. Bash commands run with full filesystem access.                                                                                                                                                                 |
+
+```bash
+cake --sandbox read-only "Audit this repo for secrets"
+cake -s read-only "Review the diff"
+cake --sandbox danger-full-access "Run setup"
+```
+
+The default (no `--sandbox` flag) is `workspace-write`, so existing behavior is unchanged.
+
+The `CAKE_SANDBOX` environment variable is still supported for backward compatibility: when no `--sandbox` flag is passed, `CAKE_SANDBOX=off` (and its aliases) maps to `danger-full-access`. When `--sandbox` is provided, the CLI flag takes precedence over the environment variable.
+
+### Disabling the Sandbox (legacy CAKE_SANDBOX)
 
 Set the `CAKE_SANDBOX` environment variable to disable sandboxing:
 
@@ -61,7 +81,7 @@ export CAKE_SANDBOX=false
 export CAKE_SANDBOX=no
 ```
 
-When disabled, a warning is logged and all commands run with full filesystem access.
+When disabled, a warning is logged and all commands run with full filesystem access. This is equivalent to `--sandbox danger-full-access`.
 
 The `warn` value is recognized but currently falls back to enforce mode.
 

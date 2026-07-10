@@ -98,6 +98,30 @@ fn test_cli_rejects_invalid_reasoning_effort() {
 }
 
 #[test]
+fn test_cli_parsing_sandbox_long_flag() {
+    let args = CodingAssistant::parse_from(["cake", "--sandbox", "read-only", "test prompt"]);
+    assert_eq!(args.sandbox, Some(SandboxPolicy::ReadOnly));
+}
+
+#[test]
+fn test_cli_parsing_sandbox_short_flag() {
+    let args = CodingAssistant::parse_from(["cake", "-s", "read-only", "test prompt"]);
+    assert_eq!(args.sandbox, Some(SandboxPolicy::ReadOnly));
+}
+
+#[test]
+fn test_cli_sandbox_defaults_to_none() {
+    let args = CodingAssistant::parse_from(["cake", "test prompt"]);
+    assert_eq!(args.sandbox, None);
+}
+
+#[test]
+fn test_cli_rejects_invalid_sandbox_policy() {
+    let result = CodingAssistant::try_parse_from(["cake", "--sandbox", "nope", "test"]);
+    assert!(result.is_err());
+}
+
+#[test]
 fn test_cli_parsing_profile_flag() {
     let args = CodingAssistant::parse_from(["cake", "--profile", "review", "test prompt"]);
     assert_eq!(args.profile, Some("review".to_string()));
