@@ -1,0 +1,4 @@
+interface:
+  display_name: "Delegate to cake"
+  short_description: "Use cake as the sole codebase subagent"
+  default_prompt: "Use $delegating-to-cake to complete this codebase task entirely through cake."
