@@ -208,14 +208,22 @@ impl MacOsSandbox {
     /// IPC, which is covered by the `(allow mach-lookup)` rule above. The
     /// file-level rules here allow tools that read keychain database files
     /// directly (rare, but harmless to permit).
-    fn append_keychain_rules(profile: &mut SeatbeltProfileBuilder) {
+    ///
+    /// When `read_only` is true, emit read-only rules so the read-only
+    /// sandbox policy cannot write to user keychain database files.
+    fn append_keychain_rules(profile: &mut SeatbeltProfileBuilder, read_only: bool) {
         profile.comment(
             "macOS Keychain file access (supplementary; primary access is via mach-lookup)",
         );
         profile.allow_subpath("file-read*", "/Library/Keychains");
         profile.allow_subpath("file-read*", "/System/Library/Keychains");
         if let Some(home) = home_dir() {
-            profile.allow_subpath("file-read* file-write*", home.join("Library/Keychains"));
+            let access = if read_only {
+                "file-read*"
+            } else {
+                "file-read* file-write*"
+            };
+            profile.allow_subpath(access, home.join("Library/Keychains"));
         }
         profile.blank();
     }
@@ -322,7 +330,7 @@ impl MacOsSandbox {
         Self::append_git_rules(&mut profile);
         Self::append_ssh_agent_rules(&mut profile);
         Self::append_scm_cli_rules(&mut profile, config.policy == SandboxPolicy::ReadOnly);
-        Self::append_keychain_rules(&mut profile);
+        Self::append_keychain_rules(&mut profile, config.policy == SandboxPolicy::ReadOnly);
         Self::append_device_rules(&mut profile);
 
         // Allow file-ioctl scoped to terminal devices
@@ -732,6 +740,44 @@ mod tests {
                 );
             },
         );
+    }
+
+    #[test]
+    fn test_read_only_profile_denies_scm_and_keychain_writes() {
+        temp_env::with_var("HOME", Some("/Users/testhome"), || {
+            let config = SandboxConfig {
+                writable: vec![PathBuf::from("/tmp")],
+                system_paths: vec![PathBuf::from("/usr")],
+                readable: vec![PathBuf::from("/workspace")],
+                policy: SandboxPolicy::ReadOnly,
+            };
+
+            let profile = MacOsSandbox::generate_profile(&config);
+
+            // Read-only policy must not re-grant writes through the hardcoded
+            // SCM CLI and keychain rules.
+            assert!(
+                profile.contains("(allow file-read* (subpath \"/Users/testhome/.config/gh\"))"),
+                "read-only profile should keep SCM CLI dirs readable"
+            );
+            assert!(
+                !profile.contains(
+                    "(allow file-read* file-write* (subpath \"/Users/testhome/.config/gh\"))"
+                ),
+                "read-only profile must not grant writes to SCM CLI dirs"
+            );
+            assert!(
+                profile
+                    .contains("(allow file-read* (subpath \"/Users/testhome/Library/Keychains\"))"),
+                "read-only profile should keep user keychains readable"
+            );
+            assert!(
+                !profile.contains(
+                    "(allow file-read* file-write* (subpath \"/Users/testhome/Library/Keychains\"))"
+                ),
+                "read-only profile must not grant writes to user keychains"
+            );
+        });
     }
 
     #[test]

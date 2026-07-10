@@ -579,6 +579,18 @@ impl ToolRegistry {
         &self.definitions
     }
 
+    /// Remove the tools that mutate files in-process (Edit, Write).
+    ///
+    /// The read-only sandbox policy uses this so the model never sees tools
+    /// it cannot use: Edit and Write bypass the OS sandbox (which only wraps
+    /// Bash), so omitting them is what makes the policy's no-mutation
+    /// guarantee hold for the whole agent, not just shell commands.
+    pub(super) fn retain_read_safe_tools(&mut self) {
+        self.entries
+            .retain(|entry| !matches!(entry.definition.name.as_str(), "Edit" | "Write"));
+        self.definitions = self.entries.iter().map(|e| e.definition.clone()).collect();
+    }
+
     /// Return the enabled tool names.
     pub(super) fn names(&self) -> Vec<String> {
         self.entries
@@ -807,11 +819,15 @@ fn execute_write_tool(context: Arc<ToolContext>, arguments: String) -> ToolFutur
 
 /// Generate the "Available tools" section for the built-in system prompt.
 ///
-/// This is derived from the tool registry so that prompt text stays in sync
-/// with the actual set of registered tools. Each tool's one-line summary is
-/// its first sentence (up to the first `.`).
-pub fn format_tool_list_section() -> String {
-    let registry = default_tool_registry();
+/// This is derived from the tool registry for the given sandbox policy so
+/// that prompt text stays in sync with the actual set of registered tools
+/// (under `ReadOnly`, Edit and Write are not registered). Each tool's
+/// one-line summary is its first sentence (up to the first `.`).
+pub fn format_tool_list_section(sandbox_policy: SandboxPolicy) -> String {
+    let mut registry = default_tool_registry();
+    if sandbox_policy == SandboxPolicy::ReadOnly {
+        registry.retain_read_safe_tools();
+    }
     let mut s = String::from("## Available tools\n\n");
     for def in registry.definitions() {
         let desc = &def.description;
@@ -1107,7 +1123,7 @@ mod tests {
 
     #[test]
     fn format_tool_list_section_includes_all_tools() {
-        let result = format_tool_list_section();
+        let result = format_tool_list_section(SandboxPolicy::WorkspaceWrite);
         assert!(result.starts_with("## Available tools"));
         assert!(result.contains("- **Bash**:"));
         assert!(result.contains("- **Read**:"));
@@ -1115,5 +1131,28 @@ mod tests {
         assert!(result.contains("- **Write**:"));
         assert!(result.contains("Only these tools are available."));
         assert!(result.contains("no Glob, Grep, or LS tool"));
+    }
+
+    #[test]
+    fn format_tool_list_section_read_only_excludes_mutating_tools() {
+        let result = format_tool_list_section(SandboxPolicy::ReadOnly);
+        assert!(result.contains("- **Bash**:"));
+        assert!(result.contains("- **Read**:"));
+        assert!(
+            !result.contains("- **Edit**:"),
+            "read-only prompt must not advertise the Edit tool"
+        );
+        assert!(
+            !result.contains("- **Write**:"),
+            "read-only prompt must not advertise the Write tool"
+        );
+    }
+
+    #[test]
+    fn read_only_registry_drops_edit_and_write() {
+        let mut registry = default_tool_registry();
+        registry.retain_read_safe_tools();
+        assert_eq!(registry.names(), vec!["Bash", "Read"]);
+        assert_eq!(registry.definitions().len(), 2);
     }
 }

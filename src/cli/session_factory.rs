@@ -191,6 +191,7 @@ impl crate::CodingAssistant {
             settings_system_prompt,
             agents_files,
             skill_catalog,
+            tool_context.sandbox_policy,
         );
         let locs = skill_locations(skill_catalog);
 

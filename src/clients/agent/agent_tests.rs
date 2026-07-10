@@ -38,6 +38,30 @@ fn test_agent() -> Agent {
 }
 
 #[test]
+fn read_only_tool_context_removes_edit_and_write() {
+    let mut context = ToolContext::from_current_process();
+    context.sandbox_policy = SandboxPolicy::ReadOnly;
+    let agent = Agent::new(
+        test_resolved_model_config(ApiType::ChatCompletions, "https://api.example.com"),
+        &[(Role::System, "test system prompt".to_string())],
+    )
+    .with_tool_context(Arc::new(context));
+
+    assert_eq!(agent.tool_names(), vec!["Bash", "Read"]);
+}
+
+#[test]
+fn workspace_write_tool_context_keeps_all_tools() {
+    let agent = Agent::new(
+        test_resolved_model_config(ApiType::ChatCompletions, "https://api.example.com"),
+        &[(Role::System, "test system prompt".to_string())],
+    )
+    .with_tool_context(Arc::new(ToolContext::from_current_process()));
+
+    assert_eq!(agent.tool_names(), vec!["Bash", "Edit", "Read", "Write"]);
+}
+
+#[test]
 fn accumulate_usage_adds_tokens() {
     let mut agent = test_agent();
     let usage = Usage {

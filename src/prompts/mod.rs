@@ -24,7 +24,7 @@ use std::path::Path;
 use chrono::Local;
 use tracing::{debug, warn};
 
-use crate::clients::format_tool_list_section;
+use crate::clients::{SandboxPolicy, format_tool_list_section};
 use crate::config::{AgentsFile, SkillCatalog};
 use crate::types::Role;
 
@@ -55,6 +55,7 @@ pub fn resolve_system_prompt(
     config_dir: &Path,
     cli_system_prompt: Option<&Path>,
     settings_system_prompt: Option<&Path>,
+    sandbox_policy: SandboxPolicy,
 ) -> String {
     // 1. --system-prompt CLI flag
     if let Some(path) = cli_system_prompt {
@@ -128,7 +129,10 @@ pub fn resolve_system_prompt(
     debug!("Using built-in system prompt (no override found)");
     let builtin = BUILTIN_SYSTEM_PROMPT.trim().to_string();
     if builtin.contains("{{AVAILABLE_TOOLS}}") {
-        builtin.replace("{{AVAILABLE_TOOLS}}", &format_tool_list_section())
+        builtin.replace(
+            "{{AVAILABLE_TOOLS}}",
+            &format_tool_list_section(sandbox_policy),
+        )
     } else {
         builtin
     }
@@ -146,6 +150,7 @@ pub fn build_initial_prompt_messages(
     settings_system_prompt: Option<&Path>,
     agents_files: &[AgentsFile],
     skill_catalog: &SkillCatalog,
+    sandbox_policy: SandboxPolicy,
 ) -> Vec<(Role, String)> {
     let mut messages = vec![(
         Role::System,
@@ -154,6 +159,7 @@ pub fn build_initial_prompt_messages(
             config_dir,
             cli_system_prompt,
             settings_system_prompt,
+            sandbox_policy,
         ),
     )];
     let context = format_agents_context(agents_files);
@@ -259,7 +265,13 @@ mod tests {
     fn resolve_uses_builtin_when_no_override() {
         let dir = TempDir::new().unwrap();
         let config_dir = TempDir::new().unwrap();
-        let prompt = resolve_system_prompt(dir.path(), config_dir.path(), None, None);
+        let prompt = resolve_system_prompt(
+            dir.path(),
+            config_dir.path(),
+            None,
+            None,
+            SandboxPolicy::WorkspaceWrite,
+        );
         assert!(prompt.starts_with("You are cake."));
     }
 
@@ -272,7 +284,13 @@ mod tests {
         std::fs::create_dir_all(&cake_dir).unwrap();
         std::fs::write(cake_dir.join("system.md"), "Project prompt").unwrap();
 
-        let prompt = resolve_system_prompt(working_dir.path(), config_dir.path(), None, None);
+        let prompt = resolve_system_prompt(
+            working_dir.path(),
+            config_dir.path(),
+            None,
+            None,
+            SandboxPolicy::WorkspaceWrite,
+        );
         assert_eq!(prompt, "Project prompt");
     }
 
@@ -283,7 +301,13 @@ mod tests {
 
         std::fs::write(config_dir.path().join("system.md"), "User prompt").unwrap();
 
-        let prompt = resolve_system_prompt(working_dir.path(), config_dir.path(), None, None);
+        let prompt = resolve_system_prompt(
+            working_dir.path(),
+            config_dir.path(),
+            None,
+            None,
+            SandboxPolicy::WorkspaceWrite,
+        );
         assert_eq!(prompt, "User prompt");
     }
 
@@ -297,7 +321,13 @@ mod tests {
         std::fs::write(cake_dir.join("system.md"), "Project prompt").unwrap();
         std::fs::write(config_dir.path().join("system.md"), "User prompt").unwrap();
 
-        let prompt = resolve_system_prompt(working_dir.path(), config_dir.path(), None, None);
+        let prompt = resolve_system_prompt(
+            working_dir.path(),
+            config_dir.path(),
+            None,
+            None,
+            SandboxPolicy::WorkspaceWrite,
+        );
         assert_eq!(prompt, "Project prompt");
     }
 
@@ -310,7 +340,13 @@ mod tests {
         std::fs::create_dir_all(&cake_dir).unwrap();
         std::fs::write(cake_dir.join("system.md"), "").unwrap();
 
-        let prompt = resolve_system_prompt(working_dir.path(), config_dir.path(), None, None);
+        let prompt = resolve_system_prompt(
+            working_dir.path(),
+            config_dir.path(),
+            None,
+            None,
+            SandboxPolicy::WorkspaceWrite,
+        );
         assert_eq!(prompt, "");
     }
 
@@ -323,7 +359,13 @@ mod tests {
         std::fs::create_dir_all(&cake_dir).unwrap();
         std::fs::write(cake_dir.join("system.md"), "   \n\n  ").unwrap();
 
-        let prompt = resolve_system_prompt(working_dir.path(), config_dir.path(), None, None);
+        let prompt = resolve_system_prompt(
+            working_dir.path(),
+            config_dir.path(),
+            None,
+            None,
+            SandboxPolicy::WorkspaceWrite,
+        );
         assert_eq!(prompt, "");
     }
 
@@ -346,7 +388,13 @@ mod tests {
 
         std::fs::write(config_dir.path().join("system.md"), "User prompt").unwrap();
 
-        let prompt = resolve_system_prompt(working_dir.path(), config_dir.path(), None, None);
+        let prompt = resolve_system_prompt(
+            working_dir.path(),
+            config_dir.path(),
+            None,
+            None,
+            SandboxPolicy::WorkspaceWrite,
+        );
 
         #[cfg(unix)]
         {
@@ -389,7 +437,13 @@ mod tests {
             std::fs::set_permissions(&user_file, std::fs::Permissions::from_mode(0o000)).unwrap();
         }
 
-        let prompt = resolve_system_prompt(working_dir.path(), config_dir.path(), None, None);
+        let prompt = resolve_system_prompt(
+            working_dir.path(),
+            config_dir.path(),
+            None,
+            None,
+            SandboxPolicy::WorkspaceWrite,
+        );
 
         #[cfg(unix)]
         {
@@ -419,7 +473,13 @@ mod tests {
     fn resolve_builtin_is_trimmed() {
         let dir = TempDir::new().unwrap();
         let config_dir = TempDir::new().unwrap();
-        let prompt = resolve_system_prompt(dir.path(), config_dir.path(), None, None);
+        let prompt = resolve_system_prompt(
+            dir.path(),
+            config_dir.path(),
+            None,
+            None,
+            SandboxPolicy::WorkspaceWrite,
+        );
         assert!(!prompt.starts_with('\n'));
         assert!(!prompt.ends_with('\n'));
     }
@@ -440,6 +500,7 @@ mod tests {
             None,
             &[],
             &SkillCatalog::empty(),
+            SandboxPolicy::WorkspaceWrite,
         );
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].0, Role::System);
@@ -471,6 +532,7 @@ mod tests {
             None,
             &files,
             &SkillCatalog::empty(),
+            SandboxPolicy::WorkspaceWrite,
         );
         let prompt = render_messages(&messages);
         assert!(prompt.contains("## Additional Context"));
@@ -497,6 +559,7 @@ mod tests {
             None,
             &files,
             &SkillCatalog::empty(),
+            SandboxPolicy::WorkspaceWrite,
         );
         let prompt = render_messages(&messages);
         assert!(prompt.contains("## Additional Context"));
@@ -526,6 +589,7 @@ mod tests {
             None,
             &files,
             &SkillCatalog::empty(),
+            SandboxPolicy::WorkspaceWrite,
         );
         let prompt = render_messages(&messages);
         // Should not include Project Context section since all files are empty
@@ -554,6 +618,7 @@ mod tests {
             None,
             &[],
             &catalog,
+            SandboxPolicy::WorkspaceWrite,
         );
         let prompt = render_messages(&messages);
         assert!(prompt.contains("## Skills"));
@@ -587,6 +652,7 @@ mod tests {
             None,
             &files,
             &catalog,
+            SandboxPolicy::WorkspaceWrite,
         );
         let prompt = render_messages(&messages);
         // AGENTS.md comes before Skills
@@ -605,6 +671,7 @@ mod tests {
             None,
             &[],
             &SkillCatalog::empty(),
+            SandboxPolicy::WorkspaceWrite,
         );
         assert_prompt_snapshot("prompt_empty", &messages);
     }
@@ -623,6 +690,7 @@ mod tests {
             None,
             &files,
             &SkillCatalog::empty(),
+            SandboxPolicy::WorkspaceWrite,
         );
         assert_prompt_snapshot("prompt_with_project_agents", &messages);
     }
@@ -647,6 +715,7 @@ mod tests {
             None,
             &files,
             &SkillCatalog::empty(),
+            SandboxPolicy::WorkspaceWrite,
         );
         assert_prompt_snapshot("prompt_with_user_and_project_agents", &messages);
     }
@@ -669,6 +738,7 @@ mod tests {
             None,
             &[],
             &catalog,
+            SandboxPolicy::WorkspaceWrite,
         );
         assert_prompt_snapshot("prompt_with_skill_catalog", &messages);
     }
@@ -695,6 +765,7 @@ mod tests {
             None,
             &files,
             &catalog,
+            SandboxPolicy::WorkspaceWrite,
         );
         assert_prompt_snapshot("prompt_with_agents_and_skills", &messages);
     }

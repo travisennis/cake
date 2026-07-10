@@ -18,13 +18,14 @@ impl LandlockSandbox {
             landlock::RulesetStatus::FullyEnforced => Ok(()),
             landlock::RulesetStatus::PartiallyEnforced => Err(std::io::Error::other(
                 "Linux sandbox unavailable: Landlock only partially enforced the filesystem \
-                 ruleset. Set CAKE_SANDBOX=off to run Bash commands without filesystem \
-                 sandboxing.",
+                 ruleset. Run cake with --sandbox danger-full-access (or set CAKE_SANDBOX=off) \
+                 to run Bash commands without filesystem sandboxing.",
             )),
             landlock::RulesetStatus::NotEnforced => Err(std::io::Error::other(
                 "Linux sandbox unavailable: Landlock did not enforce the filesystem ruleset. \
-                 This usually means the kernel lacks required Landlock support. Set \
-                 CAKE_SANDBOX=off to run Bash commands without filesystem sandboxing.",
+                 This usually means the kernel lacks required Landlock support. Run cake with \
+                 --sandbox danger-full-access (or set CAKE_SANDBOX=off) to run Bash commands \
+                 without filesystem sandboxing.",
             )),
         }
     }
@@ -73,12 +74,16 @@ impl LandlockSandbox {
             }
         }
 
-        // Add read-only rules
-        let read_access = AccessFs::ReadFile | AccessFs::ReadDir;
+        // Add read-only + exec rules for readable paths. Execute is included
+        // so read-only paths (skill dirs, --add-dir, and everything the
+        // read-only policy demotes from writable: workspace, toolchain
+        // caches) can still run scripts and binaries, matching macOS Seatbelt
+        // where file-read* plus the global process-exec allow is sufficient
+        // to exec. Read-only denies mutations, not execution.
         for path in &config.readable {
             if path.exists() {
                 ruleset = ruleset
-                    .add_rules(landlock::path_beneath_rules(&[path], read_access))
+                    .add_rules(landlock::path_beneath_rules(&[path], ro_exec_access))
                     .map_err(|e| {
                         std::io::Error::other(format!(
                             "Failed to add ro rule for {}: {e}",

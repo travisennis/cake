@@ -38,7 +38,7 @@ struct BashExecutionArgs {
 }
 
 impl BashExecutionArgs {
-    fn from_json(arguments: &str) -> Result<Self, String> {
+    fn from_json(arguments: &str, policy: super::sandbox::SandboxPolicy) -> Result<Self, String> {
         #[derive(Deserialize)]
         struct BashArgs {
             command: String,
@@ -51,21 +51,8 @@ impl BashExecutionArgs {
         Ok(Self {
             command: args.command,
             timeout: args.timeout.unwrap_or(60),
-            // Default until `execute_bash` overrides from the tool context.
-            policy: super::sandbox::SandboxPolicy::WorkspaceWrite,
+            policy,
         })
-    }
-}
-
-#[cfg(test)]
-impl BashExecutionArgs {
-    fn with_sandbox(mut self, use_sandbox: bool) -> Self {
-        self.policy = if use_sandbox {
-            super::sandbox::SandboxPolicy::WorkspaceWrite
-        } else {
-            super::sandbox::SandboxPolicy::DangerFullAccess
-        };
-        self
     }
 }
 
@@ -306,8 +293,7 @@ pub(super) async fn execute_bash(
     context: &super::ToolContext,
     arguments: &str,
 ) -> Result<super::ToolResult, String> {
-    let mut args = BashExecutionArgs::from_json(arguments)?;
-    args.policy = context.sandbox_policy;
+    let args = BashExecutionArgs::from_json(arguments, context.sandbox_policy)?;
     Box::pin(execute_bash_with_args(context, args)).await
 }
 
@@ -440,8 +426,9 @@ async fn execute_bash_with_args(
             "{}\n\n\
             macOS sandbox unavailable: sandbox-exec could not apply a sandbox profile, \
             so the requested command did not run. This commonly happens when cake is \
-            itself running inside another Seatbelt sandbox. Set CAKE_SANDBOX=off to \
-            run Bash commands without filesystem sandboxing.",
+            itself running inside another Seatbelt sandbox. Run cake with \
+            --sandbox danger-full-access (or set CAKE_SANDBOX=off) to run Bash \
+            commands without filesystem sandboxing.",
             output_str.trim_end()
         ));
     }
@@ -475,7 +462,8 @@ async fn execute_bash_with_args(
 
 #[cfg(test)]
 async fn execute_bash_unsandboxed(arguments: &str) -> Result<super::ToolResult, String> {
-    let args = BashExecutionArgs::from_json(arguments)?.with_sandbox(false);
+    let args =
+        BashExecutionArgs::from_json(arguments, super::sandbox::SandboxPolicy::DangerFullAccess)?;
     let context = super::ToolContext::from_current_process();
     Box::pin(execute_bash_with_args(&context, args)).await
 }

@@ -1,6 +1,6 @@
 use super::*;
 use crate::clients::responses_types::{OutputContent, OutputMessage, ProviderConfig};
-use crate::clients::tools::default_tool_registry;
+use crate::clients::tools::{SandboxPolicy, default_tool_registry};
 use crate::config::skills::{Skill, SkillScope};
 use crate::config::{AgentsFile, SkillCatalog};
 use crate::prompts::build_initial_prompt_messages;
@@ -42,6 +42,7 @@ fn full_prompt_history() -> Vec<ConversationItem> {
         None,
         &agents_files,
         &skill_catalog,
+        SandboxPolicy::WorkspaceWrite,
     )
     .into_iter()
     .map(|(role, content)| ConversationItem::Message {

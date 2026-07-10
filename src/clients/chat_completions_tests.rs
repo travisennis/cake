@@ -3,7 +3,7 @@ use crate::clients::chat_types::{
     ChatChoice, ChatFunctionCall, ChatResponse, ChatResponseMessage, ChatToolCall, ChatUsage,
     PromptTokensDetails,
 };
-use crate::clients::tools::default_tool_registry;
+use crate::clients::tools::{SandboxPolicy, default_tool_registry};
 use crate::config::model::{ApiType, ModelConfig};
 use crate::config::skills::{Skill, SkillScope};
 use crate::config::{AgentsFile, SkillCatalog};
@@ -57,6 +57,7 @@ fn full_prompt_history() -> Vec<ConversationItem> {
         None,
         &agents_files,
         &skill_catalog,
+        SandboxPolicy::WorkspaceWrite,
     )
     .into_iter()
     .map(|(role, content)| ConversationItem::Message {

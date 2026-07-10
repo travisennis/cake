@@ -6,12 +6,12 @@ Cake sandboxes commands executed by the Bash tool to restrict filesystem access.
 
 When the Bash tool executes a command, cake wraps it in an OS-level sandbox that enforces a deny-default filesystem policy. Only explicitly allowed paths are accessible:
 
-  | Access Level            | Paths                                                                                                                                                                                                                                                            | Purpose                                                                                       |
-  | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-  | **Read-write**          | Current working directory, temp directories, `~/.cargo`, `~/.rustup`, `~/.cache/sccache`, `~/.config/gh`, `~/.config/glab-cli`, `~/.config/mise`, `~/.asdf`, `~/.volta`, and related cache/state directories                                                     | Project files, build artifacts, toolchain caches, SCM CLI configs                             |
-  | **Read-only + execute** | `/usr`, `/bin`, `/sbin`, system paths, `/Library`, `/System/Library`, `/Applications`, `/opt/homebrew`, `/opt/local` (macOS); `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64`, `/etc/alternatives`, `/snap` (Linux)                                                    | Running system tools and compilers                                                            |
-  | **Read-only**           | `/etc`, `/dev`, `/var`, `/proc`, `/sys` (Linux); `/etc`, `/private/etc`, `/private/var`, `/dev`, `/var` (macOS); `~/.config/git`, `~/.gitattributes`; **plus any directories added via `--add-dir`**; **plus skill directories (parent dirs of SKILL.md files)** | Configuration, device access, git config, user-specified reference directories, skill scripts |
-  | **Denied**              | Everything else                                                                                                                                                                                                                                                  | Home directory (except allowed paths), other projects, etc.                                   |
+  | Access Level            | Paths                                                                                                                                                                                                                                                            | Purpose                                                                                                                                                                                               |
+  | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | **Read-write**          | Current working directory, temp directories, `~/.cargo`, `~/.rustup`, `~/.cache/sccache`, `~/.config/gh`, `~/.config/glab-cli`, `~/.config/mise`, `~/.asdf`, `~/.volta`, and related cache/state directories                                                     | Project files, build artifacts, toolchain caches, SCM CLI configs                                                                                                                                     |
+  | **Read-only + execute** | `/usr`, `/bin`, `/sbin`, system paths, `/Library`, `/System/Library`, `/Applications`, `/opt/homebrew`, `/opt/local` (macOS); `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64`, `/etc/alternatives`, `/snap` (Linux)                                                    | Running system tools and compilers                                                                                                                                                                    |
+  | **Read-only**           | `/etc`, `/dev`, `/var`, `/proc`, `/sys` (Linux); `/etc`, `/private/etc`, `/private/var`, `/dev`, `/var` (macOS); `~/.config/git`, `~/.gitattributes`; **plus any directories added via `--add-dir`**; **plus skill directories (parent dirs of SKILL.md files)** | Configuration, device access, git config, user-specified reference directories, skill scripts. Read-only paths still allow executing scripts/binaries on both platforms (execution is not a mutation) |
+  | **Denied**              | Everything else                                                                                                                                                                                                                                                  | Home directory (except allowed paths), other projects, etc.                                                                                                                                           |
 
 ## Platform Support
 
@@ -53,11 +53,11 @@ The sandbox provides OS-level filesystem restriction as the primary enforcement 
 
 Use the `--sandbox` / `-s` CLI flag to select the filesystem sandbox policy applied to model-generated shell commands:
 
-  | Value                | Behavior                                                                                                                                                                                                                                |
-  | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-  | `read-only`          | Most restrictive. Grants read access to the workspace directory, system paths, and config paths, but denies writes to the workspace and toolchain caches. Temp directories stay read-write so commands can produce intermediate output. |
-  | `workspace-write`    | The default. Read-write access to the project directory, temp directories, and toolchain caches; read-only access to system and config paths. Equivalent to the historical sandbox behavior.                                            |
-  | `danger-full-access` | No sandbox restrictions. Bash commands run with full filesystem access.                                                                                                                                                                 |
+  | Value                | Behavior                                                                                                                                                                                                                                                                                                                                                                                                                            |
+  | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | `read-only`          | Most restrictive. Grants read access to the workspace directory, system paths, and config paths, but denies writes to the workspace and toolchain caches. Temp directories stay read-write so commands can produce intermediate output. The Edit and Write tools are removed from the agent's tool set (they mutate files in-process, outside the OS sandbox that wraps Bash), so the no-mutation guarantee covers the whole agent. |
+  | `workspace-write`    | The default. Read-write access to the project directory, temp directories, and toolchain caches; read-only access to system and config paths. Equivalent to the historical sandbox behavior.                                                                                                                                                                                                                                        |
+  | `danger-full-access` | No sandbox restrictions. Bash commands run with full filesystem access.                                                                                                                                                                                                                                                                                                                                                             |
 
 ```bash
 cake --sandbox read-only "Audit this repo for secrets"
@@ -66,6 +66,8 @@ cake --sandbox danger-full-access "Run setup"
 ```
 
 The default (no `--sandbox` flag) is `workspace-write`, so existing behavior is unchanged.
+
+Under `read-only`, persistent read-write directories declared in `settings.toml` are also demoted to read-only: the policy denies all mutations, so it overrides the per-project write grants those settings normally provide.
 
 The `CAKE_SANDBOX` environment variable is still supported for backward compatibility: when no `--sandbox` flag is passed, `CAKE_SANDBOX=off` (and its aliases) maps to `danger-full-access`. When `--sandbox` is provided, the CLI flag takes precedence over the environment variable.
 
@@ -167,19 +169,19 @@ cake "List the files in this project"
 The sandbox is blocking access to a path outside the allowed set. Options:
 
 1. Ensure you're running cake from the correct project directory
-2. If the command legitimately needs broader access, disable the sandbox with `CAKE_SANDBOX=off`
+2. If the command legitimately needs broader access, disable the sandbox with `--sandbox danger-full-access` (or `CAKE_SANDBOX=off`)
 
 ### "sandbox-exec not found" error (macOS)
 
-The `sandbox-exec` binary is missing from `/usr/bin/`. This is unusual on standard macOS installations. Bash commands fail closed unless sandboxing is explicitly disabled with `CAKE_SANDBOX=off`.
+The `sandbox-exec` binary is missing from `/usr/bin/`. This is unusual on standard macOS installations. Bash commands fail closed unless sandboxing is explicitly disabled with `--sandbox danger-full-access` (or `CAKE_SANDBOX=off`).
 
 ### "sandbox-exec cannot apply profiles" error (macOS)
 
-The `sandbox-exec` binary exists, but macOS rejected applying a test Seatbelt profile in this process context. The most common cause is nested sandboxing: cake was started by another sandboxed tool, and macOS does not allow that process to apply another Seatbelt profile. Bash commands fail closed. Run cake from a normal terminal to preserve sandbox enforcement, or set `CAKE_SANDBOX=off` when intentionally running without cake's filesystem sandbox.
+The `sandbox-exec` binary exists, but macOS rejected applying a test Seatbelt profile in this process context. The most common cause is nested sandboxing: cake was started by another sandboxed tool, and macOS does not allow that process to apply another Seatbelt profile. Bash commands fail closed. Run cake from a normal terminal to preserve sandbox enforcement, or use `--sandbox danger-full-access` (or `CAKE_SANDBOX=off`) when intentionally running without cake's filesystem sandbox.
 
 ### "Landlock not enforced" error (Linux)
 
-Landlock requires kernel 5.13 or later. On older kernels, Landlock reports `NotEnforced` status and Bash commands fail closed unless sandboxing is explicitly disabled with `CAKE_SANDBOX=off`. Cake also fails closed when Landlock reports `PartiallyEnforced`, because the filesystem sandbox is treated as unavailable unless the ruleset is fully enforced. Check your kernel version with `uname -r`.
+Landlock requires kernel 5.13 or later. On older kernels, Landlock reports `NotEnforced` status and Bash commands fail closed unless sandboxing is explicitly disabled with `--sandbox danger-full-access` (or `CAKE_SANDBOX=off`). Cake also fails closed when Landlock reports `PartiallyEnforced`, because the filesystem sandbox is treated as unavailable unless the ruleset is fully enforced. Check your kernel version with `uname -r`.
 
 ### SSH git operations fail with host key verification
 

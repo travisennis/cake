@@ -10,7 +10,7 @@ use crate::clients::agent_observer::AgentObserver;
 use crate::clients::agent_runner::AgentRunner;
 use crate::clients::agent_state::{ConversationState, accumulate_usage};
 use crate::clients::backend::Backend;
-use crate::clients::tools::{ToolContext, ToolRegistry, default_tool_registry};
+use crate::clients::tools::{SandboxPolicy, ToolContext, ToolRegistry, default_tool_registry};
 use crate::config::model::ResolvedModelConfig;
 use crate::config::output_schema::OutputSchema;
 use crate::config::skills::Skill;
@@ -91,7 +91,8 @@ impl Agent {
     /// Creates a new agent with the given configuration and initial prompt messages.
     ///
     /// The agent is initialized with four default tools: Bash, Read, Edit, and Write.
-    /// A new session ID is generated automatically.
+    /// Attaching a read-only tool context via [`Self::with_tool_context`] removes
+    /// Edit and Write. A new session ID is generated automatically.
     pub fn new(config: ResolvedModelConfig, initial_messages: &[(Role, String)]) -> Self {
         Self {
             runner: AgentRunner::new(Backend::from_api_type(config.model_config.api_type)),
@@ -131,7 +132,15 @@ impl Agent {
     }
 
     /// Sets the directory context used for tool execution and sandboxing.
+    ///
+    /// Under the read-only sandbox policy, the Edit and Write tools are
+    /// removed from the registry: they mutate files in-process, outside the
+    /// OS sandbox that only wraps Bash, so they must not be offered at all
+    /// for the policy's no-mutation guarantee to hold.
     pub fn with_tool_context(mut self, context: Arc<ToolContext>) -> Self {
+        if context.sandbox_policy == SandboxPolicy::ReadOnly {
+            self.tools.retain_read_safe_tools();
+        }
         self.tool_context = context;
         self
     }

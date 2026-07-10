@@ -261,11 +261,11 @@ Commands executed by the Bash tool run inside an OS-level filesystem sandbox tha
 
 Use the `--sandbox` / `-s` CLI flag to select the sandbox policy:
 
-  | Value                | Behavior                                                                                                 |
-  | -------------------- | -------------------------------------------------------------------------------------------------------- |
-  | `read-only`          | Most restrictive: read access to workspace and system paths, no writes to workspace or toolchain caches. |
-  | `workspace-write`    | Default: read-write workspace with toolchain caches. Equivalent to the historical sandbox behavior.      |
-  | `danger-full-access` | No sandbox restrictions.                                                                                 |
+  | Value                | Behavior                                                                                                                                                                                       |
+  | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | `read-only`          | Most restrictive: read access to workspace and system paths, no writes to workspace or toolchain caches. The Edit and Write tools are disabled; the agent gets only Bash (sandboxed) and Read. |
+  | `workspace-write`    | Default: read-write workspace with toolchain caches. Equivalent to the historical sandbox behavior.                                                                                            |
+  | `danger-full-access` | No sandbox restrictions.                                                                                                                                                                       |
 
 ```bash
 cake --sandbox read-only "Audit this repo"
