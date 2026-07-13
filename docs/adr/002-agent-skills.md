@@ -1,7 +1,6 @@
 ---
-status: superseded
+status: accepted
 date: 2025-04-25
-superseded_by: adr-002-amendment-01
 ---
 
 # Agent Skills System (Original)
