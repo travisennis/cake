@@ -940,4 +940,102 @@ mod tests {
                 .contains("(allow file-read* (literal \"/\"))\n(allow file-read* (literal \"/\"))")
         );
     }
+
+    #[test]
+    fn test_profile_includes_linked_worktree_dirs() {
+        // Platform-appropriate enforcement test for linked worktree support.
+        // Creates a real git linked worktree, builds a SandboxConfig through
+        // the full resolution chain (build_with_policy), generates the Seatbelt
+        // profile, and verifies the profile contains allow rules for both the
+        // common .git dir and the per-worktree gitdir.
+        //
+        // This tests profile generation, not enforcement — it runs without
+        // sandbox-exec and is therefore deterministic on any macOS host.
+        let tmp = tempfile::tempdir().unwrap();
+        let main_repo = tmp.path().join("main");
+        let wt_path = tmp.path().join("linked-wt");
+
+        // Initialize main repo with a commit
+        let output = std::process::Command::new("git")
+            .args(["init", "--initial-branch=main"])
+            .arg(&main_repo)
+            .output()
+            .expect("git init must succeed");
+        assert!(output.status.success(), "git init failed");
+        std::fs::write(main_repo.join("README.md"), b"# test\n").unwrap();
+        let output = std::process::Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(&main_repo)
+            .output()
+            .expect("git add must succeed");
+        assert!(output.status.success(), "git add failed");
+        let output = std::process::Command::new("git")
+            .args(["commit", "-m", "initial"])
+            .current_dir(&main_repo)
+            .output()
+            .expect("git commit must succeed");
+        assert!(output.status.success(), "git commit failed");
+
+        // Create linked worktree
+        let output = std::process::Command::new("git")
+            .args(["worktree", "add", "--detach"])
+            .arg(&wt_path)
+            .arg("main")
+            .current_dir(&main_repo)
+            .output()
+            .expect("git worktree add must succeed");
+        assert!(output.status.success(), "git worktree add failed");
+
+        // Build sandbox config from the worktree using the full resolution chain
+        let config = SandboxConfig::build_with_policy(
+            SandboxPolicy::WorkspaceWrite,
+            &wt_path,
+            &[],
+            &[],
+            &[],
+            &[],
+        );
+
+        // Generate the Seatbelt profile from this config
+        let profile = MacOsSandbox::generate_profile(&config);
+
+        // The common .git directory must have a read-write subpath rule
+        let main_git = main_repo.join(".git").canonicalize().unwrap();
+        let common_rule = format!(
+            "(allow file-read* file-write* (subpath \"{}\"))",
+            main_git.display()
+        );
+        assert!(
+            profile.contains(&common_rule),
+            "profile must contain allow rule for common .git dir: {common_rule}"
+        );
+
+        // The per-worktree gitdir must also have a read-write subpath rule.
+        // Parse the exact path from the .git file to assert on the precise
+        // directory rather than any descendant.
+        let content = std::fs::read_to_string(wt_path.join(".git")).unwrap();
+        let gitdir_line = content
+            .lines()
+            .find(|l| l.trim().starts_with("gitdir:"))
+            .expect(".git file must contain gitdir:");
+        let gitdir_raw = gitdir_line
+            .strip_prefix("gitdir: ")
+            .or_else(|| gitdir_line.strip_prefix("gitdir:"))
+            .map(str::trim)
+            .unwrap();
+        let gitdir_path = if Path::new(gitdir_raw).is_relative() {
+            wt_path.join(gitdir_raw)
+        } else {
+            PathBuf::from(gitdir_raw)
+        };
+        let canonical_gitdir = gitdir_path.canonicalize().unwrap();
+        let wt_rule = format!(
+            "(allow file-read* file-write* (subpath \"{}\"))",
+            canonical_gitdir.display()
+        );
+        assert!(
+            profile.contains(&wt_rule),
+            "profile must contain allow rule for worktree gitdir: {wt_rule}"
+        );
+    }
 }

@@ -26,7 +26,7 @@ use std::sync::Arc;
 
 mod sandbox;
 
-pub use sandbox::{SandboxPolicy, resolve_sandbox_policy};
+pub use sandbox::{SandboxPolicy, resolve_linked_worktree_dirs, resolve_sandbox_policy};
 
 fn compute_temp_directories() -> Vec<PathBuf> {
     let mut dirs = Vec::new();

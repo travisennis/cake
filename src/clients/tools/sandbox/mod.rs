@@ -119,6 +119,12 @@ impl SandboxConfig {
         // Add temp directories
         writable.extend(temp_dirs.iter().cloned());
 
+        // If cwd is a linked git worktree (.git is a file pointing elsewhere),
+        // add the per-worktree gitdir and common git dir to the writable set
+        // so git commands can operate under the sandbox.
+        let linked_dirs = resolve_linked_worktree_dirs(cwd);
+        writable.extend(linked_dirs);
+
         // Add user home toolchain and integration paths
         if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
             Self::extend_with_toolchain_paths(&mut writable, &home);
@@ -708,6 +714,158 @@ pub(super) fn can_enforce_platform_sandbox() -> bool {
     std::path::Path::new("/usr/bin/sandbox-exec").exists() && MacOsSandbox::can_apply_profile()
 }
 
+/// Resolve git directories for a linked worktree, if the workspace
+/// `cwd/.git` is a file (created by `git worktree add`) rather than a
+/// directory.
+///
+/// Returns the per-worktree gitdir and the common git dir that git needs
+/// to operate. The caller adds these to the sandbox writable set so git
+/// commands (status, add, commit, etc.) can access HEAD, index, refs,
+/// objects, and config outside the workspace subtree.
+///
+/// If `.git` is not a file, returns an empty vec (silent no-op). If the
+/// gitdir cannot be parsed or the target directories don't exist, logs a
+/// warning and returns an empty vec so the session can start (the user
+/// will see the warning before the first git command fails).
+pub fn resolve_linked_worktree_dirs(cwd: &Path) -> Vec<PathBuf> {
+    let git_file = cwd.join(".git");
+    if !git_file.is_file() {
+        return Vec::new();
+    }
+
+    let content = match std::fs::read_to_string(&git_file) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(
+                "Cannot read .git file at {}: {}. Git commands inside a linked worktree may fail under the sandbox.",
+                git_file.display(),
+                e
+            );
+            return Vec::new();
+        },
+    };
+
+    // Parse the gitdir: line (must be absolute or relative to the .git file's directory)
+    let gitdir_line = content.lines().find(|line| {
+        let trimmed = line.trim();
+        trimmed.starts_with("gitdir:")
+    });
+
+    let gitdir_raw = if let Some(line) = gitdir_line {
+        // Extract everything after "gitdir:" and trim whitespace
+        let path_str = line
+            .strip_prefix("gitdir: ")
+            .or_else(|| line.strip_prefix("gitdir:"))
+            .map_or("", str::trim);
+        if path_str.is_empty() {
+            tracing::warn!(
+                ".git file at {} contains a gitdir: line with no path. Git commands inside a linked worktree may fail under the sandbox.",
+                git_file.display()
+            );
+            return Vec::new();
+        }
+        path_str.to_string()
+    } else {
+        tracing::warn!(
+            ".git file at {} does not contain a gitdir: line. Git commands inside a linked worktree may fail under the sandbox.",
+            git_file.display()
+        );
+        return Vec::new();
+    };
+
+    // Resolve relative paths against the workspace (the .git file's directory)
+    let gitdir_path = if Path::new(&gitdir_raw).is_relative() {
+        cwd.join(&gitdir_raw)
+    } else {
+        PathBuf::from(&gitdir_raw)
+    };
+
+    // Canonicalize to resolve any symlinks /.. components
+    let per_worktree_dir = match gitdir_path.canonicalize() {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(
+                "Linked worktree gitdir at {} (from .git file at {}) does not exist or cannot be resolved: {}. Git commands may fail under the sandbox.",
+                gitdir_path.display(),
+                git_file.display(),
+                e
+            );
+            return Vec::new();
+        },
+    };
+
+    // Determine the common git dir from commondir if present, or derive it
+    // from the per-worktree path structure.
+    let Some(common_dir) = resolve_worktree_commondir(&per_worktree_dir) else {
+        tracing::warn!(
+            "Cannot determine common git directory for linked worktree at {} (from .git file at {}). \
+             Git commands may fail under the sandbox.",
+            per_worktree_dir.display(),
+            git_file.display()
+        );
+        return Vec::new();
+    };
+
+    vec![per_worktree_dir, common_dir]
+}
+
+/// Resolve the common git directory from a per-worktree gitdir.
+///
+/// Reads the `commondir` file (which contains a relative or absolute path to
+/// the common directory) and resolves it against the per-worktree gitdir.
+///
+/// Git always writes a `commondir` file when creating a linked worktree.
+/// If the file is missing, empty, or its content cannot be resolved to a
+/// real directory, the function logs a warning and returns `None`. This
+/// ensures the common directory is resolved from metadata written by git
+/// itself, not inferred from directory layout.
+fn resolve_worktree_commondir(worktree_gitdir: &Path) -> Option<PathBuf> {
+    let commondir_file = worktree_gitdir.join("commondir");
+    let content = match std::fs::read_to_string(&commondir_file) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(
+                "Cannot read commondir file at {}: {}. \
+                 Git commands inside a linked worktree may fail under the sandbox.",
+                commondir_file.display(),
+                e
+            );
+            return None;
+        },
+    };
+
+    let commondir_path = content.trim();
+    if commondir_path.is_empty() {
+        tracing::warn!(
+            "commondir file at {} is empty. \
+             Git commands inside a linked worktree may fail under the sandbox.",
+            commondir_file.display()
+        );
+        return None;
+    }
+
+    let resolved = if Path::new(commondir_path).is_relative() {
+        // commondir is relative to the per-worktree gitdir
+        worktree_gitdir.join(commondir_path)
+    } else {
+        PathBuf::from(commondir_path)
+    };
+
+    match resolved.canonicalize() {
+        Ok(canonical) => Some(canonical),
+        Err(e) => {
+            tracing::warn!(
+                "commondir path '{}' (from {}) cannot be resolved: {}. \
+                 Git commands inside a linked worktree may fail under the sandbox.",
+                resolved.display(),
+                commondir_file.display(),
+                e
+            );
+            None
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::clients::tools::ToolContext;
@@ -1007,5 +1165,339 @@ mod tests {
                 );
             }
         });
+    }
+
+    #[test]
+    fn resolve_linked_worktree_normal_repo_returns_empty() {
+        // A normal repo with .git as a directory should return empty vec
+        let tmp = tempfile::tempdir().unwrap();
+        let git_dir = tmp.path().join(".git");
+        std::fs::create_dir(&git_dir).unwrap();
+
+        let dirs = super::resolve_linked_worktree_dirs(tmp.path());
+        assert!(dirs.is_empty(), "normal repo should return empty dirs");
+    }
+
+    #[test]
+    fn resolve_linked_worktree_no_git_returns_empty() {
+        // A directory with no .git at all should return empty vec
+        let tmp = tempfile::tempdir().unwrap();
+
+        let dirs = super::resolve_linked_worktree_dirs(tmp.path());
+        assert!(dirs.is_empty(), "missing .git should return empty dirs");
+    }
+
+    #[test]
+    fn resolve_linked_worktree_parses_gitdir_and_commondir() {
+        // Simulate a linked worktree where .git is a file pointing to an
+        // external per-worktree gitdir with a commondir.
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_git = tmp.path().join(".git");
+        let worktree_gitdir = tmp.path().join(".git-worktree-test");
+        let common_dir = tmp.path().join(".git-common-test");
+
+        // Create the worktree gitdir and common dir as real directories
+        std::fs::create_dir_all(&worktree_gitdir).unwrap();
+        std::fs::create_dir_all(&common_dir).unwrap();
+
+        // Write .git file (linked worktree marker) with an absolute path
+        std::fs::write(
+            &repo_git,
+            format!("gitdir: {}", worktree_gitdir.to_string_lossy()),
+        )
+        .unwrap();
+
+        // Write commondir with an absolute path to the common dir
+        std::fs::write(
+            worktree_gitdir.join("commondir"),
+            format!("{}\n", common_dir.to_string_lossy()),
+        )
+        .unwrap();
+
+        let dirs = super::resolve_linked_worktree_dirs(tmp.path());
+        assert_eq!(
+            dirs.len(),
+            2,
+            "should return per-worktree dir and common dir"
+        );
+
+        let canonical_worktree = worktree_gitdir.canonicalize().unwrap();
+        let canonical_common = common_dir.canonicalize().unwrap();
+        assert!(
+            dirs.contains(&canonical_worktree),
+            "per-worktree gitdir should be in writable set"
+        );
+        assert!(
+            dirs.contains(&canonical_common),
+            "common git dir should be in writable set"
+        );
+    }
+
+    #[test]
+    fn resolve_linked_worktree_warns_on_missing_gitdir() {
+        // Simulate a .git file with no gitdir: line
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_git = tmp.path().join(".git");
+        std::fs::write(&repo_git, "not a gitdir line\n").unwrap();
+
+        let dirs = super::resolve_linked_worktree_dirs(tmp.path());
+        assert!(dirs.is_empty(), "malformed .git should return empty dirs");
+    }
+
+    #[test]
+    fn resolve_linked_worktree_relative_gitdir() {
+        // Test that a relative path in the .git file is resolved correctly
+        //
+        // In a real linked worktree, the .git file is in the worktree root
+        // and points to <parent>/.git/worktrees/<name>. The worktree gitdir
+        // is under the parent's .git directory, not under the worktree.
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_git = tmp.path().join(".git");
+        let parent_git = tmp.path().join("parent/.git");
+        let worktree_gitdir = parent_git.join("worktrees/my-worktree");
+
+        std::fs::create_dir_all(&worktree_gitdir).unwrap();
+
+        // Write .git file with a relative path pointing into parent's .git
+        std::fs::write(&repo_git, "gitdir: parent/.git/worktrees/my-worktree\n").unwrap();
+
+        // Write commondir with a relative path ("../.." points to parent's .git,
+        // matching what git actually writes in a linked worktree)
+        std::fs::write(worktree_gitdir.join("commondir"), "../..\n").unwrap();
+
+        let dirs = super::resolve_linked_worktree_dirs(tmp.path());
+        assert_eq!(
+            dirs.len(),
+            2,
+            "should return per-worktree dir and common dir with relative paths"
+        );
+
+        let canonical_worktree = worktree_gitdir.canonicalize().unwrap();
+        let canonical_common = parent_git.canonicalize().unwrap();
+        assert!(
+            dirs.contains(&canonical_worktree),
+            "per-worktree gitdir should be in writable set"
+        );
+        assert!(
+            dirs.contains(&canonical_common),
+            "common git dir should be in writable set"
+        );
+    }
+
+    #[test]
+    fn resolve_linked_worktree_unreadable_gitdir() {
+        // Test with gitdir pointing to a non-existent path
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_git = tmp.path().join(".git");
+
+        std::fs::write(&repo_git, "gitdir: /nonexistent/path\n").unwrap();
+
+        let dirs = super::resolve_linked_worktree_dirs(tmp.path());
+        assert!(
+            dirs.is_empty(),
+            "should return empty when gitdir cannot be resolved"
+        );
+    }
+
+    #[test]
+    fn resolve_worktree_commondir_missing() {
+        // Test resolve_worktree_commondir with no commondir file
+        let tmp = tempfile::tempdir().unwrap();
+        let worktree_gitdir = tmp.path().join(".git/worktrees/missing");
+        std::fs::create_dir_all(&worktree_gitdir).unwrap();
+
+        let result = super::resolve_worktree_commondir(&worktree_gitdir);
+        assert!(result.is_none(), "missing commondir should return None");
+    }
+
+    #[test]
+    fn resolve_worktree_commondir_empty() {
+        // Test resolve_worktree_commondir with an empty commondir file
+        let tmp = tempfile::tempdir().unwrap();
+        let worktree_gitdir = tmp.path().join(".git/worktrees/empty-commondir");
+        std::fs::create_dir_all(&worktree_gitdir).unwrap();
+        std::fs::write(worktree_gitdir.join("commondir"), "").unwrap();
+
+        let result = super::resolve_worktree_commondir(&worktree_gitdir);
+        assert!(result.is_none(), "empty commondir should return None");
+    }
+
+    #[test]
+    fn resolve_worktree_commondir_unresolvable() {
+        // Test resolve_worktree_commondir with a path that can't be canonicalized
+        let tmp = tempfile::tempdir().unwrap();
+        let worktree_gitdir = tmp.path().join(".git/worktrees/bad-path");
+        std::fs::create_dir_all(&worktree_gitdir).unwrap();
+        std::fs::write(worktree_gitdir.join("commondir"), "/nonexistent/path\n").unwrap();
+
+        let result = super::resolve_worktree_commondir(&worktree_gitdir);
+        assert!(
+            result.is_none(),
+            "unresolvable commondir should return None"
+        );
+    }
+
+    #[test]
+    fn build_with_policy_includes_linked_worktree_dirs_in_writable() {
+        // Verify that build_with_policy adds linked worktree dirs to writable
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_git = tmp.path().join(".git");
+        let worktree_gitdir = tmp.path().join(".git-worktree-build");
+        let common_dir = tmp.path().join(".git-common-build");
+
+        std::fs::create_dir_all(&worktree_gitdir).unwrap();
+        std::fs::create_dir_all(&common_dir).unwrap();
+
+        std::fs::write(
+            &repo_git,
+            format!("gitdir: {}", worktree_gitdir.to_string_lossy()),
+        )
+        .unwrap();
+        std::fs::write(
+            worktree_gitdir.join("commondir"),
+            format!("{}\n", common_dir.to_string_lossy()),
+        )
+        .unwrap();
+
+        let config = SandboxConfig::build_with_policy(
+            SandboxPolicy::WorkspaceWrite,
+            tmp.path(),
+            &[],
+            &[],
+            &[],
+            &[],
+        );
+
+        let canonical_worktree = worktree_gitdir.canonicalize().unwrap();
+        let canonical_common = common_dir.canonicalize().unwrap();
+
+        assert!(
+            config.writable.contains(&canonical_worktree),
+            "per-worktree gitdir must be in writable"
+        );
+        assert!(
+            config.writable.contains(&canonical_common),
+            "common git dir must be in writable"
+        );
+    }
+
+    #[test]
+    fn resolve_linked_worktree_with_real_git_worktree() {
+        // Regression test using an actual git linked worktree created via
+        // `git worktree add`. This exercises the real git directory layout
+        // that users encounter when cake's workspace is a linked worktree.
+        //
+        // Coverage notes:
+        // - This covers externally-created worktrees (the `git worktree add`
+        //   path). Cake-managed worktrees (--worktree flag) route through the
+        //   same `SandboxConfig::build_with_policy` and `resolve_linked_worktree_dirs`
+        //   code — the .git file pointer and commondir resolution are identical
+        //   regardless of how the worktree was created.
+        // - Both the per-worktree gitdir (`<main>/.git/worktrees/<name>`) and
+        //   the common dir (`<main>/.git`) are resolved from metadata, not
+        //   assumed from path structure.
+        let tmp = tempfile::tempdir().unwrap();
+        let main_repo = tmp.path().join("main");
+        let wt_path = tmp.path().join("linked-worktree");
+
+        // Initialize main repo with a commit (required for git worktree add)
+        let output = std::process::Command::new("git")
+            .args(["init", "--initial-branch=main"])
+            .arg(&main_repo)
+            .output()
+            .expect("git init must succeed");
+        assert!(
+            output.status.success(),
+            "git init failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        // Create an initial commit
+        std::fs::write(main_repo.join("README.md"), b"# test\n").unwrap();
+        let output = std::process::Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(&main_repo)
+            .output()
+            .expect("git add must succeed");
+        assert!(
+            output.status.success(),
+            "git add failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let output = std::process::Command::new("git")
+            .args(["commit", "-m", "initial"])
+            .current_dir(&main_repo)
+            .output()
+            .expect("git commit must succeed");
+        assert!(
+            output.status.success(),
+            "git commit failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        // Create a linked worktree (detached HEAD to avoid branch conflict)
+        let output = std::process::Command::new("git")
+            .args(["worktree", "add", "--detach"])
+            .arg(&wt_path)
+            .arg("main")
+            .current_dir(&main_repo)
+            .output()
+            .expect("git worktree add must succeed");
+        assert!(
+            output.status.success(),
+            "git worktree add failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        // Sanity check: .git in the worktree must be a file
+        assert!(
+            wt_path.join(".git").is_file(),
+            ".git in linked worktree must be a file"
+        );
+
+        // Build sandbox config using the worktree as cwd
+        let config = SandboxConfig::build_with_policy(
+            SandboxPolicy::WorkspaceWrite,
+            &wt_path,
+            &[],
+            &[],
+            &[],
+            &[],
+        );
+
+        // The main repo's .git directory (common dir) must be in writable
+        let main_git = main_repo.join(".git").canonicalize().unwrap();
+        assert!(
+            config.writable.contains(&main_git),
+            "common .git dir ({}) must be in writable set",
+            main_git.display()
+        );
+
+        // Read the actual gitdir from the worktree's .git file and assert
+        // that exact path is in the writable set (not just any descendant).
+        let git_file_content =
+            std::fs::read_to_string(wt_path.join(".git")).expect(".git file must be readable");
+        let gitdir_line = git_file_content
+            .lines()
+            .find(|l| l.trim().starts_with("gitdir:"))
+            .expect(".git file must contain a gitdir: line");
+        let gitdir_raw = gitdir_line
+            .strip_prefix("gitdir: ")
+            .or_else(|| gitdir_line.strip_prefix("gitdir:"))
+            .map(str::trim)
+            .expect("gitdir: line must have a path");
+        let gitdir_path = if Path::new(gitdir_raw).is_relative() {
+            wt_path.join(gitdir_raw)
+        } else {
+            PathBuf::from(gitdir_raw)
+        };
+        let canonical_gitdir = gitdir_path
+            .canonicalize()
+            .expect("gitdir path must be resolvable");
+        assert!(
+            config.writable.contains(&canonical_gitdir),
+            "exact worktree gitdir ({}) parsed from .git file must be in writable set",
+            canonical_gitdir.display()
+        );
     }
 }

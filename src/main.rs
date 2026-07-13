@@ -18,6 +18,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use crate::cli::{CliOutputSink, CmdRunner, Commands, RunMode, SessionStorage, TurnResult};
+use crate::clients::resolve_linked_worktree_dirs;
 use crate::clients::{Agent, SandboxPolicy, ToolContext, resolve_sandbox_policy};
 use crate::config::settings::LoadedSettings;
 use crate::config::{
@@ -495,6 +496,23 @@ impl CodingAssistant {
             settings_dirs,
             sandbox_policy,
         );
+
+        // Early detection of linked worktree issues: warn at session start if
+        // the gitdir cannot be resolved. This fires before any Bash tool call,
+        // so the user sees the warning early rather than when git first fails.
+        //
+        // resolve_linked_worktree_dirs logs detailed warnings via tracing::warn!
+        // (file-only). If resolution fails (returns empty when .git is a file),
+        // also emit a user-visible stderr message since the tracing output is not
+        // shown in the terminal.
+        let linked_dirs = resolve_linked_worktree_dirs(current_dir);
+        if linked_dirs.is_empty() && current_dir.join(".git").is_file() {
+            eprintln!(
+                "warning: workspace is a linked git worktree but the worktree gitdir \
+                 could not be resolved. Git commands (status, add, commit) may fail \
+                 under the sandbox. See the cake log file for details."
+            );
+        }
 
         Self::log_skill_diagnostics(&skill_catalog);
 

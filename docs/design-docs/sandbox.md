@@ -141,6 +141,7 @@ The sandbox automatically includes:
 - SCM CLI paths: `~/.config/gh`, `~/.cache/gh`, `~/.local/share/gh`, `~/.local/state/gh`, `~/.config/glab-cli`, `~/.cache/glab-cli`, `~/.local/share/glab-cli`, `~/.local/state/glab-cli`
 - Runtime manager paths: `~/.config/mise`, `~/.local/share/mise`, `~/.local/state/mise`, `~/.cache/mise`, `~/.asdf`, `~/.volta`
 - sccache paths: `~/.cache/sccache`, `~/Library/Caches/sccache` (macOS)
+- Linked git worktree directories: when the workspace is a linked git worktree (`.git` is a file with a `gitdir:` pointer), the per-worktree gitdir and the common git directory are automatically resolved and added as read-write so that git commands (status, add, commit, etc.) can operate under the sandbox. If the gitdir cannot be resolved, a warning is logged at session start.
 
 All read-write paths are canonicalized (symlinks resolved) before being added to the sandbox policy.
 
