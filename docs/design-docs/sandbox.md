@@ -139,6 +139,7 @@ The sandbox automatically includes:
 - System temp directories (`$TMPDIR`, `/tmp`, `/var/tmp`)
 - User toolchain paths (`$CARGO_HOME` or `~/.cargo`, `$RUSTUP_HOME` or `~/.rustup`)
 - SCM CLI paths: `~/.config/gh`, `~/.cache/gh`, `~/.local/share/gh`, `~/.local/state/gh`, `~/.config/glab-cli`, `~/.cache/glab-cli`, `~/.local/share/glab-cli`, `~/.local/state/glab-cli`
+- AI coding assistant CLI paths: `~/.codex`, `~/.cache/codex`, `~/.local/share/codex`, `~/.local/state/codex`
 - Runtime manager paths: `~/.config/mise`, `~/.local/share/mise`, `~/.local/state/mise`, `~/.cache/mise`, `~/.asdf`, `~/.volta`
 - sccache paths: `~/.cache/sccache`, `~/Library/Caches/sccache` (macOS)
 - Linked git worktree directories: when the workspace is a linked git worktree (`.git` is a file with a `gitdir:` pointer), the per-worktree gitdir and the common git directory are automatically resolved and added as read-write so that git commands (status, add, commit, etc.) can operate under the sandbox. If the gitdir cannot be resolved, a warning is logged at session start.
