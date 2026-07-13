@@ -128,6 +128,24 @@ Snapshot tests use `insta`. Run `just snapshots` after changing serialized outpu
 
 See [docs/design-docs/tools.md](docs/design-docs/tools.md) for testing patterns (tools use `tempfile` for isolation).
 
+#### macOS Sandbox Integration Tests
+
+On macOS, the sandbox integration tests (tests with names starting with `test_sandbox_` in `bash_tests.rs`) can skip themselves when the platform sandbox is unavailable. This is the desired default for local runs and CI environments that cannot enforce Seatbelt.
+
+For security-sensitive changes that touch sandbox policy or enforcement, use the following command to require sandbox tests to actually execute and fail if enforcement is unavailable:
+
+```bash
+CAKE_REQUIRE_SANDBOX_TESTS=1 cargo test --quiet -- test_sandbox_
+```
+
+With `CAKE_REQUIRE_SANDBOX_TESTS=1`:
+
+- Every sandbox integration test must either pass or fail; skipped tests become failures with an actionable error message.
+- Tests that are not sandbox-related (binary data detection, output truncation, etc.) are unaffected.
+- The `test_sandbox_` test name filter is used in the canonical command to keep the run focused.
+
+Without this variable, existing behavior is preserved: unsandboxed environments print skip messages and return success.
+
 ### Verification Expectations
 
 For Rust changes:

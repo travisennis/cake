@@ -6,17 +6,56 @@ use crate::clients::tools::sandbox::SandboxPolicy;
 #[cfg(target_os = "macos")]
 use std::sync::Arc;
 
+/// Check whether `CAKE_REQUIRE_SANDBOX_TESTS` is set to a truthy value,
+/// indicating that sandbox integration tests must run (and fail if the
+/// sandbox is unavailable).
+///
+/// Accepted truthy values: `1`, `true`, `yes`, `on`.
+#[cfg(target_os = "macos")]
+fn is_sandbox_tests_required() -> bool {
+    parse_sandbox_tests_required(std::env::var("CAKE_REQUIRE_SANDBOX_TESTS").ok().as_deref())
+}
+
+/// Pure parsing of the optional value for `CAKE_REQUIRE_SANDBOX_TESTS`.
+/// Extracted from `is_sandbox_tests_required()` for focused unit testing
+/// without environment variable interference.
+#[cfg(target_os = "macos")]
+fn parse_sandbox_tests_required(value: Option<&str>) -> bool {
+    matches!(value, Some("1" | "true" | "yes" | "on"))
+}
+
+/// Skip the current macOS sandbox integration test when the platform
+/// sandbox cannot be enforced, unless `CAKE_REQUIRE_SANDBOX_TESTS` is set.
+///
+/// Returns `true` to indicate the test should be skipped.
+/// When the sandbox is unavailable *and* tests are required, panics with
+/// an actionable message so the test fails rather than silently passing.
 #[cfg(target_os = "macos")]
 fn skip_if_sandbox_unavailable() -> bool {
+    let required = is_sandbox_tests_required();
+
     if super::super::sandbox::is_sandbox_disabled() {
-        eprintln!("skipping macOS sandbox integration test: CAKE_SANDBOX disables sandboxing");
+        let msg = "skipping macOS sandbox integration test: CAKE_SANDBOX disables sandboxing";
+        assert!(
+            !required,
+            "sandbox integration tests are required via CAKE_REQUIRE_SANDBOX_TESTS=1 \
+             but CAKE_SANDBOX disables sandboxing; unset CAKE_SANDBOX or set \
+             CAKE_REQUIRE_SANDBOX_TESTS=0 to skip"
+        );
+        eprintln!("{msg}");
         return true;
     }
 
     if !super::super::sandbox::can_enforce_platform_sandbox() {
-        eprintln!(
-            "skipping macOS sandbox integration test: sandbox-exec cannot apply profiles in this process context"
+        let msg = "skipping macOS sandbox integration test: sandbox-exec cannot apply profiles \
+                    in this process context";
+        assert!(
+            !required,
+            "sandbox integration tests are required via CAKE_REQUIRE_SANDBOX_TESTS=1 \
+             but sandbox-exec cannot apply profiles in this process context; see the \
+             macOS sandbox design doc for requirements"
         );
+        eprintln!("{msg}");
         return true;
     }
 
@@ -667,6 +706,36 @@ async fn test_sandbox_linked_worktree_git_operations() {
         "git commit should show 1 file changed in linked worktree: {}",
         result.output
     );
+}
+
+// ===========================================================================
+// CAKE_REQUIRE_SANDBOX_TESTS Parsing Tests
+// ===========================================================================
+
+#[cfg(target_os = "macos")]
+#[test]
+fn require_sandbox_tests_defaults_to_false_when_unset() {
+    assert!(!parse_sandbox_tests_required(None));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn require_sandbox_tests_false_for_unrecognized_values() {
+    assert!(!parse_sandbox_tests_required(Some("0")));
+    assert!(!parse_sandbox_tests_required(Some("false")));
+    assert!(!parse_sandbox_tests_required(Some("no")));
+    assert!(!parse_sandbox_tests_required(Some("off")));
+    assert!(!parse_sandbox_tests_required(Some("maybe")));
+    assert!(!parse_sandbox_tests_required(Some("")));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn require_sandbox_tests_true_for_truthy_values() {
+    assert!(parse_sandbox_tests_required(Some("1")));
+    assert!(parse_sandbox_tests_required(Some("true")));
+    assert!(parse_sandbox_tests_required(Some("yes")));
+    assert!(parse_sandbox_tests_required(Some("on")));
 }
 
 // ===========================================================================
