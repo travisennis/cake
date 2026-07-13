@@ -326,14 +326,20 @@ async fn execute_bash_with_args(
         .stderr(Stdio::piped())
         .kill_on_drop(true);
 
-    // Apply sandbox if enabled
-    if use_sandbox {
+    // Apply sandbox if enabled.
+    // Keep the guard alive until the child has finished so sandbox
+    // resources (e.g., macOS temp profile files) are cleaned up
+    // deterministically.
+    let _sandbox_guard = if use_sandbox {
         if let Some(strategy) = super::sandbox::detect_platform()? {
-            strategy.apply(&mut command, &sandbox_config)?;
+            Some(strategy.apply(&mut command, &sandbox_config)?)
+        } else {
+            None
         }
     } else {
         tracing::debug!("Sandbox disabled; running without filesystem restrictions");
-    }
+        None
+    };
 
     // Spawn the command with piped stdout/stderr for streaming
     let mut child = command

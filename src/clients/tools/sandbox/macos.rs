@@ -5,7 +5,7 @@
 //! The profile uses a deny-default policy: everything is denied unless
 //! explicitly allowed.
 
-use crate::clients::tools::sandbox::{SandboxConfig, SandboxPolicy, SandboxStrategy};
+use crate::clients::tools::sandbox::{SandboxConfig, SandboxGuard, SandboxPolicy, SandboxStrategy};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Output, Stdio};
@@ -396,13 +396,15 @@ impl SandboxStrategy for MacOsSandbox {
         &self,
         command: &mut tokio::process::Command,
         config: &SandboxConfig,
-    ) -> Result<(), String> {
+    ) -> Result<SandboxGuard, String> {
         let profile = Self::generate_profile(config);
         tracing::debug!("Generated sandbox profile:\n{profile}");
 
-        // Write profile to temp file — persist so sandbox-exec can read it at spawn time
+        // Write profile to temp file — keep alive via SandboxGuard so
+        // sandbox-exec can read it at spawn time, then clean up
+        // deterministically when the guard is dropped after execution.
         let temp_file = Self::write_profile_to_temp(&profile)?;
-        let profile_path = temp_file.into_temp_path();
+        let profile_path = temp_file.path().to_path_buf();
 
         // Get the original command arguments
         let original_args: Vec<String> = command
@@ -415,7 +417,7 @@ impl SandboxStrategy for MacOsSandbox {
         // Reconfigure the command to use sandbox-exec
         *command = tokio::process::Command::new("/usr/bin/sandbox-exec");
 
-        command.arg("-f").arg(profile_path.as_os_str());
+        command.arg("-f").arg(&profile_path);
 
         // Add the original program (bash) and its arguments
         command.arg("bash");
@@ -433,13 +435,11 @@ impl SandboxStrategy for MacOsSandbox {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
 
-        // Leak the TempPath so the file persists until process exit.
-        // The OS will clean up temp files.
-        std::mem::forget(profile_path);
-
         tracing::debug!("Sandboxed command configured with deny-default profile");
 
-        Ok(())
+        // Return the temp file in a guard so it stays alive through spawn
+        // and is cleaned up when dropped.
+        Ok(SandboxGuard::new(temp_file))
     }
 }
 
@@ -555,12 +555,14 @@ mod tests {
         let mut command = tokio::process::Command::new("bash");
         command.arg("-c").arg("pwd").current_dir(&expected_cwd);
 
-        MacOsSandbox.apply(&mut command, &test_config()).unwrap();
+        let guard = MacOsSandbox.apply(&mut command, &test_config()).unwrap();
 
         assert_eq!(
             command.as_std().get_current_dir(),
             Some(expected_cwd.as_path())
         );
+        // Guard falls out of scope, cleaning up the temp profile file.
+        drop(guard);
     }
 
     #[test]

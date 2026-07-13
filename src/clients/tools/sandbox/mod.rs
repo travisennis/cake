@@ -623,9 +623,46 @@ fn dedup_vec(mut paths: Vec<PathBuf>) -> Vec<PathBuf> {
     paths
 }
 
+/// Guard returned by [`SandboxStrategy::apply`] that keeps sandbox resources
+/// (e.g., temporary Seatbelt profile files on macOS) alive for the duration
+/// of command execution. When the guard is dropped, any held resources are
+/// cleaned up deterministically.
+pub(super) struct SandboxGuard {
+    #[expect(
+        dead_code,
+        reason = "field is read only on Drop; it holds the cleanup resource"
+    )]
+    inner: Option<Box<dyn std::any::Any + Send>>,
+}
+
+impl SandboxGuard {
+    /// Create an empty guard (no cleanup needed).
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "used only on Linux where LandlockSandbox needs a no-op guard"
+        )
+    )]
+    pub(super) const fn empty() -> Self {
+        Self { inner: None }
+    }
+
+    /// Create a guard that owns a cleanup resource.
+    pub(super) fn new<T: Send + 'static>(resource: T) -> Self {
+        Self {
+            inner: Some(Box::new(resource)),
+        }
+    }
+}
+
 /// Platform-specific sandbox strategy trait
 pub(super) trait SandboxStrategy: Send + Sync {
     /// Wrap the given Command with sandbox restrictions.
+    ///
+    /// Returns a [`SandboxGuard`] that must be kept alive for the duration
+    /// of command execution so any cleanup resources (e.g., temp profile
+    /// files on macOS) are not removed prematurely.
     ///
     /// On macOS: replace the command with `sandbox-exec -f <profile> bash -c <cmd>`
     /// On Linux: apply Landlock rules before spawning
@@ -633,7 +670,7 @@ pub(super) trait SandboxStrategy: Send + Sync {
         &self,
         command: &mut tokio::process::Command,
         config: &SandboxConfig,
-    ) -> Result<(), String>;
+    ) -> Result<SandboxGuard, String>;
 }
 
 /// Detect the appropriate sandbox strategy for the current platform.

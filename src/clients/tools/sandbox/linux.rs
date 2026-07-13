@@ -6,7 +6,7 @@
 //! This implementation uses `CommandExt::pre_exec` to apply Landlock rules
 //! in the child process after `fork()` but before `exec()`.
 
-use crate::clients::tools::sandbox::{SandboxConfig, SandboxStrategy};
+use crate::clients::tools::sandbox::{SandboxConfig, SandboxGuard, SandboxStrategy};
 
 /// Linux sandbox strategy using Landlock LSM
 #[derive(Debug, Clone, Copy)]
@@ -106,7 +106,7 @@ impl SandboxStrategy for LandlockSandbox {
         &self,
         command: &mut tokio::process::Command,
         config: &SandboxConfig,
-    ) -> Result<(), String> {
+    ) -> Result<SandboxGuard, String> {
         let config = config.clone();
         // SAFETY: `pre_exec` runs in the child process immediately before
         // `exec`; this closure only installs Landlock rules for that child.
@@ -114,7 +114,7 @@ impl SandboxStrategy for LandlockSandbox {
             command.pre_exec(move || Self::apply_landlock_rules(&config));
         }
 
-        Ok(())
+        Ok(SandboxGuard::empty())
     }
 }
 
