@@ -410,6 +410,7 @@ impl SandboxStrategy for MacOsSandbox {
             .get_args()
             .map(|s| s.to_string_lossy().into_owned())
             .collect();
+        let original_cwd = command.as_std().get_current_dir().map(Path::to_path_buf);
 
         // Reconfigure the command to use sandbox-exec
         *command = tokio::process::Command::new("/usr/bin/sandbox-exec");
@@ -420,6 +421,10 @@ impl SandboxStrategy for MacOsSandbox {
         command.arg("bash");
         for arg in original_args {
             command.arg(arg);
+        }
+
+        if let Some(cwd) = original_cwd {
+            command.current_dir(cwd);
         }
 
         // Re-apply stdio configuration
@@ -542,6 +547,20 @@ mod tests {
         let profile = MacOsSandbox::generate_profile(&test_config());
 
         assert!(profile.contains("(allow file-read* (literal \"/\"))"));
+    }
+
+    #[test]
+    fn apply_preserves_command_current_directory() {
+        let expected_cwd = PathBuf::from("/workspace");
+        let mut command = tokio::process::Command::new("bash");
+        command.arg("-c").arg("pwd").current_dir(&expected_cwd);
+
+        MacOsSandbox.apply(&mut command, &test_config()).unwrap();
+
+        assert_eq!(
+            command.as_std().get_current_dir(),
+            Some(expected_cwd.as_path())
+        );
     }
 
     #[test]

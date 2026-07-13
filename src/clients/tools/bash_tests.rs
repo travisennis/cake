@@ -440,6 +440,236 @@ async fn test_sandbox_danger_full_access_allows_write_outside_cwd() {
 }
 
 // ===========================================================================
+// Linked Worktree Sandbox Tests (task 260)
+// ===========================================================================
+
+/// Verify git operations (status, add, commit) succeed in a real linked
+/// worktree under an enforced macOS Seatbelt sandbox.
+///
+/// This integration test creates a real git repository with a linked worktree
+/// whose per-worktree gitdir and common dir are outside the workspace subtree,
+/// then executes git commands through cake's sandboxed execution path.
+///
+/// Coverage notes:
+/// - The test uses an externally-created worktree (`git worktree add`).
+///   Cake-managed worktrees (--worktree flag) route through the same
+///   `SandboxConfig::build_with_policy` and `resolve_linked_worktree_dirs`
+///   code path — the .git file pointer and commondir resolution are
+///   identical regardless of how the worktree was created.
+/// - Both the per-worktree gitdir and the common git dir are explicitly
+///   verified to be outside the workspace subtree.
+#[cfg(target_os = "macos")]
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "integration test: setup, git init, worktree creation, path verification, and three git operations through sandbox"
+)]
+async fn test_sandbox_linked_worktree_git_operations() {
+    if skip_if_sandbox_unavailable() {
+        return;
+    }
+
+    let process_cwd = std::env::current_dir().expect("current directory must be available");
+    let fixture_parent = process_cwd
+        .parent()
+        .expect("repository must have a parent directory");
+    let fixture = tempfile::Builder::new()
+        .prefix("cake-linked-worktree-")
+        .tempdir_in(fixture_parent)
+        .expect("should create fixture outside the workspace");
+    let main_repo = fixture.path().join("main");
+    let wt_path = fixture.path().join("linked-worktree");
+
+    // Initialize main repo with a commit (required for git worktree add)
+    let output = std::process::Command::new("git")
+        .args(["init", "--initial-branch=main"])
+        .arg(&main_repo)
+        .output()
+        .expect("git init must succeed");
+    assert!(
+        output.status.success(),
+        "git init failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Create an initial commit
+    std::fs::write(main_repo.join("README.md"), b"# test\n").unwrap();
+    let output = std::process::Command::new("git")
+        .args(["add", "README.md"])
+        .current_dir(&main_repo)
+        .output()
+        .expect("git add must succeed");
+    assert!(
+        output.status.success(),
+        "git add failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let output = std::process::Command::new("git")
+        .args([
+            "-c",
+            "user.name=Cake Test",
+            "-c",
+            "user.email=cake-test@example.invalid",
+            "commit",
+            "-m",
+            "initial",
+        ])
+        .current_dir(&main_repo)
+        .output()
+        .expect("git commit must succeed");
+    assert!(
+        output.status.success(),
+        "git commit failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Create a linked worktree (detached HEAD to avoid branch conflict)
+    let output = std::process::Command::new("git")
+        .args(["worktree", "add", "--detach"])
+        .arg(&wt_path)
+        .arg("main")
+        .current_dir(&main_repo)
+        .output()
+        .expect("git worktree add must succeed");
+    assert!(
+        output.status.success(),
+        "git worktree add failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Sanity check: .git in the worktree must be a file
+    assert!(
+        wt_path.join(".git").is_file(),
+        ".git in linked worktree must be a file"
+    );
+
+    // Verify per-worktree gitdir and common dir are outside the workspace
+    // subtree (the linked worktree itself).
+    let git_file_content =
+        std::fs::read_to_string(wt_path.join(".git")).expect(".git file must be readable");
+    let gitdir_line = git_file_content
+        .lines()
+        .find(|l| l.trim().starts_with("gitdir:"))
+        .expect(".git file must contain a gitdir: line");
+    let gitdir_raw = gitdir_line
+        .strip_prefix("gitdir: ")
+        .or_else(|| gitdir_line.strip_prefix("gitdir:"))
+        .map(str::trim)
+        .expect("gitdir: line must have a path");
+    let gitdir_path = if std::path::Path::new(gitdir_raw).is_relative() {
+        wt_path.join(gitdir_raw)
+    } else {
+        std::path::PathBuf::from(gitdir_raw)
+    };
+    let canonical_gitdir = gitdir_path
+        .canonicalize()
+        .expect("gitdir path must be resolvable");
+
+    // Read commondir from the worktree gitdir
+    let commondir_content = std::fs::read_to_string(canonical_gitdir.join("commondir"))
+        .expect("commondir file must be readable");
+    let commondir_raw = commondir_content.trim();
+    let common_dir_path = if std::path::Path::new(commondir_raw).is_relative() {
+        canonical_gitdir.join(commondir_raw)
+    } else {
+        std::path::PathBuf::from(commondir_raw)
+    };
+    let canonical_common = common_dir_path
+        .canonicalize()
+        .expect("common dir must be resolvable");
+
+    // Assert both are outside the worktree and the sandbox's broad temp grants.
+    // Their writes must therefore depend on linked-worktree resolution.
+    let canonical_wt = wt_path
+        .canonicalize()
+        .expect("worktree path must be canonicalizable");
+    assert!(
+        !canonical_gitdir.starts_with(&canonical_wt),
+        "per-worktree gitdir should be outside the workspace subtree"
+    );
+    assert!(
+        !canonical_common.starts_with(&canonical_wt),
+        "common git dir should be outside the workspace subtree"
+    );
+
+    // Create a ToolContext with cwd set to the linked worktree
+    let mut context = ToolContext::from_current_process();
+    context.cwd = wt_path.clone();
+    for temp_dir in &context.temp_dirs {
+        let canonical_temp = temp_dir.canonicalize().unwrap_or_else(|_| temp_dir.clone());
+        assert!(
+            !canonical_gitdir.starts_with(&canonical_temp),
+            "per-worktree gitdir must not inherit a broad temp-directory grant"
+        );
+        assert!(
+            !canonical_common.starts_with(&canonical_temp),
+            "common git dir must not inherit a broad temp-directory grant"
+        );
+    }
+
+    // ====================================================================
+    // git status
+    // ====================================================================
+    let args = r#"{"command": "git status"}"#;
+    let result = Box::pin(execute_bash(&context, args))
+        .await
+        .expect("git status should succeed in linked worktree");
+    assert!(
+        result.output.contains("[exit:0 |"),
+        "git status should exit 0 in linked worktree: {}",
+        result.output
+    );
+    assert!(
+        result.output.contains("nothing to commit"),
+        "git status should show clean tree in linked worktree: {}",
+        result.output
+    );
+
+    // ====================================================================
+    // Create new file, git add, git commit
+    // ====================================================================
+    // Create a new file via the sandbox
+    let args = r#"{"command": "echo 'new content' > new_file.md"}"#;
+    let result = Box::pin(execute_bash(&context, args))
+        .await
+        .expect("echo to new file should succeed in linked worktree");
+    assert!(
+        result.output.contains("[exit:0 |"),
+        "echo should succeed: {}",
+        result.output
+    );
+
+    // git add the new file
+    let args = r#"{"command": "git add new_file.md"}"#;
+    let result = Box::pin(execute_bash(&context, args))
+        .await
+        .expect("git add should succeed in linked worktree");
+    assert!(
+        result.output.contains("[exit:0 |"),
+        "git add should exit 0 in linked worktree: {}",
+        result.output
+    );
+
+    // git commit with inline user config (no global git config needed
+    // since the sandbox may restrict access to ~/.gitconfig)
+    let args = r#"{"command": "git -c 'user.name=Cake Test' -c user.email=cake-test@example.invalid commit -m 'test commit in linked worktree'"}"#;
+    let result = Box::pin(execute_bash(&context, args))
+        .await
+        .expect("git commit should succeed in linked worktree");
+    assert!(
+        result.output.contains("[exit:0 |"),
+        "git commit should exit 0 in linked worktree: {}",
+        result.output
+    );
+    assert!(
+        result.output.contains("1 file changed"),
+        "git commit should show 1 file changed in linked worktree: {}",
+        result.output
+    );
+}
+
+// ===========================================================================
 // Binary Data Detection Tests
 // ===========================================================================
 
