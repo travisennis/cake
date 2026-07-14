@@ -156,11 +156,11 @@ This allows creating new files in new subdirectories while maintaining security.
 
 **Truncated Output**:
 
-When command output exceeds the 50KB inline limit, the full output is saved to a temporary file and a head+tail preview is returned. The preview shows the first \~12.5KB and last \~12.5KB of the output:
+When command output exceeds the 50KB inline limit, the full output is saved to a secure per-user temporary file and a head+tail preview is returned. On Unix the directory is `<temp_dir>/cake-<uid>` with `0o700` permissions so other local users cannot pre-create the directory or read captured output. The preview shows the first \~12.5KB and last \~12.5KB of the output:
 
 ```
 [Output too long — 75000 bytes, 1500 lines.]
-Full output saved to: /tmp/cake/bash_output_<uuid>.txt
+Full output saved to: /tmp/cake-1000/bash_output_<uuid>.txt
 You can search it with `grep` or view portions with `head`/`tail`.
 Consider reformulating the command to produce less output.
 
@@ -218,7 +218,7 @@ The Bash tool automatically detects binary output and prevents returning corrupt
 
 When binary output is detected:
 
-1. The data is saved to a temp file in `/tmp/cake/bash_binary_<uuid>`
+1. The data is saved to a secure per-user temp file in `<temp_dir>/cake-<uid>/bash_binary_<uuid>` (directory created with mode `0o700` on Unix)
 2. MIME type is detected with the maintained `infer` content-signature database when the format is recognized
 3. A user-friendly message is returned with the file path and suggested tools for inspection (`file`, `hexdump`, `xxd`)
 
@@ -227,7 +227,7 @@ Example binary output message:
 ```
 [Binary output detected - 12345 bytes (12.1 KB)]
 Detected type: image/png
-Binary data saved to: /tmp/cake/bash_binary_abc123
+Binary data saved to: /tmp/cake-1000/bash_binary_abc123
 The command produced binary output which cannot be displayed as text.
 You can inspect the file with appropriate tools (e.g., `file`, `hexdump`, `xxd`).
 

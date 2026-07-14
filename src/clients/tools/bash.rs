@@ -1,5 +1,6 @@
 use serde::Deserialize;
 use std::process::Stdio;
+use std::sync::OnceLock;
 use std::time::Instant;
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
@@ -175,6 +176,157 @@ fn format_kib_tenths(size_bytes: usize) -> String {
     )
 }
 
+// =============================================================================
+// Secure temp directory for Bash overflow / binary output artifacts
+// =============================================================================
+
+/// Return a secure per-user temporary directory for Bash output files,
+/// creating it on first call and caching the path for the lifetime of the
+/// process.
+///
+/// On Unix this creates `<temp_dir>/cake-<uid>-<random>` with `0o700`
+/// permissions. The random suffix (64 bits of entropy) prevents pre-creation
+/// attacks on shared sticky-bit temp directories: an attacker cannot predict
+/// the full path and therefore cannot create a directory or symlink that would
+/// cause permanent denial of service or ownership validation failure. The path
+/// is cached after first creation so subsequent calls are instant and
+/// consistent within a single process invocation.
+///
+/// On non-Unix platforms it falls back to `<temp_dir>/cake`.
+///
+/// Returns an error when the secure directory cannot be created or validated.
+/// Callers fail closed (do not fall back to an unvalidated shared path) so that
+/// captured output is never written to an attacker-controlled location.
+fn bash_temp_output_dir() -> std::io::Result<&'static std::path::Path> {
+    static DIR: OnceLock<std::path::PathBuf> = OnceLock::new();
+
+    // Fast path: already initialised this session.
+    if let Some(dir) = DIR.get() {
+        // Revalidate: a temp cleaner or attacker may have removed, replaced,
+        // or changed the directory since the last call.  Using only `exists()`
+        // is insufficient because a symlink replacement would pass the check.
+        // Full validation (non-following metadata, ownership, permissions)
+        // ensures the path is still a secure directory before reuse.
+        ensure_secure_temp_dir(dir)?;
+        return Ok(dir.as_path());
+    }
+
+    // Create the secure temp directory (may fail with io::Error).
+    let dir = create_secure_temp_dir()?;
+
+    // Cache it.  If another thread beat us, theirs is fine too — the
+    // extra directory is unused and will be cleaned up naturally.
+    Ok(DIR.get_or_init(|| dir).as_path())
+}
+
+/// Create a secure temp directory for Bash output artifacts.
+///
+/// On Unix, generates an unguessable path `<temp_dir>/cake-<uid>-<random>`
+/// and creates it with `0o700` permissions. On non-Unix, creates
+/// `<temp_dir>/cake`.
+#[cfg(unix)]
+fn create_secure_temp_dir() -> std::io::Result<std::path::PathBuf> {
+    // Generate an unguessable directory name using 64 bits of randomness
+    // from a UUID.  An attacker on a shared sticky-bit temp directory like
+    // `/tmp` cannot pre-create the full path because they cannot predict
+    // the random suffix.
+    let random_part = uuid::Uuid::new_v4().as_u128();
+    let suffix = format!("{:016x}", (random_part >> 64) as u64);
+
+    // SAFETY: `getuid()` is a simple system call with no safety requirements.
+    let uid = unsafe { libc::getuid() };
+    let dir = std::env::temp_dir().join(format!("cake-{uid}-{suffix}"));
+
+    std::fs::create_dir_all(&dir)?;
+
+    // Delegate to the shared validator which enforces ownership and mode.
+    ensure_secure_temp_dir(&dir)?;
+
+    Ok(dir)
+}
+
+/// Validate or recreate the cached secure temp directory before reuse.
+///
+/// Uses non-following `symlink_metadata` to detect symlink replacements:
+/// an attacker who replaces the directory with a symlink to another location
+/// cannot bypass validation because the check operates on the link itself,
+/// not its target.  Validates ownership (must match the current user) and
+/// enforces `0o700` permissions on every call.
+///
+/// On non-Unix platforms this simply re-creates the directory if missing.
+#[cfg(unix)]
+fn ensure_secure_temp_dir(dir: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    // SAFETY: `getuid()` is a simple system call with no safety requirements.
+    let uid = unsafe { libc::getuid() };
+
+    match std::fs::symlink_metadata(dir) {
+        Ok(md) if md.file_type().is_symlink() => {
+            // Attacker replaced our directory with a symlink — remove it
+            // and create a real directory in its place.
+            std::fs::remove_file(dir)?;
+            std::fs::create_dir_all(dir)?;
+        },
+        Ok(md) if md.is_dir() => {
+            // Real directory exists — validate ownership.
+            if md.uid() != uid {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!(
+                        "directory '{}' is owned by uid {} but expected {uid}",
+                        dir.display(),
+                        md.uid()
+                    ),
+                ));
+            }
+            // Fix permissions if they drifted.
+            let mut perms = md.permissions();
+            if perms.mode() & 0o777 != 0o700 {
+                perms.set_mode(0o700);
+                std::fs::set_permissions(dir, perms)?;
+            }
+            return Ok(());
+        },
+        Ok(_) => {
+            // Exists but is neither a symlink nor a directory.
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!("'{}' exists but is not a directory", dir.display()),
+            ));
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // Directory vanished — recreate it.
+            std::fs::create_dir_all(dir)?;
+        },
+        Err(e) => return Err(e),
+    }
+
+    // Set permissions on a freshly created path (symlink was removed or
+    // directory was recreated from scratch).
+    let md = std::fs::symlink_metadata(dir)?;
+    let mut perms = md.permissions();
+    perms.set_mode(0o700);
+    std::fs::set_permissions(dir, perms)?;
+
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn ensure_secure_temp_dir(dir: &std::path::Path) -> std::io::Result<()> {
+    if !dir.exists() {
+        std::fs::create_dir_all(dir)?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn create_secure_temp_dir() -> std::io::Result<std::path::PathBuf> {
+    let dir = std::env::temp_dir().join("cake");
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
 /// Create a result message for binary output, saving the data to a temp file.
 fn handle_binary_output(
     data: &[u8],
@@ -188,15 +340,29 @@ fn handle_binary_output(
     // Try to detect MIME type using the `file` command if available
     let mime_type = detect_mime_type(data);
 
-    // Save binary data to a temp file
-    let tmp_dir = std::env::temp_dir().join("cake");
-    _ = std::fs::create_dir_all(&tmp_dir);
-    let file_name = format!("bash_binary_{}", uuid::Uuid::new_v4());
-    let tmp_path = tmp_dir.join(&file_name);
+    // Try to save binary data to a secure temp file.
+    // Fail closed: if the directory cannot be created, report the error
+    // rather than writing to an unvalidated shared path.
+    let footer = format_metadata_suffix(exit_code, elapsed_ms, warn_exit_zero_stderr);
+
+    let tmp_path = match bash_temp_output_dir() {
+        Ok(dir) => dir.join(format!("bash_binary_{}", uuid::Uuid::new_v4())),
+        Err(e) => {
+            return format!(
+                "[Binary output detected - {size_bytes} bytes ({size_kb} KB)]\n\
+                 Detected type: {}\n\
+                 Failed to save binary data to temp file: could not create\
+                 secure directory: {e}\n\
+                 The command produced binary output which cannot be displayed as text.\n\
+                 {}",
+                mime_type.unwrap_or("unknown"),
+                footer
+            );
+        },
+    };
 
     match std::fs::write(&tmp_path, data) {
         Ok(()) => {
-            let footer = format_metadata_suffix(exit_code, elapsed_ms, warn_exit_zero_stderr);
             format!(
                 "[Binary output detected - {size_bytes} bytes ({size_kb} KB)]\n\
                  Detected type: {}\n\
@@ -210,7 +376,6 @@ fn handle_binary_output(
             )
         },
         Err(e) => {
-            let footer = format_metadata_suffix(exit_code, elapsed_ms, warn_exit_zero_stderr);
             format!(
                 "[Binary output detected - {size_bytes} bytes ({size_kb} KB)]\n\
                  Detected type: {}\n\
@@ -496,47 +661,56 @@ pub(super) fn truncate_output(
     let total_bytes = output.len();
     let total_lines = output.lines().count();
 
-    // Try to write the full output to a temp file so the agent can search it.
-    let tmp_dir = std::env::temp_dir().join("cake");
-    _ = std::fs::create_dir_all(&tmp_dir);
-    let file_name = format!("bash_output_{}.txt", uuid::Uuid::new_v4());
-    let tmp_path = tmp_dir.join(&file_name);
+    // Try to write the full output to a secure temp file so the agent can
+    // search it.  Fail closed: if the directory cannot be created or the
+    // write fails, fall back to the inline truncated result.
+    let write_result = match bash_temp_output_dir() {
+        Ok(dir) => {
+            let file_name = format!("bash_output_{}.txt", uuid::Uuid::new_v4());
+            let tmp_path = dir.join(&file_name);
+            std::fs::write(&tmp_path, output).map(|()| tmp_path)
+        },
+        Err(e) => {
+            debug!("Failed to create secure Bash temp dir: {e}; fall back to inline truncation");
+            Err(e)
+        },
+    };
 
-    if let Err(e) = std::fs::write(&tmp_path, output) {
-        // Could not write — fall back to a truncated inline result.
-        debug!(
-            "Failed to write overflow output to {}: {e}",
-            tmp_path.display()
-        );
+    match write_result {
+        Ok(tmp_path) => {
+            let preview = BASH_OUTPUT_MAX_BYTES / 4;
+            let head_end = output.floor_char_boundary(preview);
+            let tail_start = output.ceil_char_boundary(total_bytes - preview);
+            let (head, _) = output.split_at(head_end);
+            let (_, tail) = output.split_at(tail_start);
+            format!(
+                "[Output too long — {total_bytes} bytes, {total_lines} lines.]\n\
+                 Full output saved to: {path}\n\
+                 You can search it with `grep` or view portions with `head`/`tail`.\n\
+                 Consider reformulating the command to produce less output.\n\n\
+                 --- first ~{preview} bytes ---\n{head}\n\n\
+                 --- last ~{preview} bytes ---\n{tail}\n{footer}",
+                path = tmp_path.display(),
+            )
+        },
+        Err(e) => {
+            // Could not write — fall back to a truncated inline result.
+            debug!("Failed to write overflow output to temp file: {e}");
 
-        let half = BASH_OUTPUT_MAX_BYTES / 2;
-        let head_end = output.floor_char_boundary(half);
-        let tail_start = output.ceil_char_boundary(total_bytes - half);
-        let (head, _) = output.split_at(head_end);
-        let (_, tail) = output.split_at(tail_start);
-        return format!(
-            "[Output too long — {total_bytes} bytes, {total_lines} lines. \
-             The command was too verbose; reformulate with less output \
-             (e.g. pipe through `head`, `tail`, or `grep`).]\n\n\
-             --- first ~{half} bytes ---\n{head}\n\n\
-             --- last ~{half} bytes ---\n{tail}\n{footer}",
-        );
+            let half = BASH_OUTPUT_MAX_BYTES / 2;
+            let head_end = output.floor_char_boundary(half);
+            let tail_start = output.ceil_char_boundary(total_bytes - half);
+            let (head, _) = output.split_at(head_end);
+            let (_, tail) = output.split_at(tail_start);
+            format!(
+                "[Output too long — {total_bytes} bytes, {total_lines} lines. \
+                 The command was too verbose; reformulate with less output \
+                 (e.g. pipe through `head`, `tail`, or `grep`).]\n\n\
+                 --- first ~{half} bytes ---\n{head}\n\n\
+                 --- last ~{half} bytes ---\n{tail}\n{footer}",
+            )
+        },
     }
-
-    let preview = BASH_OUTPUT_MAX_BYTES / 4;
-    let head_end = output.floor_char_boundary(preview);
-    let tail_start = output.ceil_char_boundary(total_bytes - preview);
-    let (head, _) = output.split_at(head_end);
-    let (_, tail) = output.split_at(tail_start);
-    format!(
-        "[Output too long — {total_bytes} bytes, {total_lines} lines.]\n\
-         Full output saved to: {path}\n\
-         You can search it with `grep` or view portions with `head`/`tail`.\n\
-         Consider reformulating the command to produce less output.\n\n\
-         --- first ~{preview} bytes ---\n{head}\n\n\
-         --- last ~{preview} bytes ---\n{tail}\n{footer}",
-        path = tmp_path.display(),
-    )
 }
 
 /// Prepend soft safety warnings to command output, if any.

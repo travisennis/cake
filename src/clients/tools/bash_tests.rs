@@ -1115,3 +1115,85 @@ async fn test_streaming_stdout_drain_after_stderr_close_hits_cap() {
         Err(e) => panic!("Unexpected error: {e}"),
     }
 }
+
+// ===========================================================================
+// Secure Temp Directory Tests
+// ===========================================================================
+
+#[cfg(unix)]
+#[test]
+fn secure_temp_dir_creates_per_user_directory() {
+    let dir = bash_temp_output_dir().unwrap();
+    let dir_name = dir.file_name().unwrap().to_str().unwrap();
+    // SAFETY: `getuid()` is a simple system call with no safety requirements.
+    let uid = unsafe { libc::getuid() };
+    assert!(
+        dir_name.starts_with(&format!("cake-{uid}-")),
+        "expected directory name to start with 'cake-{uid}-', got '{dir_name}'"
+    );
+    assert!(dir.exists(), "directory should exist");
+    assert!(dir.is_dir(), "path should be a directory");
+}
+
+#[cfg(unix)]
+#[test]
+fn secure_temp_dir_has_restrictive_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = bash_temp_output_dir().unwrap();
+    assert!(dir.exists(), "directory should exist");
+
+    let metadata = std::fs::metadata(dir).unwrap();
+    let mode = metadata.permissions().mode() & 0o777;
+    assert_eq!(
+        mode, 0o700,
+        "expected 0o700 permissions on secure temp dir, got 0o{mode:o}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn secure_temp_dir_is_owned_by_current_user() {
+    use std::os::unix::fs::MetadataExt;
+
+    let dir = bash_temp_output_dir().unwrap();
+    let metadata = std::fs::metadata(dir).unwrap();
+    // SAFETY: `getuid()` is a simple system call with no safety requirements.
+    let uid = unsafe { libc::getuid() };
+    assert_eq!(
+        metadata.uid(),
+        uid,
+        "directory should be owned by current user"
+    );
+}
+
+#[test]
+fn secure_temp_dir_usable_for_truncation() {
+    // Verify that truncate_output writes to the secure temp dir
+    let large = "x".repeat(BASH_OUTPUT_MAX_BYTES + 1000);
+    let result = truncate_output(&large, 0, 100, false);
+    let path_line = result
+        .lines()
+        .find(|l| l.starts_with("Full output saved to:"))
+        .expect("should contain temp file path");
+    let path_str = path_line
+        .trim_start_matches("Full output saved to: ")
+        .trim();
+    let path = std::path::Path::new(path_str);
+    assert!(
+        path.exists(),
+        "temp file should exist at: {}",
+        path.display()
+    );
+
+    // The path should be under our secure temp dir
+    let parent = path.parent().unwrap();
+    let secure_dir = bash_temp_output_dir().unwrap();
+    assert_eq!(
+        parent, secure_dir,
+        "temp file should be inside secure temp dir"
+    );
+
+    // Clean up
+    _ = std::fs::remove_file(path);
+}
