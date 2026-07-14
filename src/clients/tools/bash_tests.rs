@@ -806,9 +806,10 @@ fn test_is_binary_data_allows_few_null_bytes() {
 }
 
 #[test]
-fn sandbox_initialization_failure_is_not_a_sandbox_violation() {
+fn sandbox_initialization_failure_requires_applied_sandbox() {
     let output = "sandbox-exec: sandbox_apply: Operation not permitted";
-    assert!(is_sandbox_initialization_failure(output));
+    assert!(is_sandbox_initialization_failure(true, output));
+    assert!(!is_sandbox_initialization_failure(false, output));
     assert!(!is_sandbox_violation(true, false, output));
 }
 
@@ -817,11 +818,13 @@ fn sandbox_initialization_failure_checks_stderr_only() {
     // The pattern must appear in the stderr string to be detected.
     // An empty stderr means no initialization failure, even if stdout
     // contains the literal string.
-    assert!(!is_sandbox_initialization_failure(""));
+    assert!(!is_sandbox_initialization_failure(true, ""));
     assert!(!is_sandbox_initialization_failure(
+        true,
         "some normal stderr output"
     ));
     assert!(is_sandbox_initialization_failure(
+        true,
         "sandbox-exec: sandbox_apply: Operation not permitted"
     ));
 }

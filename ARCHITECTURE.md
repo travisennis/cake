@@ -126,7 +126,7 @@ These constraints guide the design and are unlikely to change:
 
 6. **Session writes are atomic**: Sessions are written to a temp file, then renamed to the final path. The most recent session for a directory is determined by file modification time among files whose header matches the working directory.
 
-7. **Sandboxing is opt-out, not opt-in**: Sandboxing applies to all bash commands unless explicitly disabled via `CAKE_SANDBOX=0`.
+7. **Sandboxing is default-on**: Sandboxing applies to all Bash commands unless explicitly disabled. On macOS, a process already constrained by Seatbelt falls back to that inherited enforcement when macOS rejects applying a nested profile with the recognized `sandbox_apply: Operation not permitted` error; all other sandbox availability failures fail closed.
 
 8. **No unwrap/expect in production code**: The clippy configuration denies these, enforced at compile time.
 

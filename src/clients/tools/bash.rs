@@ -88,12 +88,12 @@ pub(super) fn bash_tool() -> super::Tool {
 // =============================================================================
 
 /// Detect if a failed sandboxed command looks like a sandbox-related permission failure.
-fn is_sandbox_violation(sandboxed: bool, success: bool, output: &str) -> bool {
-    if !sandboxed || success {
+fn is_sandbox_violation(sandbox_applied: bool, success: bool, output: &str) -> bool {
+    if !sandbox_applied || success {
         return false;
     }
 
-    if is_sandbox_initialization_failure(output) {
+    if is_sandbox_initialization_failure(sandbox_applied, output) {
         return false;
     }
 
@@ -108,9 +108,11 @@ fn is_sandbox_violation(sandboxed: bool, success: bool, output: &str) -> bool {
 /// `sandbox-exec` wrapper writes its initialization errors to stderr, so
 /// checking only stderr avoids false positives when a user command prints
 /// or searches for the literal string `sandbox-exec: sandbox_apply` in its
-/// normal output.
-fn is_sandbox_initialization_failure(stderr: &str) -> bool {
-    stderr.contains("sandbox-exec: sandbox_apply")
+/// normal output. The pattern is only cake's initialization failure when cake
+/// actually applied a sandbox strategy; a child process may emit the same text
+/// while cake is relying on inherited Seatbelt enforcement.
+fn is_sandbox_initialization_failure(sandbox_applied: bool, stderr: &str) -> bool {
+    sandbox_applied && stderr.contains("sandbox-exec: sandbox_apply")
 }
 
 const fn should_warn_exit_zero_stderr(success: bool, stderr: &str) -> bool {
@@ -330,7 +332,7 @@ async fn execute_bash_with_args(
     // Keep the guard alive until the child has finished so sandbox
     // resources (e.g., macOS temp profile files) are cleaned up
     // deterministically.
-    let _sandbox_guard = if use_sandbox {
+    let sandbox_guard = if use_sandbox {
         if let Some(strategy) = super::sandbox::detect_platform()? {
             Some(strategy.apply(&mut command, &sandbox_config)?)
         } else {
@@ -340,6 +342,7 @@ async fn execute_bash_with_args(
         tracing::debug!("Sandbox disabled; running without filesystem restrictions");
         None
     };
+    let sandbox_applied = sandbox_guard.is_some();
 
     // Spawn the command with piped stdout/stderr for streaming
     let mut child = command
@@ -427,7 +430,7 @@ async fn execute_bash_with_args(
 
     let output_str = String::from_utf8_lossy(&buf);
 
-    if use_sandbox && is_sandbox_initialization_failure(&stderr_str) {
+    if is_sandbox_initialization_failure(sandbox_applied, &stderr_str) {
         return Err(format!(
             "{}\n\n\
             macOS sandbox unavailable: sandbox-exec could not apply a sandbox profile, \
@@ -445,7 +448,7 @@ async fn execute_bash_with_args(
         format!("{output_str}\n[... output truncated at {BASH_READ_CAP} bytes ...]")
     } else if success {
         output_str.into_owned()
-    } else if is_sandbox_violation(use_sandbox, success, &output_str) {
+    } else if is_sandbox_violation(sandbox_applied, success, &output_str) {
         format!(
             "{output_str}\n\n\
             [Sandbox restriction]: This command was blocked by the filesystem sandbox. \

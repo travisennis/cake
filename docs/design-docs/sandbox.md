@@ -29,7 +29,7 @@ On macOS, cake uses `sandbox-exec` with a dynamically generated [Seatbelt profil
 
 Sandbox profiles are written to temporary files under `$TMPDIR/cake/sandbox_profiles/`.
 
-Requires `/usr/bin/sandbox-exec` (present on all standard macOS installations) and a process context where macOS allows `sandbox-exec` to apply a Seatbelt profile. Cake probes this at runtime. If the binary exists but profile application is denied, Bash commands fail closed rather than running without cake's filesystem sandbox. This commonly happens when cake itself is already running inside another Seatbelt sandbox.
+Requires `/usr/bin/sandbox-exec` (present on all standard macOS installations) and a process context where macOS allows `sandbox-exec` to apply a Seatbelt profile. Cake probes this at runtime. If the probe reports `sandbox_apply: Operation not permitted`, cake recognizes that the process is already constrained by an outer Seatbelt sandbox, emits a warning, and runs Bash without applying its own nested profile. The inherited sandbox is then the effective enforcement boundary and may not match cake's selected path policy exactly. All other probe failures fail closed rather than running without filesystem sandbox enforcement.
 
 ### Linux --- Landlock LSM
 
@@ -179,7 +179,9 @@ The `sandbox-exec` binary is missing from `/usr/bin/`. This is unusual on standa
 
 ### "sandbox-exec cannot apply profiles" error (macOS)
 
-The `sandbox-exec` binary exists, but macOS rejected applying a test Seatbelt profile in this process context. The most common cause is nested sandboxing: cake was started by another sandboxed tool, and macOS does not allow that process to apply another Seatbelt profile. Bash commands fail closed. Run cake from a normal terminal to preserve sandbox enforcement, or use `--sandbox danger-full-access` (or `CAKE_SANDBOX=off`) when intentionally running without cake's filesystem sandbox.
+The `sandbox-exec` binary exists, but macOS rejected applying a test Seatbelt profile in this process context. When the rejection is `sandbox_apply: Operation not permitted`, cake treats it as nested Seatbelt enforcement: Bash commands continue under the outer sandbox and cake logs that its own profile was not applied. This lets cake run as a subagent of tools that already use Seatbelt, but the outer tool's policy controls the effective filesystem access, including during cake `read-only` sessions.
+
+Any other profile-probe failure still blocks Bash commands. Run cake from a normal terminal to preserve cake's own sandbox enforcement, or use `--sandbox danger-full-access` (or `CAKE_SANDBOX=off`) only when intentionally running without it.
 
 ### "Landlock not enforced" error (Linux)
 

@@ -677,6 +677,9 @@ pub(super) trait SandboxStrategy: Send + Sync {
 ///
 /// If sandboxing is expected on a supported platform but cannot be enforced,
 /// return an error instead of silently falling back to unsandboxed execution.
+/// The exception is a macOS process already constrained by Seatbelt, where
+/// applying a nested profile is not permitted and the inherited sandbox remains
+/// the enforcement boundary.
 // Linux detection is infallible, but macOS detection can fail closed.
 #[cfg_attr(
     target_os = "linux",
@@ -726,13 +729,23 @@ fn detect_macos_platform(
     }
 
     if !can_apply_profile {
+        if profile_probe_failure
+            .is_some_and(|failure| failure.contains("sandbox_apply: Operation not permitted"))
+        {
+            tracing::warn!(
+                "macOS sandbox-exec cannot apply a nested Seatbelt profile; relying on \
+                 inherited Seatbelt enforcement and running Bash commands without cake's \
+                 filesystem sandbox"
+            );
+            return Ok(None);
+        }
+
         let details = profile_probe_failure
             .map(|failure| format!(" Probe failure: {failure}."))
             .unwrap_or_default();
         return Err(format!(
             "macOS sandbox unavailable: sandbox-exec could not apply a Seatbelt profile \
-             in this process context.{details} This commonly happens when cake is already \
-             running inside another sandbox. Set CAKE_SANDBOX=off to run Bash commands \
+             in this process context.{details} Set CAKE_SANDBOX=off to run Bash commands \
              without filesystem sandboxing."
         ));
     }
@@ -919,6 +932,8 @@ mod tests {
     use crate::clients::tools::ToolContext;
     use crate::clients::tools::sandbox::{SandboxConfig, SandboxPolicy};
     use std::path::{Path, PathBuf};
+    #[cfg(target_os = "macos")]
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn resolve_policy_explicit_cli_wins_over_env() {
@@ -1091,7 +1106,50 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn macos_detection_fails_closed_with_probe_details() {
+    fn macos_detection_falls_back_for_nested_seatbelt_failure_and_warns() {
+        #[derive(Clone)]
+        struct LogWriter(Arc<Mutex<Vec<u8>>>);
+
+        impl std::io::Write for LogWriter {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let logs = Arc::new(Mutex::new(Vec::new()));
+        let log_writer = LogWriter(Arc::clone(&logs));
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .without_time()
+            .with_writer(move || log_writer.clone())
+            .finish();
+
+        let strategy = tracing::subscriber::with_default(subscriber, || {
+            super::detect_macos_platform(
+                true,
+                false,
+                Some(
+                    "sandbox-exec exited with exit status: 1; stderr: sandbox-exec: \
+                     sandbox_apply: Operation not permitted",
+                ),
+            )
+        })
+        .unwrap();
+
+        assert!(strategy.is_none());
+        let log_output = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+        assert!(log_output.contains("cannot apply a nested Seatbelt profile"));
+        assert!(log_output.contains("relying on inherited Seatbelt enforcement"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_detection_fails_closed_for_non_nested_probe_failure() {
         let Err(error) = super::detect_macos_platform(true, false, Some("sandbox_apply failed"))
         else {
             panic!("profile probe failure must fail closed");
@@ -1099,7 +1157,6 @@ mod tests {
 
         assert!(error.contains("could not apply a Seatbelt profile"));
         assert!(error.contains("Probe failure: sandbox_apply failed."));
-        assert!(error.contains("running inside another sandbox"));
         assert!(error.contains("CAKE_SANDBOX=off"));
     }
 
