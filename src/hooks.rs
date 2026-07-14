@@ -590,6 +590,70 @@ impl HookRunner {
     }
 }
 
+/// RAII guard that kills the entire hook process tree on drop, unless
+/// [`defuse`](#method.defuse) has been called.
+///
+/// On Unix the guard sends [`SIGKILL`] to the hook's process group (if a PID
+/// was recorded).  On other platforms it is a no-op — the underlying
+/// `kill_on_drop(true)` on the `Command` still terminates the immediate child
+/// on drop.
+#[cfg(unix)]
+struct HookProcessGuard {
+    pid: Option<u32>,
+}
+
+#[cfg(unix)]
+impl HookProcessGuard {
+    const fn new(pid: Option<u32>) -> Self {
+        Self { pid }
+    }
+
+    /// Prevent the guard from killing the process group on drop.
+    const fn defuse(&mut self) {
+        self.pid = None;
+    }
+}
+
+#[cfg(unix)]
+impl Drop for HookProcessGuard {
+    fn drop(&mut self) {
+        if let Some(pid) = self.pid {
+            #[expect(
+                unsafe_code,
+                reason = "libc::kill requires unsafe; see SAFETY comment below"
+            )]
+            #[expect(
+                clippy::cast_possible_wrap,
+                reason = "PIDs fit in i32 on all supported Unix targets"
+            )]
+            // SAFETY: pid was obtained from `Child::id()` at a point when the
+            // child was still alive, and the child's process group ID equals
+            // its PID because `shell_command` calls `process_group(0)` on
+            // Unix.  A negative PID in `kill(2)` targets every process in the
+            // group |pid|, which is exactly what we need to reach any
+            // descendent pipelines, background jobs, etc.  The cast from u32
+            // to i32 is safe because PIDs fit in i32 on all supported Unix
+            // targets.
+            unsafe {
+                ::libc::kill(-(pid as ::libc::pid_t), ::libc::SIGKILL);
+            }
+        }
+    }
+}
+
+/// No-op guard for non-Unix platforms.
+#[cfg(not(unix))]
+struct HookProcessGuard;
+
+#[cfg(not(unix))]
+impl HookProcessGuard {
+    fn new(_pid: Option<u32>) -> Self {
+        Self
+    }
+
+    fn defuse(&mut self) {}
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "hook command execution has many branches for error handling"
@@ -628,6 +692,17 @@ async fn run_command_hook(command: HookCommand, payload: Value, cwd: PathBuf) ->
         },
     };
 
+    // Record the child PID and install a drop guard that kills the entire
+    // hook process tree on any non-successful exit (timeout, cancellation,
+    // early error return).  The guard is defused on the success path so
+    // normally completed hooks are not affected.
+    let child_id = child.id();
+    #[expect(
+        clippy::used_underscore_binding,
+        reason = "_guard prefix suppresses unused-variable warning on timeout path"
+    )]
+    let mut _guard = HookProcessGuard::new(child_id);
+
     if let Some(mut stdin) = child.stdin.take() {
         let input = serde_json::to_vec(&payload).unwrap_or_default();
         if let Err(error) = stdin.write_all(&input).await
@@ -647,8 +722,17 @@ async fn run_command_hook(command: HookCommand, payload: Value, cwd: PathBuf) ->
 
     let timeout_result = timeout(command.timeout, child.wait_with_output()).await;
     let output = match timeout_result {
-        Ok(Ok(output)) => output,
+        Ok(Ok(output)) => {
+            // Hook completed normally — defuse the guard so it does not
+            // kill background descendants on drop.
+            _guard.defuse();
+            output
+        },
         Ok(Err(error)) => {
+            // The child has already exited (wait succeeded), so there is
+            // nothing left in the process group; defuse to avoid a harmless
+            // ESRCH.
+            _guard.defuse();
             return InvocationOutcome {
                 command,
                 exit_code: None,
@@ -661,6 +745,11 @@ async fn run_command_hook(command: HookCommand, payload: Value, cwd: PathBuf) ->
         },
         Err(_) => {
             let timeout_secs = command.timeout.as_secs();
+            // Guard fires on return, killing the hook process tree:
+            // kill_on_drop(true) will already have sent SIGKILL to the
+            // immediate child (the shell) when the wait_with_output future
+            // was dropped; the guard sends SIGKILL to the process group to
+            // reach any descendants.
             return InvocationOutcome {
                 command,
                 exit_code: None,
@@ -762,13 +851,20 @@ fn shell_command(command: &str) -> Command {
     {
         let mut cmd = Command::new("cmd");
         cmd.arg("/C").arg(command);
+        cmd.kill_on_drop(true);
         cmd
     }
 
     #[cfg(not(windows))]
     {
+        use std::os::unix::process::CommandExt;
+
         let mut cmd = Command::new("sh");
         cmd.arg("-c").arg(command);
+        cmd.kill_on_drop(true);
+        // Place the entire hook process tree in its own process group so
+        // the timeout path can kill all descendants, not just the shell.
+        cmd.as_std_mut().process_group(0);
         cmd
     }
 }

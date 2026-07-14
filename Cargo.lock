@@ -226,6 +226,7 @@ dependencies = [
  "insta",
  "jsonschema",
  "landlock",
+ "libc",
  "reqwest",
  "serde",
  "serde_json",

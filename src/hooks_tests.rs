@@ -583,6 +583,80 @@ fn decision_label_parsed_continue_is_none() {
     assert_eq!(decision, "none");
 }
 
+#[tokio::test]
+#[cfg(unix)]
+async fn timed_out_hook_process_is_killed() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let pid_file = dir.path().join("hook.pid");
+    let pid_file_str = pid_file.to_str().unwrap().to_string();
+
+    // Command: record shell PID, then run a pipeline so descendants exist.
+    // Without `exec`, `sleep 30` is a child process in the shell's process
+    // group — a descendant that the old `kill_on_drop(true)`-only approach
+    // would orphan.
+    let command = format!(
+        "echo $$ > '{}'; sleep 30 | cat",
+        pid_file_str.replace('\'', "'\\''")
+    );
+
+    let hook_command = HookCommand {
+        command,
+        timeout: Duration::from_millis(500),
+        fail_closed: false,
+        status_message: None,
+        source_path: dir.path().join("hooks.json"),
+    };
+
+    let outcome = run_command_hook(
+        hook_command,
+        serde_json::json!({}),
+        dir.path().to_path_buf(),
+    )
+    .await;
+
+    // Verify timeout outcome
+    assert!(
+        outcome.error.as_deref().unwrap_or("").contains("timed out"),
+        "expected timeout error, got: {:?}",
+        outcome.error
+    );
+
+    // Give the OS a moment to reap killed processes
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // Read the PID file
+    let pid_str = std::fs::read_to_string(&pid_file).unwrap_or_else(|_| String::new());
+    let pid: i32 = pid_str
+        .trim()
+        .parse()
+        .expect("failed to read PID from hook");
+
+    // Verify the immediate child (shell) is no longer alive
+    let shell_status = std::process::Command::new("kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .status()
+        .expect("kill command failed");
+    assert!(
+        !shell_status.success(),
+        "timed-out hook shell process {pid} is still running"
+    );
+
+    // Verify no processes remain in the hook's process group (the process
+    // group ID == the shell PID because of `process_group(0)`).  A
+    // success from `kill -0 -<pgid>` would mean at least one descendant is
+    // still alive.
+    let pgid_status = std::process::Command::new("kill")
+        .arg("-0")
+        .arg(format!("-{pid}"))
+        .status()
+        .expect("kill command failed");
+    assert!(
+        !pgid_status.success(),
+        "timed-out hook process group {pid} still has running members"
+    );
+}
+
 #[test]
 fn resolved_decision_label_explicit_allow_is_allow() {
     let parsed: ParsedHookOutput =
