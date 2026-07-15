@@ -19,6 +19,7 @@ pub mod output_schema;
 pub mod session;
 pub mod settings;
 pub mod skills;
+pub mod toolbox;
 pub mod worktree;
 
 #[doc(inline)]

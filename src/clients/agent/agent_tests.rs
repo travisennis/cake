@@ -61,6 +61,58 @@ fn workspace_write_tool_context_keeps_all_tools() {
     assert_eq!(agent.tool_names(), vec!["Bash", "Edit", "Read", "Write"]);
 }
 
+fn test_toolbox_tool() -> crate::config::toolbox::ToolboxTool {
+    crate::config::toolbox::ToolboxTool {
+        registered_name: "tb__run_tests".to_string(),
+        original_name: "run_tests".to_string(),
+        path: std::path::PathBuf::from("/tools/run_tests"),
+        description: "Run the test suite.".to_string(),
+        parameters: serde_json::json!({ "type": "object", "properties": {} }),
+        format: crate::config::toolbox::ToolboxFormat::Json,
+        timeout_secs: 60,
+    }
+}
+
+#[test]
+fn toolbox_tools_register_after_builtins() {
+    let agent = Agent::new(
+        test_resolved_model_config(ApiType::ChatCompletions, "https://api.example.com"),
+        &[(Role::System, "test system prompt".to_string())],
+    )
+    .with_tool_context(Arc::new(ToolContext::from_current_process()))
+    .with_toolbox_tools(vec![test_toolbox_tool()]);
+
+    assert_eq!(
+        agent.tool_names(),
+        vec!["Bash", "Edit", "Read", "Write", "tb__run_tests"]
+    );
+}
+
+#[test]
+fn read_only_tool_context_skips_toolbox_tools_regardless_of_order() {
+    let mut context = ToolContext::from_current_process();
+    context.sandbox_policy = SandboxPolicy::ReadOnly;
+    let context = Arc::new(context);
+
+    // Read-only context applied first: registration is skipped.
+    let agent = Agent::new(
+        test_resolved_model_config(ApiType::ChatCompletions, "https://api.example.com"),
+        &[(Role::System, "test system prompt".to_string())],
+    )
+    .with_tool_context(Arc::clone(&context))
+    .with_toolbox_tools(vec![test_toolbox_tool()]);
+    assert_eq!(agent.tool_names(), vec!["Bash", "Read"]);
+
+    // Read-only context applied second: registered entries are stripped.
+    let agent = Agent::new(
+        test_resolved_model_config(ApiType::ChatCompletions, "https://api.example.com"),
+        &[(Role::System, "test system prompt".to_string())],
+    )
+    .with_toolbox_tools(vec![test_toolbox_tool()])
+    .with_tool_context(context);
+    assert_eq!(agent.tool_names(), vec!["Bash", "Read"]);
+}
+
 #[test]
 fn accumulate_usage_adds_tokens() {
     let mut agent = test_agent();

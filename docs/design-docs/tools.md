@@ -11,6 +11,8 @@ Cake provides four built-in tools:
 3. **Edit**: Make targeted text replacements in files
 4. **Write**: Create new files or overwrite existing ones
 
+Users can extend this set with their own executable tools ("toolbox tools", registered with a `tb__` prefix); see [Toolbox Tools](#toolbox-tools).
+
 Each tool defines:
 
 - A JSON schema for the API (name, description, parameters)
@@ -53,10 +55,10 @@ pub(super) fn read_tool() -> Tool {
 
 ## Tool Execution
 
-The `execute_tool` function dispatches to the appropriate implementation:
+Each tool is registered as a `ToolEntry` (model-facing definition plus executor closure) in a `ToolRegistry`; the registry dispatches calls by name:
 
 ```rust
-pub(super) async fn execute_tool(name: &str, arguments: &str) -> Result<ToolResult, String>
+pub(super) async fn execute(&self, context: Arc<ToolContext>, name: &str, arguments: &str) -> Result<ToolResult, String>
 ```
 
 Execution flow:
@@ -375,6 +377,37 @@ Lines 1-100/500
 - Use for new files
 - Use Edit for modifying existing files (more precise)
 - Large files: Consider breaking into multiple writes
+
+## Toolbox Tools
+
+Toolbox tools are user-provided executables that extend the agent's tool set. Each tool is a single executable (any language) implementing a two-action protocol selected by the `TOOLBOX_ACTION` environment variable.
+
+**Discovery** (`config::toolbox`):
+
+- Directories come from `CAKE_TOOLBOX` (colon-separated, like `PATH`), with the `--toolbox <DIR>` CLI flag appending extra directories. When `CAKE_TOOLBOX` is unset, the default directory `~/.config/cake/tools` is scanned; when it is set to the empty string, environment-driven scanning is disabled. Relative entries are anchored to the directory cake was invoked from, before any `--worktree` cwd change (matching `--add-dir`).
+- Hidden files, `.md`/`.txt` files, directories, and non-executable files are skipped. Project-level directories are only scanned when explicitly listed (no automatic `.cake/tools` pickup, so cloned repositories cannot inject tools).
+- Earlier directories win tool-name conflicts; within a directory, filenames are scanned in sorted order.
+
+**Describe protocol** (`TOOLBOX_ACTION=describe`, run once per tool at startup, 10s timeout, output read with a 64KB cap so a runaway tool is skipped instead of exhausting memory):
+
+The tool prints its schema to stdout in either format (auto-detected by attempting JSON parse first; the detected format is reused for execute):
+
+- **JSON**: `{"name": "...", "description": "...", "args": {"param": ["string", "description"]}}` (compact) or `{"name": ..., "description": ..., "inputSchema": {...}}` (full JSON Schema with a top-level object). A missing top-level `type` is normalized to `object`; explicit non-object types are rejected because toolbox calls always use named arguments. The resulting schema must compile as JSON Schema draft 2020-12 or the tool is skipped. A `?` suffix on a compact-form type (`"string?"`) marks the parameter optional. An optional `timeout` field (seconds) overrides the default 60s execute timeout (JSON format only).
+- **Text**: line-based `name: ...`, one or more `description: ...` lines (concatenated with newlines), and `param: type description` parameter lines. Types are required (`string`, `number`, `integer`, `boolean`) and support the `?` optional suffix. Duplicate parameter names are rejected so the generated JSON Schema remains valid. Parameter names containing `=`, carriage returns, or newlines are also rejected during discovery because the execute protocol cannot encode them safely.
+
+The `name` field from the describe output is authoritative (not the filename) and is registered with a `tb__` prefix (e.g. `tb__run_tests`). Names are restricted to `[A-Za-z0-9_-]` and at most 60 characters (the 64-character provider function-name limit minus the prefix). Broken tools (describe failure, invalid output, timeout, duplicate name) are skipped with a warning and never block startup.
+
+**Execute protocol** (`TOOLBOX_ACTION=execute`):
+
+- Arguments arrive on stdin: the raw JSON object for JSON-format tools, or `key=value` lines for text-format tools. Because the text protocol defines no escaping, argument names containing `=`, carriage returns, or newlines and string values containing carriage returns or newlines are rejected before spawn rather than being misinterpreted as additional arguments. Stdin is fed from a detached writer so a tool that never reads it cannot stall the call.
+- The process runs in the session working directory with `AGENT=cake` and the session id in both `CAKE_THREAD_ID` and `AGENT_THREAD_ID`.
+- stdout becomes the tool result. Output is read with a hard 50KB cap: once exceeded, the tool is stopped and the captured output is returned with a truncation marker. stderr goes to cake's log file for tool-author diagnostics (first 10KB kept).
+- Exit code 0 is success; non-zero returns an error containing the exit status and stderr.
+- Each invocation runs in its own Unix process group. The per-tool timeout (default 60s) covers the whole operation — argument delivery, output capture, and process exit — and timeout or output-cap paths terminate the entire process group, including descendants.
+
+**Sandboxing**: toolbox tools run as separate processes *without* cake's OS sandbox — they are user-provided and trusted. For that reason, under the read-only sandbox policy toolbox executables are never run at all: discovery and the describe action are skipped entirely (even describe executes user code that could mutate the workspace), and no `tb__*` tools are registered (same rationale as removing Edit/Write there: they would bypass the policy's no-mutation guarantee).
+
+**Scheduling**: toolbox calls execute concurrently like other non-mutating calls; the scheduler cannot determine their mutation targets, so same-path serialization (ADR-013) does not apply to them.
 
 ## Sandboxing
 

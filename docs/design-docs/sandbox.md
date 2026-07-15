@@ -69,6 +69,12 @@ The default (no `--sandbox` flag) is `workspace-write`, so existing behavior is 
 
 Under `read-only`, persistent read-write directories declared in `settings.toml` are also demoted to read-only: the policy denies all mutations, so it overrides the per-project write grants those settings normally provide.
 
+### Toolbox Trust Boundary
+
+User-defined toolbox executables are not wrapped in the Bash tool's Seatbelt or Landlock sandbox. Configuring `CAKE_TOOLBOX` or `--toolbox` therefore grants those executables the user's ambient filesystem and network authority under `workspace-write` and `danger-full-access`.
+
+Under `read-only`, cake does not scan or describe toolbox executables and registers no `tb__*` tools. The describe action executes user code too, so merely suppressing execute calls would not preserve the policy's no-mutation guarantee. See [ADR-017](../adr/017-trusted-executable-toolbox-tools.md) and [tools.md](./tools.md#toolbox-tools).
+
 The `CAKE_SANDBOX` environment variable is still supported for backward compatibility: when no `--sandbox` flag is passed, `CAKE_SANDBOX=off` (and its aliases) maps to `danger-full-access`. When `--sandbox` is provided, the CLI flag takes precedence over the environment variable.
 
 ### Disabling the Sandbox (legacy CAKE_SANDBOX)

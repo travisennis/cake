@@ -11,11 +11,16 @@
 //! - `Edit` - Make targeted edits to files using literal search-replace
 //! - `Write` - Create or overwrite files with content
 //!
+//! User-defined toolbox tools (`tb__*`, see `config::toolbox` and the
+//! `toolbox` submodule) can be registered alongside the built-ins.
+//!
 //! # Security
 //!
 //! All tools validate paths against the current working directory and
 //! directories added via `--add-dir` flag. Write operations are only allowed
-//! in the working directory and temp directories.
+//! in the working directory and temp directories. Toolbox tools are
+//! user-provided trusted executables that run outside the OS sandbox and are
+//! never registered under the read-only sandbox policy.
 
 use serde::Serialize;
 use std::fmt::Write as _;
@@ -157,11 +162,13 @@ mod edit;
 mod json_repair;
 mod read;
 mod scheduling;
+mod toolbox;
 mod write;
 
 pub(super) use json_repair::repair_json_args;
 pub use read::extract_path as read_extract_path;
 pub(super) use scheduling::schedule_tool_calls;
+pub(super) use toolbox::toolbox_tool_entry;
 
 // =============================================================================
 // JSON Parse Error Formatting
@@ -525,12 +532,14 @@ pub struct ToolResult {
 }
 
 type ToolFuture = Pin<Box<dyn Future<Output = Result<ToolResult, String>> + Send>>;
-type ToolExecutor = fn(Arc<ToolContext>, String) -> ToolFuture;
+type ToolExecutor = Arc<dyn Fn(Arc<ToolContext>, String) -> ToolFuture + Send + Sync>;
 
 /// Registered behavior for a callable tool.
 ///
 /// This keeps the model-facing definition and execution entry point together
-/// so adding a tool only requires one registry entry.
+/// so adding a tool only requires one registry entry. The executor is a
+/// shared closure so entries can capture per-tool state (e.g. a toolbox
+/// tool's executable path and protocol format).
 #[derive(Clone)]
 pub(super) struct ToolEntry {
     definition: Tool,
@@ -538,10 +547,13 @@ pub(super) struct ToolEntry {
 }
 
 impl ToolEntry {
-    fn new(definition: Tool, execute: ToolExecutor) -> Self {
+    fn new(
+        definition: Tool,
+        execute: impl Fn(Arc<ToolContext>, String) -> ToolFuture + Send + Sync + 'static,
+    ) -> Self {
         Self {
             definition,
-            execute,
+            execute: Arc::new(execute),
         }
     }
 }
@@ -579,16 +591,29 @@ impl ToolRegistry {
         &self.definitions
     }
 
-    /// Remove the tools that mutate files in-process (Edit, Write).
+    /// Remove the tools that mutate files in-process (Edit, Write) and all
+    /// user-defined toolbox tools (`tb__*`).
     ///
     /// The read-only sandbox policy uses this so the model never sees tools
     /// it cannot use: Edit and Write bypass the OS sandbox (which only wraps
-    /// Bash), so omitting them is what makes the policy's no-mutation
-    /// guarantee hold for the whole agent, not just shell commands.
+    /// Bash), and toolbox tools run as unsandboxed external processes, so
+    /// omitting them is what makes the policy's no-mutation guarantee hold
+    /// for the whole agent, not just shell commands.
     pub(super) fn retain_read_safe_tools(&mut self) {
-        self.entries
-            .retain(|entry| !matches!(entry.definition.name.as_str(), "Edit" | "Write"));
+        self.entries.retain(|entry| {
+            !matches!(entry.definition.name.as_str(), "Edit" | "Write")
+                && !entry
+                    .definition
+                    .name
+                    .starts_with(crate::config::toolbox::TOOLBOX_PREFIX)
+        });
         self.definitions = self.entries.iter().map(|e| e.definition.clone()).collect();
+    }
+
+    /// Append a tool entry and refresh the cached definitions.
+    pub(super) fn push_entry(&mut self, entry: ToolEntry) {
+        self.definitions.push(entry.definition.clone());
+        self.entries.push(entry);
     }
 
     /// Return the enabled tool names.
@@ -821,23 +846,40 @@ fn execute_write_tool(context: Arc<ToolContext>, arguments: String) -> ToolFutur
 ///
 /// This is derived from the tool registry for the given sandbox policy so
 /// that prompt text stays in sync with the actual set of registered tools
-/// (under `ReadOnly`, Edit and Write are not registered). Each tool's
-/// one-line summary is its first sentence (up to the first `.`).
-pub fn format_tool_list_section(sandbox_policy: SandboxPolicy) -> String {
+/// (under `ReadOnly`, Edit and Write are not registered, and toolbox tools
+/// are excluded because they run unsandboxed). Each tool's one-line summary
+/// is its first sentence (up to the first `.`).
+pub fn format_tool_list_section(
+    sandbox_policy: SandboxPolicy,
+    toolbox_tools: &[crate::config::toolbox::ToolboxTool],
+) -> String {
     let mut registry = default_tool_registry();
     if sandbox_policy == SandboxPolicy::ReadOnly {
         registry.retain_read_safe_tools();
     }
     let mut s = String::from("## Available tools\n\n");
-    for def in registry.definitions() {
-        let desc = &def.description;
+    let toolbox_lines = if sandbox_policy == SandboxPolicy::ReadOnly {
+        &[]
+    } else {
+        toolbox_tools
+    };
+    for (name, desc) in registry
+        .definitions()
+        .iter()
+        .map(|def| (&def.name, &def.description))
+        .chain(
+            toolbox_lines
+                .iter()
+                .map(|tool| (&tool.registered_name, &tool.description)),
+        )
+    {
         let first_sentence = desc
             .split('.')
             .next()
             .unwrap_or(desc)
             .trim()
             .trim_end_matches('.');
-        _ = writeln!(s, "- **{}**: {}.", def.name, first_sentence);
+        _ = writeln!(s, "- **{name}**: {first_sentence}.");
     }
     s.push_str("\nOnly these tools are available. There is no Glob, Grep, or LS tool.");
     s
@@ -1121,9 +1163,21 @@ mod tests {
         });
     }
 
+    fn fixture_toolbox_tool() -> crate::config::toolbox::ToolboxTool {
+        crate::config::toolbox::ToolboxTool {
+            registered_name: "tb__run_tests".to_string(),
+            original_name: "run_tests".to_string(),
+            path: PathBuf::from("/tools/run_tests"),
+            description: "Run the test suite. Extra detail.".to_string(),
+            parameters: serde_json::json!({ "type": "object", "properties": {} }),
+            format: crate::config::toolbox::ToolboxFormat::Json,
+            timeout_secs: 60,
+        }
+    }
+
     #[test]
     fn format_tool_list_section_includes_all_tools() {
-        let result = format_tool_list_section(SandboxPolicy::WorkspaceWrite);
+        let result = format_tool_list_section(SandboxPolicy::WorkspaceWrite, &[]);
         assert!(result.starts_with("## Available tools"));
         assert!(result.contains("- **Bash**:"));
         assert!(result.contains("- **Read**:"));
@@ -1134,8 +1188,15 @@ mod tests {
     }
 
     #[test]
+    fn format_tool_list_section_includes_toolbox_tools() {
+        let result =
+            format_tool_list_section(SandboxPolicy::WorkspaceWrite, &[fixture_toolbox_tool()]);
+        assert!(result.contains("- **tb__run_tests**: Run the test suite.\n"));
+    }
+
+    #[test]
     fn format_tool_list_section_read_only_excludes_mutating_tools() {
-        let result = format_tool_list_section(SandboxPolicy::ReadOnly);
+        let result = format_tool_list_section(SandboxPolicy::ReadOnly, &[fixture_toolbox_tool()]);
         assert!(result.contains("- **Bash**:"));
         assert!(result.contains("- **Read**:"));
         assert!(
@@ -1146,11 +1207,23 @@ mod tests {
             !result.contains("- **Write**:"),
             "read-only prompt must not advertise the Write tool"
         );
+        assert!(
+            !result.contains("tb__run_tests"),
+            "read-only prompt must not advertise toolbox tools"
+        );
     }
 
     #[test]
-    fn read_only_registry_drops_edit_and_write() {
+    fn read_only_registry_drops_edit_write_and_toolbox_tools() {
         let mut registry = default_tool_registry();
+        registry.push_entry(toolbox_tool_entry(
+            fixture_toolbox_tool(),
+            uuid::Uuid::nil(),
+        ));
+        assert_eq!(
+            registry.names(),
+            vec!["Bash", "Edit", "Read", "Write", "tb__run_tests"]
+        );
         registry.retain_read_safe_tools();
         assert_eq!(registry.names(), vec!["Bash", "Read"]);
         assert_eq!(registry.definitions().len(), 2);

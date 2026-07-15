@@ -43,6 +43,7 @@ fn full_prompt_history() -> Vec<ConversationItem> {
         &agents_files,
         &skill_catalog,
         SandboxPolicy::WorkspaceWrite,
+        &[],
     )
     .into_iter()
     .map(|(role, content)| ConversationItem::Message {

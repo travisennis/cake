@@ -13,6 +13,7 @@ use tracing::info;
 use crate::cli::run_mode::{RunMode, SessionStorage};
 use crate::clients::{Agent, ToolContext};
 use crate::config::skills::Skill;
+use crate::config::toolbox::ToolboxTool;
 use crate::config::{
     AgentsFile, DataDir, ModelDefinition, ResolvedModelConfig, Session, SkillCatalog,
 };
@@ -65,6 +66,7 @@ impl crate::CodingAssistant {
         initial_messages: &[(crate::types::Role, String)],
         skill_locations: &HashMap<PathBuf, Skill>,
         tool_context: Arc<ToolContext>,
+        toolbox_tools: Vec<ToolboxTool>,
         task_id: uuid::Uuid,
     ) -> anyhow::Result<RunSession> {
         let messages = restored.messages();
@@ -73,6 +75,7 @@ impl crate::CodingAssistant {
             .with_session_id(restored.id)
             .with_task_id(task_id)
             .with_tool_context(tool_context)
+            .with_toolbox_tools(toolbox_tools)
             .with_history(messages)?
             .with_skill_locations(skill_locations.clone());
         let mut session = Session::new(restored.id, restored.working_dir);
@@ -92,11 +95,13 @@ impl crate::CodingAssistant {
         initial_messages: &[(crate::types::Role, String)],
         skill_locations: HashMap<PathBuf, Skill>,
         tool_context: Arc<ToolContext>,
+        toolbox_tools: Vec<ToolboxTool>,
         task_id: uuid::Uuid,
     ) -> RunSession {
         let agent = Agent::new(resolved.clone(), initial_messages)
             .with_task_id(task_id)
             .with_tool_context(tool_context)
+            .with_toolbox_tools(toolbox_tools)
             .with_skill_locations(skill_locations);
         let new_id = agent.session_id();
         info!(target: "cake", "New session: {new_id}");
@@ -112,6 +117,10 @@ impl crate::CodingAssistant {
     }
 
     /// Build the agent/session pair for a forked run using a fresh agent session id.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "session construction naturally requires many parameters"
+    )]
     pub(crate) fn forked_client_and_session(
         restored: &Session,
         resolved: ResolvedModelConfig,
@@ -119,11 +128,13 @@ impl crate::CodingAssistant {
         initial_messages: &[(crate::types::Role, String)],
         skill_locations: HashMap<PathBuf, Skill>,
         tool_context: Arc<ToolContext>,
+        toolbox_tools: Vec<ToolboxTool>,
         task_id: uuid::Uuid,
     ) -> anyhow::Result<RunSession> {
         let agent = Agent::new(resolved.clone(), initial_messages)
             .with_task_id(task_id)
             .with_tool_context(tool_context)
+            .with_toolbox_tools(toolbox_tools)
             .with_history(restored.messages())?
             .with_skill_locations(skill_locations);
         let new_id = agent.session_id();
@@ -179,6 +190,7 @@ impl crate::CodingAssistant {
         default_model: Option<&str>,
         skill_catalog: &SkillCatalog,
         tool_context: &Arc<ToolContext>,
+        toolbox_tools: &[ToolboxTool],
         task_id: uuid::Uuid,
         loaded_system_prompt: Option<&str>,
     ) -> anyhow::Result<RunSession> {
@@ -192,6 +204,7 @@ impl crate::CodingAssistant {
             agents_files,
             skill_catalog,
             tool_context.sandbox_policy,
+            toolbox_tools,
         );
         let locs = skill_locations(skill_catalog);
 
@@ -220,6 +233,7 @@ impl crate::CodingAssistant {
                     &initial_messages,
                     &locs,
                     Arc::clone(tool_context),
+                    toolbox_tools.to_vec(),
                     task_id,
                 )
             },
@@ -240,6 +254,7 @@ impl crate::CodingAssistant {
                     &initial_messages,
                     &locs,
                     Arc::clone(tool_context),
+                    toolbox_tools.to_vec(),
                     task_id,
                 )
             },
@@ -270,6 +285,7 @@ impl crate::CodingAssistant {
                     &initial_messages,
                     locs,
                     Arc::clone(tool_context),
+                    toolbox_tools.to_vec(),
                     task_id,
                 )
             },
@@ -283,6 +299,7 @@ impl crate::CodingAssistant {
                     &initial_messages,
                     locs,
                     Arc::clone(tool_context),
+                    toolbox_tools.to_vec(),
                     task_id,
                 ))
             },

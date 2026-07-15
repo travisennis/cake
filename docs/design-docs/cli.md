@@ -87,6 +87,10 @@ pub struct CodingAssistant {
     #[arg(long, value_name = "DIR")]
     pub add_dir: Vec<String>,
 
+    /// Add a directory of trusted executable toolbox tools. Can be repeated.
+    #[arg(long, value_name = "DIR")]
+    pub toolbox: Vec<String>,
+
     /// Select the sandbox policy for model-generated shell commands
     /// (read-only, workspace-write, danger-full-access). Default:
     /// workspace-write. Takes precedence over CAKE_SANDBOX.
@@ -99,6 +103,10 @@ pub struct CodingAssistant {
 ```
 
 Top-level subcommands live under `src/cli/` and implement `CmdRunner` so they can reuse the main command dispatch without running an agent turn.
+
+### Toolbox Directories
+
+`--toolbox <DIR>` appends a directory to the user-defined tool search path and may be repeated. Relative paths are resolved against the invocation directory before any `--worktree` cwd change. Environment-driven directories come from colon-separated `CAKE_TOOLBOX`; when it is unset cake scans `~/.config/cake/tools`, and an empty value disables that default. Toolbox executables are trusted and unsandboxed; see [tools.md](./tools.md#toolbox-tools) and [sandbox.md](./sandbox.md#toolbox-trust-boundary).
 
 ### Debug Models
 

@@ -122,6 +122,11 @@ pub(crate) struct CodingAssistant {
     #[arg(long, value_name = "DIR")]
     pub add_dir: Vec<String>,
 
+    /// Add a directory of user-defined toolbox tools. Can be repeated;
+    /// appended after `CAKE_TOOLBOX` directories.
+    #[arg(long, value_name = "DIR")]
+    pub toolbox: Vec<PathBuf>,
+
     /// Select the sandbox policy for model-generated shell commands
     /// (read-only, workspace-write, danger-full-access). Default:
     /// workspace-write. Takes precedence over `CAKE_SANDBOX`.
@@ -147,6 +152,7 @@ pub(crate) struct CodingAssistant {
 struct PreparedRun {
     current_dir: PathBuf,
     additional_dirs: Vec<PathBuf>,
+    toolbox_dirs: Vec<PathBuf>,
     _worktree: WorktreeGuard,
     content: String,
     output_schema: Option<Arc<crate::config::OutputSchema>>,
@@ -162,6 +168,7 @@ struct RunResources {
     agents_files: Vec<AgentsFile>,
     skill_catalog: SkillCatalog,
     tool_context: Arc<ToolContext>,
+    toolbox_tools: Vec<crate::config::toolbox::ToolboxTool>,
 }
 
 impl CodingAssistant {
@@ -414,6 +421,16 @@ impl CodingAssistant {
     fn prepare_run(&self) -> anyhow::Result<PreparedRun> {
         let original_dir = std::env::current_dir()?;
         let additional_dirs = self.resolve_additional_dirs(&original_dir);
+        // Resolve toolbox directories against the invocation directory
+        // before any cwd change (e.g. --worktree), matching --add-dir.
+        let toolbox_dirs = crate::config::toolbox::toolbox_directories(
+            std::env::var(crate::config::toolbox::TOOLBOX_ENV_VAR)
+                .ok()
+                .as_deref(),
+            &self.toolbox,
+            &crate::config::config_dir().join("cake").join("tools"),
+            &original_dir,
+        );
 
         // Validate stdin/content and the output schema before creating the
         // worktree so that input errors don't leave a stale registered
@@ -428,6 +445,7 @@ impl CodingAssistant {
         Ok(PreparedRun {
             current_dir,
             additional_dirs,
+            toolbox_dirs,
             _worktree: WorktreeGuard::new(worktree, original_dir),
             content: inputs.content,
             output_schema: inputs.output_schema,
@@ -453,11 +471,12 @@ impl CodingAssistant {
         Ok(loaded)
     }
 
-    fn load_run_resources(
+    async fn load_run_resources(
         &self,
         data_dir: &DataDir,
         current_dir: &Path,
         additional_dirs: Vec<PathBuf>,
+        toolbox_dirs: &[PathBuf],
     ) -> anyhow::Result<RunResources> {
         let loaded = self.load_settings(current_dir)?;
         let agents_files = data_dir.read_agents_files(current_dir);
@@ -516,11 +535,25 @@ impl CodingAssistant {
 
         Self::log_skill_diagnostics(&skill_catalog);
 
+        // Discover and describe user-defined toolbox tools (directories were
+        // resolved in prepare_run, before any --worktree cwd change). Broken
+        // tools are skipped with a warning inside load_toolbox_tools; they
+        // never block startup. Under the read-only sandbox policy, toolbox
+        // executables are never run at all: even the describe action
+        // executes user code outside the OS sandbox and could mutate the
+        // workspace.
+        let toolbox_tools = if sandbox_policy == SandboxPolicy::ReadOnly {
+            Vec::new()
+        } else {
+            crate::config::toolbox::load_toolbox_tools(toolbox_dirs).await
+        };
+
         Ok(RunResources {
             loaded,
             agents_files,
             skill_catalog,
             tool_context: Arc::new(tool_context),
+            toolbox_tools,
         })
     }
 
@@ -889,14 +922,24 @@ fn is_output_schema_exhaustion(error: &anyhow::Error) -> bool {
 }
 
 impl CmdRunner for CodingAssistant {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "top-level run orchestration wires every session resource together"
+    )]
     async fn run(&self, data_dir: &DataDir) -> anyhow::Result<()> {
         if let Some(command) = &self.command {
             return command.run(data_dir).await;
         }
 
         let prepared = self.prepare_run()?;
-        let resources =
-            self.load_run_resources(data_dir, &prepared.current_dir, prepared.additional_dirs)?;
+        let resources = self
+            .load_run_resources(
+                data_dir,
+                &prepared.current_dir,
+                prepared.additional_dirs.clone(),
+                &prepared.toolbox_dirs,
+            )
+            .await?;
         let task_id = uuid::Uuid::new_v4();
         let run_mode = RunMode::from_cli(self)?;
         let config_dir = crate::config::config_dir().join("cake");
@@ -910,6 +953,7 @@ impl CmdRunner for CodingAssistant {
             resources.loaded.default_model.as_deref(),
             &resources.skill_catalog,
             &resources.tool_context,
+            &resources.toolbox_tools,
             task_id,
             resources.loaded.system_prompt.as_deref(),
         )?;

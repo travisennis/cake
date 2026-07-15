@@ -18,6 +18,7 @@ cake is a minimal coding harness for headless usage in the terminal. It's not a 
 - [Filesystem Sandbox](#filesystem-sandbox)
 - [AGENTS.md --- Per-Project AI Behavior](#agents.md----per-project-ai-behavior)
 - [System Prompt Customization](#system-prompt-customization)
+- [User-Defined Tools (Toolbox)](#user-defined-tools-toolbox)
 - [Shell Aliases and Functions](#shell-aliases-and-functions)
 - [Machine-Readable Output](#machine-readable-output)
 - [Exit Codes](#exit-codes)
@@ -35,6 +36,7 @@ cake is a minimal coding harness for headless usage in the terminal. It's not a 
 - Supports multiple AI providers via configurable API endpoints
 - Models are user-configured via `settings.toml`
 - OS-level filesystem sandbox for Bash tool commands (macOS sandbox-exec, Linux Landlock)
+- User-defined toolbox tools: extend the agent with your own executables in any language
 - Conversation session management with continue, resume, and fork capabilities
 - Git worktree integration for isolated development environments
 
@@ -124,6 +126,7 @@ cake requires at least one model configured in `settings.toml`, plus an API key 
   | --------------- | --------------------------------------------------------------------------------------------------------------------------- |
   | `CAKE_DATA_DIR` | Override cache and session directories (default: cache at `~/.cache/cake/`, sessions at `~/.local/share/cake/sessions/`)    |
   | `CAKE_SANDBOX`  | Set to `off` to disable filesystem sandboxing (equivalent to `--sandbox danger-full-access`; the CLI flag takes precedence) |
+  | `CAKE_TOOLBOX`  | Colon-separated directories of user-defined toolbox tools (replaces the `~/.config/cake/tools` default; empty disables it) |
 
 ### Model Configuration
 
@@ -263,7 +266,7 @@ Use the `--sandbox` / `-s` CLI flag to select the sandbox policy:
 
   | Value                | Behavior                                                                                                                                                                                       |
   | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-  | `read-only`          | Most restrictive: read access to workspace and system paths, no writes to workspace or toolchain caches. The Edit and Write tools are disabled; the agent gets only Bash (sandboxed) and Read. |
+  | `read-only`          | Most restrictive: read access to workspace and system paths, no writes to workspace or toolchain caches. The Edit, Write, and toolbox tools are disabled; the agent gets only Bash (sandboxed) and Read. |
   | `workspace-write`    | Default: read-write workspace with toolchain caches. Equivalent to the historical sandbox behavior.                                                                                            |
   | `danger-full-access` | No sandbox restrictions.                                                                                                                                                                       |
 
@@ -304,6 +307,28 @@ Project-level overrides take precedence over user-level. If neither file exists,
 An empty `system.md` file is valid and results in no system prompt (the model receives only the AGENTS.md context, skills, and environment messages).
 
 The built-in default prompt is in `src/prompts/system.md` in the source repository.
+
+### User-Defined Tools (Toolbox)
+
+You can extend the agent's tool set with your own executables, written in any language. Place an executable in `~/.config/cake/tools/` (or a directory listed in the `CAKE_TOOLBOX` environment variable or passed via `--toolbox <DIR>`), and cake discovers it at startup, exposes it to the model with a `tb__` prefix, and runs it when the model calls it.
+
+Each tool implements a two-action protocol selected by the `TOOLBOX_ACTION` environment variable: `describe` prints the tool's name, description, and parameters to stdout; `execute` reads arguments from stdin and writes its result to stdout (exit 0 for success). A minimal shell tool:
+
+```bash
+#!/bin/sh
+if [ "$TOOLBOX_ACTION" = "describe" ]; then
+  printf 'name: run_tests\ndescription: Run the test suite.\npattern: string? Optional test filter\n'
+else
+  read -r line
+  cargo test "${line#pattern=}"
+fi
+```
+
+Schemas can also be described as JSON (`{"name": ..., "description": ..., "args": {...}}` or a full `inputSchema`). Broken tools are skipped with a warning, never blocking startup.
+
+> **Note**: Toolbox tools run as separate processes **outside** cake's filesystem sandbox --- they are your own trusted executables. Under `--sandbox read-only` they are never executed at all (not even their `describe` action). Project directories are never scanned automatically; only directories you explicitly configure are used, so cloned repositories cannot inject tools.
+
+For the full protocol (formats, optional parameters, timeouts, environment variables), see [Tools](docs/design-docs/tools.md#toolbox-tools).
 
 ### Shell Aliases and Functions
 
@@ -375,6 +400,7 @@ fi
 - `--reasoning-effort <EFFORT>` - Override reasoning effort level (none, low, medium, high, xhigh)
 - `--reasoning-budget <TOKENS>` - Override reasoning token budget
 - `--add-dir <DIR>` - Add a directory to the sandbox config (read-only access). Can be repeated.
+- `--toolbox <DIR>` - Add a directory of user-defined toolbox tools. Can be repeated; appended after `CAKE_TOOLBOX` directories.
 - `--sandbox` (`-s`) - Select the sandbox policy: `read-only`, `workspace-write`, or `danger-full-access` (default: `workspace-write`)
 
 ### Example

@@ -10,10 +10,13 @@ use crate::clients::agent_observer::AgentObserver;
 use crate::clients::agent_runner::AgentRunner;
 use crate::clients::agent_state::{ConversationState, accumulate_usage};
 use crate::clients::backend::Backend;
-use crate::clients::tools::{SandboxPolicy, ToolContext, ToolRegistry, default_tool_registry};
+use crate::clients::tools::{
+    SandboxPolicy, ToolContext, ToolRegistry, default_tool_registry, toolbox_tool_entry,
+};
 use crate::config::model::ResolvedModelConfig;
 use crate::config::output_schema::OutputSchema;
 use crate::config::skills::Skill;
+use crate::config::toolbox::ToolboxTool;
 use crate::hooks::HookRunner;
 use crate::session_telemetry::{
     SessionTelemetryContext, SessionTelemetryRecord, SessionTelemetrySettings,
@@ -142,6 +145,30 @@ impl Agent {
             self.tools.retain_read_safe_tools();
         }
         self.tool_context = context;
+        self
+    }
+
+    /// Registers user-defined toolbox tools (`tb__*`) alongside the built-in
+    /// tools.
+    ///
+    /// Call after [`Self::with_session_id`], if any: each tool's executor
+    /// captures the current session id to expose `CAKE_THREAD_ID` and
+    /// `AGENT_THREAD_ID` to the tool process.
+    ///
+    /// Toolbox tools run as unsandboxed external processes, so under the
+    /// read-only sandbox policy they are never registered — this method
+    /// skips them when the current tool context is read-only, and
+    /// [`Self::with_tool_context`] strips any already-registered `tb__*`
+    /// entries when it applies a read-only context, keeping the policy's
+    /// no-mutation guarantee regardless of builder call order.
+    pub fn with_toolbox_tools(mut self, toolbox_tools: Vec<ToolboxTool>) -> Self {
+        if self.tool_context.sandbox_policy == SandboxPolicy::ReadOnly {
+            return self;
+        }
+        for tool in toolbox_tools {
+            self.tools
+                .push_entry(toolbox_tool_entry(tool, self.session_id));
+        }
         self
     }
 

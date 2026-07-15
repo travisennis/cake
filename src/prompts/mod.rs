@@ -25,6 +25,7 @@ use chrono::Local;
 use tracing::{debug, warn};
 
 use crate::clients::{SandboxPolicy, format_tool_list_section};
+use crate::config::toolbox::ToolboxTool;
 use crate::config::{AgentsFile, SkillCatalog};
 use crate::types::Role;
 
@@ -56,6 +57,7 @@ pub fn resolve_system_prompt(
     cli_system_prompt: Option<&Path>,
     settings_system_prompt: Option<&Path>,
     sandbox_policy: SandboxPolicy,
+    toolbox_tools: &[ToolboxTool],
 ) -> String {
     // 1. --system-prompt CLI flag
     if let Some(path) = cli_system_prompt {
@@ -131,7 +133,7 @@ pub fn resolve_system_prompt(
     if builtin.contains("{{AVAILABLE_TOOLS}}") {
         builtin.replace(
             "{{AVAILABLE_TOOLS}}",
-            &format_tool_list_section(sandbox_policy),
+            &format_tool_list_section(sandbox_policy, toolbox_tools),
         )
     } else {
         builtin
@@ -143,6 +145,10 @@ pub fn resolve_system_prompt(
 /// The first message is the stable system prompt. Mutable context such as
 /// AGENTS.md contents, available skills, and environment context is emitted as
 /// separate developer messages so it is not tied to the system prompt.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "prompt construction naturally requires many inputs"
+)]
 pub fn build_initial_prompt_messages(
     working_dir: &Path,
     config_dir: &Path,
@@ -151,6 +157,7 @@ pub fn build_initial_prompt_messages(
     agents_files: &[AgentsFile],
     skill_catalog: &SkillCatalog,
     sandbox_policy: SandboxPolicy,
+    toolbox_tools: &[ToolboxTool],
 ) -> Vec<(Role, String)> {
     let mut messages = vec![(
         Role::System,
@@ -160,6 +167,7 @@ pub fn build_initial_prompt_messages(
             cli_system_prompt,
             settings_system_prompt,
             sandbox_policy,
+            toolbox_tools,
         ),
     )];
     let context = format_agents_context(agents_files);
@@ -271,6 +279,7 @@ mod tests {
             None,
             None,
             SandboxPolicy::WorkspaceWrite,
+            &[],
         );
         assert!(prompt.starts_with("You are cake."));
     }
@@ -290,6 +299,7 @@ mod tests {
             None,
             None,
             SandboxPolicy::WorkspaceWrite,
+            &[],
         );
         assert_eq!(prompt, "Project prompt");
     }
@@ -307,6 +317,7 @@ mod tests {
             None,
             None,
             SandboxPolicy::WorkspaceWrite,
+            &[],
         );
         assert_eq!(prompt, "User prompt");
     }
@@ -327,6 +338,7 @@ mod tests {
             None,
             None,
             SandboxPolicy::WorkspaceWrite,
+            &[],
         );
         assert_eq!(prompt, "Project prompt");
     }
@@ -346,6 +358,7 @@ mod tests {
             None,
             None,
             SandboxPolicy::WorkspaceWrite,
+            &[],
         );
         assert_eq!(prompt, "");
     }
@@ -365,6 +378,7 @@ mod tests {
             None,
             None,
             SandboxPolicy::WorkspaceWrite,
+            &[],
         );
         assert_eq!(prompt, "");
     }
@@ -394,6 +408,7 @@ mod tests {
             None,
             None,
             SandboxPolicy::WorkspaceWrite,
+            &[],
         );
 
         #[cfg(unix)]
@@ -443,6 +458,7 @@ mod tests {
             None,
             None,
             SandboxPolicy::WorkspaceWrite,
+            &[],
         );
 
         #[cfg(unix)]
@@ -479,6 +495,7 @@ mod tests {
             None,
             None,
             SandboxPolicy::WorkspaceWrite,
+            &[],
         );
         assert!(!prompt.starts_with('\n'));
         assert!(!prompt.ends_with('\n'));
@@ -501,6 +518,7 @@ mod tests {
             &[],
             &SkillCatalog::empty(),
             SandboxPolicy::WorkspaceWrite,
+            &[],
         );
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].0, Role::System);
@@ -533,6 +551,7 @@ mod tests {
             &files,
             &SkillCatalog::empty(),
             SandboxPolicy::WorkspaceWrite,
+            &[],
         );
         let prompt = render_messages(&messages);
         assert!(prompt.contains("## Additional Context"));
@@ -560,6 +579,7 @@ mod tests {
             &files,
             &SkillCatalog::empty(),
             SandboxPolicy::WorkspaceWrite,
+            &[],
         );
         let prompt = render_messages(&messages);
         assert!(prompt.contains("## Additional Context"));
@@ -590,6 +610,7 @@ mod tests {
             &files,
             &SkillCatalog::empty(),
             SandboxPolicy::WorkspaceWrite,
+            &[],
         );
         let prompt = render_messages(&messages);
         // Should not include Project Context section since all files are empty
@@ -619,6 +640,7 @@ mod tests {
             &[],
             &catalog,
             SandboxPolicy::WorkspaceWrite,
+            &[],
         );
         let prompt = render_messages(&messages);
         assert!(prompt.contains("## Skills"));
@@ -653,6 +675,7 @@ mod tests {
             &files,
             &catalog,
             SandboxPolicy::WorkspaceWrite,
+            &[],
         );
         let prompt = render_messages(&messages);
         // AGENTS.md comes before Skills
@@ -672,6 +695,7 @@ mod tests {
             &[],
             &SkillCatalog::empty(),
             SandboxPolicy::WorkspaceWrite,
+            &[],
         );
         assert_prompt_snapshot("prompt_empty", &messages);
     }
@@ -691,6 +715,7 @@ mod tests {
             &files,
             &SkillCatalog::empty(),
             SandboxPolicy::WorkspaceWrite,
+            &[],
         );
         assert_prompt_snapshot("prompt_with_project_agents", &messages);
     }
@@ -716,6 +741,7 @@ mod tests {
             &files,
             &SkillCatalog::empty(),
             SandboxPolicy::WorkspaceWrite,
+            &[],
         );
         assert_prompt_snapshot("prompt_with_user_and_project_agents", &messages);
     }
@@ -739,6 +765,7 @@ mod tests {
             &[],
             &catalog,
             SandboxPolicy::WorkspaceWrite,
+            &[],
         );
         assert_prompt_snapshot("prompt_with_skill_catalog", &messages);
     }
@@ -766,6 +793,7 @@ mod tests {
             &files,
             &catalog,
             SandboxPolicy::WorkspaceWrite,
+            &[],
         );
         assert_prompt_snapshot("prompt_with_agents_and_skills", &messages);
     }

@@ -490,6 +490,7 @@ fn forked_session_seeds_skills_from_structured_records() {
         &[(Role::System, "system".to_string())],
         HashMap::new(),
         Arc::new(ToolContext::from_current_process()),
+        Vec::new(),
         uuid::uuid!("550e8400-e29b-41d4-a716-446655440001"),
     )
     .unwrap();
