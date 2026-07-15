@@ -119,11 +119,11 @@ fn validate_path_for_write(path_str: &str) -> Result<PathBuf, String>
 This function:
 
 1. For existing files: uses standard validation
-2. For new files: walks up the tree to find an existing parent directory
-3. Validates that parent is within allowed directories
-4. Reconstructs the full path with the canonicalized parent
+2. For new files: resolves the path root-to-leaf with symlink-aware semantics. Existing path components are resolved via `canonicalize()` (following symlinks). When a component does not exist, the remaining path suffix is normalised lexically (`..` cancels the preceding normal component).
+3. Validates the resolved base directory is within allowed directories.
+4. Appends the normalised suffix components to reconstruct the full path.
 
-This allows creating new files in new subdirectories while maintaining security.
+This allows creating new files in new subdirectories while maintaining security, correctly handles parent-directory (`..`) components across nonexistent ancestors, and preserves symlink resolution for existing path segments.
 
 ## Individual Tools
 
@@ -403,9 +403,9 @@ The `name` field from the describe output is authoritative (not the filename) an
 - The process runs in the session working directory with `AGENT=cake` and the session id in both `CAKE_THREAD_ID` and `AGENT_THREAD_ID`.
 - stdout becomes the tool result. Output is read with a hard 50KB cap: once exceeded, the tool is stopped and the captured output is returned with a truncation marker. stderr goes to cake's log file for tool-author diagnostics (first 10KB kept).
 - Exit code 0 is success; non-zero returns an error containing the exit status and stderr.
-- Each invocation runs in its own Unix process group. The per-tool timeout (default 60s) covers the whole operation — argument delivery, output capture, and process exit — and timeout or output-cap paths terminate the entire process group, including descendants.
+- Each invocation runs in its own Unix process group. The per-tool timeout (default 60s) covers the whole operation --- argument delivery, output capture, and process exit --- and timeout or output-cap paths terminate the entire process group, including descendants.
 
-**Sandboxing**: toolbox tools run as separate processes *without* cake's OS sandbox — they are user-provided and trusted. For that reason, under the read-only sandbox policy toolbox executables are never run at all: discovery and the describe action are skipped entirely (even describe executes user code that could mutate the workspace), and no `tb__*` tools are registered (same rationale as removing Edit/Write there: they would bypass the policy's no-mutation guarantee).
+**Sandboxing**: toolbox tools run as separate processes *without* cake's OS sandbox --- they are user-provided and trusted. For that reason, under the read-only sandbox policy toolbox executables are never run at all: discovery and the describe action are skipped entirely (even describe executes user code that could mutate the workspace), and no `tb__*` tools are registered (same rationale as removing Edit/Write there: they would bypass the policy's no-mutation guarantee).
 
 **Scheduling**: toolbox calls execute concurrently like other non-mutating calls; the scheduler cannot determine their mutation targets, so same-path serialization (ADR-013) does not apply to them.
 

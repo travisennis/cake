@@ -1,6 +1,7 @@
 use crate::clients::tools::ToolContext;
 use serde::Deserialize;
-use std::path::Path;
+use std::ffi::{OsStr, OsString};
+use std::path::{Path, PathBuf};
 
 // =============================================================================
 // Write Tool Definition
@@ -67,12 +68,14 @@ pub(super) fn execute_write(
         super::format_json_parse_error(&repaired, &e, "write", expected_write_arguments_shape())
     })?;
 
-    // Check if file exists to determine if it's a create or overwrite
-    let file_existed = Path::new(&args.path).exists();
-
     // Validate path is within working directory
-    // For new files, we need to handle the case where the file doesn't exist yet
     let path = validate_path_for_write(context, &args.path)?;
+
+    // Check if file exists to determine if it's a create or overwrite.
+    // This must use the validated (normalised) path so that writes to
+    // files that exist only after normalisation are correctly reported
+    // as overwrites.
+    let file_existed = path.exists();
 
     // Create parent directories if they don't exist
     if let Some(parent) = path.parent()
@@ -123,45 +126,30 @@ fn validate_path_for_write(
         return super::validate_path_for_write(context, path_str);
     }
 
-    // For new files, find the deepest existing parent directory
-    let parent = path
-        .parent()
-        .ok_or_else(|| format!("Invalid file path (no parent): {path_str}"))?;
+    // Resolve the path root-to-leaf with symlink-aware semantics for existing
+    // components. Non-existing suffixes are normalised lexically so that
+    // parent-directory components across nonexistent ancestors are handled
+    // correctly (<cwd>/missing/../target → <cwd>/target).
+    let (resolved_base, pending) = resolve_write_path(path);
 
-    // Walk up the tree to find an existing directory we can canonicalize
-    let mut current_parent = parent;
-    let mut components_to_create = Vec::new();
-
-    while !current_parent.exists() {
-        if let Some(file_name) = current_parent.file_name() {
-            components_to_create.push(file_name.to_os_string());
-        }
-        current_parent = current_parent
-            .parent()
-            .ok_or_else(|| format!("Cannot find existing parent directory for path: {path_str}"))?;
-    }
-
-    // Canonicalize the deepest existing parent
-    let canonical_parent = current_parent.canonicalize().map_err(|e| {
+    // Validate the resolved base is within allowed directories
+    let canonical_base = resolved_base.canonicalize().map_err(|e| {
         format!(
             "Parent directory not found '{}': {e}",
-            current_parent.display()
+            resolved_base.display()
         )
     })?;
 
-    // Check if the existing parent is within allowed directories
-    let is_in_cwd = canonical_parent.starts_with(&context.cwd);
+    let is_in_cwd = canonical_base.starts_with(&context.cwd);
     let is_in_temp = super::get_temp_directories(context)
         .iter()
-        .any(|temp_dir| canonical_parent.starts_with(temp_dir));
+        .any(|temp_dir| canonical_base.starts_with(temp_dir));
     let is_in_settings = super::get_settings_dirs(context)
         .iter()
-        .any(|settings_dir| canonical_parent.starts_with(settings_dir));
-
-    // Check if parent is in a read-only additional directory
+        .any(|settings_dir| canonical_base.starts_with(settings_dir));
     let is_in_read_only = super::get_additional_dirs(context)
         .iter()
-        .any(|add_dir| canonical_parent.starts_with(add_dir));
+        .any(|add_dir| canonical_base.starts_with(add_dir));
 
     if is_in_read_only {
         return Err(format!(
@@ -177,17 +165,88 @@ fn validate_path_for_write(
         ));
     }
 
-    // Reconstruct the full path with the canonicalized parent
-    let mut final_path = canonical_parent;
-    for component in components_to_create.iter().rev() {
+    // Reconstruct the full path: resolved base + pending components
+    let mut final_path = resolved_base;
+    for component in &pending {
         final_path = final_path.join(component);
     }
+    Ok(final_path)
+}
 
-    // Add the filename
-    let file_name = path
-        .file_name()
-        .ok_or_else(|| format!("Invalid file path (no file name): {path_str}"))?;
-    Ok(final_path.join(file_name))
+/// Walk a path root-to-leaf, resolving existing components via the filesystem
+/// (following symlinks) and collecting non-existing components for lexical
+/// normalisation.
+///
+/// Returns `(existing_base, pending_components)` where `existing_base` is the
+/// deepest canonicalised prefix that exists on disk, and `pending_components`
+/// is the lexically-normalised remainder.
+///
+/// `..` components before a non-existing segment are resolved through the
+/// filesystem (preserving symlink semantics). `..` components within the
+/// non-existing segment cancel a preceding pending normal component.
+fn resolve_write_path(path: &Path) -> (PathBuf, Vec<OsString>) {
+    let mut resolved = PathBuf::new();
+    let mut pending: Vec<OsString> = Vec::new();
+    let mut missing = false;
+
+    for component in path.components() {
+        match component {
+            std::path::Component::RootDir => {
+                resolved = PathBuf::from("/");
+                pending.clear();
+                missing = false;
+            },
+            std::path::Component::Prefix(p) => {
+                resolved.push(p.as_os_str());
+                pending.clear();
+                missing = false;
+            },
+            std::path::Component::CurDir => {
+                // skip `.`
+            },
+            std::path::Component::Normal(name) => {
+                if missing {
+                    pending.push(name.to_os_string());
+                } else {
+                    let candidate = resolved.join(name);
+                    if candidate.exists() {
+                        // Follow symlinks by canonicalizing
+                        resolved = candidate.canonicalize().unwrap_or(candidate);
+                    } else {
+                        missing = true;
+                        pending.push(name.to_os_string());
+                    }
+                }
+            },
+            std::path::Component::ParentDir => {
+                if !missing {
+                    let candidate = resolved.join("..");
+                    if candidate.exists() {
+                        resolved = candidate.canonicalize().unwrap_or(candidate);
+                    } else {
+                        missing = true;
+                        pending.push(OsStr::new("..").to_os_string());
+                    }
+                } else if !pending.is_empty() {
+                    // `..` in the non-existing segment cancels the last
+                    // pending normal component. If pending is now empty,
+                    // resume filesystem resolution so that subsequent
+                    // existing symlinks are canonicalized correctly.
+                    pending.pop();
+                    if pending.is_empty() {
+                        missing = false;
+                    }
+                } else if resolved.as_os_str().is_empty() || resolved == Path::new("/") {
+                    // `..` at root or empty base is a no-op
+                } else {
+                    // `..` above a fully-resolved non-root base — go up
+                    resolved.pop();
+                }
+            },
+        }
+    }
+
+    (resolved, pending)
 }
 
 #[cfg(test)]
@@ -195,6 +254,55 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
+
+    /// Lexically normalise a path by resolving `.` and `..` components without
+    /// touching the filesystem.
+    fn normalize_path(path: &Path) -> PathBuf {
+        let mut components: Vec<OsString> = Vec::new();
+        let mut root: Option<OsString> = None;
+
+        for component in path.components() {
+            match component {
+                std::path::Component::RootDir => {
+                    components.clear();
+                    root = Some(OsStr::new("/").to_os_string());
+                },
+                std::path::Component::Prefix(p) => {
+                    components.clear();
+                    root = Some(p.as_os_str().to_os_string());
+                },
+                std::path::Component::CurDir => {
+                    // skip `.`
+                },
+                std::path::Component::ParentDir => {
+                    // Pop the last component if it is a Normal component
+                    // (not a preserved `..` from an earlier ParentDir).
+                    match components.last() {
+                        Some(c) if c.as_os_str() != OsStr::new("..") => {
+                            components.pop();
+                        },
+                        _ if root.is_none() => {
+                            // Relative path above cwd — preserve `..`
+                            components.push(OsStr::new("..").to_os_string());
+                        },
+                        _ => {},
+                    }
+                },
+                std::path::Component::Normal(name) => {
+                    components.push(name.to_os_string());
+                },
+            }
+        }
+
+        let mut result = PathBuf::new();
+        if let Some(r) = root {
+            result.push(r);
+        }
+        for c in &components {
+            result.push(c);
+        }
+        result
+    }
 
     #[test]
     fn create_new_file() {
@@ -251,6 +359,72 @@ mod tests {
 
         let content = fs::read_to_string(&nested_path).unwrap();
         assert_eq!(content, "Deep content");
+    }
+
+    #[test]
+    fn parent_components_across_nonexistent_ancestor() {
+        let temp_dir = TempDir::new().unwrap();
+        let base = temp_dir.path();
+
+        // Path with `..` traversing a directory that does not exist.
+        // e.g. <base>/missing/../target/file.txt  ->  <base>/target/file.txt
+        let raw_path = base.join("missing/../target/file.txt");
+        let normalized_path = base.join("target/file.txt");
+
+        let args = serde_json::json!({
+            "path": raw_path.to_str().unwrap(),
+            "content": "parent-component test",
+        })
+        .to_string();
+
+        let result = execute_write(&ToolContext::from_current_process(), &args).unwrap();
+        assert!(result.output.contains("Created:"));
+
+        // The file must exist at the *normalized* location.
+        assert!(
+            normalized_path.exists(),
+            "file should be at the normalized path: {}",
+            normalized_path.display()
+        );
+        let content = fs::read_to_string(&normalized_path).unwrap();
+        assert_eq!(content, "parent-component test");
+
+        // The `missing` directory should never have been created.
+        assert!(
+            !base.join("missing").exists(),
+            "intermediate `missing` directory must not be created"
+        );
+
+        // mutating_target must agree with the resolved destination.
+        // Canonicalise the expected path because the validator uses
+        // `canonicalize` on the deepest existing parent (macOS may expand
+        // /var → /private/var).
+        let target = mutating_target(&ToolContext::from_current_process(), &args).unwrap();
+        let expected =
+            std::fs::canonicalize(&normalized_path).unwrap_or_else(|_| normalized_path.clone());
+        assert_eq!(
+            target, expected,
+            "mutating_target must return the normalized path"
+        );
+    }
+
+    #[test]
+    fn parent_components_above_root_are_rejected() {
+        // An absolute path that lexically normalises above root should be
+        // caught as outside the working directory.
+        let args = serde_json::json!({
+            "path": "/../etc/passwd",
+            "content": "escape",
+        })
+        .to_string();
+
+        let result = execute_write(&ToolContext::from_current_process(), &args);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("outside the working directory"),
+            "expected 'outside the working directory' error, got: {err}"
+        );
     }
 
     #[test]
@@ -366,5 +540,48 @@ mod tests {
             msg.contains("raw control character"),
             "Hint should mention raw control chars: {msg}"
         );
+    }
+
+    #[test]
+    fn normalize_path_removes_dot_components() {
+        assert_eq!(normalize_path(Path::new("/a/b/./c")), Path::new("/a/b/c"));
+    }
+
+    #[test]
+    fn normalize_path_resolves_parent_components() {
+        assert_eq!(normalize_path(Path::new("/a/b/../c")), Path::new("/a/c"));
+    }
+
+    #[test]
+    fn normalize_path_multiple_parent() {
+        assert_eq!(
+            normalize_path(Path::new("/a/b/c/../../d")),
+            Path::new("/a/d")
+        );
+    }
+
+    #[test]
+    fn normalize_path_parent_above_root_is_noop() {
+        assert_eq!(normalize_path(Path::new("/../c")), Path::new("/c"));
+    }
+
+    #[test]
+    fn normalize_path_relative_with_dotdot() {
+        assert_eq!(normalize_path(Path::new("a/../../c")), Path::new("../c"));
+    }
+
+    #[test]
+    fn normalize_path_relative_preserves_leading_dotdot() {
+        assert_eq!(normalize_path(Path::new("../../c")), Path::new("../../c"));
+    }
+
+    #[test]
+    fn normalize_path_empty_is_empty() {
+        assert_eq!(normalize_path(Path::new("")), Path::new(""));
+    }
+
+    #[test]
+    fn normalize_path_root_only() {
+        assert_eq!(normalize_path(Path::new("/")), Path::new("/"));
     }
 }
