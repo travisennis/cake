@@ -239,6 +239,67 @@ async fn test_streaming_timeout() {
 }
 
 #[tokio::test]
+async fn test_streaming_closed_streams_does_not_hang() {
+    // Command closes both stdout and stderr (by redirecting to /dev/null)
+    // but stays alive.  The configured timeout must cover the process wait
+    // even after both streams reach EOF.
+    let args = r#"{"command": "exec 1>/dev/null 2>&1; sleep 999", "timeout": 1}"#;
+    let result = Box::pin(execute_bash_unsandboxed(args)).await;
+    assert!(
+        result.is_err(),
+        "expected timeout error but got: {result:?}"
+    );
+    assert!(
+        result.unwrap_err().contains("timed out"),
+        "expected 'timed out' in error"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_streaming_timeout_kills_descendants() {
+    // Command spawns a background process that would outlive a 1-second
+    // timeout.  The process-group cleanup must terminate the descendant
+    // before it can create a marker file.
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("descendant-survived");
+    let script = format!(
+        // The background sleep creates the marker after the timeout fires.
+        // If descendant cleanup works, the file will never be created.
+        "#!/bin/sh\n(sleep 2; touch '{}') &\nsleep 999\n",
+        marker.display()
+    );
+    let script_path = dir.path().join("spawns_child.sh");
+    std::fs::write(&script_path, script.as_bytes()).unwrap();
+    std::fs::set_permissions(
+        &script_path,
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
+
+    let args = format!(
+        r#"{{"command": "{}", "timeout": 1}}"#,
+        script_path.display()
+    );
+    let result = Box::pin(execute_bash_unsandboxed(&args)).await;
+    assert!(
+        result.is_err(),
+        "expected timeout error but got: {result:?}"
+    );
+    assert!(
+        result.unwrap_err().contains("timed out"),
+        "expected 'timed out' in error"
+    );
+
+    // Give the OS time to reap killed descendants.
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    assert!(
+        !marker.exists(),
+        "a descendant survived the bash timeout and was not terminated"
+    );
+}
+
+#[tokio::test]
 async fn test_streaming_stderr_included() {
     // Command that writes to stderr has it captured with metadata footer
     let args = r#"{"command": "echo err >&2"}"#;

@@ -509,6 +509,14 @@ async fn execute_bash_with_args(
     };
     let sandbox_applied = sandbox_guard.is_some();
 
+    // Place the child in its own process group so that SIGKILL to the
+    // negative PID kills all descendants, not just the direct child.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.as_std_mut().process_group(0);
+    }
+
     // Spawn the command with piped stdout/stderr for streaming
     let mut child = command
         .spawn()
@@ -517,17 +525,26 @@ async fn execute_bash_with_args(
     let mut stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
     let mut stderr = child.stderr.take().ok_or("Failed to capture stderr")?;
 
-    let mut buf = Vec::with_capacity(BASH_OUTPUT_MAX_BYTES);
-    let mut stderr_buf = Vec::new();
-    let mut tmp_stdout = [0u8; 8192];
-    let mut tmp_stderr = [0u8; 8192];
-    let mut hit_cap = false;
+    // The configured timeout covers the full lifecycle: reading both
+    // streams, optionally killing the process group on cap, and reaping
+    // the child.  This prevents hangs when a command closes both captured
+    // streams while continuing to run — the wait is bounded by the same
+    // timeout as the read loop.
+    #[expect(
+        clippy::large_futures,
+        reason = "Bash lifecycle covers read, kill, and wait"
+    )]
+    let lifecycle_result = timeout(Duration::from_secs(args.timeout), async {
+        let mut buf = Vec::with_capacity(BASH_OUTPUT_MAX_BYTES);
+        let mut stderr_buf = Vec::new();
+        let mut tmp_stdout = [0u8; 8192];
+        let mut tmp_stderr = [0u8; 8192];
+        let mut hit_cap = false;
 
-    // Read both streams concurrently, interleaved, with a timeout.
-    // stderr is also captured separately so sandbox-init errors can be
-    // detected from stderr alone, avoiding false positives when a user
-    // command prints the literal string `sandbox-exec: sandbox_apply`.
-    let read_result = timeout(Duration::from_secs(args.timeout), async {
+        // Read both streams concurrently, interleaved, with a timeout.
+        // stderr is also captured separately so sandbox-init errors can be
+        // detected from stderr alone, avoiding false positives when a user
+        // command prints the literal string `sandbox-exec: sandbox_apply`.
         loop {
             tokio::select! {
                 n = stdout.read(&mut tmp_stdout) => {
@@ -537,14 +554,15 @@ async fn execute_bash_with_args(
                         loop {
                             let n = stderr.read(&mut tmp_stderr).await
                                 .map_err(|e| format!("stderr read error: {e}"))?;
-                            if n == 0 { return Ok::<_, String>(()); }
+                            if n == 0 { break; }
                             buf.extend_from_slice(&tmp_stderr[..n]);
                             stderr_buf.extend_from_slice(&tmp_stderr[..n]);
-                            if buf.len() >= BASH_READ_CAP { hit_cap = true; return Ok(()); }
+                            if buf.len() >= BASH_READ_CAP { hit_cap = true; break; }
                         }
+                        break;
                     }
                     buf.extend_from_slice(&tmp_stdout[..n]);
-                    if buf.len() >= BASH_READ_CAP { hit_cap = true; return Ok(()); }
+                    if buf.len() >= BASH_READ_CAP { hit_cap = true; break; }
                 }
                 n = stderr.read(&mut tmp_stderr) => {
                     let n = n.map_err(|e| format!("stderr read error: {e}"))?;
@@ -553,31 +571,73 @@ async fn execute_bash_with_args(
                         loop {
                             let n = stdout.read(&mut tmp_stdout).await
                                 .map_err(|e| format!("stdout read error: {e}"))?;
-                            if n == 0 { return Ok(()); }
+                            if n == 0 { break; }
                             buf.extend_from_slice(&tmp_stdout[..n]);
-                            if buf.len() >= BASH_READ_CAP { hit_cap = true; return Ok(()); }
+                            if buf.len() >= BASH_READ_CAP { hit_cap = true; break; }
                         }
+                        break;
                     }
                     buf.extend_from_slice(&tmp_stderr[..n]);
                     stderr_buf.extend_from_slice(&tmp_stderr[..n]);
-                    if buf.len() >= BASH_READ_CAP { hit_cap = true; return Ok(()); }
+                    if buf.len() >= BASH_READ_CAP { hit_cap = true; break; }
                 }
             }
         }
+
+        // If we hit the cap, terminate the process group so descendants
+        // do not survive.
+        if hit_cap {
+            #[cfg(unix)]
+            if let Some(pid) = child.id() {
+                #[expect(
+                    clippy::cast_possible_wrap,
+                    reason = "PIDs fit in i32 on all supported Unix targets"
+                )]
+                // SAFETY: pid was obtained from `Child::id()` at a point when the
+                // child was still alive, and the child's process group ID equals
+                // its PID because `process_group(0)` was called before spawn.
+                // A negative PID in `kill(2)` targets every process in the group
+                // |pid|.
+                unsafe {
+                    libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
+                }
+            }
+            #[cfg(not(unix))]
+            let _ = child.kill().await;
+        }
+
+        let status = child.wait().await.ok();
+        Ok::<_, String>((buf, stderr_buf, hit_cap, status))
     })
     .await;
 
-    match read_result {
-        Ok(Ok(())) => {},
+    let (buf, stderr_buf, hit_cap, status) = match lifecycle_result {
+        Ok(Ok(tuple)) => tuple,
         Ok(Err(e)) => return Err(e),
-        Err(_) => return Err(format!("Command timed out after {} seconds", args.timeout)),
-    }
+        Err(_) => {
+            // Timed out: terminate the process group and reap with a
+            // short grace period so the OS has time to deliver SIGKILL.
+            #[cfg(unix)]
+            if let Some(pid) = child.id() {
+                #[expect(
+                    clippy::cast_possible_wrap,
+                    reason = "PIDs fit in i32 on all supported Unix targets"
+                )]
+                // SAFETY: same reasoning as the cap path above — the child
+                // is in its own process group and the PID is still valid
+                // because we have not yet waited for it.
+                unsafe {
+                    libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
+                }
+            }
+            #[cfg(not(unix))]
+            let _ = child.kill().await;
+            // Grace period: give the OS time to deliver SIGKILL.
+            let _grace = timeout(Duration::from_secs(5), child.wait()).await;
+            return Err(format!("Command timed out after {} seconds", args.timeout));
+        },
+    };
 
-    // If we hit the cap, kill the child explicitly
-    if hit_cap {
-        _ = child.kill().await;
-    }
-    let status = child.wait().await.ok();
     let elapsed_ms = start_time.elapsed().as_millis();
     let stderr_str = String::from_utf8_lossy(&stderr_buf);
     let success = status
