@@ -1159,9 +1159,10 @@ impl Drop for WorktreeGuard {
                 );
             },
             Err(e) => {
-                tracing::warn!(
-                    "Could not check worktree '{}' for changes, keeping it: {e}",
-                    wt.name
+                eprintln!(
+                    "Could not determine state of worktree '{}', keeping at {}: {e}",
+                    wt.name,
+                    wt.path.display()
                 );
             },
         }

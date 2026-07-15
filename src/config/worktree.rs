@@ -190,7 +190,9 @@ pub fn has_changes(wt_path: &Path) -> anyhow::Result<bool> {
             let log_output = String::from_utf8_lossy(&output.stdout);
             Ok(!log_output.trim().is_empty())
         },
-        _ => Ok(false),
+        _ => Err(anyhow!(
+            "Cannot determine whether worktree has changes: no upstream branch configured"
+        )),
     }
 }
 
@@ -492,7 +494,20 @@ mod tests {
     fn test_has_changes_clean() {
         let dir = init_test_repo();
         let wt = create(dir.path(), Some("clean")).unwrap();
-        assert!(!has_changes(&wt.path).unwrap());
+        // Clean worktree in a no-remote repo has no upstream, so
+        // has_changes returns an error (indeterminate state) rather
+        // than silently returning "clean".
+        let result = has_changes(&wt.path);
+        assert!(
+            result.is_err(),
+            "clean worktree without upstream should return error, got: {result:?}"
+        );
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("no upstream") || msg.contains("Cannot determine"),
+            "error should mention missing upstream: {msg}"
+        );
     }
 
     #[test]

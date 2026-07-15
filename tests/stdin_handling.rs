@@ -177,8 +177,18 @@ fn test_worktree_early_failure_cleans_up() {
     // fails after worktree setup.
     let env = cake_env();
 
-    // Init a git repo.
+    // Disable automatic upstream setup so the generated worktree has no
+    // upstream, making has_changes return an error.
     init_git_repo(&env.workspace_dir);
+    assert!(
+        std::process::Command::new("git")
+            .args(["config", "branch.autoSetupMerge", "false"])
+            .current_dir(&env.workspace_dir)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
 
     // Count worktrees before.
     let before = count_worktrees(&env.workspace_dir);
@@ -204,11 +214,11 @@ fn test_worktree_early_failure_cleans_up() {
         "Should fail with model error. Stderr: {stderr}"
     );
 
-    // The guard should have removed the unused worktree.
     let after = count_worktrees(&env.workspace_dir);
     assert_eq!(
-        before, after,
-        "Worktree count should not increase after a failed --worktree run"
+        before + 1,
+        after,
+        "Worktree should be retained when its state is indeterminate (no upstream)"
     );
 }
 
