@@ -293,11 +293,14 @@ fn retry_status(
     detail: String,
     headers: &HeaderMap,
 ) -> RetryStatus {
+    let delay = parse_retry_after(headers)
+        .unwrap_or_else(|| fallback_delay(policy, attempt, session_id))
+        .min(policy.max_backoff);
+
     RetryStatus {
         attempt: attempt + 1,
         max_retries: policy.max_retries,
-        delay: parse_retry_after(headers)
-            .unwrap_or_else(|| fallback_delay(policy, attempt, session_id)),
+        delay,
         reason,
         detail,
     }
@@ -547,6 +550,97 @@ mod tests {
             parse_retry_after_at(&headers, now),
             Some(Duration::from_secs(90))
         );
+    }
+
+    #[test]
+    fn retry_after_delta_seconds_capped_to_policy_max_backoff() {
+        let policy = RetryPolicy {
+            max_backoff: Duration::from_secs(10),
+            ..RetryPolicy::default()
+        };
+        let mut headers = HeaderMap::new();
+        // 300 seconds is well above the 10-second cap
+        headers.insert(RETRY_AFTER, HeaderValue::from_static("300"));
+        let failure = HttpFailure {
+            status: 429,
+            headers,
+            body: String::new(),
+        };
+
+        match classify_http_failure(
+            &policy,
+            &failure,
+            1,
+            session_id(),
+            &RequestOverrides::default(),
+        ) {
+            RetryDecision::Retry { status } => {
+                assert_eq!(status.delay, policy.max_backoff);
+            },
+            other => panic!("expected capped retry delay, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn retry_after_http_date_capped_to_policy_max_backoff() {
+        let policy = RetryPolicy {
+            max_backoff: Duration::from_secs(5),
+            ..RetryPolicy::default()
+        };
+        let retry_at = Utc::now() + chrono::Duration::seconds(300);
+        let retry_after = retry_at.to_rfc2822();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            RETRY_AFTER,
+            HeaderValue::from_bytes(retry_after.as_bytes()).unwrap(),
+        );
+        let failure = HttpFailure {
+            status: 429,
+            headers,
+            body: String::new(),
+        };
+
+        match classify_http_failure(
+            &policy,
+            &failure,
+            1,
+            session_id(),
+            &RequestOverrides::default(),
+        ) {
+            RetryDecision::Retry { status } => {
+                assert_eq!(status.delay, policy.max_backoff);
+            },
+            other => panic!("expected capped retry delay, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn retry_after_below_cap_is_honored_exactly() {
+        let policy = RetryPolicy {
+            max_backoff: Duration::from_secs(10),
+            ..RetryPolicy::default()
+        };
+        let mut headers = HeaderMap::new();
+        // 3 seconds is well below the 10-second cap
+        headers.insert(RETRY_AFTER, HeaderValue::from_static("3"));
+        let failure = HttpFailure {
+            status: 429,
+            headers,
+            body: String::new(),
+        };
+
+        match classify_http_failure(
+            &policy,
+            &failure,
+            1,
+            session_id(),
+            &RequestOverrides::default(),
+        ) {
+            RetryDecision::Retry { status } => {
+                assert_eq!(status.delay, Duration::from_secs(3));
+            },
+            other => panic!("expected retry with exact delay, got {other:?}"),
+        }
     }
 
     #[test]

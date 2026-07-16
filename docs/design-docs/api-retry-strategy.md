@@ -27,6 +27,8 @@ An explicit `x-should-retry: false` header is authoritative. If it conflicts wit
 
 `Retry-After` wins when present and parseable. The parser supports delta seconds and HTTP-date values.
 
+For retryable HTTP failures, cake caps the selected delay to the active `RetryPolicy.max_backoff`. A provider or intermediary cannot use `Retry-After` to stall the CLI longer than the configured maximum. Ordinary values below the cap are honored exactly.
+
 When no `Retry-After` is available, cake uses bounded exponential backoff with deterministic jitter derived from the session id and attempt number. The jitter de-synchronizes concurrent sessions without adding a random-number dependency.
 
 ## Transport Recovery
