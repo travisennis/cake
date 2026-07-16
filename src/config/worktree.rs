@@ -294,6 +294,10 @@ fn copy_worktree_includes(source_root: &Path, dest_root: &Path) -> anyhow::Resul
 
 /// Recursively walk `dir` (under `base`), match each file against `patterns`,
 /// and copy matches to the corresponding path under `dest_root`.
+///
+/// Uses `any_pattern_could_match_under` to prune directories whose contents
+/// cannot match any configured pattern, avoiding traversal into known heavy
+/// irrelevant trees.
 fn collect_matching_files(
     base: &Path,
     dir: &Path,
@@ -311,6 +315,18 @@ fn collect_matching_files(
             let name = entry.file_name();
             // Skip internal git and cake directories.
             if name == ".git" || name == ".cake" {
+                continue;
+            }
+            // Prune directories whose contents cannot match any pattern.
+            let relative_dir = path.strip_prefix(base).with_context(|| {
+                format!(
+                    "path {} is not under base {}",
+                    path.display(),
+                    base.display()
+                )
+            })?;
+            let relative_dir_str = relative_dir.to_string_lossy();
+            if !any_pattern_could_match_under(patterns, &relative_dir_str) {
                 continue;
             }
             collect_matching_files(base, &path, patterns, dest_root, copied)?;
@@ -349,64 +365,157 @@ fn collect_matching_files(
 ///
 /// Everything else is matched literally.  Anchoring to the start of the path
 /// is implicit (the whole path must match).
+///
+/// Uses an iterative byte-level algorithm with a visited set to avoid the
+/// exponential backtracking of a naive recursive matcher.  Each unique
+/// (pattern position, path position) pair is explored at most once,
+/// bounding the search to `O(pattern_len` × `path_len`).
 fn glob_match(pattern: &str, path: &str) -> bool {
     glob_match_bytes(pattern.as_bytes(), path.as_bytes())
 }
 
-/// Byte-level recursive glob matcher.
+/// Byte-level iterative glob matcher with visited-set deduplication.
+///
+/// Each unique `(pattern_pos, path_pos)` pair is explored at most once,
+/// bounding the total search to `O(pattern_len` × `path_len`).
 fn glob_match_bytes(pattern: &[u8], path: &[u8]) -> bool {
-    // Base: empty pattern matches empty path.
-    if pattern.is_empty() {
-        return path.is_empty();
-    }
+    use std::collections::HashSet;
 
-    // Handle `**` (match everything including `/`).
-    if pattern.len() >= 2 && pattern[0] == b'*' && pattern[1] == b'*' {
-        // Skip past `**` and an optional following `/`.
-        let rest = if pattern.len() > 2 && pattern[2] == b'/' {
-            &pattern[3..]
-        } else {
-            &pattern[2..]
-        };
-        // Try matching the rest of the pattern at every possible position.
-        for start in 0..=path.len() {
-            if glob_match_bytes(rest, &path[start..]) {
+    let mut visited: HashSet<(usize, usize)> = HashSet::new();
+    let mut stack: Vec<(usize, usize)> = vec![(0, 0)];
+    visited.insert((0, 0));
+
+    while let Some((pi, si)) = stack.pop() {
+        // Pattern exhausted: match only if path is also exhausted.
+        if pi >= pattern.len() {
+            if si >= path.len() {
                 return true;
             }
+            continue;
         }
-        return false;
-    }
 
-    // Handle `*` (match anything except `/`).
-    if pattern[0] == b'*' {
-        let rest = &pattern[1..];
-        // Try matching 0 or more characters, stopping at `/`.
-        for end in 0..=path.len() {
-            if end > 0 && path[end - 1] == b'/' {
-                break;
+        // Handle `**` — matches any characters including `/`.
+        if pi + 1 < pattern.len() && pattern[pi] == b'*' && pattern[pi + 1] == b'*' {
+            // Skip past `**` and an optional following `/`.
+            let rest = if pi + 2 < pattern.len() && pattern[pi + 2] == b'/' {
+                pi + 3
+            } else {
+                pi + 2
+            };
+
+            // Option A: ** matches nothing, continue with rest.
+            if visited.insert((rest, si)) {
+                stack.push((rest, si));
             }
-            if glob_match_bytes(rest, &path[end..]) {
-                return true;
+            // Option B: ** matches one char, stay on **.
+            if si < path.len() && visited.insert((pi, si + 1)) {
+                stack.push((pi, si + 1));
             }
+            continue;
         }
+
+        // Handle `*` — matches any characters except `/`.
+        // This must come before the path-exhaustion check because
+        // `*` can match zero characters even when the path is empty.
+        if pattern[pi] == b'*' {
+            // Option A: * matches nothing.
+            if visited.insert((pi + 1, si)) {
+                stack.push((pi + 1, si));
+            }
+            // Option B: * matches one char (non-/), stay on *.
+            if si < path.len() && path[si] != b'/' && visited.insert((pi, si + 1)) {
+                stack.push((pi, si + 1));
+            }
+            continue;
+        }
+
+        // Path exhausted but pattern has non-* / non-** chars → no match.
+        if si >= path.len() {
+            continue;
+        }
+
+        // Handle `?` — matches any single character except `/`.
+        if pattern[pi] == b'?' {
+            if path[si] != b'/' && visited.insert((pi + 1, si + 1)) {
+                stack.push((pi + 1, si + 1));
+            }
+            continue;
+        }
+
+        // Literal character match.
+        if pattern[pi] == path[si] && visited.insert((pi + 1, si + 1)) {
+            stack.push((pi + 1, si + 1));
+        }
+    }
+
+    false
+}
+
+/// Returns `true` if `pattern` could match a file under the relative directory
+/// `dir_relative`.  Used to prune directory traversal: if no pattern can
+/// possibly reach a directory, we skip it entirely.
+///
+/// `dir_relative` is the path from the source root to the directory being
+/// considered (empty string for root).
+fn pattern_could_match_under(pattern: &str, dir_relative: &str) -> bool {
+    if dir_relative.is_empty() {
+        return true;
+    }
+
+    // Patterns starting with `**` (no preceding `/`) can match at any depth
+    // because `**` crosses `/`.  This includes `**`, `**/...`, `**.env`, etc.
+    if pattern.starts_with("**") {
+        return true;
+    }
+
+    let pattern_segments: Vec<&str> = pattern.split('/').collect();
+    let dir_segments: Vec<&str> = dir_relative.split('/').filter(|s| !s.is_empty()).collect();
+
+    // For fixed-depth patterns (no `**` in any segment), the pattern must
+    // have more segments than the directory to allow for a filename.
+    // For patterns with `**`, the pattern can expand to any depth.
+    let has_doublestar = pattern_segments.iter().any(|s| s.contains("**"));
+    if !has_doublestar && pattern_segments.len() <= dir_segments.len() {
         return false;
     }
 
-    // If the path is empty but the pattern isn't (and isn't a star), no match.
-    if path.is_empty() {
-        return false;
-    }
-
-    // Handle `?` (match any single char except `/`).
-    if pattern[0] == b'?' {
-        if path[0] == b'/' {
+    // Every non-wildcard prefix segment must match corresponding dir segment.
+    for (i, dir_seg) in dir_segments.iter().enumerate() {
+        let pat_seg = pattern_segments[i];
+        // `**` embedded in a segment (e.g., `**.json`, `config/**`) matches
+        // any number of remaining dir segments plus a filename.
+        if pat_seg.contains("**") {
+            return true;
+        }
+        // A single `*` segment matches any single directory component.
+        if pat_seg == "*" {
+            continue;
+        }
+        // Wildcard segment: check if it could match the directory name.
+        if pat_seg.contains('*') || pat_seg.contains('?') {
+            if !glob_match(pat_seg, dir_seg) {
+                return false;
+            }
+            continue;
+        }
+        // Pure literal comparison.
+        if pat_seg != *dir_seg {
             return false;
         }
-        return glob_match_bytes(&pattern[1..], &path[1..]);
     }
 
-    // Literal character match.
-    pattern[0] == path[0] && glob_match_bytes(&pattern[1..], &path[1..])
+    true
+}
+
+/// Returns `true` if any pattern in `patterns` could match a file under
+/// `dir_relative`.
+fn any_pattern_could_match_under(patterns: &[String], dir_relative: &str) -> bool {
+    if dir_relative.is_empty() {
+        return true;
+    }
+    patterns
+        .iter()
+        .any(|p| pattern_could_match_under(p, dir_relative))
 }
 
 #[cfg(test)]
@@ -588,6 +697,239 @@ mod tests {
         assert!(glob_match("**", ""));
         assert!(glob_match("**", "a"));
         assert!(glob_match("**", "a/b/c"));
+    }
+
+    #[test]
+    fn test_glob_match_multiple_doublestar() {
+        // Multiple ** segments should work correctly without explosion.
+        assert!(glob_match("a/**/b/**/c", "a/x/b/z/c"));
+        assert!(glob_match("a/**/b/**/c", "a/x/y/b/z/c"));
+        assert!(glob_match("a/**/b/**/c", "a/b/c"));
+        assert!(!glob_match("a/**/b/**/c", "a/x/y/b/z"));
+        assert!(!glob_match("a/**/b/**/c", "x/a/b/c"));
+    }
+
+    #[test]
+    fn test_glob_match_mixed_wildcards() {
+        // Mix of *, **, and ?.
+        // src/*/lib.? matches one seg under src/ then lib with 1-char extension.
+        assert!(glob_match("src/*/lib.?", "src/core/lib.c"));
+        assert!(!glob_match("src/*/lib.?", "src/core/lib.rs")); // ? matches 1 char, rs is 2
+        assert!(!glob_match("src/*/lib.?", "src/core/lib.rsx"));
+        assert!(!glob_match("src/*/lib.?", "src/core/sub/lib.rs"));
+        // ** with ? in final segment.
+        // Pattern *.?,* matches: prefix + dot + one char + comma + suffix.
+        assert!(glob_match("**/*.?,*", "config/file.r,1"));
+    }
+
+    #[test]
+    fn test_glob_match_literal_segment_with_wildcard_prefix() {
+        // Segment patterns like "*-config" should match.
+        assert!(glob_match("*-config/*.json", "dev-config/settings.json"));
+        assert!(!glob_match("*-config/*.json", "config/settings.json"));
+    }
+
+    // ── glob_match edge-case tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_glob_match_embedded_doublestar() {
+        // ** embedded in a segment (not standalone) should still cross `/`.
+        assert!(glob_match("**.env", "file.env"));
+        assert!(glob_match("**.env", "subdir/file.env"));
+        assert!(glob_match("**.env", "a/b/c/file.env"));
+        assert!(!glob_match("**.env", "file.txt"));
+
+        assert!(glob_match("config/**.json", "config/file.json"));
+        assert!(glob_match("config/**.json", "config/sub/file.json"));
+        assert!(!glob_match("config/**.json", "config/file.txt"));
+        // Should NOT match outside config/.
+        assert!(!glob_match("config/**.json", "src/file.json"));
+    }
+
+    #[test]
+    fn test_glob_match_trailing_doublestar() {
+        // Trailing ** should match any suffix.
+        assert!(glob_match("src/**", "src/lib.rs"));
+        assert!(glob_match("src/**", "src/main.rs"));
+        assert!(glob_match("src/**", "src/sub/mod.rs"));
+        assert!(!glob_match("src/**", "lib.rs"));
+    }
+
+    #[test]
+    fn test_glob_match_multiple_star_no_explosion() {
+        // Multiple * in a single segment should be bounded (polynomial).
+        // This is a correctness + complexity regression test.
+        assert!(glob_match("*a*b*c*", "xyzaxbycz"));
+        assert!(!glob_match("*a*b*c*", "xyzxbycz")); // missing 'a'
+        // Long alternating pattern — the visited set keeps this O(n²).
+        let long_path = "a".repeat(100);
+        assert!(!glob_match("*a*a*a*a*a*a*b", &long_path));
+    }
+
+    #[test]
+    fn test_glob_match_consecutive_stars() {
+        // Consecutive ** then * etc.
+        assert!(glob_match("**/*.rs", "lib.rs"));
+        assert!(glob_match("**/*.rs", "src/lib.rs"));
+        assert!(glob_match("**/*.rs", "src/sub/lib.rs"));
+        assert!(!glob_match("**/*.rs", "lib.txt"));
+    }
+
+    #[test]
+    fn test_pattern_could_match_under_embedded_doublestar() {
+        // Pattern starting with ** (like **.env) can match anywhere.
+        assert!(pattern_could_match_under("**.env", "config"));
+        assert!(pattern_could_match_under("**.env", "target"));
+        assert!(pattern_could_match_under("**.env", "a/b/c"));
+
+        // Pattern with ** in non-first segment (config/**.json).
+        assert!(pattern_could_match_under("config/**.json", "config"));
+        assert!(pattern_could_match_under("config/**.json", "config/sub"));
+        assert!(pattern_could_match_under("config/**.json", "config/a/b"));
+        assert!(!pattern_could_match_under("config/**.json", "target"));
+        assert!(!pattern_could_match_under("config/**.json", "src"));
+    }
+
+    // ── pattern_could_match_under tests ──────────────────────────────────────
+
+    #[test]
+    fn test_pattern_could_match_under_root() {
+        // Root always matches.
+        assert!(pattern_could_match_under("*.env", ""));
+        assert!(pattern_could_match_under("secrets.json", ""));
+        assert!(pattern_could_match_under("**", ""));
+    }
+
+    #[test]
+    fn test_pattern_could_match_under_literal_prefix() {
+        // Patterns with a literal prefix can only match under that prefix.
+        let p = "config/secrets.json";
+        assert!(pattern_could_match_under(p, "config"));
+        assert!(!pattern_could_match_under(p, "target"));
+        assert!(!pattern_could_match_under(p, "src"));
+
+        // Deeper literal prefix.
+        let p = "a/b/c/file.txt";
+        assert!(pattern_could_match_under(p, "a"));
+        assert!(pattern_could_match_under(p, "a/b"));
+        assert!(pattern_could_match_under(p, "a/b/c"));
+        assert!(!pattern_could_match_under(p, "a/x"));
+        assert!(!pattern_could_match_under(p, "target"));
+    }
+
+    #[test]
+    fn test_pattern_could_match_under_star_segment() {
+        // A single `*` segment matches any directory name.
+        let p = "config/*/secrets.json";
+        assert!(pattern_could_match_under(p, "config"));
+        assert!(pattern_could_match_under(p, "config/sub"));
+        assert!(!pattern_could_match_under(p, "config/sub/deep"));
+        assert!(!pattern_could_match_under(p, "target"));
+    }
+
+    #[test]
+    fn test_pattern_could_match_under_doublestar() {
+        // Patterns containing ** can match at any depth.
+        let p = "**/secrets.json";
+        assert!(pattern_could_match_under(p, "config"));
+        assert!(pattern_could_match_under(p, "config/sub"));
+        assert!(pattern_could_match_under(p, "target"));
+        assert!(pattern_could_match_under(p, "a/b/c/d"));
+
+        let p = "config/**/secrets.json";
+        assert!(pattern_could_match_under(p, "config"));
+        assert!(pattern_could_match_under(p, "config/sub"));
+        assert!(pattern_could_match_under(p, "config/a/b"));
+        assert!(!pattern_could_match_under(p, "target"));
+        assert!(!pattern_could_match_under(p, "src"));
+    }
+
+    #[test]
+    fn test_pattern_could_match_under_root_only_patterns() {
+        // Patterns like *.json only match at root.
+        let p = "*.json";
+        assert!(pattern_could_match_under(p, ""));
+        assert!(!pattern_could_match_under(p, "src"));
+        assert!(!pattern_could_match_under(p, "config"));
+        assert!(!pattern_could_match_under(p, "target"));
+    }
+
+    #[test]
+    fn test_pattern_could_match_under_explicit_in_build_dir() {
+        // A pattern like "target/specific-file" should be reachable.
+        let p = "target/specific-file";
+        assert!(pattern_could_match_under(p, "target"));
+        assert!(!pattern_could_match_under(p, "src"));
+    }
+
+    // ── copy_worktree_includes pruning tests ─────────────────────────────────
+
+    #[test]
+    fn test_copy_worktree_includes_prunes_unreachable_dirs() -> TestResult {
+        let source = TempDir::new()?;
+        let dest = TempDir::new()?;
+
+        // Create a deep structure under target/ with many files.
+        fs::create_dir_all(source.path().join("target/debug/build"))?;
+        fs::create_dir_all(source.path().join("target/release/build"))?;
+        fs::create_dir_all(source.path().join("src/lib"))?;
+
+        // Create many files in target/ (simulating build artifacts).
+        for i in 0..50 {
+            fs::write(
+                source.path().join(format!("target/debug/build/obj{i}.o")),
+                "data",
+            )?;
+        }
+        // Create an actual file to match in src/.
+        fs::write(source.path().join("src/lib/mod.rs"), "pub fn foo() {}")?;
+        fs::write(source.path().join(".env"), "SECRET=foo")?;
+
+        // Pattern only matches root-level files and src/lib/mod.rs.
+        fs::write(
+            source.path().join(".worktreeinclude"),
+            ".env\nsrc/lib/mod.rs\n",
+        )?;
+
+        copy_worktree_includes(source.path(), dest.path())?;
+
+        // .env should be copied.
+        assert!(dest.path().join(".env").exists());
+        // src/lib/mod.rs should be copied.
+        assert!(dest.path().join("src/lib/mod.rs").exists());
+        // target/ contents should NOT be copied.
+        assert!(!dest.path().join("target").exists());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_copy_worktree_includes_explicit_under_heavy_dir() -> TestResult {
+        let source = TempDir::new()?;
+        let dest = TempDir::new()?;
+
+        // Create a heavy directory with an explicitly included file.
+        fs::create_dir_all(source.path().join("target"))?;
+        fs::write(source.path().join("target/specific-file.txt"), "important")?;
+        fs::write(source.path().join("target/ignored.o"), "junk")?;
+        fs::write(source.path().join(".env"), "SECRET=foo")?;
+
+        // Pattern explicitly includes target/specific-file.txt.
+        fs::write(
+            source.path().join(".worktreeinclude"),
+            ".env\ntarget/specific-file.txt\n",
+        )?;
+
+        copy_worktree_includes(source.path(), dest.path())?;
+
+        // Both files should be copied.
+        assert!(dest.path().join(".env").exists());
+        assert!(dest.path().join("target/specific-file.txt").exists());
+        // ignored.o should NOT be copied.
+        assert!(!dest.path().join("target/ignored.o").exists());
+        // Pruning should have occurred but allowed the explicit file through.
+
+        Ok(())
     }
 
     // ── parse_worktree_includes tests ────────────────────────────────────────
