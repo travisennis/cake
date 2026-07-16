@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -379,8 +380,6 @@ fn glob_match(pattern: &str, path: &str) -> bool {
 /// Each unique `(pattern_pos, path_pos)` pair is explored at most once,
 /// bounding the total search to `O(pattern_len` × `path_len`).
 fn glob_match_bytes(pattern: &[u8], path: &[u8]) -> bool {
-    use std::collections::HashSet;
-
     let mut visited: HashSet<(usize, usize)> = HashSet::new();
     let mut stack: Vec<(usize, usize)> = vec![(0, 0)];
     visited.insert((0, 0));

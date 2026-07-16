@@ -38,6 +38,7 @@ Git hooks will automatically run:
 - Default to deleting dead code. Use `#[cfg(test)]` only for test-only items.
 - Use `#[expect(dead_code, reason = "...")]` only for serde fields that must exist for deserialization but are not read by application logic. The reason must say: `field required for serde deserialization; not read by application code`.
 - Never use `#[allow(dead_code)]`.
+- Keep `use` statements at module level, not inside function bodies. Inline `use` inside a function body is hard to notice, bypasses module-level import auditing, and is accepted only when guarded behind `#[cfg(...)]` that makes a module-level import unreachable.
 
 ### Adding a New Tool
 
