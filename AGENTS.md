@@ -16,7 +16,9 @@ Compatibility surfaces: CLI behavior, tool execution semantics, sandbox boundari
 4. State the selected route and loaded docs before editing or in handoff.
 5. Preserve compatibility surfaces unless explicitly changed.
 6. Keep edits surgical and verify according to risk.
-7. Handoff with changes, checks, and remaining risk.
+7. Run codex review (`tb__codex_review`) after completing implementation edits. Fix all reported issues, then re-run until the tool reports no remaining issues. Do not call codex review excessively --- if it takes more than a few rounds to reach clean output, step back and reconsider the approach or design rather than grinding through fix loops.
+8. When stuck on a design decision, a debugging problem, or an unclear path, use the oracle tool (`tb__oracle`) to get guidance before burning time on trial and error.
+9. Handoff with changes, checks, and remaining risk.
 
 When this file conflicts with a specialized workflow doc for that workflow, the specialized doc wins.
 
