@@ -3,7 +3,7 @@ use std::process::Stdio;
 use std::sync::OnceLock;
 use std::time::Instant;
 use tokio::io::AsyncReadExt;
-use tokio::process::Command;
+use tokio::process::{Child, Command};
 use tokio::time::{Duration, timeout};
 use tracing::debug;
 
@@ -455,6 +455,27 @@ fn command_starts_with_search(command: &str) -> bool {
     matches!(command_name, "rg" | "ripgrep" | "grep" | "egrep" | "fgrep")
 }
 
+#[cfg(unix)]
+fn terminate_process_group(child: &Child) {
+    if let Some(pid) = child.id() {
+        #[expect(
+            clippy::cast_possible_wrap,
+            reason = "PIDs fit in i32 on all supported Unix targets"
+        )]
+        // SAFETY: the PID belongs to the live child, whose process group ID
+        // equals its PID because `process_group(0)` is set before spawning.
+        // A negative PID in `kill(2)` targets every process in that group.
+        unsafe {
+            libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn terminate_process_group(child: &mut Child) {
+    let _ = child.start_kill();
+}
+
 /// Execute a bash command
 pub(super) async fn execute_bash(
     context: &super::ToolContext,
@@ -588,22 +609,9 @@ async fn execute_bash_with_args(
         // do not survive.
         if hit_cap {
             #[cfg(unix)]
-            if let Some(pid) = child.id() {
-                #[expect(
-                    clippy::cast_possible_wrap,
-                    reason = "PIDs fit in i32 on all supported Unix targets"
-                )]
-                // SAFETY: pid was obtained from `Child::id()` at a point when the
-                // child was still alive, and the child's process group ID equals
-                // its PID because `process_group(0)` was called before spawn.
-                // A negative PID in `kill(2)` targets every process in the group
-                // |pid|.
-                unsafe {
-                    libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
-                }
-            }
+            terminate_process_group(&child);
             #[cfg(not(unix))]
-            let _ = child.kill().await;
+            terminate_process_group(&mut child);
         }
 
         let status = child.wait().await.ok();
@@ -618,20 +626,9 @@ async fn execute_bash_with_args(
             // Timed out: terminate the process group and reap with a
             // short grace period so the OS has time to deliver SIGKILL.
             #[cfg(unix)]
-            if let Some(pid) = child.id() {
-                #[expect(
-                    clippy::cast_possible_wrap,
-                    reason = "PIDs fit in i32 on all supported Unix targets"
-                )]
-                // SAFETY: same reasoning as the cap path above — the child
-                // is in its own process group and the PID is still valid
-                // because we have not yet waited for it.
-                unsafe {
-                    libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
-                }
-            }
+            terminate_process_group(&child);
             #[cfg(not(unix))]
-            let _ = child.kill().await;
+            terminate_process_group(&mut child);
             // Grace period: give the OS time to deliver SIGKILL.
             let _grace = timeout(Duration::from_secs(5), child.wait()).await;
             return Err(format!("Command timed out after {} seconds", args.timeout));
