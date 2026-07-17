@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""Check that generated `.agents/` index files are consistent with source files.
+"""Check that generated `.ahm/` index files are consistent with source files.
 
-Replaces the previous `ahm --dry-run index` check that required the external
-`ahm` tool. This script validates that every source file in the task, research,
-and exec-plan directories has a corresponding entry in the generated index,
-without needing to regenerate the indexes themselves.
+Validates that every source file in the task, research, and exec-plan
+directories has a corresponding entry in the generated index, and vice versa.
+Because `.ahm/**/index.md` files are local-only artifacts (ignored by
+`.ahm/.gitignore`), this script invokes the canonical `ahm index` command to
+regenerate them when they are missing. It therefore requires `ahm` to be
+available on clean checkouts; run it manually or in environments where `ahm`
+is installed.
 
 Exit code:
   0 – indexes are current
@@ -19,10 +22,11 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import subprocess
 import sys
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-AGENTS_DIR = os.path.join(PROJECT_ROOT, ".agents")
+AHM_DIR = os.path.join(PROJECT_ROOT, ".ahm")
 
 
 def warn(msg: str) -> None:
@@ -40,6 +44,47 @@ def read_file(path: str) -> str:
             return fh.read()
     except FileNotFoundError:
         return ""
+
+
+def ensure_indexes() -> bool:
+    """Generate `.ahm/` indexes if any are missing.
+
+    Indexes are local-only artifacts (ignored by `.ahm/.gitignore`). On a clean
+    checkout they do not exist, so this script attempts to create them with the
+    canonical `ahm index` command before validating. Returns ``True`` if indexes
+    are present or were successfully generated, ``False`` otherwise.
+    """
+    required_indexes = (
+        os.path.join(AHM_DIR, "tasks", "index.md"),
+        os.path.join(AHM_DIR, "tasks", "active", "index.md"),
+        os.path.join(AHM_DIR, "tasks", "completed", "index.md"),
+        os.path.join(AHM_DIR, "tasks", "cancelled", "index.md"),
+        os.path.join(AHM_DIR, "research", "index.md"),
+        os.path.join(AHM_DIR, "exec-plans", "active", "index.md"),
+        os.path.join(AHM_DIR, "exec-plans", "completed", "index.md"),
+    )
+    if all(os.path.isfile(p) for p in required_indexes):
+        return True
+
+    try:
+        subprocess.run(
+            ["ahm", "index"],
+            cwd=PROJECT_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        print(
+            "ahm not found; skipping index check (indexes are generated local-only artifacts)",
+            file=sys.stderr,
+        )
+        return False
+    except subprocess.CalledProcessError as exc:
+        print(f"ahm index failed: {exc.stderr}", file=sys.stderr)
+        return False
+
+    return all(os.path.isfile(p) for p in required_indexes)
 
 
 def extract_id_from_front_matter(content: str) -> str | None:
@@ -106,12 +151,12 @@ def _check_orphaned_task_entries(
 def check_task_dir(
     rel_dir: str, label: str, verbose: bool
 ) -> int:
-    """Check that every `.md` source in ``.agents/.tasks/<rel_dir>/`` has an
+    """Check that every `.md` source in ``.ahm/tasks/<rel_dir>/`` has an
     entry in the corresponding ``index.md``, and vice versa.
 
     Returns 0 if OK, 1 on failure.
     """
-    src_dir = os.path.join(AGENTS_DIR, ".tasks", rel_dir)
+    src_dir = os.path.join(AHM_DIR, "tasks", rel_dir)
     index_path = os.path.join(src_dir, "index.md")
 
     if not os.path.isdir(src_dir):
@@ -156,9 +201,9 @@ def check_task_dir(
 
 
 def check_master_task_index(verbose: bool) -> int:
-    """Check that ``.agents/.tasks/index.md`` contains entries for every task
+    """Check that ``.ahm/tasks/index.md`` contains entries for every task
     across active, completed, and cancelled directories."""
-    master_path = os.path.join(AGENTS_DIR, ".tasks", "index.md")
+    master_path = os.path.join(AHM_DIR, "tasks", "index.md")
     master_text = read_file(master_path)
     if not master_text:
         warn(f"{master_path} is missing or empty")
@@ -166,7 +211,7 @@ def check_master_task_index(verbose: bool) -> int:
 
     failures = 0
     for rel_dir in ("active", "completed", "cancelled"):
-        src_dir = os.path.join(AGENTS_DIR, ".tasks", rel_dir)
+        src_dir = os.path.join(AHM_DIR, "tasks", rel_dir)
         if not os.path.isdir(src_dir):
             continue
         for fname in md_files_in(src_dir):
@@ -199,8 +244,8 @@ def check_master_task_index(verbose: bool) -> int:
 # ---------------------------------------------------------------------------
 
 def check_research_index(verbose: bool) -> int:
-    """Check that every research note appears in ``.agents/.research/index.md``."""
-    research_dir = os.path.join(AGENTS_DIR, ".research")
+    """Check that every research note appears in ``.ahm/research/index.md``."""
+    research_dir = os.path.join(AHM_DIR, "research")
     index_path = os.path.join(research_dir, "index.md")
     index_text = read_file(index_path)
     if not index_text:
@@ -232,7 +277,7 @@ def check_research_index(verbose: bool) -> int:
 
 def check_execplan_dir(rel_dir: str, label: str, verbose: bool) -> int:
     """Check exec-plan index for *rel_dir* (``active`` or ``completed``)."""
-    ep_dir = os.path.join(AGENTS_DIR, "exec-plans", rel_dir)
+    ep_dir = os.path.join(AHM_DIR, "exec-plans", rel_dir)
     index_path = os.path.join(ep_dir, "index.md")
     index_text = read_file(index_path)
     if not index_text:
@@ -258,7 +303,7 @@ def check_execplan_dir(rel_dir: str, label: str, verbose: bool) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Check that generated .agents/ index files are current"
+        description="Check that generated .ahm/ index files are current"
     )
     parser.add_argument(
         "--verbose", "-v",
@@ -267,9 +312,12 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    if not os.path.isdir(AGENTS_DIR):
-        print(f"{AGENTS_DIR} not found – nothing to check", file=sys.stderr)
+    if not os.path.isdir(AHM_DIR):
+        print(f"{AHM_DIR} not found – nothing to check", file=sys.stderr)
         return 0
+
+    if not ensure_indexes():
+        return 1
 
     total_failures = 0
 

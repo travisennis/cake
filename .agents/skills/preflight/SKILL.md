@@ -46,11 +46,10 @@ Required context items, in priority order:
 - nested `AGENTS.md` files for the changed areas
 - `ahm context task`, `ahm task show <id>` output when the work came from a
   task; open the active task file only when `ahm` is unavailable or when
-  reviewing manual edits to the task file itself; use
-  `.agents/.tasks/index.md` only as a fallback queue artifact when `ahm` is
-  unavailable
+  reviewing manual edits to the task file itself; inspect `.ahm/tasks/active/`
+  directly if `ahm` is unavailable
 - the relevant active exec plan when one exists for the current work
-  (see `.agents/exec-plans/active/`)
+  (see `.ahm/exec-plans/active/`)
 - `ahm context plan` and `docs/design-docs/index.md` for L/XL changes
 - any design doc or ADR directly relevant to the changed area
 - the changed files and enough nearby context to review them

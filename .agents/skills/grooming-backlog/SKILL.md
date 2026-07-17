@@ -43,8 +43,8 @@ ahm task list --status Open
 ahm task labels
 ```
 
-If `ahm` is unavailable, read `.agents/.tasks/index.md` as the fallback queue
-artifact and inspect the relevant files under `.agents/.tasks/active/`.
+If `ahm` is unavailable, inspect the committed task source files under
+`.ahm/tasks/active/`, `.ahm/tasks/completed/`, and `.ahm/tasks/cancelled/`.
 
 ### 2. For each task that is not Completed or Cancelled, audit:
 

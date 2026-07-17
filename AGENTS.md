@@ -64,19 +64,11 @@ For doc work, read [docs/guardrails/documentation.md](docs/guardrails/documentat
 
 `ahm` is for understanding and managing higher-order workflow records. It is not the implementation route. Use it first when the user asks about a managed work item, then return to Workflow Routing and choose the route for the actual change.
 
-Use these entry points:
-
-- Tasks: run `ahm context task`, inspect the relevant task with `ahm task ...`, and open the task file before editing.
-- ExecPlans: run `ahm context plan` when the request or task calls for an ExecPlan.
-- ADRs: run `ahm context adr` when the request or task calls for an ADR, and use `ahm adr` commands for lifecycle changes.
-- Research: run `ahm context research` and use `.agents/.research/index.md` as the map when asked to create, update, organize, or use research.
-- General session briefing: run `ahm context` only when asked for broad project context or when no narrower managed-work context applies.
+Always run `ahm prime` before starting work on a managed-work item (task, ExecPlan, ADR, or research note), and re-run it after context compaction. It reports workflow state, in-progress and ready tasks, validation warnings, and which scoped `ahm context <scope>` command covers the work at hand. Work done without it often conflicts with tracked in-progress work.
 
 After `ahm` intake, re-classify the discovered work under Workflow Routing. For example, a task about CLI flags still uses the CLI route; a task about sandbox policy still uses the sandboxing route; a task about prompt, skill, or hook behavior still uses the prompts, skills, and hooks route.
 
 Never hand-edit generated task, research, ExecPlan, or ADR indexes. Update the source records and run the appropriate `ahm` command. Use `ahm task` commands for task state moves and `ahm adr` commands for ADR lifecycle changes.
-
-Treat `ahm context` output as the canonical workflow guidance.
 
 ## Repository Rules
 

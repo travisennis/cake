@@ -79,7 +79,7 @@ The CLI is defined under `src/cli/`; inspect the current command organization be
 
 Per-session telemetry is defined in `src/session_telemetry.rs` and written as newline-delimited JSON to the sidecar established by ADR-007. Structured decisions must be carried from policy evaluation to the telemetry writer. Do not add structured policy records to the persisted conversation JSONL, and do not put commands, matched text, patterns, messages, or suggestions in telemetry.
 
-ADR-015 at `docs/adr/015-declarative-command-policy.md` is authoritative. Task 241 at `.agents/.tasks/active/241.md` defines acceptance. Relevant authorities are `docs/guardrails/sandboxing-and-filesystem-boundaries.md`, `docs/design-docs/sandbox.md`, `docs/design-docs/tools.md`, `docs/design-docs/settings.md`, `docs/guardrails/sessions-resume-and-machine-readable-output.md`, and `ARCHITECTURE.md`.
+ADR-015 at `docs/adr/015-declarative-command-policy.md` is authoritative. Task 241 at `.ahm/tasks/active/241.md` defines acceptance. Relevant authorities are `docs/guardrails/sandboxing-and-filesystem-boundaries.md`, `docs/design-docs/sandbox.md`, `docs/design-docs/tools.md`, `docs/design-docs/settings.md`, `docs/guardrails/sessions-resume-and-machine-readable-output.md`, and `ARCHITECTURE.md`.
 
 An embedded policy is version-1 policy data compiled into Cake that reproduces current rules. An inspection view is one documented representation: `raw_command`, `raw_segment`, or `normalized_segment`. A candidate is one instance of that view. Provenance identifies which source supplied each effective field. A canonical digest is a version-tagged SHA-256 hash over deterministic serialization of the complete ordered effective policy. A policy decision is the deduplicated result for one rule during one Bash call.
 
@@ -133,7 +133,7 @@ Update `docs/design-docs/tools.md` with schema, resolution, evaluation, output, 
 
 Run formatting, focused tests, serialization or snapshot tests, then `just ci`. Run the narrowest feasible Linux-sensitive check or report the platform gap. Exercise isolated temporary HOME and project directories for embedded-only, overlay, invalid-file, and snapshot behavior.
 
-Before completion, fill task 241 Acceptance Notes with evidence, update this retrospective, move the plan to `.agents/exec-plans/completed/`, change the task path, and use `ahm task complete 241`. Do not commit or push unless explicitly requested.
+Before completion, fill task 241 Acceptance Notes with evidence, update this retrospective, move the plan to `.ahm/exec-plans/completed/`, change the task path, and use `ahm task complete 241`. Do not commit or push unless explicitly requested.
 
 ## Concrete Steps
 
@@ -218,7 +218,7 @@ Preserve unrelated worktree changes. Untracked files present before this plan mu
 
 ## Artifacts and Notes
 
-The proposed architectural source is `docs/adr/015-declarative-command-policy.md`; accept it before implementation. The managed task is `.agents/.tasks/active/241.md`. Add concise test transcripts and final examples here during implementation.
+The proposed architectural source is `docs/adr/015-declarative-command-policy.md`; accept it before implementation. The managed task is `.ahm/tasks/active/241.md`. Add concise test transcripts and final examples here during implementation.
 
 The intended schema shape is illustrative until Milestone 1 fixes exact serde spelling, but semantics must remain:
 

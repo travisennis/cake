@@ -2,7 +2,7 @@
 
 This ExecPlan is a living document. The sections `Progress`, `Surprises & Discoveries`, `Decision Log`, and `Outcomes & Retrospective` must be kept up to date as work proceeds.
 
-This document follows `.agents/PLANS.md` from the repository root. It was migrated from the former `.agents/.plans/` location and remains active because it contains a broad performance investigation with some decisions recorded but no completed validation of profiling, benchmarks, or source-level optimization work.
+This document follows the `ahm` ExecPlan workflow. It was migrated from the former `.agents/.plans/` location and remains active because it contains a broad performance investigation with some decisions recorded but no completed validation of profiling, benchmarks, or source-level optimization work.
 
 ## Purpose / Big Picture
 
@@ -13,7 +13,7 @@ The behavior is observable by running documented profiling commands, collecting 
 ## Progress
 
 - [x] (2026-05-07 18:49Z) Confirmed the historical note records that `panic = "abort"` was added and reduced binary size from about 6.6 MB to 5.8 MB.
-- [x] (2026-05-07 18:49Z) Migrated this plan to `.agents/exec-plans/active/performance-improvements.md` and added the required ExecPlan lifecycle sections.
+- [x] (2026-05-07 18:49Z) Migrated this plan to `.ahm/exec-plans/active/performance-improvements.md` and added the required ExecPlan lifecycle sections.
 - [ ] Confirm the current release profile and binary-size baseline in the working tree.
 - [ ] Add or verify a profiling profile and repeatable profiling command.
 - [ ] Profile representative workloads before changing hot-path code.
@@ -231,4 +231,4 @@ Add `--timing` or use the existing `duration_ms` in result messages to track ful
 
 ## Revision Notes
 
-- 2026-05-07 / Codex: Migrated this historical plan into the new active ExecPlan directory and added lifecycle sections required by `.agents/PLANS.md`. The original profiling notes above remain as the implementation context.
+- 2026-05-07 / Codex: Migrated this historical plan into the new active ExecPlan directory and added lifecycle sections required by the `ahm` ExecPlan workflow. The original profiling notes above remain as the implementation context.

@@ -45,7 +45,7 @@ session-metrics *args:
 task-index:
     ahm index
 
-# Verify generated indexes are current (legacy script, no ahm dependency)
+# Verify generated indexes are current (requires ahm; not part of default CI)
 task-index-check:
     @python3 scripts/check-indexes.py
 
@@ -82,7 +82,7 @@ lint-imports:
     @echo "Import lint passed!"
 
 # Run the primary local checks, including the always-on CI command set
-ci: task-index-check rust-version-check check-linux fmt-check clippy-strict clippy-no-default-features test-all-features check-coverage lint-imports lint-module-size
+ci: rust-version-check check-linux fmt-check clippy-strict clippy-no-default-features test-all-features check-coverage lint-imports lint-module-size
     echo "All checks passed!"
 
 # Run the required pre-push gate for code, config, CI, fixture, and dependency changes
