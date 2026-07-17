@@ -834,7 +834,9 @@ fn snapshot_reasoning_with_tool_calls() {
 }
 
 #[test]
-fn snapshot_assistant_text_with_tool_calls() {
+fn snapshot_assistant_text_with_tool_calls_legacy_order() {
+    // Historical [FunctionCall, Message(assistant)] ordering must still build
+    // one combined assistant message with content and tool_calls.
     let history = vec![
         ConversationItem::Message {
             role: Role::User,
@@ -864,7 +866,94 @@ fn snapshot_assistant_text_with_tool_calls() {
         },
     ];
     let msgs = build_messages(&history);
-    insta::assert_json_snapshot!("build_messages_assistant_text_with_tool_calls", msgs);
+    insta::assert_json_snapshot!("build_messages_assistant_text_with_tool_calls_legacy", msgs);
+}
+
+#[test]
+fn snapshot_assistant_text_with_tool_calls_new_order() {
+    // Canonical [Message(assistant), FunctionCall] ordering should build one
+    // combined assistant message with content and tool_calls.
+    let history = vec![
+        ConversationItem::Message {
+            role: Role::User,
+            content: "do stuff".to_string(),
+            id: None,
+            status: None,
+            timestamp: None,
+        },
+        ConversationItem::Message {
+            role: Role::Assistant,
+            content: "Let me check that.".to_string(),
+            id: Some("msg-1".to_string()),
+            status: Some("completed".to_string()),
+            timestamp: None,
+        },
+        ConversationItem::FunctionCall {
+            id: "fc-1".to_string(),
+            call_id: "call-1".to_string(),
+            name: "bash".to_string(),
+            arguments: r#"{"cmd":"ls"}"#.to_string(),
+            timestamp: None,
+        },
+        ConversationItem::FunctionCallOutput {
+            call_id: "call-1".to_string(),
+            output: "files".to_string(),
+            timestamp: None,
+        },
+    ];
+    let msgs = build_messages(&history);
+    insta::assert_json_snapshot!("build_messages_assistant_text_with_tool_calls_new", msgs);
+}
+
+#[test]
+fn snapshot_assistant_text_with_multiple_tool_calls_new_order() {
+    // Multiple consecutive FunctionCalls after an Assistant message should all
+    // be merged into the same assistant message.
+    let history = vec![
+        ConversationItem::Message {
+            role: Role::User,
+            content: "do stuff".to_string(),
+            id: None,
+            status: None,
+            timestamp: None,
+        },
+        ConversationItem::Message {
+            role: Role::Assistant,
+            content: "Let me check that.".to_string(),
+            id: Some("msg-1".to_string()),
+            status: Some("completed".to_string()),
+            timestamp: None,
+        },
+        ConversationItem::FunctionCall {
+            id: "fc-1".to_string(),
+            call_id: "call-1".to_string(),
+            name: "bash".to_string(),
+            arguments: r#"{"cmd":"ls"}"#.to_string(),
+            timestamp: None,
+        },
+        ConversationItem::FunctionCall {
+            id: "fc-2".to_string(),
+            call_id: "call-2".to_string(),
+            name: "read".to_string(),
+            arguments: r#"{"path":"foo.txt"}"#.to_string(),
+            timestamp: None,
+        },
+        ConversationItem::FunctionCallOutput {
+            call_id: "call-1".to_string(),
+            output: "file.txt".to_string(),
+            timestamp: None,
+        },
+        ConversationItem::FunctionCallOutput {
+            call_id: "call-2".to_string(),
+            output: "contents".to_string(),
+            timestamp: None,
+        },
+    ];
+    let msgs = build_messages(&history);
+    insta::assert_json_snapshot!(
+        "build_messages_assistant_text_with_multiple_tool_calls_new",
+        msgs
+    );
 }
 
 #[test]
@@ -1122,15 +1211,15 @@ fn parse_choices_tool_calls_with_text_content() {
         usage: None,
     };
     let items = parse_choices(&response).unwrap();
-    // Should have both tool call and message
+    // Should have both message and tool call
     assert_eq!(items.len(), 2);
-    // Tool call comes first
-    assert!(matches!(&items[0], ConversationItem::FunctionCall { .. }));
-    // Then the message
-    assert!(matches!(&items[1], ConversationItem::Message {
+    // Message comes first, matching the Responses API ordering
+    assert!(matches!(&items[0], ConversationItem::Message {
         content,
         ..
     } if content == "Let me help you with that."));
+    // Then the tool call
+    assert!(matches!(&items[1], ConversationItem::FunctionCall { .. }));
 }
 
 #[test]

@@ -162,12 +162,13 @@ pub(super) async fn parse_response(response: reqwest::Response) -> anyhow::Resul
 /// This handles the key translation:
 /// - `ConversationItem::Message` → `ChatMessage` with role/content
 /// - Consecutive `FunctionCall` items → one assistant message with `tool_calls`
+/// - A `FunctionCall` that immediately follows an `Assistant` message → merged
+///   backward into that assistant message (the canonical Responses API ordering)
+/// - A `FunctionCall` that precedes an `Assistant` message → merged forward into
+///   the next assistant message (legacy Chat Completions ordering)
 /// - `FunctionCallOutput` → tool role message with `tool_call_id`
 /// - `Reasoning` → preserved as provider-specific `reasoning_content` on the
 ///   next assistant message for providers like Moonshot/Kimi
-///
-/// When a `FunctionCall` is followed by an `Assistant` message, the tool calls
-/// are merged into that assistant message rather than emitted separately.
 fn build_messages(history: &[ConversationItem]) -> Vec<ChatMessage<'_>> {
     let mut builder = ChatMessageBuilder::new();
     for item in history {
@@ -239,14 +240,30 @@ impl<'a> ChatMessageBuilder<'a> {
     }
 
     fn push_function_call(&mut self, call_id: &'a str, name: &'a str, arguments: &'a str) {
-        self.pending_tool_calls.push(ChatToolCallRef {
+        let tool_call = ChatToolCallRef {
             id: Cow::Borrowed(call_id),
             type_: Cow::Borrowed("function"),
             function: ChatFunctionCallRef {
                 name: Cow::Borrowed(name),
                 arguments: Cow::Borrowed(arguments),
             },
-        });
+        };
+
+        // Backward merge: when a FunctionCall immediately follows an assistant
+        // message, attach the tool call to that message. This handles the new
+        // [Message(assistant), FunctionCall] conversation ordering.
+        if let Some(last) = self.messages.last_mut()
+            && last.role == "assistant"
+        {
+            if let Some(tool_calls) = last.tool_calls.as_mut() {
+                tool_calls.push(tool_call);
+            } else {
+                last.tool_calls = Some(vec![tool_call]);
+            }
+            return;
+        }
+
+        self.pending_tool_calls.push(tool_call);
     }
 
     fn push_function_call_output(&mut self, call_id: &'a str, output: &'a str) {
@@ -357,20 +374,8 @@ fn parse_choices(response: &ChatResponse) -> anyhow::Result<Vec<ConversationItem
         });
     }
 
-    // Extract tool calls first
-    if let Some(tool_calls) = &message.tool_calls {
-        for tc in tool_calls {
-            items.push(ConversationItem::FunctionCall {
-                id: tc.id.clone(),
-                call_id: tc.id.clone(),
-                name: tc.function.name.clone(),
-                arguments: tc.function.arguments.clone(),
-                timestamp: Some(timestamp),
-            });
-        }
-    }
-
-    // Extract text content (may coexist with tool calls)
+    // Extract text content first so that `stream-json` events match the
+    // canonical Responses API ordering: [reasoning, message, function_call].
     if let Some(content) = &message.content
         && !content.is_empty()
     {
@@ -381,6 +386,19 @@ fn parse_choices(response: &ChatResponse) -> anyhow::Result<Vec<ConversationItem
             status: Some("completed".to_string()),
             timestamp: Some(timestamp),
         });
+    }
+
+    // Extract tool calls (may coexist with text content)
+    if let Some(tool_calls) = &message.tool_calls {
+        for tc in tool_calls {
+            items.push(ConversationItem::FunctionCall {
+                id: tc.id.clone(),
+                call_id: tc.id.clone(),
+                name: tc.function.name.clone(),
+                arguments: tc.function.arguments.clone(),
+                timestamp: Some(timestamp),
+            });
+        }
     }
 
     // If we got tool calls but no text content, that's fine — the agent loop
