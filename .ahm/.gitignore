@@ -1,0 +1,5 @@
+# Managed by ahm. Generated workflow indexes and machine-local state stay local-only;
+# source records and config.json remain committed.
+index.md
+.lock/
+*.tmp
