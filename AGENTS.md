@@ -8,6 +8,10 @@ Compatibility surfaces: CLI behavior, tool execution semantics, sandbox boundari
 
 ## Operating Loop
 
+0. **Before any work**: run `ahm prime` to prepare the worktree, regenerate
+   indexes, and get the session briefing. This is the canonical session-start
+   command for coding agents.
+
 1. Do managed-work intake first:
    - If the request is about a task, ExecPlan, ADR, or research note, use `ahm` to understand that managed work item before choosing implementation docs.
    - If the request is directly about code, CLI behavior, tests, docs, build, release, or repo mechanics, skip `ahm` intake and classify the request directly.
@@ -67,6 +71,8 @@ For doc work, read [docs/guardrails/documentation.md](docs/guardrails/documentat
 Always run `ahm prime` before starting work on a managed-work item (task, ExecPlan, ADR, or research note), and re-run it after context compaction. It reports workflow state, in-progress and ready tasks, validation warnings, and which scoped `ahm context <scope>` command covers the work at hand. Work done without it often conflicts with tracked in-progress work.
 
 After `ahm` intake, re-classify the discovered work under Workflow Routing. For example, a task about CLI flags still uses the CLI route; a task about sandbox policy still uses the sandboxing route; a task about prompt, skill, or hook behavior still uses the prompts, skills, and hooks route.
+
+After completing a task, do preflight checks on your work to make sure it is ready to be committed.
 
 Never hand-edit generated task, research, ExecPlan, or ADR indexes. Update the source records and run the appropriate `ahm` command. Use `ahm task` commands for task state moves and `ahm adr` commands for ADR lifecycle changes.
 
