@@ -7,7 +7,7 @@ Read this before changing JSONL session records, session lifecycle behavior, con
 ## Compatibility Surfaces
 
 - `{uuid}.jsonl` session file shape and append-only expectations.
-- Session selection by working-directory header and modification time.
+- Session selection by working-directory header and `session_meta.timestamp`.
 - `task_start` to conversation records to `task_complete` sequencing.
 - `StreamRecord` and machine-readable stdout schemas.
 - Telemetry record shape and timing fields.
@@ -16,7 +16,7 @@ Read this before changing JSONL session records, session lifecycle behavior, con
 
 - Add or update tests around session load/save and output serialization.
 - Run snapshot tests when JSON records or serialized conversation data change.
-- Preserve partial recovery and atomic write behavior unless explicitly changed.
+- Preserve partial recovery and append-only write behavior unless explicitly changed.
 
 ## Common Failure Modes
 

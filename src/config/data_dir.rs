@@ -148,7 +148,7 @@ impl DataDir {
             .join(format!("{id}.ndjson"))
     }
 
-    /// Saves a session to disk with atomic write.
+    /// Saves a session to disk as a new JSONL file.
     ///
     /// The session is saved to `~/.local/share/cake/sessions/{session_id}.jsonl`.
     /// The most recent session is determined by the session creation timestamp
