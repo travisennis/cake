@@ -114,26 +114,8 @@ jq -c '. | {type, invocation_id, turn_index, attempt, total_ms, delay_ms, name, 
 
 ## Implementation Details
 
-The logging implementation is in `src/logger.rs`:
+The logging setup is `logger::configure` in the top-level `logger` module. Key properties:
 
-```rust
-pub fn configure(log_path: &Path) -> Result<(), Error> {
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("cake=info"));
-
-    let file_appender = RollingFileAppender::builder()
-        .rotation(Rotation::DAILY)
-        .filename_prefix("cake")
-        .filename_suffix("log")
-        .max_log_files(7)
-        .build(log_path)?;
-
-    // ... subscriber setup
-}
-```
-
-Key features:
-
-- **`EnvFilter`**: Respects `RUST_LOG` environment variable, defaults to `cake=info`
+- **`EnvFilter`**: Respects the `RUST_LOG` environment variable, defaults to `cake=info`
 - **`RollingFileAppender`**: Daily rotation with 7-day retention
 - **Non-blocking**: Async-safe writes that don't block the Tokio runtime

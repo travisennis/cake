@@ -8,7 +8,7 @@ Read this before changing system prompt construction, AGENTS.md discovery, devel
 
 - AGENTS.md and system prompt search order.
 - Skill catalog format, activation trigger, and once-per-session SkillActivated records (path-watching, not output substitution).
-- Hook TOML shape, merge behavior, stdin payload, and tool plan actions.
+- Hook JSON config shape (`hooks.json`), merge behavior, stdin payload, and tool plan actions.
 - Tool result and transcript effects from hook mutation, blocking, or appended context.
 
 ## Required Checks

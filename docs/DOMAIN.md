@@ -60,7 +60,7 @@ Skills are self-contained instructions (`SKILL.md` files) auto-discovered from c
 
 ### Hooks
 
-User-defined shell commands that run before or after tool execution. Defined in `hooks.toml` files (global and project-level merged). Hooks receive tool context via stdin and can allow, deny, mutate arguments, or append context.
+User-defined shell commands that run before or after tool execution. Defined in `hooks.json` files (global and project-level merged). Hooks receive tool context via stdin and can allow, deny, mutate arguments, or append context.
 
 ### Settings
 

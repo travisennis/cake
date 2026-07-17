@@ -31,7 +31,7 @@ Settings are merged with the following rules:
 2. **Project settings overlay**: `./.cake/settings.toml` is loaded and added to the map
 3. **Project overrides global**: If the same model name exists in both, project wins
 4. **No in-file duplicates**: A single file cannot define the same model name twice (error)
-5. **Profiles overlay behavior**: selected profiles can override `default_model`, `skills`, and `directories`, but cannot define models
+5. **Profiles overlay behavior**: selected profiles can override `default_model`, `skills`, `directories`, and `system_prompt`, but cannot define models
 
 This allows you to: - Define base models globally - Override specific models per-project - Add project-specific models without affecting global config
 
@@ -116,11 +116,14 @@ only = ["review", "debugging-cake"]
 
 Supported profile fields:
 
-  | Field                      | Description                                  |
-  | -------------------------- | -------------------------------------------- |
-  | `default_model`            | Model name to use when `--model` is omitted  |
-  | `[profiles.<name>.skills]` | Partial skill settings overlay               |
-  | `directories`              | Additional persistent read-write directories |
+  | Field                      | Description                                          |
+  | -------------------------- | ---------------------------------------------------- |
+  | `default_model`            | Model name to use when `--model` is omitted          |
+  | `[profiles.<name>.skills]` | Partial skill settings overlay                       |
+  | `directories`              | Additional persistent read-write directories         |
+  | `system_prompt`            | Path to a custom system prompt file for this profile |
+
+`system_prompt` is also available as a top-level key in both global and project settings. It names a path to a prompt file that replaces the built-in system prompt; its position in the overall precedence chain is documented in [prompts.md](./prompts.md#system-prompt-resolution).
 
 Model provider configs are not allowed inside profiles. Keep all model definitions in top-level `[[models]]` entries.
 
@@ -244,43 +247,7 @@ Unknown model 'nonexistent'. Available models: zen, claude, deepseek.
 
 ## Implementation
 
-### Key Types
-
-```rust
-// Settings file structure
-struct Settings {
-    models: Vec<ModelDefinition>,
-}
-
-// Individual model definition
-struct ModelDefinition {
-    name: String,              // Required
-    model: String,             // Required
-    base_url: String,          // Required (no default)
-    api_key_env: String,       // Required (no default)
-    provider: Option<ModelProvider>,  // Optional, inferred from base_url
-    provider_headers: Option<ProviderHeaders>,  // Optional provider headers
-    api_type: ApiType,         // Optional, defaults to ChatCompletions
-    temperature: Option<f32>,  // Optional
-    top_p: Option<f32>,         // Optional
-    max_output_tokens: Option<u32>,  // Optional
-    reasoning_effort: Option<String>,  // Optional
-    reasoning_summary: Option<String>,  // Optional
-    reasoning_max_tokens: Option<u32>,  // Optional
-    providers: Vec<String>,     // Optional, defaults to []
-}
-```
-
-### SettingsLoader
-
-The `SettingsLoader` handles loading and merging:
-
-```rust
-impl SettingsLoader {
-    /// Load and merge settings from global and project locations.
-    pub fn load(project_dir: Option<&Path>) -> Result<HashMap<String, ModelDefinition>, SettingsError>;
-}
-```
+Loading and merging are implemented by `SettingsLoader` in `config::settings`; the parsed shapes are `Settings` and `ModelDefinition` in the same module, which convert to runtime model config via `ModelDefinition::to_model_config()` (`config::model`).
 
 ## Example Workflow
 

@@ -14,7 +14,9 @@ The CLI layer is intentionally thin---it delegates all business logic to lower l
 
 ### Command Structure
 
-The primary prompt-running CLI is implemented by `CodingAssistant` using `clap`'s derive macro. It also accepts optional top-level subcommands for introspection commands that should exit before agent/session setup:
+The primary prompt-running CLI is implemented by the `CodingAssistant` clap struct in `src/main.rs`. The authoritative flag set --- names, aliases, defaults, value parsing, and help text --- is that struct's clap derive attributes, surfaced to users via `cake --help` and the README. This document covers the semantics that clap cannot express.
+
+The CLI also accepts optional top-level subcommands for introspection commands that should exit before agent/session setup:
 
 ```text
 cake [OPTIONS] [PROMPT]
@@ -22,87 +24,7 @@ cake debug models
 cake sessions list
 ```
 
-The prompt path remains the default when no subcommand is provided:
-
-```rust
-#[derive(Parser)]
-#[command(author, version, about, long_about = None)]
-pub struct CodingAssistant {
-    /// The prompt to send to the AI (use `-` to read from stdin)
-    #[arg(value_name = "PROMPT")]
-    pub prompt: Option<String>,
-
-    /// Sets the max tokens value
-    #[arg(long)]
-    pub max_tokens: Option<u32>,
-
-    /// Output format for the response (text, stream-json, or json)
-    #[arg(long, value_enum, default_value = "text")]
-    pub output_format: OutputFormat,
-
-    /// Constrain the final response to a JSON document valid against
-    /// this JSON Schema file (draft 2020-12). Only the final response
-    /// is constrained; tool use and intermediate output are unchanged.
-    #[arg(long, value_name = "PATH")]
-    pub output_schema: Option<String>,
-
-    /// Continue the most recent session for this directory
-    #[arg(long = "continue")]
-    pub continue_session: bool,
-
-    /// Resume a specific session by UUID
-    #[arg(long, value_name = "UUID")]
-    pub resume: Option<String>,
-
-    /// Fork a session: copy its history into a new session with a fresh ID.
-    /// Use without a value to fork the latest session, or provide a UUID.
-    #[arg(long, num_args = 0..=1, default_missing_value = "", value_name = "UUID")]
-    pub fork: Option<String>,
-
-    /// Do not save the session to disk
-    #[arg(long)]
-    pub no_session: bool,
-
-    /// Run in an isolated git worktree (optionally provide a name)
-    #[arg(short, long, num_args = 0..=1, default_missing_value = "", value_name = "NAME")]
-    pub worktree: Option<String>,
-
-    /// Select a model by name from settings.toml
-    #[arg(long)]
-    pub model: Option<String>,
-
-    /// Apply a named behavior profile from settings.toml
-    #[arg(long, value_name = "NAME")]
-    pub profile: Option<String>,
-
-    /// Override reasoning effort level (none, low, medium, high, xhigh)
-    #[arg(long, value_name = "EFFORT")]
-    pub reasoning_effort: Option<String>,
-
-    /// Override reasoning token budget
-    #[arg(long, value_name = "TOKENS")]
-    pub reasoning_budget: Option<u32>,
-
-    /// Add a directory to the sandbox config (read-only access). Can be repeated.
-    #[arg(long, value_name = "DIR")]
-    pub add_dir: Vec<String>,
-
-    /// Add a directory of trusted executable toolbox tools. Can be repeated.
-    #[arg(long, value_name = "DIR")]
-    pub toolbox: Vec<String>,
-
-    /// Select the sandbox policy for model-generated shell commands
-    /// (read-only, workspace-write, danger-full-access). Default:
-    /// workspace-write. Takes precedence over CAKE_SANDBOX.
-    #[arg(short, long, value_enum, value_name = "POLICY")]
-    pub sandbox: Option<SandboxPolicy>,
-
-    #[command(subcommand)]
-    pub command: Option<Commands>,
-}
-```
-
-Top-level subcommands live under `src/cli/` and implement `CmdRunner` so they can reuse the main command dispatch without running an agent turn.
+The prompt path remains the default when no subcommand is provided. Top-level subcommands live under `src/cli/` and implement the `CmdRunner` trait --- the single interface every command implements --- so they can reuse the main command dispatch without running an agent turn.
 
 ### Toolbox Directories
 
@@ -114,75 +36,9 @@ Top-level subcommands live under `src/cli/` and implement `CmdRunner` so they ca
 
 ### Model Configuration
 
-Model-related settings (`model`, `temperature`, `top_p`, `api_type`, etc.) are configured via:
+Model selection is settings-driven: `--model <name>` selects a named model from `settings.toml`, `--profile <name>` applies a behavior overlay, and reasoning flags (`--reasoning-effort`, `--reasoning-budget`) override per-invocation. If `--model` is not provided, cake uses the configured `default_model`; if no `default_model` is configured, cake exits with setup instructions --- there is no built-in default model.
 
-1. **Settings TOML** (`settings.toml`): Named models can be defined in settings files (see below)
-2. **Settings `default_model`**: Optional model name used when `--model` is omitted
-3. **Settings profiles**: Optional behavior overlays selected with `--profile`
-4. **CLI flags**: `--model` to select a named model, `--max-tokens` for token override
-
-#### Settings TOML
-
-cake supports loading model configurations from `settings.toml` files:
-
-- **Project-level**: `.cake/settings.toml` in the current working directory
-- **Global**: `~/.config/cake/settings.toml` for system-wide settings
-
-Settings are merged with project settings overriding global settings for models with the same name. This allows you to define base configurations globally and override specific models per-project.
-
-```toml
-default_model = "zen"             # Optional; enables running without --model
-
-[[models]]
-name = "zen"                    # Required: unique name (lowercase alphanumeric + hyphens)
-model = "glm-5.1"               # Required: model identifier
-base_url = "https://opencode.ai/zen/go/v1/"  # Optional
-api_key_env = "OPENCODE_ZEN_API_TOKEN"        # Optional
-api_type = "chat_completions"   # Optional: chat_completions or responses
-temperature = 0.8               # Optional
-top_p = 0.9                    # Optional: nucleus sampling (alternative to temperature)
-max_output_tokens = 8000      # Optional
-providers = []                 # Optional
-
-[[models]]
-name = "claude"
-model = "anthropic/claude-3-sonnet"
-base_url = "https://openrouter.ai/api/v1/"
-api_key_env = "OPENROUTER_API_KEY"
-api_type = "responses"
-temperature = 0.7
-top_p = 0.9
-
-[profiles.review]
-default_model = "claude"
-
-[profiles.review.skills]
-only = ["debugging-cake", "evaluating-cake"]
-```
-
-Use `--model <name>` to select a named model from settings:
-
-```bash
-# Use the "claude" model from settings.toml
-cake --model claude "Your prompt here"
-
-# Apply behavior settings from [profiles.review]
-cake --profile review "Your prompt here"
-```
-
-If `--model` is not provided, cake uses the configured `default_model` from settings. If no `default_model` is configured, cake exits with setup instructions; there is no built-in default model.
-
-Profiles can override `default_model`, skill settings, and persistent settings `directories`. Model provider configs are always top-level `[[models]]` entries and are not supported inside profiles.
-
-The struct implements the `CmdRunner` trait for execution:
-
-```rust
-impl CmdRunner for CodingAssistant {
-    async fn run(&self, data_dir: &DataDir) -> anyhow::Result<()> {
-        // Validate flags, build client, run the conversation
-    }
-}
-```
+The settings file format, merge behavior, profile precedence, and validation rules are documented in [settings.md](./settings.md), the single home for that contract.
 
 ## Session Management
 
@@ -193,7 +49,7 @@ The CLI handles four session modes:
 3. **Resume** (`--resume <UUID>`): Loads a specific session by UUID
 4. **Fork** (`--fork [UUID]`): Copies history from an existing session into a new session
 
-These modes are mutually exclusive---only one can be used at a time.
+These modes are mutually exclusive---only one can be used at a time. Lifecycle details and storage are in [session-management.md](./session-management.md).
 
 ## Input Sources
 
@@ -224,17 +80,12 @@ EOF
 echo "Hello" | cake -
 ```
 
-## Related Documentation
-
-- [prompts.md](./prompts.md): System prompt construction and AGENTS.md integration
-- [session-management.md](./session-management.md): Session lifecycle and storage
-
 ## Output Formats
 
 Three output formats are supported:
 
 - **`text`** (default): Human-readable text output. Progress is streamed to stderr while the final assistant message is printed to stdout. The final progress line includes the session ID along with duration, turn count, and token usage.
-- **`stream-json`**: Machine-readable JSON streaming with events for each conversation item as they occur. Useful for building frontends that consume cake output live.
+- **`stream-json`**: Machine-readable JSON streaming with events for each conversation item as they occur. Useful for building frontends that consume cake output live. See [streaming-json-output.md](./streaming-json-output.md).
 - **`json`**: A single JSON object printed at completion containing the result, session metadata, token usage, working directory, session file path, turn count, and elapsed time. Designed for scripting and CI integration where a structured summary is needed rather than a live stream.
 
 When using `stream-json` or `json`, console progress reporting (spinner) is automatically suppressed to avoid polluting stdout.
@@ -277,11 +128,11 @@ cake returns structured exit codes so that shell scripts and CI pipelines can br
 
 The `exit_code` module classifies `anyhow::Error` values by inspecting the error chain:
 
-1. **Input errors** (exit 3): Matched by message patterns such as "Environment variable ... is not set", "No input provided", "Invalid model name", "Unknown model", "Invalid session UUID", and clap argument errors.
-2. **API errors** (exit 2): Matched by `reqwest::Error` downcast (401/403, connect, timeout, request errors) or message patterns containing "429", "401", "403", "rate_limit", "authentication", "connection refused", etc.
+1. **Input errors** (exit 3): Missing environment variables, no input provided, invalid model names, invalid session UUIDs, and clap argument errors.
+2. **API errors** (exit 2): `reqwest::Error` downcasts (auth, connect, timeout, request errors) and rate-limit/authentication message patterns.
 3. **Agent/tool errors** (exit 1): The default for any error not matching the above categories.
 
-The `main()` function returns `std::process::ExitCode` directly (not `anyhow::Result`), classifying errors before exiting. This replaces the previous behavior where all errors produced exit code 1.
+The `main()` function returns `std::process::ExitCode` directly (not `anyhow::Result`), classifying errors before exiting. The authoritative pattern list is the `classify` function in `exit_code` and its tests.
 
 ### Streaming JSON Integration
 
@@ -318,7 +169,7 @@ When using `--output-format json`, a single JSON object is printed at the end of
 
 On error, `result` is `null` and an `error` field is included with the error message. The error is then propagated to produce a non-zero exit code.
 
-A cut-off turn — the model produced no final assistant message (for example, it stopped mid-reasoning or returned an empty response) — is reported as an error, never as a `result`. The object additionally carries an additive `"subtype": "cut_off"` field so consumers can distinguish cut-offs from other agent errors (parity with stream-json's `task_complete` subtype), and the process exits 1:
+A cut-off turn --- the model produced no final assistant message (for example, it stopped mid-reasoning or returned an empty response) --- is reported as an error, never as a `result`. The object additionally carries an additive `"subtype": "cut_off"` field so consumers can distinguish cut-offs from other agent errors (parity with stream-json's `task_complete` subtype), and the process exits 1:
 
 ```json
 {
@@ -330,3 +181,9 @@ A cut-off turn — the model produced no final assistant message (for example, i
 ```
 
 In `text` output, a cut-off prints `Error: <detail>` on stderr and exits 1; the explanation never appears in the assistant-output position on stdout. In `stream-json` output, cut-offs follow the in-stream-error policy and exit 0 (see Streaming JSON Integration above).
+
+## Related Documentation
+
+- [prompts.md](./prompts.md): System prompt construction and AGENTS.md integration
+- [session-management.md](./session-management.md): Session lifecycle and storage
+- [settings.md](./settings.md): `settings.toml` format, merge behavior, and profiles

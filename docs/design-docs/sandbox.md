@@ -45,7 +45,7 @@ System paths on Linux include `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64`, `/etc/a
 
 ## Layered Defense
 
-The sandbox provides OS-level filesystem restriction as the primary enforcement mechanism. In addition, the Bash tool includes a narrow pre-execution destructive command guard that blocks known-destructive commands (e.g., `git reset --hard`, `git push --force`, `rm -rf` outside literal `/tmp` or `/var/tmp` targets) before they reach the shell. This best-effort guard complements the sandbox by catching destructive operations that are technically allowed within the sandbox's permitted zones---for example, destructive git operations inside the repository directory. It is not a shell security policy engine. See [tools.md](./tools.md) for the full list of blocked commands.
+The sandbox provides OS-level filesystem restriction as the primary enforcement mechanism. In addition, the Bash tool includes a narrow pre-execution destructive command guard that blocks known-destructive commands (e.g., `git reset --hard`, `git push --force`, `rm -rf` outside literal `/tmp` or `/var/tmp` targets) before they reach the shell. This best-effort guard complements the sandbox by catching destructive operations that are technically allowed within the sandbox's permitted zones---for example, destructive git operations inside the repository directory. It is not a shell security policy engine. See [tools.md](./tools.md) for the blocked categories; the authoritative rule set lives in `clients::tools::bash_safety` and its tests.
 
 ## Configuration
 
@@ -139,18 +139,17 @@ directories = ["../shared-libs", "/data/exports"]
 
 ### Additional Read-Write Paths
 
-The sandbox automatically includes:
+Beyond the workspace, the sandbox automatically grants read-write access to these categories of paths:
 
 - The current working directory (and its subtree)
 - System temp directories (`$TMPDIR`, `/tmp`, `/var/tmp`)
-- User toolchain paths (`$CARGO_HOME` or `~/.cargo`, `$RUSTUP_HOME` or `~/.rustup`)
-- SCM CLI paths: `~/.config/gh`, `~/.cache/gh`, `~/.local/share/gh`, `~/.local/state/gh`, `~/.config/glab-cli`, `~/.cache/glab-cli`, `~/.local/share/glab-cli`, `~/.local/state/glab-cli`
-- AI coding assistant CLI paths: `~/.codex`, `~/.cache/codex`, `~/.local/share/codex`, `~/.local/state/codex`
-- Runtime manager paths: `~/.config/mise`, `~/.local/share/mise`, `~/.local/state/mise`, `~/.cache/mise`, `~/.asdf`, `~/.volta`
-- sccache paths: `~/.cache/sccache`, `~/Library/Caches/sccache` (macOS)
+- Rust toolchain and build caches (cargo, rustup, sccache), honoring `$CARGO_HOME`/`$RUSTUP_HOME`
+- SCM CLI config/cache/state directories (`gh`, `glab`)
+- AI coding assistant CLI directories (`codex`)
+- Runtime manager directories (`mise`, `asdf`, `volta`)
 - Linked git worktree directories: when the workspace is a linked git worktree (`.git` is a file with a `gitdir:` pointer), the per-worktree gitdir and the common git directory are automatically resolved and added as read-write so that git commands (status, add, commit, etc.) can operate under the sandbox. If the gitdir cannot be resolved, a warning is logged at session start.
 
-All read-write paths are canonicalized (symlinks resolved) before being added to the sandbox policy.
+The authoritative per-directory list is `SandboxConfig` in `clients::tools::sandbox`, pinned by its tests; extend it there rather than here when adding tool support. All read-write paths are canonicalized (symlinks resolved) before being added to the sandbox policy.
 
 ## Examples
 

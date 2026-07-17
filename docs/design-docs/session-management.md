@@ -83,6 +83,8 @@ jq -c '. | {type, invocation_id, turn_index, attempt, total_ms, delay_ms, name, 
 
 ## Schema
 
+This section is the single authoritative field-level contract for these records. `--output-format stream-json` emits the same per-task record shapes; [streaming-json-output.md](./streaming-json-output.md) documents only the stream-specific differences.
+
 All timestamps are UTC RFC 3339 strings. `session_id` and `task_id` are UUID strings. Optional fields are omitted when absent.
 
 ### `session_meta`
@@ -145,14 +147,15 @@ The `git` object contains `repository_url`, `branch`, and `commit_hash`. Each pr
 
 `function_call` stores a model request to execute a tool.
 
-  | Field       | Type   | Required | Description                                                          |
-  | ----------- | ------ | -------- | -------------------------------------------------------------------- |
-  | `type`      | string | yes      | Always `function_call`                                               |
-  | `id`        | string | yes      | Provider function-call item id                                       |
-  | `call_id`   | string | yes      | Correlation id used by the matching output                           |
-  | `name`      | string | yes      | Tool name, for example `bash`, `read`, `edit`, or `write`            |
-  | `arguments` | string | yes      | JSON-encoded tool argument string exactly as received from the model |
-  | `timestamp` | string | no       | Item creation time                                                   |
+  | Field                   | Type   | Required | Description                                                          |
+  | ----------------------- | ------ | -------- | -------------------------------------------------------------------- |
+  | `type`                  | string | yes      | Always `function_call`                                               |
+  | `id`                    | string | yes      | Provider function-call item id                                       |
+  | `call_id`               | string | yes      | Correlation id used by the matching output                           |
+  | `name`                  | string | yes      | Tool name, for example `bash`, `read`, `edit`, or `write`            |
+  | `arguments`             | string | yes      | JSON-encoded tool argument string exactly as received from the model |
+  | `arguments_parse_error` | string | no       | Present when `arguments` is not valid JSON; contains the parse error |
+  | `timestamp`             | string | no       | Item creation time                                                   |
 
 ### `function_call_output`
 
@@ -215,20 +218,20 @@ Older `hook_event` records may omit `call_id`, `tool_name`, `tool_input_summary`
 
 `task_complete` records the outcome and aggregate usage for one invocation.
 
-  | Field                | Type             | Required | Description                                                                         |
-  | -------------------- | ---------------- | -------- | ----------------------------------------------------------------------------------- |
-  | `type`               | string           | yes      | Always `task_complete`                                                              |
+  | Field                | Type             | Required | Description                                                                                    |
+  | -------------------- | ---------------- | -------- | ---------------------------------------------------------------------------------------------- |
+  | `type`               | string           | yes      | Always `task_complete`                                                                         |
   | `subtype`            | string           | yes      | One of `success`, `error_during_execution`, `error_output_schema`, `cut_off`, or `interrupted` |
-  | `is_error`           | boolean          | yes      | `false` for successful completion                                                   |
-  | `duration_ms`        | number           | yes      | Wall-clock task duration in milliseconds                                            |
-  | `turn_count`         | number           | yes      | Number of API turns with usage accumulated                                          |
-  | `tool_call_count`    | number           | yes      | Number of tool calls executed during the task                                       |
-  | `session_id`         | string           | yes      | Session UUID                                                                        |
-  | `task_id`            | string           | yes      | Task UUID from the matching `task_start`                                            |
-  | `result`             | string           | no       | Final assistant text on success                                                     |
-  | `error`              | string           | no       | Error message on failure                                                            |
-  | `usage`              | object           | yes      | Aggregate token usage for the task                                                  |
-  | `permission_denials` | array of strings | no       | Tool permission denial messages when present                                        |
+  | `is_error`           | boolean          | yes      | `false` for successful completion                                                              |
+  | `duration_ms`        | number           | yes      | Wall-clock task duration in milliseconds                                                       |
+  | `turn_count`         | number           | yes      | Number of API turns with usage accumulated                                                     |
+  | `tool_call_count`    | number           | yes      | Number of tool calls executed during the task                                                  |
+  | `session_id`         | string           | yes      | Session UUID                                                                                   |
+  | `task_id`            | string           | yes      | Task UUID from the matching `task_start`                                                       |
+  | `result`             | string           | no       | Final assistant text on success                                                                |
+  | `error`              | string           | no       | Error message on failure                                                                       |
+  | `usage`              | object           | yes      | Aggregate token usage for the task                                                             |
+  | `permission_denials` | array of strings | no       | Tool permission denial messages when present                                                   |
 
 `usage` has this shape:
 

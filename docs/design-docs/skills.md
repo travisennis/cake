@@ -224,78 +224,7 @@ Provide findings as:
 
 ## Implementation
 
-### Key Types
-
-```rust
-// src/config/skills.rs
-pub struct Skill {
-    pub name: String,
-    pub description: String,
-    pub location: PathBuf,
-    pub base_directory: PathBuf,
-    pub scope: SkillScope,
-}
-
-pub enum SkillScope {
-    Project,
-    User,
-}
-
-pub struct SkillCatalog {
-    pub skills: Vec<Skill>,
-    pub diagnostics: Vec<SkillDiagnostic>,
-}
-
-pub enum SkillConfig {
-    All,
-    Disabled,
-    Only(Vec<String>),
-}
-```
-
-### Key Functions
-
-```rust
-// Discover skills from filesystem
-pub fn discover_skills(working_dir: &Path) -> SkillCatalog;
-
-// Parse a SKILL.md file
-impl Skill {
-    pub fn parse(path: &Path, scope: SkillScope) -> Result<Self, SkillDiagnostic>;
-}
-
-// Generate XML catalog for prompt context
-impl SkillCatalog {
-    pub fn to_prompt_xml(&self) -> String;
-    pub fn filter_to(&mut self, skill_names: &[String]);
-}
-
-// Resolve configuration from CLI and settings
-impl SettingsLoader {
-    pub fn resolve_skill_config(
-        no_skills: bool,
-        skills_flag: Option<&str>,
-        settings: &SkillSettings,
-    ) -> SkillConfig;
-}
-```
-
-### Integration Flow
-
-1. **`main.rs`**: Call `discover_skills()`, apply `SkillConfig`, pass catalog to `build_initial_prompt_messages()`
-2. **`prompts/mod.rs`**: Emit `<available_skills>` XML in a developer context message if skills exist
-3. **`tools/mod.rs`**: Register skill base directories for path validation via `set_skill_dirs()`
-4. **`agent.rs`**: Check Read tool paths against `skill_locations`; emit `SkillActivated` records once per skill per session via the `activated_skills` set
-
-## Testing
-
-The skills system includes tests for:
-
-- **Parsing**: Valid skills, malformed YAML, missing fields, multiline descriptions
-- **Discovery**: Project skills, user skills, collision resolution, excluded directories, max depth
-- **XML generation**: Format, escaping, empty catalog
-- **Configuration precedence**: CLI flags override settings
-- **SkillActivated records**: Records emitted once per skill per session
+Discovery, parsing, and catalog construction live in `config::skills` (`discover_skills`, `Skill`, `SkillCatalog`). The prompts module emits the `<available_skills>` XML as a developer context message, the tools module registers skill base directories for path validation, and the agent loop watches Read paths against `skill_locations` to emit `SkillActivated` records once per skill per session.
 
 ## Related Documentation
 

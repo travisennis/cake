@@ -2,6 +2,8 @@
 
 The `clients::tools` module provides the tool execution framework that enables AI agents to interact with the filesystem and execute commands safely.
 
+This document describes the contracts and design decisions of the tool framework. For exact schemas, output formats, limits, and error strings, the code and its tests are authoritative: each tool lives in its own module under `src/clients/tools/` (`bash`, `read`, `edit`, `write`), with its model-facing description in the adjacent `*-description.txt` file and its behavior pinned by the module's tests.
+
 ## Overview
 
 Cake provides four built-in tools:
@@ -13,66 +15,22 @@ Cake provides four built-in tools:
 
 Users can extend this set with their own executable tools ("toolbox tools", registered with a `tb__` prefix); see [Toolbox Tools](#toolbox-tools).
 
-Each tool defines:
-
-- A JSON schema for the API (name, description, parameters)
-- Validation logic for arguments
-- Execution logic with proper error handling
-
-## Tool Definition
-
-Tools are defined using the `Tool` struct:
-
-```rust
-pub struct Tool {
-    pub(super) type_: String,        // Always "function"
-    pub(super) name: String,         // Tool name (Bash, Read, Edit, Write)
-    pub(super) description: String,  // Human-readable description
-    pub(super) parameters: serde_json::Value,  // JSON Schema for arguments
-}
-```
-
-Example tool definition (Read):
-
-```rust
-pub(super) fn read_tool() -> Tool {
-    Tool {
-        type_: "function".to_string(),
-        name: "Read".to_string(),
-        description: "Read a file's contents...",
-        parameters: serde_json::json!({
-            "type": "object",
-            "properties": {
-                "path": { "type": "string", "description": "..." },
-                "start_line": { "type": "integer", ... },
-                "end_line": { "type": "integer", ... }
-            },
-            "required": ["path"]
-        }),
-    }
-}
-```
+Each tool defines a JSON schema for the API (name, description, parameters), validation logic for arguments, and execution logic with proper error handling.
 
 ## Tool Execution
 
-Each tool is registered as a `ToolEntry` (model-facing definition plus executor closure) in a `ToolRegistry`; the registry dispatches calls by name:
-
-```rust
-pub(super) async fn execute(&self, context: Arc<ToolContext>, name: &str, arguments: &str) -> Result<ToolResult, String>
-```
+Each tool is registered as a `ToolEntry` (model-facing definition plus executor closure) in a `ToolRegistry`; the registry dispatches calls by name via `ToolRegistry::execute`.
 
 Execution flow:
 
 1. Attempt strict JSON argument parsing using serde
-2. If parsing fails, apply a conservative repair pass that handles:
-   - Raw control characters inside string literals (tab, newline, etc.)
-   - Trailing garbage after a balanced top-level JSON value
+2. If parsing fails, apply a conservative repair pass (`json_repair`) that handles raw control characters inside string literals and trailing garbage after a balanced top-level JSON value
 3. Re-attempt parsing on the repaired text
 4. Validate inputs (paths, etc.)
 5. Execute the operation
 6. Return `ToolResult` with output or error
 
-See `src/clients/tools/json_repair.rs` for the full repair logic. Repairs are deterministic and lossless --- if a repair produces wrong content, the tool's own preflight validation still catches it.
+Repairs are deterministic and lossless --- if a repair produces wrong content, the tool's own preflight validation still catches it.
 
 Results are returned as strings so they can be included in API responses.
 
@@ -93,290 +51,65 @@ Regardless of grouping, tool results are recorded and streamed in the model's is
 
 ## Path Validation
 
-All filesystem tools validate paths before operating:
+All filesystem tools validate paths before operating (`validate_path_in_cwd`). A path is allowed when it is within:
 
-```rust
-pub(super) fn validate_path_in_cwd(path_str: &str) -> Result<PathBuf, String>
-```
-
-Validation rules:
-
-- Path must exist and be accessible
-- Path must be within the current working directory, OR
-- Path must be within allowed temp directories (`/tmp`, `/var/folders`, `TMPDIR`), OR
-- Path must be within directories added via `--add-dir` CLI flag (read-only access)
+- the current working directory, or
+- allowed temp directories (`/tmp`, `/var/folders`, `TMPDIR`), or
+- directories added via the `--add-dir` CLI flag (read-only access), or
+- registered skill directories (read-only; see [skills.md](./skills.md))
 
 This prevents the AI from accessing sensitive files outside the project.
 
 ### Write Tool Path Handling
 
-The Write tool has special handling for new files that don't exist yet:
-
-```rust
-fn validate_path_for_write(path_str: &str) -> Result<PathBuf, String>
-```
-
-This function:
-
-1. For existing files: uses standard validation
-2. For new files: resolves the path root-to-leaf with symlink-aware semantics. Existing path components are resolved via `canonicalize()` (following symlinks). When a component does not exist, the remaining path suffix is normalised lexically (`..` cancels the preceding normal component).
-3. Validates the resolved base directory is within allowed directories.
-4. Appends the normalised suffix components to reconstruct the full path.
-
-This allows creating new files in new subdirectories while maintaining security, correctly handles parent-directory (`..`) components across nonexistent ancestors, and preserves symlink resolution for existing path segments.
+The Write tool has special handling for new files that don't exist yet (`validate_path_for_write`). Existing path components are resolved via `canonicalize()` (following symlinks); nonexistent trailing components are normalised lexically (`..` cancels the preceding normal component), and the resolved base directory must be within allowed directories. This allows creating new files in new subdirectories while maintaining security, correctly handles parent-directory (`..`) components across nonexistent ancestors, and preserves symlink resolution for existing path segments.
 
 ## Individual Tools
 
 ### Bash Tool
 
-**Purpose**: Execute shell commands in the host environment.
+Executes shell commands in the project working directory (`ToolContext.cwd`) under the OS-level sandbox (Seatbelt on macOS, Landlock on Linux; see [sandbox.md](./sandbox.md)). Behavioral contract:
 
-**Parameters**:
-
-- `command`: The shell command to execute (required)
-- `timeout`: Optional timeout in seconds (default: 60)
-
-**Features**:
-
-- Commands run in the project's current working directory (`ToolContext.cwd`) via an explicit `current_dir()` setting on the spawned process
-- OS-level sandboxing (Seatbelt on macOS, Landlock on Linux)
-- Configurable via `CAKE_SANDBOX=0` environment variable
-- Output streaming with 100KB read cap
-- Automatic truncation for large outputs (saved to temp file)
-- Metadata footer with exit code and execution time
-- Binary output detection and handling
-
-**Output Handling**:
-
-- Small output (≤ 50KB): Returned inline with metadata footer
-- Large output (> 50KB): Truncated with head/tail preview (see below)
-- Binary output: Written to temp file with helpful message and MIME type detection
-- Timeout: Command killed, timeout error returned
-- Read cap: Up to 100KB (2× the inline limit) is read from the process; output beyond this is discarded and marked with `[... output truncated at 100000 bytes ...]`
-- Stderr on success: If a command exits 0 but writes to stderr, the returned output includes `[stderr output present despite exit 0]` separated from the metadata footer by a blank line. Cake flags any non-empty stderr this way because the tool cannot reliably distinguish harmless progress output from diagnostics.
-- Empty search miss: If a command starts with `rg`, `ripgrep`, `grep`, `egrep`, or `fgrep`, exits 1, and produces no stdout or stderr, the returned output includes `(no matches)` before the unchanged exit-status footer. This keeps the original exit code visible while distinguishing an empty search result from a tool or shell error.
-
-**Truncated Output**:
-
-When command output exceeds the 50KB inline limit, the full output is saved to a secure per-user temporary file and a head+tail preview is returned. On Unix the directory is `<temp_dir>/cake-<uid>` with `0o700` permissions so other local users cannot pre-create the directory or read captured output. The preview shows the first \~12.5KB and last \~12.5KB of the output:
-
-```
-[Output too long — 75000 bytes, 1500 lines.]
-Full output saved to: /tmp/cake-1000/bash_output_<uuid>.txt
-You can search it with `grep` or view portions with `head`/`tail`.
-Consider reformulating the command to produce less output.
-
---- first ~12500 bytes ---
-<first ~12.5KB of output>
-
---- last ~12500 bytes ---
-<last ~12.5KB of output>
-
-[exit:0 | 1.2s]
-```
-
-If the temp file cannot be written (e.g., disk full), a fallback inline truncation is used with the first \~25KB and last \~25KB:
-
-```
-[Output too long — 75000 bytes, 1500 lines. The command was too verbose; reformulate with less output (e.g. pipe through `head`, `tail`, or `grep`).]
-
---- first ~25000 bytes ---
-<first ~25KB of output>
-
---- last ~25000 bytes ---
-<last ~25KB of output>
-
-[exit:0 | 1.2s]
-```
-
-**Metadata Footer**:
-
-All Bash tool output includes a metadata footer showing exit code and execution time:
-
-```
-[exit:0 | 12ms]
-```
-
-When a successful command writes to stderr, the warning marker appears before the footer, separated by a blank line:
-
-```
-<stdout and stderr output>
-[stderr output present despite exit 0]
-
-[exit:0 | 12ms]
-```
-
-The time display adapts to the duration:
-
-- Durations under 1 second: Shows milliseconds (e.g., `12ms`, `500ms`, `999ms`)
-- Durations of 1 second or more: Shows seconds with one decimal place (e.g., `1.0s`, `1.2s`, `15.3s`)
-
-**Binary Output Detection**:
-
-The Bash tool automatically detects binary output and prevents returning corrupted binary data to the LLM. Detection is based on:
-
-- Null byte count: More than 8 null bytes indicates binary
-- Non-printable character ratio: More than 30% non-printable characters (excluding common whitespace: `\t`, `\n`, `\r`) indicates binary
-
-When binary output is detected:
-
-1. The data is saved to a secure per-user temp file in `<temp_dir>/cake-<uid>/bash_binary_<uuid>` (directory created with mode `0o700` on Unix)
-2. MIME type is detected with the maintained `infer` content-signature database when the format is recognized
-3. A user-friendly message is returned with the file path and suggested tools for inspection (`file`, `hexdump`, `xxd`)
-
-Example binary output message:
-
-```
-[Binary output detected - 12345 bytes (12.1 KB)]
-Detected type: image/png
-Binary data saved to: /tmp/cake-1000/bash_binary_abc123
-The command produced binary output which cannot be displayed as text.
-You can inspect the file with appropriate tools (e.g., `file`, `hexdump`, `xxd`).
-
-[exit:0 | 15ms]
-```
+- **Output capping and truncation**: process output is read up to a hard cap and, above an inline limit, returned as a head+tail preview with the full output saved to a secure per-user temp directory (`0o700` on Unix, so other local users cannot pre-create it or read captured output). If the temp file cannot be written, a larger inline head+tail fallback is used. The limits and preview formats live in `clients::tools::bash`.
+- **Metadata footer**: every result ends with a footer reporting exit code and adaptive duration formatting.
+- **Stderr on success**: a command that exits 0 but writes to stderr gets a warning marker, because the tool cannot reliably distinguish harmless progress output from diagnostics.
+- **Empty search miss**: a search command (`rg`, `grep`, and variants) that exits 1 with no output gets a `(no matches)` marker while keeping the original exit code visible, distinguishing an empty result from a tool or shell error.
+- **Binary output detection**: output that looks binary (null bytes / high non-printable ratio) is never returned inline; it is saved to the secure temp directory, MIME-sniffed with the `infer` content-signature database, and reported with suggested inspection tools.
+- **Timeout**: the command is killed and a timeout error returned.
 
 **Destructive Command Blocking**:
 
 The Bash tool includes a narrow, best-effort pre-execution destructive command guard that blocks known-destructive commands before they reach the sandbox or process spawn. This complements the OS-level sandbox by catching destructive operations that are allowed within the sandbox's permitted zones --- for example, destructive git operations inside the repo or remote-affecting operations like force-push. It is not a shell security policy engine; the OS sandbox is the filesystem enforcement boundary.
 
-Blocked git commands:
+Blocked categories:
 
-  | Blocked Command                                                                  | Reason                                                                               | Allowed Alternative                                               |
-  | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ | ----------------------------------------------------------------- |
-  | `git reset --hard` / `--merge`                                                   | Discards uncommitted changes                                                         | `git stash` or `git reset --soft`                                 |
-  | `git checkout -- <file>`                                                         | Discards working tree changes                                                        | `git restore --staged`                                            |
-  | `git restore <file>` (without `--staged`), `git restore --worktree`              | Discards working tree changes                                                        | `git restore --staged`                                            |
-  | `git clean -f` / `--force` (including combined flags like `-fd`, `-fdx`)         | Permanently deletes untracked files                                                  | `git clean -n` (dry run)                                          |
-  | `git push --force` / `-f`                                                        | Rewrites remote history                                                              | `--force-with-lease` (allowed)                                    |
-  | `git branch -D` (uppercase)                                                      | Force-deletes unmerged branch                                                        | `git branch -d` (lowercase, allowed)                              |
-  | `git stash drop` / `clear`                                                       | Permanently deletes stashed changes                                                  | `git stash pop` or `git stash list`                               |
-  | `git commit -m` / `--message` with backticks or `$()` inside double-quoted value | Shell interprets backticks and `$()` as command substitution, corrupting the message | Use `git commit -F -` with a heredoc, or single-quote the message |
+- **Destructive git operations**: history- or worktree-destroying commands such as `git reset --hard`, working-tree-discarding `checkout`/`restore` forms, forced `clean`, `push --force` (`--force-with-lease` is allowed), force branch deletion, and stash deletion.
+- **Git commit message corruption**: `git commit -m`/`--message` with backticks or `$()` inside a double-quoted value, which the shell would interpret as command substitution.
+- **Irreversible filesystem deletion**: `rm -rf` outside literal `/tmp` or `/var/tmp` targets. Environment-variable or shell-expanded temp paths are blocked unless the guard deliberately supports and tests that exact form.
 
-Blocked filesystem commands:
+Additional protections: `bash -c`/`sh -c` wrappers are unwrapped and the inner script recursively checked; chained commands (`&&`, `||`, `;`, newlines) are split and each segment checked; data contexts such as commit messages, `echo`, and `printf` are skipped to avoid false positives.
 
-  | Blocked Command                                       | Reason                          |
-  | ----------------------------------------------------- | ------------------------------- |
-  | `rm -rf` outside literal `/tmp` or `/var/tmp` targets | Irreversible recursive deletion |
-
-Additional protections:
-
-- **Wrapper detection**: `bash -c` / `sh -c` wrappers are detected and the inner script is recursively checked
-- **Command chaining**: Commands joined via `&&`, `||`, `;`, or newlines are split and each segment is checked independently
-- **False positive avoidance**: Commit messages, `echo`, `printf`, and similar data contexts are skipped to avoid flagging non-destructive uses
-- **Temp target scope**: `$TMPDIR`, `$TEMP`, and other environment-variable or shell-expanded temp paths are blocked unless the guard deliberately supports and tests that exact form
-
-Error format:
-
-When a command is blocked, the tool returns a `BLOCKED` message with structured fields:
-
-```
-⚠️ BLOCKED: <summary>
-Reason: <why the command is dangerous>
-Tip: <safe alternative>
-```
+Blocked commands return a structured `BLOCKED` message with a reason and a safe alternative. The authoritative rule set, matching logic, and error wording live in `clients::tools::bash_safety` and its tests.
 
 > **Note**: Destructive command blocking is a best-effort guard, not a security boundary. The OS-level sandbox remains the primary enforcement mechanism. See [sandbox.md](./sandbox.md) for details.
 
 ### Read Tool
 
-**Purpose**: Read file contents.
-
-**Parameters**:
-
-- `path`: Absolute path to the file (required)
-- `start_line`: First line to read (1-indexed, default: 1)
-- `end_line`: Last line to read (1-indexed, default: 500)
-
-**Features**:
-
-- Line-numbered output for files
-- Directory path rejection (clear error message when path is a directory)
-- Binary file detection (rejects files with null bytes)
-- Automatic truncation at 100KB
-- Pagination hints ("... X more lines")
-
-**Output Format**:
-
-```
-File: /path/to/file
-Lines 1-100/500
-     1: first line
-     2: second line
-    ...
-[... 400 more lines ...]
-```
+Reads file contents with line-numbered output and pagination (`start_line`/`end_line`, defaulting to the first 200 lines). Rejects directories with a clear error, rejects binary files (null-byte detection), truncates very large reads, and emits pagination hints for remaining lines. Defaults and caps live in `clients::tools::read` and `read-description.txt`.
 
 ### Edit Tool
 
-**Purpose**: Make targeted text replacements in existing files.
+Makes targeted text replacements in existing files via a list of `{old_text, new_text}` edits (bounded by `MAX_EDITS_PER_CALL`). Behavioral contract:
 
-**Parameters**:
-
-- `path`: Absolute path to the file (required)
-- `edits`: Array of edit operations (required, max 20)
-  - `old_text`: Exact text to find (required)
-  - `new_text`: Replacement text (required)
-
-**Features**:
-
-- Multiple edits per call (up to 20)
-- Preflight validation (all edits validated before any changes)
-- Overlap detection (prevents conflicting edits)
-- Reverse-order application (prevents position shifting)
-- Line ending preservation (LF/CRLF)
-- UTF-8 BOM handling
-- Exact match validation (including whitespace)
-- Ambiguous-match diagnostics with capped, line-numbered candidate contexts
-- Delete support (empty `newText`)
-- Binary file detection
-- Unified diff output showing changes
-
-**Error Cases**:
-
-- `old_text` not found (with edit number)
-- Multiple matches for `old_text` (must be unique; includes candidate contexts)
-- `old_text` == `new_text` (no-op)
-- Overlapping edits (with edit numbers)
-- Invalid JSON arguments (includes bounded context window around the failure offset with control characters visibly escaped, a caret marker, and a targeted hint for control characters, trailing data, missing fields, unknown fields, unexpected EOF, or key-not-string errors)
-- Too many edits (> 20)
-- No edits provided
-- File is binary
-- Path is outside working directory
-
-**Example**:
-
-```json
-{
-  "path": "/path/to/file.rs",
-  "edits": [
-    { "old_text": "fn old_name()", "new_text": "fn new_name()" },
-    { "old_text": "old_name()", "new_text": "new_name()" }
-  ]
-}
-```
+- **Preflight validation**: all edits are validated before any change is applied; a failing edit means no change at all.
+- **Uniqueness**: each `old_text` must match exactly once; ambiguous matches produce capped, line-numbered candidate contexts so the model can disambiguate.
+- **Overlap detection**: conflicting edits are rejected with the edit numbers involved.
+- **Fidelity**: line endings (LF/CRLF) and UTF-8 BOM are preserved; matching is exact including whitespace; empty `new_text` deletes; identical `old_text`/`new_text` pairs are no-ops.
+- **Diagnostics**: invalid JSON arguments produce a bounded context window around the serde failure offset with control characters visibly escaped, a caret marker, and a targeted hint keyed off the error kind. The result includes a unified diff of applied changes.
 
 ### Write Tool
 
-**Purpose**: Create new files or overwrite existing ones.
-
-**Parameters**:
-
-- `file_path`: Absolute path to the file (required)
-- `content`: Full content to write (required)
-
-**Features**:
-
-- Automatic parent directory creation
-- Distinguishes create vs. overwrite in output
-- Warning for overwrites (suggests using Edit instead)
-- Byte count reporting
-
-**Best Practices**:
-
-- Use for new files
-- Use Edit for modifying existing files (more precise)
-- Large files: Consider breaking into multiple writes
+Creates new files or overwrites existing ones, creating parent directories automatically. Output distinguishes create from overwrite and warns on overwrite (Edit is more precise for modifying existing files).
 
 ## Toolbox Tools
 
@@ -411,58 +144,20 @@ The `name` field from the describe output is authoritative (not the filename) an
 
 ## Sandboxing
 
-The Bash tool integrates with the `tools::sandbox` module. See [sandbox.md](./sandbox.md) for details.
+The Bash tool integrates with the `tools::sandbox` module: when sandboxing is enabled, the platform strategy (Seatbelt or Landlock) is applied to the spawned command. See [sandbox.md](./sandbox.md) for the policy and implementation.
+
+## Error Handling
+
+Tools return `Result<ToolResult, String>` where `Ok` carries the output string and `Err` carries a descriptive message. Error messages are designed to be:
+
+- Actionable (suggest what to do)
+- Descriptive (include path, context)
+- Safe (don't expose sensitive info)
+
+Tool errors are returned to the model as function-call output rather than aborting the task, so the model can decide how to proceed. Exact error wording is pinned by each tool module's tests.
 
 ## Related Documentation
 
 - [prompts.md](./prompts.md): Tool definitions are included in system prompts
 - [cli.md](./cli.md): CLI layer triggers tool execution
 - [sandbox.md](./sandbox.md): OS-level sandboxing implementation
-
-## Sandboxing
-
-The Bash tool integrates with the `tools::sandbox` module:
-
-```rust
-// Check if sandboxing is disabled
-if !super::sandbox::is_sandbox_disabled() {
-    if let Some(strategy) = super::sandbox::detect_platform()? {
-        strategy.apply(&mut command, &sandbox_config)?;
-    }
-}
-```
-
-See [sandbox.md](./sandbox.md) for details on sandbox implementation.
-
-## Error Handling
-
-Tools return `Result<ToolResult, String>` where:
-
-- `Ok(ToolResult { output })`: Success with output string
-- `Err(message)`: Error with descriptive message
-
-Error messages are designed to be:
-
-- Actionable (suggest what to do)
-- Descriptive (include path, context)
-- Safe (don't expose sensitive info)
-
-Examples:
-
-- `"Path '/etc/passwd' is outside the working directory"`
-- `"old_text matches 3 locations but must match exactly 1"` with capped, line-numbered candidate contexts
-- `"Binary file detected: cannot edit"`
-- `"Invalid edit arguments: ..."` with bounded context window (\~80 chars around the failure offset), a caret (`^`) marker, control characters rendered visibly, a targeted hint keyed off the error kind, and the expected JSON shape
-
-JSON parse errors for Edit and Write tool arguments include a context snippet centered on the serde failure offset, with control characters escaped for legibility. Targeted hints cover control characters (`must escape as \\t / \\n`), trailing data, missing fields, unknown fields, unexpected EOF, and key type errors. The context width is bounded to prevent echoing large payloads.
-
-## Testing
-
-Each tool has comprehensive tests:
-
-- **Bash**: Output streaming, timeout, sandbox blocking, stderr capture, metadata footer formatting, binary output detection, destructive command blocking (git operations, filesystem operations, wrapper detection, command chaining, false positive avoidance)
-- **Read**: Small files, line ranges, binary detection, directory rejection
-- **Edit**: Multiple edits, overlap detection, line ending preservation, BOM handling, binary files, no-op detection, path validation
-- **Write**: Create, overwrite, nested directories, path validation
-
-Tests use `tempfile` for isolation and avoid side effects on the real filesystem.
