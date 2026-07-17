@@ -429,6 +429,72 @@ fn stream_record_json_function_call() {
 }
 
 #[test]
+fn stream_record_json_function_call_valid_arguments_has_no_parse_error() {
+    let item = ConversationItem::FunctionCall {
+        id: "fc-1".to_string(),
+        call_id: "call-1".to_string(),
+        name: "bash".to_string(),
+        arguments: r#"{"cmd":"ls"}"#.to_string(),
+        timestamp: None,
+    };
+    let json = stream_json_for(&item);
+    assert!(json.get("arguments_parse_error").is_none());
+}
+
+#[test]
+fn stream_record_json_function_call_malformed_arguments_has_parse_error() {
+    let item = ConversationItem::FunctionCall {
+        id: "fc-1".to_string(),
+        call_id: "call-1".to_string(),
+        name: "Edit".to_string(),
+        arguments: r#"{"edits": [{"new_text": "x"}],<"#.to_string(),
+        timestamp: None,
+    };
+    let json = stream_json_for(&item);
+    assert_eq!(json["type"], "function_call");
+    assert!(json.get("arguments_parse_error").is_some());
+    let error = json["arguments_parse_error"].as_str().unwrap();
+    assert!(
+        !error.is_empty(),
+        "arguments_parse_error should be non-empty"
+    );
+
+    // The enclosing StreamRecord must remain valid JSON even though the
+    // nested arguments string is not.
+    let line = serde_json::to_string(&StreamRecord::from_conversation_item(&item)).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(parsed["arguments"], r#"{"edits": [{"new_text": "x"}],<"#);
+}
+
+#[test]
+fn function_call_hostile_argument_content_roundtrips() {
+    // Valid JSON containing quotes, backslashes, newlines, and a control char.
+    let arguments = serde_json::json!({
+        "text": "hello\nworld\t\"quoted\"\\backslash\u{0001}"
+    })
+    .to_string();
+    let item = ConversationItem::FunctionCall {
+        id: "fc-1".to_string(),
+        call_id: "call-1".to_string(),
+        name: "bash".to_string(),
+        arguments,
+        timestamp: Some(timestamp_at("2026-05-10T00:00:00Z")),
+    };
+    assert_conversation_item_stream_session_roundtrip(&item);
+
+    // Stream-json line is valid JSON and the nested arguments parse cleanly.
+    let line = serde_json::to_string(&StreamRecord::from_conversation_item(&item)).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert!(parsed.get("arguments_parse_error").is_none());
+    let nested: serde_json::Value =
+        serde_json::from_str(parsed["arguments"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        nested["text"],
+        "hello\nworld\t\"quoted\"\\backslash\u{0001}"
+    );
+}
+
+#[test]
 fn stream_record_json_function_call_output() {
     let item = ConversationItem::FunctionCallOutput {
         call_id: "call-1".to_string(),

@@ -507,6 +507,7 @@ mod tests {
                 call_id: "call-1".to_string(),
                 name: "bash".to_string(),
                 arguments: r#"{"cmd":"ls"}"#.to_string(),
+                arguments_parse_error: None,
                 timestamp: None,
             }),
             SessionRecord::FunctionCallOutput(FunctionCallOutputData {

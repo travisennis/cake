@@ -60,14 +60,17 @@ Roles are `system`, `user`, `assistant`, or `tool`. `id`, `status`, and `timesta
 {"type":"function_call","id":"fc_abc123","call_id":"call_xyz789","name":"bash","arguments":"{\"command\":\"ls\"}"}
 ```
 
-  | Field       | Type   | Required | Description                                |
-  | ----------- | ------ | -------- | ------------------------------------------ |
-  | `type`      | string | yes      | Always `function_call`                     |
-  | `id`        | string | yes      | Provider function-call item id             |
-  | `call_id`   | string | yes      | Correlation id used by the matching output |
-  | `name`      | string | yes      | Tool name                                  |
-  | `arguments` | string | yes      | JSON-encoded tool argument string          |
-  | `timestamp` | string | no       | Item creation time                         |
+  | Field                   | Type   | Required | Description                                                          |
+  | ----------------------- | ------ | -------- | -------------------------------------------------------------------- |
+  | `type`                  | string | yes      | Always `function_call`                                               |
+  | `id`                    | string | yes      | Provider function-call item id                                       |
+  | `call_id`               | string | yes      | Correlation id used by the matching output                           |
+  | `name`                  | string | yes      | Tool name                                                            |
+  | `arguments`             | string | yes      | JSON-encoded tool argument string, exactly as emitted by the model   |
+  | `arguments_parse_error` | string | no       | Present when `arguments` is not valid JSON; contains the parse error |
+  | `timestamp`             | string | no       | Item creation time                                                   |
+
+`arguments` is the raw tool argument string produced by the model. When the model emits malformed JSON, `arguments_parse_error` is included so consumers can detect the condition without failing to parse the enclosing stream-json record. Consumers that parse `arguments` as JSON should treat `arguments_parse_error` as a signal that the nested parse will fail.
 
 ### Function Call Output
 
@@ -139,20 +142,20 @@ Hook stdout and stderr may include local paths, policy diagnostics, or other pro
 
 `subtype` is one of `success`, `error_during_execution`, `error_output_schema`, `cut_off`, or `interrupted`. On failure, `error` contains the error message and `result` is omitted.
 
-  | Field                | Type             | Required | Description                                                                         |
-  | -------------------- | ---------------- | -------- | ----------------------------------------------------------------------------------- |
-  | `type`               | string           | yes      | Always `task_complete`                                                              |
+  | Field                | Type             | Required | Description                                                                                    |
+  | -------------------- | ---------------- | -------- | ---------------------------------------------------------------------------------------------- |
+  | `type`               | string           | yes      | Always `task_complete`                                                                         |
   | `subtype`            | string           | yes      | One of `success`, `error_during_execution`, `error_output_schema`, `cut_off`, or `interrupted` |
-  | `is_error`           | boolean          | yes      | `false` for successful completion                                                   |
-  | `duration_ms`        | number           | yes      | Wall-clock task duration in milliseconds                                            |
-  | `turn_count`         | number           | yes      | Number of API turns with usage accumulated                                          |
-  | `tool_call_count`    | number           | yes      | Number of tool calls executed during the task                                       |
-  | `session_id`         | string           | yes      | Session UUID                                                                        |
-  | `task_id`            | string           | yes      | Task UUID from the matching `task_start`                                            |
-  | `result`             | string           | no       | Final assistant text on success                                                     |
-  | `error`              | string           | no       | Error message on failure                                                            |
-  | `usage`              | object           | yes      | Aggregate token usage for the task                                                  |
-  | `permission_denials` | array of strings | no       | Tool permission denial messages when present                                        |
+  | `is_error`           | boolean          | yes      | `false` for successful completion                                                              |
+  | `duration_ms`        | number           | yes      | Wall-clock task duration in milliseconds                                                       |
+  | `turn_count`         | number           | yes      | Number of API turns with usage accumulated                                                     |
+  | `tool_call_count`    | number           | yes      | Number of tool calls executed during the task                                                  |
+  | `session_id`         | string           | yes      | Session UUID                                                                                   |
+  | `task_id`            | string           | yes      | Task UUID from the matching `task_start`                                                       |
+  | `result`             | string           | no       | Final assistant text on success                                                                |
+  | `error`              | string           | no       | Error message on failure                                                                       |
+  | `usage`              | object           | yes      | Aggregate token usage for the task                                                             |
+  | `permission_denials` | array of strings | no       | Tool permission denial messages when present                                                   |
 
 `usage` contains `input_tokens`, `input_tokens_details.cached_tokens`, `output_tokens`, `output_tokens_details.reasoning_tokens`, and `total_tokens`.
 

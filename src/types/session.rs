@@ -231,6 +231,10 @@ pub struct FunctionCallData {
     pub call_id: String,
     pub name: String,
     pub arguments: String,
+    /// Error message when `arguments` is not valid JSON, indicating the model
+    /// emitted malformed tool arguments. Present only when parsing fails.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arguments_parse_error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<DateTime<Utc>>,
 }
@@ -426,6 +430,9 @@ impl StreamRecord {
                 call_id: call_id.clone(),
                 name: name.clone(),
                 arguments: arguments.clone(),
+                arguments_parse_error: serde_json::from_str::<serde_json::Value>(arguments)
+                    .err()
+                    .map(|e| e.to_string()),
                 timestamp: *timestamp,
             }),
             ConversationItem::FunctionCallOutput {
@@ -496,6 +503,7 @@ impl SessionRecord {
                 call_id,
                 name,
                 arguments,
+                arguments_parse_error: _,
                 timestamp,
             }) => Some(ConversationItem::FunctionCall {
                 id: id.clone(),
