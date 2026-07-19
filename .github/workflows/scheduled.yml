@@ -15,15 +15,6 @@ permissions:
   checks: write
 
 jobs:
-  security-audit:
-    name: Security Audit
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: rustsec/audit-check@v2.0.0
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-
   deny:
     name: Dependency Audit
     runs-on: ubuntu-latest
