@@ -299,6 +299,55 @@ async fn test_streaming_timeout_kills_descendants() {
     );
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn dropping_bash_future_kills_descendants() {
+    let dir = tempfile::tempdir().unwrap();
+    let started = dir.path().join("started");
+    let survived = dir.path().join("descendant-survived");
+    let command = format!(
+        "touch '{}'; (sleep 2; touch '{}') & sleep 999",
+        started.display(),
+        survived.display()
+    );
+    let args = serde_json::json!({ "command": command }).to_string();
+    let execution = tokio::spawn(async move { execute_bash_unsandboxed(&args).await });
+
+    timeout(std::time::Duration::from_secs(5), async {
+        while !started.exists() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("bash command did not start");
+
+    execution.abort();
+    assert!(execution.await.unwrap_err().is_cancelled());
+
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    assert!(
+        !survived.exists(),
+        "a descendant survived after the bash execution future was dropped"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn completed_bash_future_does_not_kill_descendants() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("background-descendant-completed");
+    let command = format!("(sleep 1; touch '{}') >/dev/null 2>&1 &", marker.display());
+    let args = serde_json::json!({ "command": command }).to_string();
+
+    execute_bash_unsandboxed(&args).await.unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    assert!(
+        marker.exists(),
+        "normal bash completion killed a deliberately backgrounded descendant"
+    );
+}
+
 #[tokio::test]
 async fn test_streaming_stderr_included() {
     // Command that writes to stderr has it captured with metadata footer

@@ -7,6 +7,7 @@ use tokio::process::{Child, Command};
 use tokio::time::{Duration, timeout};
 use tracing::debug;
 
+use crate::config::toolbox::ToolboxProcessGuard;
 use crate::time_format::format_seconds_tenths;
 
 /// Maximum number of null bytes or control characters (excluding common whitespace)
@@ -543,6 +544,11 @@ async fn execute_bash_with_args(
         .spawn()
         .map_err(|e| format!("Failed to spawn command: {e}"))?;
 
+    // RAII guard: kills the whole process group on drop unless defused.
+    // This ensures Ctrl-C or any other future cancellation terminates
+    // descendant processes, not just the direct child.
+    let mut guard = ToolboxProcessGuard::new(child.id());
+
     let mut stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
     let mut stderr = child.stderr.take().ok_or("Failed to capture stderr")?;
 
@@ -634,6 +640,11 @@ async fn execute_bash_with_args(
             return Err(format!("Command timed out after {} seconds", args.timeout));
         },
     };
+
+    // Normal completion (or hit_cap with group already killed by
+    // terminate_process_group above): defuse the guard so it does not
+    // send a harmless-but-unnecessary SIGKILL to the reaped group.
+    guard.defuse();
 
     let elapsed_ms = start_time.elapsed().as_millis();
     let stderr_str = String::from_utf8_lossy(&stderr_buf);

@@ -76,6 +76,9 @@ Executes shell commands in the project working directory (`ToolContext.cwd`) und
 - **Empty search miss**: a search command (`rg`, `grep`, and variants) that exits 1 with no output gets a `(no matches)` marker while keeping the original exit code visible, distinguishing an empty result from a tool or shell error.
 - **Binary output detection**: output that looks binary (null bytes / high non-printable ratio) is never returned inline; it is saved to the secure temp directory, MIME-sniffed with the `infer` content-signature database, and reported with suggested inspection tools.
 - **Timeout**: the command is killed and a timeout error returned.
+- **Cancellation**: dropping an in-flight Bash execution, including on Ctrl-C,
+  kills the command's entire process group so descendant processes do not
+  survive cake's interrupted turn.
 
 **Destructive Command Blocking**:
 
