@@ -8,21 +8,33 @@ Compatibility surfaces: CLI behavior, tool execution semantics, sandbox boundari
 
 ## Operating Loop
 
-0. **Before any work**: run `ahm prime` to prepare the worktree, regenerate
-   indexes, and get the session briefing. This is the canonical session-start
-   command for coding agents.
+0. **Before any work**: run `ahm prime` to prepare the worktree, regenerate indexes, and get the session briefing. This is the canonical session-start command for coding agents.
 
 1. Do managed-work intake first:
-   - If the request is about a task, ExecPlan, ADR, or research note, use `ahm` to understand that managed work item before choosing implementation docs.
+   - If the request is about a task, ExecPlan, ADR, or research note, use `ahm` to understand the managed work item before choosing implementation docs.
    - If the request is directly about code, CLI behavior, tests, docs, build, release, or repo mechanics, skip `ahm` intake and classify the request directly.
+
 2. Classify the concrete work by Workflow Routing.
+
 3. Load only the routed docs needed for that concrete work.
+
 4. State the selected route and loaded docs before editing or in handoff.
+
 5. Preserve compatibility surfaces unless explicitly changed.
-6. Keep edits surgical and verify according to risk.
-7. Run codex review (`tb__codex_review`) after completing implementation edits. Fix all reported issues, then re-run until the tool reports no remaining issues. Do not call codex review excessively --- if it takes more than a few rounds to reach clean output, step back and reconsider the approach or design rather than grinding through fix loops.
-8. When stuck on a design decision, a debugging problem, or an unclear path, use the oracle tool (`tb__oracle`) to get guidance before burning time on trial and error.
-9. Handoff with changes, checks, and remaining risk.
+
+6. If the work came from a managed task, mark it in progress with `ahm task start <id>`.
+
+7. Keep edits surgical and verify according to risk.
+
+8. Run codex review (`tb__codex_review`) after completing implementation edits. Fix all reported issues, then re-run until the tool reports no remaining issues. Do not call codex review excessively --- if it takes more than a few rounds to reach clean output, step back and reconsider the approach or design rather than grinding through fix loops.
+
+9. When stuck on a design decision, a debugging problem, or an unclear path, use the oracle tool (`tb__oracle`) to get guidance before burning time on trial and error.
+
+10. Perform preflight checks on your work to make sure it is ready to be committed.
+
+11. If the work came from a managed task, mark the task complete with `ahm task complete <id>`.
+
+12. Handoff with changes, checks, and remaining risk.
 
 When this file conflicts with a specialized workflow doc for that workflow, the specialized doc wins.
 
@@ -71,8 +83,6 @@ For doc work, read [docs/guardrails/documentation.md](docs/guardrails/documentat
 Always run `ahm prime` before starting work on a managed-work item (task, ExecPlan, ADR, or research note), and re-run it after context compaction. It reports workflow state, in-progress and ready tasks, validation warnings, and which scoped `ahm context <scope>` command covers the work at hand. Work done without it often conflicts with tracked in-progress work.
 
 After `ahm` intake, re-classify the discovered work under Workflow Routing. For example, a task about CLI flags still uses the CLI route; a task about sandbox policy still uses the sandboxing route; a task about prompt, skill, or hook behavior still uses the prompts, skills, and hooks route.
-
-After completing a task, do preflight checks on your work to make sure it is ready to be committed.
 
 Never hand-edit generated task, research, ExecPlan, or ADR indexes. Update the source records and run the appropriate `ahm` command. Use `ahm task` commands for task state moves and `ahm adr` commands for ADR lifecycle changes.
 
