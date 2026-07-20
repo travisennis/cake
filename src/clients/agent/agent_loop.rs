@@ -113,6 +113,16 @@ impl Agent {
             // from a misbehaving provider. Do not execute them; treat the turn
             // as a failed validation attempt.
             if in_correction_mode {
+                // Append synthetic FunctionCallOutput items for every
+                // unexecuted call so the history stays well-formed for both
+                // the Responses API and Chat Completions backends.
+                for (call_id, name, _) in &function_calls {
+                    let output = format!(
+                        "not executed: correction turn offers no tools for {name}({call_id})"
+                    );
+                    let item = self.conversation.push_tool_output(call_id.clone(), output);
+                    self.stream_item(&item)?;
+                }
                 self.record_correction_tool_call_failure(
                     &mut corrections_used,
                     &mut in_correction_mode,

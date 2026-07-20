@@ -925,6 +925,9 @@ mod error_tests {
         assert_eq!(agent.permission_denials().len(), 1);
         assert!(agent.permission_denials()[0].contains("Bash(call-1):"));
         assert!(agent.permission_denials()[0].contains("blocked"));
+
+        // No dangling function_call items remain.
+        assert_no_dangling_function_calls(agent.history());
     }
 
     // =========================================================================
@@ -1734,6 +1737,37 @@ mod error_tests {
     }
 }
 
+/// Assert that every `FunctionCall` item in `history` has a corresponding
+/// `FunctionCallOutput` item with a matching `call_id`. Catches dangling
+/// `function_call` items from correction-mode or hook-blocked paths.
+fn assert_no_dangling_function_calls(history: &[ConversationItem]) {
+    let call_ids: std::collections::HashSet<_> = history
+        .iter()
+        .filter_map(|item| {
+            if let ConversationItem::FunctionCall { call_id, .. } = item {
+                Some(call_id.as_str())
+            } else {
+                None
+            }
+        })
+        .collect();
+    let output_ids: std::collections::HashSet<_> = history
+        .iter()
+        .filter_map(|item| {
+            if let ConversationItem::FunctionCallOutput { call_id, .. } = item {
+                Some(call_id.as_str())
+            } else {
+                None
+            }
+        })
+        .collect();
+    let dangling: Vec<_> = call_ids.difference(&output_ids).copied().collect();
+    assert!(
+        dangling.is_empty(),
+        "dangling FunctionCall items without matching FunctionCallOutput: {dangling:?}"
+    );
+}
+
 /// Output-schema enforcement tests using wiremock for HTTP mocking.
 #[cfg(test)]
 mod output_schema_tests {
@@ -1827,6 +1861,28 @@ mod output_schema_tests {
             has_corrective_message
                 && body.get("tools").is_none()
                 && body.get("tool_choice").is_none()
+        }
+    }
+
+    /// Matches a correction request that carries the synthetic output for a
+    /// tool call returned by the previous, tool-disabled correction turn.
+    #[derive(Debug)]
+    struct CorrectionRequestWithToolOutput;
+
+    impl Match for CorrectionRequestWithToolOutput {
+        fn matches(&self, request: &Request) -> bool {
+            let Ok(body) = serde_json::from_slice::<serde_json::Value>(&request.body) else {
+                return false;
+            };
+            body["input"].as_array().is_some_and(|items| {
+                items.iter().any(|item| {
+                    item["type"] == "function_call_output"
+                        && item["call_id"] == "call-1"
+                        && item["output"].as_str().is_some_and(|output| {
+                            output.contains("not executed: correction turn offers no tools")
+                        })
+                })
+            })
         }
     }
 
@@ -1987,6 +2043,7 @@ mod output_schema_tests {
             .await;
         Mock::given(method("POST"))
             .and(path("/responses"))
+            .and(CorrectionRequestWithToolOutput)
             .respond_with(
                 ResponseTemplate::new(200).set_body_json(text_response("{\"summary\": \"ok\"}")),
             )
@@ -2002,14 +2059,10 @@ mod output_schema_tests {
 
         assert_eq!(result, "{\"summary\": \"ok\"}");
         assert_eq!(agent.turn_count(), 3);
-        // The tool call was recorded in history but never executed.
-        assert!(
-            agent
-                .history()
-                .iter()
-                .all(|item| !matches!(item, ConversationItem::FunctionCallOutput { .. }))
-        );
+        // The tool call was recorded but never executed. The third request's
+        // matcher proves its synthetic output was carried forward.
         assert_eq!(agent.tool_call_count, 0);
+        assert_no_dangling_function_calls(agent.history());
     }
 }
 
