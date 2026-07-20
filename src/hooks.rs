@@ -705,19 +705,13 @@ async fn run_command_hook(command: HookCommand, payload: Value, cwd: PathBuf) ->
 
     if let Some(mut stdin) = child.stdin.take() {
         let input = serde_json::to_vec(&payload).unwrap_or_default();
-        if let Err(error) = stdin.write_all(&input).await
-            && error.kind() != std::io::ErrorKind::BrokenPipe
-        {
-            return InvocationOutcome {
-                command,
-                exit_code: None,
-                duration: start.elapsed(),
-                stdout: String::new(),
-                stderr: String::new(),
-                parsed: None,
-                error: Some(format!("failed to write hook stdin: {error}")),
-            };
-        }
+        // Feed stdin from a detached task so a hook that never reads stdin
+        // cannot block the call. Write errors are ignored because exit status
+        // is authoritative and the enclosing timeout bounds the writer.
+        tokio::spawn(async move {
+            _ = stdin.write_all(&input).await;
+            _ = stdin.shutdown().await;
+        });
     }
 
     let timeout_result = timeout(command.timeout, child.wait_with_output()).await;

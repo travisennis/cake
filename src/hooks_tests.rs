@@ -704,3 +704,33 @@ fn decision_label_parsed_deny_is_deny() {
     let decision = outcome_decision_label(outcome.parsed.as_ref(), outcome.error.as_deref());
     assert_eq!(decision, "deny");
 }
+
+#[tokio::test]
+#[cfg(unix)]
+async fn non_reading_hook_does_not_hang() {
+    // A hook that never reads stdin should not block the caller when the
+    // payload exceeds the OS pipe buffer (~64 KiB). The timeout should fire
+    // and return a timeout error instead of hanging indefinitely.
+    let dir = tempfile::TempDir::new().unwrap();
+
+    // Use sleep (does not read stdin) with a payload > 64 KiB pipe buffer
+    let big_payload_value = serde_json::json!({
+        "data": "x".repeat(100 * 1024),  // 100 KiB
+    });
+
+    let hook_command = HookCommand {
+        command: "sleep 30".to_string(),
+        timeout: Duration::from_millis(500),
+        fail_closed: false,
+        status_message: None,
+        source_path: dir.path().join("hooks.json"),
+    };
+
+    let outcome = run_command_hook(hook_command, big_payload_value, dir.path().to_path_buf()).await;
+
+    assert!(
+        outcome.error.as_deref().unwrap_or("").contains("timed out"),
+        "expected timeout error for non-reading hook, got: {:?}",
+        outcome.error
+    );
+}
