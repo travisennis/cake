@@ -194,7 +194,9 @@ Landlock requires kernel 5.13 or later. On older kernels, Landlock reports `NotE
 
 ### SSH git operations fail with host key verification
 
-The sandbox grants read-only access to `~/.ssh/known_hosts` so the sandboxed process cannot modify it. If you use SSH for git operations (e.g., `git clone git@github.com:...`), you need to populate `known_hosts` before running cake. Choose one of the following approaches:
+On macOS, the sandbox grants read-only access to `~/.ssh/known_hosts` and `~/.ssh/config` so the sandboxed process cannot modify them, and read-write access to SSH agent sockets under `/tmp/ssh-*` and `/private/tmp/ssh-*` so agent-based authentication works. On Linux the Landlock sandbox does not add SSH-specific path rules; use `--add-dir ~/.ssh` to grant read-only access to the SSH directory for host key verification and config lookup.
+
+If you use SSH for git operations (e.g., `git clone git@github.com:...`), you need to populate `known_hosts` before running cake. Choose one of the following approaches:
 
 **Option 1: Pre-populate known_hosts with ssh-keyscan**
 

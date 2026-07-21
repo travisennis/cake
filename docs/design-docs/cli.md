@@ -42,12 +42,13 @@ The settings file format, merge behavior, profile precedence, and validation rul
 
 ## Session Management
 
-The CLI handles four session modes:
+The CLI handles five session modes:
 
 1. **New Session** (default): Creates a fresh session with a new UUID
 2. **Continue** (`--continue`): Loads the most recent session for the current directory
 3. **Resume** (`--resume <UUID>`): Loads a specific session by UUID
 4. **Fork** (`--fork [UUID]`): Copies history from an existing session into a new session
+5. **Ephemeral** (`--no-session`): Run without persisting a session to disk
 
 These modes are mutually exclusive---only one can be used at a time. Lifecycle details and storage are in [session-management.md](./session-management.md).
 
@@ -117,12 +118,13 @@ Failure behavior:
 
 cake returns structured exit codes so that shell scripts and CI pipelines can branch on the reason for failure:
 
-  | Code | Name        | Description                                               |
-  | ---- | ----------- | --------------------------------------------------------- |
-  | `0`  | Success     | The agent completed and produced a response               |
-  | `1`  | Agent error | The model or a tool encountered an error during execution |
-  | `2`  | API error   | Rate limit, auth failure, or network error                |
-  | `3`  | Input error | No prompt provided, invalid flags, missing API key        |
+  | Code  | Name        | Description                                               |
+  | ----- | ----------- | --------------------------------------------------------- |
+  | `0`   | Success     | The agent completed and produced a response               |
+  | `1`   | Agent error | The model or a tool encountered an error during execution |
+  | `2`   | API error   | Rate limit, auth failure, or network error                |
+  | `3`   | Input error | No prompt provided, invalid flags, missing API key        |
+  | `130` | Interrupted | User interrupted the run with Ctrl-C                      |
 
 ### Classification Logic
 

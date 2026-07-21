@@ -33,6 +33,8 @@ cake --fork 550e8400-e29b-41d4-a716-446655440000 "New branch"
 
 Path-based `--resume <path>` and `--fork <path>` are not supported. Stream-json output is a live task feed, not a resumable session file.
 
+`--no-session` runs the invocation without creating or appending to a session file. No transcript is persisted and no telemetry sidecar is written. This is useful for one-off queries or scripting where session history is not needed.
+
 ## Storage Layout
 
 Sessions are stored as flat files under `~/.local/share/cake/sessions/`:
