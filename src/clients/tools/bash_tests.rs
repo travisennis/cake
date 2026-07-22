@@ -387,6 +387,12 @@ async fn grep_no_match_output_is_disambiguated() {
 
 #[cfg(target_os = "macos")]
 #[tokio::test]
+// FLAKE(task#292): This test fails when the environment transitions between
+// `detect_platform()` returning `Err` (guard check) and `execute_bash` calling
+// it again — the command runs unsandboxed and returns `Ok` instead of the
+// expected sandbox error. Root mechanism is unclear since the probe is
+// OnceLock-cached. Fails on clean master; reproduced across two separate
+// cake sessions (b446b156, 5841be03).
 async fn test_sandbox_unavailable_fails_closed() {
     if super::super::sandbox::is_sandbox_disabled()
         || super::super::sandbox::detect_platform().is_ok()
