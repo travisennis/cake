@@ -162,6 +162,7 @@ mod edit;
 mod json_repair;
 mod read;
 mod scheduling;
+mod secure_temp_dir;
 mod toolbox;
 mod write;
 

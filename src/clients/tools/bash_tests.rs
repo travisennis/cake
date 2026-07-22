@@ -389,7 +389,7 @@ async fn grep_no_match_output_is_disambiguated() {
 #[tokio::test]
 async fn test_sandbox_unavailable_fails_closed() {
     if super::super::sandbox::is_sandbox_disabled()
-        || super::super::sandbox::can_enforce_platform_sandbox()
+        || super::super::sandbox::detect_platform().is_ok()
     {
         return;
     }

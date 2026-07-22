@@ -6,6 +6,7 @@
 //! explicitly allowed.
 
 use crate::clients::tools::sandbox::{SandboxConfig, SandboxGuard, SandboxPolicy, SandboxStrategy};
+use crate::clients::tools::secure_temp_dir::secure_temp_dir;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Output, Stdio};
@@ -44,8 +45,15 @@ impl MacOsSandbox {
     }
 
     fn probe_can_apply_profile() -> SandboxProfileProbe {
-        let tmp_dir = std::env::temp_dir().join("cake").join("sandbox_profiles");
-        Self::probe_can_apply_profile_in(&tmp_dir, |profile_path| {
+        let tmp_dir = match secure_temp_dir() {
+            Ok(dir) => dir,
+            Err(e) => {
+                let failure = format!("failed to create sandbox profile probe directory: {e}");
+                tracing::warn!("{failure}");
+                return SandboxProfileProbe::unavailable(failure);
+            },
+        };
+        Self::probe_can_apply_profile_in(tmp_dir, |profile_path| {
             std::process::Command::new("/usr/bin/sandbox-exec")
                 .arg("-f")
                 .arg(profile_path)
@@ -346,14 +354,13 @@ impl MacOsSandbox {
 
     /// Write the profile to a temp file and return its path
     fn write_profile_to_temp(profile: &str) -> Result<tempfile::NamedTempFile, String> {
-        let tmp_dir = std::env::temp_dir().join("cake").join("sandbox_profiles");
-        std::fs::create_dir_all(&tmp_dir)
+        let tmp_dir = secure_temp_dir()
             .map_err(|e| format!("Failed to create sandbox profile directory: {e}"))?;
 
         let mut temp_file = tempfile::Builder::new()
             .prefix("cake_sandbox_")
             .suffix(".sb")
-            .tempfile_in(&tmp_dir)
+            .tempfile_in(tmp_dir)
             .map_err(|e| format!("Failed to create sandbox profile temp file: {e}"))?;
 
         temp_file
@@ -649,6 +656,22 @@ mod tests {
             probe.failure.as_deref(),
             Some("failed to run sandbox-exec probe: missing sandbox-exec")
         );
+    }
+
+    #[test]
+    fn probe_can_apply_profile_fails_before_spawn_for_unusable_directory() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let unusable_path = tmp_dir.path().join("not-a-directory");
+        std::fs::write(&unusable_path, b"occupied").unwrap();
+
+        let probe = MacOsSandbox::probe_can_apply_profile_in(&unusable_path, |_| {
+            panic!("sandbox-exec probe must not run with an unusable profile directory")
+        });
+
+        assert!(!probe.can_apply);
+        assert!(probe.failure.as_deref().is_some_and(|failure| {
+            failure.starts_with("failed to create sandbox profile probe directory:")
+        }));
     }
 
     #[test]
