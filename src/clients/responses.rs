@@ -431,25 +431,34 @@ fn parse_function_call_output(
     output: &OutputMessage,
     index: usize,
 ) -> anyhow::Result<ConversationItem> {
-    let (Some(id), Some(call_id), Some(name), Some(arguments)) = (
+    let (Some(id), Some(call_id), Some(name)) = (
         output.id.as_ref(),
         output.call_id.as_ref(),
         output.name.as_ref(),
-        output.arguments.as_ref(),
     ) else {
         return Err(malformed_function_call_error(api_response, output, index));
     };
 
-    if id.is_empty() || call_id.is_empty() || name.is_empty() || arguments.is_empty() {
+    if id.is_empty() || call_id.is_empty() || name.is_empty() {
         return Err(malformed_function_call_error(api_response, output, index));
     }
+
+    // Normalize missing, empty, or whitespace-only arguments to "{}" — some
+    // providers send none or an empty string for parameterless tool calls.
+    // Established toolbox parse_arguments already does the same normalization.
+    let arguments = output
+        .arguments
+        .as_deref()
+        .filter(|a| !a.trim().is_empty())
+        .unwrap_or("{}")
+        .to_string();
 
     let timestamp = chrono::Utc::now();
     Ok(ConversationItem::FunctionCall {
         id: id.clone(),
         call_id: call_id.clone(),
         name: name.clone(),
-        arguments: arguments.clone(),
+        arguments,
         timestamp: Some(timestamp),
     })
 }
@@ -463,7 +472,6 @@ fn malformed_function_call_error(
         ("id", output.id.as_deref()),
         ("call_id", output.call_id.as_deref()),
         ("name", output.name.as_deref()),
-        ("arguments", output.arguments.as_deref()),
     ]
     .into_iter()
     .filter_map(|(field, value)| match value {

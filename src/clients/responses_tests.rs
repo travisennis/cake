@@ -761,7 +761,41 @@ fn parse_output_items_function_call_missing_fields() {
     assert!(message.contains("malformed Responses API function_call"));
     assert!(message.contains("output[0]"));
     assert!(message.contains("resp-123"));
-    assert!(message.contains("id, call_id, name, arguments"));
+    assert!(message.contains("id, call_id, name"));
+    assert!(
+        !message.contains("arguments"),
+        "arguments is no longer a required field"
+    );
+}
+
+#[test]
+fn parse_output_items_function_call_blank_arguments() {
+    for arguments in [None, Some(""), Some("   ")] {
+        let response = ApiResponse {
+            id: None,
+            output: vec![OutputMessage {
+                msg_type: "function_call".to_string(),
+                id: Some("fc-1".to_string()),
+                call_id: Some("call-1".to_string()),
+                name: Some("bash".to_string()),
+                arguments: arguments.map(str::to_string),
+                status: None,
+                content: None,
+                encrypted_content: None,
+                summary: None,
+            }],
+            usage: None,
+        };
+        let items = parse_output_items(&response).unwrap();
+        assert!(matches!(
+            items.as_slice(),
+            [ConversationItem::FunctionCall {
+                arguments,
+                name,
+                ..
+            }] if arguments == "{}" && name == "bash"
+        ));
+    }
 }
 
 #[test]
