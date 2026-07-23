@@ -169,7 +169,7 @@ impl MacOsSandbox {
         profile.allow_regex("file-read* file-write*", "^/private/tmp/ssh-");
         profile.allow_regex(
             "file-read* file-write*",
-            "^/private/tmp/com\\.apple\\.launchd\\.*/Listeners",
+            "^/private/tmp/com\\.apple\\.launchd\\..*/Listeners$",
         );
         // Allow the actual SSH_AUTH_SOCK path (may be in a non-standard location
         // such as ~/.ssh/agent/). Grant read-write on the parent directory so the
@@ -1081,5 +1081,35 @@ mod tests {
             profile.contains(&wt_rule),
             "profile must contain allow rule for worktree gitdir: {wt_rule}"
         );
+    }
+
+    #[test]
+    fn test_launchd_regex_in_generated_profile_matches_representative_path() {
+        let profile = MacOsSandbox::generate_profile(&test_config());
+        let pattern = profile
+            .lines()
+            .find_map(|line| {
+                line.strip_prefix("(allow file-read* file-write* (regex #\"")
+                    .and_then(|line| line.strip_suffix("\"))"))
+                    .filter(|pattern| pattern.contains("launchd"))
+            })
+            .expect("profile must contain the launchd SSH agent regex");
+        let (prefix, suffix) = pattern
+            .split_once(".*")
+            .expect("launchd regex must contain a wildcard suffix");
+        let prefix = prefix
+            .strip_prefix('^')
+            .expect("launchd regex must be anchored")
+            .replace("\\.", ".");
+        let suffix = suffix
+            .strip_suffix('$')
+            .expect("launchd regex must be end-anchored")
+            .replace("\\.", ".");
+        let path = "/private/tmp/com.apple.launchd.XXXX/Listeners";
+        let wildcard_match = path
+            .strip_prefix(&prefix)
+            .is_some_and(|remainder| remainder.ends_with(&suffix));
+
+        assert!(wildcard_match, "pattern {pattern} must match {path}");
     }
 }
