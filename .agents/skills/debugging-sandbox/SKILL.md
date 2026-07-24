@@ -5,9 +5,7 @@ description: Diagnose sandbox denials in cake. Use when a command fails inside t
 
 # Debugging Sandbox Denials
 
-cake runs tools inside a macOS Seatbelt (`sandbox-exec`) or Linux Landlock
-sandbox. When a command fails with `Operation not permitted`, use this skill
-to identify which operation was denied and update the profile.
+cake runs tools inside a macOS Seatbelt (`sandbox-exec`) or Linux Landlock sandbox. When a command fails with `Operation not permitted`, use this skill to identify which operation was denied and update the profile.
 
 ## Quick Diagnosis
 
@@ -22,8 +20,7 @@ sandbox-exec -f "$TMPDIR"/cake/sandbox_profiles/cake_sandbox_*.sb \
 
 ## Trace Mode: Find What Was Denied
 
-Create a debug profile that **logs** denials instead of (or in addition to)
-blocking them.
+Create a debug profile that **logs** denials instead of (or in addition to) blocking them.
 
 ```bash
 # 1. Find the generated profile
@@ -51,12 +48,12 @@ cat /tmp/sandbox_trace.log
 
 ## Common Missing Permissions
 
-| Error pattern                                 | Likely cause                               | Fix                                |
-| --------------------------------------------- | ------------------------------------------ | ---------------------------------- |
-| `Operation not permitted` on `target/` writes | Missing `file-lock`                        | Add `(allow file-lock)` to profile |
-| `/tmp` access denied despite being allowed    | Symlink mismatch (`/tmp` → `/private/tmp`) | Include both forms in profile      |
-| Cargo registry download fails                 | `~/.cargo/registry` is read-only           | Add to `read_write` paths          |
-| `flock` / `fcntl` failures                    | Missing `file-lock` permission             | Add `(allow file-lock)` to profile |
+  | Error pattern                                 | Likely cause                               | Fix                                |
+  | --------------------------------------------- | ------------------------------------------ | ---------------------------------- |
+  | `Operation not permitted` on `target/` writes | Missing `file-lock`                        | Add `(allow file-lock)` to profile |
+  | `/tmp` access denied despite being allowed    | Symlink mismatch (`/tmp` → `/private/tmp`) | Include both forms in profile      |
+  | Cargo registry download fails                 | `~/.cargo/registry` is read-only           | Add to `read_write` paths          |
+  | `flock` / `fcntl` failures                    | Missing `file-lock` permission             | Add `(allow file-lock)` to profile |
 
 ## Inspecting the Generated Profile
 
@@ -71,8 +68,7 @@ cat "$TMPDIR"/cake/sandbox_profiles/cake_sandbox_*.sb
 
 ## Worked Example: `cargo build` Denied Inside the Sandbox
 
-User reports: cake's `bash` tool can't run `cargo build` — fails with
-`Operation not permitted (os error 1)`.
+User reports: cake's `bash` tool can't run `cargo build` --- fails with `Operation not permitted (os error 1)`.
 
 ```bash
 $ echo $CAKE_SANDBOX
@@ -95,16 +91,10 @@ $ tail -5 /tmp/sandbox_trace.log
 (deny file-lock (path "/Users/me/.cargo/registry/index/.cargo-lock"))
 ```
 
-**Diagnosis**: `cargo` needs `file-lock` on `~/.cargo`, plus write access
-to the registry path. Matches the "Cargo registry download fails" row in
-the table above.
+**Diagnosis**: `cargo` needs `file-lock` on `~/.cargo`, plus write access to the registry path. Matches the "Cargo registry download fails" row in the table above.
 
-**Fix**: Update the profile template under `src/clients/tools/sandbox/`
-to add `(allow file-lock)` and include `~/.cargo/registry` (and the
-package-cache path) in the read-write set. Rebuild cake.
+**Fix**: Update the profile template under `src/clients/tools/sandbox/` to add `(allow file-lock)` and include `~/.cargo/registry` (and the package-cache path) in the read-write set. Rebuild cake.
 
 ## After Fixing
 
-Profile changes belong in the cake source (`src/clients/tools/sandbox/`),
-not in the generated `$TMPDIR` copy. Once trace mode identifies the missing permission,
-update the source profile template and rebuild cake.
+Profile changes belong in the cake source (`src/clients/tools/sandbox/`), not in the generated `$TMPDIR` copy. Once trace mode identifies the missing permission, update the source profile template and rebuild cake.

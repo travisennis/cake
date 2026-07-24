@@ -126,7 +126,7 @@ cake requires at least one model configured in `settings.toml`, plus an API key 
   | --------------- | --------------------------------------------------------------------------------------------------------------------------- |
   | `CAKE_DATA_DIR` | Override cache and session directories (default: cache at `~/.cache/cake/`, sessions at `~/.local/share/cake/sessions/`)    |
   | `CAKE_SANDBOX`  | Set to `off` to disable filesystem sandboxing (equivalent to `--sandbox danger-full-access`; the CLI flag takes precedence) |
-  | `CAKE_TOOLBOX`  | Colon-separated directories of user-defined toolbox tools (replaces the `~/.config/cake/tools` default; empty disables it) |
+  | `CAKE_TOOLBOX`  | Colon-separated directories of user-defined toolbox tools (replaces the `~/.config/cake/tools` default; empty disables it)  |
 
 ### Model Configuration
 
@@ -264,11 +264,11 @@ Commands executed by the Bash tool run inside an OS-level filesystem sandbox tha
 
 Use the `--sandbox` / `-s` CLI flag to select the sandbox policy:
 
-  | Value                | Behavior                                                                                                                                                                                       |
-  | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | Value                | Behavior                                                                                                                                                                                                 |
+  | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
   | `read-only`          | Most restrictive: read access to workspace and system paths, no writes to workspace or toolchain caches. The Edit, Write, and toolbox tools are disabled; the agent gets only Bash (sandboxed) and Read. |
-  | `workspace-write`    | Default: read-write workspace with toolchain caches. Equivalent to the historical sandbox behavior.                                                                                            |
-  | `danger-full-access` | No sandbox restrictions.                                                                                                                                                                       |
+  | `workspace-write`    | Default: read-write workspace with toolchain caches. Equivalent to the historical sandbox behavior.                                                                                                      |
+  | `danger-full-access` | No sandbox restrictions.                                                                                                                                                                                 |
 
 ```bash
 cake --sandbox read-only "Audit this repo"

@@ -3,6 +3,7 @@ status: proposed
 date: 2026-07-12
 decision-makers: Travis Ennis
 ---
+
 # Declarative Command Policy
 
 ## Context and Problem Statement
