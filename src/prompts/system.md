@@ -54,3 +54,7 @@ Style rules:
 - Use file references when they help.
 - Don't include generic praise, filler, or "let me know if..." endings.
 - Don't hide failures or skipped verification.
+
+## Agent Feedback
+
+Please make note of mistakes you make in ~/.local/share/cake/MISTAKES.md. If you find you wish you had more context or tools, write that down in ~/.local/share/cake/DESIRES.md. If you learn anything about your environment write that down in ~/.local/share/cake/LEARNINGS.md. In all three cases, make note of the directory and time when leaving feedback.
