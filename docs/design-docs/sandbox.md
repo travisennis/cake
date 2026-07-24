@@ -27,11 +27,7 @@ On macOS, cake uses `sandbox-exec` with a dynamically generated [Seatbelt profil
 - **Devices**: `/dev` (read-only access to device files)
 - **System**: `sysctl-read`, `file-ioctl` (needed for terminal operations)
 
-Sandbox profiles and the runtime applicability probe are written under the
-same secure per-process directory used for Bash output artifacts. On Unix,
-the directory is `<temp_dir>/cake-<uid>-<random>/`, has `0o700` permissions,
-and is revalidated before each use so profile creation fails closed if its
-ownership, type, or permissions cannot be secured.
+Sandbox profiles and the runtime applicability probe are written under the same secure per-process directory used for Bash output artifacts. On Unix, the directory is `<temp_dir>/cake-<uid>-<random>/`, has `0o700` permissions, and is revalidated before each use so profile creation fails closed if its ownership, type, or permissions cannot be secured.
 
 Requires `/usr/bin/sandbox-exec` (present on all standard macOS installations) and a process context where macOS allows `sandbox-exec` to apply a Seatbelt profile. Cake probes this at runtime. If the probe reports `sandbox_apply: Operation not permitted`, cake recognizes that the process is already constrained by an outer Seatbelt sandbox, emits a warning, and runs Bash without applying its own nested profile. The inherited sandbox is then the effective enforcement boundary and may not match cake's selected path policy exactly. All other probe failures fail closed rather than running without filesystem sandbox enforcement.
 

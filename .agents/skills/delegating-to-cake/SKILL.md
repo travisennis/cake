@@ -30,12 +30,12 @@ If cake is unavailable or cannot authenticate, report the blocker. Do not fall b
 
 Use the least-permissive sandbox that can complete the delegated role:
 
-| Role | Session | Sandbox | Purpose |
-| --- | --- | --- | --- |
-| Scout | New | `read-only` | Locate code, read docs, trace behavior, propose a change |
-| Reviewer | New | `read-only` | Independently review existing code or a working-tree change |
-| Implementer | New, then resume | `workspace-write` | Inspect, edit, format, and test one coherent change |
-| Verifier | New | `workspace-write` | Run checks that need build artifacts; explicitly forbid source edits |
+  | Role        | Session          | Sandbox           | Purpose                                                              |
+  | ----------- | ---------------- | ----------------- | -------------------------------------------------------------------- |
+  | Scout       | New              | `read-only`       | Locate code, read docs, trace behavior, propose a change             |
+  | Reviewer    | New              | `read-only`       | Independently review existing code or a working-tree change          |
+  | Implementer | New, then resume | `workspace-write` | Inspect, edit, format, and test one coherent change                  |
+  | Verifier    | New              | `workspace-write` | Run checks that need build artifacts; explicitly forbid source edits |
 
 Use one writer at a time in a shared working tree. Parallel read-only runs are acceptable when they answer independent questions. Use `--worktree` only for deliberately isolated competing implementations; delegate any later comparison or integration to cake as well.
 

@@ -3,6 +3,7 @@ status: accepted
 date: 2026-07-14
 decision-makers: Travis Ennis
 ---
+
 # Trusted Executable Toolbox Tools
 
 ## Context and Problem Statement

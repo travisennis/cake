@@ -1,8 +1,6 @@
 # jq Recipes for Cake Session Files
 
-Reference cookbook for ad-hoc queries against persisted cake session files
-(`{uuid}.jsonl`, format version 4). Load this only when running queries
-beyond the essentials already in `SKILL.md`.
+Reference cookbook for ad-hoc queries against persisted cake session files (`{uuid}.jsonl`, format version 4). Load this only when running queries beyond the essentials already in `SKILL.md`.
 
 All examples assume:
 
@@ -159,5 +157,4 @@ jq 'select(.type == "session_summary")' "$TELEMETRY"
 
 ## Safety
 
-Do not modify the session file during analysis. All queries above are
-read-only; do not pipe results back into the file with `>` or `>>`.
+Do not modify the session file during analysis. All queries above are read-only; do not pipe results back into the file with `>` or `>>`.

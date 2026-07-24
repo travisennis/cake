@@ -21,7 +21,7 @@ Read this before auditing or updating durable documentation, generated indexes, 
 
 ## Agent-Facing Instruction Changes
 
-Instructions in `AGENTS.md`, guardrails, and skills exist to change agent behavior. A consistency edit (fixing drift, links, or duplication against code or existing docs) needs only the checks above. A behavior-shaping edit — one that adds, removes, or reorders what an agent should do — additionally requires:
+Instructions in `AGENTS.md`, guardrails, and skills exist to change agent behavior. A consistency edit (fixing drift, links, or duplication against code or existing docs) needs only the checks above. A behavior-shaping edit --- one that adds, removes, or reorders what an agent should do --- additionally requires:
 
 - Name the observed failure motivating the edit (session, commit, or ahm record) in the ahm task or commit message.
 - State the observable behavior the edit is expected to change.

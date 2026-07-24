@@ -13,12 +13,9 @@ description: |
 
 # Debugging a Failed Cake Run
 
-This skill is for **fast, reactive triage** of the user's most recent failed
-cake run. The goal is to identify what broke, not to produce a full session
-analysis report.
+This skill is for **fast, reactive triage** of the user's most recent failed cake run. The goal is to identify what broke, not to produce a full session analysis report.
 
-For deeper structural analysis of a session (issue categories, quality
-assessment, improvement recommendations), use `analyzing-cake-sessions`.
+For deeper structural analysis of a session (issue categories, quality assessment, improvement recommendations), use `analyzing-cake-sessions`.
 
 ## Step 1: Find the Failing Session
 
@@ -32,8 +29,7 @@ If `$CAKE_DATA_DIR` is set, sessions live under `$CAKE_DATA_DIR/sessions/`.
 
 ## Step 2: Check How the Session Ended
 
-A complete invocation ends with `task_complete`. Anything else means the
-task did not finish cleanly.
+A complete invocation ends with `task_complete`. Anything else means the task did not finish cleanly.
 
 ```bash
 tail -1 "$LATEST" | jq '{type, is_error, subtype, error}'
@@ -41,12 +37,12 @@ tail -1 "$LATEST" | jq '{type, is_error, subtype, error}'
 
 Interpretation:
 
-| Last record type             | Meaning                                                       |
-| ---------------------------- | ------------------------------------------------------------- |
-| `task_complete` (no error)   | Task finished normally — issue is in the result, not the run |
-| `task_complete` (`is_error`) | Task ended with a recorded error — read `.error`              |
-| `reasoning` / `function_call`/ `function_call_output` / `message` | Task was interrupted mid-stream (timeout, crash, signal)      |
-| `task_start`                 | Task never produced any output                                |
+  | Last record type                                                  | Meaning                                                      |
+  | ----------------------------------------------------------------- | ------------------------------------------------------------ |
+  | `task_complete` (no error)                                        | Task finished normally — issue is in the result, not the run |
+  | `task_complete` (`is_error`)                                      | Task ended with a recorded error — read `.error`             |
+  | `reasoning` / `function_call`/ `function_call_output` / `message` | Task was interrupted mid-stream (timeout, crash, signal)     |
+  | `task_start`                                                      | Task never produced any output                               |
 
 ## Step 3: Look at the Last Few Records
 
@@ -54,8 +50,7 @@ Interpretation:
 tail -5 "$LATEST" | jq '.'
 ```
 
-This usually reveals: the last tool the model invoked, the last output it
-saw, or where the reasoning trailed off.
+This usually reveals: the last tool the model invoked, the last output it saw, or where the reasoning trailed off.
 
 ## Step 4: Check Today's Log
 
@@ -65,10 +60,10 @@ tail -100 ~/.cache/cake/cake.$(date +%Y-%m-%d).log | grep -iE "error|warn|trunca
 
 Common patterns:
 
-- `output truncated` — a tool output exceeded the cap
-- API errors — provider returned an error or timed out
-- stream interruption — connection dropped mid-response
-- panics — cake itself crashed (see the panic message)
+- `output truncated` --- a tool output exceeded the cap
+- API errors --- provider returned an error or timed out
+- stream interruption --- connection dropped mid-response
+- panics --- cake itself crashed (see the panic message)
 
 ## Step 5: Check Telemetry for Retries and Timing
 
@@ -86,8 +81,7 @@ jq 'select(.type == "tool_call") | {turn_index, name, duration_ms, output_bytes,
 jq 'select(.type == "session_summary")' "$TELEMETRY"
 ```
 
-Telemetry is **not** resumable conversation history; it is a separate
-performance sidecar.
+Telemetry is **not** resumable conversation history; it is a separate performance sidecar.
 
 ## Step 6: Correlate Session and Log
 
@@ -98,16 +92,14 @@ grep "$SESSION_ID" ~/.cache/cake/cake.*.log
 
 ## Why "None" Happens
 
-`None` or empty output almost always means **no completed assistant result
-was produced** before the session ended. Typical causes:
+`None` or empty output almost always means **no completed assistant result was produced** before the session ended. Typical causes:
 
 - Model hit token limits mid-response
 - Response or streaming connection timed out
 - Process was interrupted (signal, panic, crash)
 - A tool call hung and never returned
 
-When this happens, the session file ends without a `task_complete` record
-(or `task_complete` is present with `is_error: true`).
+When this happens, the session file ends without a `task_complete` record (or `task_complete` is present with `is_error: true`).
 
 ## Continuing or Resuming
 
@@ -153,22 +145,18 @@ $ grep -iE "error|timeout|truncat" ~/.cache/cake/cake.$(date +%Y-%m-%d).log | ta
 
 **Diagnosis**: Streaming connection dropped during the model's response.
 
-**Next step for the user**: `cake --continue "Continue where you left off"`
-will reload the partial session and let the model finish.
+**Next step for the user**: `cake --continue "Continue where you left off"` will reload the partial session and let the model finish.
 
 ## File Locations
 
-| File                                            | Purpose                                              |
-| ----------------------------------------------- | ---------------------------------------------------- |
-| `~/.local/share/cake/sessions/{uuid}.jsonl`     | Session files (or `$CAKE_DATA_DIR/sessions/`)        |
-| `~/.cache/cake/session-telemetry/{uuid}.ndjson` | Per-session telemetry (timings, retries)             |
-| `~/.cache/cake/cake.YYYY-MM-DD.log`             | Daily logs (or `$CAKE_DATA_DIR/cake.YYYY-MM-DD.log`) |
+  | File                                            | Purpose                                              |
+  | ----------------------------------------------- | ---------------------------------------------------- |
+  | `~/.local/share/cake/sessions/{uuid}.jsonl`     | Session files (or `$CAKE_DATA_DIR/sessions/`)        |
+  | `~/.cache/cake/session-telemetry/{uuid}.ndjson` | Per-session telemetry (timings, retries)             |
+  | `~/.cache/cake/cake.YYYY-MM-DD.log`             | Daily logs (or `$CAKE_DATA_DIR/cake.YYYY-MM-DD.log`) |
 
 ## When to Switch Skills
 
-- For full session review, scoring, or recommendations on what cake should
-  change → load `analyzing-cake-sessions`.
-- For `Operation not permitted (os error 1)` or other sandbox-denied
-  operations → load `debugging-sandbox`.
-- For details on JSONL record types, format version 4 schema, and the
-  LLM-visible vs. audit-only distinction → see `analyzing-cake-sessions`.
+- For full session review, scoring, or recommendations on what cake should change → load `analyzing-cake-sessions`.
+- For `Operation not permitted (os error 1)` or other sandbox-denied operations → load `debugging-sandbox`.
+- For details on JSONL record types, format version 4 schema, and the LLM-visible vs. audit-only distinction → see `analyzing-cake-sessions`.

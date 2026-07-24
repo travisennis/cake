@@ -34,7 +34,7 @@ We implement a skills system with the following design:
 
 - **Positive**: Reduced system prompt size, better model focus, easy to add new specialized knowledge
 - **Positive**: Skills are plain markdown files with YAML frontmatter, no special tooling needed to author them
-- **Positive**: ~300 lines of state machine and plumbing removed; simpler agent code
+- **Positive**: \~300 lines of state machine and plumbing removed; simpler agent code
 - **Positive**: The model can re-read a skill at any time, which is useful during review or when skill files change mid-session
 - **Negative**: The model may waste tokens if it reads the same skill multiple times (mitigated by the model's own judgement)
 - **Negative**: Skill discovery has a small filesystem scan cost at startup (mitigated by depth/directory limits)
