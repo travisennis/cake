@@ -52,7 +52,7 @@ Make Landlock a **target-specific non-optional dependency** on Linux using Cargo
 - ADR 006: Linux Landlock Release Artifacts (superseded)
 - `Cargo.toml`
 - `.github/workflows/release.yml`
-- `docs/design-docs/sandbox.md`
+- `docs/security.md`
 
 ## More Information
 

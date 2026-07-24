@@ -40,6 +40,6 @@ cake debug models
 ## References
 
 - Task 194: Add `cake debug models` Command to Show Configured Models
-- `docs/design-docs/cli.md`
+- `src/main.rs` and `cake --help`
 - `src/cli/debug.rs`
 - `src/config/settings.rs`

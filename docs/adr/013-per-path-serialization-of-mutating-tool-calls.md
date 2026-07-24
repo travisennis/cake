@@ -2,18 +2,19 @@
 status: accepted
 date: 2026-07-09
 ---
+
 # Per-Path Serialization of Mutating Tool Calls
 
 ## Context and Problem Statement
 
-Tool calls issued in one assistant turn execute concurrently (`join_all` in `src/clients/agent/agent_loop.rs`), so two mutations targeting the same file would race. Instead of fixing the race, the harness compensated with a duplicate-mutation guard (`src/clients/tools/duplicate_guard.rs`) that rejected the second same-file Edit/Write with an error telling the model to re-read and retry, burning an API round-trip. The same restriction was then echoed in three prompt layers: `src/prompts/system.md`, `edit-description.txt`, and `write-description.txt` — four encodings of one implementation shortcut. A model that correctly batches two sequential edits to one file gets punished for coherent behavior.
+Tool calls issued in one assistant turn execute concurrently (`join_all` in `src/clients/agent/agent_loop.rs`), so two mutations targeting the same file would race. Instead of fixing the race, the harness compensated with a duplicate-mutation guard (`src/clients/tools/duplicate_guard.rs`) that rejected the second same-file Edit/Write with an error telling the model to re-read and retry, burning an API round-trip. The same restriction was then echoed in three prompt layers: `src/prompts/system.md`, `edit-description.txt`, and `write-description.txt` --- four encodings of one implementation shortcut. A model that correctly batches two sequential edits to one file gets punished for coherent behavior.
 
 Task 202 proposed serializing all tool calls in a turn (including Bash) and was cancelled as over-complicated: it constrained model judgment and destroyed useful concurrency to fix a race that only exists between same-path mutations.
 
 ## Decision Drivers
 
 - Fix the harness's own concurrency choice mechanically instead of teaching the model to work around it (mechanism over judgment).
-- Preserve transcript, session-record, and stream-json ordering and per-call attribution — documented compatibility surfaces.
+- Preserve transcript, session-record, and stream-json ordering and per-call attribution --- documented compatibility surfaces.
 - Keep concurrency for non-mutating calls and mutations to distinct files.
 - Eliminate the rejection round-trip and the prompt-layer echoes.
 
@@ -48,5 +49,4 @@ The concrete semantics:
 - Task 236: Replace Duplicate-Mutation Guard with Per-Path Serialization (source: 2026-07-07 backlog triage, bitter-lesson audit V2 item 7).
 - Cancelled task 202 documents why whole-turn serialization was rejected.
 - Key code: `src/clients/tools/scheduling.rs` (grouping), `src/clients/agent/agent_loop.rs` (`Agent::run_tool_plans`), `src/clients/tools/mod.rs` (`ToolRegistry::mutating_target`).
-- Design docs: `docs/design-docs/tools.md` (Tool-Call Scheduling), `docs/guardrails/agent-loop-tools-and-tool-execution.md`.
-
+- Current boundary: `ARCHITECTURE.md`; implementation and tests: `src/clients/tools/scheduling.rs`.

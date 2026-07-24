@@ -61,7 +61,7 @@ Profiles may not define model provider configurations. All model configs remain 
 
 ## References
 
-- `docs/design-docs/settings.md` - Settings and profile documentation
-- `docs/design-docs/cli.md` - CLI flag documentation
+- `docs/configuration.md` - Current settings and profile documentation
+- `src/main.rs` - CLI declaration and generated help
 - `src/config/settings.rs` - Profile parsing, validation, and merge behavior
 - `src/main.rs` - `--profile` CLI integration

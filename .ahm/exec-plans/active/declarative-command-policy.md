@@ -79,7 +79,7 @@ The CLI is defined under `src/cli/`; inspect the current command organization be
 
 Per-session telemetry is defined in `src/session_telemetry.rs` and written as newline-delimited JSON to the sidecar established by ADR-007. Structured decisions must be carried from policy evaluation to the telemetry writer. Do not add structured policy records to the persisted conversation JSONL, and do not put commands, matched text, patterns, messages, or suggestions in telemetry.
 
-ADR-015 at `docs/adr/015-declarative-command-policy.md` is authoritative. Task 241 at `.ahm/tasks/active/241.md` defines acceptance. Relevant authorities are `docs/guardrails/sandboxing-and-filesystem-boundaries.md`, `docs/design-docs/sandbox.md`, `docs/design-docs/tools.md`, `docs/design-docs/settings.md`, `docs/guardrails/sessions-resume-and-machine-readable-output.md`, and `ARCHITECTURE.md`.
+ADR-015 at `docs/adr/015-declarative-command-policy.md` is authoritative. Task 241 at `.ahm/tasks/active/241.md` defines acceptance. Relevant durable authorities are `docs/security.md`, `docs/configuration.md`, `docs/integrations.md`, and `ARCHITECTURE.md`; implementation mechanics belong in the command-policy code and tests.
 
 An embedded policy is version-1 policy data compiled into Cake that reproduces current rules. An inspection view is one documented representation: `raw_command`, `raw_segment`, or `normalized_segment`. A candidate is one instance of that view. Provenance identifies which source supplied each effective field. A canonical digest is a version-tagged SHA-256 hash over deterministic serialization of the complete ordered effective policy. A policy decision is the deduplicated result for one rule during one Bash call.
 
@@ -129,7 +129,7 @@ The milestone is complete when help, show, targeted show, blocked check, warned 
 
 ### Milestone 5: Document, verify, and complete managed work
 
-Update `docs/design-docs/tools.md` with schema, resolution, evaluation, output, and the frozen preprocessing boundary. Update `docs/design-docs/settings.md` to distinguish dedicated policy files. Update sandbox docs and guardrails to preserve the OS boundary and note policy under every sandbox mode. Update CLI and telemetry docs. Update `ARCHITECTURE.md` and implementation maps if modules move.
+Update `docs/configuration.md` with user-owned policy locations and precedence, `docs/security.md` with the relationship between command policy and the OS boundary, and `docs/integrations.md` with any new CLI or telemetry compatibility semantics. Update `ARCHITECTURE.md` only if a durable boundary or invariant changes. Keep field-level schema and evaluation mechanics in code, tests, and generated help.
 
 Run formatting, focused tests, serialization or snapshot tests, then `just ci`. Run the narrowest feasible Linux-sensitive check or report the platform gap. Exercise isolated temporary HOME and project directories for embedded-only, overlay, invalid-file, and snapshot behavior.
 

@@ -42,6 +42,6 @@ Chosen option: **fall back only for the recognized nested-Seatbelt error signatu
 
 - Task 275: Graceful fallback when nested inside another Seatbelt sandbox.
 - Related: ADR-014, Sandbox Policy CLI Flag. This decision narrows its normal macOS enforcement behavior only when nested Seatbelt application is rejected with the recognized EPERM signature.
-- `docs/design-docs/sandbox.md`
+- `docs/security.md`
 - `src/clients/tools/sandbox/mod.rs`
 - `src/clients/tools/sandbox/macos.rs`

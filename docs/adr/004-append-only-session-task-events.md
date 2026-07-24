@@ -57,7 +57,6 @@ Path-based `--resume <path>` and `--fork <path>` are removed. Resume and fork ac
 
 ## References
 
-- `docs/design-docs/session-management.md` - Persisted session lifecycle and schema
-- `docs/design-docs/streaming-json-output.md` - Live task stream schema
+- `docs/integrations.md` - Current persisted-session and stream contracts
 - `src/types/session.rs` - `SessionRecord`, `StreamRecord`, and task completion types
 - `src/config/session.rs` - v4 session loading, appending, and compatibility checks

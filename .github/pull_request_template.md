@@ -14,5 +14,5 @@
 
 - [ ] `just ci` passes locally, including coverage/change-risk
 - [ ] Tests added/updated for new functionality
-- [ ] Documentation updated if needed (README, ARCHITECTURE.md, AGENTS.md)
+- [ ] The authoritative documentation was updated if its audience or contract changed
 - [ ] Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/)

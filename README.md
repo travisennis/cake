@@ -1,48 +1,12 @@
 # cake
 
-cake is a minimal coding harness for headless usage in the terminal. It's not a TUI --- it's a Unix filter for AI. It takes input, does work, produces output, and exits. That's its strength: cake is composable with every tool in your shell.
+cake is a headless AI coding assistant for the terminal. It behaves like a Unix filter: provide a task, let the model inspect and modify the working tree, receive the result, and exit.
 
-## Table of Contents
+Cake supports OpenAI-compatible Chat Completions and Responses APIs, sandboxed tool execution, persisted conversations, machine-readable output, project instructions, hooks, skills, and user-defined tools.
 
-- [Features](#features)
-- [Installation](#installation)
-- [Usage](#usage)
-  - [Shell Pipelines](#shell-pipelines)
-  - [Multi-file Context](#multi-file-context)
-- [Configuration](#configuration)
-  - [Model Configuration](#model-configuration)
-  - [Reasoning Configuration](#reasoning-configuration)
-  - [Default Model](#default-model)
-- [Session Management](#session-management)
-- [Worktrees](#worktrees)
-- [Filesystem Sandbox](#filesystem-sandbox)
-- [AGENTS.md --- Per-Project AI Behavior](#agents.md----per-project-ai-behavior)
-- [System Prompt Customization](#system-prompt-customization)
-- [User-Defined Tools (Toolbox)](#user-defined-tools-toolbox)
-- [Shell Aliases and Functions](#shell-aliases-and-functions)
-- [Machine-Readable Output](#machine-readable-output)
-- [Exit Codes](#exit-codes)
-- [Options](#options)
-- [Architecture](#architecture)
-- [Contributing](#contributing)
-- [Platform Support](#platform-support)
-- [Testing](#testing)
-- [License](#license)
-- [Acknowledgements](#acknowledgements)
+## Install
 
-## Features
-
-- Send instructions to AI for code generation or documentation
-- Supports multiple AI providers via configurable API endpoints
-- Models are user-configured via `settings.toml`
-- OS-level filesystem sandbox for Bash tool commands (macOS sandbox-exec, Linux Landlock)
-- User-defined toolbox tools: extend the agent with your own executables in any language
-- Conversation session management with continue, resume, and fork capabilities
-- Git worktree integration for isolated development environments
-
-## Installation
-
-To install cake, you'll need Rust and Cargo installed on your system:
+Cake requires a current Rust toolchain:
 
 ```bash
 git clone https://github.com/travisennis/cake.git
@@ -50,399 +14,114 @@ cd cake
 cargo build --release
 ```
 
-The binary will be available at `target/release/cake`.
+The binary is written to `target/release/cake`. Contributors should follow [CONTRIBUTING.md](CONTRIBUTING.md) instead.
 
-For contributor setup (testing, linting, coverage, commit hooks), see [CONTRIBUTING.md](CONTRIBUTING.md).
+## Configure a model
 
-## Usage
-
-```bash
-# Basic usage with a prompt
-cake "Implement a binary search tree in Rust"
-
-# Pipe file content with instructions
-cat src/main.rs | cake "Explain this code"
-
-# Use a heredoc for multi-line prompts
-cake << 'EOF'
-Implement a function that:
-1. Takes a list of numbers
-2. Returns the sum
-EOF
-
-# Heredoc with prompt prefix
-cake "Review this code:" << 'EOF'
-fn main() {
-    println!("Hello");
-}
-EOF
-
-# Input redirection
-cake < prompt.txt
-
-# Read from stdin explicitly
-cake - < file.txt
-
-# With max tokens override
-cake --max-tokens 4000 "Your prompt here"
-```
-
-### Shell Pipelines
-
-cake reads from stdin, so it composes naturally with other Unix tools: When a prompt argument and stdin are both present, cake sends them as separate labeled sections so the prompt stays distinct from the piped content.
-
-```bash
-# Code review from git diff
-git diff HEAD~3 | cake "Summarize these changes for a changelog entry"
-
-# Explain a file
-cat src/main.rs | cake "Explain this code"
-
-# Review staged changes
-git diff --staged | cake "Code review these staged changes"
-```
-
-### Multi-file Context
-
-Use heredocs with command substitution to feed multiple files as context:
-
-```bash
-cake << 'EOF'
-Here are two files. Explain how they interact:
---- agent.rs ---
-$(cat src/clients/agent.rs)
---- conversation.rs ---
-$(cat src/types/conversation.rs)
-EOF
-```
-
-## Configuration
-
-cake requires at least one model configured in `settings.toml`, plus an API key for that model's provider. Set the API key as the environment variable named by the model's `api_key_env` field.
-
-### Environment Variables
-
-  | Variable        | Description                                                                                                                 |
-  | --------------- | --------------------------------------------------------------------------------------------------------------------------- |
-  | `CAKE_DATA_DIR` | Override cache and session directories (default: cache at `~/.cache/cake/`, sessions at `~/.local/share/cake/sessions/`)    |
-  | `CAKE_SANDBOX`  | Set to `off` to disable filesystem sandboxing (equivalent to `--sandbox danger-full-access`; the CLI flag takes precedence) |
-  | `CAKE_TOOLBOX`  | Colon-separated directories of user-defined toolbox tools (replaces the `~/.config/cake/tools` default; empty disables it) |
-
-### Model Configuration
-
-Model settings can be configured via:
-
-1. **Settings TOML**: Define named models in `settings.toml` files
-2. **Environment variables**: Set the API key env var named by each model's `api_key_env`
-3. **CLI flags**: `--model` to select a named model, `--max-tokens` to override
-
-#### Settings TOML
-
-Create a `settings.toml` file to define custom model configurations:
-
-- **Project-level**: `.cake/settings.toml` in your project directory
-- **Global**: `~/.config/cake/settings.toml` for system-wide settings
+Create `$XDG_CONFIG_HOME/cake/settings.toml`, or `~/.config/cake/settings.toml` when `XDG_CONFIG_HOME` is unset:
 
 ```toml
-# Example settings.toml
-default_model = "claude"
+default_model = "openrouter"
 
 [[models]]
-name = "claude"
-model = "anthropic/claude-4.6-sonnet"
+name = "openrouter"
+model = "openai/gpt-5"
 base_url = "https://openrouter.ai/api/v1/"
 api_key_env = "OPENROUTER_API_KEY"
-api_type = "responses"
-temperature = 0.7
-
-[[models]]
-name = "o4-mini"
-model = "openai/o4-mini"
-base_url = "https://api.openai.com/v1/"
-api_key_env = "OPENAI_API_KEY"
-api_type = "responses"
-reasoning_effort = "high"
-
-[skills]
-path = "~/my-skills:/shared/team-skills"
+api_type = "chat_completions"
 ```
+
+Then export the API key named by `api_key_env`:
 
 ```bash
-# Use a named model from settings.toml
-cake --model claude "Your prompt here"
-
-# Without --model, uses the configured default_model
-cake "Your prompt here"
-
-# Apply a behavior profile from settings.toml
-cake --profile review "Your prompt here"
+export OPENROUTER_API_KEY="..."
 ```
 
-See `.cake/settings.toml` for a complete example.
+Project settings may be placed in `.cake/settings.toml`. See [Configuration](docs/configuration.md) for model fields, precedence, profiles, skills, prompts, hooks, and toolbox tools.
 
-#### Profiles
-
-Profiles are named behavior overlays in `settings.toml` that can change the default model, skill filtering, and persistent directories without redefining model configs:
-
-```toml
-[profiles.fast]
-default_model = "deepseek"
-```
-
-Pass `--profile <name>` to apply one. CLI flags such as `--model` still take precedence. See [Settings](docs/design-docs/settings.md) for full details on profile layering and merging.
-
-#### Reasoning Configuration
-
-Models that support reasoning (e.g., OpenAI o-series, Anthropic Claude with extended thinking) can be configured with these fields:
-
-  | Field                  | Description                                      | Values                                   |
-  | ---------------------- | ------------------------------------------------ | ---------------------------------------- |
-  | `reasoning_effort`     | Controls how much reasoning the model performs   | `none`, `low`, `medium`, `high`, `xhigh` |
-  | `reasoning_summary`    | How reasoning is summarized (Responses API only) | `concise`, `detailed`, `auto`            |
-  | `reasoning_max_tokens` | Token budget for reasoning (budget-style)        | Any positive integer                     |
-
-These can also be overridden at runtime with CLI flags:
+## Use cake
 
 ```bash
-# Override reasoning effort for a single run
-cake --reasoning-effort high "Solve this math problem"
+# Prompt argument
+cake "Explain the architecture"
 
-# Set a reasoning token budget
-cake --reasoning-budget 4000 "Analyze this code"
+# Pipe context while keeping the task separate
+git diff --staged | cake "Review this change"
 
-# Combine with a named model
-cake --model claude --reasoning-effort medium "Explain this algorithm"
+# Read the complete prompt from stdin
+cake - < prompt.md
+
+# Select a configured model
+cake --model openrouter "Fix the failing test"
 ```
 
-#### Default Model
+Run `cake --help` for the authoritative flag list.
 
-cake does not include a built-in default model. To run `cake "prompt"` without `--model`, set `default_model` to the name of a configured model:
+### Sessions
 
-```toml
-default_model = "zen"
-
-[[models]]
-name = "zen"
-model = "glm-5.1"
-base_url = "https://opencode.ai/zen/go/v1/"
-api_key_env = "OPENCODE_ZEN_API_TOKEN"
-```
-
-If neither `--model` nor `default_model` is provided, cake exits with setup instructions.
-
-### Session Management
-
-cake automatically saves conversation sessions so you can continue conversations across separate invocations. Sessions are tracked per directory.
+Runs are persisted by default:
 
 ```bash
-# Start a conversation
-cake "Remember the number 42"
-
-# Continue the most recent session in the current directory
-cake --continue "What number did I tell you?"
+cake "Start the refactor"
+cake --continue "Finish it"
+cake --resume <UUID> "Try another approach"
+cake --fork <UUID> "Explore this without changing the original session"
 ```
 
-Sessions are saved to `~/.local/share/cake/sessions/` (or `$CAKE_DATA_DIR/sessions/` if set) as flat `{uuid}.jsonl` files. For full details on the session lifecycle, storage format, telemetry sidecar, and stream-json output, see [Session Management](docs/design-docs/session-management.md).
+Use `--no-session` for an ephemeral run. Session and output compatibility contracts are documented in [Integrations](docs/integrations.md).
 
 ### Worktrees
 
-Run a task in an isolated git worktree so changes don't affect your main working directory. The worktree is created at `<repo>/.cake/worktrees/<name>` on a new branch based on the default remote branch.
+`--worktree [NAME]` runs the task in an isolated Git worktree. Files matching patterns in a repository-root `.worktreeinclude` are copied into a newly created worktree.
 
 ```bash
-# Named worktree
-cake -w feature-auth "Add auth middleware"
-
-# Auto-generated name
-cake -w "Fix the bug"
+cake --worktree experiment "Implement the change"
 ```
 
-When the task finishes, cake automatically removes the worktree if no changes were made. If there are uncommitted changes or new commits, the worktree is kept so you can return to it later.
+Cake removes an unchanged worktree when the task finishes and retains one with uncommitted changes or new commits.
 
-### Filesystem Sandbox
-
-Commands executed by the Bash tool run inside an OS-level filesystem sandbox that restricts access to only the project directory and essential system paths. This prevents LLM-generated commands from reading or writing files outside the allowed set.
-
-Use the `--sandbox` / `-s` CLI flag to select the sandbox policy:
-
-  | Value                | Behavior                                                                                                                                                                                       |
-  | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-  | `read-only`          | Most restrictive: read access to workspace and system paths, no writes to workspace or toolchain caches. The Edit, Write, and toolbox tools are disabled; the agent gets only Bash (sandboxed) and Read. |
-  | `workspace-write`    | Default: read-write workspace with toolchain caches. Equivalent to the historical sandbox behavior.                                                                                            |
-  | `danger-full-access` | No sandbox restrictions.                                                                                                                                                                       |
+### Machine-readable output
 
 ```bash
-cake --sandbox read-only "Audit this repo"
-cake -s danger-full-access "Run setup"
+cake --output-format json "Summarize this repository" | jq '.result'
+cake --output-format stream-json "Run the tests" | jq -c '.type'
+cake --output-schema result.schema.json "Return structured findings"
 ```
 
-The `CAKE_SANDBOX=off` environment variable is still supported for backward compat (equivalent to `danger-full-access`), but `--sandbox` takes precedence when both are set. Use `--add-dir <DIR>` to grant read-only access to additional directories, or declare persistent read-write directories in `settings.toml`.
+`json` emits one completion object. `stream-json` emits newline-delimited task events as they happen. `--output-schema` constrains only the final model response.
 
-For full details on platforms, destructive command protection, directory configuration, and troubleshooting, see [Filesystem Sandbox](docs/design-docs/sandbox.md).
+### Sandboxing
 
-### AGENTS.md --- Per-Project AI Behavior
+Model-generated Bash commands use `workspace-write` sandboxing by default. Select `read-only`, `workspace-write`, or `danger-full-access` with `--sandbox`.
 
-cake reads `AGENTS.md` files to shape its behavior without re-prompting every time:
+The sandbox is a filesystem boundary, not a network boundary. Hooks and toolbox executables are trusted extensions and run outside the Bash sandbox. Read [Security](docs/security.md) before changing permissions or enabling extensions.
 
-- **`~/.cake/AGENTS.md`** --- Global personality, preferences, and conventions applied to all projects.
-- **`~/.config/AGENTS.md`** --- XDG-standard location for global instructions.
-- **`./AGENTS.md`** --- Project-level instructions: tech stack, coding standards, domain knowledge.
+## Project instructions and extensions
 
-This is how you make cake a domain expert. For example, a project-level `AGENTS.md` might say:
+- `AGENTS.md` supplies project-specific agent instructions.
+- `SKILL.md` files provide instructions loaded on demand.
+- `hooks.json` files run local commands at lifecycle events.
+- Toolbox executables register additional `tb__*` tools.
+- `system.md` can replace the built-in system prompt.
 
-```markdown
-This is a Rust project using Tokio for async. Use `anyhow` for errors.
-Always run `cargo fmt` and `cargo clippy` after editing Rust files.
-Never use `unwrap()` in production code.
-```
+Configuration and precedence are in [Configuration](docs/configuration.md); extension protocols are in [Integrations](docs/integrations.md).
 
-### System Prompt Customization
+## Documentation
 
-cake uses a built-in system prompt that tells the model it is a coding agent and how to use its tools. You can replace this prompt with your own by creating a `system.md` file:
+  | Need                                                       | Authority                                    |
+  | ---------------------------------------------------------- | -------------------------------------------- |
+  | Configure and operate cake                                 | [Configuration](docs/configuration.md)       |
+  | Consume sessions, JSON output, hooks, or toolbox protocols | [Integrations](docs/integrations.md)         |
+  | Understand permissions and trust boundaries                | [Security](docs/security.md)                 |
+  | Understand durable system boundaries                       | [Architecture](ARCHITECTURE.md)              |
+  | Contribute changes                                         | [Contributing](CONTRIBUTING.md)              |
+  | Understand past decisions                                  | [ADR archive](docs/adr/README.md)            |
+  | Apply this documentation approach elsewhere                | [Documentation philosophy](DOCUMENTATION.md) |
 
-- **Project-level**: `.cake/system.md` in your project directory --- applies to that project only
-- **User-level**: `~/.config/cake/system.md` --- applies to all projects
+## Platform support
 
-Project-level overrides take precedence over user-level. If neither file exists, the built-in default is used. Custom files **replace** the default prompt entirely; they do not append to it.
-
-An empty `system.md` file is valid and results in no system prompt (the model receives only the AGENTS.md context, skills, and environment messages).
-
-The built-in default prompt is in `src/prompts/system.md` in the source repository.
-
-### User-Defined Tools (Toolbox)
-
-You can extend the agent's tool set with your own executables, written in any language. Place an executable in `~/.config/cake/tools/` (or a directory listed in the `CAKE_TOOLBOX` environment variable or passed via `--toolbox <DIR>`), and cake discovers it at startup, exposes it to the model with a `tb__` prefix, and runs it when the model calls it.
-
-Each tool implements a two-action protocol selected by the `TOOLBOX_ACTION` environment variable: `describe` prints the tool's name, description, and parameters to stdout; `execute` reads arguments from stdin and writes its result to stdout (exit 0 for success). A minimal shell tool:
-
-```bash
-#!/bin/sh
-if [ "$TOOLBOX_ACTION" = "describe" ]; then
-  printf 'name: run_tests\ndescription: Run the test suite.\npattern: string? Optional test filter\n'
-else
-  read -r line
-  cargo test "${line#pattern=}"
-fi
-```
-
-Schemas can also be described as JSON (`{"name": ..., "description": ..., "args": {...}}` or a full `inputSchema`). Broken tools are skipped with a warning, never blocking startup.
-
-> **Note**: Toolbox tools run as separate processes **outside** cake's filesystem sandbox --- they are your own trusted executables. Under `--sandbox read-only` they are never executed at all (not even their `describe` action). Project directories are never scanned automatically; only directories you explicitly configure are used, so cloned repositories cannot inject tools.
-
-For the full protocol (formats, optional parameters, timeouts, environment variables), see [Tools](docs/design-docs/tools.md#toolbox-tools).
-
-### Shell Aliases and Functions
-
-Set up shell aliases to turn common patterns into one-liners:
-
-```bash
-# Quick aliases
-alias review='git diff --staged | cake "Code review these staged changes"'
-alias explain='cake "Explain this code:" < '
-alias changelog='git log --oneline HEAD~10..HEAD | cake "Write a changelog from these commits"'
-
-# Multi-model comparison
-compare() { cake --no-session --model glm "$1" & cake --no-session --model qwen "$1" & wait; }
-```
-
-### Machine-Readable Output
-
-The `--output-format stream-json` mode emits NDJSON events for every conversation item, turning cake into a **backend for any frontend**. You can build a tmux-pane viewer, a web UI, or a VS Code extension that consumes the stream.
-
-```bash
-cake --output-format stream-json "List files" | jq '.type'
-```
-
-See [Streaming JSON Output](docs/design-docs/streaming-json-output.md) for the full schema.
-
-The `--output-format json` mode prints a single JSON summary object at completion for scripting and CI:
-
-```bash
-cake --output-format json "Fix the bug" | jq '{result, usage, turns, elapsed_time}'
-```
-
-### Exit Codes
-
-cake uses structured exit codes so that shell scripts and CI pipelines can distinguish between failure modes:
-
-  | Code | Meaning     | Description                                               |
-  | ---- | ----------- | --------------------------------------------------------- |
-  | `0`  | Success     | The agent completed and produced a response               |
-  | `1`  | Agent error | The model or a tool encountered an error during execution |
-  | `2`  | API error   | Rate limit, auth failure, or network error                |
-  | `3`  | Input error | No prompt provided, invalid flags, missing API key        |
-
-```bash
-# Use exit codes in scripts
-if cake "Fix the bug"; then
-    echo "Success"
-else
-    code=$?
-    case $code in
-        1) echo "Agent error" ;;
-        2) echo "API error" ;;
-        3) echo "Input error" ;;
-    esac
-fi
-```
-
-### Options
-
-- `[PROMPT]` - Your instruction prompt as a positional argument (use `-` to read from stdin)
-- `--max-tokens` - Set maximum tokens in response
-- `--output-format` - Output format: `text` (default), `stream-json`, or `json`
-- `--model <NAME>` - Select a named model from settings.toml
-- `--profile <NAME>` - Apply a named behavior profile from settings.toml
-- `--continue` - Continue the most recent session for the current directory
-- `--resume <UUID>` - Resume a specific session by UUID
-- `--fork [UUID]` - Fork a session (copy history into new session), optionally specify a UUID
-- `--no-session` - Do not save the session to disk
-- `--worktree` (`-w`) - Run in an isolated git worktree (optionally provide a name)
-- `--reasoning-effort <EFFORT>` - Override reasoning effort level (none, low, medium, high, xhigh)
-- `--reasoning-budget <TOKENS>` - Override reasoning token budget
-- `--add-dir <DIR>` - Add a directory to the sandbox config (read-only access). Can be repeated.
-- `--toolbox <DIR>` - Add a directory of user-defined toolbox tools. Can be repeated; appended after `CAKE_TOOLBOX` directories.
-- `--sandbox` (`-s`) - Select the sandbox policy: `read-only`, `workspace-write`, or `danger-full-access` (default: `workspace-write`)
-
-### Example
-
-```bash
-cake --max-tokens 4000 "Explain what this code does"
-```
-
-## Architecture
-
-cake follows a layered architecture with strict dependency flow:
-
-1. **CLI Layer**: Argument parsing and user interaction
-2. **Clients Layer**: AI service integration, tool execution, and conversation orchestration
-3. **Config/Models/Prompts Layer**: Data persistence, core types, and prompt generation
-
-For detailed architecture documentation, see [ARCHITECTURE.md](ARCHITECTURE.md).
-
-## Contributing
-
-Contributions to cake are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, build commands, code style guidelines, and commit conventions.
-
-## Platform Support
-
-cake is developed and primarily validated on macOS. Linux support is intended, but currently CI treats Linux as a compile-level compatibility target rather than a fully tested runtime platform.
-
-## Testing
-
-To run the test suite:
-
-```bash
-cargo test
-```
+Cake is developed and primarily validated on macOS. Linux builds include Landlock support, but CI provides less runtime coverage than on macOS.
 
 ## License
 
-cake is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
-
-## Acknowledgements
-
-cake uses several open-source libraries and AI models. We're grateful to the developers and organizations behind these technologies:
-
-- Rust and the Rust community for providing excellent tools and libraries that make projects like this possible.
-- OpenCode and OpenRouter for AI model access.
-- The developers of crates used in this project (tokio, clap, reqwest, and others). Please see the `Cargo.toml` file for a full list of dependencies.
+Cake is licensed under the [MIT License](LICENSE).
