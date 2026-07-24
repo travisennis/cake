@@ -4,7 +4,7 @@
 
 Cake is a Rust 2024 binary-only AI coding assistant CLI with sandboxed tool execution, persisted sessions, and OpenAI-compatible Chat Completions and Responses API backends.
 
-The code, tests, snapshots, CLI help, and `justfile` are the implementation authorities. Durable prose exists only for user guidance, external contracts, security boundaries, architectural intent, contributor workflow, and decision history. Follow [DOCUMENTATION.md](DOCUMENTATION.md) when changing documentation.
+The code, tests, snapshots, CLI help, and `justfile` are the implementation authorities. Durable prose exists only for user guidance, external contracts, security boundaries, architectural intent, contributor workflow, and decision history.
 
 ## Operating loop
 
@@ -14,10 +14,10 @@ The code, tests, snapshots, CLI help, and `justfile` are the implementation auth
 4. Preserve compatibility unless the task explicitly changes it.
 5. If work is managed, start and complete it through `ahm`.
 6. Make surgical edits and run risk-proportionate checks.
-7. After implementation edits, run Codex review until no actionable findings remain, then perform preflight.
+7. After implementation edits, run a review in a subagent until no actionable findings remain, then perform preflight.
 8. Hand off changes, exact checks, skipped checks, and remaining risk.
 
-Large or cross-cutting work requires an ExecPlan as directed by `ahm context plan`. Use the oracle tool before repeated trial and error on an unclear design or debugging problem.
+Large or cross-cutting work requires an ExecPlan as directed by `ahm context plan`.
 
 ## Compatibility and risk
 
