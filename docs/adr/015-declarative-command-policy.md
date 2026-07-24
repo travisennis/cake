@@ -83,5 +83,5 @@ Policy decisions are written as metadata-only records in the existing per-sessio
 - Implements the architectural direction required by task 241, `Convert bash_safety Into a Declarative Command-Policy Engine`.
 - Builds on ADR-007, `Per-Session Telemetry Sidecar`, for structured policy decision records.
 - Preserves ADR-014, `Sandbox Policy CLI Flag`: command policy remains active independently of the selected filesystem sandbox policy.
-- Relevant design authorities are `docs/design-docs/sandbox.md`, `docs/design-docs/tools.md`, `docs/design-docs/settings.md`, and `docs/design-docs/session-management.md`.
+- Current durable authorities are `docs/security.md`, `docs/configuration.md`, `docs/integrations.md`, and `ARCHITECTURE.md`.
 - Version 1 intentionally omits override reasons and expiration. A future policy schema may add a static `reason` and an `expires_at` timestamp for auditable, time-bounded overrides after real usage establishes the required expiration and clock-handling semantics.

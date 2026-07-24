@@ -45,6 +45,5 @@ Telemetry sidecars are never resumable session files. `--continue`, `--resume`, 
 
 - `.agents/.tasks/active/119.md` - Add Per-Session Telemetry Sidecar
 - `.agents/exec-plans/active/per-session-telemetry-plan.md` - Implementation plan
-- `docs/design-docs/session-management.md` - Session storage and telemetry sidecar documentation
-- `docs/design-docs/logging.md` - Logging and telemetry locations
+- `docs/integrations.md` - Current session and telemetry contracts
 - `src/session_telemetry.rs` - Telemetry record schema and writer

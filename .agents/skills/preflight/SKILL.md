@@ -22,14 +22,14 @@ git status --short
 
 Include untracked new files from `git status --short` (or `git ls-files --others --exclude-standard`) when choosing the scale. A split into new files can look deceptively small in `git diff --stat` until those files are staged.
 
-  | Change size                                                                                                           | Required context                           | Review passes     | Compliance note |
-  | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ | ----------------- | --------------- |
-  | **XS** (docs/skill/config only, ≤2 files)                                                                             | Root AGENTS.md if relevant                 | One combined pass | One line        |
-  | **S** (single module, ≤~50 LOC, no public API)                                                                        | Root AGENTS.md, nearest nested AGENTS.md   | One combined pass | One line        |
-  | **M** (multi-file, ≤~200 LOC, no cross-module)                                                                        | + active task file, ExecPlan if one exists | Pass 1 + Pass 2   | Short block     |
-  | **L/XL** (cross-module, public API, agent loop, persistence, concurrency, external integrations, security boundaries) | + design docs and ADRs in the changed area | All three passes  | Full block      |
+  | Change size                                                                                                           | Required context                                                           | Review passes     | Compliance note |
+  | --------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- | ----------------- | --------------- |
+  | **XS** (docs/skill/config only, ≤2 files)                                                                             | Root AGENTS.md if relevant                                                 | One combined pass | One line        |
+  | **S** (single module, ≤~50 LOC, no public API)                                                                        | Root AGENTS.md, nearest nested AGENTS.md                                   | One combined pass | One line        |
+  | **M** (multi-file, ≤~200 LOC, no cross-module)                                                                        | + active task file, ExecPlan if one exists                                 | Pass 1 + Pass 2   | Short block     |
+  | **L/XL** (cross-module, public API, agent loop, persistence, concurrency, external integrations, security boundaries) | + durable contract/security/architecture docs and ADRs in the changed area | All three passes  | Full block      |
 
-Only read context items that are relevant to the changed surface. Discover them with targeted commands, e.g. `rg --files -g AGENTS.md`, `rg --files docs/design-docs docs/adr`, `git diff -- <paths>`.
+Only read context items that are relevant to the changed surface. Discover them with targeted commands, e.g. `rg --files -g AGENTS.md`, `rg --files docs`, `git diff -- <paths>`.
 
 Required context items, in priority order:
 
@@ -37,8 +37,8 @@ Required context items, in priority order:
 - nested `AGENTS.md` files for the changed areas
 - `ahm context task`, `ahm task show <id>` output when the work came from a task; open the active task file only when `ahm` is unavailable or when reviewing manual edits to the task file itself; inspect `.ahm/tasks/active/` directly if `ahm` is unavailable
 - the relevant active exec plan when one exists for the current work (see `.ahm/exec-plans/active/`)
-- `ahm context plan` and `docs/design-docs/index.md` for L/XL changes
-- any design doc or ADR directly relevant to the changed area
+- `ahm context plan` for L/XL changes
+- any durable user, contract, security, architecture, or ADR document directly relevant to the changed area
 - the changed files and enough nearby context to review them
 
 ## Review passes
@@ -47,11 +47,11 @@ Treat each pass as a clean read with its own focus. Do not blur findings across 
 
 ### Pass 1: Rules and documentation conformance
 
-- Are we following `AGENTS.md`, nested `AGENTS.md`, and design docs?
+- Are we following `AGENTS.md`, nested `AGENTS.md`, and the relevant durable documentation?
 - Did we drift from documented repo patterns or ownership boundaries?
 - If the changed surface is user-visible CLI/API/config/file-format/workflow behavior, did we update the affected docs in the same change or record why the behavior is intentionally undocumented?
 - If the work came from a task or ExecPlan, does the implementation match its acceptance notes and recorded decisions?
-- Did we update task, ExecPlan, design doc, or ADR notes when the change discovered something durable?
+- Did we update task, ExecPlan, authoritative documentation, or ADR notes when the change discovered something durable?
 
 ### Pass 2: Correctness and source of truth
 
@@ -100,7 +100,7 @@ After running the passes for the chosen scale, synthesize into one balanced repo
 In an unattended implementation flow, apply worthwhile feedback before commit. Prioritize:
 
 - type drift, unnecessary cloning/string conversion, duplicated type defs
-- violations of documented repo boundaries or design documents
+- violations of documented repo boundaries or durable contracts
 - dead helpers, dead code, debug leftovers, placeholder text
 - new panic/abort paths, placeholder exceptions, debug prints, commented-out code, broad lint suppressions, or ignored errors in production paths
 - errors lacking actionable context at CLI/API/UI/database/config/process/ network/external-service boundaries
@@ -129,14 +129,14 @@ Make the chosen context auditable. Length scales with change size.
 - Nested AGENTS.md: <paths or "none under changed paths">
 - Task context: <task id> / not applicable because <reason>
 - ExecPlan: <plan id> / not applicable because <reason>
-- Design docs: <docs> / not applicable because <reason>
+- Durable docs: <docs> / not applicable because <reason>
 - ADRs: <adrs> / not applicable because <reason>
 - Documentation impact: <docs checked/updated, or intentionally none because ...>
 - Changed files and diff: reviewed via `git diff --stat` and targeted diffs
 - Validation: <commands run>
 ```
 
-Do not write blanket "no design docs to check" claims unless you actually looked for a relevant one and can explain why the changed area has no design-doc surface.
+Do not write blanket "no durable docs to check" claims unless you actually looked for a relevant authority and can explain why the changed area has no user, contract, security, architecture, or decision surface.
 
 ## Steps
 

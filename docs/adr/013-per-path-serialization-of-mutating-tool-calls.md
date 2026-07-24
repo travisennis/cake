@@ -49,4 +49,4 @@ The concrete semantics:
 - Task 236: Replace Duplicate-Mutation Guard with Per-Path Serialization (source: 2026-07-07 backlog triage, bitter-lesson audit V2 item 7).
 - Cancelled task 202 documents why whole-turn serialization was rejected.
 - Key code: `src/clients/tools/scheduling.rs` (grouping), `src/clients/agent/agent_loop.rs` (`Agent::run_tool_plans`), `src/clients/tools/mod.rs` (`ToolRegistry::mutating_target`).
-- Design docs: `docs/design-docs/tools.md` (Tool-Call Scheduling), `docs/guardrails/agent-loop-tools-and-tool-execution.md`.
+- Current boundary: `ARCHITECTURE.md`; implementation and tests: `src/clients/tools/scheduling.rs`.

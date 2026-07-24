@@ -48,7 +48,7 @@ This ADR was superseded by [ADR 010](./010-linux-landlock-default-dependency.md)
 - Task 179: Reassess Linux Landlock Default Build Policy
 - `Cargo.toml`
 - `.github/workflows/release.yml`
-- `docs/design-docs/sandbox.md`
+- `docs/security.md`
 
 ## Supersession
 

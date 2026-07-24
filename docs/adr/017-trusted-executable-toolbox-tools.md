@@ -50,7 +50,7 @@ Each describe or execute invocation starts in its own Unix process group. Timeou
 
 - Task 121: Implement User-Defined Toolbox Tools.
 - ExecPlan: `.agents/exec-plans/active/toolboxes-plan.md`.
-- `docs/design-docs/tools.md` (Toolbox Tools).
-- `docs/design-docs/sandbox.md` (Toolbox trust boundary).
+- `docs/integrations.md` (Toolbox protocol).
+- `docs/security.md` (Toolbox trust boundary).
 - ADR-013: Per-Path Serialization of Mutating Tool Calls.
 - ADR-014: Sandbox Policy CLI Flag.

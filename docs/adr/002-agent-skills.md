@@ -53,7 +53,7 @@ We implement a skills system with the following design:
 
 ## References
 
-- `docs/design-docs/skills.md` - Full feature documentation
+- `docs/configuration.md` - Current user configuration
 - `src/config/skills.rs` - Skill discovery and parsing implementation
 - `src/prompts/mod.rs` - System prompt integration
 - `src/clients/agent.rs` - Path-watching skill activation tracking

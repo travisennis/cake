@@ -1,279 +1,81 @@
 # Contributing to Cake
 
-Thank you for your interest in contributing to Cake! This document provides contributor onboarding, development setup, common command invocations, and verification guidance for humans and agents.
+Agent operating rules are in [AGENTS.md](AGENTS.md). This document is the shared human and agent development workflow.
 
-Agent-specific operating rules live in [AGENTS.md](AGENTS.md). Follow AGENTS.md first when working as an agent; use this file for the shared development workflow.
+## Setup
 
-## Development Setup
-
-### Prerequisites
-
-- [mise](https://mise.jdx.dev/) (or install Rust and just manually)
-- Git
-
-### Quick Setup
+Prerequisites are Git and either [mise](https://mise.jdx.dev/) or a manually installed Rust toolchain and `just`.
 
 ```bash
-mise install    # installs pinned Rust toolchain and just
-just setup      # installs cargo subcommands
+mise install
+just setup
 prek install --hook-type pre-commit --hook-type pre-push --hook-type commit-msg
 ```
 
-This installs all required tools: clippy, rustfmt, cargo-edit, cargo-deny, cargo-insta, cargo-llvm-cov, cargo-crap, panache, prek, cocogitto. The `prek install` step configures git hooks.
+`just setup` installs the Cargo utilities used by repository recipes. Run `just --list` for the authoritative command catalog.
 
-Git hooks will automatically run:
+## Development loop
 
-- **pre-commit**: `cargo fmt -- --check` (formatting verification)
-- **pre-commit**: `cargo clippy --all-targets --all-features -- -D warnings` (linting)
-- **pre-commit**: `panache lint --force-exclude .` for changed Markdown files
-- **pre-push**: `just pre-push`, which runs `just ci`
-- **commit-msg**: `cog verify --file` (conventional commit validation)
+1. Inspect `git status --short` and preserve unrelated work.
+2. Read the implementation and its focused tests before editing.
+3. Make the smallest coherent change.
+4. Run a focused test or check while iterating.
+5. Format changed code and run the applicable final gate.
+6. Review the diff for compatibility, security, and unnecessary complexity.
 
-## Contributor Guides
+The crate has no library target. Do not use `cargo test --lib`.
 
-### Code Style
+## Verification
 
-- Use `thiserror` for custom errors and `anyhow` for application errors.
-- Prefer Tokio `async fn` and `?` for error propagation.
-- Default to deleting dead code. Use `#[cfg(test)]` only for test-only items.
-- Use `#[expect(dead_code, reason = "...")]` only for serde fields that must exist for deserialization but are not read by application logic. The reason must say: `field required for serde deserialization; not read by application code`.
-- Never use `#[allow(dead_code)]`.
-- Keep `use` statements at module level, not inside function bodies. Inline `use` inside a function body is hard to notice, bypasses module-level import auditing, and is accepted only when guarded behind `#[cfg(...)]` that makes a module-level import unreachable.
-
-### Adding a New Tool
-
-Tools are defined in `src/clients/tools/`.
-
-1. **Create the tool definition** in `tools.rs`:
-   ```rust
-   fn my_tool() -> Tool {
-       Tool {
-           type_: "function".to_string(),
-           name: "MyTool".to_string(),
-           description: "Description of what the tool does".to_string(),
-           parameters: serde_json::json!({
-               "type": "object",
-               "properties": {
-                   "param1": { "type": "string", "description": "..." }
-               },
-               "required": ["param1"]
-           }),
-       }
-   }
-   ```
-
-2. **Add execution logic** in `execute_tool()`:
-   ```rust
-   "MyTool" => execute_my_tool(arguments).await,
-   ```
-
-3. **Implement the execution function**:
-   ```rust
-   async fn execute_my_tool(arguments: &str) -> Result<ToolResult, String> {
-       // Parse arguments, validate paths, execute, return result
-   }
-   ```
-
-4. **Register in tools list** (if applicable)
-
-See [docs/design-docs/tools.md](docs/design-docs/tools.md) for tool framework details.
-
-### Adding a New Conversation Type
-
-Conversation items are defined in `src/clients/types.rs`.
-
-1. **Extend the `ConversationItem` enum**:
-   ```rust
-   pub enum ConversationItem {
-       // ... existing variants
-       MyNewItem { field1: String, field2: i32 },
-   }
-   ```
-
-2. **Update serialization** (`#[serde]` attributes)
-
-3. **Update API translation** (`to_api_input()`, `build_messages()`, `to_streaming_json()`)
-
-4. **Add pattern matches** in all `match` arms across the codebase
-
-See [docs/design-docs/conversation-types.md](docs/design-docs/conversation-types.md) for data model details.
-
-### Testing Changes
+For Rust, configuration, CI, fixture, or dependency changes, run:
 
 ```bash
-# Run all tests
-just test
-
-# Run tests for a specific module
-cargo test module_name
-
-# Run tests with coverage
-just coverage
-
-# Run snapshot tests
-just snapshots
-
-# Review and accept snapshot updates
-cargo insta review
-
-# Open HTML coverage report
-just coverage-open
-
-# Run the broad local validation suite
-just check-full
-```
-
-Tests live alongside source files: - `src/module/mod.rs` → `tests/module_tests.rs` - Inline `#[cfg(test)]` modules are also used
-
-Snapshot tests use `insta`. Run `just snapshots` after changing serialized output, prompts, API request construction, or other snapshot-backed behavior. If `.snap.new` files are created, inspect and accept or reject them with `cargo insta review`; do not leave `.snap.new` files in the worktree.
-
-See [docs/design-docs/tools.md](docs/design-docs/tools.md) for testing patterns (tools use `tempfile` for isolation).
-
-#### macOS Sandbox Integration Tests
-
-On macOS, the sandbox integration tests (tests with names starting with `test_sandbox_` in `bash_tests.rs`) can skip themselves when the platform sandbox is unavailable. This is the desired default for local runs and CI environments that cannot enforce Seatbelt.
-
-For security-sensitive changes that touch sandbox policy or enforcement, use the following command to require sandbox tests to actually execute and fail if enforcement is unavailable:
-
-```bash
-CAKE_REQUIRE_SANDBOX_TESTS=1 cargo test --quiet -- test_sandbox_
-```
-
-With `CAKE_REQUIRE_SANDBOX_TESTS=1`:
-
-- Every sandbox integration test must either pass or fail; skipped tests become failures with an actionable error message.
-- Tests that are not sandbox-related (binary data detection, output truncation, etc.) are unaffected.
-- The `test_sandbox_` test name filter is used in the canonical command to keep the run focused.
-
-Without this variable, existing behavior is preserved: unsandboxed environments print skip messages and return success.
-
-### Verification Expectations
-
-For Rust changes:
-
-1. Run the narrowest useful check first, such as `cargo check --tests`, `cargo test <module_or_test_name>`, or `cargo test`.
-2. Run `cargo fmt` after code edits.
-3. Run `just check-coverage` when adding or removing meaningful Rust code, changing tests or fixtures, changing coverage configuration or baselines under `ci/`, or changing dependency features in a way that affects compiled code.
-4. Run `just ci` before final handoff and before pushing code, test, config, CI, fixture, or dependency changes. This is the minimum pre-push gate and includes the coverage threshold and cargo-crap change-risk regression check.
-
-If `just ci` cannot be run, state the exact reason and list the narrower checks that were run instead. Do not treat a red `master` branch as background noise: check the current GitHub CI status before pushing to `master` or merging, and investigate an existing red Coverage job before stacking new changes on top.
-
-For cfg-sensitive or platform-specific Rust changes, run the narrowest feasible target check for installed non-host targets affected by the change. On macOS, prefer `just clippy-linux` for Linux-sensitive changes when the target and cross compiler are available; otherwise use the closest feasible `cargo check --target ...` command. State any platform verification gap in the handoff.
-
-For dependency changes, also run `just check-deps`. It is not part of `just ci`.
-
-For documentation-only changes, run the narrowest useful Markdown or link checks instead of `just ci` when no code, tests, config, fixtures, generated indexes, dependency files, or build metadata changed. Explain the skip in the handoff.
-
-This crate has no library target. Do not run `cargo test --lib`; use `cargo test <module_or_test_name>` for targeted tests or `cargo test` for the full test suite.
-
-## Build/Lint/Test Commands
-
-```bash
-# Build release binary
-cargo build --release
-
-# Build and install to ~/bin
-just install
-
-# Run tests
-cargo test
-
-# Run tests for a specific module
-cargo test <module_name>
-
-# Run tests with coverage
-just coverage
-
-# Run snapshot tests
-just snapshots
-
-# Run coverage and open HTML report
-just coverage-open
-
-# Formatting
-cargo fmt
-
-# Linting
-just clippy-strict
-
-# Update dependencies
-just update-dependencies
-
-# Full CI check
 just ci
-
-# Pre-push gate; equivalent to `just ci`
-just pre-push
 ```
 
-## Running the App
+This checks toolchain synchronization, Linux compilation, formatting, strict Clippy in both feature modes, tests, coverage/change risk, imports, and module size. Run focused commands such as `cargo test <name>` before the full gate.
 
-```bash
-# Set API key
-export OPENROUTER_API_KEY=your_key_here
+Additional checks:
 
-# Run binary directly
-./target/release/cake "Your prompt here"
+- Dependency changes: `just check-deps`.
+- Rust-version changes: `just rust-version-check`.
+- Linux-sensitive changes on macOS: `just clippy-linux` when the target and cross-compiler are installed.
+- Snapshot changes: `just snapshots`, then `cargo insta review`.
+- Full release-oriented validation: `just check-full`.
+- Documentation-only changes: targeted `panache format --check` and `panache lint` for changed living documents, link validation, `ahm doctor`, and `git diff --check`. Use `just docs-check` when intentionally validating the complete Markdown corpus.
 
-# Or with cargo
-cargo run --release -- "Your prompt here"
+If an applicable check cannot run, report the exact reason and the narrower checks that did run. Do not describe a failing primary branch as unrelated without investigating it.
 
-# To get help
-./target/release/cake --help
+## Code conventions
+
+- Use `thiserror` for typed domain errors and `anyhow` for application context.
+- Prefer `?` over manual propagation.
+- Delete dead code. Do not hide it behind `#[allow]`.
+- Use `#[expect(..., reason = "...")]` only for intentional, explained lint exceptions.
+- Keep imports at module scope unless conditional compilation makes that impossible.
+- Use absolute `crate::` imports in production code.
+- Preserve public behavior during refactors unless the task explicitly changes it.
+
+Tests and snapshots should encode behavior close to its implementation. Add documentation only when the change affects a user workflow, external contract, security boundary, durable architectural invariant, or contributor workflow. See [DOCUMENTATION.md](DOCUMENTATION.md).
+
+## Managed work
+
+`ahm` owns tasks, research, ExecPlans, ADR metadata, and generated indexes. Start with `ahm prime`. Use the scoped `ahm context ...` guidance for managed records, never edit generated indexes, and complete managed work before any commit containing its implementation.
+
+## Git and commits
+
+Do not overwrite unrelated changes. Branches are optional unless the work or maintainer requires one. Commit only when requested.
+
+Commits use [Conventional Commits](https://www.conventionalcommits.org/):
+
+```text
+feat(cli): add a flag
+fix(sandbox): preserve read-only paths
+docs: simplify contributor guidance
 ```
 
-## Updating Rust Version
+Common types are `feat`, `fix`, `docs`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, and `revert`. Keep a commit focused and ensure required hooks and checks pass before pushing.
 
-The project Rust toolchain is pinned in `rust-toolchain.toml`. When changing it: - Update `rust-toolchain.toml`. - Update matching project-toolchain pins in `.github/workflows/ci.yml`, `.github/workflows/release.yml`, and non-MSRV Rust jobs in `.github/workflows/scheduled.yml`. - Leave the scheduled `MSRV Compatibility` job pinned to the supported minimum Rust version unless intentionally changing MSRV. - Run `just rust-version-check` to verify pins are synchronized. - Run `just ci` before finishing the change.
+## Pull requests
 
-## Git Workflow
-
-This project uses trunk-based development. Commits go directly to the `master` branch, protected by:
-
-- **Pre-commit hooks**: formatting, linting, and Markdown lint (installed via `prek`)
-- **Pre-push gate** (`just pre-push` / `just ci`): full test suite, coverage threshold, and change-risk regression checks
-- **GitHub CI**: acts as a backstop on push
-
-Branch + pull request workflow is optional for risky or experimental changes that benefit from review before merging.
-
-## Commit Conventions
-
-This project uses [Conventional Commits](https://www.conventionalcommits.org/). Commit messages are validated by a `commit-msg` hook.
-
-**Format:** `<type>[(scope)]: <description>`
-
-**Types:** `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`
-
-**Recommended Scopes** (aligned with architecture):
-
-  | Scope       | Description                                            |
-  | ----------- | ------------------------------------------------------ |
-  | `cli`       | Command-line interface and argument parsing            |
-  | `agent`     | Agent orchestration, conversation loop, tool execution |
-  | `responses` | Responses API backend                                  |
-  | `chat`      | Chat Completions API backend                           |
-  | `tools`     | Tool definitions (Bash, Read, Edit, Write, etc.)       |
-  | `sandbox`   | Sandbox implementations (Seatbelt, Landlock)           |
-  | `config`    | Configuration, sessions, data directory                |
-  | `session`   | Session persistence and management                     |
-  | `model`     | Model configuration and API types                      |
-  | `prompts`   | System prompt construction, AGENTS.md integration      |
-  | `logger`    | Logging configuration                                  |
-  | `docs`      | Documentation changes                                  |
-  | `tests`     | Test files and test infrastructure                     |
-
-**Examples:** ```
-feat(cli): add --verbose flag
-fix(agent): handle timeout correctly
-docs: update ARCHITECTURE.md with new module
-refactor(tools): extract path validation into shared function
-```
-
-## Pull Request Process (Optional)
-
-For risky or experimental changes, a branch + pull request workflow may be used:
-
-1. Create a branch with a descriptive name (e.g., `feat/xxx`, `fix/xxx`, `refactor/xxx`, `test/xxx`)
-2. Make changes and commit following the commit conventions above
-3. Open a pull request targeting `master`
-4. Ensure all CI checks pass before merging
+Explain the user-visible or maintainer-visible outcome, notable design choices, compatibility or security impact, and exact verification. Link the managed task or ADR when one exists. Update documentation only when its authority is affected.

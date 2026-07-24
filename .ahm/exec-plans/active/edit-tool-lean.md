@@ -274,7 +274,7 @@ Implementation Note: After completing this milestone and automated verification,
 
 Overview: This milestone turns the learning into durable project value. At the end, cake should have stronger Rust tests and a short reusable guide explaining how Lean was used.
 
-Repository Context: Update `src/clients/tools/edit.rs` tests with any edge cases discovered from the model. Add documentation in a durable location, preferably `docs/design-docs/edit-tool-formal-model.md` or `.ahm/research/investigations/edit-tool-lean/README.md`. If the guidance is meant for future contributors rather than only this experiment, prefer `docs/design-docs/edit-tool-formal-model.md`.
+Repository Context: Update `src/clients/tools/edit.rs` tests with any edge cases discovered from the model. Keep experiment evidence and formal-model working notes in `.ahm/research/investigations/edit-tool-lean/README.md`. Add durable prose only if the work changes a user workflow, external contract, security boundary, or architectural invariant, following `DOCUMENTATION.md`.
 
 Plan of Work: Compare the Lean model to the Rust test suite. For each property modeled in Lean, ensure there is either a Rust test or a documented reason it is not applicable to production code. Write the workflow documentation in plain language: why this target was chosen, how the pure function was extracted, how the abstract model was scoped, what commands were run, what was learned, and what should be done differently next time.
 

@@ -56,7 +56,7 @@ Hook activity is recorded through tracing and appended to session JSONL as `hook
 
 ## References
 
-- `docs/design-docs/hooks.md` - Hook configuration, runtime protocol, and observability
+- `docs/configuration.md` and `docs/integrations.md` - Current hook configuration and protocol
 - `.cake/hooks.json.example` - Example project hook configuration
 - `src/config/hooks.rs` - Hook config loading, validation, and matcher handling
 - `src/hooks.rs` - Hook runner, payloads, decisions, and session records
