@@ -8,7 +8,7 @@ setup:
     cargo install cargo-insta --quiet 2>/dev/null || true
     cargo install cargo-llvm-cov --quiet 2>/dev/null || true
     cargo install cargo-crap --version 0.2.2 --locked --quiet 2>/dev/null || true
-    cargo install panache --quiet 2>/dev/null || true
+    cargo install panache --version 3.0.0 --locked --quiet 2>/dev/null || true
     cargo install prek --quiet 2>/dev/null || true
     cargo install --locked cocogitto --quiet 2>/dev/null || true
     @echo "Setup complete! Run 'just --list' to see available commands."

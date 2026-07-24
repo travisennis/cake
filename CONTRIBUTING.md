@@ -42,7 +42,7 @@ Additional checks:
 - Linux-sensitive changes on macOS: `just clippy-linux` when the target and cross-compiler are installed.
 - Snapshot changes: `just snapshots`, then `cargo insta review`.
 - Full release-oriented validation: `just check-full`.
-- Documentation-only changes: targeted `panache format --check` and `panache lint --check` for changed living documents, link validation, `ahm doctor`, and `git diff --check`. Use `just docs-check` when intentionally validating the complete Markdown corpus.
+- Documentation-only changes: targeted `panache format --check` and `panache lint` for changed living documents, link validation, `ahm doctor`, and `git diff --check`. Use `just docs-check` when intentionally validating the complete Markdown corpus.
 
 If an applicable check cannot run, report the exact reason and the narrower checks that did run. Do not describe a failing primary branch as unrelated without investigating it.
 

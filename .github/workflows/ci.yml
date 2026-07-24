@@ -121,9 +121,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
         with:
-          tool: panache
+          tool: panache@3.0.0
       - run: panache format --check . --quiet
-      - run: panache lint . --quiet --check
+      - run: panache lint . --quiet
 
   coverage:
     name: Coverage

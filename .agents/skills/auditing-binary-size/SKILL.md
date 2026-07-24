@@ -55,7 +55,7 @@ The typical size breakdown for this project:
 
 ### 5. Check for easy wins
 
-- **Symbols stripped?** The release profile should have `strip = true`. If not, that's ~1.3 MB of free savings with no performance cost (only downside: raw addresses in panic backtraces instead of function names).
+- **Symbols stripped?** The release profile should have `strip = true`. If not, that's \~1.3 MB of free savings with no performance cost (only downside: raw addresses in panic backtraces instead of function names).
 - **Panic strategy set?** The release profile currently uses `panic = "abort"` for smaller binaries.
 - **Tokio features minimal?** The project currently uses `features = ["full"]`. If auditing for size regressions, check whether narrower features can support the current async, process, IO, signal, and macro usage before changing this.
 - **Unused dependencies?** Run `cargo machete` to detect unused deps (install with `cargo install cargo-machete`).
@@ -69,24 +69,15 @@ ls -lh target/release/cake
 cargo bloat --release --crates | head -20
 ```
 
-**What counts as a regression?** This project does not currently track a
-committed binary-size baseline, so judgment is required. Sensible heuristics
-(not measured from this project — treat as starting points to discuss with
-the maintainer, not hard gates):
+**What counts as a regression?** This project does not currently track a committed binary-size baseline, so judgment is required. Sensible heuristics (not measured from this project --- treat as starting points to discuss with the maintainer, not hard gates):
 
-- A noticeable relative jump (rule of thumb: more than a few percent) in
-  one change usually signals a new dependency or a wider feature set.
-- A noticeable absolute jump (rule of thumb: hundreds of KB or more) is
-  worth investigating even if relative growth is small.
-- A single crate moving meaningfully up the `cargo bloat --crates` list
-  warrants checking whether new features were enabled or a heavier
-  dependency was pulled in.
+- A noticeable relative jump (rule of thumb: more than a few percent) in one change usually signals a new dependency or a wider feature set.
+- A noticeable absolute jump (rule of thumb: hundreds of KB or more) is worth investigating even if relative growth is small.
+- A single crate moving meaningfully up the `cargo bloat --crates` list warrants checking whether new features were enabled or a heavier dependency was pulled in.
 
-If the project later commits a `binary-size-baseline.txt` or similar
-artifact, prefer comparing against it over these heuristics.
+If the project later commits a `binary-size-baseline.txt` or similar artifact, prefer comparing against it over these heuristics.
 
-Capture a local baseline before starting work so the comparison is
-meaningful:
+Capture a local baseline before starting work so the comparison is meaningful:
 
 ```bash
 cargo build --release
@@ -100,20 +91,17 @@ diff /tmp/cake-bloat-before.txt <(cargo bloat --release --crates | head -20)
 
 ## Current Release Profile
 
-The release profile lives in [`Cargo.toml`](../../../Cargo.toml). Inspect it
-directly rather than relying on a copy here:
+The release profile lives in [`Cargo.toml`](../../../Cargo.toml). Inspect it directly rather than relying on a copy here:
 
 ```bash
 awk '/^\[profile.release\]/,/^$/' Cargo.toml
 ```
 
-At time of writing it includes `lto`, `codegen-units`, `panic`, and `strip`
-settings. If any of those are missing or changed unexpectedly, that is the
-first place to look for size regressions or easy wins.
+At time of writing it includes `lto`, `codegen-units`, `panic`, and `strip` settings. If any of those are missing or changed unexpectedly, that is the first place to look for size regressions or easy wins.
 
 ## Key Tradeoffs to Be Aware Of
 
-- **`rustls` vs `native-tls`**: `rustls` bundles ~1 MB of crypto (`aws_lc_sys` + `rustls`). Switching to `native-tls` uses the OS TLS stack (smaller binary) but introduces platform-dependent build behavior, especially on Linux with OpenSSL.
+- **`rustls` vs `native-tls`**: `rustls` bundles \~1 MB of crypto (`aws_lc_sys` + `rustls`). Switching to `native-tls` uses the OS TLS stack (smaller binary) but introduces platform-dependent build behavior, especially on Linux with OpenSSL.
 - **`opt-level = "z"`**: Optimizes for size over speed. Not recommended unless binary size is critical.
 - **`strip = true`**: Only downside is panic backtraces show raw addresses instead of function names. Logs via `tracing` are unaffected.
 - **`panic = "abort"`**: Reduces unwind machinery. The tradeoff is no stack unwinding or panic recovery.
