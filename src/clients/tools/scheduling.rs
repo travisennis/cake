@@ -299,6 +299,66 @@ mod tests {
     }
 
     #[test]
+    fn serializes_write_then_edit_for_same_nonexistent_file() {
+        let (dir, context, _, _) = scheduling_fixture();
+        let path = dir.path().join("nonexistent.txt");
+        assert!(!path.exists());
+        let write_args =
+            serde_json::json!({ "path": path, "content": "new file content" }).to_string();
+        let edit_args = edit_arguments(&path);
+
+        let groups = schedule(
+            &context,
+            vec![
+                (
+                    "call-1".to_string(),
+                    "Write".to_string(),
+                    execute_plan(write_args),
+                ),
+                (
+                    "call-2".to_string(),
+                    "Edit".to_string(),
+                    execute_plan(edit_args),
+                ),
+            ],
+        );
+
+        assert_eq!(group_indexes(&groups), vec![vec![0, 1]]);
+        assert_eq!(groups[0][0].call_id, "call-1");
+        assert_eq!(groups[0][1].call_id, "call-2");
+    }
+
+    #[test]
+    fn serializes_edit_then_write_for_same_nonexistent_file() {
+        let (dir, context, _, _) = scheduling_fixture();
+        let path = dir.path().join("nonexistent.txt");
+        assert!(!path.exists());
+        let edit_args = edit_arguments(&path);
+        let write_args =
+            serde_json::json!({ "path": path, "content": "new file content" }).to_string();
+
+        let groups = schedule(
+            &context,
+            vec![
+                (
+                    "call-1".to_string(),
+                    "Edit".to_string(),
+                    execute_plan(edit_args),
+                ),
+                (
+                    "call-2".to_string(),
+                    "Write".to_string(),
+                    execute_plan(write_args),
+                ),
+            ],
+        );
+
+        assert_eq!(group_indexes(&groups), vec![vec![0, 1]]);
+        assert_eq!(groups[0][0].call_id, "call-1");
+        assert_eq!(groups[0][1].call_id, "call-2");
+    }
+
+    #[test]
     fn interleaved_calls_group_by_path_and_keep_issue_order() {
         let (_dir, context, first_path, second_path) = scheduling_fixture();
         let read_arguments = serde_json::json!({ "path": second_path }).to_string();

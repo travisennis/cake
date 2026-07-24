@@ -2,7 +2,9 @@ use serde::Deserialize;
 use std::fmt::Write as _;
 use std::path::Path;
 
-use crate::clients::tools::{ToolContext, repair_json_args, validate_path_for_write};
+use crate::clients::tools::{
+    ToolContext, repair_json_args, resolve_path_for_write_scheduling, validate_path_for_write,
+};
 
 // =============================================================================
 // Constants
@@ -98,7 +100,7 @@ pub(super) fn mutating_target(
             expected_edit_summary_shape(),
         )
     })?;
-    validate_path_for_write(context, &args.path)
+    resolve_path_for_write_scheduling(context, &args.path)
 }
 
 /// A matched edit with position information

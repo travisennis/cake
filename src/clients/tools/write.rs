@@ -1,7 +1,5 @@
 use crate::clients::tools::ToolContext;
 use serde::Deserialize;
-use std::ffi::{OsStr, OsString};
-use std::path::{Path, PathBuf};
 
 // =============================================================================
 // Write Tool Definition
@@ -55,7 +53,7 @@ pub(super) fn mutating_target(
     let args: WriteArgs = serde_json::from_str(&repaired).map_err(|e| {
         super::format_json_parse_error(&repaired, &e, "write", expected_write_arguments_shape())
     })?;
-    validate_path_for_write(context, &args.path)
+    super::resolve_path_for_write_scheduling(context, &args.path)
 }
 
 /// Execute a write command
@@ -69,7 +67,7 @@ pub(super) fn execute_write(
     })?;
 
     // Validate path is within working directory
-    let path = validate_path_for_write(context, &args.path)?;
+    let path = super::resolve_path_for_write_scheduling(context, &args.path)?;
 
     // Check if file exists to determine if it's a create or overwrite.
     // This must use the validated (normalised) path so that writes to
@@ -113,146 +111,12 @@ pub(super) fn execute_write(
     Ok(super::ToolResult { output: result })
 }
 
-/// Validate a path for writing - allows non-existent paths as long as parent is in cwd or temp directories.
-/// Rejects paths in read-only additional directories (--add-dir).
-fn validate_path_for_write(
-    context: &ToolContext,
-    path_str: &str,
-) -> Result<std::path::PathBuf, String> {
-    let path = Path::new(path_str);
-
-    // If the file exists, use the shared validation which checks read-only status
-    if path.exists() {
-        return super::validate_path_for_write(context, path_str);
-    }
-
-    // Resolve the path root-to-leaf with symlink-aware semantics for existing
-    // components. Non-existing suffixes are normalised lexically so that
-    // parent-directory components across nonexistent ancestors are handled
-    // correctly (<cwd>/missing/../target → <cwd>/target).
-    let (resolved_base, pending) = resolve_write_path(path);
-
-    // Validate the resolved base is within allowed directories
-    let canonical_base = resolved_base.canonicalize().map_err(|e| {
-        format!(
-            "Parent directory not found '{}': {e}",
-            resolved_base.display()
-        )
-    })?;
-
-    let is_in_cwd = canonical_base.starts_with(&context.cwd);
-    let is_in_temp = super::get_temp_directories(context)
-        .iter()
-        .any(|temp_dir| canonical_base.starts_with(temp_dir));
-    let is_in_settings = super::get_settings_dirs(context)
-        .iter()
-        .any(|settings_dir| canonical_base.starts_with(settings_dir));
-    let is_in_read_only = super::get_additional_dirs(context)
-        .iter()
-        .any(|add_dir| canonical_base.starts_with(add_dir));
-
-    if is_in_read_only {
-        return Err(format!(
-            "Path '{}' is in a read-only directory (added via --add-dir). Write operations are not allowed.",
-            path.display()
-        ));
-    }
-
-    if !is_in_cwd && !is_in_temp && !is_in_settings {
-        return Err(format!(
-            "Path '{}' is outside the working directory",
-            path.display()
-        ));
-    }
-
-    // Reconstruct the full path: resolved base + pending components
-    let mut final_path = resolved_base;
-    for component in &pending {
-        final_path = final_path.join(component);
-    }
-    Ok(final_path)
-}
-
-/// Walk a path root-to-leaf, resolving existing components via the filesystem
-/// (following symlinks) and collecting non-existing components for lexical
-/// normalisation.
-///
-/// Returns `(existing_base, pending_components)` where `existing_base` is the
-/// deepest canonicalised prefix that exists on disk, and `pending_components`
-/// is the lexically-normalised remainder.
-///
-/// `..` components before a non-existing segment are resolved through the
-/// filesystem (preserving symlink semantics). `..` components within the
-/// non-existing segment cancel a preceding pending normal component.
-fn resolve_write_path(path: &Path) -> (PathBuf, Vec<OsString>) {
-    let mut resolved = PathBuf::new();
-    let mut pending: Vec<OsString> = Vec::new();
-    let mut missing = false;
-
-    for component in path.components() {
-        match component {
-            std::path::Component::RootDir => {
-                resolved = PathBuf::from("/");
-                pending.clear();
-                missing = false;
-            },
-            std::path::Component::Prefix(p) => {
-                resolved.push(p.as_os_str());
-                pending.clear();
-                missing = false;
-            },
-            std::path::Component::CurDir => {
-                // skip `.`
-            },
-            std::path::Component::Normal(name) => {
-                if missing {
-                    pending.push(name.to_os_string());
-                } else {
-                    let candidate = resolved.join(name);
-                    if candidate.exists() {
-                        // Follow symlinks by canonicalizing
-                        resolved = candidate.canonicalize().unwrap_or(candidate);
-                    } else {
-                        missing = true;
-                        pending.push(name.to_os_string());
-                    }
-                }
-            },
-            std::path::Component::ParentDir => {
-                if !missing {
-                    let candidate = resolved.join("..");
-                    if candidate.exists() {
-                        resolved = candidate.canonicalize().unwrap_or(candidate);
-                    } else {
-                        missing = true;
-                        pending.push(OsStr::new("..").to_os_string());
-                    }
-                } else if !pending.is_empty() {
-                    // `..` in the non-existing segment cancels the last
-                    // pending normal component. If pending is now empty,
-                    // resume filesystem resolution so that subsequent
-                    // existing symlinks are canonicalized correctly.
-                    pending.pop();
-                    if pending.is_empty() {
-                        missing = false;
-                    }
-                } else if resolved.as_os_str().is_empty() || resolved == Path::new("/") {
-                    // `..` at root or empty base is a no-op
-                } else {
-                    // `..` above a fully-resolved non-root base — go up
-                    resolved.pop();
-                }
-            },
-        }
-    }
-
-    (resolved, pending)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::{OsStr, OsString};
     use std::fs;
+    use std::path::{Path, PathBuf};
     use tempfile::TempDir;
 
     /// Lexically normalise a path by resolving `.` and `..` components without

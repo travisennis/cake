@@ -23,6 +23,7 @@
 //! never registered under the read-only sandbox policy.
 
 use serde::Serialize;
+use std::ffi::{OsStr, OsString};
 use std::fmt::Write as _;
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -800,6 +801,149 @@ pub(super) fn validate_path_for_write(
         ));
     }
     Ok(validated.canonical)
+}
+
+/// Walk a path root-to-leaf, resolving existing components via the filesystem
+/// (following symlinks) and collecting non-existing components for lexical
+/// normalisation.
+///
+/// Returns `(existing_base, pending_components)` where `existing_base` is the
+/// deepest canonicalised prefix that exists on disk, and `pending_components`
+/// is the lexically-normalised remainder.
+///
+/// `..` components before a non-existing segment are resolved through the
+/// filesystem (preserving symlink semantics). `..` components within the
+/// non-existing segment cancel a preceding pending normal component.
+pub(super) fn resolve_write_path(path: &Path) -> (PathBuf, Vec<OsString>) {
+    let mut resolved = PathBuf::new();
+    let mut pending: Vec<OsString> = Vec::new();
+    let mut missing = false;
+
+    for component in path.components() {
+        match component {
+            std::path::Component::RootDir => {
+                resolved = PathBuf::from("/");
+                pending.clear();
+                missing = false;
+            },
+            std::path::Component::Prefix(p) => {
+                resolved.push(p.as_os_str());
+                pending.clear();
+                missing = false;
+            },
+            std::path::Component::CurDir => {
+                // skip `.`
+            },
+            std::path::Component::Normal(name) => {
+                if missing {
+                    pending.push(name.to_os_string());
+                } else {
+                    let candidate = resolved.join(name);
+                    if candidate.exists() {
+                        // Follow symlinks by canonicalizing
+                        resolved = candidate.canonicalize().unwrap_or(candidate);
+                    } else {
+                        missing = true;
+                        pending.push(name.to_os_string());
+                    }
+                }
+            },
+            std::path::Component::ParentDir => {
+                if !missing {
+                    let candidate = resolved.join("..");
+                    if candidate.exists() {
+                        resolved = candidate.canonicalize().unwrap_or(candidate);
+                    } else {
+                        missing = true;
+                        pending.push(OsStr::new("..").to_os_string());
+                    }
+                } else if !pending.is_empty() {
+                    // `..` in the non-existing segment cancels the last
+                    // pending normal component. If pending is now empty,
+                    // resume filesystem resolution so that subsequent
+                    // existing symlinks are canonicalized correctly.
+                    pending.pop();
+                    if pending.is_empty() {
+                        missing = false;
+                    }
+                } else if resolved.as_os_str().is_empty() || resolved == Path::new("/") {
+                    // `..` at root or empty base is a no-op
+                } else {
+                    // `..` above a fully-resolved non-root base — go up
+                    resolved.pop();
+                }
+            },
+        }
+    }
+
+    (resolved, pending)
+}
+
+/// Resolve a write-target path for scheduling without requiring the file to
+/// exist.  Returns a stable path key for grouping same-file mutations even
+/// when the file hasn't been created yet.
+///
+/// For existing files, delegates to the standard `validate_path_for_write`.
+/// For nonexistent paths, resolves the deepest existing ancestor via the
+/// filesystem, canonicalises that, validates permissions, and appends the
+/// lexically-normalised remainder.
+pub(super) fn resolve_path_for_write_scheduling(
+    context: &ToolContext,
+    path_str: &str,
+) -> Result<PathBuf, String> {
+    let path = Path::new(path_str);
+
+    // If the file exists, use the shared validation which canonicalizes and
+    // checks read-only status.
+    if path.exists() {
+        return validate_path_for_write(context, path_str);
+    }
+
+    // Resolve the path root-to-leaf with symlink-aware semantics for existing
+    // components. Non-existing suffixes are normalised lexically so that
+    // parent-directory components across nonexistent ancestors are handled
+    // correctly (<cwd>/missing/../target → <cwd>/target).
+    let (resolved_base, pending) = resolve_write_path(path);
+
+    // Validate the resolved base is within allowed directories
+    let canonical_base = resolved_base.canonicalize().map_err(|e| {
+        format!(
+            "Parent directory not found '{}': {e}",
+            resolved_base.display()
+        )
+    })?;
+
+    let is_in_cwd = canonical_base.starts_with(&context.cwd);
+    let is_in_temp = get_temp_directories(context)
+        .iter()
+        .any(|temp_dir| canonical_base.starts_with(temp_dir));
+    let is_in_settings = get_settings_dirs(context)
+        .iter()
+        .any(|settings_dir| canonical_base.starts_with(settings_dir));
+    let is_in_read_only = get_additional_dirs(context)
+        .iter()
+        .any(|add_dir| canonical_base.starts_with(add_dir));
+
+    if is_in_read_only {
+        return Err(format!(
+            "Path '{}' is in a read-only directory (added via --add-dir). Write operations are not allowed.",
+            path.display()
+        ));
+    }
+
+    if !is_in_cwd && !is_in_temp && !is_in_settings {
+        return Err(format!(
+            "Path '{}' is outside the working directory",
+            path.display()
+        ));
+    }
+
+    // Reconstruct the full path: resolved base + pending components
+    let mut final_path = resolved_base;
+    for component in &pending {
+        final_path = final_path.join(component);
+    }
+    Ok(final_path)
 }
 
 /// Get standard temporary directory paths (cached)
