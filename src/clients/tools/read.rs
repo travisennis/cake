@@ -126,27 +126,40 @@ fn read_file(
         None => DEFAULT_END_LINE.saturating_sub(1),
     };
 
-    // Read only the lines we need using a buffered reader
+    // Read the requested window using a buffered reader.
+    // Lines outside the window reuse a single buffer to avoid allocating a
+    // String per line through EOF.
     let file = std::fs::File::open(path)
         .map_err(|e| format!("Failed to read file '{}': {e}", path.display()))?;
-    let reader = BufReader::new(file);
+    let mut reader = BufReader::new(file);
 
     let mut numbered_lines: Vec<String> = Vec::new();
     let mut total_lines: usize = 0;
+    let mut line_buf = String::new();
 
-    for (i, line_result) in reader.lines().enumerate() {
-        let line =
-            line_result.map_err(|e| format!("Failed to read file '{}': {e}", path.display()))?;
-        total_lines = i + 1;
+    loop {
+        line_buf.clear();
+        let n = reader
+            .read_line(&mut line_buf)
+            .map_err(|e| format!("Failed to read file '{}': {e}", path.display()))?;
+        if n == 0 {
+            break; // EOF
+        }
+
+        let i = total_lines;
+        total_lines += 1;
 
         if i < start {
-            continue;
+            continue; // line_buf reused, no allocation
         }
         if i > end_requested {
-            // Keep counting for total_lines but don't store content
+            // Past the window — keep counting using the same reused buffer.
+            // No per-line String allocation.
             continue;
         }
-        numbered_lines.push(format!("{:>6}: {line}", i + 1));
+
+        let trimmed = line_buf.trim_end_matches('\n').trim_end_matches('\r');
+        numbered_lines.push(format!("{:>6}: {trimmed}", i + 1));
     }
 
     // Clamp end to actual file length
@@ -170,11 +183,18 @@ fn read_file(
         numbered_lines.join("\n")
     );
 
-    // Truncate if too large
+    // Truncate if too large, respecting the byte cap at valid UTF-8 boundaries
     if output.len() > MAX_OUTPUT_BYTES {
         use std::fmt::Write;
-        let truncate_at = MAX_OUTPUT_BYTES - 100; // Leave room for truncation message
-        let mut truncated = output.chars().take(truncate_at).collect::<String>();
+        let reserve = 100; // bytes for the truncation marker
+        let byte_end = output.floor_char_boundary(MAX_OUTPUT_BYTES.saturating_sub(reserve));
+        let mut truncated = {
+            #[expect(
+                clippy::string_slice,
+                reason = "floor_char_boundary guarantees a char boundary"
+            )]
+            output[..byte_end].to_string()
+        };
         _ = write!(
             truncated,
             "\n[... output truncated at {MAX_OUTPUT_BYTES} bytes ...]"
@@ -195,6 +215,7 @@ fn read_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::Write;
     use std::fs;
     use tempfile::TempDir;
 
@@ -382,5 +403,107 @@ mod tests {
         let result = execute_read(&ToolContext::from_current_process(), &args).unwrap();
         assert!(result.output.contains("Lines 1-200/600"));
         assert!(result.output.contains("[... 400 more lines ...]"));
+    }
+
+    #[test]
+    fn read_early_window_large_file() {
+        // An early window from a large file must not allocate a String per
+        // line through EOF.  This test verifies correct output for a small
+        // window in a 100K-line file.
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("large.txt");
+        let mut content = String::with_capacity(6_000_000);
+        for i in 1..=100_000 {
+            let _result = writeln!(content, "Line number {i}");
+        }
+        fs::write(&file_path, &content).unwrap();
+        drop(content);
+
+        let args = serde_json::json!({
+            "path": file_path.to_str().unwrap(),
+            "start_line": 1,
+            "end_line": 200
+        })
+        .to_string();
+
+        let result = execute_read(&ToolContext::from_current_process(), &args).unwrap();
+        assert!(result.output.contains("Lines 1-200/100000"));
+        assert!(result.output.contains("   200: Line number 200"));
+        assert!(!result.output.contains("Line number 201"));
+        assert!(result.output.contains("[... 99800 more lines ...]"));
+    }
+
+    #[test]
+    fn read_truncation_with_multibyte_utf8() {
+        // Multibyte output must respect the documented byte cap without
+        // splitting a code point.
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("emoji.txt");
+
+        // Build content that when formatted exceeds MAX_OUTPUT_BYTES (100_000).
+        // Using '€' (3 bytes, U+20AC) repeated on one long line.
+        // Header: ~60 bytes. Line prefix "     1: ": 8 bytes.
+        // Each € = 3 bytes.  35_000 € → 105_000 bytes, comfortably over the cap.
+        let emoji_count = 35_000;
+        let mut line = String::with_capacity(emoji_count * 3);
+        for _ in 0..emoji_count {
+            line.push('\u{20AC}');
+        }
+        // File has one line with 35K € chars
+        fs::write(&file_path, &line).unwrap();
+
+        let args = serde_json::json!({
+            "path": file_path.to_str().unwrap()
+        })
+        .to_string();
+
+        let result = execute_read(&ToolContext::from_current_process(), &args).unwrap();
+        let output = &result.output;
+
+        // Output must not exceed the byte cap
+        assert!(
+            output.len() <= MAX_OUTPUT_BYTES,
+            "Output is {} bytes but cap is {MAX_OUTPUT_BYTES}",
+            output.len()
+        );
+
+        // Truncation marker must be present
+        assert!(
+            output.contains("output truncated"),
+            "Expected truncation marker in output of {} bytes",
+            output.len()
+        );
+
+        // No replacement character from a split code point
+        assert!(
+            !output.contains('\u{FFFD}'),
+            "Output contains replacement character (split code point)"
+        );
+    }
+
+    #[test]
+    fn error_on_binary_file() {
+        // Binary files (containing null bytes) must be rejected.
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("binary.bin");
+        // A file with a null byte early on
+        fs::write(
+            &file_path,
+            [
+                b'h', b'e', b'l', b'l', b'o', 0x00, b'w', b'o', b'r', b'l', b'd',
+            ],
+        )
+        .unwrap();
+
+        let args = serde_json::json!({
+            "path": file_path.to_str().unwrap()
+        })
+        .to_string();
+
+        let result = execute_read(&ToolContext::from_current_process(), &args);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("Cannot read binary file"), "{err}");
+        assert!(err.contains("detected null bytes"), "{err}");
     }
 }
