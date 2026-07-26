@@ -25,6 +25,13 @@ hooks = [
     files = "\\.md$",
     pass_filenames = false,
   },
+  {
+    id = "whitespace-check",
+    name = "git diff --check",
+    language = "system",
+    entry = "git diff --check",
+    pass_filenames = false,
+  },
 ]
 
 [[repos]]

@@ -45,4 +45,4 @@ Protect compatibility with focused tests and snapshots. Security-boundary change
 
 ## Verification
 
-Use focused checks first. `just ci` is the normal code-change gate; documentation-only work uses targeted Panache format/lint checks for changed living documents, link validation, `ahm doctor`, and `git diff --check`. Follow [CONTRIBUTING.md](CONTRIBUTING.md) for exceptions and specialized checks.
+Use focused checks first. `just ci` is the normal code-change gate; documentation-only work uses targeted Panache format/lint checks for changed living documents, link validation, and `ahm doctor`. Follow [CONTRIBUTING.md](CONTRIBUTING.md) for exceptions and specialized checks.
