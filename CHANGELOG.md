@@ -1,113 +1,885 @@
-# Changelog
+## Unreleased (9f0c277..26b8a0a)
+#### Features
+- (**agent**) add builder methods and accessors for test fixtures - (e7d331f) - Travis Ennis
+- (**agent**) lazy-load skill bodies on activation - (93e8f06) - Travis Ennis
+- (**agent**) delete unused Agent::task_id method - (ff577a7) - Travis Ennis
+- (**agent**) replace redundant num_turns with tool_call_count in TaskCompleteData - (d4aec9a) - Travis Ennis
+- (**agent**) add command hooks - (fdbcafb) - Travis Ennis
+- (**agents**) add just task-complete recipe and require it for finishing tasks - (2816a6c) - Travis Ennis
+- (**bash**) run commands in the project working directory explicitly - (6341ed9) - Travis Ennis
+- (**bash**) include metadata footer in truncated output - (9ae4da1) - Travis Ennis, *Amp*
+- (**bash**) detect and handle binary output - (bdf971a) - Travis Ennis
+- (**bash**) show seconds in metadata footer for durations over 999ms - (1a990f2) - Travis Ennis
+- (**bash**) add metadata footer with exit code and execution time - (92c13b7) - Travis Ennis
+- (**bash**) add output size guardrails to bash tool - (c0f6bb3) - Travis Ennis, *Amp*
+- (**bash-safety**) add enumerable check registry and rg -rn soft warning - (65bbb35) - Travis Ennis
+- (**build**) add just install target to build and copy binary to ~/bin - (5d0e63a) - Travis Ennis
+- (**chat**) separate initial context messages in Chat Completions requests - (301e280) - Travis Ennis
+- (**ci**) add module size lint script and just recipe - (d448b2c) - Travis Ennis
+- (**cli**) support .worktreeinclude for copying files into new worktrees - (04ef4a9) - Travis Ennis
+- (**cli**) add cake sessions list command - (2690925) - Travis Ennis
+- (**cli**) remove progress spinner from text output mode - (d8faed6) - Travis Ennis
+- (**cli**) add debug models command - (308e25c) - Travis Ennis
+- (**cli**) add 10 MB size limit for stdin input - (d40ae4f) - Travis Ennis
+- (**cli**) add json output format for single-object summary at completion - (53a218d) - Travis Ennis
+- (**cli**) simplify text output modes - (49f379a) - Travis Ennis
+- (**cli**) add structured exit codes for scripting - (9cb99ad) - Travis Ennis
+- (**cli**) show completion summary on normal-mode spinner - (b9ad825) - Travis Ennis, *Amp*
+- (**cli**) add default spinner and --quiet flag for progress output - (c7fcd90) - Travis Ennis, *Amp*
+- (**cli**) add additional details to verbose output - (7f95ce7) - Travis Ennis
+- (**cli**) add project dir and session ID to verbose output - (d5ebe22) - Travis Ennis
+- (**cli**) add --verbose flag for text output mode - (cc334c2) - Travis Ennis, *Amp*
+- (**cli**) simplify to positional prompt interface (#1) - (e8f0e2d) - Travis Ennis, *Amp*, *Amp*, *Amp*, *Amp*
+- (**cli**) add --no-session flag to skip saving sessions - (7bfaa01) - Travis Ennis, *Amp*
+- (**cli**) add --streaming-json flag for JSON message output - (136080c) - Travis Ennis
+- (**cli,agent,session**) add Ctrl-C handling with graceful shutdown - (22f0c1d) - Travis Ennis
+- (**clients**) add attribution headers for OpenRouter - (33a261a) - Travis Ennis
+- (**clients**) store reqwest::Client on Responses struct for connection pooling - (c64e7f1) - Travis Ennis
+- (**cmds**) add complete command - (93652df) - Travis Ennis
+- (**config**) warn when configured skills path or only-list yields zero skills - (1539f1c) - Travis Ennis
+- (**config**) add settings-based and profile-based system prompt configuration - (97c6971) - Travis Ennis
+- (**config**) centralize config directory resolution and honor XDG_CONFIG_HOME - (c89d4d8) - Travis Ennis
+- (**config**) add structured provider headers - (c47ba58) - Travis Ennis
+- (**config**) add project hooks - (6b236a2) - Travis Ennis
+- (**config**) add settings profiles - (e95ebb8) - Travis Ennis
+- (**config**) add directories key to settings.toml for persistent read-write access - (921c5ba) - Travis Ennis
+- (**config**) add reasoning effort control - (0d0d48c) - Travis Ennis, *Amp*
+- (**debug**) add --json flag to cake debug models - (5002cd4) - Travis Ennis
+- (**edit**) support multiple edits per call with preflight validation - (f4b3fc0) - Travis Ennis
+- (**hooks**) stream hook event records - (c572f91) - Travis Ennis
+- (**hooks**) add PreToolUse hook to block `cargo test --lib` - (507e145) - Travis Ennis
+- (**instruct**) add --fork flag to branch conversation sessions - (4335912) - Travis Ennis, *Amp*
+- (**instruct**) add --providers flag for OpenRouter provider filtering - (3c16207) - Travis Ennis
+- (**instruct**) add --prompt-file flag to read prompts from file - (aea7839) - Travis Ennis
+- (**instruct**) add init and result messages to streaming-json output - (3502952) - Travis Ennis
+- (**model**) add typed reasoning effort - (487f929) - Travis Ennis
+- (**prompts**) enrich environment developer message with platform, architecture, shell, and terminal info - (2c200db) - Travis Ennis
+- (**prompts**) add Behavior section and refine Read tool guidance - (d820dc2) - Travis Ennis
+- (**prompts**) move built-in system prompt to Markdown with runtime overrides - (ca1c85f) - Travis Ennis
+- (**prompts**) add efficiency rules to system prompt - (314fd2c) - Travis Ennis
+- (**prompts**) add self-reflection note instructions to system prompt - (f52bc08) - Travis Ennis, *Amp*
+- (**prompts**) add session investigation skill - (d8c17c3) - Travis Ennis
+- (**prompts**) add ~/.config/AGENTS.md as a lookup location - (58f4907) - Travis Ennis, *Amp*
+- (**prompts**) include AGENTS.md files in system prompt - (9937a25) - Travis Ennis
+- (**prompts**) begin to implement a prompt builder - (bb648fd) - Travis Ennis
+- (**responses**) add retry logic with exponential backoff for transient API errors - (09c3aac) - Travis Ennis
+- (**sandbox**) add codex CLI paths to sandbox allowed directories - (38bebd9) - Travis Ennis
+- (**sandbox**) add --sandbox CLI flag with read-only, workspace-write, and danger-full-access policies - (ae9aeea) - Travis Ennis
+- (**sandbox**) make Landlock a default dependency on Linux - (9b37911) - Travis Ennis
+- (**sandbox**) broaden toolchain coverage to match safehouse profile - (0d1007a) - Travis Ennis, *Amp*
+- (**sandbox**) improve macOS sandbox rules for git, SSH, and SCM CLIs - (b151ed1) - Travis Ennis
+- (**sandbox**) expand macOS sandbox policy for agent usability - (2c8d328) - Travis Ennis, *Amp*
+- (**scripts**) report skill activation rate against availability - (e542102) - Travis Ennis, *Claude Fable 5*
+- (**scripts**) add session metrics suite and just recipe - (2164198) - Travis Ennis, *Claude Fable 5*
+- (**session**) replace mtime sort with session timestamp in header lookups - (adbd44b) - Travis Ennis
+- (**session**) add per-session telemetry sidecar - (03ff601) - Travis Ennis
+- (**session**) correlate hook events with tool calls - (b5ee235) - Travis Ennis
+- (**session**) persist system prompt and git state in metadata - (2242eac) - Travis Ennis
+- (**session**) unify stream-json output and session file format - (be131a5) - Travis Ennis, *Trav Ennis*
+- (**session**) add diagnostic logging for session lifecycle events - (7bc5c8f) - Travis Ennis
+- (**session**) add session persistence and restoration - (f41febb) - Travis Ennis, *Amp*
+- (**settings**) add settings.toml for configurable model definitions - (7fc6233) - Travis Ennis
+- (**skills**) add configured skill paths - (16652e1) - Travis Ennis
+- (**skills**) add evaluating-acai skill for session evaluation - (691d857) - Travis Ennis
+- (**task**) add task 214 for --json flag on debug models - (5f34950) - Travis Ennis
+- (**tools**) add user-defined toolbox tools - (6edce02) - Travis Ennis
+- (**tools**) include parse-failure context in Edit/Write invalid-argument errors - (384401c) - Travis Ennis
+- (**tools**) improve bash tool output formatting - (eea81f4) - Travis Ennis
+- (**tools**) increase max edit limit to 20 and add this to tool description - (cbf50be) - Travis Ennis
+- (**tools**) clarify Edit multi-edit failure recovery - (ac5f459) - Travis Ennis, *Amp*
+- (**tools**) include line range in Read tool progress display - (8b6b194) - Travis Ennis, *Amp*
+- (**tools**) add pre-execution destructive command blocking for Bash tool (#4) - (964c639) - Travis Ennis, *Amp*, *Amp*, *Amp*, *Amp*
+- (**tools**) add Edit, Read, and Write tools - (f914dca) - Travis Ennis
+- (**worktree**) add --worktree flag for isolated git worktree sessions - (33b190f) - Travis Ennis, *Amp*
+- add MDL instructions to system prompt - (64d8055) - Travis Ennis
+- add task 275 (nested sandbox fallback) and task 276 (evaluate exemption list) - (48f383c) - Travis Ennis
+- add schema-constrained final output - (597db94) - Travis Ennis
+- surface .agents/skills to Claude Code via symlink - (2cec186) - Travis Ennis
+- remove duplicate git commit guidance from system prompt, document routing policy - (953af9f) - Travis Ennis
+- add handoff instructions to the system prompt - (6741315) - Travis Ennis
+- add task 199 to remove progress spinner from text output mode - (b7e7157) - Travis Ennis
+- add structured diagnostics for missing API response fields - (9875ab8) - Travis Ennis
+- implement agent skills discovery and activation - (c637827) - Travis Ennis
+- add qwen 3.5 and qwen 3.6 as configured models - (d2aec4b) - Travis Ennis
+- update default model to glm-5.1 - (2973296) - Travis Ennis
+- update mimo-pro and add mimo-omni - (dee9c58) - Travis Ennis
+- add qwen 3.6 plus as a configured model - (6270962) - Travis Ennis
+- show thinking/reasoning and assistant text in verbose mode - (33950b7) - Travis Ennis
+- append working directory and date to system prompt - (f3a4d5e) - Travis Ennis
+- add --add-dir CLI flag for read-only directory access - (2b1c518) - Travis Ennis
+- allow sandbox access to ~/.cache/prek for pre-commit hooks - (ce1bb26) - Travis Ennis
+- revert default model to kimi k2.5 - (4c291ca) - Travis Ennis
+- update default model to hunter-alpha - (062111a) - Travis Ennis
+- add OS-level filesystem sandbox for Bash tool - (9fbd10d) - Travis Ennis, *Amp*
+- update default model to kimi k2.5 - (c017219) - Travis Ennis
+- save full conversation history including tool calls and reasoning - (05f6895) - Travis Ennis
+- add tool calling support for OpenRouter Responses API - (109de5b) - Travis Ennis
+- update to latest sonnet 3.5 - (0f7d339) - Travis Ennis
+- add lint_code tool - (800c1a6) - Travis Ennis
+- add ability to add files from chat - (5edd24a) - Travis Ennis
+- update chat - (5bcbeed) - Travis Ennis
+- add ability to add file tree to generated prompts - (40d5d8a) - Travis Ennis
+- add function to generate string representation of a file tree - (1e667fb) - Travis Ennis
+- update to accept a prompt - (80a6411) - Travis Ennis
+- add a ability to set prompt and context - (71e3ac5) - Travis Ennis
+- add support for gpt-4-0314 - (b7629c9) - Travis Ennis
+- add support for gpt-4o-mini - (33999a4) - Travis Ennis
+- support larger max_token limit with anthropic claude 3.5 sonnet - (f3af3c7) - Travis Ennis
+- add logging system - (e2b83d9) - Travis Ennis
+- add suggestion task - (ead1876) - Travis Ennis
+- change name of project to acai - (0994cde) - Travis Ennis
+- add Request struct for Anthropic - (9e0c6d0) - Travis Ennis
+- add ability to parse context for instructions - (b9ecc9d) - Travis Ennis
+- add support for ollama - (fc25b99) - Travis Ennis
+- pass dianostics to code_action_resolve - (f66e9e6) - Travis Ennis
+- add ability to change model in chat - (7d804f2) - Travis Ennis
+- redo providers api and add google - (ad85d8d) - Travis Ennis
+- add more operations to support additional code actions - (511b498) - Travis Ennis
+- add anthropic's sonnet 3.5 - (338512c) - Travis Ennis
+- begin to add complete operation - (a429a63) - Travis Ennis
+- implement LSP - (3042a83) - Travis Ennis
+- add operations - (afa9458) - Travis Ennis
+- support codestral - (07916ff) - Travis Ennis
+- update and refactor client. add completion client - (06468d4) - Travis Ennis
+- begin implementation of prompt generation command - (44d64de) - Travis Ennis
+- add more config options - (446639b) - Travis Ennis
+- update prompt to take instruction from todo comments - (a4decfb) - Travis Ennis
+- add gpt-4o and make it the default model - (2751239) - Travis Ennis
+- add max_tokens and top_p with default values - (c8201a6) - Travis Ennis
+- update how config and history is handled - (1e19eae) - Travis Ennis
+- add tasks with dedicated prompts to pipe - (41e4a43) - Travis Ennis
+- reorganize how config and app data is saved - (a65b359) - Travis Ennis
+- change name of package to coding-assistant - (e4e4437) - Travis Ennis
+- reorganize api into commands - (ab545f3) - Travis Ennis
+- add justfile - (a30eac5) - Travis Ennis
+- refactor code and add claude models - (a919ea0) - Travis Ennis
+- move model definitions into their own file - (521e075) - Travis Ennis
+- store app data in ~/./config/coding-assistant - (3b8c647) - Travis Ennis
+- initial implementation - (9f0c277) - Travis Ennis
+#### Bug Fixes
+- (**agent**) scope cut-off detection to the current turn - (9f3687a) - Travis Ennis, *Claude Fable 5*
+- (**agent**) extract handle_agent_turn_result, add unit tests for all branches - (910221b) - Travis Ennis
+- (**agent**) decouple turn counting from usage reporting - (62ebe1d) - Travis Ennis
+- (**agent**) classify error-body read failures through retry logic - (b4aafdc) - Travis Ennis
+- (**agent**) record hook-blocked tool calls as permission denials in task_complete - (8e5f047) - Travis Ennis
+- (**agent**) reject duplicate same-file mutations - (b4e7651) - Travis Ennis
+- (**agent**) persist hook records through shared session writer - (5951d70) - Travis Ennis, *Amp*
+- (**agent**) prefer structured overloaded retry signals - (cf67318) - Travis Ennis
+- (**agent**) replace with_history debug assertion with real invariant - (8499c5f) - Travis Ennis
+- (**agent**) warn on StreamRecord serialization failure instead of silently dropping - (0f5f144) - Travis Ennis
+- (**agent**) make skill activation reservation atomic - (4fad063) - Travis Ennis
+- (**agent**) handle activated skills mutex poisoning explicitly - (0cbb009) - Travis Ennis
+- (**agent**) fail on HTTP client build errors - (44c584f) - Travis Ennis
+- (**agent**) retry transient provider failures - (e2c8889) - Travis Ennis, *Amp*
+- (**agent**) retry transient gateway errors - (b87db18) - Travis Ennis
+- (**bash**) resolve change-risk regression in execute_bash_with_args - (b50c1bc) - Travis Ennis
+- (**chat**) emit message before function_call in Chat Completions stream-json - (5628677) - Travis Ennis
+- (**chat**) remove retry string-slice suppression - (7ade9af) - Travis Ennis
+- (**chat**) fail on missing completion ids - (98d4f9e) - Travis Ennis
+- (**chat**) preserve reasoning content in tool calls - (dcccdeb) - Travis Ennis, *Amp*
+- (**chat**) extract cached_tokens from Chat Completions API response - (a4c27af) - Travis Ennis, *Amp*
+- (**ci**) make docs lint blocking with --check flag - (8be4ce0) - Travis Ennis
+- (**ci**) update two more CRAP baseline entries for refactored functions - (06851e4) - Travis Ennis
+- (**ci**) update CRAP baseline for refactored functions, fix panache formatting, patch rg test for ripgrep 15 - (911cbe7) - Travis Ennis
+- (**ci**) exclude extracted test modules from cargo-crap - (76bdc87) - Travis Ennis
+- (**ci**) make cargo-crap regression gate reliable - (b8b3d70) - Travis Ennis
+- (**ci**) remove ahm dependency from task index check - (989a99c) - Travis Ennis
+- (**ci**) repair hook and linux clippy failures - (5172d9a) - Travis Ennis
+- (**ci**) resolve workflow failures in CI and coverage jobs - (47b4862) - Travis Ennis
+- (**ci**) resolve critical issues in CI/CD workflows - (05f9fa3) - Travis Ennis
+- (**cli**) report cut-off turns as failures in json, text, and telemetry - (8fda0b2) - Travis Ennis, *Claude Fable 5*
+- (**cli**) parse CLI args before creating data dir and logging - (e9fa48c) - Travis Ennis
+- (**cli**) ensure worktree cleanup runs after early failures - (4552069) - Travis Ennis
+- (**cli**) resolve relative --add-dir paths before worktree cwd changes - (7eec0c4) - Travis Ennis
+- (**cli**) suppress session_file path in JSON output when --no-session is used - (a6b1a06) - Travis Ennis
+- (**cli**) label combined prompt and stdin input - (b58090f) - Travis Ennis
+- (**cli**) reject conflicting session mode flags - (171cf45) - Travis Ennis
+- (**cli**) read piped stdin to EOF - (b3b0c58) - Travis Ennis
+- (**cli**) allow --continue to resolve session model by API identifier - (b98ffe6) - Travis Ennis
+- (**cli**) add tracing warn when stdin read times out - (c3d5da0) - Travis Ennis
+- (**cli**) use structured error types for exit code classification - (fb1c5b4) - Travis Ennis, *Amp*
+- (**cli**) prevent stdin read from hanging on empty pipe - (4f8c36b) - Travis Ennis
+- (**cli**) add Eq derive to OutputFormat enum - (6f54190) - Travis Ennis
+- (**cli**) make top_p an optional argument from the command line - (ab76587) - Travis Ennis
+- (**clients**) cap Retry-After delays - (f108414) - Travis Ennis
+- (**clients**) return meaningful message for truncated API responses - (0f69788) - Travis Ennis, *Amp*
+- (**clients**) include stderr in shell tool output on success - (c0c6a3b) - Travis Ennis
+- (**config**) enforce UUID invariant for Session at construction time - (06908e9) - Travis Ennis
+- (**config**) load settings from ~/.config/cake - (e85ab46) - Travis Ennis, *Amp*
+- (**errors**) unify error handling with anyhow and thiserror - (4018c0c) - Travis Ennis, *Amp*
+- (**history**) serialize saved sessions using Responses API format - (b772591) - Travis Ennis, *Amp*
+- (**hooks**) terminate entire hook process tree on timeout and cancellation - (0fa0f1a) - Travis Ennis
+- (**hooks**) record no-op hook outcomes as decision none instead of error - (9884455) - Travis Ennis
+- (**hooks**) remove dead suppress_output field from RawHookOutput - (643e772) - Travis Ennis
+- (**install**) replace cake binary atomically - (af1f9c5) - Travis Ennis
+- (**instruct**) prevent stdin blocking when no prompt and stdin is a TTY - (ae4eb0a) - Travis Ennis
+- (**instruct**) error when no input provided - (748a65d) - Travis Ennis
+- (**logger**) suppress stderr output in stream-json mode - (b2bbd16) - Travis Ennis
+- (**logger**) initialize logger before first log call - (31aa303) - Travis Ennis
+- (**prompts**) list available agent tools - (a561efe) - Travis Ennis
+- (**prompts**) remove println - (0663f7a) - Travis Ennis
+- (**prompts**) update handlebars config - (602bce2) - Travis Ennis
+- (**prompts**) update prompt and change name of function to build - (e78b438) - Travis Ennis
+- (**responses**) make api input serialization failure explicit - (c709efe) - Travis Ennis
+- (**responses**) report unknown output types - (78720fd) - Travis Ennis
+- (**responses**) reject misplaced system messages - (0fa6691) - Travis Ennis
+- (**responses**) reject malformed function calls - (ade6ad0) - Travis Ennis
+- (**responses**) stream function call outputs in stream-json format - (84cd64b) - Travis Ennis
+- (**sandbox**) correct launchd SSH agent socket regex pattern in macOS Seatbelt profile - (8062221) - Travis Ennis
+- (**sandbox**) harden sandbox profile temp directory like the Bash output directory - (db29236) - Travis Ennis
+- (**sandbox**) support inherited macOS Seatbelt - (1f55c9f) - Travis Ennis
+- (**sandbox**) support linked git worktrees - (c59e04b) - Travis Ennis
+- (**sandbox**) close read-only policy enforcement gaps from ae9aeea review - (add272c) - Travis Ennis, *Claude Fable 5*
+- (**sandbox**) allow macOS Cryptex paths - (5851dd2) - Travis Ennis
+- (**sandbox**) improve macOS probe diagnostics - (1e00c89) - Travis Ennis
+- (**sandbox**) prevent Bash sandbox false positives from command output - (5940f88) - Travis Ennis
+- (**sandbox**) rename SandboxConfig fields to eliminate clippy::struct_field_names - (02ebc14) - Travis Ennis
+- (**sandbox**) address linux clippy failures - (926a616) - Travis Ennis
+- (**sandbox**) remove unfulfilled landlock lint expectation - (a45a3dc) - Travis Ennis
+- (**sandbox**) escape home paths in macos profiles - (368418c) - Travis Ennis
+- (**sandbox**) fail closed for incomplete Landlock - (5edf741) - Travis Ennis
+- (**sandbox**) allow fnm runtime paths - (8f6ffff) - Travis Ennis
+- (**sandbox**) fail closed when macOS sandbox unavailable - (4f0d87b) - Travis Ennis
+- (**sandbox**) resolve macOS Seatbelt permission failures for cargo builds - (b0d1177) - Travis Ennis, *Amp*
+- (**security**) secure Bash overflow output temp files against local attacks - (3e542c4) - Travis Ennis
+- (**security**) enforce read-only access for --add-dir paths in Edit/Write tools - (8e66f68) - Travis Ennis
+- (**session**) mark malformed function_call arguments in stream-json output - (cf1c182) - Travis Ennis
+- (**session**) retry transient session lock contention - (b2cc458) - Travis Ennis
+- (**session**) normalize loaded conversation timestamps - (8fdb228) - Travis Ennis
+- (**session**) remove redundant task success field - (1dfff1d) - Travis Ennis
+- (**session**) persist skill activations structurally - (4a621be) - Travis Ennis
+- (**session**) record timestamps when items are created, not when saved - (8344206) - Travis Ennis
+- (**sessions**) remove system prompt from session files and stream-json output - (1ec5ebc) - Travis Ennis
+- (**shell**) implement actual timeout handling in shell tool - (9a887d3) - Travis Ennis
+- (**test**) use correct API key env var in stdin tests - (ccb19c7) - Travis Ennis
+- (**tests**) prevent integration tests from making real API calls - (fc915d2) - Travis Ennis, *Amp*
+- (**tests**) configure git user in test repo setup for CI - (11ee4a1) - Travis Ennis
+- (**tools**) bound Read tool work and enforce byte cap - (bae5ee2) - Travis Ennis
+- (**tools**) serialize Write→Edit on the same nonexistent file in one turn - (1566a25) - Travis Ennis
+- (**tools**) handle parent components safely in Write path resolution - (59b13d4) - Travis Ennis
+- (**tools**) bound Bash lifecycle timeout and terminate process groups - (3344931) - Travis Ennis
+- (**tools**) annotate empty search misses - (aa2effc) - Travis Ennis
+- (**tools**) repair recoverable invalid JSON in Edit and Write arguments - (c9c9b19) - Travis Ennis
+- (**tools**) reduce bash safety change risk (#29) - (e9df21e) - Travis Ennis
+- (**tools**) warn on successful bash stderr - (25a57b8) - Travis Ennis
+- (**tools**) harden edit argument validation - (c3b5016) - Travis Ennis
+- (**tools**) avoid CRLF double encoding in edit replacements - (13f3394) - Travis Ennis
+- (**tools**) prevent shell command-substitution in Bash-tool git commit messages - (5a91cac) - Travis Ennis
+- (**tools**) remove dead code in is_allowed_rm_target - (2e89f32) - Travis Ennis
+- (**tools**) improve Read tool range defaults when start_line is provided - (895dba1) - Travis Ennis
+- (**tools**) skip edit no-op replacements - (090c8dd) - Travis Ennis
+- (**tools**) report multi-edit preflight failures - (ad12ea3) - Travis Ennis
+- (**tools**) show contexts for ambiguous edits - (f850426) - Travis Ennis
+- (**tools**) remove bash safety string-slice suppression - (2fb8f60) - Travis Ennis
+- (**tools**) remove bash string-slice suppression - (bf0033f) - Travis Ennis
+- (**tools**) scan whole file for edit binary detection - (df9d92b) - Travis Ennis
+- (**tools**) use infer for bash binary MIME detection - (9c260ac) - Travis Ennis
+- (**tools**) tighten sandbox violation detection - (ed8ee6f) - Travis Ennis
+- (**tools**) preserve edit line endings - (a814173) - Travis Ennis
+- (**tools**) inspect bash data context substitutions - (1d6abdb) - Travis Ennis
+- (**tools**) reject TMPDIR rm targets - (8eefb3f) - Travis Ennis
+- (**tools**) validate all rm -rf targets - (be87ca2) - Travis Ennis
+- (**tools**) ensure skill directories are accessible from Read and Bash tools - (aa0eee5) - Travis Ennis
+- (**tools**) remove naive_bytecount suppression by using explicit loop - (f9fe633) - Travis Ennis
+- (**types**) change Usage token fields from u32 to u64 to match API types - (bd64686) - Travis Ennis
+- tolerate empty function-call arguments in Responses API parsing - (0fe99cb) - Travis Ennis
+- kill Bash tool's process group when future is dropped (Ctrl-C) - (0c5bca3) - Travis Ennis
+- prevent dangling function_call items from correction turns - (2b90fd9) - Travis Ennis
+- feed hook stdin from a detached task so a non-reading hook cannot hang cake - (62ee1df) - Travis Ennis
+- bound .worktreeinclude traversal and glob matching - (23e8044) - Travis Ennis
+- retain worktrees when change state cannot be determined (no upstream) - (b35a70d) - Travis Ennis
+- deterministically clean up macOS sandbox profile temp files - (0e183fc) - Travis Ennis
+- make lifecycle hook failures best-effort after a result exists - (2adb86e) - Travis Ennis
+- only emit Rust failure guidance hook on failed commands - (91b4730) - Travis Ennis, *Amp*
+- make tool_count() const fn instead of suppressing missing_const_for_fn lint - (e8b02dd) - Travis Ennis
+- remove duplicate Content-Type header causing GLM-5.1 API failures (#7) - (44d4554) - Travis Ennis, *Amp*
+- update default model test assertion to match glm-5.1 (#8) - (8322f2c) - Travis Ennis, *Amp*
+- ensure system prompt is correctly delivered to all API backends - (4f393d8) - Travis Ennis, *Amp*
+- skip final assistant message in verbose progress output - (e2e8ccd) - Travis Ennis
+- verbose mode tool argument display - (27cbf3d) - Travis Ennis
+- correct parent path resolution in read_agents_files - (3117973) - Travis Ennis
+- resolve strict clippy lints - (c2ad91c) - Travis Ennis, *Amp*
+- correct tool calling to use Responses API format - (fc97aeb) - Travis Ennis
+- don't call generate edits if content_blocks is empty - (c7b04da) - Travis Ennis
+- update system prompt - (0912189) - Travis Ennis
+- add conditional support for larger max_tokens - (3fee497) - Travis Ennis
+- correct google api url - (c10db99) - Travis Ennis
+- fix issues with completions - (6682168) - Travis Ennis
+- fix issues with google models - (0ea56df) - Travis Ennis
+- update system prompts - (37d6099) - Travis Ennis
+- minor refactor - (6a836b6) - Travis Ennis
+- refactor error name - (393800d) - Travis Ennis
+- update response model for Google - (a14cfc0) - Travis Ennis
+- add stop parameter - (9582bc0) - Travis Ennis
+- simplify how providers and models are handled - (de1ae3e) - Travis Ennis
+- add top_p to completion client - (8090d1d) - Travis Ennis
+- update bacon.toml - (d0f4523) - Travis Ennis
+- apply lint fixes - (38ee7bc) - Travis Ennis
+- add code actions and improve concurrency - (81a834b) - Travis Ennis
+- remove create and make new create directory - (235af8e) - Travis Ennis
+- cleaning up - (8dd6958) - Travis Ennis
+- cleanup - (230b4bf) - Travis Ennis
+- update bacon and justfile clippy args - (b1fa5f4) - Travis Ennis
+- address clippy errors - (c66c515) - Travis Ennis
+- update prompts - (fcad3ab) - Travis Ennis
+- refactor on_code_action - (c4d2834) - Travis Ennis
+- update .gitignore - (03b1f8b) - Travis Ennis
+- remove unused type - (6a1ca6b) - Travis Ennis
+- add IntoMessage trait and remove Response trait - (d45d783) - Travis Ennis
+- linting errors - (1d9e116) - Travis Ennis
+- update optimize prompt - (3d7b3f6) - Travis Ennis
+- cleanup - (e6362e3) - Travis Ennis
+- cleanup - (df73ea7) - Travis Ennis
+- address lint issues - (32b3043) - Travis Ennis
+- update completion client - (ba93e85) - Travis Ennis
+- change where app data is stored - (d5e37f2) - Travis Ennis
+- refactored cli commands - (b688abe) - Travis Ennis
+- update instruct command - (de1b3c5) - Travis Ennis
+- update variable name - (b638d69) - Travis Ennis
+- add context to first chat line - (292a2b5) - Travis Ennis
+- allow clippy rule - (56d7a42) - Travis Ennis
+- make most config optional - (b74c571) - Travis Ennis
+- add clippy directive to allow dead code - (184ea3f) - Travis Ennis
+- refactor ChatCompletionClient to use a fluent interface - (1190a3d) - Travis Ennis
+- remove unused code - (8918a29) - Travis Ennis
+- refactor CmdConfig and CmdRunner - (b831b13) - Travis Ennis
+- update prompts - (4230eaf) - Travis Ennis
+- change how messages are sent and saved - (7f13b27) - Travis Ennis
+- rename LLMClient to ChatCompletionClient - (0addaa4) - Travis Ennis
+- clean up prompts - (11c8e1c) - Travis Ennis
+- reorganize models - (e38fccb) - Travis Ennis
+- refactor config - (c131a8d) - Travis Ennis
+- refactor and reorganize cli and clients - (ac37e9d) - Travis Ennis
+- begin to standardize cli args - (24bf594) - Travis Ennis
+- update user messages to work with Claude - (0d72f0b) - Travis Ennis
+- remove use of unwrap - (d52d833) - Travis Ennis
+- update clippy-strict rules - (17910d0) - Travis Ennis
+- address unwrap usage, remove panic calls, fix clippy warning - (29cf7d5) - Travis Ennis
+- disable clippy warning - (3939311) - Travis Ennis
+#### Performance
+- (**agent**) cache immutable tool definitions to avoid per-turn cloning - (9ef5bf8) - Travis Ennis
+- (**agent**) drain history instead of cloning in drain_history_without_system - (c9cacac) - Travis Ennis
+- (**clients**) set explicit connect and request timeouts on reqwest client - (11e0e47) - Travis Ennis, *Amp*
+- (**clients**) gate trace-level request serialization behind level check - (9761f28) - Travis Ennis, *Amp*
+- (**clients**) use Cow<'static, str> to avoid model cloning in agent loop - (6dd301b) - Travis Ennis
+- (**read**) use BufReader instead of reading entire file into memory - (1d1ff5d) - Travis Ennis, *Amp*
+- (**responses**) execute tool calls concurrently using join_all - (6256ed4) - Travis Ennis
+- (**responses**) eliminate unnecessary clone in agent loop - (3435b7e) - Travis Ennis
+- (**session**) wrap shared Session append handle in BufWriter - (17a26ae) - Travis Ennis
+- (**tools**) parse edit summary args narrowly - (f9462bf) - Travis Ennis
+- (**tools**) apply edits in place - (9ce5e78) - Travis Ennis
+- (**tools**) cache cwd and temp directory lookups with OnceLock - (48db79a) - Travis Ennis, *Amp*
+- (**tools**) stream bash output with early termination - (b311bfe) - Travis Ennis
+- add panic = abort to release profile - (24ea2c2) - Travis Ennis, *Amp*
+- use Cow<str> in build_messages to avoid cloning strings - (4a395c7) - Travis Ennis
+#### Revert
+- remove premature smoke test workflow - (ff020ac) - Travis Ennis
+#### Documentation
+- (**adr**) fix duplicate ADR 007 and migrate legacy 006 format - (880a78d) - Travis Ennis
+- (**adr**) document ADR workflow requirements - (18cd995) - Travis Ennis
+- (**adr**) document command hooks - (52ba638) - Travis Ennis
+- (**agent**) document generic retry policy - (5153ec9) - Travis Ennis
+- (**agents**) organize research artifacts - (ea4a94c) - Travis Ennis
+- (**agents**) track planning artifacts - (2605ff0) - Travis Ennis
+- (**bash**) document metadata footer and binary output detection features - (e42cf8e) - Travis Ennis
+- (**config**) add Clippy configuration research and follow-up task - (4fc4f1c) - Travis Ennis
+- (**guardrails**) require behavioral evidence for behavior-shaping instruction edits - (a708105) - Travis Ennis, *Claude Fable 5*
+- (**logger**) document daily log file naming convention - (eea745f) - Travis Ennis
+- (**prompts**) add Documentation Workflow section to AGENTS.md - (e6b1dae) - Travis Ennis
+- (**prompts**) recommend fd over find in Bash tool description - (ba97fcb) - Travis Ennis
+- (**prompts**) clarify agent verification workflow - (8ee656e) - Travis Ennis
+- (**prompts,tools**) clarify parallel tool guidance for mutating writes - (6145f8a) - Travis Ennis
+- (**research**) add ds4-agent compaction source notes - (07c8516) - Travis Ennis, *Amp*
+- (**research**) compare common tool definitions - (9381c20) - Travis Ennis
+- (**research**) add fff search integration notes - (03cfb68) - Travis Ennis
+- (**responses**) document annotations provider quirk in ResponsesApiInputItem - (b81accc) - Travis Ennis
+- (**responses**) document ResponsesApiInputItem construction boundary - (f0cfdaf) - Travis Ennis
+- (**session**) rescope task 183 to BufWriter wrap - (ef035c7) - Travis Ennis, *Amp*
+- (**session**) update skill references from stale `success` field to v4 schema - (f2d5577) - Travis Ennis
+- (**session**) add session evaluation follow-up tasks - (a77c2ed) - Travis Ennis
+- (**session**) document session and stream schemas - (6a1604b) - Travis Ennis
+- (**session**) add session management documentation - (bf29778) - Travis Ennis, *Amp*
+- (**skill**) update debugging-acai skill to reflect JSONL session format - (435496b) - Travis Ennis
+- (**skills**) consolidate and improve agent skills - (2724a17) - Travis Ennis, *Amp*
+- (**skills**) require deslop compliance notes - (33ed671) - Travis Ennis
+- (**skills**) tailor deslop workflow for cake - (72f86c3) - Travis Ennis
+- (**skills**) align project skills with current cake behavior - (9573265) - Travis Ennis
+- (**skills**) update session and config paths in skill docs - (417e3c0) - Travis Ennis
+- (**skills**) add debugging-acai skill for investigating CLI issues - (baa6504) - Travis Ennis
+- (**system**) remove redundant Agent Feedback section - (9504708) - Travis Ennis
+- (**system**) add self-reflection step to Final Handoff instructions - (1784b92) - Travis Ennis
+- (**tasks**) plan debug command emitting synthetic stream-json sample - (61b1e90) - Travis Ennis, *Claude Fable 5*
+- (**tasks**) add code-review follow-up tasks 200-211 and update task 178 - (1d6641c) - Travis Ennis, *Claude Fable 5*
+- (**tasks**) capture repeated read context-thrash nudge - (95e4f29) - Travis Ennis
+- (**tasks**) add chat completions context task - (6637670) - Travis Ennis
+- (**tasks**) update task 191 and cancel 192 - (1753e82) - Travis Ennis
+- (**tasks**) capture duplicate mutation review follow-ups - (f8235d2) - Travis Ennis
+- (**tasks**) add agent loop performance tasks - (cc3683c) - Travis Ennis
+- (**tasks**) capture clawpatch findings - (a7761f1) - Travis Ennis
+- (**tasks**) add review follow-up tasks - (639660e) - Travis Ennis
+- (**tasks**) add session evaluation follow-up tasks - (155ecbe) - Travis Ennis
+- (**tasks**) add session improvement tasks - (55b5efb) - Travis Ennis
+- (**tasks**) add skill activation read task - (693980c) - Travis Ennis
+- (**tasks**) file follow-ups from session evaluation T-019e3394 - (e7144cb) - Travis Ennis
+- (**tasks**) add system prompt markdown task - (86ad219) - Travis Ennis
+- (**tasks**) track hook no-op decision labeling - (4240c76) - Travis Ennis
+- (**tasks**) capture session evaluation follow-ups - (e8731b1) - Travis Ennis
+- (**tasks**) capture edit tool improvements - (8cd821e) - Travis Ennis
+- (**tasks**) add follow-ups from review of task 061 - (3a499c2) - Travis Ennis, *Amp*
+- (**tasks**) require ExecPlans for large tasks - (8e5eec9) - Travis Ennis
+- (**tools**) align edit task queue - (0587ded) - Travis Ennis
+- (**tools**) document Edit session analysis strategy - (532cebe) - Travis Ennis
+- (**tools**) add auditing-binary-size skill - (a9692ff) - Travis Ennis, *Amp*
+- annotate mechanically-enforced rules with their verifiers - (e28aa93) - Travis Ennis
+- clean up instructions in AGENTS.md - (0b6a44b) - Travis Ennis
+- replace prose mirror with essential documentation (#38) - (c16b0e0) - Travis Ennis
+- move edit-tool-session-analysis into analyzing-cake-sessions skill references - (7f810d7) - Travis Ennis
+- fix drift between design docs and implementation - (76169e0) - Travis Ennis
+- fix operating loop ordering and conditionalize ahm task steps - (be10000) - Travis Ennis
+- make code authoritative for implementation detail, fix drift - (5b1ff2c) - Travis Ennis, *Claude Fable 5*
+- add additional instructions to clarify workflow - (e13b401) - Travis Ennis
+- correct stale session persistence architecture invariants - (4390d17) - Travis Ennis
+- add codex review and oracle tool usage to operating loop - (9ca5cf8) - Travis Ennis
+- fix managed work validation issues - (2439a53) - Travis Ennis
+- propose declarative command policy - (4b7b10c) - Travis Ennis
+- add cake delegation skill - (63d0b5d) - Travis Ennis
+- align CONTRIBUTING.md with trunk-based development - (082693e) - Travis Ennis
+- deduplicate guardrails and design-docs tables into per-directory indexes - (24bfcad) - Travis Ennis
+- replace file:// absolute URIs in ARCHITECTURE.md - (4d049a9) - Travis Ennis
+- update task 142 bash footgun scope - (482f2b0) - Travis Ennis
+- update agent commit branch guidance - (5700c63) - Travis Ennis
+- reformat with panache 2.59.0 to fix format check - (af10557) - Travis Ennis, *Claude Opus 4.8*
+- add Conventional Commit rule to repository rules in AGENTS.md - (ed36ab0) - Travis Ennis
+- convert workflow routing doc paths to markdown links - (d1598cf) - Travis Ennis
+- trim README duplication, remove stale implementation-notes.md - (d4c69ee) - Travis Ennis
+- route workflow docs through ahm context - (b0f83a1) - Travis Ennis
+- add documentation index - (06cba0b) - Travis Ennis
+- clarify task workflow overlay routing - (da438ca) - Travis Ennis
+- add task 213 for .worktreeinclude feature - (cd18cd0) - Travis Ennis
+- restructure agent instructions for progressive disclosure - (6e1027d) - Travis Ennis
+- trim AGENTS.md routing sections, create DOMAIN.md, reduce duplication - (c355411) - Travis Ennis
+- add CLAUDE.md that references AGENTS.md - (ca96dad) - Travis Ennis
+- condense agent instructions - (3271766) - Travis Ennis
+- add opencode compaction research document - (5cdcbd3) - Travis Ennis
+- resolve ahm validation warnings across task files and exec plans - (af7a36f) - Travis Ennis
+- add platform verification guidance - (839d9d2) - Travis Ennis
+- clarify agent workflow guidance - (e425c59) - Travis Ennis
+- update task workflow instructions - (a7522df) - Travis Ennis
+- refresh ARCHITECTURE.md to match current src layout - (a1954b8) - Travis Ennis, *Amp*
+- add just setup as the canonical development bootstrap step - (e6446cf) - Travis Ennis
+- clarify session record types and LLM visibility across all skills - (5e46371) - Travis Ennis
+- add harness anchored editing research - (c8e3350) - Travis Ennis
+- replace stale to_api_input reference in conversation-types.md - (2d4bfbf) - Travis Ennis
+- use panache to apply formatting to project markdown files - (ec5db1b) - Travis Ennis
+- improve agent instructions - (03c5e77) - Travis Ennis
+- add dead-code suppression policy to AGENTS.md - (85780d9) - Travis Ennis
+- add follow-up tasks 122-131 from clippy stricter-config review - (9ae64c4) - Travis Ennis, *Amp*
+- remove completed task 060 from parent trackers - (aad4ea6) - Travis Ennis, *Amp*
+- mark task 060 parent as completed - (e7716e7) - Travis Ennis, *Amp*
+- add a project deslop skill - (3b47755) - Travis Ennis
+- update tasks file to define priorities and add an XS effort - (517f1ec) - Travis Ennis
+- add rust codebase critical review to research investigations - (6b5be3a) - Travis Ennis
+- clean up instructions on commit conventions - (d91ae5e) - Travis Ennis
+- add more specific criteria for when to run the full ci check - (b955fdd) - Travis Ennis
+- add instruction clarifying that cake a binary and not a library - (2248645) - Travis Ennis
+- move Rust version update instructions to CONTRIBUTING.md - (b96c835) - Travis Ennis
+- correct the location of PLANS.md - (675319d) - Travis Ennis
+- remove skills from AGENTS.md - (0005f03) - Travis Ennis
+- clean up documentation to reflect recent updates - (a014d71) - Travis Ennis
+- clarify model configuration defaults - (47963ac) - Travis Ennis
+- add skills documentation and ADR - (780d875) - Travis Ennis
+- add more details about cake app - (a00d772) - Travis Ennis
+- update AGENTS.md with Agent Instructions - (b56334f) - Travis Ennis
+- update default model from glm-5 to glm-5.1 - (82acd5f) - Travis Ennis
+- add instructions for ExecPlans - (17ed8d6) - Travis Ennis
+- improve agentic legibility across docs, ADR, and setup tooling - (7c28e27) - Travis Ennis
+- update AGENTS.md - (63c22e7) - Travis Ennis
+- remove rule that says to never commit directly to master - (efb3476) - Travis Ennis
+- update debugging and evaluating skills to match current codebase - (9360adc) - Travis Ennis, *Amp*
+- remove misleading doctest examples from Agent and config modules - (687e56f) - Travis Ennis
+- add table of contents and power-user sections to README (#6) - (6e83c0e) - Travis Ennis, *Amp*, *Amp*
+- improve documentation following Microsoft Rust guidelines - (5d7983c) - Travis Ennis
+- reorganize AGENTS.md for clarity and completeness - (3fb89f9) - Travis Ennis
+- add full CI check command to contributing guide - (fd9bb32) - Travis Ennis
+- add reasoning configuration to design docs - (c4e6e51) - Travis Ennis
+- document reasoning effort configuration - (f0471ae) - Travis Ennis, *Amp*
+- document --verbose flag in README and design docs - (fd3a5fc) - Travis Ennis, *Amp*
+- remove items that are more appropriate for AGENTS.md - (6cef1a0) - Travis Ennis
+- add instructions for agents to provide feedback - (25029b9) - Travis Ennis
+- remove --providers flag documentation - (193e66d) - Travis Ennis
+- create CONTRIBUTING.md and consolidate documentation - (a02892f) - Travis Ennis
+- add comprehensive documentation for undocumented modules - (3fb1d00) - Travis Ennis
+- add repository knowledge map and development workflow to AGENTS.md - (b898807) - Travis Ennis, *Amp*
+- consolidate redundant rules in AGENTS.md - (149619f) - Travis Ennis
+- restructure docs directory into design-docs and references - (f04a1e9) - Travis Ennis
+- refactor ARCHITECTURE.md for clarity and maintainability - (7260c48) - Travis Ennis
+- add comprehensive ARCHITECTURE.md documenting system design - (5dcf278) - Travis Ennis
+- add filesystem sandbox documentation - (1c68b73) - Travis Ennis, *Amp*
+- update rules - (516454d) - Travis Ennis
+- update AGENTS.md to include what checks to do when completing a code task - (feedee4) - Travis Ennis
+- remove rules from AGENTS.md that are covered by linter and formatter - (a038841) - Travis Ennis
+- add Responses API support documentation - (66919cc) - Travis Ennis
+- update streaming-json references to --output-format - (36afbee) - Travis Ennis
+- fix flag name and add streaming-json documentation - (bfe7b6d) - Travis Ennis
+- update AGENTS.md to indicate the project uses the 2024 edition of Rust - (2d68a84) - Travis Ennis
+- add --stream-json option to README - (6466798) - Travis Ennis
+- add AGENTS.md file - (6602d29) - Travis Ennis
+- update README to reflect current project state - (082ab0a) - Travis Ennis
+- add logging documentation - (a122f79) - Travis Ennis
+- add code docs to cmd_runner.rs - (90221e3) - Travis Ennis
+- update README - (958f3d9) - Travis Ennis
+- add code docs - (9a0d47e) - Travis Ennis
+- update readme.md - (62d4c54) - Travis Ennis
+#### Tests
+- (**agent**) add end-to-end loop coverage - (02117d4) - Travis Ennis
+- (**agent**) centralize agent test construction - (dabcb88) - Travis Ennis
+- (**cli**) isolate config-dependent integration tests - (2e24f8d) - Travis Ennis
+- (**cli**) add integration tests for --no-session flag (#9) - (3dd1be1) - Travis Ennis, *Amp*, *Amp*
+- (**clients**) add comprehensive error handling tests - (701d869) - Travis Ennis
+- (**config**) isolate skill discovery tests from real HOME - (53f9679) - Travis Ennis, *Amp*
+- (**duplicate_guard**) add Write/Write and hook-blocked mutation guard coverage - (1d11178) - Travis Ennis
+- (**prompts**) snapshot full llm request bodies - (7b5f3d9) - Travis Ennis
+- (**responses**) document reasoning summary empty array semantics - (a816128) - Travis Ennis
+- (**sandbox**) verify linked-worktree git operations - (6e69b45) - Travis Ennis
+- (**sandbox**) cover macos sandbox probe regressions - (2045be8) - Travis Ennis
+- (**sandbox**) pin HOME via temp_env to fix flaky parallel tests - (d38d4cf) - Travis Ennis, *Amp*
+- (**session**) cover reasoning without summary - (4d59d80) - Travis Ennis
+- (**session**) snapshot persistence-only session records - (4c470b5) - Travis Ennis
+- (**session**) cover conversation record roundtrip - (b80ea7e) - Travis Ennis
+- (**skills**) fix discover_skills tests to isolate project scope assertions - (c3774ad) - Travis Ennis
+- (**tools**) add focused unit tests for bash safety parser helpers - (0e6eb07) - Travis Ennis
+- (**tools**) document bash safety wrapper scope - (77763c4) - Travis Ennis
+- add CAKE_REQUIRE_SANDBOX_TESTS required mode for sandbox integration tests - (25c58f7) - Travis Ennis
+- regenerate insta snapshots after system prompt reformat - (5cf0d4d) - Travis Ennis, *Claude Opus 4.8*
+- add shared fixtures and just smoke target - (3ba0a0a) - Travis Ennis
+- add snapshot coverage for provider payloads - (7380848) - Travis Ennis
+- add comprehensive unit tests to improve code coverage - (676d80f) - Travis Ennis
+#### Build
+- (**config**) apply stricter clippy configuration and fix warnings - (3cc2e73) - Travis Ennis
+- (**deps**) cargo update and bump codecov-action to v7 - (a69808f) - Travis Ennis
+- (**deps**) update rust and dependencies - (7062754) - Travis Ennis
+- (**deps**) bump tracing-appender from 0.2.4 to 0.2.5 - (c828ebe) - Travis Ennis
+- remove unused git-cliff config - (0591c4b) - Travis Ennis, *Claude Fable 5*
+- add .mise.toml with pinned Rust toolchain and just - (85ad354) - Travis Ennis
+- add rust-analyzer to pinned toolchain components - (0e36745) - Travis Ennis, *Amp*
+- enable strip in release profile - (43b1431) - Travis Ennis, *Amp*
+- add build target in justfile - (2d0cd62) - Travis Ennis
+- update Rust edition to 2024 and add optimized build profiles - (e341be7) - Travis Ennis
+- update dependencies and fix new clippy lints - (044e948) - Travis Ennis
+- add command to update dependencies - (3b72a3c) - Travis Ennis
+- update bacon config - (28f2dac) - Travis Ennis
+#### CI
+- (**agent-efficiency**) use concise CI output - (c56c454) - Travis Ennis, *Amp*
+- (**coverage**) make codecov upload non-blocking - (0f4c6bb) - Travis Ennis
+- (**coverage**) add llvm-cov setup for code coverage - (983d895) - Travis Ennis
+- (**deps**) bump actions/upload-artifact from 4 to 7 - (9623182) - Travis Ennis
+- (**deps**) bump github actions to latest major versions - (1f71e56) - Travis Ennis
+- (**hooks**) add git diff --check as pre-commit hook - (26b8a0a) - Travis Ennis
+- (**lint**) add lint-deps target to enforce dependency direction - (f4ea201) - Travis Ennis
+- (**sandbox**) enable landlock for linux releases - (ac42acd) - Travis Ennis
+- (**security**) add Dependabot configuration - (59a64f1) - Travis Ennis, *Amp*
+- (**task-discovery**) add pull request template - (4f61ded) - Travis Ennis, *Amp*
+- (**task-discovery**) add GitHub issue templates - (7c0585c) - Travis Ennis, *Amp*
+- (**testing**) use quiet test output in justfile - (82126f9) - Travis Ennis, *Amp*
+- drop rustsec audit-check job duplicated by cargo-deny advisories - (cea6208) - Travis Ennis, *Claude Fable 5*
+- make check-coverage failures diagnosable with per-gate pass/fail labels - (0f335bc) - Travis Ennis
+- decide LCOV missing-source warning policy for `*_tests.rs` files - (648285f) - Travis Ennis
+- harden change-risk workflow - (cd80866) - Travis Ennis
+- align change-risk checks - (821f443) - Travis Ennis
+- clean up coverage risk checks - (9ce5483) - Travis Ennis
+- simplify local check recipe names - (4baecba) - Travis Ennis
+- align local ci checks with workflow - (f030663) - Travis Ennis
+- make macos the primary validation path - (129cd46) - Travis Ennis
+- add cargo-crap change-risk gate - (1846536) - Travis Ennis
+- raise coverage threshold - (4109f15) - Travis Ennis
+- run module size lint in ci - (b0e0934) - Travis Ennis
+- pin rust toolchain checks - (98a9f19) - Travis Ennis
+- add lint-imports to ci-full and fix formatting - (094dc73) - Travis Ennis
+- enforce import style and missing Debug via tooling - (c90ee0f) - Travis Ennis, *Amp*
+- consolidate workflows to reduce CI minutes - (53ad4ee) - Travis Ennis
+- add ci-full recipe to reproduce full CI pipeline locally (#2) - (b6defef) - Travis Ennis, *Amp*
+- fix failing workflows - update deps, config, and permissions - (9b95c1e) - Travis Ennis
+- fix failing CI and coverage workflows - (2e1818c) - Travis Ennis, *Amp*
+#### Refactoring
+- (**agent**) extract poison-recovery helper, refactor prompt-context records - (a5efeab) - Travis Ennis
+- (**agent**) break agent module into smaller modules - (eaad379) - Travis Ennis
+- (**agent**) extract duplicate mutation guard into dedicated module - (fd6acb5) - Travis Ennis
+- (**agent**) extract immediate tool error result helper - (fcb713d) - Travis Ennis
+- (**agent**) simplify agent turn item processing - (d3e0f15) - Travis Ennis
+- (**agent**) extract skill dedup subsystem to skill_dedup.rs - (0df042c) - Travis Ennis
+- (**agent**) rename with_text_progress to attach_text_progress and move to CliOutputSink - (dbbd5bc) - Travis Ennis
+- (**agent**) replace manual Tokio runtime setup with #[tokio::main] - (fa4d63f) - Travis Ennis
+- (**agent**) flatten format_api_error_body with if-let chain - (0e52fae) - Travis Ennis
+- (**agent**) remove test-only activated_skills accessor - (48e2797) - Travis Ennis
+- (**agent**) introduce retry policy - (e7ba4a1) - Travis Ennis
+- (**agent**) encapsulate public mutable fields - (02035ff) - Travis Ennis
+- (**agent**) reduce tool loop cloning - (652c199) - Travis Ennis
+- (**agent**) split agent responsibilities - (29b7cad) - Travis Ennis
+- (**agent**) add provider backend abstraction - (6202cc8) - Travis Ennis
+- (**agent**) make usage accumulation const - (e55ea12) - Travis Ennis
+- (**agent**) store session id as uuid - (bc06b78) - Travis Ennis
+- (**agent**) remove deprecated history drain - (4203c54) - Travis Ennis
+- (**agent**) extract retry delay and check helpers in complete_turn() - (dfc33e6) - Travis Ennis
+- (**agent**) replace activated skills set directly - (bf3aede) - Travis Ennis
+- (**agent**) deduplicate session streaming helpers - (1efd073) - Travis Ennis, *Amp*
+- (**agent**) avoid duplicate user message construction - (983ad2e) - Travis Ennis
+- (**agent**) remove unused prior skill activation state - (92f7482) - Travis Ennis
+- (**agent**) extract tool execution helpers - (8e02c31) - Travis Ennis
+- (**agent,session**) return typed TaskOutcome::CutOff instead of fabricating assistant messages - (6acfdd0) - Travis Ennis
+- (**chat**) move response parsing tests into extracted test module - (0528351) - Travis Ennis
+- (**chat**) extract inline tests from chat_completions.rs - (992bd20) - Travis Ennis
+- (**chat**) clarify message builder state - (99011f2) - Travis Ennis
+- (**chat**) separate Kimi reasoning fallback from message building - (bc7ece4) - Travis Ennis
+- (**cli**) extract CliOutputSink, RunMode, and session construction from main.rs - (4b5a1ab) - Travis Ennis
+- (**cli**) share duration formatting helper - (3d916e7) - Travis Ennis
+- (**cli**) add structured output sink - (a4afd24) - Travis Ennis
+- (**cli**) split coding assistant run - (d44681c) - Travis Ennis
+- (**cli**) model session run mode - (a8b0fa8) - Travis Ennis
+- (**cli**) format elapsed seconds without floats - (e0acef4) - Travis Ennis
+- (**cli**) extract text progress setup - (7437d22) - Travis Ennis
+- (**cli**) split session construction helpers - (0461ddd) - Travis Ennis
+- (**cli**) replace --json-streaming with --output-format option - (96b69a3) - Travis Ennis
+- (**client**) simplify retry overload classification - (e4900c6) - Travis Ennis
+- (**clients**) harden system message handling in with_history and extract_instructions (#5) - (dae8ee8) - Travis Ennis
+- (**clients**) reduce log verbosity for API payloads - (da280fe) - Travis Ennis
+- (**clients**) introduce multi-backend architecture for AI APIs - (be35069) - Travis Ennis
+- (**clients**) split responses.rs into tools, types, and responses modules - (b7f40e3) - Travis Ennis, *Amp*
+- (**clients**) deduplicate conversation serialization - (b038405) - Travis Ennis
+- (**config**) replace skills string slicing - (47fbebf) - Travis Ennis
+- (**config**) rename ResolvedModelConfig.config to model_config - (b0b42a9) - Travis Ennis
+- (**config**) remove hardcoded defaults, require explicit model config - (90fc3ca) - Travis Ennis
+- (**config**) replace symlink-based session tracking with mtime lookup - (4c65012) - Travis Ennis, *Amp*
+- (**config**) remove unused reasoning_exclude field - (65215e7) - Travis Ennis
+- (**config**) centralize model and provider defaults - (60e4430) - Travis Ennis
+- (**config**) replace DataDir global singleton with dependency injection - (4fd99a6) - Travis Ennis
+- (**debug**) extract render_models to clear change-risk regression - (edd537d) - Travis Ennis, *Claude Opus 4.8*
+- (**deps**) remove unnecessary dependencies - (93eb130) - Travis Ennis, *Amp*
+- (**hooks**) model hook continue/block as a proper enum - (5f0f4ab) - Travis Ennis
+- (**hooks**) replace Option<&str> source with typed HookSource enum - (52eb2f2) - Travis Ennis
+- (**logger**) migrate from log4rs to tracing with log rotation - (9655d9a) - Travis Ennis
+- (**model**) derive Copy for usage counters - (fdbddcc) - Travis Ennis
+- (**model**) make reasoning summary Optional on Chat Completions path - (081543a) - Travis Ennis
+- (**model**) reorganize type modules and remove Message struct - (5bff3d2) - Travis Ennis, *Amp*
+- (**model**) delete unused serde response fields and ApiError - (e8775d9) - Travis Ennis
+- (**models**) add Role::as_str() to deduplicate role-to-string logic - (697abff) - Travis Ennis, *Amp*
+- (**prompts**) generate tool list from registry instead of hand-coding it - (6295e85) - Travis Ennis
+- (**prompts**) remove self-reflection notes section from system prompt - (cd06d77) - Travis Ennis
+- (**prompts**) separate mutable context from system prompt - (846cb47) - Travis Ennis
+- (**prompts**) rename Project Context to Additional Context and add override instructions - (dc5210d) - Travis Ennis, *Amp*
+- (**prompts**) remove expect_used suppressions by replacing write! with push_str/format! - (14a3368) - Travis Ennis
+- (**responses**) simplify reasoning config construction - (a0fca52) - Travis Ennis
+- (**responses**) consolidate conversation serialization - (21fb640) - Travis Ennis
+- (**responses**) type reasoning content kinds - (18aefa5) - Travis Ennis
+- (**responses**) move provider quirks behind strategy - (7945f2f) - Travis Ennis
+- (**responses**) extract stream_item helper and fix test - (8e1eb93) - Travis Ennis, *Amp*
+- (**responses**) rename shell tool to Bash for Claude compatibility - (53c82c3) - Travis Ennis
+- (**responses**) update default temperature and max_tokens - (b12793e) - Travis Ennis
+- (**sandbox**) clean up macOS profile builder string construction - (bb99dbd) - Travis Ennis
+- (**sandbox**) add seatbelt profile builder - (566b638) - Travis Ennis
+- (**sandbox**) remove unnecessary Result wrappers from SandboxConfig methods - (4d985e2) - Travis Ennis
+- (**session**) replace looks_like_uuid with typed UUID parsing at CLI boundary - (c5bffe8) - Travis Ennis
+- (**session**) remove ForkSeed variant from SessionStorage - (fd046ca) - Travis Ennis
+- (**session**) store timestamps as DateTime - (9c7459b) - Travis Ennis
+- (**session**) model task completion outcome - (a0c3f79) - Travis Ennis
+- (**session**) append task events to session logs - (3ac0d6e) - Travis Ennis
+- (**session**) move v2 line parser before statements - (46ac829) - Travis Ennis
+- (**session**) move sessions to XDG-compliant flat storage - (c1bdcea) - Travis Ennis
+- (**tools**) reduce Bash lifecycle complexity - (eeba8d0) - Travis Ennis
+- (**tools**) replace duplicate-mutation guard with per-path serialization - (38b8aca) - Travis Ennis, *Claude Fable 5*
+- (**tools**) Remove directory reading support from the Read tool - (b2d1a73) - Travis Ennis
+- (**tools**) move tool descriptions to include_str text files - (7571757) - Travis Ennis
+- (**tools**) extract bash safety check rules into a checks module - (f59296f) - Travis Ennis
+- (**tools**) extract inline tests from edit.rs to edit_tests.rs - (46fd39c) - Travis Ennis
+- (**tools**) convert bash_safety.rs to subdirectory with separated parsing - (44596df) - Travis Ennis
+- (**tools**) hide read module behind tools facade - (1ce4a34) - Travis Ennis, *Amp*
+- (**tools**) simplify test-only Bash sandbox constructor - (7fec391) - Travis Ennis
+- (**tools**) remove no-op `_ = result.as_bytes()` in bash test - (84a6163) - Travis Ennis
+- (**tools**) simplify binary ratio threshold constants - (cc5944f) - Travis Ennis
+- (**tools**) reduce default Read window from 500 to 200 lines - (faa3765) - Travis Ennis
+- (**tools**) clarify human-readable formatting - (f17333b) - Travis Ennis
+- (**tools**) remove dead edit diff header construction - (951cc1c) - Travis Ennis
+- (**tools**) remove global tool directory caches - (81d09eb) - Travis Ennis
+- (**tools**) plumb tool context through execution - (d9d1faa) - Travis Ennis
+- (**tools**) add tool registry - (a249e71) - Travis Ennis
+- (**tools**) introduce tool context - (52a1c9f) - Travis Ennis
+- (**tools**) update the description of the Bash tool - (1208a5e) - Travis Ennis
+- (**tools**) avoid float casts in bash output formatting - (d9cb54f) - Travis Ennis
+- (**tools**) extract Bash tool into separate module - (e4cb5d7) - Travis Ennis
+- (**types**) extract shared SessionRecord/StreamRecord data into inner structs - (746bdd0) - Travis Ennis
+- delete skill-read interception and dedup; keep the Read tool - (6dba1b1) - Travis Ennis
+- extract inline tests from six large modules (task 171) - (4dd410f) - Travis Ennis
+- flatten agent send result - (1f5885c) - Travis Ennis
+- remove library-style doctests from binary-only crate - (0f57128) - Travis Ennis
+- use typed structs for tool argument summarization - (87ca43a) - Travis Ennis
+- migrate super:: imports to crate:: absolute paths - (abfe139) - Travis Ennis, *Amp*
+- move emit_init_message to caller of send() - (4da073f) - Travis Ennis
+- remove unnecessary #[serde(rename)] attributes - (96b64ca) - Travis Ennis
+- migrate session storage to JSONL and convert tools to sync - (dc0f166) - Travis Ennis
+- remove dead code and unused abstractions - (1caf744) - Travis Ennis, *Amp*
+- simplify system prompt to single sentence - (b30738c) - Travis Ennis
+- clean up dead code and fix compiler warnings - (cbf2be3) - Travis Ennis
+- replace ChatCompletion with Responses API client - (826992a) - Travis Ennis
+- remove prompt builder - (b4c4cfd) - Travis Ennis
+- simplify to only support instruct command - (8a3b1ab) - Travis Ennis
+- simplify system prompt for chat - (408e8cd) - Travis Ennis
+- clear project_context in reset function - (b111bcc) - Travis Ennis
+- remove unused import - (ce2b68b) - Travis Ennis
+- add add_files method to ChatState - (1df0c02) - Travis Ennis
+- break down implementation of Anthropic's chat function - (c89acda) - Travis Ennis
+- define default template in code - (cb2814b) - Travis Ennis
+- improve error handling - (9fcea37) - Travis Ennis
+- log the original error - (ea4a4e2) - Travis Ennis
+- change name from get_files to get_file_info - (0bf3d2b) - Travis Ennis
+- handle error if data dir can't be set - (7fc85ba) - Travis Ennis
+- <span style="background-color: #d73a49; color: white; padding: 2px 6px; border-radius: 3px; font-weight: bold; font-size: 0.85em;">BREAKING</span>change cmd name from prompt-generator to generate-prompt - (a9b3585) - Travis Ennis
+- return value from save_messages - (1984697) - Travis Ennis
+- add debug logging - (c83dc4b) - Travis Ennis
+- <span style="background-color: #d73a49; color: white; padding: 2px 6px; border-radius: 3px; font-weight: bold; font-size: 0.85em;">BREAKING</span>reorganize cli commands and consolidate functionality - (986c579) - Travis Ennis
+- reorganize code to support lsp - (d731894) - Travis Ennis
+- removed unused code - (2d7d670) - Travis Ennis
+- change name of default prompt - (a0f6792) - Travis Ennis
+- update per clippy recommendation - (2344403) - Travis Ennis
+- change name from ChatCompletionClient to ChatCompletion - (e927b0f) - Travis Ennis
+- update per clippy recommendations - (c61c3ce) - Travis Ennis
+- redo how prompts are managed and built - (eaaafd4) - Travis Ennis
+- minor changes from clippy recommendations - (e4b5660) - Travis Ennis
+- clean up logger code - (93bdc66) - Travis Ennis
+- add logging - (4296d9c) - Travis Ennis
+- rework the prompt builder - (9b9660a) - Travis Ennis
+- redo how the data dir is managed - (f7148f0) - Travis Ennis
+- redo Backend with DashMap and Rope - (5668e5e) - Travis Ennis
+- clean up code - (a020421) - Travis Ennis
+- add macro for client logging - (6964e7c) - Travis Ennis
+#### Chore
+- (**agent**) generate task indexes - (5d20a84) - Travis Ennis
+- (**agents**) add task labels system and align workflow scaffold - (12dd636) - Travis Ennis
+- (**ahm**) track dependency maintenance workflow - (99886a4) - Travis Ennis
+- (**ahm**) add task 291 for structured cross-reference index - (9cd9ecd) - Travis Ennis
+- (**ahm**) add tasks 282-290 from full code review - (be9d8c7) - Travis Ennis, *Claude Fable 5*
+- (**ahm**) upgrade ahm - (c0b7faa) - Travis Ennis
+- (**ahm**) add task 281 to wire cog bump and changelog into releases - (3b734f9) - Travis Ennis, *Claude Fable 5*
+- (**ahm**) add tasks 279-280 from harness proportionality audit - (6f830f8) - Travis Ennis, *Claude Fable 5*
+- (**ahm**) add task 278 and research note for LLM-judge bash safety tier - (aa18b80) - Travis Ennis, *Claude Fable 5*
+- (**ahm**) add task 277 for project-customizable sandbox paths - (8aa8495) - Travis Ennis
+- (**ci**) pin Panache 3.0.0 (#39) - (49b3c4c) - Travis Ennis
+- (**config**) extract inline tests from settings.rs to settings_tests.rs - (2da3b4b) - Travis Ennis
+- (**config**) cancel task 096 (git branch delete parser already safe) - (4a52371) - Travis Ennis, *Amp*
+- (**config**) use panache for markdown formatting - (7bbb4cd) - Travis Ennis
+- (**config**) remove skills restriction from settings.toml - (be60aac) - Travis Ennis
+- (**config**) restrict skills to project-specific subset - (be99670) - Travis Ennis
+- (**deps**) update anyhow 1.0.102→1.0.103 and chrono 0.4.44→0.4.45 - (71d4793) - Travis Ennis
+- (**docs**) add documentation-ops enforcement with panache - (9ff8429) - Travis Ennis
+- (**lint**) update stale .agents/ panache exclude to .ahm/ - (1bcaf9c) - Travis Ennis
+- (**lints**) deny missing_errors_doc - (aedacf9) - Travis Ennis
+- (**model**) clean up type refactor metadata - (5834da9) - Travis Ennis
+- (**scripts**) make task complete/cancel output more visible - (e6e771f) - Travis Ennis, *Amp*
+- (**session**) close obsolete init ordering task - (8ad5264) - Travis Ennis
+- (**setup**) include prek and cocogitto in just setup - (4fb4b01) - Travis Ennis
+- (**tasks**) groom active backlog - (7888d99) - Travis Ennis
+- (**tasks**) resolve ahm doctor warnings - (77f2a03) - Travis Ennis
+- (**tasks**) capture validated review findings - (44b8066) - Travis Ennis
+- (**tasks**) capture task-work reliability findings - (db27356) - Travis Ennis
+- (**tasks**) note native --worktree shares the sandbox gap on task 257 - (95f3298) - Travis Ennis, *Claude Fable 5*
+- (**tasks**) file worktree sandbox, stash guard, and stream-json args tasks (257-259) - (d298f5a) - Travis Ennis, *Claude Fable 5*
+- (**tasks**) add tasks 250 and 251 for cut-off outcome follow-ups - (1e4af68) - Travis Ennis, *Claude Fable 5*
+- (**tasks**) groom task 249 with ADR-012 and ExecPlan - (f08cb8f) - Travis Ennis, *Claude Fable 5*
+- (**tasks**) add output schema feature task - (4a6c0f6) - Travis Ennis
+- (**tasks**) capture cake init policy scaffolding - (4a81296) - Travis Ennis
+- (**tasks**) triage backlog against bitter-lesson direction - (5758bd9) - Travis Ennis, *Claude Fable 5*
+- (**tasks**) groom tool contract tasks - (8a0e902) - Travis Ennis
+- (**tasks**) add Edit tool invalid-JSON reliability tasks 232-234 - (8af6190) - Travis Ennis, *Claude Fable 5*
+- (**tasks**) groom and accept tasks 229, 230, 231 into pending queue - (c0b7289) - Travis Ennis
+- (**tasks**) capture coverage verifier follow-ups - (0d15bd2) - Travis Ennis
+- (**tasks**) cancel stale backlog items - (9cf1042) - Travis Ennis
+- (**tasks**) add flaky session lock test task - (20da722) - Travis Ennis
+- (**tasks**) complete task 220 - (a64c826) - Travis Ennis
+- (**tasks**) add task 223 to consider the removal of the Read tool - (926a780) - Travis Ennis
+- (**tasks**) add session replay/export feature task - (15c2054) - Travis Ennis
+- (**tasks**) track change-risk cleanup - (1a245b2) - Travis Ennis
+- (**tasks**) add task definitions for debug models and sandbox policies - (661dbfa) - Travis Ennis
+- (**tasks**) add task 193 - (d0de77c) - Travis Ennis
+- (**tasks**) add task 180 to clarify task complete guidance - (266ab34) - Travis Ennis
+- (**tasks**) cancelled task 161 - (afce1ea) - Travis Ennis
+- (**tasks**) add task 176 to include edit tool input in parse errors - (ab6852c) - Travis Ennis
+- (**tasks**) add task 175 to enrich environment developer message - (48417b4) - Travis Ennis
+- (**tasks**) add task 174 to remove directory reading from Read tool - (bf9df6d) - Travis Ennis
+- (**tasks**) update status of tasks in backlog - (7917e65) - Travis Ennis
+- (**tasks**) add task 167 for making reasoning summary optional - (b048271) - Travis Ennis
+- (**tasks**) add no-session output task - (70d94b4) - Travis Ennis
+- (**tasks**) complete ast-grep sandbox investigation - (5219496) - Travis Ennis
+- (**tasks**) complete hook observability investigation - (002519e) - Travis Ennis
+- (**tasks**) add staging hints to lifecycle scripts - (861a53e) - Travis Ennis
+- (**tasks**) clean up backlog. cancelling tasks that don't fit cake - (becbba9) - Travis Ennis
+- (**tasks**) capture session improvement follow-ups - (1c3ba46) - Travis Ennis
+- (**tasks**) add session evaluation follow-ups - (e41283f) - Travis Ennis
+- (**tasks**) add tasks 117-121 for all five active ExecPlans - (ce01bfe) - Travis Ennis
+- (**tasks**) add task 116 for eliminating redundant num_turns/turn_count - (3379b86) - Travis Ennis
+- (**test**) document flaky test_sandbox_unavailable_fails_closed and create task #292 - (952be07) - Travis Ennis
+- (**workflow**) adopt ahm task management - (26d2476) - Travis Ennis
+- update snapshots for Agent Feedback section in instructions - (16fc63c) - Travis Ennis
+- remove DOCUMENTATION.md - (5f35480) - Travis Ennis
+- update remaining .agents/ workflow references to .ahm/ - (4a806a4) - Travis Ennis
+- migrate ahm workflow records from .agents/ to .ahm/ - (2ac0cab) - Travis Ennis
+- add task 274 for Chat Completions stream-json event ordering fix - (1051211) - Travis Ennis
+- resolve all Open tasks to Pending or Blocked - (4525e6a) - Travis Ennis
+- whitelist the .agents tree in .ignore for rg/fd search - (c8a825d) - Travis Ennis, *Claude Fable 5*
+- run ahm upgrade - (17c2c44) - Travis Ennis
+- run ahm upgrade - (ae1e3b1) - Travis Ennis
+- run ahm upgrade - (6043359) - Travis Ennis
+- groom backlog — accept, unblock, label, and document blockers - (8cb06c4) - Travis Ennis
+- run ahm upgrade - (bfdbf44) - Travis Ennis
+- reformat markdown files - (f53ff0e) - Travis Ennis
+- migrate existing ADRs to MADR format - (9fe857c) - Travis Ennis
+- run ahm upgrade - (201bfaf) - Travis Ennis
+- run ahm upgrade - (ae23307) - Travis Ennis
+- run ahm upgrade - (bec8a0e) - Travis Ennis
+- remove unneeded hook - (621b2d8) - Travis Ennis
+- run ahm upgrade - (aff2062) - Travis Ennis
+- run ahm upgrade - (1161749) - Travis Ennis
+- run ahm upgrade - (018e78b) - Travis Ennis
+- add task 196 for snapshot tests of full LLM request arrays - (077ca1f) - Travis Ennis
+- archive stale research documents - (9028f2a) - Travis Ennis
+- run ahm upgrade on project - (2ccb8ea) - Travis Ennis
+- ran ahm upgrade - (4f1332e) - Travis Ennis
+- add .local.justfile to .gitignore - (7d2eaff) - Travis Ennis
+- mark task 101b as completed - (c527292) - Travis Ennis
+- add ast-grep sandbox debugging task - (854446d) - Travis Ennis
+- scope task 101 module size review into 7 child tasks - (e53c3ac) - Travis Ennis
+- add tasks for mutating tool safety - (332a289) - Travis Ennis
+- regenerate task indexes after 099 completion - (001b26d) - Travis Ennis
+- update task indexes for 099 completion - (2d03569) - Travis Ennis
+- add Cancelled task status and cancelled/ bucket - (ead578b) - Travis Ennis, *Amp*
+- remove unused HookGroup.source_path and non-conforming dead_code expect - (0cba481) - Travis Ennis
+- add ~/.cake to the list of allowed directories - (9e68e6b) - Travis Ennis
+- clean up pre-existing dead code - (bce3da8) - Travis Ennis
+- update dependencies - (825dff2) - Travis Ennis
+- remove working files - (d696992) - Travis Ennis
+- removed settings.toml - (e9564ab) - Travis Ennis
+- add kimi 2.6 as a configured model - (3df417c) - Travis Ennis
+- update remaining acai references to cake - (4ca6435) - Travis Ennis
+- renamed project from acai to cake - (2d54ebe) - Travis Ennis
+- update dependencies - (52fb4af) - Travis Ennis
+- add a CODEOWNERS file - (45c1e0c) - Travis Ennis
+- add example sandbox files - (15a7330) - Travis Ennis
+- update dependencies - (6c8b363) - Travis Ennis
+- add conventional commit validation with cocogitto - (a301de4) - Travis Ennis
+- add prek for pre-commit hooks - (a6e3e87) - Travis Ennis
+- add deterministic code style enforcement - (9dbf96e) - Travis Ennis
+- fix formatting issues - (720581b) - Travis Ennis
+- add acai.json file to configure acai - (1ea4e42) - Travis Ennis
+- add .ignore file - (d84bdee) - Travis Ennis
+- remove unused argument for just clippy - (8b9a1e0) - Travis Ennis
+- add changelog - (ae7bedb) - Travis Ennis
+#### Style
+- (**cli**) restore e.print().ok() with localized clippy expect - (e3319ff) - Travis Ennis
+- (**clippy**) add precision loss rationale comments on cast_precision_loss suppressions - (487ca44) - Travis Ennis
+- move inline HashSet import to module level and document convention - (67a2c26) - Travis Ennis
+- reformat startup info message - (b0e91e9) - Travis Ennis
+- format code with cargo fmt - (bb8a1b5) - Travis Ennis
+- collapse nested if statements to fix clippy warnings - (994c2d1) - Travis Ennis
+- fix clippy warnings in responses client - (f4c5a76) - Travis Ennis
+- fix strict clippy warnings - (2736224) - Travis Ennis
+- improve ultra-strict clippy configuration - (b4fec32) - Travis Ennis
+- fix strict clippy warnings - (404cb26) - Travis Ennis
 
-All notable changes to this project will be documented in this file.
 
-## [unreleased]
-
-### Breaking Changes
-
-- Bump persisted session JSONL schema to v4 with append-only `session_meta`, `task_start`, and `task_complete` records.
-- Stop loading legacy v2 and old v3 session files that use `session_start`, `init`, or `result`.
-- Remove path-based `--resume <path>` and `--fork <path>`; both now accept session UUIDs only.
-- Change stream-json output to a live task stream that starts with `task_start`, ends with `task_complete`, and never emits `session_meta`.
-
-### 🚀 Features
-
-- Initial implementation
-- Store app data in \~/./config/coding-assistant
-- Move model definitions into their own file
-- Refactor code and add claude models
-- Add justfile
-- Reorganize api into commands
-- Change name of package to coding-assistant
-- Reorganize how config and app data is saved
-- Add tasks with dedicated prompts to pipe
-- Update how config and history is handled
-- Add max_tokens and top_p with default values
-- Add gpt-4o and make it the default model
-- Update prompt to take instruction from todo comments
-- Add more config options
-- *(prompts)* Begin to implement a prompt builder
-- Begin implementation of prompt generation command
-- *(cmds)* Add complete command
-- Update and refactor client. add completion client
-- Support codestral
-- Add operations
-- Implement LSP
-- Begin to add complete operation
-- Add anthropic's sonnet 3.5
-- Add more operations to support additional code actions
-- Redo providers api and add google
-- Add ability to change model in chat
-- Pass dianostics to code_action_resolve
-- Add support for ollama
-- Add ability to parse context for instructions
-- Add Request struct for Anthropic
-- Change name of project to cake
-
-### 🐛 Bug Fixes
-
-- Disable clippy warning
-- Address unwrap usage, remove panic calls, fix clippy warning
-- Update clippy-strict rules
-- Remove use of unwrap
-- Update user messages to work with Claude
-- Begin to standardize cli args
-- Refactor and reorganize cli and clients
-- Refactor config
-- Reorganize models
-- Clean up prompts
-- Rename LLMClient to ChatCompletionClient
-- Change how messages are sent and saved
-- Update prompts
-- Refactor CmdConfig and CmdRunner
-- Remove unused code
-- Refactor ChatCompletionClient to use a fluent interface
-- Add clippy directive to allow dead code
-- Make most config optional
-- Allow clippy rule
-- Add context to first chat line
-- *(cli)* Make top_p an optional argument from the command line
-- *(prompts)* Update prompt and change name of function to build
-- *(prompts)* Update handlebars config
-- *(prompts)* Remove println
-- Update variable name
-- Update instruct command
-- Refactored cli commands
-- Change where app data is stored
-- Update completion client
-- Address lint issues
-- Cleanup
-- Cleanup
-- Update optimize prompt
-- Linting errors
-- Add IntoMessage trait and remove Response trait
-- Remove unused type
-- Update .gitignore
-- Refactor on_code_action
-- Update prompts
-- Address clippy errors
-- Update bacon and justfile clippy args
-- Cleanup
-- Cleaning up
-- Remove create and make new create directory
-- Add code actions and improve concurrency
-- Apply lint fixes
-- Update bacon.toml
-- Add top_p to completion client
-- Simplify how providers and models are handled
-- Add stop parameter
-- Update response model for Google
-- Refactor error name
-- Minor refactor
-- Update system prompts
-
-### 🚜 Refactor
-
-- Add macro for client logging
-
-### 📚 Documentation
-
-- Update readme.md
-
-<!-- generated by git-cliff -->

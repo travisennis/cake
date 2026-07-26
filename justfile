@@ -88,7 +88,7 @@ lint-deps:
     @echo "Dependency lint passed!"
 
 # Run the primary local checks, including the always-on CI command set
-ci: rust-version-check check-linux fmt-check clippy-strict clippy-no-default-features test-all-features check-coverage lint-imports lint-deps lint-module-size
+ci: rust-version-check check-linux fmt-check clippy-strict clippy-no-default-features test-all-features check-coverage lint-imports lint-deps changelog-check lint-module-size
     echo "All checks passed!"
 
 # Run the required pre-push gate for code, config, CI, fixture, and dependency changes
@@ -165,6 +165,20 @@ docs-fmt:
 
 build:
     cargo build --release
+
+# Regenerate CHANGELOG.md from conventional commits (suppresses parse warnings for pre-convention history)
+changelog:
+    @cog changelog 2>/dev/null > CHANGELOG.md
+    @echo "CHANGELOG.md regenerated"
+
+# Verify the committed changelog matches the generated one
+changelog-check:
+    @cog changelog 2>/dev/null > /tmp/cake-changelog-check.md; \
+    if ! diff -q /tmp/cake-changelog-check.md CHANGELOG.md > /dev/null 2>&1; then \
+        echo "ERROR: CHANGELOG.md is stale. Run 'just changelog' to regenerate."; \
+        exit 1; \
+    fi
+    @echo "CHANGELOG.md is current"
 
 install:
     cargo build --release
