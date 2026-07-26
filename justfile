@@ -81,8 +81,14 @@ lint-imports:
     @! grep -rn 'use self::' src/ --include='*.rs' | grep -q . || true
     @echo "Import lint passed!"
 
+# Lint for dependency direction violations (nothing below cli imports cli, types is foundational)
+lint-deps:
+    @grep -rn 'use crate::cli[;:]' src/ --include='*.rs' | grep -v '^src/cli/' | grep -v '^src/main.rs:' | { if grep -q .; then echo "ERROR: Module imports crate::cli from outside the CLI layer. Violations:"; grep -rn 'use crate::cli[;:]' src/ --include='*.rs' | grep -v '^src/cli/' | grep -v '^src/main.rs:'; exit 1; fi; }
+    @grep -rn 'use crate::' src/types/ --include='*.rs' | grep -v 'use crate::types' | grep -v '_tests\.rs:' | { if grep -q .; then echo "ERROR: src/types/ imports from a non-types crate module. Violations:"; grep -rn 'use crate::' src/types/ --include='*.rs' | grep -v 'use crate::types' | grep -v '_tests\.rs:'; exit 1; fi; }
+    @echo "Dependency lint passed!"
+
 # Run the primary local checks, including the always-on CI command set
-ci: rust-version-check check-linux fmt-check clippy-strict clippy-no-default-features test-all-features check-coverage lint-imports lint-module-size
+ci: rust-version-check check-linux fmt-check clippy-strict clippy-no-default-features test-all-features check-coverage lint-imports lint-deps lint-module-size
     echo "All checks passed!"
 
 # Run the required pre-push gate for code, config, CI, fixture, and dependency changes

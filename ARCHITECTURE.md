@@ -57,8 +57,8 @@ Persisted sessions are append-only, versioned JSONL logs. Stream-json is a curre
 
 ## Invariants
 
-- Dependencies flow from CLI orchestration toward clients and foundational configuration/types, never back toward the CLI.
-- Production imports use absolute `crate::` paths.
+- Dependencies flow from `cli` toward `clients`, `config`, `prompts`, and `types`; verified by `just lint-deps`.
+- Production imports use absolute `crate::` paths; verified by `just lint-imports`.
 - Production code does not use `unwrap` or `expect`.
 - Conversation state has one typed internal representation.
 - Filesystem tools validate paths before side effects.
