@@ -53,7 +53,7 @@ If an applicable check cannot run, report the exact reason and the narrower chec
 - Delete dead code. Do not hide it behind `#[allow]`.
 - Use `#[expect(..., reason = "...")]` only for intentional, explained lint exceptions.
 - Keep imports at module scope unless conditional compilation makes that impossible.
-- Use absolute `crate::` imports in production code.
+- Use absolute `crate::` imports in production code; verified by `just lint-imports`.
 - Preserve public behavior during refactors unless the task explicitly changes it.
 
 Tests and snapshots should encode behavior close to its implementation. Add documentation only when the change affects a user workflow, external contract, security boundary, durable architectural invariant, or contributor workflow. See [DOCUMENTATION.md](DOCUMENTATION.md).

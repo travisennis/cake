@@ -59,7 +59,7 @@ Persisted sessions are append-only, versioned JSONL logs. Stream-json is a curre
 
 - Dependencies flow from `cli` toward `clients`, `config`, `prompts`, and `types`; verified by `just lint-deps`.
 - Production imports use absolute `crate::` paths; verified by `just lint-imports`.
-- Production code does not use `unwrap` or `expect`.
+- Production code does not use `unwrap` or `expect`; verified by clippy.
 - Conversation state has one typed internal representation.
 - Filesystem tools validate paths before side effects.
 - Sandboxing is default-on and availability failures fail closed, except for the documented recognized nested-Seatbelt fallback.

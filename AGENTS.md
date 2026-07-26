@@ -37,7 +37,7 @@ Protect compatibility with focused tests and snapshots. Security-boundary change
 - Do not commit or push unless explicitly asked.
 - Work on the current branch unless asked to create another.
 - Preserve unrelated user changes; never clean or revert them.
-- Use Conventional Commits when writing commit messages.
+- Use Conventional Commits when writing commit messages; verified by the commit-msg hook.
 - Never hand-edit generated `.ahm` indexes.
 - Future work and unresolved questions belong in `.ahm`, not durable docs.
 - Update architecture documentation only when a durable boundary or invariant changes, not when symbols or files move.
