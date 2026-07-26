@@ -108,15 +108,14 @@ Configuration and precedence are in [Configuration](docs/configuration.md); exte
 
 ## Documentation
 
-  | Need                                                       | Authority                                    |
-  | ---------------------------------------------------------- | -------------------------------------------- |
-  | Configure and operate cake                                 | [Configuration](docs/configuration.md)       |
-  | Consume sessions, JSON output, hooks, or toolbox protocols | [Integrations](docs/integrations.md)         |
-  | Understand permissions and trust boundaries                | [Security](docs/security.md)                 |
-  | Understand durable system boundaries                       | [Architecture](ARCHITECTURE.md)              |
-  | Contribute changes                                         | [Contributing](CONTRIBUTING.md)              |
-  | Understand past decisions                                  | [ADR archive](docs/adr/README.md)            |
-  | Apply this documentation approach elsewhere                | [Documentation philosophy](DOCUMENTATION.md) |
+  | Need                                                       | Authority                              |
+  | ---------------------------------------------------------- | -------------------------------------- |
+  | Configure and operate cake                                 | [Configuration](docs/configuration.md) |
+  | Consume sessions, JSON output, hooks, or toolbox protocols | [Integrations](docs/integrations.md)   |
+  | Understand permissions and trust boundaries                | [Security](docs/security.md)           |
+  | Understand durable system boundaries                       | [Architecture](ARCHITECTURE.md)        |
+  | Contribute changes                                         | [Contributing](CONTRIBUTING.md)        |
+  | Understand past decisions                                  | [ADR archive](docs/adr/README.md)      |
 
 ## Platform support
 

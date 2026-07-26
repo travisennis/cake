@@ -1,4 +1,4 @@
-## Unreleased (9f0c277..26b8a0a)
+## Unreleased (9f0c277..3d40241)
 #### Features
 - (**agent**) add builder methods and accessors for test fixtures - (e7d331f) - Travis Ennis
 - (**agent**) lazy-load skill bodies on activation - (93e8f06) - Travis Ennis
@@ -382,6 +382,7 @@
 - (**agents**) organize research artifacts - (ea4a94c) - Travis Ennis
 - (**agents**) track planning artifacts - (2605ff0) - Travis Ennis
 - (**bash**) document metadata footer and binary output detection features - (e42cf8e) - Travis Ennis
+- (**changelog**) auto-generate from conventional commits - (abdc0ee) - Travis Ennis
 - (**config**) add Clippy configuration research and follow-up task - (4fc4f1c) - Travis Ennis
 - (**guardrails**) require behavioral evidence for behavior-shaping instruction edits - (a708105) - Travis Ennis, *Claude Fable 5*
 - (**logger**) document daily log file naming convention - (eea745f) - Travis Ennis
@@ -547,6 +548,7 @@
 - (**session**) snapshot persistence-only session records - (4c470b5) - Travis Ennis
 - (**session**) cover conversation record roundtrip - (b80ea7e) - Travis Ennis
 - (**skills**) fix discover_skills tests to isolate project scope assertions - (c3774ad) - Travis Ennis
+- (**snapshots**) update system-prompt snapshot fixtures - (3d40241) - Travis Ennis
 - (**tools**) add focused unit tests for bash safety parser helpers - (0e6eb07) - Travis Ennis
 - (**tools**) document bash safety wrapper scope - (77763c4) - Travis Ennis
 - add CAKE_REQUIRE_SANDBOX_TESTS required mode for sandbox integration tests - (25c58f7) - Travis Ennis

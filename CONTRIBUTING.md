@@ -27,6 +27,8 @@ The crate has no library target. Do not use `cargo test --lib`.
 
 ## Verification
 
+**Definition of done:** run `just ci`.
+
 For Rust, configuration, CI, fixture, or dependency changes, run:
 
 ```bash
@@ -56,7 +58,7 @@ If an applicable check cannot run, report the exact reason and the narrower chec
 - Use absolute `crate::` imports in production code; verified by `just lint-imports`.
 - Preserve public behavior during refactors unless the task explicitly changes it.
 
-Tests and snapshots should encode behavior close to its implementation. Add documentation only when the change affects a user workflow, external contract, security boundary, durable architectural invariant, or contributor workflow. See [DOCUMENTATION.md](DOCUMENTATION.md).
+Tests and snapshots should encode behavior close to its implementation. Add documentation only when the change affects a user workflow, external contract, security boundary, durable architectural invariant, or contributor workflow.
 
 ## Managed work
 
