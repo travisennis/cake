@@ -1,8 +1,9 @@
 #!/bin/sh
 #
 # Remind the agent to record mistakes, learnings, and tool/context gaps
-# at the end of each task.  This hook fires on UserPromptSubmit so the
-# reminder appears as developer context on every user turn.
+# at the end of each task.  This hook fires on SessionStart so the
+# reminder appears as developer context once per session (including
+# resume and fork).
 #
 # Input:  JSON payload on stdin (HookRecord + event-specific fields)
 # Output: JSON object with an "additional_context" string (exit 0)
