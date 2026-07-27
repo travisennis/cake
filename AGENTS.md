@@ -4,7 +4,7 @@
 
 Cake is a Rust 2024 binary-only AI coding assistant CLI with sandboxed tool execution, persisted sessions, and OpenAI-compatible Chat Completions and Responses API backends.
 
-The code, tests, snapshots, CLI help, and `justfile` are the implementation authorities. Durable prose exists only for user guidance, external contracts, security boundaries, architectural intent, contributor workflow, and decision history.
+The code, tests, snapshots, CLI help, and `justfile` are the implementation authorities. Durable prose exists only for user guidance, external contracts, security boundaries, architectural intent, contributor workflow, decision history, and rules that shape agent behavior. Behavior-shaping rules live in `docs/guardrails/`; each one names the observed failure that motivated it and the condition under which it retires, and is removed when that condition is met rather than for document volume.
 
 ## Operating loop
 
@@ -41,6 +41,7 @@ Protect compatibility with focused tests and snapshots. Security-boundary change
 - Never hand-edit generated `.ahm` indexes.
 - Future work and unresolved questions belong in `.ahm`, not durable docs.
 - Update architecture documentation only when a durable boundary or invariant changes, not when symbols or files move.
+- Behavior-shaping edits to agent instructions or skills require the evidence in [docs/guardrails/agent-instructions.md](docs/guardrails/agent-instructions.md).
 - Before broad edits and before handoff, inspect `git status --short`.
 
 ## Verification
