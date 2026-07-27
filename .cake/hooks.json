@@ -27,6 +27,17 @@
 					}
 				]
 			}
+		],
+		"UserPromptSubmit": [
+			{
+				"hooks": [
+					{
+						"type": "command",
+						"command": "./.cake/hooks/remind-self-reflection.sh",
+						"timeout": 3
+					}
+				]
+			}
 		]
 	}
 }

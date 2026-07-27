@@ -51,12 +51,6 @@ Include:
    - If files were edited, mention remaining uncommitted or untracked files when useful.
    - If a commit was requested, include the commit hash and whether the worktree is clean.
 
-6. **Self-reflection**
-   - Record mistakes in `~/.local/share/cake/MISTAKES.md`.
-   - Record learnings about the environment or tooling in `~/.local/share/cake/LEARNINGS.md`.
-   - Record tool or context gaps in `~/.local/share/cake/DESIRES.md`.
-   - Each entry must include the working directory and date.
-
 Style rules:
 
 - Be brief unless the change was complex.
