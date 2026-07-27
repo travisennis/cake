@@ -15,7 +15,7 @@ Users depend on CLI shape and exit behavior, machine-readable output formats, to
 5. Preserve compatibility unless the task explicitly changes it.
 6. If work is managed, start and complete it through `ahm`.
 7. Make surgical edits and run risk-proportionate checks.
-8. After implementation edits, run a review in a subagent until no actionable findings remain, then perform preflight.
+8. After implementation edits, run a review in a subagent and address findings until none remain, then perform preflight. If a third round reports findings of the same class, stop patching: report the finding class and the suspected design flaw, and escalate to a design decision.
 9. Hand off changes, exact checks, skipped checks, and remaining risk.
 
 Large or cross-cutting work requires an ExecPlan as directed by `ahm context plan`.
@@ -60,6 +60,8 @@ Consult:
 - [ADR 017](docs/adr/017-trusted-executable-toolbox-tools.md), for trusted toolbox executables.
 
 Sandboxing is default-on and availability failures fail closed. Security-boundary changes require explicit impact analysis and platform-specific verification.
+
+Before editing a security boundary, enumerate the bypass classes you intend to defend against. A review-reported bypass class you did not enumerate is a signal to revisit the design, not to add another check.
 
 ### Providers, Agent Loop, And Request Shaping
 
@@ -136,6 +138,7 @@ Dependency changes require explicit scope and `Cargo.toml`/`Cargo.lock` consiste
 - Do not commit or push unless explicitly asked.
 - Work on the current branch unless asked to create another.
 - Preserve unrelated user changes; never clean or revert them.
+- Complete managed work through `ahm` before the commit that contains its implementation; task-state and index files are commit content.
 - Use Conventional Commits when writing commit messages; verified by the commit-msg hook.
 - Never hand-edit generated `.ahm` indexes.
 - Future work and unresolved questions belong in `.ahm`, not durable docs.

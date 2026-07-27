@@ -60,3 +60,11 @@ Changes to allowed paths, sandbox policy, fallback behavior, command checks, hoo
 - updated documentation when the guarantee or limitation changes.
 
 Convenience is not sufficient justification for widening authority.
+
+### Enumerate bypass classes first
+
+Before editing a security boundary, enumerate the bypass classes the change must defend against. Record them with the change so review has something to check against.
+
+A review-reported bypass class that was not enumerated is a signal that the design is wrong, not that another check is missing. Patching each reported bypass in turn converges slowly or not at all: a boundary that can only be held by enumerating evasions is not a boundary. Stop and revisit the approach instead.
+
+Validating an untrusted command string by parsing it is the recurring instance of this. Shell quoting, expansion, chaining, symlinked targets, and a child process's own configuration flags each reopen the boundary independently, so a parser that rejects today's evasions does not constrain tomorrow's.
