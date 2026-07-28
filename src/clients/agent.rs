@@ -438,6 +438,20 @@ impl Agent {
         Ok(())
     }
 
+    /// Emit the repair outputs synthesized while restoring history.
+    ///
+    /// A restored conversation can contain a function call whose output the
+    /// previous process never persisted. [`Self::with_history`] closes each
+    /// such call in memory; this appends the same items to the session file so
+    /// later restores read a well-formed history. No-op for a fresh session or
+    /// a restored one whose calls are all matched.
+    pub fn emit_history_repair_records(&mut self) -> anyhow::Result<()> {
+        for item in self.conversation.take_pending_repairs() {
+            self.stream_item(&item)?;
+        }
+        Ok(())
+    }
+
     /// Accumulate usage from an API turn.
     const fn accumulate_usage(&mut self, turn_usage: Option<&Usage>) {
         accumulate_usage(&mut self.total_usage, turn_usage);

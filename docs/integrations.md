@@ -52,6 +52,8 @@ Conversation records restored into model history are `message`, `function_call`,
 
 Session files are append-only and locked for one writer per invocation. Loading tolerates an interrupted final task without `task_complete`. Unsupported format versions fail explicitly; Cake does not silently rewrite older files.
 
+An interrupted task can leave a `function_call` whose `function_call_output` was never written. Continue, resume, and fork close each such call by appending an ordinary `function_call_output` that records the call as not executed, so the restored history stays valid for providers. Repair appends only; prior bytes are never rewritten, and a history whose pairing is ambiguous fails with a diagnostic instead of being guessed at.
+
 ### Record semantics
 
 - `session_meta`: version, session identity, creation context, tools, optional model/system prompt, and Git state.

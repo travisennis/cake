@@ -413,6 +413,124 @@ fn builder_with_history() {
 }
 
 #[test]
+fn history_repair_records_persist_and_stream() {
+    let persisted = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let persisted_clone = persisted.clone();
+    let streamed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let streamed_clone = streamed.clone();
+
+    let history = vec![
+        ConversationItem::Message {
+            role: Role::User,
+            content: "list files".to_string(),
+            id: None,
+            status: None,
+            timestamp: None,
+        },
+        ConversationItem::FunctionCall {
+            id: "fc-1".to_string(),
+            call_id: "call-1".to_string(),
+            name: "Bash".to_string(),
+            arguments: r#"{"command":"ls"}"#.to_string(),
+            timestamp: None,
+        },
+    ];
+
+    let mut agent = test_agent()
+        .with_history(history)
+        .unwrap()
+        .with_persist_callback(move |record| {
+            persisted_clone.lock().unwrap().push(record.clone());
+            Ok(())
+        })
+        .with_streaming_json(move |json| {
+            streamed_clone.lock().unwrap().push(json.to_string());
+        });
+
+    agent.emit_history_repair_records().unwrap();
+
+    let persisted = persisted.lock().unwrap();
+    assert_eq!(persisted.len(), 1);
+    assert!(matches!(
+        &persisted[0],
+        SessionRecord::FunctionCallOutput(data)
+            if data.call_id == "call-1"
+                && data.output == "not executed: the previous cake process ended before \
+                    Bash(call-1) recorded a result. Assume the tool did not run, and call \
+                    it again if its result is still needed."
+    ));
+    drop(persisted);
+
+    let streamed = streamed.lock().unwrap();
+    assert_eq!(streamed.len(), 1);
+    let record: serde_json::Value = serde_json::from_str(&streamed[0]).unwrap();
+    drop(streamed);
+    assert_eq!(record["type"], "function_call_output");
+    assert_eq!(record["call_id"], "call-1");
+}
+
+#[test]
+fn history_repair_records_are_emitted_once() {
+    let persisted = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let persisted_clone = persisted.clone();
+
+    let history = vec![ConversationItem::FunctionCall {
+        id: "fc-1".to_string(),
+        call_id: "call-1".to_string(),
+        name: "Bash".to_string(),
+        arguments: "{}".to_string(),
+        timestamp: None,
+    }];
+
+    let mut agent = test_agent()
+        .with_history(history)
+        .unwrap()
+        .with_persist_callback(move |record| {
+            persisted_clone.lock().unwrap().push(record.clone());
+            Ok(())
+        });
+
+    agent.emit_history_repair_records().unwrap();
+    agent.emit_history_repair_records().unwrap();
+
+    assert_eq!(persisted.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn history_repair_records_are_absent_for_matched_history() {
+    let persisted = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let persisted_clone = persisted.clone();
+
+    let history = vec![
+        ConversationItem::FunctionCall {
+            id: "fc-1".to_string(),
+            call_id: "call-1".to_string(),
+            name: "Bash".to_string(),
+            arguments: "{}".to_string(),
+            timestamp: None,
+        },
+        ConversationItem::FunctionCallOutput {
+            call_id: "call-1".to_string(),
+            output: "ok".to_string(),
+            timestamp: None,
+        },
+    ];
+
+    let mut agent = test_agent()
+        .with_history(history)
+        .unwrap()
+        .with_persist_callback(move |record| {
+            persisted_clone.lock().unwrap().push(record.clone());
+            Ok(())
+        });
+
+    agent.emit_history_repair_records().unwrap();
+
+    assert!(persisted.lock().unwrap().is_empty());
+    assert_eq!(agent.history().len(), 3);
+}
+
+#[test]
 fn stream_item_emits_function_call_output() {
     let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let captured_clone = captured.clone();

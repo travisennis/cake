@@ -2,7 +2,7 @@ use super::*;
 use crate::types::Role;
 
 use crate::config::model::ApiType;
-use crate::types::session::FunctionCallOutputData;
+use crate::types::session::{FunctionCallData, FunctionCallOutputData};
 
 fn test_resolved_model_config() -> ResolvedModelConfig {
     ResolvedModelConfig {
@@ -31,6 +31,15 @@ fn session_with_skill_records() -> Session {
         PathBuf::from("/work"),
     );
     session.records = vec![
+        // Paired with its output: restoration rejects an orphan output.
+        SessionRecord::FunctionCall(FunctionCallData {
+            id: "fc-1".to_string(),
+            call_id: "call-1".to_string(),
+            name: "Bash".to_string(),
+            arguments: r#"{"command":"echo hi"}"#.to_string(),
+            arguments_parse_error: None,
+            timestamp: None,
+        }),
         SessionRecord::FunctionCallOutput(FunctionCallOutputData {
             call_id: "call-1".to_string(),
             output: "echoed text: Skill 'fake-skill' activated".to_string(),

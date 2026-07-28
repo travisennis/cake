@@ -1,4 +1,4 @@
-## Unreleased (9f0c277..3d40241)
+## Unreleased (9f0c277..80f3fb7)
 #### Features
 - (**agent**) add builder methods and accessors for test fixtures - (e7d331f) - Travis Ennis
 - (**agent**) lazy-load skill bodies on activation - (93e8f06) - Travis Ennis
@@ -91,6 +91,7 @@
 - (**tools**) add pre-execution destructive command blocking for Bash tool (#4) - (964c639) - Travis Ennis, *Amp*, *Amp*, *Amp*, *Amp*
 - (**tools**) add Edit, Read, and Write tools - (f914dca) - Travis Ennis
 - (**worktree**) add --worktree flag for isolated git worktree sessions - (33b190f) - Travis Ennis, *Amp*
+- file task 296 for content-based hook matchers - (cdf0f82) - Travis Ennis
 - add MDL instructions to system prompt - (64d8055) - Travis Ennis
 - add task 275 (nested sandbox fallback) and task 276 (evaluate exemption list) - (48f383c) - Travis Ennis
 - add schema-constrained final output - (597db94) - Travis Ennis
@@ -216,6 +217,7 @@
 - (**instruct**) error when no input provided - (748a65d) - Travis Ennis
 - (**logger**) suppress stderr output in stream-json mode - (b2bbd16) - Travis Ennis
 - (**logger**) initialize logger before first log call - (31aa303) - Travis Ennis
+- (**prompts**) remove redundant Behavior section and two Efficiency rules from system.md - (b412dcf) - Travis Ennis
 - (**prompts**) list available agent tools - (a561efe) - Travis Ennis
 - (**prompts**) remove println - (0663f7a) - Travis Ennis
 - (**prompts**) update handlebars config - (602bce2) - Travis Ennis
@@ -282,6 +284,7 @@
 - (**tools**) ensure skill directories are accessible from Read and Bash tools - (aa0eee5) - Travis Ennis
 - (**tools**) remove naive_bytecount suppression by using explicit loop - (f9fe633) - Travis Ennis
 - (**types**) change Usage token fields from u32 to u64 to match API types - (bd64686) - Travis Ennis
+- switch self-reflection reminder from UserPromptSubmit to SessionStart - (f3e7be1) - Travis Ennis
 - tolerate empty function-call arguments in Responses API parsing - (0fe99cb) - Travis Ennis
 - kill Bash tool's process group when future is dropped (Ctrl-C) - (0c5bca3) - Travis Ennis
 - prevent dangling function_call items from correction turns - (2b90fd9) - Travis Ennis
@@ -384,6 +387,7 @@
 - (**bash**) document metadata footer and binary output detection features - (e42cf8e) - Travis Ennis
 - (**changelog**) auto-generate from conventional commits - (abdc0ee) - Travis Ennis
 - (**config**) add Clippy configuration research and follow-up task - (4fc4f1c) - Travis Ennis
+- (**guardrails**) restore behavioral evidence rule for agent instruction edits - (72b69ed) - Travis Ennis, *Claude Opus 5*
 - (**guardrails**) require behavioral evidence for behavior-shaping instruction edits - (a708105) - Travis Ennis, *Claude Fable 5*
 - (**logger**) document daily log file naming convention - (eea745f) - Travis Ennis
 - (**prompts**) add Documentation Workflow section to AGENTS.md - (e6b1dae) - Travis Ennis
@@ -431,6 +435,13 @@
 - (**tools**) align edit task queue - (0587ded) - Travis Ennis
 - (**tools**) document Edit session analysis strategy - (532cebe) - Travis Ennis
 - (**tools**) add auditing-binary-size skill - (a9692ff) - Travis Ennis, *Amp*
+- file task 305 to convert preflight to a runbook - (fe8dd67) - Travis Ennis, *Claude Opus 5*
+- file the skills-to-runbooks conversion tasks - (c2df0e0) - Travis Ennis, *Claude Opus 5*
+- bound the review loop and surface the commit-ordering rule - (90b96a1) - Travis Ennis, *Claude Opus 5*
+- add research for grok-build context compaction architecture - (81b8cb5) - Travis Ennis
+- route AGENTS.md to durable authorities - (578905e) - Travis Ennis, *Claude Opus 5*
+- add research for cache break detection algorithm - (12dcaf8) - Travis Ennis
+- remove DOCUMENTATION.md references, add definition-of-done - (d5339a1) - Travis Ennis
 - annotate mechanically-enforced rules with their verifiers - (e28aa93) - Travis Ennis
 - clean up instructions in AGENTS.md - (0b6a44b) - Travis Ennis
 - replace prose mirror with essential documentation (#38) - (c16b0e0) - Travis Ennis
@@ -708,6 +719,7 @@
 - (**tools**) avoid float casts in bash output formatting - (d9cb54f) - Travis Ennis
 - (**tools**) extract Bash tool into separate module - (e4cb5d7) - Travis Ennis
 - (**types**) extract shared SessionRecord/StreamRecord data into inner structs - (746bdd0) - Travis Ennis
+- move self-reflection reminder from system prompt to project hook - (f37013c) - Travis Ennis
 - delete skill-read interception and dedup; keep the Read tool - (6dba1b1) - Travis Ennis
 - extract inline tests from six large modules (task 171) - (4dd410f) - Travis Ennis
 - flatten agent send result - (1f5885c) - Travis Ennis
@@ -755,6 +767,11 @@
 #### Chore
 - (**agent**) generate task indexes - (5d20a84) - Travis Ennis
 - (**agents**) add task labels system and align workflow scaffold - (12dd636) - Travis Ennis
+- (**ahm**) file tasks from the 2026-07-28 code review - (80f3fb7) - Travis Ennis, *Claude Opus 5*
+- (**ahm**) file project improvement tasks - (e569256) - Travis Ennis
+- (**ahm**) file session-analysis findings and re-run the Edit telemetry - (aad6f62) - Travis Ennis, *Claude Opus 5*
+- (**ahm**) mark task 265 acceptance notes as verified - (44bf248) - Travis Ennis
+- (**ahm**) correct the guardrails routing in task 279 - (380a181) - Travis Ennis, *Claude Opus 5*
 - (**ahm**) track dependency maintenance workflow - (99886a4) - Travis Ennis
 - (**ahm**) add task 291 for structured cross-reference index - (9cd9ecd) - Travis Ennis
 - (**ahm**) add tasks 282-290 from full code review - (be9d8c7) - Travis Ennis, *Claude Fable 5*
@@ -818,6 +835,7 @@
 - (**tasks**) add task 116 for eliminating redundant num_turns/turn_count - (3379b86) - Travis Ennis
 - (**test**) document flaky test_sandbox_unavailable_fails_closed and create task #292 - (952be07) - Travis Ennis
 - (**workflow**) adopt ahm task management - (26d2476) - Travis Ennis
+- move delegating-to-cake to the shared skills collection - (cc555aa) - Travis Ennis, *Claude Opus 5*
 - update snapshots for Agent Feedback section in instructions - (16fc63c) - Travis Ennis
 - remove DOCUMENTATION.md - (5f35480) - Travis Ennis
 - update remaining .agents/ workflow references to .ahm/ - (4a806a4) - Travis Ennis

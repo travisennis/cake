@@ -236,6 +236,57 @@ fn build_messages_flushes_pending_tool_calls_before_user_message() {
 }
 
 #[test]
+fn build_messages_pairs_repaired_tool_call_before_next_user_message() {
+    // Shape produced by resuming a session whose prior process died between
+    // persisting the call and its output: the repair output closes the call
+    // before the new user turn.
+    let history = vec![
+        ConversationItem::Message {
+            role: Role::User,
+            content: "inspect".to_string(),
+            id: None,
+            status: None,
+            timestamp: None,
+        },
+        ConversationItem::FunctionCall {
+            id: "fc-1".to_string(),
+            call_id: "call-1".to_string(),
+            name: "Bash".to_string(),
+            arguments: r#"{"command":"ls"}"#.to_string(),
+            timestamp: None,
+        },
+        ConversationItem::FunctionCallOutput {
+            call_id: "call-1".to_string(),
+            output: "not executed: the previous cake process ended".to_string(),
+            timestamp: None,
+        },
+        ConversationItem::Message {
+            role: Role::User,
+            content: "carry on".to_string(),
+            id: None,
+            status: None,
+            timestamp: None,
+        },
+    ];
+
+    let msgs = build_messages(&history);
+    assert_eq!(msgs.len(), 4);
+    assert_eq!(msgs[0].role, "user");
+    assert_eq!(msgs[1].role, "assistant");
+    let tool_calls = msgs[1].tool_calls.as_ref().unwrap();
+    assert_eq!(tool_calls.len(), 1);
+    assert_eq!(tool_calls[0].id, "call-1");
+    assert_eq!(msgs[2].role, "tool");
+    assert_eq!(msgs[2].tool_call_id.as_deref(), Some("call-1"));
+    assert_eq!(
+        msgs[2].content.as_deref(),
+        Some("not executed: the previous cake process ended")
+    );
+    assert_eq!(msgs[3].role, "user");
+    assert_eq!(msgs[3].content.as_deref(), Some("carry on"));
+}
+
+#[test]
 fn build_messages_groups_consecutive_function_calls() {
     let history = vec![
         ConversationItem::Message {

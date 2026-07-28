@@ -76,7 +76,10 @@ impl crate::CodingAssistant {
             .with_task_id(task_id)
             .with_tool_context(tool_context)
             .with_toolbox_tools(toolbox_tools)
-            .with_history(messages)?
+            // Flattened rather than layered: the CLI prints only the outermost
+            // error, and the underlying diagnostic is the useful part.
+            .with_history(messages)
+            .map_err(|error| anyhow::anyhow!("Cannot restore session {}: {error:#}", restored.id))?
             .with_skill_locations(skill_locations.clone());
         let mut session = Session::new(restored.id, restored.working_dir);
         session.model = Some(resolved.model_config.model);
@@ -135,7 +138,8 @@ impl crate::CodingAssistant {
             .with_task_id(task_id)
             .with_tool_context(tool_context)
             .with_toolbox_tools(toolbox_tools)
-            .with_history(restored.messages())?
+            .with_history(restored.messages())
+            .map_err(|error| anyhow::anyhow!("Cannot fork session {}: {error:#}", restored.id))?
             .with_skill_locations(skill_locations);
         let new_id = agent.session_id();
         let seed_records: Vec<_> = restored

@@ -217,6 +217,46 @@ fn build_input_converts_history() {
 }
 
 #[test]
+fn build_input_orders_repaired_tool_call_before_next_user_message() {
+    // Shape produced by resuming a session whose prior process died between
+    // persisting the call and its output.
+    let history = vec![
+        ConversationItem::FunctionCall {
+            id: "fc-1".to_string(),
+            call_id: "call-1".to_string(),
+            name: "Bash".to_string(),
+            arguments: r#"{"command":"ls"}"#.to_string(),
+            timestamp: None,
+        },
+        ConversationItem::FunctionCallOutput {
+            call_id: "call-1".to_string(),
+            output: "not executed: the previous cake process ended".to_string(),
+            timestamp: None,
+        },
+        ConversationItem::Message {
+            role: Role::User,
+            content: "carry on".to_string(),
+            id: None,
+            status: None,
+            timestamp: None,
+        },
+    ];
+
+    let input = input_json(&history);
+    assert_eq!(input.len(), 3);
+    assert_eq!(input[0]["type"], "function_call");
+    assert_eq!(input[0]["call_id"], "call-1");
+    assert_eq!(input[1]["type"], "function_call_output");
+    assert_eq!(input[1]["call_id"], "call-1");
+    assert_eq!(
+        input[1]["output"],
+        "not executed: the previous cake process ended"
+    );
+    assert_eq!(input[2]["type"], "message");
+    assert_eq!(input[2]["role"], "user");
+}
+
+#[test]
 fn build_input_empty_history() {
     let history: Vec<ConversationItem> = vec![];
     let input = build_input(&history);

@@ -792,6 +792,10 @@ impl CodingAssistant {
         client.append_output_schema_context();
         client.emit_prompt_context_records()?;
         client.emit_task_start_record()?;
+        // After task_start so the invocation's first record still opens the
+        // stream, and before send() so the repaired history is what the
+        // provider receives.
+        client.emit_history_repair_records()?;
 
         let result = client.send(content.to_string()).await;
         let duration_ms = start.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
