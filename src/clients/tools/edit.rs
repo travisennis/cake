@@ -129,7 +129,9 @@ struct NormalizedContent {
     /// Content with CRLF line endings represented as LF.
     content: String,
     /// Original byte offset for each normalized byte offset.
-    original_offsets: Vec<usize>,
+    /// `None` when the content has no CRLF line endings, i.e. every normalized byte
+    /// offset is its own original offset (identity mapping).
+    original_offsets: Option<Vec<usize>>,
     /// Original content length in bytes.
     original_len: usize,
 }
@@ -687,6 +689,18 @@ fn detect_line_ending(content: &str) -> LineEnding {
 /// Bare CR characters are preserved, and every normalized byte offset can be
 /// mapped back to the original string so unrelated bytes are not rewritten.
 fn normalize_crlf_line_endings(content: &str) -> NormalizedContent {
+    // When the content has no CRLF line endings, normalization is a no-op and the
+    // offset mapping is the identity. Skip both the normalized copy and the per-byte
+    // offset table. This avoids an 8× memory overhead over the file size for LF-only
+    // files while still cloning the content so the result is owned.
+    if !content.contains("\r\n") {
+        return NormalizedContent {
+            content: content.to_string(),
+            original_offsets: None,
+            original_len: content.len(),
+        };
+    }
+
     let mut normalized = String::with_capacity(content.len());
     let mut original_offsets = Vec::with_capacity(content.len());
     let mut chars = content.char_indices().peekable();
@@ -708,7 +722,7 @@ fn normalize_crlf_line_endings(content: &str) -> NormalizedContent {
 
     NormalizedContent {
         content: normalized,
-        original_offsets,
+        original_offsets: Some(original_offsets),
         original_len: content.len(),
     }
 }
@@ -754,8 +768,11 @@ impl NormalizedContent {
 
     /// Return the original byte offset for a normalized byte offset.
     fn original_offset(&self, index: usize) -> Result<usize, String> {
-        self.original_offsets.get(index).copied().ok_or_else(|| {
-            "Internal error: edit match did not map to original file content".to_string()
+        // Identity mapping when None: no CRLF in the original, so normalized offset == original offset.
+        self.original_offsets.as_ref().map_or(Ok(index), |offsets| {
+            offsets.get(index).copied().ok_or_else(|| {
+                "Internal error: edit match did not map to original file content".to_string()
+            })
         })
     }
 }

@@ -493,6 +493,48 @@ fn preserves_lf_line_endings() {
 }
 
 #[test]
+fn lf_only_content_uses_identity_offset_mapping() {
+    // LF-only content must not allocate a per-byte offset table.
+    // The offset mapping is implicitly the identity, represented as None.
+    let lf_content = "hello\nworld\n";
+    let normalized = normalize_crlf_line_endings(lf_content);
+    assert!(
+        normalized.original_offsets.is_none(),
+        "LF-only content should not allocate a per-byte offset table"
+    );
+    // Verify byte-level identity: every normalized offset maps to itself.
+    for i in 0..lf_content.len() {
+        assert_eq!(
+            normalized.original_offset(i).unwrap(),
+            i,
+            "normalized offset {i} should map to original offset {i} for LF-only content"
+        );
+    }
+    // The mapping works past the end for the end-of-string boundary.
+    assert_eq!(
+        normalized.original_offset(lf_content.len()).unwrap(),
+        lf_content.len()
+    );
+}
+
+#[test]
+fn crlf_content_uses_explicit_offset_table() {
+    // CRLF content must allocate a per-byte offset table.
+    let crlf_content = "hello\r\nworld\r\n";
+    let normalized = normalize_crlf_line_endings(crlf_content);
+    let offsets = normalized
+        .original_offsets
+        .as_ref()
+        .expect("CRLF content should have a per-byte offset table");
+    // The normalized content is shorter: each \r\n pair becomes one \n.
+    assert_eq!(normalized.content.len(), crlf_content.len() - 2);
+    assert_eq!(offsets.len(), normalized.content.len());
+    // The original \r\n pairs should be mapped: \n at normalized index 5 maps to
+    // original index 5 (the \r), and so on.
+    assert_eq!(normalized.original_offset(5).unwrap(), 5); // \r at original[5]
+}
+
+#[test]
 fn preserves_crlf_line_endings() {
     let temp_dir = TempDir::new().unwrap();
     let file_path = temp_dir.path().join("test.txt");
