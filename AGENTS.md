@@ -15,8 +15,9 @@ Users depend on CLI shape and exit behavior, machine-readable output formats, to
 5. Preserve compatibility unless the task explicitly changes it.
 6. If work is managed, start and complete it through `ahm`.
 7. Make surgical edits and run risk-proportionate checks.
-8. After implementation edits, run a review in a subagent and address findings until none remain, then perform preflight. If a third round reports findings of the same class, stop patching: report the finding class and the suspected design flaw, and escalate to a design decision.
-9. Hand off changes, exact checks, skipped checks, and remaining risk.
+8. After implementation edits, run reviews in a subagent and address findings until the reviewer gives an all clear. If a third round reports findings of the same class, stop patching: report the finding class and the suspected design flaw, and escalate to a design decision.
+9. Perform preflight.
+10. Hand off changes, exact checks, skipped checks, and remaining risk.
 
 Large or cross-cutting work requires an ExecPlan as directed by `ahm context plan`.
 
