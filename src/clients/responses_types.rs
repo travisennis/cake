@@ -141,6 +141,19 @@ pub(super) struct ApiResponse {
     pub(super) usage: Option<ApiUsage>,
 }
 
+#[derive(Deserialize, Debug)]
+pub(super) struct ApiResponseEnvelope {
+    #[serde(flatten)]
+    pub(super) response: ApiResponse,
+    pub(super) status: Option<String>,
+    pub(super) incomplete_details: Option<IncompleteDetails>,
+}
+
+#[derive(Deserialize, Debug)]
+pub(super) struct IncompleteDetails {
+    pub(super) reason: Option<String>,
+}
+
 #[derive(Deserialize, Debug, Clone)]
 pub(super) struct OutputMessage {
     #[serde(rename = "type")]
@@ -209,5 +222,36 @@ mod tests {
         let json = serde_json::to_string(&config).unwrap();
         let expected = r#"{"only":["OpenAI"]}"#;
         assert_eq!(json, expected);
+    }
+
+    #[test]
+    fn response_envelope_retains_optional_termination_fields() {
+        let envelope: ApiResponseEnvelope = serde_json::from_value(serde_json::json!({
+            "id": "resp-123",
+            "status": "incomplete",
+            "incomplete_details": {"reason": "max_output_tokens"},
+            "output": []
+        }))
+        .unwrap();
+
+        assert_eq!(envelope.status.as_deref(), Some("incomplete"));
+        assert_eq!(
+            envelope.incomplete_details.unwrap().reason.as_deref(),
+            Some("max_output_tokens")
+        );
+        assert_eq!(envelope.response.id.as_deref(), Some("resp-123"));
+    }
+
+    #[test]
+    fn response_envelope_tolerates_unknown_and_missing_termination_fields() {
+        let envelope: ApiResponseEnvelope = serde_json::from_value(serde_json::json!({
+            "id": "resp-123",
+            "output": [],
+            "future_metadata": {"value": true}
+        }))
+        .unwrap();
+
+        assert!(envelope.status.is_none());
+        assert!(envelope.incomplete_details.is_none());
     }
 }

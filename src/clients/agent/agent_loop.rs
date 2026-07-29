@@ -80,7 +80,11 @@ impl Agent {
 
         // Agent loop: continue until model stops making tool calls
         loop {
-            let TurnResult { items, usage } = self
+            let TurnResult {
+                items,
+                usage,
+                termination,
+            } = self
                 .complete_turn_with_output_schema_fallback(in_correction_mode)
                 .await?;
 
@@ -103,6 +107,7 @@ impl Agent {
                     &mut corrections_used,
                     &mut in_correction_mode,
                     turn_start,
+                    termination.as_ref(),
                 )? {
                     return Ok(document);
                 }
@@ -350,6 +355,7 @@ impl Agent {
         corrections_used: &mut u32,
         in_correction_mode: &mut bool,
         turn_start: usize,
+        termination: Option<&crate::session_telemetry::ProviderTermination>,
     ) -> anyhow::Result<Option<String>> {
         let Some(message) = self.conversation.resolve_assistant_message_from(turn_start) else {
             let turn_items = self
@@ -357,7 +363,7 @@ impl Agent {
                 .history()
                 .get(turn_start..)
                 .unwrap_or_default();
-            return Err(cut_off_error(turn_items).into());
+            return Err(cut_off_error(turn_items, termination).into());
         };
         let Some(schema) = self.output_schema.clone() else {
             return Ok(Some(message));
@@ -601,8 +607,11 @@ fn detect_skill_activation(
 /// `turn_items` must contain only the current turn's items (history after the
 /// turn-start index), so reasoning from earlier turns cannot mislabel a fresh
 /// empty response as cut off during reasoning.
-fn cut_off_error(turn_items: &[ConversationItem]) -> CutOffError {
-    let detail = if turn_items.is_empty() {
+fn cut_off_error(
+    turn_items: &[ConversationItem],
+    termination: Option<&crate::session_telemetry::ProviderTermination>,
+) -> CutOffError {
+    let mut detail = if turn_items.is_empty() {
         "No response was received from the model.".to_string()
     } else if turn_items
         .iter()
@@ -612,5 +621,17 @@ fn cut_off_error(turn_items: &[ConversationItem]) -> CutOffError {
     } else {
         "The model's response was incomplete. No final message was received.".to_string()
     };
+    detail.push_str(&termination_diagnostic(termination));
     CutOffError::new(detail)
+}
+
+fn termination_diagnostic(
+    termination: Option<&crate::session_telemetry::ProviderTermination>,
+) -> String {
+    termination.map_or_else(String::new, |termination| {
+        format!(
+            " Provider termination: {}.",
+            termination.classification.as_str()
+        )
+    })
 }

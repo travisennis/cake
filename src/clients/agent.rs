@@ -19,7 +19,7 @@ use crate::config::skills::Skill;
 use crate::config::toolbox::ToolboxTool;
 use crate::hooks::HookRunner;
 use crate::session_telemetry::{
-    SessionTelemetryContext, SessionTelemetryRecord, SessionTelemetrySettings,
+    ProviderTermination, SessionTelemetryContext, SessionTelemetryRecord, SessionTelemetrySettings,
     SessionTelemetryWriter,
 };
 use crate::types::{
@@ -32,6 +32,7 @@ use crate::types::{
 pub(super) struct TurnResult {
     pub(super) items: Vec<ConversationItem>,
     pub(super) usage: Option<Usage>,
+    pub(super) termination: Option<ProviderTermination>,
 }
 
 struct AgentTelemetry {

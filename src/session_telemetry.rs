@@ -12,6 +12,41 @@ use crate::clients::retry::{RequestOverrides, RetryReason, RetryStatus};
 use crate::config::model::{ApiType, ReasoningEffort};
 use crate::types::Usage;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TerminationClassification {
+    Completed,
+    ToolCalls,
+    TokenLimit,
+    ContentFilter,
+    Incomplete,
+    Failed,
+    Unknown,
+}
+
+impl TerminationClassification {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::ToolCalls => "tool_calls",
+            Self::TokenLimit => "token_limit",
+            Self::ContentFilter => "content_filter",
+            Self::Incomplete => "incomplete",
+            Self::Failed => "failed",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ProviderTermination {
+    pub classification: TerminationClassification,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_reason: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionTelemetryRunMode {
@@ -47,6 +82,8 @@ pub struct ApiAttemptTelemetry {
     pub status_code: Option<u16>,
     pub error: Option<String>,
     pub usage: Option<Usage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub termination: Option<ProviderTermination>,
     pub request_overrides: RequestOverridesSnapshot,
 }
 
@@ -215,6 +252,69 @@ impl SessionTelemetryWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn api_attempt(termination: Option<ProviderTermination>) -> ApiAttemptTelemetry {
+        ApiAttemptTelemetry {
+            turn_index: 1,
+            attempt: 1,
+            request_ms: 10,
+            parse_ms: 2,
+            total_ms: 12,
+            history_items: 3,
+            status_code: Some(200),
+            error: None,
+            usage: None,
+            termination,
+            request_overrides: RequestOverridesSnapshot {
+                max_output_tokens: None,
+                reasoning_max_tokens: None,
+                context_overflow_retry_used: false,
+            },
+        }
+    }
+
+    #[test]
+    fn api_attempt_serializes_optional_termination_metadata() {
+        let with_termination = serde_json::to_value(api_attempt(Some(ProviderTermination {
+            classification: TerminationClassification::Unknown,
+            provider_status: Some("future_status".to_string()),
+            provider_reason: Some("future_reason".to_string()),
+        })))
+        .unwrap();
+        assert_eq!(with_termination["termination"]["classification"], "unknown");
+        assert_eq!(
+            with_termination["termination"]["provider_status"],
+            "future_status"
+        );
+        assert_eq!(
+            with_termination["termination"]["provider_reason"],
+            "future_reason"
+        );
+
+        let without_termination = serde_json::to_value(api_attempt(None)).unwrap();
+        assert!(without_termination.get("termination").is_none());
+    }
+
+    #[test]
+    fn termination_classification_labels_match_serialized_values() {
+        let cases = [
+            (TerminationClassification::Completed, "completed"),
+            (TerminationClassification::ToolCalls, "tool_calls"),
+            (TerminationClassification::TokenLimit, "token_limit"),
+            (TerminationClassification::ContentFilter, "content_filter"),
+            (TerminationClassification::Incomplete, "incomplete"),
+            (TerminationClassification::Failed, "failed"),
+            (TerminationClassification::Unknown, "unknown"),
+        ];
+
+        for (classification, expected) in cases {
+            assert_eq!(classification.as_str(), expected);
+            assert_eq!(
+                serde_json::to_value(classification).unwrap(),
+                serde_json::json!(expected)
+            );
+        }
+    }
 
     #[test]
     fn writer_appends_newline_delimited_json() {

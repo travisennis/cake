@@ -94,6 +94,10 @@ impl AgentRunner {
                         let parse_ms = elapsed_ms(parse_start);
                         let total_ms = elapsed_ms(total_start);
                         let usage = parse_result.as_ref().ok().and_then(|turn| turn.usage);
+                        let termination = parse_result
+                            .as_ref()
+                            .ok()
+                            .and_then(|turn| turn.termination.clone());
                         let error = parse_result.as_ref().err().map(ToString::to_string);
                         report_telemetry(AgentRunnerTelemetryEvent::ApiAttempt(
                             ApiAttemptTelemetry {
@@ -106,6 +110,7 @@ impl AgentRunner {
                                 status_code: Some(status_code),
                                 error,
                                 usage,
+                                termination,
                                 request_overrides: RequestOverridesSnapshot::from(
                                     &request_overrides,
                                 ),
@@ -137,6 +142,7 @@ impl AgentRunner {
                         status_code: Some(status_code),
                         error: Some(format!("{} {}", failure.status, failure.body)),
                         usage: None,
+                        termination: None,
                         request_overrides: RequestOverridesSnapshot::from(&request_overrides),
                     }));
 
@@ -189,6 +195,7 @@ impl AgentRunner {
                         status_code: None,
                         error: Some(error.to_string()),
                         usage: None,
+                        termination: None,
                         request_overrides: RequestOverridesSnapshot::from(&request_overrides),
                     }));
                     match retry::classify_transport_error(

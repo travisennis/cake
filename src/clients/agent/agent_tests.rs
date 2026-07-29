@@ -1129,6 +1129,46 @@ mod error_tests {
     }
 
     #[tokio::test]
+    async fn cut_off_diagnostic_includes_provider_termination_without_reasoning() {
+        let mock_server = MockServer::start().await;
+        let mut body = reasoning_only_response();
+        body["status"] = serde_json::json!("incomplete");
+        body["incomplete_details"] = serde_json::json!({"reason": "max_output_tokens"});
+        mount_response(&mock_server, body).await;
+
+        let mut agent = test_agent_with_url(&mock_server.uri());
+        let err = agent.send("hello".to_string()).await.unwrap_err();
+        let cutoff = err
+            .downcast_ref::<crate::types::CutOffError>()
+            .expect("expected CutOffError");
+
+        assert!(cutoff.detail.contains("Provider termination: token_limit"));
+        assert!(!cutoff.detail.contains("incomplete"));
+        assert!(!cutoff.detail.contains("max_output_tokens"));
+        assert!(!cutoff.detail.contains("thinking..."));
+    }
+
+    #[tokio::test]
+    async fn cut_off_diagnostic_does_not_expose_unknown_provider_metadata() {
+        let mock_server = MockServer::start().await;
+        let mut body = reasoning_only_response();
+        body["status"] = serde_json::json!("secret-status");
+        body["incomplete_details"] =
+            serde_json::json!({"reason": "private model output\nand control text"});
+        mount_response(&mock_server, body).await;
+
+        let mut agent = test_agent_with_url(&mock_server.uri());
+        let err = agent.send("hello".to_string()).await.unwrap_err();
+        let cutoff = err
+            .downcast_ref::<crate::types::CutOffError>()
+            .expect("expected CutOffError");
+
+        assert!(cutoff.detail.contains("Provider termination: unknown"));
+        assert!(!cutoff.detail.contains("secret-status"));
+        assert!(!cutoff.detail.contains("private model output"));
+    }
+
+    #[tokio::test]
     async fn cut_off_in_resumed_session_is_not_masked_by_prior_assistant_message() {
         let mock_server = MockServer::start().await;
         mount_response(&mock_server, empty_output_response()).await;

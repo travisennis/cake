@@ -13,6 +13,7 @@ use crate::clients::chat_types::{
 use crate::clients::provider_strategy::ProviderStrategy;
 use crate::clients::retry::RequestOverrides;
 use crate::clients::tools::Tool;
+use crate::session_telemetry::{ProviderTermination, TerminationClassification};
 use crate::types::{
     ConversationItem, InputTokensDetails, OutputTokensDetails, ReasoningContentKind, Role, Usage,
 };
@@ -153,8 +154,32 @@ pub(super) async fn parse_response(response: reqwest::Response) -> anyhow::Resul
     });
 
     let items = parse_choices(&chat_response)?;
+    let termination = chat_response
+        .choices
+        .first()
+        .and_then(|choice| choice.finish_reason.as_deref())
+        .map(chat_termination);
 
-    Ok(TurnResult { items, usage })
+    Ok(TurnResult {
+        items,
+        usage,
+        termination,
+    })
+}
+
+fn chat_termination(reason: &str) -> ProviderTermination {
+    let classification = match reason {
+        "stop" => TerminationClassification::Completed,
+        "tool_calls" | "function_call" => TerminationClassification::ToolCalls,
+        "length" | "max_tokens" | "max_output_tokens" => TerminationClassification::TokenLimit,
+        "content_filter" => TerminationClassification::ContentFilter,
+        _ => TerminationClassification::Unknown,
+    };
+    ProviderTermination {
+        classification,
+        provider_status: None,
+        provider_reason: Some(reason.to_string()),
+    }
 }
 
 /// Convert internal conversation history to Chat Completions messages.

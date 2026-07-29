@@ -599,6 +599,7 @@ fn parse_choices_text_response() {
                 reasoning_content: None,
                 tool_calls: None,
             },
+            finish_reason: None,
         }],
         usage: None,
     };
@@ -627,6 +628,7 @@ fn parse_choices_tool_calls() {
                     },
                 }]),
             },
+            finish_reason: None,
         }],
         usage: None,
     };
@@ -653,6 +655,7 @@ fn parse_choices_preserves_reasoning_content_for_tool_calls() {
                     },
                 }]),
             },
+            finish_reason: None,
         }],
         usage: None,
     };
@@ -688,6 +691,7 @@ fn parse_choices_with_usage() {
                 reasoning_content: None,
                 tool_calls: None,
             },
+            finish_reason: None,
         }],
         usage: Some(ChatUsage {
             prompt_tokens: Some(100),
@@ -1166,6 +1170,7 @@ fn parse_choices_empty_message_content() {
                 reasoning_content: None,
                 tool_calls: None,
             },
+            finish_reason: None,
         }],
         usage: None,
     };
@@ -1190,6 +1195,7 @@ fn parse_choices_none_content_creates_empty_message() {
                 reasoning_content: None,
                 tool_calls: None,
             },
+            finish_reason: None,
         }],
         usage: None,
     };
@@ -1228,6 +1234,7 @@ fn parse_choices_multiple_tool_calls() {
                     },
                 ]),
             },
+            finish_reason: None,
         }],
         usage: None,
     };
@@ -1258,6 +1265,7 @@ fn parse_choices_tool_calls_with_text_content() {
                     },
                 }]),
             },
+            finish_reason: None,
         }],
         usage: None,
     };
@@ -1283,6 +1291,7 @@ fn parse_choices_missing_id_fails() {
                 reasoning_content: None,
                 tool_calls: None,
             },
+            finish_reason: None,
         }],
         usage: None,
     };
@@ -1303,6 +1312,7 @@ fn parse_choices_message_with_content_only() {
                 reasoning_content: None,
                 tool_calls: None,
             },
+            finish_reason: None,
         }],
         usage: None,
     };
@@ -1354,6 +1364,65 @@ mod response_parsing_tests {
         assert!(result.is_ok());
         let turn_result = result.unwrap();
         assert_eq!(turn_result.items.len(), 1);
+        assert_eq!(
+            turn_result.termination.unwrap().classification,
+            TerminationClassification::Completed
+        );
+    }
+
+    #[tokio::test]
+    async fn parse_response_classifies_and_preserves_finish_reasons() {
+        let cases = [
+            ("length", TerminationClassification::TokenLimit),
+            ("content_filter", TerminationClassification::ContentFilter),
+            ("provider_new_reason", TerminationClassification::Unknown),
+        ];
+
+        for (reason, expected) in cases {
+            let mock_server = MockServer::start().await;
+            let mut body = minimal_valid_response();
+            body["choices"][0]["finish_reason"] = serde_json::json!(reason);
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(body))
+                .mount(&mock_server)
+                .await;
+
+            let response = reqwest::Client::new()
+                .post(format!("{}/chat/completions", mock_server.uri()))
+                .send()
+                .await
+                .unwrap();
+            let termination = parse_response(response).await.unwrap().termination.unwrap();
+            assert_eq!(termination.classification, expected);
+            assert_eq!(termination.provider_reason.as_deref(), Some(reason));
+        }
+    }
+
+    #[tokio::test]
+    async fn parse_response_tolerates_missing_finish_reason() {
+        let mock_server = MockServer::start().await;
+        let mut body = minimal_valid_response();
+        body["choices"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("finish_reason");
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&mock_server)
+            .await;
+
+        let response = reqwest::Client::new()
+            .post(format!("{}/chat/completions", mock_server.uri()))
+            .send()
+            .await
+            .unwrap();
+        assert!(
+            parse_response(response)
+                .await
+                .unwrap()
+                .termination
+                .is_none()
+        );
     }
 
     #[tokio::test]

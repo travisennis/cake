@@ -101,6 +101,7 @@ pub(super) struct ChatResponse {
 #[derive(Deserialize, Debug)]
 pub(super) struct ChatChoice {
     pub(super) message: ChatResponseMessage,
+    pub(super) finish_reason: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]

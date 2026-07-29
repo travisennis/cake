@@ -6,11 +6,13 @@ use crate::clients::agent::TurnResult;
 use crate::clients::backend::FinalOutputConstraint;
 use crate::clients::provider_strategy::ProviderStrategy;
 use crate::clients::responses_types::{
-    ApiResponse, ApiUsage, OutputMessage, ReasoningConfig, Request, ResponsesApiInputItem,
-    ResponsesMessageContent, ResponsesReasoningSummary, TextConfig, TextFormat,
+    ApiResponse, ApiResponseEnvelope, ApiUsage, OutputMessage, ReasoningConfig, Request,
+    ResponsesApiInputItem, ResponsesMessageContent, ResponsesReasoningSummary, TextConfig,
+    TextFormat,
 };
 use crate::clients::retry::RequestOverrides;
 use crate::clients::tools::Tool;
+use crate::session_telemetry::{ProviderTermination, TerminationClassification};
 use crate::types::{
     ConversationItem, InputTokensDetails, OutputTokensDetails, ReasoningContentKind, Role, Usage,
 };
@@ -105,7 +107,15 @@ pub(super) async fn send_request<'a>(
 ///
 /// Returns an error if the response body cannot be deserialized.
 pub(super) async fn parse_response(response: reqwest::Response) -> anyhow::Result<TurnResult> {
-    let api_response = response.json::<ApiResponse>().await?;
+    let envelope = response.json::<ApiResponseEnvelope>().await?;
+    let termination = responses_termination(
+        envelope.status.as_deref(),
+        envelope
+            .incomplete_details
+            .as_ref()
+            .and_then(|details| details.reason.as_deref()),
+    );
+    let api_response = envelope.response;
     trace!(target: "cake", "{api_response:?}");
 
     if api_response.id.is_none() {
@@ -121,7 +131,33 @@ pub(super) async fn parse_response(response: reqwest::Response) -> anyhow::Resul
         .map(|u| map_usage(u, &api_response));
     let items = parse_output_items(&api_response)?;
 
-    Ok(TurnResult { items, usage })
+    Ok(TurnResult {
+        items,
+        usage,
+        termination,
+    })
+}
+
+fn responses_termination(
+    status: Option<&str>,
+    reason: Option<&str>,
+) -> Option<ProviderTermination> {
+    if status.is_none() && reason.is_none() {
+        return None;
+    }
+    let classification = match (status, reason) {
+        (_, Some("max_output_tokens" | "max_tokens")) => TerminationClassification::TokenLimit,
+        (_, Some("content_filter")) => TerminationClassification::ContentFilter,
+        (Some("completed"), _) => TerminationClassification::Completed,
+        (Some("incomplete" | "in_progress" | "queued"), _) => TerminationClassification::Incomplete,
+        (Some("failed" | "cancelled"), _) => TerminationClassification::Failed,
+        _ => TerminationClassification::Unknown,
+    };
+    Some(ProviderTermination {
+        classification,
+        provider_status: status.map(str::to_string),
+        provider_reason: reason.map(str::to_string),
+    })
 }
 
 /// Map API-level usage to the canonical `Usage` type.

@@ -72,7 +72,7 @@ Serialization snapshots under `src/types/snapshots/` provide canonical record ex
 
 Persisted sessions have operational telemetry under `~/.cache/cake/session-telemetry/{session_id}.ndjson` or the corresponding `CAKE_DATA_DIR` path. A sidecar may span several invocations; `invocation_id` separates them.
 
-Records cover initialization, API attempts, retries, tool calls, and summaries. They include timing and usage metadata but intentionally omit prompts, assistant text, and raw tool-output bodies. Sidecars are never used for continue, resume, fork, or session discovery.
+Records cover initialization, API attempts, retries, tool calls, and summaries. They include timing and usage metadata but intentionally omit prompts, assistant text, and raw tool-output bodies. Successful `api_attempt` records may include an optional `termination` object with Cake's provider-neutral `classification` and the provider's raw `provider_status` or `provider_reason` when supplied. Consumers must tolerate this and other additional optional fields; older sidecars and providers that omit termination metadata will not contain it. Sidecars are never used for continue, resume, fork, or session discovery.
 
 ## Hook protocol
 

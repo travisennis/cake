@@ -82,6 +82,41 @@ fn assert_json_snapshot_with_environment_filters(name: &str, value: &serde_json:
 }
 
 #[test]
+fn response_termination_classifies_status_and_incomplete_details() {
+    let cases = [
+        (
+            Some("completed"),
+            None,
+            TerminationClassification::Completed,
+        ),
+        (
+            Some("incomplete"),
+            Some("max_output_tokens"),
+            TerminationClassification::TokenLimit,
+        ),
+        (
+            Some("incomplete"),
+            Some("content_filter"),
+            TerminationClassification::ContentFilter,
+        ),
+        (Some("failed"), None, TerminationClassification::Failed),
+        (
+            Some("future_status"),
+            Some("future_reason"),
+            TerminationClassification::Unknown,
+        ),
+    ];
+
+    for (status, reason, expected) in cases {
+        let termination = responses_termination(status, reason).unwrap();
+        assert_eq!(termination.classification, expected);
+        assert_eq!(termination.provider_status.as_deref(), status);
+        assert_eq!(termination.provider_reason.as_deref(), reason);
+    }
+    assert!(responses_termination(None, None).is_none());
+}
+
+#[test]
 fn extract_instructions_with_system_message() {
     let history = vec![
         ConversationItem::Message {
