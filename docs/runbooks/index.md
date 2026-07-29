@@ -16,7 +16,7 @@ Audit a release binary and identify its principal size contributors.
 
 ### Debugging Sandbox Denials
 
-Destination: `docs/runbooks/debugging-sandbox.md`
+[Debugging Sandbox Denials](debugging-sandbox.md)
 
 Diagnose sandbox failures using the platform-appropriate Seatbelt or Landlock path.
 

@@ -55,7 +55,7 @@ Use for sandbox policies, allowed paths, command policy, and trusted hook or too
 Consult:
 
 - [Security and trust boundaries](docs/security.md), for the threat model, policies, enforcement layers, and what the sandbox does not restrict.
-- [Runbook index --- Debugging Sandbox Denials](docs/runbooks/index.md#debugging-sandbox-denials), for operational diagnosis and recovery.
+- [Debugging Sandbox Denials runbook](docs/runbooks/debugging-sandbox.md), for platform-specific operational diagnosis and recovery.
 - [ADR 014](docs/adr/014-sandbox-policy-cli-flag.md), for the sandbox policy flag.
 - [ADR 016](docs/adr/016-nested-seatbelt-sandbox-fallback.md), for the recognized nested-Seatbelt fallback.
 - [ADR 015](docs/adr/015-declarative-command-policy.md), for declarative command policy.

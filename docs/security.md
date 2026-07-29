@@ -31,6 +31,8 @@ Sandbox availability errors fail closed. On macOS, a process already inside Seat
 
 Command checks are workflow protection, not a shell parser or security boundary. They cannot recognize every equivalent spelling or prevent every remote side effect.
 
+For operational diagnosis and platform-specific recovery, follow the [Debugging Sandbox Denials runbook](runbooks/debugging-sandbox.md).
+
 ## What the sandbox does not restrict
 
 The Bash sandbox is a filesystem boundary. Network access remains available. Commands may reach remote services using credentials readable within their environment and allowed paths. Remote Git history, APIs, databases, and other network effects are outside the filesystem sandbox.
