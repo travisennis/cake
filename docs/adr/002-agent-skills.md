@@ -11,16 +11,28 @@ As cake evolved, users needed a way to provide specialized instructions for spec
 
 We evaluated several approaches for making specialized knowledge available to the agent on demand.
 
-## Decision (as amended by 2026-07-07)
+## Decision (as amended by 2026-07-29)
 
 We implement a skills system with the following design:
 
 1. **Discovery**: Skills are discovered from `.agents/skills/<skill-name>/SKILL.md` directories at both project (`./.agents/skills/`) and user (`~/.agents/skills/`) levels.
+
 2. **Parsing**: Each `SKILL.md` file contains YAML frontmatter with `name` and `description` fields, followed by markdown body content.
+
 3. **Catalog disclosure**: Discovered skills are listed in the system prompt as an XML `<available_skills>` catalog, telling the model which skills exist and where to find them.
+
 4. **Lazy activation**: The model uses the existing `Read` tool to load a `SKILL.md` file when its description matches the current task. The skill content is then in the conversation context. A `SkillActivated` session record is emitted once per skill per session on the first read, but the Read tool always returns the actual file contents.
+
 5. **No deduplication**: Every `Read` of a `SKILL.md` returns the file contents like any other read. There is no interception, no state machine, and no "already active" message. The model retains full control over when and what it reads.
+
 6. **Configuration**: Users can disable skills (`--no-skills`), filter to specific skills (`--skills name1,name2`), or configure defaults in `settings.toml`.
+
+7. **Instruction content model**: Repository-owned agent instructions use three roles:
+   - A **skill** teaches a decision frame, capability, or way of approaching work.
+   - A **runbook** owns a repeatable repository operation, including branches, safety, evidence, and recovery.
+   - A **reference** records stable formats, commands, and diagnostic interpretation.
+
+   Runbooks live under `docs/runbooks/` and are routed from `AGENTS.md`. A converted skill may remain in the skill catalog as a pointer stub, but the runbook owns the procedure.
 
 ## Rationale
 
@@ -51,9 +63,12 @@ We implement a skills system with the following design:
 
 2026-07-07: Decision point 5 changed from "Deduplication" to "No deduplication". The Read interception state machine (`skill_dedup.rs`) and its agent plumbing were removed. `SkillActivated` records are still emitted on first read per skill per session via path-watching (no output substitution). See task 235.
 
+2026-07-29: Decision point 7 established the skill / runbook / reference content model. Repeatable repository procedures move to `docs/runbooks/` and are routed from `AGENTS.md`; catalog compatibility may be preserved with a pointer-only `SKILL.md`. See task 300.
+
 ## References
 
 - `docs/configuration.md` - Current user configuration
+- `docs/runbooks/index.md` - Repository runbook category and pointer-stub shape
 - `src/config/skills.rs` - Skill discovery and parsing implementation
 - `src/prompts/mod.rs` - System prompt integration
 - `src/clients/agent.rs` - Path-watching skill activation tracking

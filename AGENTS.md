@@ -55,6 +55,7 @@ Use for sandbox policies, allowed paths, command policy, and trusted hook or too
 Consult:
 
 - [Security and trust boundaries](docs/security.md), for the threat model, policies, enforcement layers, and what the sandbox does not restrict.
+- [Runbook index --- Debugging Sandbox Denials](docs/runbooks/index.md#debugging-sandbox-denials), for operational diagnosis and recovery.
 - [ADR 014](docs/adr/014-sandbox-policy-cli-flag.md), for the sandbox policy flag.
 - [ADR 016](docs/adr/016-nested-seatbelt-sandbox-fallback.md), for the recognized nested-Seatbelt fallback.
 - [ADR 015](docs/adr/015-declarative-command-policy.md), for declarative command policy.
@@ -72,6 +73,7 @@ Consult:
 
 - [ARCHITECTURE.md](ARCHITECTURE.md), for the conversation and backend boundary.
 - [Integration contracts](docs/integrations.md), for provider retry behavior.
+- [Runbook index --- Debugging Failed Cake Runs](docs/runbooks/index.md#debugging-failed-cake-runs), for reactive agent-loop failure triage.
 - [ADR 001](docs/adr/001-agent-loop-architecture.md), for the agent loop.
 - [ADR 008](docs/adr/008-structured-provider-headers.md), for structured provider headers.
 - [ADR 011](docs/adr/011-interrupt-handling.md), for interrupt handling and graceful shutdown.
@@ -97,6 +99,8 @@ Use for session JSONL, record semantics, resume, and telemetry sidecars.
 Consult:
 
 - [Integration contracts](docs/integrations.md), for persisted-session layout and record semantics.
+- [Runbook index --- Analyzing Cake Sessions](docs/runbooks/index.md#analyzing-cake-sessions), for evidence-backed review of a persisted session.
+- [Runbook index --- Debugging Failed Cake Runs](docs/runbooks/index.md#debugging-failed-cake-runs), for reactive triage before deeper session analysis.
 - [ADR 004](docs/adr/004-append-only-session-task-events.md), for append-only task events.
 - [ADR 007](docs/adr/007-per-session-telemetry-sidecar.md), for the telemetry sidecar.
 - `src/types/session.rs` and its snapshots, which are the authority for serialized records.
@@ -131,6 +135,7 @@ Use for `Cargo.toml`, `Cargo.lock`, the `justfile`, CI, toolchain, and release w
 Consult:
 
 - [CONTRIBUTING.md](CONTRIBUTING.md), the canonical command catalog and verification policy.
+- [Runbook index --- Auditing Binary Size](docs/runbooks/index.md#auditing-binary-size), for investigating release binary bloat.
 
 Dependency changes require explicit scope and `Cargo.toml`/`Cargo.lock` consistency.
 
