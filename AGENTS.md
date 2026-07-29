@@ -135,7 +135,7 @@ Use for `Cargo.toml`, `Cargo.lock`, the `justfile`, CI, toolchain, and release w
 Consult:
 
 - [CONTRIBUTING.md](CONTRIBUTING.md), the canonical command catalog and verification policy.
-- [Runbook index --- Auditing Binary Size](docs/runbooks/index.md#auditing-binary-size), for investigating release binary bloat.
+- [Auditing Binary Size runbook](docs/runbooks/auditing-binary-size.md), for investigating release binary bloat.
 
 Dependency changes require explicit scope and `Cargo.toml`/`Cargo.lock` consistency.
 

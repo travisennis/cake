@@ -14,6 +14,14 @@ prek install --hook-type pre-commit --hook-type pre-push --hook-type commit-msg
 
 `just setup` installs the Cargo utilities used by repository recipes. Run `just --list` for the authoritative command catalog.
 
+Binary-size audits additionally require `cargo-bloat`:
+
+```bash
+cargo install cargo-bloat
+```
+
+Follow the [Auditing Binary Size runbook](docs/runbooks/auditing-binary-size.md) for the release build and analysis commands.
+
 ## Development loop
 
 1. Inspect `git status --short` and preserve unrelated work.

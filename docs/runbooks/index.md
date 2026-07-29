@@ -4,13 +4,13 @@ Runbooks own repeatable repository operations. A runbook gives an agent the bran
 
 `AGENTS.md` routes agents to the relevant runbook. A catalog entry may remain under `.agents/skills/` as a discovery aid, but the runbook is the canonical procedure.
 
-## Planned Runbooks
+## Runbook Catalog
 
-The following runbooks are being migrated into this category:
+The following runbooks are available here or planned for migration into this category:
 
 ### Auditing Binary Size
 
-Destination: `docs/runbooks/auditing-binary-size.md`
+[Auditing Binary Size](auditing-binary-size.md)
 
 Audit a release binary and identify its principal size contributors.
 
