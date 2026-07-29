@@ -91,11 +91,17 @@ pub(super) fn execute_read(
 fn is_binary(path: &Path) -> Result<bool, String> {
     let file = std::fs::File::open(path)
         .map_err(|e| format!("Failed to open file '{}': {e}", path.display()))?;
-    let mut buf = [0u8; 8192];
-    let n = (&file)
-        .take(8192)
-        .read(&mut buf)
-        .map_err(|e| format!("Failed to read file '{}': {e}", path.display()))?;
+    probe_binary(file).map_err(|e| format!("Failed to read file '{}': {e}", path.display()))
+}
+
+/// Probe the first 8 KiB of a reader for null bytes.
+///
+/// Uses `read_to_end` on a `Take` to handle readers that return fewer bytes
+/// than requested on the first call (short reads from FIFOs, network mounts,
+/// or FUSE filesystems).
+fn probe_binary(reader: impl std::io::Read) -> Result<bool, std::io::Error> {
+    let mut buf = Vec::with_capacity(8192);
+    let n = reader.take(8192).read_to_end(&mut buf)?;
     Ok(buf[..n].contains(&0))
 }
 
@@ -478,6 +484,75 @@ mod tests {
         assert!(
             !output.contains('\u{FFFD}'),
             "Output contains replacement character (split code point)"
+        );
+    }
+
+    /// A reader that returns data in small chunks to simulate short reads
+    /// from FIFOs, network mounts, or FUSE filesystems.
+    struct ShortReader<'a> {
+        data: &'a [u8],
+        chunk_size: usize,
+        pos: usize,
+    }
+
+    impl<'a> ShortReader<'a> {
+        fn new(data: &'a [u8], chunk_size: usize) -> Self {
+            Self {
+                data,
+                chunk_size,
+                pos: 0,
+            }
+        }
+    }
+
+    impl std::io::Read for ShortReader<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.pos >= self.data.len() {
+                return Ok(0);
+            }
+            let chunk = self
+                .chunk_size
+                .min(buf.len())
+                .min(self.data.len() - self.pos);
+            let chunk = chunk.max(1); // always return at least 1 byte if data remains
+            buf[..chunk].copy_from_slice(&self.data[self.pos..self.pos + chunk]);
+            self.pos += chunk;
+            Ok(chunk)
+        }
+    }
+
+    #[test]
+    fn probe_binary_detects_null_byte_across_short_reads() {
+        // A reader that returns data in 100-byte chunks with a null byte
+        // at offset 512 (past the first few chunks).
+        let mut data = vec![b'x'; 8192];
+        data[512] = 0x00;
+        let reader = ShortReader::new(&data, 100);
+        assert!(
+            probe_binary(reader).unwrap(),
+            "should detect null byte at offset 512 across short-read boundary"
+        );
+    }
+
+    #[test]
+    fn probe_binary_short_read_no_null() {
+        // A reader returning data in small chunks without null bytes.
+        let data = vec![b'x'; 8192];
+        let reader = ShortReader::new(&data, 100);
+        assert!(
+            !probe_binary(reader).unwrap(),
+            "should not detect binary without null bytes"
+        );
+    }
+
+    #[test]
+    fn probe_binary_short_read_short_file_no_null() {
+        // A file shorter than the probe window, returned in tiny chunks.
+        let data = vec![b'a'; 42];
+        let reader = ShortReader::new(&data, 7);
+        assert!(
+            !probe_binary(reader).unwrap(),
+            "short file without null bytes should not be detected as binary"
         );
     }
 
