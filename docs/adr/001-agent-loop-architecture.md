@@ -17,7 +17,10 @@ We use an iterative agent loop with tool execution:
 2. Receive response
 3. If response contains tool calls, execute them and append results
 4. If response is a final message, return it
-5. Repeat from step 1
+5. If a successful response has no final message and is not explicitly non-retryable, append one final-answer-only continuation with tools disabled
+6. Repeat from step 1
+
+The incomplete-turn continuation is allowed once per user invocation. It remains in the same session and task, and its provider turn, usage, conversation records, and telemetry accumulate normally. A second incomplete response returns the existing cut-off outcome rather than extending the loop again.
 
 ## Rationale
 
@@ -29,8 +32,10 @@ We use an iterative agent loop with tool execution:
 ## Consequences
 
 - **Positive**: Minimal abstraction overhead, easy to trace execution
+- **Positive**: Bounded recovery preserves context when a provider stops after partial reasoning
 - **Negative**: Higher latency due to sequential tool execution
 - **Negative**: Requires careful handling of tool call limits to prevent infinite loops
+- **Negative**: An incomplete provider response can add one extra request and final-answer latency
 
 ## Alternatives Considered
 

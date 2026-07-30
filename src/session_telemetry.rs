@@ -142,6 +142,7 @@ pub enum RetryReasonSnapshot {
     LockTimeout,
     Network,
     ContextOverflow,
+    SemanticIncomplete,
 }
 
 impl From<&RetryReason> for RetryReasonSnapshot {
@@ -154,6 +155,7 @@ impl From<&RetryReason> for RetryReasonSnapshot {
             RetryReason::LockTimeout => Self::LockTimeout,
             RetryReason::Network => Self::Network,
             RetryReason::ContextOverflow => Self::ContextOverflow,
+            RetryReason::SemanticIncomplete => Self::SemanticIncomplete,
         }
     }
 }

@@ -157,8 +157,7 @@ pub(super) async fn parse_response(response: reqwest::Response) -> anyhow::Resul
     let termination = chat_response
         .choices
         .first()
-        .and_then(|choice| choice.finish_reason.as_deref())
-        .map(chat_termination);
+        .and_then(chat_choice_termination);
 
     Ok(TurnResult {
         items,
@@ -167,12 +166,26 @@ pub(super) async fn parse_response(response: reqwest::Response) -> anyhow::Resul
     })
 }
 
+fn chat_choice_termination(
+    choice: &crate::clients::chat_types::ChatChoice,
+) -> Option<ProviderTermination> {
+    if choice.message.refusal.is_some() {
+        return Some(ProviderTermination {
+            classification: TerminationClassification::Failed,
+            provider_status: None,
+            provider_reason: choice.finish_reason.clone(),
+        });
+    }
+    choice.finish_reason.as_deref().map(chat_termination)
+}
+
 fn chat_termination(reason: &str) -> ProviderTermination {
     let classification = match reason {
         "stop" => TerminationClassification::Completed,
         "tool_calls" | "function_call" => TerminationClassification::ToolCalls,
         "length" | "max_tokens" | "max_output_tokens" => TerminationClassification::TokenLimit,
         "content_filter" => TerminationClassification::ContentFilter,
+        "refusal" | "refused" => TerminationClassification::Failed,
         _ => TerminationClassification::Unknown,
     };
     ProviderTermination {
@@ -250,6 +263,9 @@ impl<'a> ChatMessageBuilder<'a> {
             return;
         }
 
+        if !matches!(role, Role::Assistant) {
+            self.pending_reasoning_content = None;
+        }
         self.flush_pending_tool_calls();
 
         let reasoning_content = matches!(role, Role::Assistant)
@@ -293,6 +309,7 @@ impl<'a> ChatMessageBuilder<'a> {
 
     fn push_function_call_output(&mut self, call_id: &'a str, output: &'a str) {
         self.flush_pending_tool_calls();
+        self.pending_reasoning_content = None;
 
         self.messages.push(ChatMessage {
             role: Cow::Borrowed("tool"),

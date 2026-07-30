@@ -1,20 +1,41 @@
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::clients::agent::{Agent, TurnResult};
 use crate::clients::backend::FinalOutputConstraint;
+use crate::clients::retry::{RequestOverrides, RetryReason, RetryStatus};
 use crate::clients::tools::{Tool, ToolRegistry, read_extract_path, schedule_tool_calls};
 use crate::config::output_schema::{OutputSchema, OutputSchemaError};
 use crate::hooks::{HookRunner, ToolHookPlan};
-use crate::session_telemetry::ToolCallTelemetry;
+use crate::session_telemetry::{
+    AgentRunnerTelemetryEvent, RetryScheduledTelemetry, TerminationClassification,
+    ToolCallTelemetry,
+};
 use crate::types::{ConversationItem, CutOffError, SessionRecord};
 
 /// Maximum number of corrective turns after a final message fails
 /// output-schema validation.
 const MAX_SCHEMA_CORRECTION_TURNS: u32 = 2;
 
+pub(super) const SEMANTIC_RECOVERY_PROMPT: &str = "Your previous response ended before providing a final \
+answer. Continue from the existing conversation and provide the final answer now. Do not repeat \
+completed tool calls or redo completed work.";
+
 type FunctionCall = (String, String, String);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TurnMode {
+    Normal,
+    SchemaCorrection,
+    SemanticRecovery,
+}
+
+impl TurnMode {
+    const fn tools_disabled(self) -> bool {
+        !matches!(self, Self::Normal)
+    }
+}
 
 #[derive(Debug, Clone)]
 struct ToolRunResult {
@@ -67,25 +88,22 @@ impl Agent {
         let user_item = self.conversation.push_user_message(content);
         self.stream_item(&user_item)?;
 
-        // History index where this turn's items begin. Resumed and multi-turn
-        // histories carry earlier assistant messages; cut-off detection must
-        // only consider items produced by the current turn.
-        let turn_start = self.conversation.history().len();
-
         // Output-schema correction state: when the final message fails
         // validation, the loop re-enters with tools disabled for at most
         // MAX_SCHEMA_CORRECTION_TURNS corrective turns.
         let mut corrections_used: u32 = 0;
-        let mut in_correction_mode = false;
+        let mut turn_mode = TurnMode::Normal;
+        let mut semantic_recovery_used = false;
 
         // Agent loop: continue until model stops making tool calls
         loop {
+            let provider_turn_start = self.conversation.history().len();
             let TurnResult {
                 items,
                 usage,
                 termination,
             } = self
-                .complete_turn_with_output_schema_fallback(in_correction_mode)
+                .complete_turn_with_output_schema_fallback(turn_mode)
                 .await?;
 
             // Count every completed API turn unconditionally; accumulate usage separately.
@@ -103,11 +121,40 @@ impl Agent {
             // If no function calls, resolve the message; with a schema
             // attached, the message must validate before it is returned.
             if function_calls.is_empty() {
+                let message = self
+                    .conversation
+                    .resolve_assistant_message_from(provider_turn_start);
+                if message.is_none() || termination_marks_incomplete(termination.as_ref()) {
+                    if !semantic_recovery_used
+                        && semantic_incomplete_is_retryable(termination.as_ref())
+                    {
+                        semantic_recovery_used = true;
+                        turn_mode = TurnMode::SemanticRecovery;
+                        self.record_semantic_recovery_retry();
+                        let continuation = self
+                            .conversation
+                            .push_user_message(SEMANTIC_RECOVERY_PROMPT.to_string());
+                        self.stream_item(&continuation)?;
+                        continue;
+                    }
+
+                    let turn_items = self
+                        .conversation
+                        .history()
+                        .get(provider_turn_start..)
+                        .unwrap_or_default();
+                    return Err(cut_off_error(
+                        turn_items,
+                        termination.as_ref(),
+                        semantic_recovery_used.then_some(self.session_id),
+                    )
+                    .into());
+                }
+
                 if let Some(document) = self.resolve_final_message_or_correct(
                     &mut corrections_used,
-                    &mut in_correction_mode,
-                    turn_start,
-                    termination.as_ref(),
+                    &mut turn_mode,
+                    provider_turn_start,
                 )? {
                     return Ok(document);
                 }
@@ -117,7 +164,7 @@ impl Agent {
             // Correction turns offer no tools, so any function calls here come
             // from a misbehaving provider. Do not execute them; treat the turn
             // as a failed validation attempt.
-            if in_correction_mode {
+            if turn_mode.tools_disabled() {
                 // Append synthetic FunctionCallOutput items for every
                 // unexecuted call so the history stays well-formed for both
                 // the Responses API and Chat Completions backends.
@@ -128,11 +175,22 @@ impl Agent {
                     let item = self.conversation.push_tool_output(call_id.clone(), output);
                     self.stream_item(&item)?;
                 }
-                self.record_correction_tool_call_failure(
-                    &mut corrections_used,
-                    &mut in_correction_mode,
-                )?;
-                continue;
+                if turn_mode == TurnMode::SchemaCorrection {
+                    self.record_correction_tool_call_failure(
+                        &mut corrections_used,
+                        &mut turn_mode,
+                    )?;
+                    continue;
+                }
+
+                let turn_items = self
+                    .conversation
+                    .history()
+                    .get(provider_turn_start..)
+                    .unwrap_or_default();
+                return Err(
+                    cut_off_error(turn_items, termination.as_ref(), Some(self.session_id)).into(),
+                );
             }
 
             let results = self.execute_function_calls(function_calls).await?;
@@ -327,11 +385,11 @@ impl Agent {
 
     async fn complete_turn_with_output_schema_fallback(
         &mut self,
-        in_correction_mode: bool,
+        turn_mode: TurnMode,
     ) -> anyhow::Result<TurnResult> {
         loop {
-            let constraint_attached = self.native_constraint_attached(in_correction_mode);
-            match self.complete_turn(in_correction_mode).await {
+            let constraint_attached = self.native_constraint_attached(turn_mode);
+            match self.complete_turn_in_mode(turn_mode).await {
                 Ok(turn) => return Ok(turn),
                 Err(error) if constraint_attached && is_native_constraint_rejection(&error) => {
                     self.native_constraint_enabled = false;
@@ -346,24 +404,21 @@ impl Agent {
         }
     }
 
-    const fn native_constraint_attached(&self, in_correction_mode: bool) -> bool {
-        in_correction_mode && self.native_constraint_enabled && self.output_schema.is_some()
+    const fn native_constraint_attached(&self, turn_mode: TurnMode) -> bool {
+        turn_mode.tools_disabled() && self.native_constraint_enabled && self.output_schema.is_some()
     }
 
     fn resolve_final_message_or_correct(
         &mut self,
         corrections_used: &mut u32,
-        in_correction_mode: &mut bool,
-        turn_start: usize,
-        termination: Option<&crate::session_telemetry::ProviderTermination>,
+        turn_mode: &mut TurnMode,
+        provider_turn_start: usize,
     ) -> anyhow::Result<Option<String>> {
-        let Some(message) = self.conversation.resolve_assistant_message_from(turn_start) else {
-            let turn_items = self
-                .conversation
-                .history()
-                .get(turn_start..)
-                .unwrap_or_default();
-            return Err(cut_off_error(turn_items, termination).into());
+        let Some(message) = self
+            .conversation
+            .resolve_assistant_message_from(provider_turn_start)
+        else {
+            return Ok(None);
         };
         let Some(schema) = self.output_schema.clone() else {
             return Ok(Some(message));
@@ -371,7 +426,7 @@ impl Agent {
         match validate_final_message(&schema, &message) {
             Ok(document) => Ok(Some(document)),
             Err(detail) => {
-                self.push_schema_correction(corrections_used, in_correction_mode, detail)?;
+                self.push_schema_correction(corrections_used, turn_mode, detail)?;
                 Ok(None)
             },
         }
@@ -380,11 +435,11 @@ impl Agent {
     fn record_correction_tool_call_failure(
         &mut self,
         corrections_used: &mut u32,
-        in_correction_mode: &mut bool,
+        turn_mode: &mut TurnMode,
     ) -> anyhow::Result<()> {
         self.push_schema_correction(
             corrections_used,
-            in_correction_mode,
+            turn_mode,
             "the response contained tool calls instead of a single JSON document".to_string(),
         )
     }
@@ -398,7 +453,7 @@ impl Agent {
     fn push_schema_correction(
         &mut self,
         corrections_used: &mut u32,
-        in_correction_mode: &mut bool,
+        turn_mode: &mut TurnMode,
         detail: String,
     ) -> anyhow::Result<()> {
         if *corrections_used >= MAX_SCHEMA_CORRECTION_TURNS {
@@ -409,7 +464,7 @@ impl Agent {
             .into());
         }
         *corrections_used += 1;
-        *in_correction_mode = true;
+        *turn_mode = TurnMode::SchemaCorrection;
         let corrective = format!(
             "Your previous response failed output schema validation:\n{detail}\n\n\
              Respond with only a single JSON document that validates against \
@@ -426,14 +481,11 @@ impl Agent {
     /// Correction turns offer no tools — the model must answer with the final
     /// JSON document, not more tool calls — and attach the provider's native
     /// structured-output constraint while it remains enabled for this run.
-    pub(super) async fn complete_turn(
-        &mut self,
-        in_correction_mode: bool,
-    ) -> anyhow::Result<TurnResult> {
-        let tool_definitions = tool_definitions_for_turn(&self.tools, in_correction_mode);
+    async fn complete_turn_in_mode(&mut self, turn_mode: TurnMode) -> anyhow::Result<TurnResult> {
+        let tool_definitions = tool_definitions_for_turn(&self.tools, turn_mode);
         let constraint = final_output_constraint_for_turn(
             self.output_schema.as_deref(),
-            self.native_constraint_attached(in_correction_mode),
+            self.native_constraint_attached(turn_mode),
         );
         let config = &self.config;
         let session_id = self.session_id;
@@ -458,6 +510,51 @@ impl Agent {
             self.append_runner_telemetry(event);
         }
         result
+    }
+
+    #[cfg(test)]
+    pub(super) async fn complete_turn(
+        &mut self,
+        in_correction_mode: bool,
+    ) -> anyhow::Result<TurnResult> {
+        let turn_mode = if in_correction_mode {
+            TurnMode::SchemaCorrection
+        } else {
+            TurnMode::Normal
+        };
+        self.complete_turn_in_mode(turn_mode).await
+    }
+
+    fn record_semantic_recovery_retry(&mut self) {
+        let status = RetryStatus {
+            attempt: 1,
+            max_retries: 1,
+            delay: Duration::ZERO,
+            reason: RetryReason::SemanticIncomplete,
+            detail: "successful provider turn contained no final assistant message".to_string(),
+        };
+        let request_overrides = RequestOverrides {
+            max_output_tokens: self.config.model_config.max_output_tokens,
+            reasoning_max_tokens: self.config.model_config.reasoning_max_tokens,
+            context_overflow_retry_used: false,
+        };
+        self.append_runner_telemetry(AgentRunnerTelemetryEvent::RetryScheduled(
+            RetryScheduledTelemetry::from_status(
+                &status,
+                self.turn_count,
+                false,
+                &request_overrides,
+            ),
+        ));
+        self.report_progress("Retrying incomplete model turn (semantic_incomplete, attempt 1/1)");
+        tracing::info!(
+            target: "cake",
+            reason = ?status.reason,
+            detail = %status.detail,
+            attempt = status.attempt,
+            max_attempts = status.max_retries,
+            "Retrying incomplete model turn"
+        );
     }
 
     fn function_calls_from_items(items: &[ConversationItem]) -> Vec<FunctionCall> {
@@ -493,8 +590,8 @@ fn is_native_constraint_rejection(error: &anyhow::Error) -> bool {
         .is_some_and(|api_error| api_error.status == 400)
 }
 
-fn tool_definitions_for_turn(tools: &ToolRegistry, in_correction_mode: bool) -> &[Tool] {
-    if in_correction_mode {
+fn tool_definitions_for_turn(tools: &ToolRegistry, turn_mode: TurnMode) -> &[Tool] {
+    if turn_mode.tools_disabled() {
         &[]
     } else {
         tools.definitions()
@@ -610,6 +707,7 @@ fn detect_skill_activation(
 fn cut_off_error(
     turn_items: &[ConversationItem],
     termination: Option<&crate::session_telemetry::ProviderTermination>,
+    resume_session_id: Option<uuid::Uuid>,
 ) -> CutOffError {
     let mut detail = if turn_items.is_empty() {
         "No response was received from the model.".to_string()
@@ -622,7 +720,46 @@ fn cut_off_error(
         "The model's response was incomplete. No final message was received.".to_string()
     };
     detail.push_str(&termination_diagnostic(termination));
+    if let Some(session_id) = resume_session_id {
+        detail.push_str(" To continue this session explicitly, run: cake --resume ");
+        detail.push_str(&session_id.to_string());
+        detail.push_str(" \"try again\"");
+    }
     CutOffError::new(detail)
+}
+
+fn semantic_incomplete_is_retryable(
+    termination: Option<&crate::session_telemetry::ProviderTermination>,
+) -> bool {
+    termination.is_none_or(|termination| {
+        !matches!(
+            termination.classification,
+            TerminationClassification::ContentFilter | TerminationClassification::Failed
+        ) && !provider_declares_refusal(termination.provider_status.as_deref())
+            && !provider_declares_refusal(termination.provider_reason.as_deref())
+    })
+}
+
+fn termination_marks_incomplete(
+    termination: Option<&crate::session_telemetry::ProviderTermination>,
+) -> bool {
+    termination.is_some_and(|termination| {
+        matches!(
+            termination.classification,
+            TerminationClassification::ToolCalls
+                | TerminationClassification::TokenLimit
+                | TerminationClassification::ContentFilter
+                | TerminationClassification::Incomplete
+                | TerminationClassification::Failed
+        ) || provider_declares_refusal(termination.provider_status.as_deref())
+            || provider_declares_refusal(termination.provider_reason.as_deref())
+    })
+}
+
+fn provider_declares_refusal(value: Option<&str>) -> bool {
+    value.is_some_and(|value| {
+        value.eq_ignore_ascii_case("refusal") || value.eq_ignore_ascii_case("refused")
+    })
 }
 
 fn termination_diagnostic(

@@ -356,6 +356,15 @@ impl Agent {
         self
     }
 
+    /// Enables human-readable progress updates for recoverable agent-loop events.
+    pub fn with_progress_callback(
+        mut self,
+        callback: impl Fn(&str) + Send + Sync + 'static,
+    ) -> Self {
+        self.observer.set_progress(callback);
+        self
+    }
+
     /// Enables best-effort session telemetry sidecar writing.
     pub fn with_session_telemetry(
         mut self,
@@ -385,6 +394,10 @@ impl Agent {
     /// Stream a conversation item as JSON via the streaming callback, if set.
     fn stream_item(&mut self, item: &ConversationItem) -> anyhow::Result<()> {
         self.observer.stream_item(item)
+    }
+
+    fn report_progress(&self, message: &str) {
+        self.observer.report_progress(message);
     }
 
     /// Emit the task start record.

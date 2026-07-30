@@ -383,6 +383,68 @@ fn build_messages_preserves_reasoning_content_for_assistant_messages() {
 }
 
 #[test]
+fn build_messages_drops_unpaired_reasoning_before_semantic_recovery_prompt() {
+    let history = vec![
+        ConversationItem::Message {
+            role: Role::User,
+            content: "investigate".to_string(),
+            id: None,
+            status: None,
+            timestamp: None,
+        },
+        ConversationItem::Reasoning {
+            id: "r-incomplete".to_string(),
+            summary: Some(vec!["partial".to_string()]),
+            encrypted_content: None,
+            content: Some(vec![ReasoningContent {
+                content_type: ReasoningContentKind::ReasoningText,
+                text: Some("provider-private reasoning".to_string()),
+            }]),
+            timestamp: None,
+        },
+        ConversationItem::Message {
+            role: Role::User,
+            content: "provide the final answer now".to_string(),
+            id: None,
+            status: None,
+            timestamp: None,
+        },
+        ConversationItem::Message {
+            role: Role::Assistant,
+            content: "recovered answer".to_string(),
+            id: Some("msg-recovered".to_string()),
+            status: Some("completed".to_string()),
+            timestamp: None,
+        },
+        ConversationItem::Message {
+            role: Role::User,
+            content: "next question".to_string(),
+            id: None,
+            status: None,
+            timestamp: None,
+        },
+    ];
+
+    let msgs = build_messages(&history);
+
+    assert_eq!(msgs.len(), 4);
+    assert_eq!(msgs[0].role, "user");
+    assert_eq!(msgs[1].role, "user");
+    assert_eq!(
+        msgs[1].content.as_deref(),
+        Some("provide the final answer now")
+    );
+    assert!(
+        msgs.iter()
+            .all(|message| message.reasoning_content.is_none())
+    );
+    assert_eq!(msgs[2].role, "assistant");
+    assert_eq!(msgs[2].content.as_deref(), Some("recovered answer"));
+    assert_eq!(msgs[3].role, "user");
+    assert_eq!(msgs[3].content.as_deref(), Some("next question"));
+}
+
+#[test]
 fn build_messages_preserves_reasoning_content_for_assistant_tool_calls() {
     let history = vec![
         ConversationItem::Message {
@@ -597,6 +659,7 @@ fn parse_choices_text_response() {
             message: ChatResponseMessage {
                 content: Some("Hello!".to_string()),
                 reasoning_content: None,
+                refusal: None,
                 tool_calls: None,
             },
             finish_reason: None,
@@ -620,6 +683,7 @@ fn parse_choices_tool_calls() {
             message: ChatResponseMessage {
                 content: None,
                 reasoning_content: None,
+                refusal: None,
                 tool_calls: Some(vec![ChatToolCall {
                     id: "call-abc".to_string(),
                     function: ChatFunctionCall {
@@ -647,6 +711,7 @@ fn parse_choices_preserves_reasoning_content_for_tool_calls() {
             message: ChatResponseMessage {
                 content: None,
                 reasoning_content: Some("preserved reasoning".to_string()),
+                refusal: None,
                 tool_calls: Some(vec![ChatToolCall {
                     id: "call-abc".to_string(),
                     function: ChatFunctionCall {
@@ -689,6 +754,7 @@ fn parse_choices_with_usage() {
             message: ChatResponseMessage {
                 content: Some("Hi".to_string()),
                 reasoning_content: None,
+                refusal: None,
                 tool_calls: None,
             },
             finish_reason: None,
@@ -1168,6 +1234,7 @@ fn parse_choices_empty_message_content() {
             message: ChatResponseMessage {
                 content: Some(String::new()), // Empty content
                 reasoning_content: None,
+                refusal: None,
                 tool_calls: None,
             },
             finish_reason: None,
@@ -1193,6 +1260,7 @@ fn parse_choices_none_content_creates_empty_message() {
             message: ChatResponseMessage {
                 content: None, // No content
                 reasoning_content: None,
+                refusal: None,
                 tool_calls: None,
             },
             finish_reason: None,
@@ -1217,6 +1285,7 @@ fn parse_choices_multiple_tool_calls() {
             message: ChatResponseMessage {
                 content: None,
                 reasoning_content: None,
+                refusal: None,
                 tool_calls: Some(vec![
                     ChatToolCall {
                         id: "call-1".to_string(),
@@ -1257,6 +1326,7 @@ fn parse_choices_tool_calls_with_text_content() {
             message: ChatResponseMessage {
                 content: Some("Let me help you with that.".to_string()),
                 reasoning_content: None,
+                refusal: None,
                 tool_calls: Some(vec![ChatToolCall {
                     id: "call-1".to_string(),
                     function: ChatFunctionCall {
@@ -1289,6 +1359,7 @@ fn parse_choices_missing_id_fails() {
             message: ChatResponseMessage {
                 content: Some("Hello".to_string()),
                 reasoning_content: None,
+                refusal: None,
                 tool_calls: None,
             },
             finish_reason: None,
@@ -1310,6 +1381,7 @@ fn parse_choices_message_with_content_only() {
             message: ChatResponseMessage {
                 content: Some("Hello".to_string()),
                 reasoning_content: None,
+                refusal: None,
                 tool_calls: None,
             },
             finish_reason: None,
@@ -1375,6 +1447,7 @@ mod response_parsing_tests {
         let cases = [
             ("length", TerminationClassification::TokenLimit),
             ("content_filter", TerminationClassification::ContentFilter),
+            ("refusal", TerminationClassification::Failed),
             ("provider_new_reason", TerminationClassification::Unknown),
         ];
 

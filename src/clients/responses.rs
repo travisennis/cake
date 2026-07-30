@@ -108,14 +108,19 @@ pub(super) async fn send_request<'a>(
 /// Returns an error if the response body cannot be deserialized.
 pub(super) async fn parse_response(response: reqwest::Response) -> anyhow::Result<TurnResult> {
     let envelope = response.json::<ApiResponseEnvelope>().await?;
+    let api_response = envelope.response;
     let termination = responses_termination(
         envelope.status.as_deref(),
+        api_response
+            .output
+            .iter()
+            .filter_map(|output| output.status.as_deref()),
         envelope
             .incomplete_details
             .as_ref()
             .and_then(|details| details.reason.as_deref()),
+        response_contains_refusal(&api_response),
     );
-    let api_response = envelope.response;
     trace!(target: "cake", "{api_response:?}");
 
     if api_response.id.is_none() {
@@ -138,25 +143,68 @@ pub(super) async fn parse_response(response: reqwest::Response) -> anyhow::Resul
     })
 }
 
-fn responses_termination(
-    status: Option<&str>,
+fn responses_termination<'a>(
+    envelope_status: Option<&str>,
+    item_statuses: impl IntoIterator<Item = &'a str>,
     reason: Option<&str>,
+    contains_refusal: bool,
 ) -> Option<ProviderTermination> {
-    if status.is_none() && reason.is_none() {
+    let item_statuses = item_statuses.into_iter().collect::<Vec<_>>();
+    if envelope_status.is_none()
+        && item_statuses.is_empty()
+        && reason.is_none()
+        && !contains_refusal
+    {
         return None;
     }
-    let classification = match (status, reason) {
-        (_, Some("max_output_tokens" | "max_tokens")) => TerminationClassification::TokenLimit,
-        (_, Some("content_filter")) => TerminationClassification::ContentFilter,
-        (Some("completed"), _) => TerminationClassification::Completed,
-        (Some("incomplete" | "in_progress" | "queued"), _) => TerminationClassification::Incomplete,
-        (Some("failed" | "cancelled"), _) => TerminationClassification::Failed,
-        _ => TerminationClassification::Unknown,
-    };
+    let statuses = envelope_status
+        .into_iter()
+        .chain(item_statuses.iter().copied());
+    let classification = classify_response_termination(statuses, reason, contains_refusal);
     Some(ProviderTermination {
         classification,
-        provider_status: status.map(str::to_string),
+        provider_status: envelope_status
+            .or_else(|| item_statuses.first().copied())
+            .map(str::to_string),
         provider_reason: reason.map(str::to_string),
+    })
+}
+
+fn classify_response_termination<'a>(
+    statuses: impl IntoIterator<Item = &'a str>,
+    reason: Option<&str>,
+    contains_refusal: bool,
+) -> TerminationClassification {
+    let statuses = statuses.into_iter().collect::<Vec<_>>();
+    let has_status = |expected: &[&str]| statuses.iter().any(|status| expected.contains(status));
+
+    if reason == Some("content_filter") || has_status(&["content_filter"]) {
+        TerminationClassification::ContentFilter
+    } else if contains_refusal
+        || matches!(reason, Some("refusal" | "refused" | "failed" | "cancelled"))
+        || has_status(&["refusal", "refused", "failed", "cancelled"])
+    {
+        TerminationClassification::Failed
+    } else if matches!(reason, Some("max_output_tokens" | "max_tokens" | "length"))
+        || has_status(&["max_output_tokens", "max_tokens", "length"])
+    {
+        TerminationClassification::TokenLimit
+    } else if has_status(&["incomplete", "in_progress", "queued"]) {
+        TerminationClassification::Incomplete
+    } else if has_status(&["completed"]) {
+        TerminationClassification::Completed
+    } else {
+        TerminationClassification::Unknown
+    }
+}
+
+fn response_contains_refusal(api_response: &ApiResponse) -> bool {
+    api_response.output.iter().any(|output| {
+        output.msg_type == "refusal"
+            || output
+                .content
+                .as_ref()
+                .is_some_and(|content| content.iter().any(|item| item.content_type == "refusal"))
     })
 }
 

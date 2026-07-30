@@ -33,6 +33,8 @@ impl CliOutputSink {
     pub(crate) fn attach_callbacks(self, mut client: Agent) -> Agent {
         if self.format == OutputFormat::StreamJson {
             client = client.with_streaming_json(Self::write_stream_record);
+        } else if self.format == OutputFormat::Text {
+            client = client.with_progress_callback(Self::write_progress);
         }
 
         client
@@ -153,6 +155,10 @@ impl CliOutputSink {
 
     fn write_text_response(content: &str) {
         println!("{content}");
+    }
+
+    fn write_progress(message: &str) {
+        eprintln!("{message}");
     }
 
     pub(crate) fn write_json_value(value: &serde_json::Value) -> anyhow::Result<()> {

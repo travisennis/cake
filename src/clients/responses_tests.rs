@@ -86,34 +86,109 @@ fn response_termination_classifies_status_and_incomplete_details() {
     let cases = [
         (
             Some("completed"),
+            &[][..],
             None,
             TerminationClassification::Completed,
         ),
         (
             Some("incomplete"),
+            &[][..],
             Some("max_output_tokens"),
             TerminationClassification::TokenLimit,
         ),
         (
             Some("incomplete"),
+            &[][..],
             Some("content_filter"),
             TerminationClassification::ContentFilter,
         ),
-        (Some("failed"), None, TerminationClassification::Failed),
+        (
+            Some("failed"),
+            &[][..],
+            None,
+            TerminationClassification::Failed,
+        ),
         (
             Some("future_status"),
+            &[][..],
             Some("future_reason"),
             TerminationClassification::Unknown,
         ),
     ];
 
-    for (status, reason, expected) in cases {
-        let termination = responses_termination(status, reason).unwrap();
+    for (status, item_statuses, reason, expected) in cases {
+        let termination =
+            responses_termination(status, item_statuses.iter().copied(), reason, false).unwrap();
         assert_eq!(termination.classification, expected);
         assert_eq!(termination.provider_status.as_deref(), status);
         assert_eq!(termination.provider_reason.as_deref(), reason);
     }
-    assert!(responses_termination(None, None).is_none());
+    assert!(responses_termination(None, std::iter::empty(), None, false).is_none());
+    assert_eq!(
+        responses_termination(Some("completed"), std::iter::empty(), None, true)
+            .unwrap()
+            .classification,
+        TerminationClassification::Failed
+    );
+}
+
+#[test]
+fn response_termination_uses_global_severity_precedence() {
+    let cases = [
+        (
+            Some("failed"),
+            &["incomplete"][..],
+            None,
+            false,
+            TerminationClassification::Failed,
+        ),
+        (
+            Some("completed"),
+            &["incomplete"][..],
+            None,
+            false,
+            TerminationClassification::Incomplete,
+        ),
+        (
+            Some("completed"),
+            &["completed"][..],
+            None,
+            true,
+            TerminationClassification::Failed,
+        ),
+        (
+            Some("incomplete"),
+            &["failed"][..],
+            Some("content_filter"),
+            false,
+            TerminationClassification::ContentFilter,
+        ),
+        (
+            Some("completed"),
+            &["completed"][..],
+            Some("max_output_tokens"),
+            false,
+            TerminationClassification::TokenLimit,
+        ),
+        (
+            Some("incomplete"),
+            &["failed"][..],
+            None,
+            false,
+            TerminationClassification::Failed,
+        ),
+    ];
+
+    for (status, item_statuses, reason, contains_refusal, expected) in cases {
+        let termination = responses_termination(
+            status,
+            item_statuses.iter().copied(),
+            reason,
+            contains_refusal,
+        )
+        .unwrap();
+        assert_eq!(termination.classification, expected);
+    }
 }
 
 #[test]
@@ -249,6 +324,47 @@ fn build_input_converts_history() {
     let input = input_json(&history);
     assert_eq!(input.len(), 1);
     assert_eq!(input[0]["type"], "message");
+}
+
+#[test]
+fn build_input_keeps_native_reasoning_before_semantic_recovery_prompt() {
+    let history = vec![
+        ConversationItem::Message {
+            role: Role::User,
+            content: "investigate".to_string(),
+            id: None,
+            status: None,
+            timestamp: None,
+        },
+        ConversationItem::Reasoning {
+            id: "r-incomplete".to_string(),
+            summary: Some(vec!["partial".to_string()]),
+            encrypted_content: Some("opaque".to_string()),
+            content: None,
+            timestamp: None,
+        },
+        ConversationItem::Message {
+            role: Role::User,
+            content: "provide the final answer now".to_string(),
+            id: None,
+            status: None,
+            timestamp: None,
+        },
+    ];
+
+    let input = input_json(&history);
+
+    assert_eq!(input.len(), 3);
+    assert_eq!(input[0]["type"], "message");
+    assert_eq!(input[1]["type"], "reasoning");
+    assert_eq!(input[1]["id"], "r-incomplete");
+    assert_eq!(input[1]["encrypted_content"], "opaque");
+    assert_eq!(input[2]["type"], "message");
+    assert_eq!(input[2]["role"], "user");
+    assert_eq!(
+        input[2]["content"][0]["text"],
+        "provide the final answer now"
+    );
 }
 
 #[test]

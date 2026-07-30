@@ -211,6 +211,7 @@ fn resolve_assistant_message(items: &[ConversationItem]) -> Option<String> {
             content,
             ..
         } = item
+            && !content.trim().is_empty()
         {
             Some(content.clone())
         } else {
@@ -252,6 +253,13 @@ mod tests {
     #[test]
     fn resolve_assistant_message_no_output_items() {
         let items: Vec<ConversationItem> = vec![];
+        let content = resolve_assistant_message(&items);
+        assert!(content.is_none());
+    }
+
+    #[test]
+    fn resolve_assistant_message_ignores_empty_assistant_message() {
+        let items = vec![assistant_message(" \n")];
         let content = resolve_assistant_message(&items);
         assert!(content.is_none());
     }

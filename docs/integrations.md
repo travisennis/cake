@@ -21,6 +21,8 @@ Retries are bounded. Cake retries transport failures and HTTP `408`, `409`, `429
 
 A parseable `Retry-After` value takes precedence over exponential backoff, but is capped by the active maximum backoff. Transport recovery temporarily disables idle connection reuse. A parseable context-window overflow may be retried once with reduced output and reasoning-token budgets when enough output space remains.
 
+Cake also makes one zero-delay semantic continuation turn when a successful provider response contains partial output but no final assistant message, unless the provider identifies a non-retryable termination such as content filtering, failure, or refusal. This continuation stays in the same session and task, preserves cumulative usage and counters, asks only for the missing final answer, and offers no tools so completed tool work is not repeated. Text mode reports the `semantic_incomplete` retry on stderr; JSON and stream-JSON keep prose progress suppressed. If that turn is also incomplete, Cake emits the existing cut-off outcome once and includes an explicit `cake --resume <UUID> "try again"` command.
+
 ## Completion JSON
 
 `--output-format json` emits one JSON object after the invocation completes. It contains the final result or error plus session metadata, usage, working directory, turn count, and elapsed time.
@@ -34,6 +36,8 @@ Progress and retry rendering are suppressed so stdout remains parseable. The exa
 A redirected stream is an event feed, not a resumable session file. Consumers should process records by their top-level `type`, preserve order, ignore unknown optional fields, and use `call_id` to associate tool calls, outputs, and hook events.
 
 Malformed model tool arguments remain visible on the `function_call` record and produce a corresponding error output instead of making the stream invalid.
+
+An automatic semantic continuation is visible as the provider's partial conversation records followed by one Cake-authored user continuation message. These records precede the recovered assistant message or terminal cut-off. The invocation still emits exactly one final `task_complete`; recovery does not create another task boundary.
 
 ## Persisted sessions
 
@@ -72,7 +76,7 @@ Serialization snapshots under `src/types/snapshots/` provide canonical record ex
 
 Persisted sessions have operational telemetry under `~/.cache/cake/session-telemetry/{session_id}.ndjson` or the corresponding `CAKE_DATA_DIR` path. A sidecar may span several invocations; `invocation_id` separates them.
 
-Records cover initialization, API attempts, retries, tool calls, and summaries. They include timing and usage metadata but intentionally omit prompts, assistant text, and raw tool-output bodies. Successful `api_attempt` records may include an optional `termination` object with Cake's provider-neutral `classification` and the provider's raw `provider_status` or `provider_reason` when supplied. Consumers must tolerate this and other additional optional fields; older sidecars and providers that omit termination metadata will not contain it. Sidecars are never used for continue, resume, fork, or session discovery.
+Records cover initialization, API attempts, retries, tool calls, and summaries. They include timing and usage metadata but intentionally omit prompts, assistant text, and raw tool-output bodies. Successful `api_attempt` records may include an optional `termination` object with Cake's provider-neutral `classification` and the provider's raw `provider_status` or `provider_reason` when supplied. A `retry_scheduled` record whose reason is `semantic_incomplete` identifies the zero-delay continuation described above. Consumers must tolerate this and other additional enum values or optional fields; older sidecars and providers that omit termination metadata will not contain it. Sidecars are never used for continue, resume, fork, or session discovery.
 
 ## Hook protocol
 

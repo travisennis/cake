@@ -108,6 +108,7 @@ pub(super) struct ChatChoice {
 pub(super) struct ChatResponseMessage {
     pub(super) content: Option<String>,
     pub(super) reasoning_content: Option<String>,
+    pub(super) refusal: Option<String>,
     pub(super) tool_calls: Option<Vec<ChatToolCall>>,
 }
 

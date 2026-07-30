@@ -565,6 +565,7 @@ fn stream_item_emits_function_call_output() {
 #[cfg(test)]
 mod error_tests {
     use super::*;
+    use crate::clients::agent::agent_loop::SEMANTIC_RECOVERY_PROMPT;
     use crate::config::hooks::{HookCommand, HookEvent, HookGroup, HookMatcher, LoadedHooks};
     use crate::config::model::ApiType;
     use crate::hooks::{HookContext, HookRunner};
@@ -714,6 +715,34 @@ mod error_tests {
                         && item["output"] == self.output
                 })
             })
+        }
+    }
+
+    #[derive(Debug)]
+    struct SemanticRecoveryMatcher {
+        call_id: String,
+        output: String,
+    }
+
+    impl Match for SemanticRecoveryMatcher {
+        fn matches(&self, request: &Request) -> bool {
+            let Ok(body) = serde_json::from_slice::<serde_json::Value>(&request.body) else {
+                return false;
+            };
+            let Some(items) = body["input"].as_array() else {
+                return false;
+            };
+
+            body.get("tools").is_none()
+                && items.iter().any(|item| {
+                    item["type"] == "function_call_output"
+                        && item["call_id"] == self.call_id
+                        && item["output"] == self.output
+                })
+                && items.iter().any(|item| item["type"] == "reasoning")
+                && items.iter().any(|item| {
+                    item["role"] == "user" && item["content"][0]["text"] == SEMANTIC_RECOVERY_PROMPT
+                })
         }
     }
 
@@ -1111,6 +1140,566 @@ mod error_tests {
         ]
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the end-to-end recovery assertion covers identity, accounting, request shape, persistence, streaming, and progress together"
+    )]
+    #[tokio::test]
+    async fn semantic_incomplete_responses_turn_recovers_in_place() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(reasoning_only_response()))
+            .expect(1)
+            .up_to_n_times(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(success_response()))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let persisted = Arc::new(Mutex::new(Vec::new()));
+        let persisted_clone = Arc::clone(&persisted);
+        let streamed = Arc::new(Mutex::new(Vec::new()));
+        let streamed_clone = Arc::clone(&streamed);
+        let progress = Arc::new(Mutex::new(Vec::<String>::new()));
+        let progress_clone = Arc::clone(&progress);
+        let session_id = uuid::uuid!("550e8400-e29b-41d4-a716-446655440000");
+        let task_id = uuid::uuid!("550e8400-e29b-41d4-a716-446655440001");
+        let mut agent = Agent::new(
+            test_resolved_model_config(ApiType::Responses, &mock_server.uri()),
+            &[(Role::System, "test system prompt".to_string())],
+        )
+        .with_session_id(session_id)
+        .with_task_id(task_id)
+        .with_persist_callback(move |record| {
+            persisted_clone.lock().unwrap().push(record.clone());
+            Ok(())
+        })
+        .with_streaming_json(move |json| {
+            streamed_clone.lock().unwrap().push(json.to_string());
+        })
+        .with_progress_callback(move |message| {
+            progress_clone.lock().unwrap().push(message.to_string());
+        });
+
+        let result = agent.send("hello".to_string()).await.unwrap();
+
+        assert_eq!(result, "Hello!");
+        assert_eq!(agent.session_id(), session_id);
+        assert_eq!(agent.task_id(), task_id);
+        assert_eq!(agent.turn_count(), 2);
+        assert_eq!(agent.total_usage().input_tokens, 20);
+        assert_eq!(agent.total_usage().output_tokens, 10);
+        assert_eq!(agent.total_usage().total_tokens, 30);
+        assert_eq!(
+            agent
+                .history()
+                .iter()
+                .map(|item| match item {
+                    ConversationItem::Message { role, .. } => role.as_str(),
+                    ConversationItem::Reasoning { .. } => "reasoning",
+                    ConversationItem::FunctionCall { .. } => "function_call",
+                    ConversationItem::FunctionCallOutput { .. } => "function_call_output",
+                })
+                .collect::<Vec<_>>(),
+            vec!["system", "user", "reasoning", "user", "assistant"]
+        );
+        assert!(matches!(
+            &agent.history()[3],
+            ConversationItem::Message {
+                role: Role::User,
+                content,
+                ..
+            } if content == SEMANTIC_RECOVERY_PROMPT
+        ));
+
+        let requests = mock_server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 2);
+        let first: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        let second: serde_json::Value = serde_json::from_slice(&requests[1].body).unwrap();
+        assert!(first["tools"].is_array());
+        assert!(second.get("tools").is_none());
+        assert!(second["input"].as_array().is_some_and(|items| {
+            items.iter().any(|item| item["type"] == "reasoning")
+                && items.iter().any(|item| {
+                    item["role"] == "user" && item["content"][0]["text"] == SEMANTIC_RECOVERY_PROMPT
+                })
+        }));
+
+        let persisted = persisted.lock().unwrap();
+        assert_eq!(persisted.len(), 4);
+        assert!(
+            persisted
+                .iter()
+                .all(|record| !matches!(record, SessionRecord::TaskComplete { .. }))
+        );
+        assert!(matches!(persisted[0], SessionRecord::Message(_)));
+        assert!(matches!(persisted[1], SessionRecord::Reasoning(_)));
+        assert!(matches!(persisted[2], SessionRecord::Message(_)));
+        assert!(matches!(persisted[3], SessionRecord::Message(_)));
+        drop(persisted);
+        let streamed = streamed.lock().unwrap();
+        assert_eq!(streamed.len(), 4);
+        assert!(
+            streamed
+                .iter()
+                .all(|record| !record.contains("task_complete"))
+        );
+        drop(streamed);
+        assert_eq!(
+            progress.lock().unwrap().as_slice(),
+            ["Retrying incomplete model turn (semantic_incomplete, attempt 1/1)"]
+        );
+    }
+
+    #[tokio::test]
+    async fn semantic_recovery_preserves_completed_tools_without_reexecuting_them() {
+        let mock_server = MockServer::start().await;
+        let fixture = loop_fixture();
+        let mut tool_response = loop_tool_call_response(&fixture.read_arguments);
+        tool_response["output"].as_array_mut().unwrap().insert(
+            0,
+            serde_json::json!({
+                "type": "message",
+                "id": "msg-progress",
+                "status": "completed",
+                "content": [{
+                    "type": "output_text",
+                    "text": "I am checking that now."
+                }]
+            }),
+        );
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .and(body_partial_json(serde_json::json!({
+                "input": [{
+                    "type": "message",
+                    "role": "user",
+                    "content": [{
+                        "type": "input_text",
+                        "text": "run a command"
+                    }]
+                }]
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(tool_response))
+            .expect(1)
+            .up_to_n_times(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .and(FunctionCallOutputMatcher {
+                call_id: "call-1".to_string(),
+                output: fixture.expected_tool_output.clone(),
+            })
+            .respond_with(ResponseTemplate::new(200).set_body_json(reasoning_only_response()))
+            .expect(1)
+            .up_to_n_times(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .and(SemanticRecoveryMatcher {
+                call_id: "call-1".to_string(),
+                output: fixture.expected_tool_output.clone(),
+            })
+            .respond_with(ResponseTemplate::new(200).set_body_json(success_response()))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let mut agent = Agent::new(
+            test_resolved_model_config(ApiType::Responses, &mock_server.uri()),
+            &[(Role::System, "test system prompt".to_string())],
+        );
+        let result = agent.send("run a command".to_string()).await.unwrap();
+
+        assert_eq!(result, "Hello!");
+        assert_eq!(agent.turn_count(), 3);
+        assert_eq!(agent.tool_call_count, 1);
+        assert_eq!(
+            agent
+                .history()
+                .iter()
+                .filter(|item| matches!(item, ConversationItem::FunctionCallOutput { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(mock_server.received_requests().await.unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn semantic_incomplete_chat_turn_recovers_without_assistant_reasoning_replay() {
+        let mock_server = MockServer::start().await;
+        let reasoning = serde_json::json!({
+            "id": "chatcmpl-reasoning",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "reasoning_content": "provider-private reasoning"
+                },
+                "finish_reason": "length"
+            }],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "total_tokens": 15
+            }
+        });
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(reasoning))
+            .expect(1)
+            .up_to_n_times(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(success_chat_response()))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let mut agent = test_agent_chat_completions(&mock_server.uri());
+        let result = agent.send("hello".to_string()).await.unwrap();
+
+        assert_eq!(result, "Hello!");
+        assert_eq!(agent.turn_count(), 2);
+        let requests = mock_server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 2);
+        let recovery: serde_json::Value = serde_json::from_slice(&requests[1].body).unwrap();
+        let messages = recovery["messages"].as_array().unwrap();
+        assert!(
+            messages
+                .iter()
+                .all(|message| message["role"] != "assistant")
+        );
+        assert!(messages.iter().all(|message| {
+            message.get("reasoning_content").is_none() || message["reasoning_content"].is_null()
+        }));
+        assert!(!recovery.to_string().contains("provider-private reasoning"));
+        assert_eq!(
+            messages.last().unwrap()["content"],
+            SEMANTIC_RECOVERY_PROMPT
+        );
+    }
+
+    #[tokio::test]
+    async fn semantic_incomplete_content_filter_does_not_retry() {
+        let mock_server = MockServer::start().await;
+        let mut body = reasoning_only_response();
+        body["status"] = serde_json::json!("incomplete");
+        body["incomplete_details"] = serde_json::json!({"reason": "content_filter"});
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let mut agent = test_agent_with_url(&mock_server.uri());
+        let error = agent.send("hello".to_string()).await.unwrap_err();
+        let cutoff = error
+            .downcast_ref::<crate::types::CutOffError>()
+            .expect("expected CutOffError");
+
+        assert_eq!(agent.turn_count(), 1);
+        assert!(
+            cutoff
+                .detail
+                .contains("Provider termination: content_filter")
+        );
+        assert!(!cutoff.detail.contains("cake --resume"));
+        assert_eq!(mock_server.received_requests().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn semantic_incomplete_responses_partial_text_recovers() {
+        let mock_server = MockServer::start().await;
+        let partial = serde_json::json!({
+            "id": "resp-partial",
+            "output": [{
+                "type": "message",
+                "id": "msg-partial",
+                "status": "incomplete",
+                "content": [{
+                    "type": "output_text",
+                    "text": "partial answer"
+                }]
+            }],
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "total_tokens": 15
+            }
+        });
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(partial))
+            .expect(1)
+            .up_to_n_times(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(success_response()))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let mut agent = test_agent_with_url(&mock_server.uri());
+        let response = agent.send("hello".to_string()).await.unwrap();
+
+        assert_eq!(response, "Hello!");
+        assert_eq!(agent.turn_count(), 2);
+        assert_eq!(mock_server.received_requests().await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn semantic_incomplete_responses_refusal_does_not_retry() {
+        let mock_server = MockServer::start().await;
+        let refusal = serde_json::json!({
+            "id": "resp-refusal",
+            "status": "completed",
+            "output": [{
+                "type": "message",
+                "id": "msg-refusal",
+                "status": "completed",
+                "content": [{
+                    "type": "refusal",
+                    "refusal": "sensitive refusal text"
+                }]
+            }],
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "total_tokens": 15
+            }
+        });
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(refusal))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let mut agent = test_agent_with_url(&mock_server.uri());
+        let error = agent.send("hello".to_string()).await.unwrap_err();
+        let cutoff = error
+            .downcast_ref::<crate::types::CutOffError>()
+            .expect("expected CutOffError");
+
+        assert_eq!(agent.turn_count(), 1);
+        assert!(cutoff.detail.contains("Provider termination: failed"));
+        assert!(!cutoff.detail.contains("sensitive refusal text"));
+        assert!(!cutoff.detail.contains("cake --resume"));
+        assert_eq!(mock_server.received_requests().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn semantic_incomplete_responses_failure_dominates_incomplete_item() {
+        let mock_server = MockServer::start().await;
+        let failed = serde_json::json!({
+            "id": "resp-failed",
+            "status": "failed",
+            "output": [{
+                "type": "reasoning",
+                "id": "r-failed",
+                "status": "incomplete",
+                "summary": ["partial reasoning"]
+            }],
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "total_tokens": 15
+            }
+        });
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(failed))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let mut agent = test_agent_with_url(&mock_server.uri());
+        let error = agent.send("hello".to_string()).await.unwrap_err();
+        let cutoff = error
+            .downcast_ref::<crate::types::CutOffError>()
+            .expect("expected CutOffError");
+
+        assert_eq!(agent.turn_count(), 1);
+        assert!(cutoff.detail.contains("Provider termination: failed"));
+        assert!(!cutoff.detail.contains("cake --resume"));
+        assert_eq!(mock_server.received_requests().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn semantic_incomplete_chat_partial_text_recovers() {
+        let mock_server = MockServer::start().await;
+        let partial = serde_json::json!({
+            "id": "chatcmpl-partial",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "partial answer"
+                },
+                "finish_reason": "length"
+            }],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "total_tokens": 15
+            }
+        });
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(partial))
+            .expect(1)
+            .up_to_n_times(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(success_chat_response()))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let mut agent = test_agent_chat_completions(&mock_server.uri());
+        let response = agent.send("hello".to_string()).await.unwrap();
+
+        assert_eq!(response, "Hello!");
+        assert_eq!(agent.turn_count(), 2);
+        assert_eq!(mock_server.received_requests().await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn semantic_incomplete_chat_refusal_does_not_retry() {
+        let mock_server = MockServer::start().await;
+        let refusal = serde_json::json!({
+            "id": "chatcmpl-refusal",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "refusal": "sensitive refusal text"
+                },
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "total_tokens": 15
+            }
+        });
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(refusal))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let mut agent = test_agent_chat_completions(&mock_server.uri());
+        let error = agent.send("hello".to_string()).await.unwrap_err();
+        let cutoff = error
+            .downcast_ref::<crate::types::CutOffError>()
+            .expect("expected CutOffError");
+
+        assert_eq!(agent.turn_count(), 1);
+        assert!(cutoff.detail.contains("Provider termination: failed"));
+        assert!(!cutoff.detail.contains("sensitive refusal text"));
+        assert!(!cutoff.detail.contains("cake --resume"));
+        assert_eq!(mock_server.received_requests().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn semantic_recovery_defers_stop_hook_and_task_completion_until_success() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(reasoning_only_response()))
+            .expect(1)
+            .up_to_n_times(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(success_response()))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let marker = dir.path().join("stop-marker");
+        let runner = Arc::new(HookRunner::new(
+            LoadedHooks {
+                groups: vec![HookGroup {
+                    event: HookEvent::Stop,
+                    matcher: HookMatcher::All,
+                    hooks: vec![HookCommand {
+                        command: "touch stop-marker".to_string(),
+                        timeout: Duration::from_secs(2),
+                        fail_closed: false,
+                        status_message: None,
+                        source_path: dir.path().join("hooks.json"),
+                    }],
+                }],
+            },
+            HookContext {
+                session_id: uuid::Uuid::new_v4(),
+                task_id: uuid::Uuid::new_v4(),
+                transcript_path: None,
+                session_writer: None,
+                hook_event_sink: None,
+                cwd: dir.path().to_path_buf(),
+                model: "test-model".to_string(),
+            },
+        ));
+        let streamed = Arc::new(Mutex::new(Vec::new()));
+        let streamed_clone = Arc::clone(&streamed);
+        let mut agent = test_agent_with_url(&mock_server.uri())
+            .with_hook_runner(Arc::clone(&runner))
+            .with_streaming_json(move |json| {
+                streamed_clone.lock().unwrap().push(json.to_string());
+            });
+
+        let response = agent.send("hello".to_string()).await.unwrap();
+
+        assert!(!marker.exists());
+        assert!(
+            streamed
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|record| !record.contains("task_complete"))
+        );
+
+        let result: Result<String, anyhow::Error> = Ok(response);
+        crate::CodingAssistant::handle_agent_turn_result(&mut agent, Some(&runner), &result, 100)
+            .await
+            .unwrap();
+
+        assert!(marker.exists());
+        assert_eq!(
+            streamed
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|record| record.contains("task_complete"))
+                .count(),
+            1
+        );
+    }
+
     #[tokio::test]
     async fn cut_off_reasoning_only_response_returns_cut_off_error() {
         let mock_server = MockServer::start().await;
@@ -1124,8 +1713,11 @@ mod error_tests {
             .expect("expected CutOffError");
         assert_eq!(
             cutoff.detail,
-            "The model's response was cut off during reasoning."
+            "The model's response was cut off during reasoning. To continue this session \
+             explicitly, run: cake --resume 550e8400-e29b-41d4-a716-446655440000 \"try again\""
         );
+        assert_eq!(agent.turn_count(), 2);
+        assert_eq!(mock_server.received_requests().await.unwrap().len(), 2);
     }
 
     #[tokio::test]
@@ -1181,7 +1773,11 @@ mod error_tests {
         let cutoff = err
             .downcast_ref::<crate::types::CutOffError>()
             .expect("expected CutOffError, not the prior turn's answer");
-        assert_eq!(cutoff.detail, "No response was received from the model.");
+        assert_eq!(
+            cutoff.detail,
+            "No response was received from the model. To continue this session explicitly, run: \
+             cake --resume 550e8400-e29b-41d4-a716-446655440000 \"try again\""
+        );
     }
 
     #[tokio::test]
@@ -1209,7 +1805,9 @@ mod error_tests {
             .downcast_ref::<crate::types::CutOffError>()
             .expect("expected CutOffError");
         assert_eq!(
-            cutoff.detail, "No response was received from the model.",
+            cutoff.detail,
+            "No response was received from the model. To continue this session explicitly, run: \
+             cake --resume 550e8400-e29b-41d4-a716-446655440000 \"try again\"",
             "prior-turn reasoning must not mislabel the detail as cut off during reasoning"
         );
     }

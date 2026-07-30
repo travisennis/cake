@@ -2,11 +2,13 @@ use crate::types::{ConversationItem, SessionRecord, StreamRecord};
 
 type StreamingCallback = Box<dyn Fn(&str) + Send + Sync>;
 type PersistCallback = Box<dyn FnMut(&SessionRecord) -> anyhow::Result<()> + Send + Sync>;
+type ProgressCallback = Box<dyn Fn(&str) + Send + Sync>;
 
 #[derive(Default)]
 pub(super) struct AgentObserver {
     streaming: Option<StreamingCallback>,
     persist: Option<PersistCallback>,
+    progress: Option<ProgressCallback>,
 }
 
 impl AgentObserver {
@@ -19,6 +21,16 @@ impl AgentObserver {
         callback: impl FnMut(&SessionRecord) -> anyhow::Result<()> + Send + Sync + 'static,
     ) {
         self.persist = Some(Box::new(callback));
+    }
+
+    pub(super) fn set_progress(&mut self, callback: impl Fn(&str) + Send + Sync + 'static) {
+        self.progress = Some(Box::new(callback));
+    }
+
+    pub(super) fn report_progress(&self, message: &str) {
+        if let Some(callback) = &self.progress {
+            callback(message);
+        }
     }
 
     pub(super) fn stream_record(&mut self, record: StreamRecord) -> anyhow::Result<()> {
