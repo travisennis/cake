@@ -2,9 +2,10 @@ Execute a shell command in the host machine's terminal. Commands run in the curr
 
 Guidance:
 - File search: Read file contents with Read, explore directories with Bash commands (ls, find, tree)
-- Content search: Use commands via Bash
+- Content search: Use rg (ripgrep) via Bash
 - Read files: Use Read tool, not cat/head/tail
 - Edit files: Use Edit tool, not sed/awk
 - Write files: Use Write tool, not echo/cat
+- The working directory persists across calls — do not prefix commands with cd
 
 Note: Shell interprets backticks (`) and $() inside double-quoted arguments as command substitution.

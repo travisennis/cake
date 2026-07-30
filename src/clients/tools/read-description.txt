@@ -5,3 +5,5 @@ Behavior:
 - Returns a "N more lines" note when the file extends beyond the requested range.
 - Rejects binary files (null-byte detection).
 - Rejects directory paths (use Bash with ls, find, or tree for directory listings).
+
+Warning: Ranged and truncated reads return only the requested region. Do not compose old_text for an Edit from content outside the returned lines — the match will fail.
