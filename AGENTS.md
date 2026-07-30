@@ -139,6 +139,16 @@ Consult:
 
 Dependency changes require explicit scope and `Cargo.toml`/`Cargo.lock` consistency.
 
+### Code Quality, Complexity, And Coverage
+
+Use for cyclomatic complexity targets, CRAP scores, coverage requirements, and the coverage-first refactoring workflow. Relevant when writing or modifying functions, or when reviewing code quality.
+
+Consult:
+
+- [Code complexity targets](docs/guardrails/complexity-targets.md), for CC and CRAP targets and the refactoring workflow.
+- `cargo-crap` and `just cargo-crap-report`, for the CI CRAP gate.
+- Task #335, for enforcement mechanisms.
+
 ## Repository rules
 
 - Do not commit or push unless explicitly asked.
