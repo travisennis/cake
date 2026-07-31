@@ -1,3 +1,5 @@
+use std::fmt;
+
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
@@ -109,12 +111,22 @@ pub struct ModelConfig {
 ///
 /// Create a [`ModelConfig`], call [`ResolvedModelConfig::resolve`] to obtain
 /// the resolved configuration with the API key read from the environment.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ResolvedModelConfig {
     /// The underlying model configuration
     pub model_config: ModelConfig,
     /// The resolved API key value
     pub api_key: String,
+}
+
+impl fmt::Debug for ResolvedModelConfig {
+    /// Formats the struct without ever emitting the API key (or a substring of it).
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ResolvedModelConfig")
+            .field("model_config", &self.model_config)
+            .field("api_key", &"<redacted>")
+            .finish()
+    }
 }
 
 impl ResolvedModelConfig {
@@ -262,6 +274,29 @@ mod tests {
             let resolved = ResolvedModelConfig::resolve(config).unwrap();
             assert_eq!(resolved.api_key, "sk-test-123");
             assert_eq!(resolved.model_config.api_key_env, "CAKE_TEST_VALID_KEY");
+        });
+    }
+
+    #[test]
+    fn test_debug_redacts_api_key() {
+        temp_env::with_var("CAKE_TEST_DEBUG_KEY", Some("sk-super-secret-42"), || {
+            let config = test_config(|c| {
+                c.api_key_env = "CAKE_TEST_DEBUG_KEY".to_string();
+            });
+
+            let resolved = ResolvedModelConfig::resolve(config).unwrap();
+            let debug = format!("{resolved:?}");
+
+            // Never emit the key or any substring of it.
+            assert!(!debug.contains("sk-super-secret-42"));
+            assert!(!debug.contains("sk-super"));
+            assert!(!debug.contains("secret-42"));
+
+            // The rest of the config stays useful for diagnostics.
+            assert!(debug.contains("<redacted>"));
+            assert!(debug.contains("model_config"));
+            assert!(debug.contains("test/model"));
+            assert!(debug.contains("CAKE_TEST_DEBUG_KEY"));
         });
     }
 }
