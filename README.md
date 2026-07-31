@@ -72,7 +72,7 @@ Use `--no-session` for an ephemeral run. Session and output compatibility contra
 
 ### Worktrees
 
-`--worktree [NAME]` runs the task in an isolated Git worktree. Files matching patterns in a repository-root `.worktreeinclude` are copied into a newly created worktree.
+`--worktree [NAME]` runs the task in an isolated Git worktree. Files matching patterns in a repository-root `.worktreeinclude` are copied into a newly created worktree. Symlinks are never followed: symlinked directories and files are skipped, which bounds traversal against symlink cycles and keeps collection inside the repository.
 
 ```bash
 cake --worktree experiment "Implement the change"

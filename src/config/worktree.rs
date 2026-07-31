@@ -299,6 +299,12 @@ fn copy_worktree_includes(source_root: &Path, dest_root: &Path) -> anyhow::Resul
 /// Uses `any_pattern_could_match_under` to prune directories whose contents
 /// cannot match any configured pattern, avoiding traversal into known heavy
 /// irrelevant trees.
+///
+/// Symlinks are never followed: entries whose type is a symlink (directory or
+/// file) are skipped. This bounds traversal against symlink cycles (a
+/// self-referential link would otherwise recurse without limit) and keeps
+/// collection inside the source repository (a link to a directory outside the
+/// repo would otherwise copy out-of-repo files into the worktree).
 fn collect_matching_files(
     base: &Path,
     dir: &Path,
@@ -312,7 +318,17 @@ fn collect_matching_files(
         let entry = entry?;
         let path = entry.path();
 
-        if path.is_dir() {
+        // Use the non-following file type: `path.is_dir()` / `path.is_file()`
+        // follow symlinks, which would let a symlink cycle recurse without
+        // bound and let symlinks escape the repository. Skip symlinks entirely.
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("Failed to stat {}", path.display()))?;
+        if file_type.is_symlink() {
+            continue;
+        }
+
+        if file_type.is_dir() {
             let name = entry.file_name();
             // Skip internal git and cake directories.
             if name == ".git" || name == ".cake" {
@@ -331,7 +347,7 @@ fn collect_matching_files(
                 continue;
             }
             collect_matching_files(base, &path, patterns, dest_root, copied)?;
-        } else if path.is_file() {
+        } else if file_type.is_file() {
             let relative = path.strip_prefix(base).with_context(|| {
                 format!(
                     "path {} is not under base {}",
@@ -339,20 +355,32 @@ fn collect_matching_files(
                     base.display()
                 )
             })?;
-            let relative_str = relative.to_string_lossy();
-
-            if patterns.iter().any(|p| glob_match(p, &relative_str)) {
-                let dest = dest_root.join(relative);
-                if let Some(parent) = dest.parent() {
-                    std::fs::create_dir_all(parent)
-                        .with_context(|| format!("Failed to create dir {}", parent.display()))?;
-                }
-                std::fs::copy(&path, &dest).with_context(|| {
-                    format!("Failed to copy {} to {}", path.display(), dest.display())
-                })?;
-                *copied += 1;
-            }
+            copy_matching_file(&path, relative, patterns, dest_root, copied)?;
         }
+    }
+    Ok(())
+}
+
+/// Copy `path` to `dest_root.join(relative)` when any pattern matches
+/// `relative`. Increments `copied` when a copy happens.
+fn copy_matching_file(
+    path: &Path,
+    relative: &Path,
+    patterns: &[String],
+    dest_root: &Path,
+    copied: &mut usize,
+) -> anyhow::Result<()> {
+    let relative_str = relative.to_string_lossy();
+
+    if patterns.iter().any(|p| glob_match(p, &relative_str)) {
+        let dest = dest_root.join(relative);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create dir {}", parent.display()))?;
+        }
+        std::fs::copy(path, &dest)
+            .with_context(|| format!("Failed to copy {} to {}", path.display(), dest.display()))?;
+        *copied += 1;
     }
     Ok(())
 }
@@ -1081,6 +1109,76 @@ mod tests {
 
         assert!(dest.path().join(".env").exists());
         assert!(!dest.path().join("missing.txt").exists());
+        Ok(())
+    }
+
+    // ── symlink containment tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_copy_worktree_includes_skips_self_referential_symlink() -> TestResult {
+        let source = TempDir::new()?;
+        let dest = TempDir::new()?;
+
+        // A directory symlink pointing at its own parent forms a cycle:
+        // without symlink containment, a `**` pattern (which matches at any
+        // depth) recurses forever until stack overflow.
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(".", source.path().join("self"))?;
+        fs::write(source.path().join(".env"), "SECRET=foo")?;
+        fs::write(source.path().join(".worktreeinclude"), "**\n")?;
+
+        copy_worktree_includes(source.path(), dest.path())?;
+
+        // The real file is copied; the symlink cycle is not entered.
+        assert!(dest.path().join(".env").exists());
+        assert!(!dest.path().join("self").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn test_copy_worktree_includes_skips_out_of_repo_dir_symlink() -> TestResult {
+        let source = TempDir::new()?;
+        let outside = TempDir::new()?;
+        let dest = TempDir::new()?;
+
+        // A directory symlink pointing outside the repository must not drag
+        // out-of-repo files into the generated worktree.
+        fs::write(outside.path().join("secret.txt"), "outside")?;
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(outside.path(), source.path().join("docs"))?;
+        fs::write(source.path().join(".env"), "SECRET=foo")?;
+        fs::write(source.path().join(".worktreeinclude"), "**\n")?;
+
+        copy_worktree_includes(source.path(), dest.path())?;
+
+        assert!(dest.path().join(".env").exists());
+        assert!(
+            !dest.path().join("docs/secret.txt").exists(),
+            "out-of-repo file must not be copied"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_copy_worktree_includes_skips_symlinked_files() -> TestResult {
+        let source = TempDir::new()?;
+        let dest = TempDir::new()?;
+
+        // Symlinked files are skipped rather than copied: the worktree only
+        // receives regular files, so a file symlink cannot leak target content
+        // (including content outside the repository) into the worktree.
+        fs::write(source.path().join("real.env"), "SECRET=real")?;
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("real.env", source.path().join("linked.env"))?;
+        fs::write(source.path().join(".worktreeinclude"), "**.env\n")?;
+
+        copy_worktree_includes(source.path(), dest.path())?;
+
+        assert!(dest.path().join("real.env").exists());
+        assert!(
+            !dest.path().join("linked.env").exists(),
+            "symlinked file must be skipped"
+        );
         Ok(())
     }
 }
