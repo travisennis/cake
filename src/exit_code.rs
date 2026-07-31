@@ -136,93 +136,39 @@ fn is_reqwest_api_error(req_err: &reqwest::Error) -> bool {
     false
 }
 
+const INPUT_ERROR_PATTERNS: &[&str] = &[
+    "No input provided",
+    "stdin input exceeds",
+    "Invalid model name",
+    "Unknown model",
+    "No model specified",
+    "is not configured in settings.toml",
+    "Invalid session UUID",
+    "Invalid session reference",
+    "No previous session found",
+    "Failed to open session file",
+    "Working directory mismatch",
+    "Session model mismatch",
+    "Failed to cd into worktree",
+    "Failed to get current directory",
+];
+
+const COMPOUND_INPUT_ERROR_PATTERNS: &[&[&str]] = &[
+    &["Environment variable", "is not set", "API key"],
+    &["Environment variable", "is set but empty"],
+    &["Session", "not found"],
+    &["Failed to parse", "session file"],
+    &["error:", "USAGE"],
+];
+
 /// Determine if an error message indicates an input/validation error.
 fn is_input_error(msg: &str) -> bool {
-    // Missing API key
-    if msg.contains("Environment variable") && msg.contains("is not set") && msg.contains("API key")
-    {
-        return true;
-    }
-    if msg.contains("Environment variable") && msg.contains("is set but empty") {
-        return true;
-    }
-
-    // Missing prompt
-    if msg.contains("No input provided") {
-        return true;
-    }
-    if msg.contains("No input provided via stdin") {
-        return true;
-    }
-    if msg.contains("stdin input exceeds") {
-        return true;
-    }
-
-    // Invalid model name
-    if msg.contains("Invalid model name") {
-        return true;
-    }
-    if msg.contains("Unknown model") {
-        return true;
-    }
-
-    // No model specified (no --model and no default_model in settings)
-    if msg.contains("No model specified") {
-        return true;
-    }
-
-    // Session model not configured
-    if msg.contains("is not configured in settings.toml") {
-        return true;
-    }
-
-    // Invalid session reference
-    if msg.contains("Invalid session UUID") || msg.contains("Invalid session reference") {
-        return true;
-    }
-
-    // Session not found
-    if msg.contains("No previous session found") {
-        return true;
-    }
-    if msg.contains("Session") && msg.contains("not found") {
-        return true;
-    }
-
-    // Resume/fork file path errors
-    if msg.contains("Failed to open session file") {
-        return true;
-    }
-    if msg.contains("Failed to parse") && msg.contains("session file") {
-        return true;
-    }
-
-    // Working directory mismatch for file-based resume/fork
-    if msg.contains("Working directory mismatch") {
-        return true;
-    }
-
-    // Model mismatch when resuming a session
-    if msg.contains("Session model mismatch") {
-        return true;
-    }
-
-    // clap argument errors (e.g. required arguments missing, bad flag values)
-    if msg.contains("error:") && msg.contains("USAGE") {
-        return true;
-    }
-
-    // Worktree errors that are input-related
-    if msg.contains("Failed to cd into worktree") {
-        return true;
-    }
-
-    // Failed to get current directory (unlikely but input-related)
-    if msg.contains("Failed to get current directory") {
-        return true;
-    }
-
-    false
+    INPUT_ERROR_PATTERNS
+        .iter()
+        .any(|pattern| msg.contains(pattern))
+        || COMPOUND_INPUT_ERROR_PATTERNS
+            .iter()
+            .any(|patterns| patterns.iter().all(|pattern| msg.contains(pattern)))
 }
 
 /// Determine if an error message indicates a network/connection error.
@@ -267,6 +213,72 @@ mod tests {
     }
 
     // --- Input error classification ---
+
+    #[test]
+    fn input_error_patterns_are_recognized() {
+        let cases = [
+            (
+                "missing API key",
+                "Environment variable TOKEN is not set; provide an API key",
+            ),
+            (
+                "empty API key",
+                "Environment variable TOKEN is set but empty",
+            ),
+            ("missing prompt", "No input provided"),
+            ("missing stdin", "No input provided via stdin"),
+            ("oversized stdin", "stdin input exceeds the maximum size"),
+            ("invalid model", "Invalid model name 'BAD'"),
+            ("unknown model", "Unknown model 'missing'"),
+            ("missing model", "No model specified"),
+            (
+                "unconfigured session model",
+                "Session model is not configured in settings.toml",
+            ),
+            ("invalid session UUID", "Invalid session UUID 'bad'"),
+            (
+                "invalid session reference",
+                "Invalid session reference 'bad'",
+            ),
+            ("missing previous session", "No previous session found"),
+            ("missing session", "Session abc not found"),
+            ("unreadable session file", "Failed to open session file"),
+            ("invalid session file", "Failed to parse session file"),
+            ("working directory mismatch", "Working directory mismatch"),
+            ("session model mismatch", "Session model mismatch"),
+            ("clap error", "error: invalid option\nUSAGE: cake"),
+            ("invalid worktree", "Failed to cd into worktree"),
+            (
+                "unavailable current directory",
+                "Failed to get current directory",
+            ),
+        ];
+
+        for (name, message) in cases {
+            assert!(is_input_error(message), "{name}: {message}");
+        }
+    }
+
+    #[test]
+    fn compound_input_error_patterns_require_every_fragment() {
+        let messages = [
+            "Environment variable TOKEN is not set",
+            "Environment variable TOKEN needs an API key",
+            "TOKEN is not set; provide an API key",
+            "Environment variable TOKEN is empty",
+            "TOKEN is set but empty",
+            "Session exists",
+            "record not found",
+            "Failed to parse settings file",
+            "invalid session file",
+            "error: invalid option",
+            "USAGE: cake",
+        ];
+
+        for message in messages {
+            assert!(!is_input_error(message), "{message}");
+        }
+    }
 
     #[test]
     fn classify_missing_api_key() {

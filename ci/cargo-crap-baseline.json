@@ -4309,7 +4309,7 @@
     {
       "file": "./src/exit_code.rs",
       "function": "is_api_network_error",
-      "line": 232,
+      "line": 178,
       "cyclomatic": 6.0,
       "coverage": 100.0,
       "crap": 6.0
@@ -4317,10 +4317,10 @@
     {
       "file": "./src/exit_code.rs",
       "function": "is_input_error",
-      "line": 140,
-      "cyclomatic": 27.0,
-      "coverage": 86.66666666666667,
-      "crap": 28.727999999999998
+      "line": 165,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
     },
     {
       "file": "./src/exit_code.rs",
