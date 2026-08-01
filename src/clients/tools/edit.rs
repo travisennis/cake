@@ -131,7 +131,10 @@ struct NormalizedContent {
     /// Original byte offset for each normalized byte offset.
     /// `None` when the content has no CRLF line endings, i.e. every normalized byte
     /// offset is its own original offset (identity mapping).
-    original_offsets: Option<Vec<usize>>,
+    /// `u32` elements halve the table size compared to `usize`; offsets need only
+    /// 32 bits because CRLF-containing files larger than `u32::MAX` bytes are
+    /// rejected (see `MAX_OFFSET_TABLE_BYTES`).
+    original_offsets: Option<Vec<u32>>,
     /// Original content length in bytes.
     original_len: usize,
 }
@@ -198,7 +201,7 @@ pub(super) fn execute_edit(
     let line_ending = detect_line_ending(content);
 
     // Normalize CRLF to LF for matching while keeping original byte ranges.
-    let normalized_content = normalize_crlf_line_endings(content);
+    let normalized_content = normalize_crlf_line_endings(content)?;
 
     // Preflight validation: find all match positions
     let preflighted_edits = preflight_edits(&args.edits, &normalized_content, line_ending, &path)?;
@@ -684,22 +687,51 @@ fn detect_line_ending(content: &str) -> LineEnding {
     }
 }
 
+/// Maximum file size (in bytes) whose CRLF offset table can use `u32` elements.
+/// `u32` addresses offsets up to `u32::MAX` (just under 4 GiB), so any file at or
+/// below this size is representable; CRLF-containing files above it are rejected
+/// with an explicit error.
+const MAX_OFFSET_TABLE_BYTES: usize = u32::MAX as usize;
+
+/// Check that a CRLF-containing file of `content_len` bytes fits the `u32`
+/// offset table. Returns an error naming the ceiling and the offending size.
+fn check_crlf_offset_table_size(content_len: usize) -> Result<(), String> {
+    if content_len > MAX_OFFSET_TABLE_BYTES {
+        return Err(format!(
+            "Cannot edit file with CRLF line endings: file is {content_len} bytes, exceeding the {MAX_OFFSET_TABLE_BYTES} byte (just under 4 GiB) limit for the CRLF offset mapping",
+        ));
+    }
+    Ok(())
+}
+
 /// Normalize CRLF line endings to LF for consistent processing.
 ///
 /// Bare CR characters are preserved, and every normalized byte offset can be
 /// mapped back to the original string so unrelated bytes are not rewritten.
-fn normalize_crlf_line_endings(content: &str) -> NormalizedContent {
+///
+/// Returns an error when the content contains CRLF line endings and is larger
+/// than `MAX_OFFSET_TABLE_BYTES`, since the per-byte offset table cannot address
+/// such files with `u32` elements. LF-only content is unaffected at any size.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the ceiling check guarantees content.len() <= u32::MAX, so every byte index fits in u32"
+)]
+fn normalize_crlf_line_endings(content: &str) -> Result<NormalizedContent, String> {
     // When the content has no CRLF line endings, normalization is a no-op and the
     // offset mapping is the identity. Skip both the normalized copy and the per-byte
     // offset table. This avoids an 8× memory overhead over the file size for LF-only
     // files while still cloning the content so the result is owned.
     if !content.contains("\r\n") {
-        return NormalizedContent {
+        return Ok(NormalizedContent {
             content: content.to_string(),
             original_offsets: None,
             original_len: content.len(),
-        };
+        });
     }
+
+    // Only CRLF-containing files allocate an offset table, so only they are
+    // subject to the u32 ceiling. Check before allocating the table.
+    check_crlf_offset_table_size(content.len())?;
 
     let mut normalized = String::with_capacity(content.len());
     let mut original_offsets = Vec::with_capacity(content.len());
@@ -708,23 +740,23 @@ fn normalize_crlf_line_endings(content: &str) -> NormalizedContent {
     while let Some((index, ch)) = chars.next() {
         if ch == '\r' && chars.peek().is_some_and(|(_, next)| *next == '\n') {
             normalized.push('\n');
-            original_offsets.push(index);
+            original_offsets.push(index as u32);
             let _ = chars.next();
             continue;
         }
 
         let normalized_index = normalized.len();
         normalized.push(ch);
-        original_offsets.resize(normalized.len(), index);
+        original_offsets.resize(normalized.len(), index as u32);
 
         debug_assert!(normalized.is_char_boundary(normalized_index));
     }
 
-    NormalizedContent {
+    Ok(NormalizedContent {
         content: normalized,
         original_offsets: Some(original_offsets),
         original_len: content.len(),
-    }
+    })
 }
 
 /// Convert replacement LF line endings to the file's dominant line ending.
@@ -770,9 +802,13 @@ impl NormalizedContent {
     fn original_offset(&self, index: usize) -> Result<usize, String> {
         // Identity mapping when None: no CRLF in the original, so normalized offset == original offset.
         self.original_offsets.as_ref().map_or(Ok(index), |offsets| {
-            offsets.get(index).copied().ok_or_else(|| {
-                "Internal error: edit match did not map to original file content".to_string()
-            })
+            offsets
+                .get(index)
+                .copied()
+                .map(|o| o as usize)
+                .ok_or_else(|| {
+                    "Internal error: edit match did not map to original file content".to_string()
+                })
         })
     }
 }

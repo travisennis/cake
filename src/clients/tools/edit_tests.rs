@@ -497,7 +497,7 @@ fn lf_only_content_uses_identity_offset_mapping() {
     // LF-only content must not allocate a per-byte offset table.
     // The offset mapping is implicitly the identity, represented as None.
     let lf_content = "hello\nworld\n";
-    let normalized = normalize_crlf_line_endings(lf_content);
+    let normalized = normalize_crlf_line_endings(lf_content).unwrap();
     assert!(
         normalized.original_offsets.is_none(),
         "LF-only content should not allocate a per-byte offset table"
@@ -521,7 +521,7 @@ fn lf_only_content_uses_identity_offset_mapping() {
 fn crlf_content_uses_explicit_offset_table() {
     // CRLF content must allocate a per-byte offset table.
     let crlf_content = "hello\r\nworld\r\n";
-    let normalized = normalize_crlf_line_endings(crlf_content);
+    let normalized = normalize_crlf_line_endings(crlf_content).unwrap();
     let offsets = normalized
         .original_offsets
         .as_ref()
@@ -529,9 +529,30 @@ fn crlf_content_uses_explicit_offset_table() {
     // The normalized content is shorter: each \r\n pair becomes one \n.
     assert_eq!(normalized.content.len(), crlf_content.len() - 2);
     assert_eq!(offsets.len(), normalized.content.len());
+    // Entries are u32: the narrowed element type halves the table size.
+    assert_eq!(offsets[0], 0u32, "offset table entries are u32");
     // The original \r\n pairs should be mapped: \n at normalized index 5 maps to
     // original index 5 (the \r), and so on.
     assert_eq!(normalized.original_offset(5).unwrap(), 5); // \r at original[5]
+}
+
+#[test]
+fn crlf_offset_table_rejects_files_above_u32_ceiling() {
+    // The ceiling is fixed at u32::MAX (4 GiB), which is impractical to allocate
+    // in a unit test, so exercise the size check directly rather than building a
+    // 4 GiB string. The check runs before any table allocation in
+    // `normalize_crlf_line_endings`.
+    check_crlf_offset_table_size(MAX_OFFSET_TABLE_BYTES).unwrap();
+
+    let err = check_crlf_offset_table_size(MAX_OFFSET_TABLE_BYTES + 1).unwrap_err();
+    assert!(
+        err.contains("4 GiB"),
+        "error should name the ceiling: {err}"
+    );
+    assert!(
+        err.contains(&(MAX_OFFSET_TABLE_BYTES + 1).to_string()),
+        "error should report the file size: {err}"
+    );
 }
 
 #[test]
