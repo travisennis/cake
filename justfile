@@ -13,6 +13,36 @@ setup:
     cargo install --locked cocogitto --quiet 2>/dev/null || true
     @echo "Setup complete! Run 'just --list' to see available commands."
 
+# Start work on a feature branch cut from an up-to-date master
+# --no-track keeps the upstream unset, so a later `git push` cannot target master
+branch name:
+    git fetch origin
+    git switch --create {{name}} --no-track origin/master
+
+# Start work in a linked worktree on a new branch cut from an up-to-date master
+worktree name:
+    @test ! -e .cake/worktrees/{{name}} || { echo "ERROR: worktree .cake/worktrees/{{name}} already exists"; exit 1; }
+    git fetch origin
+    git worktree add .cake/worktrees/{{name}} -b {{name}} --no-track origin/master
+    @# Untracked local files a checkout does not carry; keep in sync with .worktreeinclude
+    @for f in .local.justfile .claude/settings.local.json; do \
+        if [ -f "$f" ]; then mkdir -p ".cake/worktrees/{{name}}/$(dirname "$f")" && cp "$f" ".cake/worktrees/{{name}}/$f"; fi; \
+    done
+    @echo "Worktree ready: .cake/worktrees/{{name}} (branch {{name}})"
+
+# Remove a finished worktree and its branch
+worktree-rm name:
+    git worktree remove .cake/worktrees/{{name}}
+    git branch --delete {{name}}
+
+# List active worktrees and the branch each one holds
+worktrees:
+    @git worktree list
+
+# Open a pull request for the current branch (branch must be pushed)
+pr:
+    gh pr create --base master --fill
+
 # Check code formatting (use in CI)
 fmt-check:
     cargo fmt -- --check

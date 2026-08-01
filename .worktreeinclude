@@ -1,0 +1,8 @@
+# Untracked local files copied into a new `cake --worktree` worktree.
+#
+# Tracked files arrive with the checkout, so list only files that git ignores
+# but a worktree still needs. Patterns are globs matched against paths relative
+# to the repository root; symlinks are never followed.
+
+.local.justfile
+.claude/settings.local.json

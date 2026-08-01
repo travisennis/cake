@@ -14,6 +14,8 @@ prek install --hook-type pre-commit --hook-type pre-push --hook-type commit-msg
 
 `just setup` installs the Cargo utilities used by repository recipes. Run `just --list` for the authoritative command catalog.
 
+`mise install` also provides `sccache` and points `RUSTC_WRAPPER` at it, so a newly created worktree reuses already-compiled dependencies instead of rebuilding the graph from cold. The setting is scoped to `.mise.toml`, so it applies to local development only. Without mise, install `sccache` and export `RUSTC_WRAPPER=sccache` yourself, or accept a cold build per worktree.
+
 Binary-size audits additionally require `cargo-bloat`:
 
 ```bash
@@ -25,11 +27,13 @@ Follow the [Auditing Binary Size runbook](docs/runbooks/auditing-binary-size.md)
 ## Development loop
 
 1. Inspect `git status --short` and preserve unrelated work.
-2. Read the implementation and its focused tests before editing.
-3. Make the smallest coherent change.
-4. Run a focused test or check while iterating.
-5. Format changed code and run the applicable final gate.
-6. Review the diff for compatibility, security, and unnecessary complexity.
+2. Create the branch before editing: `just branch <type>/<slug>`, or `just worktree <type>/<slug>` to work in a linked worktree beside other in-flight work.
+3. Read the implementation and its focused tests before editing.
+4. Make the smallest coherent change.
+5. Run a focused test or check while iterating.
+6. Format changed code and run the applicable final gate.
+7. Review the diff for compatibility, security, and unnecessary complexity.
+8. Push the branch and open a pull request with `just pr`.
 
 The crate has no library target. Do not use `cargo test --lib`.
 
@@ -74,7 +78,11 @@ Tests and snapshots should encode behavior close to its implementation. Add docu
 
 ## Git and commits
 
-Do not overwrite unrelated changes. Branches are optional unless the work or maintainer requires one. Commit only when requested.
+Do not overwrite unrelated changes. Commit only when requested.
+
+All work happens on a branch. `master` is protected: a GitHub ruleset rejects direct pushes and requires a pull request with passing checks, and the `branch-guard` hook in `prek.toml` rejects a commit made on `master` before you spend a verification gate on it. Branch names use the commit type as a prefix, such as `feat/turn-limits` or `fix/sandbox-read-only`. [Working on branches and worktrees](docs/runbooks/parallel-worktrees.md) covers the mechanics, including running several branches at once in linked worktrees.
+
+`ci/cargo-crap-baseline.json` is generated and committed, so parallel branches conflict on it. A three-way merge of that file is meaningless. Take `master`'s copy and regenerate with `just change-risk-baseline`.
 
 Commits use [Conventional Commits](https://www.conventionalcommits.org/):
 

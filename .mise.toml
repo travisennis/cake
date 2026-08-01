@@ -1,3 +1,16 @@
 [tools]
 rust = { version = "1.96.0", components = ["clippy", "rustfmt", "rust-analyzer"] }
 just = "latest"
+sccache = "latest"
+
+# Share compiled dependencies across worktrees. Each worktree gets its own
+# `target/`, so a new worktree would otherwise rebuild the whole dependency
+# graph from cold. A shared CARGO_TARGET_DIR is not the answer: cargo takes an
+# exclusive lock on it, so parallel worktree builds would serialize.
+#
+# Scoped to mise, so this applies to local development only; CI uses its own
+# toolchain setup and Swatinem/rust-cache. Cargo builds dependencies
+# non-incrementally, so they cache well here while the local crate keeps its
+# incremental edit-compile loop.
+[env]
+RUSTC_WRAPPER = "sccache"

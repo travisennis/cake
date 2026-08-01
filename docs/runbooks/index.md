@@ -20,6 +20,12 @@ Audit a release binary and identify its principal size contributors.
 
 Diagnose sandbox failures using the platform-appropriate Seatbelt or Landlock path.
 
+### Working on Branches and Worktrees
+
+[Working on Branches and Worktrees](parallel-worktrees.md)
+
+Carry a change from a branch to a merged pull request, and run several changes at once in linked worktrees.
+
 ### Analyzing Cake Sessions
 
 Destination: `docs/runbooks/analyzing-cake-sessions/`
