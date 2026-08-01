@@ -22,6 +22,8 @@ just branch feat/turn-limits
 
 The recipe fetches `origin` and creates the branch from `origin/master`, not from whatever the local `master` happens to point at. Prefix the branch with its Conventional Commit type, so `feat/`, `fix/`, `docs/`, `refactor/`, `perf/`, `test/`, `build/`, `ci/`, or `chore/`.
 
+`just branch`, `just worktree`, and `just worktree-rm` reject a name outside that shape. `just` interpolates a recipe argument into shell source, so a name Git would accept, such as `feat/x$(...)`, would otherwise run as a command before Git saw it. Names are restricted to letters, digits, dot, underscore, hyphen, and `/`, and every interpolation is shell-quoted.
+
 Managed work starts here too: run `ahm task start <id>` on the branch, so the task record and its implementation travel together.
 
 ### 2. Work and verify
