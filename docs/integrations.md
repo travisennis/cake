@@ -72,6 +72,8 @@ An interrupted task can leave a `function_call` whose `function_call_output` was
 
 Serialization snapshots under `src/types/snapshots/` provide canonical record examples.
 
+For evidence-backed review of a persisted session, follow the [Analyzing Cake Sessions runbook](runbooks/analyzing-cake-sessions/index.md).
+
 ## Telemetry sidecars
 
 Persisted sessions have operational telemetry under `~/.cache/cake/session-telemetry/{session_id}.ndjson` or the corresponding `CAKE_DATA_DIR` path. A sidecar may span several invocations; `invocation_id` separates them.

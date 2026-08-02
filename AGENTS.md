@@ -100,7 +100,7 @@ Use for session JSONL, record semantics, resume, and telemetry sidecars.
 Consult:
 
 - [Integration contracts](docs/integrations.md), for persisted-session layout and record semantics.
-- [Runbook index --- Analyzing Cake Sessions](docs/runbooks/index.md#analyzing-cake-sessions), for evidence-backed review of a persisted session.
+- [Analyzing Cake Sessions runbook](docs/runbooks/analyzing-cake-sessions/index.md), for evidence-backed review of a persisted session.
 - [Runbook index --- Debugging Failed Cake Runs](docs/runbooks/index.md#debugging-failed-cake-runs), for reactive triage before deeper session analysis.
 - [ADR 004](docs/adr/004-append-only-session-task-events.md), for append-only task events.
 - [ADR 007](docs/adr/007-per-session-telemetry-sidecar.md), for the telemetry sidecar.

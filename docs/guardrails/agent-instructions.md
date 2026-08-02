@@ -14,7 +14,7 @@ A behavior-shaping edit --- one that adds, removes, or reorders what an agent sh
 
 - Name the observed failure motivating the edit, citing a session, commit, or `ahm` record, in the managed task or the commit message.
 - State the observable behavior the edit is expected to change.
-- Verify with the narrowest fresh probe that exercises the instruction: run a representative task in a fresh agent session and check that the instruction was retrieved and followed. Session files and the `analyzing-cake-sessions` skill provide the evidence.
+- Verify with the narrowest fresh probe that exercises the instruction: run a representative task in a fresh agent session and check that the instruction was retrieved and followed. Session files and the [Analyzing Cake Sessions runbook](../runbooks/analyzing-cake-sessions/index.md) provide the evidence.
 - When a probe is not run, record that verification is deferred and which probe would establish it.
 
 A green consistency check shows that the documents agree with each other; it does not show that an agent behaves differently. An instruction no trajectory ever used has no evidence of effect.

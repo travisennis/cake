@@ -1,6 +1,6 @@
 # jq Recipes for Cake Session Files
 
-Reference cookbook for ad-hoc queries against persisted cake session files (`{uuid}.jsonl`, format version 4). Load this only when running queries beyond the essentials already in `SKILL.md`.
+Reference cookbook for ad-hoc queries against persisted cake session files (`{uuid}.jsonl`, format version 4). Load this only when running queries beyond the essentials already in the [Analyzing Cake Sessions runbook](../index.md).
 
 All examples assume:
 
@@ -60,7 +60,7 @@ jq 'select(.type == "message" and .role == "assistant") | {
 # Developer/system messages
 jq 'select(.type == "message" and (.role == "developer" or .role == "system"))' "$SESSION"
 
-# All reasoning (use .content, NOT .summary — see SKILL.md caveat)
+# All reasoning (use .content, NOT .summary — see the runbook's reasoning caveat)
 jq 'select(.type == "reasoning") | {timestamp, content: (.content[0:1000])}' "$SESSION"
 
 # Search user prompts for a keyword
