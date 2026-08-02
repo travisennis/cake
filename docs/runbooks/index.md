@@ -34,7 +34,7 @@ Analyze persisted session records, with supporting references loaded only when n
 
 ### Debugging Failed Cake Runs
 
-Destination: `docs/runbooks/debugging-cake.md`
+[Debugging Failed Cake Runs](debugging-cake.md)
 
 Triage a recent failed, interrupted, empty, or truncated cake run.
 
