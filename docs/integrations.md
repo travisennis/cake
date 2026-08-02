@@ -72,7 +72,7 @@ An interrupted task can leave a `function_call` whose `function_call_output` was
 
 Serialization snapshots under `src/types/snapshots/` provide canonical record examples.
 
-For evidence-backed review of a persisted session, follow the [Analyzing Cake Sessions runbook](runbooks/analyzing-cake-sessions/index.md).
+For evidence-backed review of a persisted session, follow the [Analyzing Cake Sessions runbook](runbooks/analyzing-cake-sessions/index.md). For reactive triage of a recent failed, interrupted, empty, or truncated run, follow the [Debugging Failed Cake Runs runbook](runbooks/debugging-cake.md).
 
 ## Telemetry sidecars
 
