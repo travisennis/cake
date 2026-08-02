@@ -28,7 +28,7 @@ Carry a change from a branch to a merged pull request, and run several changes a
 
 ### Analyzing Cake Sessions
 
-Destination: `docs/runbooks/analyzing-cake-sessions/`
+[Analyzing Cake Sessions](analyzing-cake-sessions/index.md)
 
 Analyze persisted session records, with supporting references loaded only when needed.
 
