@@ -13,6 +13,56 @@ setup:
     cargo install --locked cocogitto --quiet 2>/dev/null || true
     @echo "Setup complete! Run 'just --list' to see available commands."
 
+# Reject branch names outside the <type>/<slug> convention.
+# just interpolates a recipe argument into shell source, so an otherwise legal
+# Git ref such as `feat/x$(...)` would execute before Git ever saw it. The
+# recipes below also shell-quote every interpolation; this check keeps the
+# accepted character set narrow enough that the quoting has nothing to defend.
+_check-branch-name name:
+    @name={{ quote(name) }}; \
+    case "$name" in \
+        -*|/*|*/|*..*|*[!A-Za-z0-9._/-]*) \
+            echo "ERROR: branch name may use only letters, digits, dot, underscore, hyphen, and /, and may not start with '-' or '/', end with '/', or contain '..'" >&2; \
+            exit 1 ;; \
+    esac; \
+    case "$name" in \
+        */*) ;; \
+        *) echo "ERROR: branch name must start with a commit type, for example feat/turn-limits" >&2; exit 1 ;; \
+    esac
+
+# Start work on a feature branch cut from an up-to-date master
+branch name: (_check-branch-name name)
+    @# --no-track keeps the upstream unset, so a later `git push` cannot target master
+    git fetch origin
+    git switch --create {{ quote(name) }} --no-track origin/master
+
+# Start work in a linked worktree on a new branch cut from an up-to-date master
+worktree name: (_check-branch-name name)
+    @test ! -e {{ quote(".cake/worktrees/" + name) }} || { printf 'ERROR: worktree %s already exists\n' {{ quote(".cake/worktrees/" + name) }} >&2; exit 1; }
+    git fetch origin
+    git worktree add {{ quote(".cake/worktrees/" + name) }} -b {{ quote(name) }} --no-track origin/master
+    @# Untracked local files a checkout does not carry; keep in sync with .worktreeinclude
+    @for f in .local.justfile .claude/settings.local.json; do \
+        if [ -f "$f" ]; then \
+            dest={{ quote(".cake/worktrees/" + name) }}/"$f"; \
+            mkdir -p "$(dirname "$dest")" && cp "$f" "$dest"; \
+        fi; \
+    done
+    @printf 'Worktree ready: %s (branch %s)\n' {{ quote(".cake/worktrees/" + name) }} {{ quote(name) }}
+
+# Remove a finished worktree and its branch
+worktree-rm name: (_check-branch-name name)
+    git worktree remove {{ quote(".cake/worktrees/" + name) }}
+    git branch --delete {{ quote(name) }}
+
+# List active worktrees and the branch each one holds
+worktrees:
+    @git worktree list
+
+# Open a pull request for the current branch (branch must be pushed)
+pr:
+    gh pr create --base master --fill
+
 # Check code formatting (use in CI)
 fmt-check:
     cargo fmt -- --check

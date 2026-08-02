@@ -10,14 +10,15 @@ Users depend on CLI shape and exit behavior, machine-readable output formats, to
 
 1. Run `ahm prime` before any work.
 2. If the request names a task, ExecPlan, ADR, or research record, inspect it through `ahm` before choosing implementation work.
-3. Classify the change, select the route below, and load only that route's documents.
-4. Read the smallest relevant code and tests. [ARCHITECTURE.md](ARCHITECTURE.md) names the code authority for each surface.
-5. Preserve compatibility unless the task explicitly changes it.
-6. If work is managed, start and complete it through `ahm`.
-7. Make surgical edits and run risk-proportionate checks.
-8. After implementation edits, run reviews in a subagent and address findings until the reviewer gives an all clear. If a third round reports findings of the same class, stop patching: report the finding class and the suspected design flaw, and escalate to a design decision.
-9. Perform preflight.
-10. Hand off changes, exact checks, skipped checks, and remaining risk.
+3. Create the branch before the first edit: `just branch <type>/<slug>`, or `just worktree <type>/<slug>` when another agent is working in parallel. `master` is protected and rejects commits and pushes.
+4. Classify the change, select the route below, and load only that route's documents.
+5. Read the smallest relevant code and tests. [ARCHITECTURE.md](ARCHITECTURE.md) names the code authority for each surface.
+6. Preserve compatibility unless the task explicitly changes it.
+7. If work is managed, start and complete it through `ahm`.
+8. Make surgical edits and run risk-proportionate checks.
+9. After implementation edits, run reviews in a subagent and address findings until the reviewer gives an all clear. If a third round reports findings of the same class, stop patching: report the finding class and the suspected design flaw, and escalate to a design decision.
+10. Perform preflight.
+11. Hand off the branch and its pull request, exact checks, skipped checks, and remaining risk.
 
 Large or cross-cutting work requires an ExecPlan as directed by `ahm context plan`.
 
@@ -135,6 +136,7 @@ Use for `Cargo.toml`, `Cargo.lock`, the `justfile`, CI, toolchain, and release w
 Consult:
 
 - [CONTRIBUTING.md](CONTRIBUTING.md), the canonical command catalog and verification policy.
+- [Working on branches and worktrees runbook](docs/runbooks/parallel-worktrees.md), for branch, worktree, and pull-request mechanics.
 - [Auditing Binary Size runbook](docs/runbooks/auditing-binary-size.md), for investigating release binary bloat.
 
 Dependency changes require explicit scope and `Cargo.toml`/`Cargo.lock` consistency.
@@ -152,8 +154,10 @@ Consult:
 ## Repository rules
 
 - Do not commit or push unless explicitly asked.
-- Work on the current branch unless asked to create another.
+- Work on a branch cut from an up-to-date `master`, never on `master` itself. Integration happens through a pull request. [Working on branches and worktrees](docs/runbooks/parallel-worktrees.md) has the mechanics.
+- One branch holds one task. Do not carry unrelated work across on the same branch.
 - Preserve unrelated user changes; never clean or revert them.
+- Never resolve a merge conflict in `ci/cargo-crap-baseline.json` by hand or by three-way merge. Take `master`'s copy, then regenerate it with `just change-risk-baseline`.
 - Complete managed work through `ahm` before the commit that contains its implementation; task-state and index files are commit content.
 - Use Conventional Commits when writing commit messages; verified by the commit-msg hook.
 - Never hand-edit generated `.ahm` indexes.
