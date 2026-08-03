@@ -107,6 +107,22 @@ task-complete id:
 task-cancel id:
     ahm task cancel {{id}}
 
+# Synchronize repository labels with the committed vocabulary in .github/labels.yml
+labels:
+    @python3 scripts/sync-labels.py
+
+# Verify repository labels match .github/labels.yml (exit 1 on drift; requires gh)
+labels-check:
+    @python3 scripts/sync-labels.py --check
+
+# Validate .github/labels.yml structure without touching the network
+labels-check-file:
+    @python3 scripts/sync-labels.py --check-file
+
+# Delete repository labels not present in .github/labels.yml
+labels-prune:
+    @python3 scripts/sync-labels.py --prune
+
 # Clippy against the Linux target so local macOS checks cover CI-only cfg paths
 clippy-linux:
     @rustup target list --installed | grep -qx 'x86_64-unknown-linux-gnu' || { echo "ERROR: missing Rust target x86_64-unknown-linux-gnu. Run: rustup target add x86_64-unknown-linux-gnu"; exit 1; }

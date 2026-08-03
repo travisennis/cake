@@ -160,6 +160,7 @@ Consult:
 - Never resolve a merge conflict in `ci/cargo-crap-baseline.json` by hand or by three-way merge. Take `master`'s copy, then regenerate it with `just change-risk-baseline`.
 - Complete managed work through `ahm` before the commit that contains its implementation; task-state and index files are commit content.
 - Use Conventional Commits when writing commit messages; verified by the commit-msg hook.
+- Labels on GitHub issues and pull requests: use only the vocabulary in `.github/labels.yml`; never invent or rename labels. `just labels-check` verifies the repo matches it, and the label-governance workflow removes out-of-vocabulary labels from issues.
 - Never hand-edit generated `.ahm` indexes.
 - Future work and unresolved questions belong in `.ahm`, not durable docs.
 - Update architecture documentation only when a durable boundary or invariant changes, not when symbols or files move.
