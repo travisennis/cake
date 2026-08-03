@@ -1,0 +1,164 @@
+# Label governance for Cake (travisennis/cake).
+#
+# This file is the single source of truth for repository labels. Keep it
+# sorted by name. Change the vocabulary here first, then sync:
+#
+#   python3 scripts/sync-labels.py             # create/update labels to match this file
+#   python3 scripts/sync-labels.py --check     # verify the repo matches (exit 1 on drift)
+#   python3 scripts/sync-labels.py --prune     # also delete labels not listed here
+#   python3 scripts/sync-labels.py --check-file  # validate this file only (no network)
+#
+# The label-governance workflow applies the file after merges to `master`,
+# removes out-of-vocabulary labels from issues at runtime, and exposes a
+# manual "prune" dispatch. Labels not listed here are out of vocabulary.
+#
+# Notes:
+# - The `type:`, `area:`, and `risk:` vocabulary maps to the former ahm task
+#   labels. Priority, effort, and status are Projects v2 fields, not labels.
+# - `dependencies`, `github_actions`, and `rust` are applied automatically by
+#   Dependabot and must not be removed.
+# - `bug` and `enhancement` (GitHub defaults) and the repo's `documentation`
+#   label were retired in favor of `type:bug`, `type:docs`, and `type:feature`.
+
+labels:
+  - name: area:agent
+    color: "d4c5f9"
+    description: Agent loop, session orchestration, and tool scheduling
+  - name: area:bash_safety
+    color: "d4c5f9"
+    description: Bash command safety checks and policy
+  - name: area:build
+    color: "d4c5f9"
+    description: Build, packaging, and release tooling
+  - name: area:chat
+    color: "d4c5f9"
+    description: Chat Completions backend and request shaping
+  - name: area:ci
+    color: "d4c5f9"
+    description: CI workflows, gates, and change-risk
+  - name: area:cli
+    color: "d4c5f9"
+    description: CLI flags, output formats, and exit behavior
+  - name: area:clients
+    color: "d4c5f9"
+    description: Provider client layer and wire formats
+  - name: area:config
+    color: "d4c5f9"
+    description: Settings, profiles, skills, and prompt construction
+  - name: area:deps
+    color: "d4c5f9"
+    description: Dependency management
+  - name: area:dev-env
+    color: "d4c5f9"
+    description: Local development environment and tooling
+  - name: area:docs
+    color: "d4c5f9"
+    description: Documentation (living docs, runbooks, ADRs)
+  - name: area:exit_code
+    color: "d4c5f9"
+    description: Exit codes and process behavior
+  - name: area:hooks
+    color: "d4c5f9"
+    description: Hook protocol and trusted extensions
+  - name: area:logger
+    color: "d4c5f9"
+    description: Logging and diagnostics
+  - name: area:measurement
+    color: "d4c5f9"
+    description: Metrics, telemetry, and measurement
+  - name: area:model
+    color: "d4c5f9"
+    description: Model configuration and provider quirks
+  - name: area:output
+    color: "d4c5f9"
+    description: Output formatting and rendering
+  - name: area:prompts
+    color: "d4c5f9"
+    description: System prompts and prompt assembly
+  - name: area:quality
+    color: "d4c5f9"
+    description: Code quality, complexity, and coverage gates
+  - name: area:responses
+    color: "d4c5f9"
+    description: Responses API backend
+  - name: area:safety
+    color: "d4c5f9"
+    description: Safety checks and destructive-command guards
+  - name: area:sandbox
+    color: "d4c5f9"
+    description: Sandboxing, filesystem access, and trusted extensions
+  - name: area:session
+    color: "d4c5f9"
+    description: Session records, persistence, and telemetry sidecars
+  - name: area:test
+    color: "d4c5f9"
+    description: Test suites and test infrastructure
+  - name: area:tools
+    color: "d4c5f9"
+    description: Tool schemas, execution, and model-visible text
+  - name: dependencies
+    color: "0366d6"
+    description: Pull requests that update a dependency file
+  - name: duplicate
+    color: "cfd3d7"
+    description: This issue or pull request already exists
+  - name: github_actions
+    color: "000000"
+    description: Pull requests that update GitHub Actions code
+  - name: good first issue
+    color: "7057ff"
+    description: Good for newcomers
+  - name: help wanted
+    color: "008672"
+    description: Extra attention is needed
+  - name: invalid
+    color: "e4e669"
+    description: This doesn't seem right
+  - name: question
+    color: "d876e3"
+    description: Further information is requested
+  - name: risk:breaking-change
+    color: "ff7619"
+    description: Changes that break compatibility surfaces
+  - name: risk:external-service
+    color: "c5def5"
+    description: Depends on or changes external service behavior
+  - name: risk:security-sensitive
+    color: "d93f0b"
+    description: Touches security boundaries; needs security review
+  - name: rust
+    color: "000000"
+    description: Pull requests that update rust code
+  - name: type:bug
+    color: "d73a4a"
+    description: Bugs and regressions in existing behavior
+  - name: type:chore
+    color: "6e7781"
+    description: Tooling, housekeeping, and non-user-visible maintenance
+  - name: type:docs
+    color: "0075ca"
+    description: Documentation changes
+  - name: type:feature
+    color: "a2eeef"
+    description: New capabilities or user-visible improvements
+  - name: type:maintenance
+    color: "fbca04"
+    description: "Upkeep: dependency bumps, deprecations, housekeeping"
+  - name: type:process
+    color: "5319e7"
+    description: Workflow, process, and guardrail changes
+  - name: type:refactor
+    color: "8250df"
+    description: Restructure code without changing behavior
+  - name: type:security
+    color: "b60205"
+    description: Security fixes and hardening
+  - name: type:task
+    color: "e4e669"
+    description: General implementation task (default)
+  - name: type:test
+    color: "0e8a16"
+    description: Test coverage and test infrastructure
+  - name: wontfix
+    color: "ffffff"
+    description: This will not be worked on

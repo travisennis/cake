@@ -1,0 +1,65 @@
+name: label-governance
+
+on:
+  workflow_dispatch:
+    inputs:
+      prune:
+        description: Delete repository labels not present in .github/labels.yml
+        type: boolean
+        required: false
+        default: false
+  push:
+    branches: [master]
+    paths:
+      - ".github/labels.yml"
+  pull_request:
+    paths:
+      - ".github/labels.yml"
+      - "scripts/sync-labels.py"
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: read
+
+jobs:
+  check-file:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate .github/labels.yml
+        run: python3 scripts/sync-labels.py --check-file
+
+  apply:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Sync repository labels from .github/labels.yml
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ github.event.inputs.prune }}" = "true" ]; then
+            python3 scripts/sync-labels.py --prune
+          else
+            python3 scripts/sync-labels.py
+          fi
+
+  enforce:
+    if: github.event_name == 'issues' && github.event.action == 'labeled'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Remove out-of-vocabulary labels from issue
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/sync-labels.py --enforce --number ${{ github.event.issue.number }}

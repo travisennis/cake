@@ -55,6 +55,7 @@ Additional checks:
 - Rust-version changes: `just rust-version-check`.
 - Linux-sensitive changes on macOS: `just clippy-linux` when the target and cross-compiler are installed.
 - Snapshot changes: `just snapshots`, then `cargo insta review`.
+- Label changes: `just labels-check-file` (file validation, also CI), `just labels-check` (repo drift vs `.github/labels.yml`), `just labels` (apply), `just labels-prune` (delete unlisted labels).
 - Full release-oriented validation: `just check-full`.
 - Documentation-only changes: targeted `panache format --check` and `panache lint` for changed living documents, link validation, `ahm doctor`, and `git diff --check`. Use `just docs-check` when intentionally validating the complete Markdown corpus.
 
