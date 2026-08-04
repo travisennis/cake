@@ -27,7 +27,7 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Validate .github/labels.yml
         run: python3 scripts/sync-labels.py --check-file
 
@@ -38,7 +38,7 @@ jobs:
       contents: read
       issues: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Sync repository labels from .github/labels.yml
         env:
           GH_REPO: ${{ github.repository }}
@@ -57,7 +57,7 @@ jobs:
       contents: read
       issues: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Remove out-of-vocabulary labels from issue
         env:
           GH_REPO: ${{ github.repository }}
