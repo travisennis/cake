@@ -488,7 +488,8 @@ def migrate(tasks: list[dict[str, object]], active_ids: set[str], vocabulary: se
             force: bool) -> int:
     available = [t for t in tasks if str(t["id"]) not in map_in]
     selected = available if limit is None else available[:limit]
-    if not check_graphql_budget(len(selected) * 12 + 200, force):
+    # Measured ~245 GraphQL points per issue (item-add + three item-edits).
+    if not check_graphql_budget(len(selected) * 250 + 100, force):
         return 1
     token_ids = {str(t["id"]) for t in selected}
     resolvable_ids = token_ids | set(map_in)
@@ -591,7 +592,8 @@ def verify(tasks: list[dict[str, object]], vocabulary: set[str] | None, repo: st
     """
     by_id = {str(t["id"]): t for t in tasks}
 
-    if not check_graphql_budget(2100, force):
+    # The board query measures ~1 point; the per-issue views are REST.
+    if not check_graphql_budget(50, force):
         return 1
 
     query = (
