@@ -24,7 +24,7 @@ The recipe fetches `origin` and creates the branch from `origin/master`, not fro
 
 `just branch`, `just worktree`, and `just worktree-rm` reject a name outside that shape. `just` interpolates a recipe argument into shell source, so a name Git would accept, such as `feat/x$(...)`, would otherwise run as a command before Git saw it. Names are restricted to letters, digits, dot, underscore, hyphen, and `/`, and every interpolation is shell-quoted.
 
-Managed work starts here too: run `ahm task start <id>` on the branch, so the task record and its implementation travel together.
+Managed work starts here too: set the GitHub issue's Status to In Progress on the branch (see [docs/workflow/tasks.md](../workflow/tasks.md)), so the issue and its implementation travel together.
 
 ### 2. Work and verify
 
@@ -98,13 +98,11 @@ git checkout --ours ci/cargo-crap-baseline.json   # during a merge from master
 just change-risk-baseline
 ```
 
-Generated `.ahm` indexes need no such handling. `.ahm/.gitignore` keeps them out of version control, so parallel branches never conflict on them. Task records themselves are committed and move between `active/` and `completed/`, which merges cleanly.
+ExecPlan and research records are committed markdown under `docs/`, so parallel branches never conflict on them; a merge of moved files is a plain rename.
 
-## Coordinating which agent takes which task
+## Coordinating which agent takes which issue
 
-`ahm task start <id>` marks a task In Progress in a file on that branch. Other worktrees cannot see it until the branch merges, so two agents can claim the same task without either noticing.
-
-This is currently handled by assigning tasks to worktrees by hand. Confirm the assignment before starting parallel work.
+GitHub issue state (Status field, assignee) is shared across worktrees. Claim an issue by setting Status to In Progress and assigning yourself before starting; two agents should not claim the same issue. Confirm the assignment before starting parallel work.
 
 ## Recovery
 

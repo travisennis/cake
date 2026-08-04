@@ -46,7 +46,7 @@ Chosen option: **Option A**, because it satisfies all decision drivers in one us
 ## More Information
 
 - Task 195: Add `--sandbox` CLI Flag With Read-Only, Workspace-Write, and Danger-Full-Access Policies.
-- ExecPlan: `.agents/exec-plans/completed/sandbox-policy-flag.md` (see the Decision Log for the `Option<SandboxPolicy>` vs `default_value` rationale and the temp-dir-retention rationale).
+- ExecPlan: `docs/exec-plans/completed/sandbox-policy-flag.md` (see the Decision Log for the `Option<SandboxPolicy>` vs `default_value` rationale and the temp-dir-retention rationale).
 - `docs/security.md` (Sandbox policies).
 - `src/clients/tools/sandbox/mod.rs` --- `SandboxPolicy`, `resolve_sandbox_policy`, `SandboxConfig::build_with_policy`, `SandboxConfig::partition_read_only`.
 - `src/clients/tools/sandbox/macos.rs` --- `append_scm_cli_rules` read-only gating.
