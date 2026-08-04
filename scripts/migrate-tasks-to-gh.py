@@ -22,14 +22,15 @@ preinstalled and uses `GITHUB_TOKEN`; locally it uses the logged-in account.
 Set `GH_REPO` (owner/repo) to override repository detection.
 
 Exit code:
-  0 – success (or `--dry-run`)
-  1 – validation or runtime error
+  0 – success (or `--dry-run`; or `--verify` with no diffs)
+  1 – validation or runtime error, or `--verify` diffs found
   2 – usage error
 
 Usage:
     python3 scripts/migrate-tasks-to-gh.py --dry-run
     python3 scripts/migrate-tasks-to-gh.py [--limit N] [--no-comments] [--map-out FILE]
     python3 scripts/migrate-tasks-to-gh.py --map-in migrated.json [--map-out FILE]
+    python3 scripts/migrate-tasks-to-gh.py --verify --map-in migrated.json
     python3 scripts/migrate-tasks-to-gh.py --help
 
 Without `--map-in` the tool does not deduplicate: issues are created from the
@@ -500,7 +501,7 @@ def migrate(tasks: list[dict[str, object]], active_ids: set[str], vocabulary: se
         for dep in deps:
             dep_id = str(dep)
             if dep_id in mapping:
-                body = body.replace(f"ahm#{dep_id}", f"#{mapping[dep_id]}")
+                body = re.sub(rf"ahm#{re.escape(dep_id)}(?!\d)", f"#{mapping[dep_id]}", body)
         proc = gh(["api", "-X", "PATCH", f"repos/{repo}/issues/{number}", "-f", f"body={body}"])
         if proc.returncode != 0:
             return fail(f"failed to update body of #{number}: {proc.stderr.strip()}")
@@ -513,6 +514,102 @@ def migrate(tasks: list[dict[str, object]], active_ids: set[str], vocabulary: se
         _write_map(mapping, map_out)
         print(f"mapping written to {map_out}")
     return 0
+
+
+def verify(tasks: list[dict[str, object]], vocabulary: set[str] | None, repo: str,
+           project: int, map_in: dict[str, int]) -> int:
+    """Check migrated issues against their ahm records.
+
+    For every ahm-id -> issue-number mapping entry, compares labels, project
+    fields (Status/Priority/Effort), comments count, `## Migrated from ahm`
+    metadata, and dependency-token rewriting against the ahm record. Expects
+    the default migration (comments posted); issues migrated with
+    `--no-comments` will report a comments diff.
+    """
+    by_id = {str(t["id"]): t for t in tasks}
+
+    query = (
+        "{ viewer { projectV2(number: %d) { items(first: 100) { nodes { "
+        "... on ProjectV2Item { "
+        "content { ... on Issue { number } } "
+        "fieldValues(first: 20) { nodes { "
+        "... on ProjectV2ItemFieldSingleSelectValue { name "
+        "field { ... on ProjectV2SingleSelectField { name } } } } } } } } } } }"
+    ) % project
+    proc = gh(["api", "graphql", "-f", f"query={query}"])
+    if proc.returncode != 0:
+        err(f"failed to read project {project} fields: {proc.stderr.strip()}")
+        return 1
+    try:
+        items = json.loads(proc.stdout)["data"]["viewer"]["projectV2"]["items"]["nodes"]
+    except (KeyError, TypeError, ValueError) as exc:
+        err(f"unexpected project query response: {exc}")
+        return 1
+    if len(items) >= 100:
+        print("note: project has >= 100 items; verification may miss fields on later items")
+    project_fields: dict[int, dict[str, str]] = {}
+    for item in items:
+        content = item.get("content")
+        number = content.get("number") if content else None
+        if number is None:
+            continue
+        fields: dict[str, str] = {}
+        for value in item.get("fieldValues", {}).get("nodes", []):
+            if value and value.get("field", {}).get("name"):
+                fields[value["field"]["name"]] = value["name"]
+        project_fields[number] = fields
+
+    problems = 0
+    checked = 0
+    for ahm_id, number in sorted(map_in.items(), key=lambda kv: int(kv[0])):
+        task = by_id.get(ahm_id)
+        if task is None:
+            print(f"ahm {ahm_id} -> #{number}: ahm record not found (skipped)")
+            continue
+        checked += 1
+        proc = gh(["issue", "view", str(number), "--repo", repo,
+                   "--json", "body,labels,comments"])
+        if proc.returncode != 0:
+            err(f"failed to read #{number}: {proc.stderr.strip()}")
+            return 1
+        try:
+            issue = json.loads(proc.stdout)
+        except ValueError as exc:
+            err(f"unexpected response for #{number}: {exc}")
+            return 1
+        diffs: list[str] = []
+        expected_labels, _ = map_labels(task["labels"], vocabulary)  # type: ignore[arg-type]
+        actual_labels = sorted(label["name"] for label in issue["labels"])
+        if sorted(expected_labels) != actual_labels:
+            diffs.append(f"labels: expected {sorted(expected_labels)} got {actual_labels}")
+        fields = project_fields.get(number, {})
+        for field, expected in (
+            ("Status", STATUS_TO_FIELD.get(str(task["status"]), str(task["status"]))),
+            ("Priority", str(task["priority"])),
+            ("Effort", str(task["effort"])),
+        ):
+            actual = fields.get(field)
+            if actual != expected:
+                diffs.append(f"{field}: expected {expected} got {actual}")
+        expected_comments = 1 if split_comments(str(task["body"]))[1] else 0
+        actual_comments = len(issue["comments"])
+        if actual_comments != expected_comments:
+            diffs.append(f"comments: expected {expected_comments} got {actual_comments}")
+        body = issue.get("body") or ""
+        if f"- ahm id: {ahm_id}" not in body:
+            diffs.append("body: missing `- ahm id` metadata")
+        for dep in task["depends_on"]:  # type: ignore[union-attr]
+            dep_id = str(dep)
+            if dep_id in map_in and re.search(rf"ahm#{re.escape(dep_id)}(?!\d)", body):
+                diffs.append(f"dep ahm#{dep_id}: token not rewritten (expected #{map_in[dep_id]})")
+        if diffs:
+            problems += 1
+            print(f"#{number} (ahm {ahm_id}): " + "; ".join(diffs))
+        else:
+            print(f"#{number} (ahm {ahm_id}): OK")
+    print(f"verified {len(map_in)} mapped issue(s) ({checked} checked, "
+          f"{len(map_in) - checked} skipped); {problems} with diffs")
+    return 1 if problems else 0
 
 
 def _write_map(mapping: dict[str, int], path: str) -> None:
@@ -534,9 +631,14 @@ def main() -> int:
     parser.add_argument("--map-in", metavar="FILE",
                         help="JSON map of already-migrated ahm-id -> issue-number; "
                              "those tasks are skipped and their dependencies resolve to links")
+    parser.add_argument("--verify", action="store_true",
+                        help="check mapped issues against their ahm records (requires --map-in)")
     parser.add_argument("--project", type=int, default=1,
                         help="Projects v2 project number (default: 1, Cake Backlog)")
     args = parser.parse_args()
+    if args.verify and not args.map_in:
+        err("--verify requires --map-in")
+        return 2
 
     try:
         tasks = load_tasks()
@@ -549,8 +651,7 @@ def main() -> int:
         err(str(exc))
         return 1
     if vocabulary is None:
-        print("note: .github/labels.yml not on this branch yet (PR #44); "
-              "label vocabulary validation skipped")
+        print("note: .github/labels.yml not present; label vocabulary validation skipped")
     active_ids = {str(t["id"]) for t in tasks}
 
     map_in: dict[str, int] = {}
@@ -567,6 +668,10 @@ def main() -> int:
         except (OSError, ValueError, TypeError) as exc:
             err(f"cannot read --map-in {args.map_in}: {exc}")
             return 1
+
+    if args.verify:
+        repo = repo_slug()
+        return verify(tasks, vocabulary, repo, args.project, map_in)
 
     if args.dry_run:
         return dry_run(tasks, active_ids, vocabulary, set(map_in))
