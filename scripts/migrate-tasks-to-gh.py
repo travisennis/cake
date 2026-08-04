@@ -40,6 +40,12 @@ smoke batch) to skip already-migrated tasks and resolve their dependency
 links. Run `--dry-run` and review before creating. `--limit` is for
 smoke-testing a small batch, not for batched migration -- dependencies on
 tasks outside the batch render as text rather than links.
+
+Rate limits: setting project fields uses GraphQL (one item-add plus three
+item-edits per issue), and `--verify` reads the whole board, which is
+point-hungry. Before a run the tool checks the GraphQL budget and aborts if
+it is too low (`--force` to proceed); any call that trips the limit waits
+for the reset and retries.
 """
 
 from __future__ import annotations
@@ -50,6 +56,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TASKS_DIR = os.path.join(PROJECT_ROOT, ".ahm", "tasks", "active")
@@ -298,6 +305,59 @@ def gh(args: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(["gh", *args], check=False, capture_output=True, text=True)
 
 
+RATE_LIMIT_RE = re.compile(r"rate limit", re.IGNORECASE)
+
+
+def graphql_reset_wait_seconds() -> int:
+    """Seconds until the GraphQL rate limit resets (fallback: 5 minutes)."""
+    proc = gh(["api", "rate_limit", "--jq", ".resources.graphql.reset"])
+    if proc.returncode == 0:
+        try:
+            return max(0, int(proc.stdout.strip()) - int(time.time()))
+        except ValueError:
+            pass
+    return 300
+
+
+def gh_retry(args: list[str], retries: int = 2) -> subprocess.CompletedProcess[str]:
+    """Run gh, waiting out GraphQL rate-limit resets before retrying.
+
+    The GraphQL budget is a rolling window of points; when a call trips the
+    limit the only move is waiting for the reset, so the wrapper sleeps until
+    then and retries instead of aborting the batch mid-way.
+    """
+    for attempt in range(retries + 1):
+        proc = gh(args)
+        if proc.returncode == 0 or not RATE_LIMIT_RE.search(proc.stderr):
+            return proc
+        if attempt == retries:
+            break
+        wait = graphql_reset_wait_seconds() + 10
+        print(f"rate limit hit; waiting {wait}s for reset (attempt {attempt + 1})",
+              file=sys.stderr)
+        time.sleep(wait)
+    return proc
+
+
+def check_graphql_budget(estimated_points: int, force: bool) -> bool:
+    """Abort when the GraphQL budget is too low for the operation."""
+    proc = gh(["api", "rate_limit", "--jq", ".resources.graphql.remaining"])
+    if proc.returncode != 0:
+        print("note: could not read the GraphQL rate limit; proceeding", file=sys.stderr)
+        return True
+    try:
+        remaining = int(proc.stdout.strip())
+    except ValueError:
+        return True
+    if remaining >= estimated_points:
+        return True
+    wait = graphql_reset_wait_seconds()
+    err(f"GraphQL rate budget too low: {remaining} remaining, this operation needs "
+        f"~{estimated_points}. Wait ~{wait}s for the reset and rerun"
+        + ("" if force else ", or pass --force to proceed"))
+    return False
+
+
 def repo_slug() -> str:
     env = os.environ.get("GH_REPO")
     if env:
@@ -424,9 +484,12 @@ def map_labels(ahm_labels: list[str], vocabulary: set[str] | None) -> tuple[list
 
 def migrate(tasks: list[dict[str, object]], active_ids: set[str], vocabulary: set[str],
             repo: str, owner: str, project: int, limit: int | None,
-            no_comments: bool, map_out: str | None, map_in: dict[str, int]) -> int:
+            no_comments: bool, map_out: str | None, map_in: dict[str, int],
+            force: bool) -> int:
     available = [t for t in tasks if str(t["id"]) not in map_in]
     selected = available if limit is None else available[:limit]
+    if not check_graphql_budget(len(selected) * 12 + 200, force):
+        return 1
     token_ids = {str(t["id"]) for t in selected}
     resolvable_ids = token_ids | set(map_in)
     mapping = dict(map_in)
@@ -451,7 +514,7 @@ def migrate(tasks: list[dict[str, object]], active_ids: set[str], vocabulary: se
         label_args: list[str] = []
         for label in labels:
             label_args += ["--label", label]
-        proc = gh(
+        proc = gh_retry(
             ["issue", "create", "--repo", repo, "--title", str(task["title"]),
              "--body", body] + label_args
         )
@@ -468,22 +531,22 @@ def migrate(tasks: list[dict[str, object]], active_ids: set[str], vocabulary: se
         if map_out:
             _write_map(mapping, map_out)
 
-        proc = gh(["project", "item-add", str(project), "--owner", owner, "--url", url,
-                   "--format", "json"])
+        proc = gh_retry(["project", "item-add", str(project), "--owner", owner, "--url", url,
+                         "--format", "json"])
         if proc.returncode != 0:
             return fail(f"failed to add #{number} to project {project}: {proc.stderr.strip()}")
         status_field = STATUS_TO_FIELD.get(str(task["status"]), str(task["status"]))
         for field, value in (("Status", status_field), ("Priority", str(task["priority"])),
                              ("Effort", str(task["effort"]))):
-            proc = gh(["project", "item-edit", str(project), "--owner", owner, "--url", url,
-                       "--field", field, "--value", value])
+            proc = gh_retry(["project", "item-edit", str(project), "--owner", owner, "--url", url,
+                             "--field", field, "--value", value])
             if proc.returncode != 0:
                 return fail(f"failed to set {field}={value} on #{number}: {proc.stderr.strip()}")
         print(f"  set Status={status_field} Priority={task['priority']} Effort={task['effort']}")
 
         if not no_comments and comments:
             comment = f"> Migrated comments from ahm task {task_id}.\n\n{comments}"
-            proc = gh(["api", f"repos/{repo}/issues/{number}/comments", "-f", f"body={comment}"])
+            proc = gh_retry(["api", f"repos/{repo}/issues/{number}/comments", "-f", f"body={comment}"])
             if proc.returncode != 0:
                 return fail(f"failed to post comments on #{number}: {proc.stderr.strip()}")
             print(f"  posted {len(comments.splitlines())} comment line(s)")
@@ -493,7 +556,7 @@ def migrate(tasks: list[dict[str, object]], active_ids: set[str], vocabulary: se
     for task in selected:
         task_id = str(task["id"])
         number = mapping[task_id]
-        proc = gh(["api", f"repos/{repo}/issues/{number}", "--jq", ".body"])
+        proc = gh_retry(["api", f"repos/{repo}/issues/{number}", "--jq", ".body"])
         if proc.returncode != 0:
             return fail(f"failed to read body of #{number}: {proc.stderr.strip()}")
         body = proc.stdout
@@ -502,7 +565,7 @@ def migrate(tasks: list[dict[str, object]], active_ids: set[str], vocabulary: se
             dep_id = str(dep)
             if dep_id in mapping:
                 body = re.sub(rf"ahm#{re.escape(dep_id)}(?!\d)", f"#{mapping[dep_id]}", body)
-        proc = gh(["api", "-X", "PATCH", f"repos/{repo}/issues/{number}", "-f", f"body={body}"])
+        proc = gh_retry(["api", "-X", "PATCH", f"repos/{repo}/issues/{number}", "-f", f"body={body}"])
         if proc.returncode != 0:
             return fail(f"failed to update body of #{number}: {proc.stderr.strip()}")
 
@@ -517,7 +580,7 @@ def migrate(tasks: list[dict[str, object]], active_ids: set[str], vocabulary: se
 
 
 def verify(tasks: list[dict[str, object]], vocabulary: set[str] | None, repo: str,
-           project: int, map_in: dict[str, int]) -> int:
+           project: int, map_in: dict[str, int], force: bool) -> int:
     """Check migrated issues against their ahm records.
 
     For every ahm-id -> issue-number mapping entry, compares labels, project
@@ -528,6 +591,9 @@ def verify(tasks: list[dict[str, object]], vocabulary: set[str] | None, repo: st
     """
     by_id = {str(t["id"]): t for t in tasks}
 
+    if not check_graphql_budget(2100, force):
+        return 1
+
     query = (
         "{ viewer { projectV2(number: %d) { items(first: 100) { nodes { "
         "... on ProjectV2Item { "
@@ -536,7 +602,15 @@ def verify(tasks: list[dict[str, object]], vocabulary: set[str] | None, repo: st
         "... on ProjectV2ItemFieldSingleSelectValue { name "
         "field { ... on ProjectV2SingleSelectField { name } } } } } } } } } } }"
     ) % project
-    proc = gh(["api", "graphql", "-f", f"query={query}"])
+    before = gh(["api", "rate_limit", "--jq", ".resources.graphql.remaining"])
+    proc = gh_retry(["api", "graphql", "-f", f"query={query}"])
+    after = gh(["api", "rate_limit", "--jq", ".resources.graphql.remaining"])
+    if before.returncode == 0 and after.returncode == 0:
+        try:
+            cost = int(before.stdout.strip()) - int(after.stdout.strip())
+            print(f"note: board query consumed ~{cost} GraphQL points")
+        except ValueError:
+            pass
     if proc.returncode != 0:
         err(f"failed to read project {project} fields: {proc.stderr.strip()}")
         return 1
@@ -567,8 +641,8 @@ def verify(tasks: list[dict[str, object]], vocabulary: set[str] | None, repo: st
             print(f"ahm {ahm_id} -> #{number}: ahm record not found (skipped)")
             continue
         checked += 1
-        proc = gh(["issue", "view", str(number), "--repo", repo,
-                   "--json", "body,labels,comments"])
+        proc = gh_retry(["issue", "view", str(number), "--repo", repo,
+                         "--json", "body,labels,comments"])
         if proc.returncode != 0:
             err(f"failed to read #{number}: {proc.stderr.strip()}")
             return 1
@@ -633,6 +707,8 @@ def main() -> int:
                              "those tasks are skipped and their dependencies resolve to links")
     parser.add_argument("--verify", action="store_true",
                         help="check mapped issues against their ahm records (requires --map-in)")
+    parser.add_argument("--force", action="store_true",
+                        help="proceed even when the GraphQL rate budget looks too low")
     parser.add_argument("--project", type=int, default=1,
                         help="Projects v2 project number (default: 1, Cake Backlog)")
     args = parser.parse_args()
@@ -671,7 +747,7 @@ def main() -> int:
 
     if args.verify:
         repo = repo_slug()
-        return verify(tasks, vocabulary, repo, args.project, map_in)
+        return verify(tasks, vocabulary, repo, args.project, map_in, args.force)
 
     if args.dry_run:
         return dry_run(tasks, active_ids, vocabulary, set(map_in))
@@ -679,7 +755,7 @@ def main() -> int:
     repo = repo_slug()
     owner = repo.split("/")[0]
     return migrate(tasks, active_ids, vocabulary, repo, owner, args.project,
-                   args.limit, args.no_comments, args.map_out, map_in)
+                   args.limit, args.no_comments, args.map_out, map_in, args.force)
 
 
 if __name__ == "__main__":
