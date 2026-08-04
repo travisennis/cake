@@ -56,6 +56,6 @@ The concrete behavior:
 ## More Information
 
 - Task 249: Add Schema-Constrained Final Output.
-- ExecPlan: `.agents/exec-plans/completed/schema-constrained-final-output.md`.
+- ExecPlan: `docs/exec-plans/completed/schema-constrained-final-output.md`.
 - ADR-011 established the additive-`TaskCompleteSubtype` precedent (`interrupted`).
 - Key code: `src/clients/agent/agent_loop.rs` (`Agent::send`, final-message branch), `src/clients/responses_types.rs` / `src/clients/chat_types.rs` (request DTOs), `src/types/session.rs` (`TaskOutcome`, `TaskCompleteSubtype`), `src/exit_code.rs` (classification), `src/main.rs` (flag parsing and pre-run validation).

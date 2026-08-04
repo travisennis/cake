@@ -1,4 +1,4 @@
-exclude = [".ahm/", "docs/adr/index.md"]
+exclude = []
 
 [format]
 line-width = 1000

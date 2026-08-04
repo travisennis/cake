@@ -8,21 +8,33 @@ Users depend on CLI shape and exit behavior, machine-readable output formats, to
 
 ## Operating loop
 
-1. Run `ahm prime` before any work.
-2. If the request names a task, ExecPlan, ADR, or research record, inspect it through `ahm` before choosing implementation work.
+1. Run `just brief` (or list open issues with `gh issue list --state open`) before any work.
+2. If the request names an issue, ExecPlan, ADR, or research record, inspect it (`gh issue view <number>` or the file itself) before choosing implementation work.
 3. Create the branch before the first edit: `just branch <type>/<slug>`, or `just worktree <type>/<slug>` when another agent is working in parallel. `master` is protected and rejects commits and pushes.
 4. Classify the change, select the route below, and load only that route's documents.
 5. Read the smallest relevant code and tests. [ARCHITECTURE.md](ARCHITECTURE.md) names the code authority for each surface.
 6. Preserve compatibility unless the task explicitly changes it.
-7. If work is managed, start and complete it through `ahm`.
+7. If work is managed, track it in a GitHub issue: set Status to In Progress when you start, and close the issue with acceptance notes before the commit that contains its implementation.
 8. Make surgical edits and run risk-proportionate checks.
 9. After implementation edits, run reviews in a subagent and address findings until the reviewer gives an all clear. If a third round reports findings of the same class, stop patching: report the finding class and the suspected design flaw, and escalate to a design decision.
 10. Perform preflight.
 11. Hand off the branch and its pull request, exact checks, skipped checks, and remaining risk.
 
-Large or cross-cutting work requires an ExecPlan as directed by `ahm context plan`.
+Large or cross-cutting work requires an ExecPlan per [docs/workflow/exec-plans.md](docs/workflow/exec-plans.md).
 
 ## Workflow routing
+
+### Managed Work: Issues, ExecPlans, ADRs, And Research
+
+Use for choosing, preparing, and closing work; authoring execution plans; recording research evidence; and writing architecture decision records.
+
+Consult:
+
+- [Task workflow](docs/workflow/tasks.md), for the GitHub Issues lifecycle: queue selection, triage, the work procedure, and closing.
+- [ExecPlan workflow](docs/workflow/exec-plans.md), for authoring execution plans.
+- [ADR README](docs/adr/README.md), for when and how to write architecture decision records.
+- [Research workflow](docs/workflow/research.md), for research note conventions.
+- `docs/exec-plans/`, `docs/research/`, and `docs/adr/`, which are the authority for records.
 
 ### CLI, Output Formats, And Exit Behavior
 
@@ -149,7 +161,7 @@ Consult:
 
 - [Code complexity targets](docs/guardrails/complexity-targets.md), for CC and CRAP targets and the refactoring workflow.
 - `cargo-crap` and `just cargo-crap-report`, for the CI CRAP gate.
-- Task #335, for enforcement mechanisms.
+- Issue #335, for enforcement mechanisms.
 
 ## Repository rules
 
@@ -158,14 +170,13 @@ Consult:
 - One branch holds one task. Do not carry unrelated work across on the same branch.
 - Preserve unrelated user changes; never clean or revert them.
 - Never resolve a merge conflict in `ci/cargo-crap-baseline.json` by hand or by three-way merge. Take `master`'s copy, then regenerate it with `just change-risk-baseline`.
-- Complete managed work through `ahm` before the commit that contains its implementation; task-state and index files are commit content.
+- Close the GitHub issue tracking a change before the commit that contains its implementation; issue state, links, and sub-issues are the managed record.
 - Use Conventional Commits when writing commit messages; verified by the commit-msg hook.
 - Labels on GitHub issues and pull requests: use only the vocabulary in `.github/labels.yml`; never invent or rename labels. `just labels-check` verifies the repo matches it, and the label-governance workflow removes out-of-vocabulary labels from issues.
-- Never hand-edit generated `.ahm` indexes.
-- Future work and unresolved questions belong in `.ahm`, not durable docs.
+- Future work and unresolved questions belong in GitHub issues, not durable docs.
 - Update architecture documentation only when a durable boundary or invariant changes, not when symbols or files move.
 - Before broad edits and before handoff, inspect `git status --short`.
 
 ## Verification
 
-Use focused checks first. `just ci` is the normal code-change gate; documentation-only work uses targeted Panache format/lint checks for changed living documents, link validation, and `ahm doctor`. Follow [CONTRIBUTING.md](CONTRIBUTING.md) for exceptions and specialized checks.
+Use focused checks first. `just ci` is the normal code-change gate; documentation-only work uses targeted Panache format/lint checks for changed living documents and link validation. Follow [CONTRIBUTING.md](CONTRIBUTING.md) for exceptions and specialized checks.

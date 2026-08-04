@@ -57,7 +57,7 @@ Additional checks:
 - Snapshot changes: `just snapshots`, then `cargo insta review`.
 - Label changes: `just labels-check-file` (file validation, also CI), `just labels-check` (repo drift vs `.github/labels.yml`), `just labels` (apply), `just labels-prune` (delete unlisted labels).
 - Full release-oriented validation: `just check-full`.
-- Documentation-only changes: targeted `panache format --check` and `panache lint` for changed living documents, link validation, `ahm doctor`, and `git diff --check`. Use `just docs-check` when intentionally validating the complete Markdown corpus.
+- Documentation-only changes: targeted `panache format --check` and `panache lint` for changed living documents, link validation, and `git diff --check`. Use `just docs-check` when intentionally validating the complete Markdown corpus.
 
 If an applicable check cannot run, report the exact reason and the narrower checks that did run. Do not describe a failing primary branch as unrelated without investigating it.
 
@@ -75,7 +75,7 @@ Tests and snapshots should encode behavior close to its implementation. Add docu
 
 ## Managed work
 
-`ahm` owns tasks, research, ExecPlans, ADR metadata, and generated indexes. Start with `ahm prime`. Use the scoped `ahm context ...` guidance for managed records, never edit generated indexes, and complete managed work before any commit containing its implementation.
+Issues, research notes, ExecPlans, and ADRs are managed records. Work is tracked in GitHub Issues; run `just brief` to see the open queue, active ExecPlans, and recent research. Use the workflow references in AGENTS.md (task, ExecPlan, ADR, and research workflows), never edit generated indexes (there are none), and close the issue tracking a change before any commit containing its implementation.
 
 ## Git and commits
 

@@ -91,21 +91,9 @@ rust-version-check:
 session-metrics *args:
     @python3 scripts/session-metrics/report.py {{args}}
 
-# Regenerate generated indexes from ahm-managed metadata
-task-index:
-    ahm index
-
-# Verify generated indexes are current (requires ahm; not part of default CI)
-task-index-check:
-    @python3 scripts/check-indexes.py
-
-# Mark a task as Completed, move active/<id>.md to completed/, and refresh indexes
-task-complete id:
-    ahm task complete {{id}}
-
-# Mark a task as Cancelled, move active/<id>.md to cancelled/, and refresh indexes
-task-cancel id:
-    ahm task cancel {{id}}
+# Print the session briefing: open issues by status, active ExecPlans, recent research
+brief:
+    @python3 scripts/session-brief.py
 
 # Synchronize repository labels with the committed vocabulary in .github/labels.yml
 labels:
