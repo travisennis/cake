@@ -1,4 +1,4 @@
-# Install required development tools
+# Install required development tools and git hooks
 setup:
     @echo "Checking Rust installation..."
     @which rustc > /dev/null || { echo "ERROR: Rust not installed. Install from https://rustup.rs"; exit 1; }
@@ -11,6 +11,8 @@ setup:
     cargo install panache --version 3.0.0 --locked --quiet 2>/dev/null || true
     cargo install prek --quiet 2>/dev/null || true
     cargo install --locked cocogitto --quiet 2>/dev/null || true
+    @echo "Installing git hooks declared in prek.toml..."
+    prek install --hook-type pre-commit --hook-type pre-push --hook-type commit-msg
     @echo "Setup complete! Run 'just --list' to see available commands."
 
 # Reject branch names outside the <type>/<slug> convention.

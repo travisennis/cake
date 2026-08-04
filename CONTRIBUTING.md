@@ -7,12 +7,14 @@ Agent operating rules are in [AGENTS.md](AGENTS.md). This document is the shared
 Prerequisites are Git and either [mise](https://mise.jdx.dev/) or a manually installed Rust toolchain and `just`.
 
 ```bash
+mise trust
 mise install
 just setup
-prek install --hook-type pre-commit --hook-type pre-push --hook-type commit-msg
 ```
 
-`just setup` installs the Cargo utilities used by repository recipes. Run `just --list` for the authoritative command catalog.
+`mise trust` marks the repository's `.mise.toml` as trusted; mise refuses to read an untrusted config, so it must run before `mise install`. It is a one-time step per clone location --- mise keys trust to the config file's path, so a new worktree path asks again.
+
+`just setup` installs the Cargo utilities used by repository recipes and the git hooks declared in `prek.toml` (`pre-commit`, `pre-push`, and `commit-msg`). Re-running it is safe: the hook install is idempotent. To refresh hooks without the full setup, run `prek install --hook-type pre-commit --hook-type pre-push --hook-type commit-msg` yourself. Run `just --list` for the authoritative command catalog.
 
 `mise install` also provides `sccache` and points `RUSTC_WRAPPER` at it, so a newly created worktree reuses already-compiled dependencies instead of rebuilding the graph from cold. The setting is scoped to `.mise.toml`, so it applies to local development only. Without mise, install `sccache` and export `RUSTC_WRAPPER=sccache` yourself, or accept a cold build per worktree.
 
