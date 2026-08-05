@@ -90,7 +90,7 @@ For an issue without an ExecPlan, skip step 7. The inspection, start, implementa
 This section is the single source of truth for the issue lifecycle. [AGENTS.md](../../AGENTS.md), [CONTRIBUTING.md](../../CONTRIBUTING.md), and [docs/workflow/exec-plans.md](exec-plans.md) reference it instead of restating the rule. The lifecycle has two checkpoints:
 
 - **Change pushed (branch push / pull request opened)** --- the work record completes and the issue stays open. At this checkpoint the verification results are recorded in an issue comment and the acceptance notes are marked complete (steps 5-6). This is the definition of done for a change entering a PR: implementation complete, routed checks run and recorded, acceptance notes complete, documentation impact assessed, PR open for review.
-- **Change merged to `master`** --- the issue closes. Close with a summary of what was delivered and how it was verified; for ExecPlan-driven issues, complete the ExecPlan records first (step 7). This is the definition of done for the issue: the PR is merged and the issue record says delivered and verified.
+- **Change merged to `master`** --- the issue closes. Reference the issue from the pull request body (e.g. "Closes #135") so GitHub closes it on merge; if the PR does not reference it, close the issue from a follow-up session once the change is in `master`. Close with a summary of what was delivered and how it was verified; for ExecPlan-driven issues, complete the ExecPlan records first (step 7). This is the definition of done for the issue: the PR is merged and the issue record says delivered and verified.
 
 A change can be done in a PR while its issue remains open; the issue closes only when the change is in `master`.
 
