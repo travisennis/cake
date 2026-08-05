@@ -149,9 +149,10 @@ Consult:
 
 - [CONTRIBUTING.md](CONTRIBUTING.md), the canonical command catalog and verification policy.
 - [Working on branches and worktrees runbook](docs/runbooks/parallel-worktrees.md), for branch, worktree, and pull-request mechanics.
+- [CI Runner Images and Required Checks runbook](docs/runbooks/ci-runner-images-and-required-checks.md), for runner labels, workflow job names, and the branch-protection contexts they feed.
 - [Auditing Binary Size runbook](docs/runbooks/auditing-binary-size.md), for investigating release binary bloat.
 
-Dependency changes require explicit scope and `Cargo.toml`/`Cargo.lock` consistency.
+Dependency changes require explicit scope and `Cargo.toml`/`Cargo.lock` consistency. A workflow job name is a branch-protection identifier; renaming one without updating the ruleset blocks every pull request.
 
 ### Code Quality, Complexity, And Coverage
 
