@@ -598,16 +598,22 @@ async fn test_sandbox_danger_full_access_allows_write_outside_cwd() {
 // Linked Worktree Sandbox Tests (task 260)
 // ===========================================================================
 
-/// Build bash tool arguments that run `git` with the repository-pinning
-/// environment variables dropped.
+/// Build bash tool arguments that run `git` with the inherited repository and
+/// configuration variables dropped.
 ///
 /// The bash tool passes cake's environment to the child, so a `GIT_DIR`
 /// inherited from whoever launched the test suite would send these commands
-/// at that repository instead of the fixture worktree.
+/// at that repository instead of the fixture worktree. These commands carry
+/// no `-c` options of their own, so inherited command-scope configuration
+/// would also outrank the fixture's local settings, including its pinned
+/// `core.hooksPath`.
 #[cfg(target_os = "macos")]
 fn sandboxed_git(args: &[&str]) -> String {
     let mut command = String::from("env");
-    for var in crate::config::git::REPOSITORY_ENV_VARS {
+    for var in crate::config::git::REPOSITORY_ENV_VARS
+        .iter()
+        .chain(crate::config::git::CONFIG_ENV_VARS)
+    {
         command.push_str(" -u ");
         command.push_str(var);
     }

@@ -7,11 +7,13 @@ fn binary_path() -> PathBuf {
 }
 
 /// Environment variables that pin `git` to a specific repository, index, or
-/// object store, overriding discovery from the working directory.
+/// object store, overriding discovery from the working directory, plus those
+/// that inject configuration at command scope, which outranks a repository's
+/// own local configuration.
 ///
 /// Integration tests are a separate crate and cannot reach `src/config/git.rs`,
 /// so this list is duplicated here; keep the two in sync.
-pub const GIT_REPOSITORY_ENV_VARS: &[&str] = &[
+pub const GIT_AMBIENT_ENV_VARS: &[&str] = &[
     "GIT_DIR",
     "GIT_WORK_TREE",
     "GIT_COMMON_DIR",
@@ -20,6 +22,9 @@ pub const GIT_REPOSITORY_ENV_VARS: &[&str] = &[
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
     "GIT_NAMESPACE",
     "GIT_PREFIX",
+    "GIT_CONFIG",
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_PARAMETERS",
 ];
 
 pub struct TestEnv {
@@ -56,9 +61,9 @@ impl TestEnv {
             .env("HOME", &self.home_dir)
             .env("XDG_CONFIG_HOME", self.home_dir.join(".config"))
             .env("CAKE_DATA_DIR", &self.data_dir);
-        // Never hand the binary under test a repository pinned by the
-        // environment the suite was launched from.
-        for var in GIT_REPOSITORY_ENV_VARS {
+        // Never hand the binary under test a repository or configuration
+        // pinned by the environment the suite was launched from.
+        for var in GIT_AMBIENT_ENV_VARS {
             cmd.env_remove(var);
         }
         cmd

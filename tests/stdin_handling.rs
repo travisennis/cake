@@ -19,7 +19,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use support::{GIT_REPOSITORY_ENV_VARS, TestEnv};
+use support::{GIT_AMBIENT_ENV_VARS, TestEnv};
 
 fn cake_env() -> TestEnv {
     TestEnv::new("cake-stdin-test")
@@ -34,10 +34,9 @@ fn cake_env() -> TestEnv {
 fn git(working_dir: &std::path::Path) -> std::process::Command {
     let mut cmd = std::process::Command::new("git");
     cmd.current_dir(working_dir);
-    for var in GIT_REPOSITORY_ENV_VARS {
+    for var in GIT_AMBIENT_ENV_VARS {
         cmd.env_remove(var);
     }
-    cmd.env_remove("GIT_CONFIG");
     cmd.env("GIT_CONFIG_GLOBAL", "/dev/null");
     cmd.env("GIT_CONFIG_NOSYSTEM", "1");
     cmd.args([

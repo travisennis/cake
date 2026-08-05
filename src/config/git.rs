@@ -22,6 +22,20 @@ pub const REPOSITORY_ENV_VARS: &[&str] = &[
     "GIT_PREFIX",
 ];
 
+/// Environment variables that inject configuration at command scope, which
+/// outranks a repository's own local configuration.
+///
+/// `GIT_CONFIG_COUNT` gates the numbered `GIT_CONFIG_KEY_<n>` and
+/// `GIT_CONFIG_VALUE_<n>` pairs, so clearing it disables all of them.
+/// `GIT_CONFIG_PARAMETERS` is the serialized form git uses to propagate its
+/// own `-c` options into subprocesses, which is how these reach a test suite
+/// launched from a hook.
+///
+/// Test-only: production honors the user's configuration at every scope, so
+/// only fixtures drop these.
+#[cfg(test)]
+pub const CONFIG_ENV_VARS: &[&str] = &["GIT_CONFIG", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS"];
+
 /// Build a `git` command that discovers its repository from `working_dir`,
 /// ignoring any repository pinned by the ambient environment.
 ///
@@ -43,12 +57,14 @@ pub mod test_support {
     /// Build a `git` command for a fixture repository at `working_dir`.
     ///
     /// On top of [`crate::config::git::command`], this isolates the fixture from the
-    /// developer's environment entirely: no global or system configuration is
-    /// read or written, no hooks run, and the committer identity is supplied
-    /// inline. A test must never be able to reach the repository it runs in.
+    /// developer's environment entirely: no configuration is read or written at
+    /// any scope, no hooks run, and the committer identity is supplied inline.
+    /// A test must never be able to reach the repository it runs in.
     pub fn git(working_dir: &Path) -> Command {
         let mut cmd = crate::config::git::command(working_dir);
-        cmd.env_remove("GIT_CONFIG");
+        for var in crate::config::git::CONFIG_ENV_VARS {
+            cmd.env_remove(var);
+        }
         cmd.env("GIT_CONFIG_GLOBAL", "/dev/null");
         cmd.env("GIT_CONFIG_NOSYSTEM", "1");
         cmd.args([
@@ -163,6 +179,36 @@ mod tests {
             resolved,
             fs::canonicalize(workspace.path().join(".git")).unwrap(),
             "an inherited GIT_DIR must not redirect the command"
+        );
+    }
+
+    #[test]
+    fn a_fixture_ignores_command_scope_config_from_the_environment() {
+        // Command-scope configuration outranks a repository's local config, so
+        // an inherited `GIT_CONFIG_COUNT` would reach fixtures for every key
+        // the fixture builder does not pin inline — `core.hooksPath` among
+        // them, for any command that carries no `-c` of its own.
+        let dir = TempDir::new().unwrap();
+        test_support::init_repo(dir.path());
+
+        let leaked = temp_env::with_vars(
+            [
+                ("GIT_CONFIG_COUNT", Some("1")),
+                ("GIT_CONFIG_KEY_0", Some("cake.sentinel")),
+                ("GIT_CONFIG_VALUE_0", Some("leaked")),
+            ],
+            || {
+                test_support::git(dir.path())
+                    .args(["config", "--get", "cake.sentinel"])
+                    .output()
+                    .expect("git config must spawn")
+            },
+        );
+
+        assert!(
+            !leaked.status.success(),
+            "command-scope config must not reach a fixture, got: {}",
+            String::from_utf8_lossy(&leaked.stdout)
         );
     }
 
