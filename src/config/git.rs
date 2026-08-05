@@ -9,9 +9,15 @@
 
 use std::{path::Path, process::Command};
 
-/// Environment variables that pin `git` to a specific repository, index, or
-/// object store, overriding discovery from the working directory.
-pub const REPOSITORY_ENV_VARS: &[&str] = &[
+/// Environment variables that redirect or reconfigure `git` independently of
+/// the working directory, and that cake therefore never inherits.
+///
+/// The first eight pin git to a specific repository, index, or object store,
+/// overriding discovery. `GIT_CONFIG_PARAMETERS` is the serialized form git
+/// uses to propagate one invocation's `-c` options into the subprocesses it
+/// spawns; git documents it as internal, and options meant for a parent
+/// invocation are not settings for cake's unrelated ones.
+pub const AMBIENT_ENV_VARS: &[&str] = &[
     "GIT_DIR",
     "GIT_WORK_TREE",
     "GIT_COMMON_DIR",
@@ -20,31 +26,42 @@ pub const REPOSITORY_ENV_VARS: &[&str] = &[
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
     "GIT_NAMESPACE",
     "GIT_PREFIX",
+    "GIT_CONFIG_PARAMETERS",
 ];
 
-/// Environment variables that inject configuration at command scope, which
-/// outranks a repository's own local configuration.
+/// Environment variables a fixture must not inherit on top of
+/// [`AMBIENT_ENV_VARS`], because each one outranks the `-c` options that
+/// [`test_support::git`] pins.
 ///
 /// `GIT_CONFIG_COUNT` gates the numbered `GIT_CONFIG_KEY_<n>` and
-/// `GIT_CONFIG_VALUE_<n>` pairs, so clearing it disables all of them.
-/// `GIT_CONFIG_PARAMETERS` is the serialized form git uses to propagate its
-/// own `-c` options into subprocesses, which is how these reach a test suite
-/// launched from a hook.
+/// `GIT_CONFIG_VALUE_<n>` pairs, so clearing it disables all of them. The
+/// identity variables beat `-c user.name` and `-c user.email` outright, and
+/// git exports them into `pre-commit` and `commit-msg` hooks.
 ///
-/// Test-only: production honors the user's configuration at every scope, so
-/// only fixtures drop these.
+/// Test-only, and deliberately stricter than production: cake acts on the
+/// user's repository and must honor the user's own configuration and identity.
 #[cfg(test)]
-pub const CONFIG_ENV_VARS: &[&str] = &["GIT_CONFIG", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS"];
+pub const FIXTURE_ENV_VARS: &[&str] = &[
+    "GIT_CONFIG",
+    "GIT_CONFIG_COUNT",
+    "GIT_AUTHOR_NAME",
+    "GIT_AUTHOR_EMAIL",
+    "GIT_AUTHOR_DATE",
+    "GIT_COMMITTER_NAME",
+    "GIT_COMMITTER_EMAIL",
+    "GIT_COMMITTER_DATE",
+];
 
 /// Build a `git` command that discovers its repository from `working_dir`,
-/// ignoring any repository pinned by the ambient environment.
+/// ignoring any repository or parent `-c` options pinned by the ambient
+/// environment.
 ///
-/// User-facing configuration is deliberately left intact: cake acts on the
-/// user's repository and must honor the user's git config and hooks.
+/// The user's own configuration is deliberately left intact: cake acts on the
+/// user's repository and must honor their git config, identity, and hooks.
 pub fn command(working_dir: &Path) -> Command {
     let mut cmd = Command::new("git");
     cmd.current_dir(working_dir);
-    for var in REPOSITORY_ENV_VARS {
+    for var in AMBIENT_ENV_VARS {
         cmd.env_remove(var);
     }
     cmd
@@ -58,11 +75,11 @@ pub mod test_support {
     ///
     /// On top of [`crate::config::git::command`], this isolates the fixture from the
     /// developer's environment entirely: no configuration is read or written at
-    /// any scope, no hooks run, and the committer identity is supplied inline.
-    /// A test must never be able to reach the repository it runs in.
+    /// any scope, no hooks run, and the identity is fixed. A test must never be
+    /// able to reach the repository it runs in.
     pub fn git(working_dir: &Path) -> Command {
         let mut cmd = crate::config::git::command(working_dir);
-        for var in crate::config::git::CONFIG_ENV_VARS {
+        for var in crate::config::git::FIXTURE_ENV_VARS {
             cmd.env_remove(var);
         }
         cmd.env("GIT_CONFIG_GLOBAL", "/dev/null");
@@ -183,6 +200,34 @@ mod tests {
     }
 
     #[test]
+    fn command_ignores_a_propagated_parent_dash_c() {
+        // Git serializes `git -c key=value` into GIT_CONFIG_PARAMETERS for the
+        // subprocesses it spawns, so anything launched from a hook of such an
+        // invocation inherits it. Command-scope config outranks a repository's
+        // local config, so an inherited `core.hooksPath` would run a foreign
+        // hook on every repository cake touches, fixtures included.
+        let dir = TempDir::new().unwrap();
+        test_support::init_repo(dir.path());
+
+        let leaked = temp_env::with_var(
+            "GIT_CONFIG_PARAMETERS",
+            Some("'cake.sentinel'='leaked'"),
+            || {
+                command(dir.path())
+                    .args(["config", "--get", "cake.sentinel"])
+                    .output()
+                    .expect("git config must spawn")
+            },
+        );
+
+        assert!(
+            !leaked.status.success(),
+            "a parent invocation's -c must not reach cake's git calls, got: {}",
+            String::from_utf8_lossy(&leaked.stdout)
+        );
+    }
+
+    #[test]
     fn a_fixture_ignores_command_scope_config_from_the_environment() {
         // Command-scope configuration outranks a repository's local config, so
         // an inherited `GIT_CONFIG_COUNT` would reach fixtures for every key
@@ -222,10 +267,21 @@ mod tests {
         let poison = fs::canonicalize(victim.path().join(".git")).unwrap();
         let before = fs::read_to_string(victim.path().join(".git/config")).unwrap();
 
+        // Run the mutating commands without asserting their exit status, so a
+        // regression is caught by the comparison below rather than by a
+        // fixture-setup panic that never reaches it.
         let fixture = TempDir::new().unwrap();
         temp_env::with_var("GIT_DIR", Some(&poison), || {
-            test_support::init_repo(fixture.path());
-            test_support::run_git(fixture.path(), &["config", "user.name", "Test User"]);
+            for args in [
+                ["init", "", ""],
+                ["config", "user.name", "Test User"],
+                ["commit", "--allow-empty", "-m=poison"],
+            ] {
+                let _ = test_support::git(fixture.path())
+                    .args(args.iter().filter(|a| !a.is_empty()))
+                    .output()
+                    .expect("git must spawn");
+            }
         });
 
         let after = fs::read_to_string(victim.path().join(".git/config")).unwrap();

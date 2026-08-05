@@ -610,9 +610,9 @@ async fn test_sandbox_danger_full_access_allows_write_outside_cwd() {
 #[cfg(target_os = "macos")]
 fn sandboxed_git(args: &[&str]) -> String {
     let mut command = String::from("env");
-    for var in crate::config::git::REPOSITORY_ENV_VARS
+    for var in crate::config::git::AMBIENT_ENV_VARS
         .iter()
-        .chain(crate::config::git::CONFIG_ENV_VARS)
+        .chain(crate::config::git::FIXTURE_ENV_VARS)
     {
         command.push_str(" -u ");
         command.push_str(var);
