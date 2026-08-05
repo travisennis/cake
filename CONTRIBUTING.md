@@ -77,7 +77,7 @@ Tests and snapshots should encode behavior close to its implementation. Add docu
 
 ## Managed work
 
-Issues, research notes, ExecPlans, and ADRs are managed records. Work is tracked in GitHub Issues; run `just brief` to see the open queue, active ExecPlans, and recent research. Use the workflow references in AGENTS.md (task, ExecPlan, ADR, and research workflows), never edit generated indexes (there are none), and close the issue tracking a change before any commit containing its implementation.
+Issues, research notes, ExecPlans, and ADRs are managed records. Work is tracked in GitHub Issues; run `just brief` to see the open queue, active ExecPlans, and recent research. Use the workflow references in AGENTS.md (task, ExecPlan, ADR, and research workflows), never edit generated indexes (there are none), and follow the issue lifecycle in [docs/workflow/tasks.md](docs/workflow/tasks.md).
 
 ## Git and commits
 

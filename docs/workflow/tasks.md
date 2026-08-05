@@ -77,13 +77,22 @@ Follow this procedure for every implementation issue, whether or not it has an E
 
 5. Run the repository's routed verification commands. Record material results in an issue comment and update the acceptance notes so the record explains how the outcome was verified.
 
-6. Before closing the issue, assess documentation impact. Documentation is an ordinary project deliverable, so follow the project's own documentation guidance when durable user or contributor knowledge may have changed. Record the documents checked and updated, or the reason no update was needed, in the issue. Do not require documentation changes for every issue.
+6. Before pushing the change, assess documentation impact. Documentation is an ordinary project deliverable, so follow the project's own documentation guidance when durable user or contributor knowledge may have changed. Record the documents checked and updated, or the reason no update was needed, in the issue. Do not require documentation changes for every issue.
 
-7. If the issue has an ExecPlan, update its Outcomes & Retrospective, move it to the completed plan bucket with `git mv`, update the issue's link to the completed path, and record the outcome.
+7. If the issue has an ExecPlan, complete its records when the change reaches `master` (step 8): update the ExecPlan Outcomes & Retrospective, move it to the completed plan bucket with `git mv`, update the issue's link to the completed path, and record the outcome.
 
-8. Close the issue with a summary of what was delivered and how it was verified. The issue must be closed before any git commit that includes the implementation; committing unclosed work breaks the lifecycle contract.
+8. Close the issue when the change reaches `master`. Pushing the branch or opening the pull request completes the acceptance record but leaves the issue open; see the lifecycle below.
 
 For an issue without an ExecPlan, skip step 7. The inspection, start, implementation, verification, documentation assessment, and handoff steps remain the same.
+
+### Issue lifecycle: definition of done
+
+This section is the single source of truth for the issue lifecycle. [AGENTS.md](../../AGENTS.md), [CONTRIBUTING.md](../../CONTRIBUTING.md), and [docs/workflow/exec-plans.md](exec-plans.md) reference it instead of restating the rule. The lifecycle has two checkpoints:
+
+- **Change pushed (branch push / pull request opened)** --- the work record completes and the issue stays open. At this checkpoint the verification results are recorded in an issue comment and the acceptance notes are marked complete (steps 5-6). This is the definition of done for a change entering a PR: implementation complete, routed checks run and recorded, acceptance notes complete, documentation impact assessed, PR open for review.
+- **Change merged to `master`** --- the issue closes. Close with a summary of what was delivered and how it was verified; for ExecPlan-driven issues, complete the ExecPlan records first (step 7). This is the definition of done for the issue: the PR is merged and the issue record says delivered and verified.
+
+A change can be done in a PR while its issue remains open; the issue closes only when the change is in `master`.
 
 ## Change Or Close An Issue
 
@@ -93,7 +102,7 @@ Use `gh` commands for lifecycle and queue metadata:
 gh issue edit <number> --add-label <label>       # retriage / accept
 gh issue edit <number> --body-file <path>        # rewrite body (deps, scope)
 gh issue comment <number> --body <text>          # progress / acceptance notes
-gh issue close <number>                          # complete
+gh issue close <number>                          # complete -- only once the change is in master
 gh issue close <number> --reason "not planned"   # cancel (with a comment explaining why)
 gh issue reopen <number>                         # reopen
 ```
