@@ -148,6 +148,7 @@ Use for `Cargo.toml`, `Cargo.lock`, the `justfile`, CI, toolchain, and release w
 Consult:
 
 - [CONTRIBUTING.md](CONTRIBUTING.md), the canonical command catalog and verification policy.
+- [Automation conventions](docs/automations/README.md), for scheduled maintenance, its reporting rules, and which surfaces each automation owns.
 - [Working on branches and worktrees runbook](docs/runbooks/parallel-worktrees.md), for branch, worktree, and pull-request mechanics.
 - [Auditing Binary Size runbook](docs/runbooks/auditing-binary-size.md), for investigating release binary bloat.
 
