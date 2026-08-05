@@ -163,9 +163,10 @@ Consult:
 - [Dependency and supply chain posture](docs/dependencies.md), for pin ownership, tooling pins, and the review a dependency update requires.
 - [Automation conventions](docs/automations/README.md), for scheduled maintenance, its reporting rules, and which surfaces each automation owns.
 - [Working on branches and worktrees runbook](docs/runbooks/parallel-worktrees.md), for branch, worktree, and pull-request mechanics.
+- [CI Runner Images and Required Checks runbook](docs/runbooks/ci-runner-images-and-required-checks.md), for runner labels, workflow job names, and the branch-protection contexts they feed.
 - [Auditing Binary Size runbook](docs/runbooks/auditing-binary-size.md), for investigating release binary bloat.
 
-Dependency changes require explicit scope and `Cargo.toml`/`Cargo.lock` consistency. Classify a dependency update from its upstream diff, not from the repository-side diff or a green CI run.
+Dependency changes require explicit scope and `Cargo.toml`/`Cargo.lock` consistency. Classify a dependency update from its upstream diff, not from the repository-side diff or a green CI run. A workflow job name is a branch-protection identifier; renaming one without updating the ruleset blocks every pull request.
 
 ### Code Quality, Complexity, And Coverage
 
