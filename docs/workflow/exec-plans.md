@@ -8,7 +8,7 @@ When authoring an executable specification (ExecPlan), follow this document's gu
 
 In this repository, store in-progress ExecPlans under the active ExecPlan bucket at `docs/exec-plans/active/`. When an ExecPlan is complete and its Outcomes & Retrospective section has been fully updated, move it to the completed ExecPlan bucket at `docs/exec-plans/completed/` with `git mv`. The directories are the index; no separate listing is maintained.
 
-When an ExecPlan completes an issue, use this order so the records stay coherent: fill the issue's acceptance notes, update the ExecPlan Outcomes & Retrospective, move the ExecPlan to the completed bucket, update the issue's link to the completed plan path, then close the issue.
+When an ExecPlan completes an issue, mirror the issue lifecycle in [docs/workflow/tasks.md](../workflow/tasks.md): before opening the pull request, fill the issue's acceptance notes, update the ExecPlan Outcomes & Retrospective, and move the ExecPlan to the completed bucket with `git mv`. Include `Closes #<number>` in the pull request body. The issue stays open during review and GitHub closes it when the pull request merges to `master`; after merge, add the delivered/verified summary and update the issue's link to the completed plan path if needed.
 
 When implementing an executable specification (ExecPlan), do not prompt the user for "next steps"; simply proceed to the next milestone. Keep all sections up to date, add or split entries in the list at every stopping point to affirmatively state the progress made and next steps. Resolve ambiguities autonomously, and commit frequently.
 

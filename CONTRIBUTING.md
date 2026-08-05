@@ -78,7 +78,7 @@ Tests and snapshots should encode behavior close to its implementation. Add docu
 
 ## Managed work
 
-Issues, research notes, ExecPlans, and ADRs are managed records. Work is tracked in GitHub Issues; run `just brief` to see the open queue, active ExecPlans, and recent research. Use the workflow references in AGENTS.md (task, ExecPlan, ADR, and research workflows), never edit generated indexes (there are none), and close the issue tracking a change before any commit containing its implementation.
+Issues, research notes, ExecPlans, and ADRs are managed records. Work is tracked in GitHub Issues; run `just brief` to see the open queue, active ExecPlans, and recent research. Use the workflow references in AGENTS.md (task, ExecPlan, ADR, and research workflows), never edit generated indexes (there are none), and follow the issue lifecycle in [docs/workflow/tasks.md](docs/workflow/tasks.md).
 
 ## Git and commits
 
@@ -100,4 +100,4 @@ Common types are `feat`, `fix`, `docs`, `refactor`, `perf`, `test`, `build`, `ci
 
 ## Pull requests
 
-Explain the user-visible or maintainer-visible outcome, notable design choices, compatibility or security impact, and exact verification. Link the managed task or ADR when one exists. Update documentation only when its authority is affected.
+Explain the user-visible or maintainer-visible outcome, notable design choices, compatibility or security impact, and exact verification. Link the managed task or ADR when one exists. Open the pull request only when the change is ready to merge: acceptance notes, verification, documentation assessment, and any ExecPlan archival must already be complete. Use `Closes #<number>` for the managed issue; GitHub closes it when the pull request reaches `master`, after which the issue may receive its final delivered/verified summary. Update documentation only when its authority is affected.

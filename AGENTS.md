@@ -14,7 +14,7 @@ Users depend on CLI shape and exit behavior, machine-readable output formats, to
 4. Classify the change, select the route below, and load only that route's documents.
 5. Read the smallest relevant code and tests. [ARCHITECTURE.md](ARCHITECTURE.md) names the code authority for each surface.
 6. Preserve compatibility unless the task explicitly changes it.
-7. If work is managed, track it in a GitHub issue: set Status to In Progress when you start, and close the issue with acceptance notes before the commit that contains its implementation.
+7. If work is managed, track it in a GitHub issue: set Status to In Progress when you start. Before opening a pull request, complete the acceptance notes, routed verification, documentation assessment, and any ExecPlan archival; include `Closes #<number>` in the pull request body and follow the issue lifecycle in [docs/workflow/tasks.md](docs/workflow/tasks.md).
 8. Make surgical edits and run risk-proportionate checks. Keep the diff narrow: do not mix behavior changes, dependency updates, formatting passes, snapshot regeneration, change-risk baseline updates, and unrelated cleanup unless the task requires it. Mechanical churn hides the change a reviewer needs to see.
 9. After implementation edits, run reviews in a subagent and address findings until the reviewer gives an all clear. If a third round reports findings of the same class, stop patching: report the finding class and the suspected design flaw, and escalate to a design decision.
 10. Perform preflight.
@@ -185,7 +185,7 @@ Consult:
 - One branch holds one task. Do not carry unrelated work across on the same branch.
 - Preserve unrelated user changes; never clean or revert them.
 - Never resolve a merge conflict in `ci/cargo-crap-baseline.json` by hand or by three-way merge. Take `master`'s copy, then regenerate it with `just change-risk-baseline`.
-- Close the GitHub issue tracking a change before the commit that contains its implementation; issue state, links, and sub-issues are the managed record.
+- The issue lifecycle (ready-to-merge work before the pull request, automatic issue closure when the pull request reaches `master`, and the post-merge summary) is defined in [docs/workflow/tasks.md](docs/workflow/tasks.md); issue state, links, and sub-issues are the managed record.
 - Use Conventional Commits when writing commit messages; verified by the commit-msg hook.
 - Labels on GitHub issues and pull requests: use only the vocabulary in `.github/labels.yml`; never invent or rename labels. `just labels-check` verifies the repo matches it, and the label-governance workflow removes out-of-vocabulary labels from issues.
 - Future work and unresolved questions belong in GitHub issues, not durable docs.
