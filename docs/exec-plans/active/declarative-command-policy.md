@@ -48,7 +48,9 @@ A user can see the result by running `cake policy show`, by checking `cake polic
 
 - Decision: Defer override `reason` and `expires_at` fields to a future schema version. Rationale: Auditable, time-bounded exceptions are useful, but version 1 deliberately has persistent named overrides and has not defined expiration, clock, or stale-policy behavior. Date/Author: 2026-07-12, Travis Ennis and Codex
 
-- Decision: Complete managed work per the merge-based issue lifecycle in `docs/workflow/tasks.md` (acceptance notes when the change is pushed, close when it merges to `master`) rather than closing issue #64 before the completion commit. Rationale: The issue lifecycle is single-sourced in `docs/workflow/tasks.md` (#135); the prior "Before completion ... close issue #64" wording predated the branch/PR workflow. Date/Author: 2026-08-04, Travis Ennis and cake
+- Decision: Complete managed work per the merge-based issue lifecycle in `docs/workflow/tasks.md` (acceptance notes when the change is pushed, close when it merges to `master`) rather than closing issue #64 before the completion commit. Rationale: The issue lifecycle is single-sourced in `docs/workflow/tasks.md` (#135); the prior "Before completion ... close issue #64" wording predated the branch/PR workflow. This timing was refined by the 2026-08-05 decision below: the ready-to-merge records must be complete before opening the pull request. Date/Author: 2026-08-04, Travis Ennis and cake
+
+- Decision: Treat opening the pull request as the ready-to-merge checkpoint: complete issue acceptance notes, verification, documentation assessment, and this plan's Outcomes & Retrospective and completed-bucket move before opening it; let GitHub close issue #64 when the pull request reaches `master`, then add the final summary and reconcile the issue link. Rationale: A pull request asserts that all implementation and repository records are ready for merge; only the merge proves that the implementation reached `master`. Date/Author: 2026-08-05, Travis Ennis and cake
 
 ## Outcomes & Retrospective
 
@@ -116,7 +118,7 @@ Update `docs/configuration.md` with user-owned policy locations and precedence, 
 
 Run formatting, focused tests, serialization or snapshot tests, then `just ci`. Run the narrowest feasible Linux-sensitive check or report the platform gap. Exercise isolated temporary HOME and project directories for embedded-only, overlay, invalid-file, and snapshot behavior.
 
-Fill issue #64's Acceptance Notes when the change is pushed (the issue stays open); when the change merges to `master`, update this retrospective, move the plan to `docs/exec-plans/completed/` with `git mv`, update the issue's link, and close issue #64 per the lifecycle in `docs/workflow/tasks.md`. Do not commit or push unless explicitly requested.
+Before opening the pull request, fill issue #64's Acceptance Notes with evidence, update this retrospective, and move the plan to `docs/exec-plans/completed/` with `git mv`. Include `Closes #64` in the pull request body. The issue stays open during review and GitHub closes it when the change merges to `master`; after merge, add the delivered/verified summary and update issue #64's link to the completed plan path. Do not commit or push unless explicitly requested.
 
 ## Concrete Steps
 

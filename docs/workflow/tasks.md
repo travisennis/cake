@@ -75,24 +75,25 @@ Follow this procedure for every implementation issue, whether or not it has an E
 
 4. Implement only the issue's problem and acceptance scope. Preserve unrelated worktree changes, and do not commit unless the user explicitly asks.
 
-5. Run the repository's routed verification commands. Record material results in an issue comment and update the acceptance notes so the record explains how the outcome was verified.
+5. Before opening the pull request, run the repository's routed verification commands. Record material results in an issue comment and update the acceptance notes so the record explains how the outcome was verified. Opening the pull request is the contributor's assertion that the implementation is ready to merge; review may still require changes.
 
-6. Before pushing the change, assess documentation impact. Documentation is an ordinary project deliverable, so follow the project's own documentation guidance when durable user or contributor knowledge may have changed. Record the documents checked and updated, or the reason no update was needed, in the issue. Do not require documentation changes for every issue.
+6. Before opening the pull request, assess documentation impact. Documentation is an ordinary project deliverable, so follow the project's own documentation guidance when durable user or contributor knowledge may have changed. Record the documents checked and updated, or the reason no update was needed, in the issue. Do not require documentation changes for every issue.
 
-7. If the issue has an ExecPlan, complete its records when the change reaches `master` (step 8): update the ExecPlan Outcomes & Retrospective, move it to the completed plan bucket with `git mv`, update the issue's link to the completed path, and record the outcome.
+7. If the issue has an ExecPlan, complete its repository records before opening the pull request: update the ExecPlan Outcomes & Retrospective and move it to the completed plan bucket with `git mv`. If the issue body links to the plan, update that link after the pull request merges so the completed path is present on `master`.
 
-8. Close the issue when the change reaches `master`. Pushing the branch or opening the pull request completes the acceptance record but leaves the issue open; see the lifecycle below.
+8. Open the pull request only after steps 5-7 are complete. Reference the issue with `Closes #<number>` in the pull request body. The issue stays open during review and closes automatically when the pull request reaches `master`; after merge, add the delivered/verified summary and reconcile the issue's completed-plan link if needed.
 
 For an issue without an ExecPlan, skip step 7. The inspection, start, implementation, verification, documentation assessment, and handoff steps remain the same.
 
 ### Issue lifecycle: definition of done
 
-This section is the single source of truth for the issue lifecycle. [AGENTS.md](../../AGENTS.md), [CONTRIBUTING.md](../../CONTRIBUTING.md), and [docs/workflow/exec-plans.md](exec-plans.md) reference it instead of restating the rule. The lifecycle has two checkpoints:
+This section is the single source of truth for the issue lifecycle. [AGENTS.md](../../AGENTS.md), [CONTRIBUTING.md](../../CONTRIBUTING.md), and [docs/workflow/exec-plans.md](exec-plans.md) reference it instead of restating the rule. The lifecycle has two checkpoints and one post-merge record update:
 
-- **Change pushed (branch push / pull request opened)** --- the work record completes and the issue stays open. At this checkpoint the verification results are recorded in an issue comment and the acceptance notes are marked complete (steps 5-6). This is the definition of done for a change entering a PR: implementation complete, routed checks run and recorded, acceptance notes complete, documentation impact assessed, PR open for review.
-- **Change merged to `master`** --- the issue closes. Reference the issue from the pull request body (e.g. "Closes #135") so GitHub closes it on merge; if the PR does not reference it, close the issue from a follow-up session once the change is in `master`. Close with a summary of what was delivered and how it was verified; for ExecPlan-driven issues, complete the ExecPlan records first (step 7). This is the definition of done for the issue: the PR is merged and the issue record says delivered and verified.
+- **Pull request opened (ready-to-merge checkpoint)** --- all implementation work, routed verification, acceptance notes, documentation assessment, and ExecPlan repository records are complete. The issue stays open during review. Include `Closes #<number>` in the pull request body so the issue is linked for automatic closure.
+- **Pull request merged to the default branch (`master`)** --- GitHub closes the linked issue automatically. This is the definition of done for the issue because the implementation is now in `master`.
+- **After merge** --- add the delivered/verified summary to the closed issue and update its link to the completed ExecPlan path if that link was not updated earlier. A normal merged pull request does not need a separate `gh issue close` command.
 
-A change can be done in a PR while its issue remains open; the issue closes only when the change is in `master`.
+A pushed branch without an open pull request is not a lifecycle checkpoint. If a pull request is closed without merging, leave the issue open and either continue the work in a new pull request or close it separately as not planned.
 
 ## Change Or Close An Issue
 
@@ -101,8 +102,8 @@ Use `gh` commands for lifecycle and queue metadata:
 ```bash
 gh issue edit <number> --add-label <label>       # retriage / accept
 gh issue edit <number> --body-file <path>        # rewrite body (deps, scope)
-gh issue comment <number> --body <text>          # progress / acceptance notes
-gh issue close <number>                          # complete -- only once the change is in master
+gh issue comment <number> --body <text>          # progress, acceptance notes, or post-merge summary
+gh issue close <number>                          # fallback only after a merged PR lacked a closing keyword
 gh issue close <number> --reason "not planned"   # cancel (with a comment explaining why)
 gh issue reopen <number>                         # reopen
 ```

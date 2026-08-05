@@ -99,4 +99,4 @@ Common types are `feat`, `fix`, `docs`, `refactor`, `perf`, `test`, `build`, `ci
 
 ## Pull requests
 
-Explain the user-visible or maintainer-visible outcome, notable design choices, compatibility or security impact, and exact verification. Link the managed task or ADR when one exists. Update documentation only when its authority is affected.
+Explain the user-visible or maintainer-visible outcome, notable design choices, compatibility or security impact, and exact verification. Link the managed task or ADR when one exists. Open the pull request only when the change is ready to merge: acceptance notes, verification, documentation assessment, and any ExecPlan archival must already be complete. Use `Closes #<number>` for the managed issue; GitHub closes it when the pull request reaches `master`, after which the issue may receive its final delivered/verified summary. Update documentation only when its authority is affected.

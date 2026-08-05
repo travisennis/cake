@@ -32,12 +32,14 @@ Follow the development loop in [CONTRIBUTING.md](../../CONTRIBUTING.md). The pre
 
 ### 3. Open the pull request
 
+Open the pull request only after the change is ready to merge. Complete the acceptance notes, routed verification, documentation assessment, and any ExecPlan archival first. Use the pull request template, include `Closes #<number>` for the managed issue, and leave the issue open for review; the issue closes when the merged pull request reaches `master`.
+
 ```bash
 git push -u origin HEAD
 just pr
 ```
 
-`just pr` runs `gh pr create --base master --fill`. CI runs the same checks the ruleset requires. Merge once they pass.
+`just pr` runs `gh pr create --base master --fill`. Confirm that the generated PR body still contains the closing keyword. CI runs the same checks the ruleset requires. Merge once review and checks are complete; after merge, add the delivered/verified summary to the closed issue and update its completed-plan link if needed.
 
 ### 4. Clean up
 
