@@ -6,6 +6,34 @@ fn binary_path() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_cake"))
 }
 
+/// Environment variables no test may hand to `git` or to the binary under
+/// test: those that redirect or reconfigure git independently of the working
+/// directory, plus those that outrank a fixture's own `-c` options.
+///
+/// Integration tests are a separate crate and cannot reach `src/config/git.rs`.
+/// This list is the union of that module's two constants, so it is
+/// intentionally stricter than production, which honors the user's own
+/// configuration and identity. Keep it a superset of `AMBIENT_ENV_VARS`.
+pub const GIT_AMBIENT_ENV_VARS: &[&str] = &[
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_NAMESPACE",
+    "GIT_PREFIX",
+    "GIT_CONFIG",
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_AUTHOR_NAME",
+    "GIT_AUTHOR_EMAIL",
+    "GIT_AUTHOR_DATE",
+    "GIT_COMMITTER_NAME",
+    "GIT_COMMITTER_EMAIL",
+    "GIT_COMMITTER_DATE",
+];
+
 pub struct TestEnv {
     _root: TempDir,
     pub workspace_dir: PathBuf,
@@ -40,6 +68,11 @@ impl TestEnv {
             .env("HOME", &self.home_dir)
             .env("XDG_CONFIG_HOME", self.home_dir.join(".config"))
             .env("CAKE_DATA_DIR", &self.data_dir);
+        // Never hand the binary under test a repository, configuration, or
+        // identity pinned by the environment the suite was launched from.
+        for var in GIT_AMBIENT_ENV_VARS {
+            cmd.env_remove(var);
+        }
         cmd
     }
 

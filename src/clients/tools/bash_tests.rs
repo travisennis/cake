@@ -598,6 +598,39 @@ async fn test_sandbox_danger_full_access_allows_write_outside_cwd() {
 // Linked Worktree Sandbox Tests (task 260)
 // ===========================================================================
 
+/// Build bash tool arguments that run `git` with the inherited repository and
+/// configuration variables dropped.
+///
+/// The bash tool passes cake's environment to the child, so a `GIT_DIR`
+/// inherited from whoever launched the test suite would send these commands
+/// at that repository instead of the fixture worktree. These commands carry
+/// no `-c` options of their own, so inherited command-scope configuration
+/// would also outrank the fixture's local settings, including its pinned
+/// `core.hooksPath`.
+#[cfg(target_os = "macos")]
+fn sandboxed_git(args: &[&str]) -> String {
+    let mut command = String::from("env");
+    for var in crate::config::git::AMBIENT_ENV_VARS
+        .iter()
+        .chain(crate::config::git::FIXTURE_ENV_VARS)
+    {
+        command.push_str(" -u ");
+        command.push_str(var);
+    }
+    command.push_str(" git");
+    for arg in args {
+        command.push(' ');
+        command.push_str(&shell_quote(arg));
+    }
+    serde_json::json!({ "command": command }).to_string()
+}
+
+/// Single-quote `value` for a POSIX shell.
+#[cfg(target_os = "macos")]
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', r"'\''"))
+}
+
 /// Verify git operations (status, add, commit) succeed in a real linked
 /// worktree under an enforced macOS Seatbelt sandbox.
 ///
@@ -635,69 +668,8 @@ async fn test_sandbox_linked_worktree_git_operations() {
     let main_repo = fixture.path().join("main");
     let wt_path = fixture.path().join("linked-worktree");
 
-    // Initialize main repo with a commit (required for git worktree add)
-    let output = std::process::Command::new("git")
-        .args(["init", "--initial-branch=main"])
-        .arg(&main_repo)
-        .output()
-        .expect("git init must succeed");
-    assert!(
-        output.status.success(),
-        "git init failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    // Create an initial commit
-    std::fs::write(main_repo.join("README.md"), b"# test\n").unwrap();
-    let output = std::process::Command::new("git")
-        .args(["add", "README.md"])
-        .current_dir(&main_repo)
-        .output()
-        .expect("git add must succeed");
-    assert!(
-        output.status.success(),
-        "git add failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let output = std::process::Command::new("git")
-        .args([
-            "-c",
-            "user.name=Cake Test",
-            "-c",
-            "user.email=cake-test@example.invalid",
-            "commit",
-            "-m",
-            "initial",
-        ])
-        .current_dir(&main_repo)
-        .output()
-        .expect("git commit must succeed");
-    assert!(
-        output.status.success(),
-        "git commit failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    // Create a linked worktree (detached HEAD to avoid branch conflict)
-    let output = std::process::Command::new("git")
-        .args(["worktree", "add", "--detach"])
-        .arg(&wt_path)
-        .arg("main")
-        .current_dir(&main_repo)
-        .output()
-        .expect("git worktree add must succeed");
-    assert!(
-        output.status.success(),
-        "git worktree add failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    // Sanity check: .git in the worktree must be a file
-    assert!(
-        wt_path.join(".git").is_file(),
-        ".git in linked worktree must be a file"
-    );
+    // Initialize main repo with a commit and a detached linked worktree
+    crate::config::git::test_support::init_repo_with_linked_worktree(&main_repo, &wt_path);
 
     // Verify per-worktree gitdir and common dir are outside the workspace
     // subtree (the linked worktree itself).
@@ -766,8 +738,8 @@ async fn test_sandbox_linked_worktree_git_operations() {
     // ====================================================================
     // git status
     // ====================================================================
-    let args = r#"{"command": "git status"}"#;
-    let result = Box::pin(execute_bash(&context, args))
+    let args = sandboxed_git(&["status"]);
+    let result = Box::pin(execute_bash(&context, &args))
         .await
         .expect("git status should succeed in linked worktree");
     assert!(
@@ -796,8 +768,8 @@ async fn test_sandbox_linked_worktree_git_operations() {
     );
 
     // git add the new file
-    let args = r#"{"command": "git add new_file.md"}"#;
-    let result = Box::pin(execute_bash(&context, args))
+    let args = sandboxed_git(&["add", "new_file.md"]);
+    let result = Box::pin(execute_bash(&context, &args))
         .await
         .expect("git add should succeed in linked worktree");
     assert!(
@@ -808,8 +780,16 @@ async fn test_sandbox_linked_worktree_git_operations() {
 
     // git commit with inline user config (no global git config needed
     // since the sandbox may restrict access to ~/.gitconfig)
-    let args = r#"{"command": "git -c 'user.name=Cake Test' -c user.email=cake-test@example.invalid commit -m 'test commit in linked worktree'"}"#;
-    let result = Box::pin(execute_bash(&context, args))
+    let args = sandboxed_git(&[
+        "-c",
+        "user.name=Cake Test",
+        "-c",
+        "user.email=cake-test@example.invalid",
+        "commit",
+        "-m",
+        "test commit in linked worktree",
+    ]);
+    let result = Box::pin(execute_bash(&context, &args))
         .await
         .expect("git commit should succeed in linked worktree");
     assert!(

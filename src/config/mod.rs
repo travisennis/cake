@@ -13,6 +13,7 @@
 
 mod config_dir;
 mod data_dir;
+pub mod git;
 pub mod hooks;
 pub mod model;
 pub mod output_schema;

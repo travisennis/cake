@@ -1,0 +1,297 @@
+//! Hermetic construction of `git` subprocesses.
+//!
+//! Git exports repository-pinning variables such as `GIT_DIR` into hook
+//! processes and everything those hooks spawn. In a linked worktree `GIT_DIR`
+//! is absolute, so it survives into unrelated child processes and redirects
+//! every `git` invocation at the exporting repository no matter which working
+//! directory the child chose. Cake always selects a repository by working
+//! directory, so those variables are never wanted here.
+
+use std::{path::Path, process::Command};
+
+/// Environment variables that redirect or reconfigure `git` independently of
+/// the working directory, and that cake therefore never inherits.
+///
+/// The first eight pin git to a specific repository, index, or object store,
+/// overriding discovery. `GIT_CONFIG_PARAMETERS` is the serialized form git
+/// uses to propagate one invocation's `-c` options into the subprocesses it
+/// spawns; git documents it as internal, and options meant for a parent
+/// invocation are not settings for cake's unrelated ones.
+pub const AMBIENT_ENV_VARS: &[&str] = &[
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_NAMESPACE",
+    "GIT_PREFIX",
+    "GIT_CONFIG_PARAMETERS",
+];
+
+/// Environment variables a fixture must not inherit on top of
+/// [`AMBIENT_ENV_VARS`], because each one outranks the `-c` options that
+/// [`test_support::git`] pins.
+///
+/// `GIT_CONFIG_COUNT` gates the numbered `GIT_CONFIG_KEY_<n>` and
+/// `GIT_CONFIG_VALUE_<n>` pairs, so clearing it disables all of them. The
+/// identity variables beat `-c user.name` and `-c user.email` outright, and
+/// git exports them into `pre-commit` and `commit-msg` hooks.
+///
+/// Test-only, and deliberately stricter than production: cake acts on the
+/// user's repository and must honor the user's own configuration and identity.
+#[cfg(test)]
+pub const FIXTURE_ENV_VARS: &[&str] = &[
+    "GIT_CONFIG",
+    "GIT_CONFIG_COUNT",
+    "GIT_AUTHOR_NAME",
+    "GIT_AUTHOR_EMAIL",
+    "GIT_AUTHOR_DATE",
+    "GIT_COMMITTER_NAME",
+    "GIT_COMMITTER_EMAIL",
+    "GIT_COMMITTER_DATE",
+];
+
+/// Build a `git` command that discovers its repository from `working_dir`,
+/// ignoring any repository or parent `-c` options pinned by the ambient
+/// environment.
+///
+/// The user's own configuration is deliberately left intact: cake acts on the
+/// user's repository and must honor their git config, identity, and hooks.
+pub fn command(working_dir: &Path) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.current_dir(working_dir);
+    for var in AMBIENT_ENV_VARS {
+        cmd.env_remove(var);
+    }
+    cmd
+}
+
+#[cfg(test)]
+pub mod test_support {
+    use std::{path::Path, process::Command};
+
+    /// Build a `git` command for a fixture repository at `working_dir`.
+    ///
+    /// On top of [`crate::config::git::command`], this isolates the fixture from the
+    /// developer's environment entirely: no configuration is read or written at
+    /// any scope, no hooks run, and the identity is fixed. A test must never be
+    /// able to reach the repository it runs in.
+    pub fn git(working_dir: &Path) -> Command {
+        let mut cmd = crate::config::git::command(working_dir);
+        for var in crate::config::git::FIXTURE_ENV_VARS {
+            cmd.env_remove(var);
+        }
+        cmd.env("GIT_CONFIG_GLOBAL", "/dev/null");
+        cmd.env("GIT_CONFIG_NOSYSTEM", "1");
+        cmd.args([
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "user.name=Cake Test",
+            "-c",
+            "user.email=cake-test@example.invalid",
+        ]);
+        cmd
+    }
+
+    /// Run `args` in `working_dir` through [`git`] and panic on failure.
+    pub fn run_git(working_dir: &Path, args: &[&str]) {
+        let output = git(working_dir)
+            .args(args)
+            .output()
+            .unwrap_or_else(|e| panic!("failed to spawn git {args:?}: {e}"));
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// Create a fixture repository at `dir` with one empty commit.
+    ///
+    /// The repository pins `core.hooksPath` locally so that commands cake's
+    /// production code runs against the fixture cannot pick up hooks from the
+    /// developer's global configuration either.
+    pub fn init_repo(dir: &Path) {
+        run_git(dir, &["init"]);
+        run_git(dir, &["config", "core.hooksPath", "/dev/null"]);
+        run_git(dir, &["commit", "--allow-empty", "-m", "initial"]);
+    }
+
+    /// Create a fixture repository at `main_repo` holding one committed file,
+    /// plus a detached linked worktree at `wt_path`.
+    pub fn init_repo_with_linked_worktree(main_repo: &Path, wt_path: &Path) {
+        std::fs::create_dir_all(main_repo).expect("fixture repository directory");
+        run_git(main_repo, &["init", "--initial-branch=main"]);
+        run_git(main_repo, &["config", "core.hooksPath", "/dev/null"]);
+        std::fs::write(main_repo.join("README.md"), b"# test\n").expect("fixture README");
+        run_git(main_repo, &["add", "README.md"]);
+        run_git(main_repo, &["commit", "-m", "initial"]);
+        run_git(
+            main_repo,
+            &[
+                "worktree",
+                "add",
+                "--detach",
+                &wt_path.to_string_lossy(),
+                "main",
+            ],
+        );
+        assert!(
+            wt_path.join(".git").is_file(),
+            ".git in a linked worktree must be a file"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::config::git::{command, test_support};
+    use std::fs;
+    use tempfile::TempDir;
+
+    /// Absolute git directory that production [`command`] resolves for
+    /// `working_dir`.
+    fn resolved_git_dir(working_dir: &std::path::Path) -> std::path::PathBuf {
+        let output = command(working_dir)
+            .args(["rev-parse", "--absolute-git-dir"])
+            .output()
+            .expect("git rev-parse must spawn");
+        assert!(
+            output.status.success(),
+            "git rev-parse failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let reported = String::from_utf8(output.stdout).expect("git output must be UTF-8");
+        fs::canonicalize(reported.trim()).expect("reported git dir must exist")
+    }
+
+    #[test]
+    fn command_discovers_the_repository_at_the_working_directory() {
+        let dir = TempDir::new().unwrap();
+        test_support::init_repo(dir.path());
+
+        assert_eq!(
+            resolved_git_dir(dir.path()),
+            fs::canonicalize(dir.path().join(".git")).unwrap()
+        );
+    }
+
+    #[test]
+    fn command_ignores_an_inherited_git_dir() {
+        let workspace = TempDir::new().unwrap();
+        test_support::init_repo(workspace.path());
+        let elsewhere = TempDir::new().unwrap();
+        test_support::init_repo(elsewhere.path());
+        let poison = fs::canonicalize(elsewhere.path().join(".git")).unwrap();
+
+        // Setting the variable process-wide is safe precisely because every
+        // git invocation in the suite goes through this module and drops it.
+        let resolved = temp_env::with_var("GIT_DIR", Some(&poison), || {
+            resolved_git_dir(workspace.path())
+        });
+
+        assert_eq!(
+            resolved,
+            fs::canonicalize(workspace.path().join(".git")).unwrap(),
+            "an inherited GIT_DIR must not redirect the command"
+        );
+    }
+
+    #[test]
+    fn command_ignores_a_propagated_parent_dash_c() {
+        // Git serializes `git -c key=value` into GIT_CONFIG_PARAMETERS for the
+        // subprocesses it spawns, so anything launched from a hook of such an
+        // invocation inherits it. Command-scope config outranks a repository's
+        // local config, so an inherited `core.hooksPath` would run a foreign
+        // hook on every repository cake touches, fixtures included.
+        let dir = TempDir::new().unwrap();
+        test_support::init_repo(dir.path());
+
+        let leaked = temp_env::with_var(
+            "GIT_CONFIG_PARAMETERS",
+            Some("'cake.sentinel'='leaked'"),
+            || {
+                command(dir.path())
+                    .args(["config", "--get", "cake.sentinel"])
+                    .output()
+                    .expect("git config must spawn")
+            },
+        );
+
+        assert!(
+            !leaked.status.success(),
+            "a parent invocation's -c must not reach cake's git calls, got: {}",
+            String::from_utf8_lossy(&leaked.stdout)
+        );
+    }
+
+    #[test]
+    fn a_fixture_ignores_command_scope_config_from_the_environment() {
+        // Command-scope configuration outranks a repository's local config, so
+        // an inherited `GIT_CONFIG_COUNT` would reach fixtures for every key
+        // the fixture builder does not pin inline — `core.hooksPath` among
+        // them, for any command that carries no `-c` of its own.
+        let dir = TempDir::new().unwrap();
+        test_support::init_repo(dir.path());
+
+        let leaked = temp_env::with_vars(
+            [
+                ("GIT_CONFIG_COUNT", Some("1")),
+                ("GIT_CONFIG_KEY_0", Some("cake.sentinel")),
+                ("GIT_CONFIG_VALUE_0", Some("leaked")),
+            ],
+            || {
+                test_support::git(dir.path())
+                    .args(["config", "--get", "cake.sentinel"])
+                    .output()
+                    .expect("git config must spawn")
+            },
+        );
+
+        assert!(
+            !leaked.status.success(),
+            "command-scope config must not reach a fixture, got: {}",
+            String::from_utf8_lossy(&leaked.stdout)
+        );
+    }
+
+    #[test]
+    fn an_inherited_git_dir_cannot_be_mutated_by_a_fixture() {
+        // The observed damage: `git init` run with an inherited GIT_DIR and a
+        // working directory that is not that repository's work tree flips
+        // `core.bare` in the pinned repository and rewrites its identity.
+        let victim = TempDir::new().unwrap();
+        test_support::init_repo(victim.path());
+        let poison = fs::canonicalize(victim.path().join(".git")).unwrap();
+        let before = fs::read_to_string(victim.path().join(".git/config")).unwrap();
+
+        // Run the mutating commands without asserting their exit status, so a
+        // regression is caught by the comparison below rather than by a
+        // fixture-setup panic that never reaches it.
+        let fixture = TempDir::new().unwrap();
+        temp_env::with_var("GIT_DIR", Some(&poison), || {
+            for args in [
+                ["init", "", ""],
+                ["config", "user.name", "Test User"],
+                ["commit", "--allow-empty", "-m=poison"],
+            ] {
+                let _ = test_support::git(fixture.path())
+                    .args(args.iter().filter(|a| !a.is_empty()))
+                    .output()
+                    .expect("git must spawn");
+            }
+        });
+
+        let after = fs::read_to_string(victim.path().join(".git/config")).unwrap();
+        assert_eq!(
+            before, after,
+            "a fixture repository must not write to the repository pinned by GIT_DIR"
+        );
+        assert!(
+            fixture.path().join(".git").is_dir(),
+            "the fixture must have initialized its own git directory"
+        );
+    }
+}

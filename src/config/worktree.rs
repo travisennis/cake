@@ -1,11 +1,12 @@
 use std::{
     collections::HashSet,
     path::{Path, PathBuf},
-    process::Command,
 };
 
 use anyhow::{Context, anyhow};
 use tracing::info;
+
+use crate::config::git;
 
 /// Adjectives for random worktree name generation.
 const ADJECTIVES: &[&str] = &[
@@ -46,9 +47,8 @@ pub fn generate_name() -> String {
 
 /// Find the root of the current git repository.
 fn find_repo_root(from: &Path) -> anyhow::Result<PathBuf> {
-    let output = Command::new("git")
+    let output = git::command(from)
         .args(["rev-parse", "--show-toplevel"])
-        .current_dir(from)
         .output()
         .context("Failed to run git rev-parse")?;
 
@@ -68,9 +68,8 @@ fn find_repo_root(from: &Path) -> anyhow::Result<PathBuf> {
 /// Get the default remote branch (e.g., origin/main).
 fn default_remote_branch(repo_root: &Path) -> anyhow::Result<String> {
     // Try origin/HEAD first
-    let output = Command::new("git")
+    let output = git::command(repo_root)
         .args(["symbolic-ref", "refs/remotes/origin/HEAD"])
-        .current_dir(repo_root)
         .output()
         .context("Failed to run git symbolic-ref")?;
 
@@ -87,9 +86,8 @@ fn default_remote_branch(repo_root: &Path) -> anyhow::Result<String> {
 
     // Fallback: try common defaults
     for candidate in &["origin/main", "origin/master"] {
-        let check = Command::new("git")
+        let check = git::command(repo_root)
             .args(["rev-parse", "--verify", candidate])
-            .current_dir(repo_root)
             .output()
             .context("Failed to verify branch")?;
 
@@ -134,7 +132,7 @@ pub fn create(from: &Path, name: Option<&str>) -> anyhow::Result<Worktree> {
         wt_path.display()
     );
 
-    let output = Command::new("git")
+    let output = git::command(&repo_root)
         .args([
             "worktree",
             "add",
@@ -143,7 +141,6 @@ pub fn create(from: &Path, name: Option<&str>) -> anyhow::Result<Worktree> {
             &branch,
             &start_point,
         ])
-        .current_dir(&repo_root)
         .output()
         .context("Failed to run git worktree add")?;
 
@@ -164,9 +161,8 @@ pub fn create(from: &Path, name: Option<&str>) -> anyhow::Result<Worktree> {
 /// Check if a worktree has uncommitted changes or commits ahead of its start point.
 pub fn has_changes(wt_path: &Path) -> anyhow::Result<bool> {
     // Check for uncommitted changes (staged or unstaged)
-    let status = Command::new("git")
+    let status = git::command(wt_path)
         .args(["status", "--porcelain"])
-        .current_dir(wt_path)
         .output()
         .context("Failed to run git status")?;
 
@@ -180,9 +176,8 @@ pub fn has_changes(wt_path: &Path) -> anyhow::Result<bool> {
     }
 
     // Check for commits not on the default remote branch
-    let log = Command::new("git")
+    let log = git::command(wt_path)
         .args(["log", "--oneline", "@{upstream}..HEAD"])
-        .current_dir(wt_path)
         .output();
 
     // If upstream doesn't exist, check if there are any commits at all
@@ -219,9 +214,8 @@ pub fn remove(from: &Path, name: &str, force: bool) -> anyhow::Result<()> {
     let wt_path_str = wt_path.to_string_lossy().to_string();
     args.push(&wt_path_str);
 
-    let output = Command::new("git")
+    let output = git::command(&repo_root)
         .args(&args)
-        .current_dir(&repo_root)
         .output()
         .context("Failed to run git worktree remove")?;
 
@@ -232,9 +226,8 @@ pub fn remove(from: &Path, name: &str, force: bool) -> anyhow::Result<()> {
 
     // Delete the branch
     let branch_flag = if force { "-D" } else { "-d" };
-    let branch_output = Command::new("git")
+    let branch_output = git::command(&repo_root)
         .args(["branch", branch_flag, &branch])
-        .current_dir(&repo_root)
         .output()
         .context("Failed to delete branch")?;
 
@@ -548,6 +541,7 @@ fn any_pattern_could_match_under(patterns: &[String], dir_relative: &str) -> boo
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::git::test_support;
     use std::fs;
     use tempfile::TempDir;
 
@@ -557,27 +551,7 @@ mod tests {
     /// Create a temporary git repo for testing.
     fn init_test_repo() -> TempDir {
         let dir = TempDir::new().unwrap();
-        Command::new("git")
-            .args(["init"])
-            .current_dir(dir.path())
-            .output()
-            .unwrap();
-        // Configure git user for CI environments where global config may not exist
-        Command::new("git")
-            .args(["config", "user.name", "Test User"])
-            .current_dir(dir.path())
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args(["config", "user.email", "test@example.com"])
-            .current_dir(dir.path())
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args(["commit", "--allow-empty", "-m", "initial"])
-            .current_dir(dir.path())
-            .output()
-            .unwrap();
+        test_support::init_repo(dir.path());
         dir
     }
 
@@ -597,6 +571,36 @@ mod tests {
             root.canonicalize().unwrap(),
             dir.path().canonicalize().unwrap()
         );
+    }
+
+    #[test]
+    fn default_remote_branch_prefers_origin_head() {
+        let dir = init_test_repo();
+        test_support::run_git(
+            dir.path(),
+            &["update-ref", "refs/remotes/origin/main", "HEAD"],
+        );
+        test_support::run_git(
+            dir.path(),
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/main",
+            ],
+        );
+
+        assert_eq!(default_remote_branch(dir.path()).unwrap(), "origin/main");
+    }
+
+    #[test]
+    fn default_remote_branch_falls_back_to_a_known_remote_branch() {
+        let dir = init_test_repo();
+        test_support::run_git(
+            dir.path(),
+            &["update-ref", "refs/remotes/origin/master", "HEAD"],
+        );
+
+        assert_eq!(default_remote_branch(dir.path()).unwrap(), "origin/master");
     }
 
     #[test]
@@ -654,6 +658,40 @@ mod tests {
         // Create a new file to make it dirty
         std::fs::write(wt.path.join("new_file.txt"), "content").unwrap();
         assert!(has_changes(&wt.path).unwrap());
+    }
+
+    #[test]
+    fn create_ignores_an_inherited_git_dir() {
+        // Regression: an inherited GIT_DIR pins every git subprocess to the
+        // exporting repository, so worktree creation registered fixture
+        // worktrees in — and rewrote the config of — the developer's own
+        // checkout. Worktree management must resolve the repository from the
+        // directory it was given.
+        let dir = init_test_repo();
+        let victim = TempDir::new().unwrap();
+        test_support::init_repo(victim.path());
+        let poison = fs::canonicalize(victim.path().join(".git")).unwrap();
+        let victim_config = victim.path().join(".git").join("config");
+        let before = fs::read_to_string(&victim_config).unwrap();
+
+        let wt = temp_env::with_var("GIT_DIR", Some(&poison), || {
+            create(dir.path(), Some("poisoned")).unwrap()
+        });
+
+        assert!(
+            wt.path.starts_with(fs::canonicalize(dir.path()).unwrap()),
+            "worktree should be created under the requested repository, got {}",
+            wt.path.display()
+        );
+        assert_eq!(
+            before,
+            fs::read_to_string(&victim_config).unwrap(),
+            "the repository pinned by GIT_DIR must not be modified"
+        );
+        assert!(
+            !victim.path().join(".git").join("worktrees").exists(),
+            "no worktree may be registered in the repository pinned by GIT_DIR"
+        );
     }
 
     // ── glob_match tests ────────────────────────────────────────────────────
