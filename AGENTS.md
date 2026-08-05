@@ -8,7 +8,7 @@ Users depend on CLI shape and exit behavior, machine-readable output formats, to
 
 ## Operating loop
 
-1. Run `just brief` (or list open issues with `gh issue list --state open`) before any work.
+1. List open issues with `gh issue list --state open` before any work.
 2. If the request names an issue, ExecPlan, ADR, or research record, inspect it (`gh issue view <number>` or the file itself) before choosing implementation work.
 3. Create the branch before the first edit: `just branch <type>/<slug>`, or `just worktree <type>/<slug>` when another agent is working in parallel. `master` is protected and rejects commits and pushes.
 4. Classify the change, select the route below, and load only that route's documents.
