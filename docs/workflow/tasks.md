@@ -2,7 +2,7 @@
 
 Use this reference to choose, prepare, work, and close tasks. Tasks live in GitHub Issues on this repository; `gh` is the primary interface. Issue identity, labels, Projects v2 fields (Priority, Effort, Status), and close state are owned by GitHub. This reference focuses on the decisions and order of work that GitHub cannot determine.
 
-For the first task in a session, run the session briefing (`just brief`), then inspect the specific issue with `gh issue view <number>`. Reread this document when you need to refresh the workflow.
+For the first task in a session, inspect the specific issue with `gh issue view <number>`. Reread this document when you need to refresh the workflow.
 
 ## Choose And Inspect Work
 
@@ -25,7 +25,7 @@ gh project item-list 1 --owner travisennis --query 'status:Blocked' --limit 200
 gh issue list --state open --label 'area:clients'
 ```
 
-`just brief` prints the same status summary plus active ExecPlans and recent research. GitHub issue search does not index Projects v2 Status fields, so query the project with `gh project item-list` rather than `gh issue list --search 'status:...'`.
+GitHub issue search does not index Projects v2 Status fields, so query the project with `gh project item-list` rather than `gh issue list --search 'status:...'`.
 
 The committed vocabulary in `.github/labels.yml` is the single source of truth for labels; verify it with `just labels-check-file`.
 

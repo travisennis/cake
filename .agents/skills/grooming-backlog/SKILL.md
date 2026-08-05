@@ -42,7 +42,7 @@ gh issue list --state open
 cat .github/labels.yml
 ```
 
-Use `just brief` for the one-shot status summary (Ready, In Progress, Blocked, Backlog counts from the Cake Backlog project). GitHub issue search does not index Projects v2 Status fields, so query the project with `gh project item-list` rather than `gh issue list --search 'status:...'`.
+GitHub issue search does not index Projects v2 Status fields, so query the project with `gh project item-list` rather than `gh issue list --search 'status:...'`.
 
 ### 2. For each open issue, audit
 

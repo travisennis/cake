@@ -93,10 +93,6 @@ rust-version-check:
 session-metrics *args:
     @python3 scripts/session-metrics/report.py {{args}}
 
-# Print the session briefing: open issues by status, active ExecPlans, recent research
-brief:
-    @python3 scripts/session-brief.py
-
 # Synchronize repository labels with the committed vocabulary in .github/labels.yml
 labels:
     @python3 scripts/sync-labels.py
