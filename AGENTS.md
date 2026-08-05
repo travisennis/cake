@@ -148,10 +148,11 @@ Use for `Cargo.toml`, `Cargo.lock`, the `justfile`, CI, toolchain, and release w
 Consult:
 
 - [CONTRIBUTING.md](CONTRIBUTING.md), the canonical command catalog and verification policy.
+- [Dependency and supply chain posture](docs/dependencies.md), for pin ownership, tooling pins, and the review a dependency update requires.
 - [Working on branches and worktrees runbook](docs/runbooks/parallel-worktrees.md), for branch, worktree, and pull-request mechanics.
 - [Auditing Binary Size runbook](docs/runbooks/auditing-binary-size.md), for investigating release binary bloat.
 
-Dependency changes require explicit scope and `Cargo.toml`/`Cargo.lock` consistency.
+Dependency changes require explicit scope and `Cargo.toml`/`Cargo.lock` consistency. Classify a dependency update from its upstream diff, not from the repository-side diff or a green CI run.
 
 ### Code Quality, Complexity, And Coverage
 
