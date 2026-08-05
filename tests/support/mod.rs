@@ -6,6 +6,22 @@ fn binary_path() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_cake"))
 }
 
+/// Environment variables that pin `git` to a specific repository, index, or
+/// object store, overriding discovery from the working directory.
+///
+/// Integration tests are a separate crate and cannot reach `src/config/git.rs`,
+/// so this list is duplicated here; keep the two in sync.
+pub const GIT_REPOSITORY_ENV_VARS: &[&str] = &[
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_NAMESPACE",
+    "GIT_PREFIX",
+];
+
 pub struct TestEnv {
     _root: TempDir,
     pub workspace_dir: PathBuf,
@@ -40,6 +56,11 @@ impl TestEnv {
             .env("HOME", &self.home_dir)
             .env("XDG_CONFIG_HOME", self.home_dir.join(".config"))
             .env("CAKE_DATA_DIR", &self.data_dir);
+        // Never hand the binary under test a repository pinned by the
+        // environment the suite was launched from.
+        for var in GIT_REPOSITORY_ENV_VARS {
+            cmd.env_remove(var);
+        }
         cmd
     }
 

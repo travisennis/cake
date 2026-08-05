@@ -2,14 +2,13 @@ use std::{
     fs::{self, File},
     io::{BufRead, BufReader},
     path::{Path, PathBuf},
-    process::Command,
 };
 
 use anyhow::{Context, anyhow};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
-use crate::config::{Session, session::CURRENT_FORMAT_VERSION};
+use crate::config::{Session, git, session::CURRENT_FORMAT_VERSION};
 use crate::types::{GitState, SessionRecord};
 
 /// Represents an AGENTS.md file with its path and content.
@@ -436,11 +435,7 @@ fn git_state(working_dir: &Path) -> Option<GitState> {
 }
 
 fn git_output(working_dir: &Path, args: &[&str]) -> Option<String> {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(working_dir)
-        .output()
-        .ok()?;
+    let output = git::command(working_dir).args(args).output().ok()?;
 
     if !output.status.success() {
         return None;
@@ -454,6 +449,7 @@ fn git_output(working_dir: &Path, args: &[&str]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::git::test_support::{init_repo, run_git};
     use tempfile::TempDir;
 
     fn test_data_dir() -> (DataDir, TempDir) {
@@ -522,10 +518,7 @@ mod tests {
     #[test]
     fn git_state_captures_repository_url_branch_and_commit() {
         let repo = TempDir::new().unwrap();
-        run_git(repo.path(), &["init"]);
-        run_git(repo.path(), &["config", "user.email", "test@example.com"]);
-        run_git(repo.path(), &["config", "user.name", "Test User"]);
-        run_git(repo.path(), &["commit", "--allow-empty", "-m", "initial"]);
+        init_repo(repo.path());
         run_git(
             repo.path(),
             &["remote", "add", "origin", "https://example.com/cake.git"],
@@ -543,18 +536,22 @@ mod tests {
         assert_eq!(state.commit_hash.as_deref(), Some(expected_commit.as_str()));
     }
 
-    fn run_git(working_dir: &Path, args: &[&str]) {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(working_dir)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "git {} failed: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&output.stderr)
-        );
+    #[test]
+    fn git_state_ignores_an_inherited_git_dir() {
+        // Regression: session metadata captured the repository pinned by an
+        // inherited GIT_DIR rather than the session's working directory.
+        let repo = TempDir::new().unwrap();
+        init_repo(repo.path());
+        run_git(repo.path(), &["checkout", "-b", "feature/hermetic"]);
+
+        let elsewhere = TempDir::new().unwrap();
+        init_repo(elsewhere.path());
+        let poison = fs::canonicalize(elsewhere.path().join(".git")).unwrap();
+
+        let state =
+            temp_env::with_var("GIT_DIR", Some(&poison), || git_state(repo.path())).unwrap();
+
+        assert_eq!(state.branch.as_deref(), Some("feature/hermetic"));
     }
 
     #[test]

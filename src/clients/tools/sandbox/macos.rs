@@ -999,36 +999,8 @@ mod tests {
         let main_repo = tmp.path().join("main");
         let wt_path = tmp.path().join("linked-wt");
 
-        // Initialize main repo with a commit
-        let output = std::process::Command::new("git")
-            .args(["init", "--initial-branch=main"])
-            .arg(&main_repo)
-            .output()
-            .expect("git init must succeed");
-        assert!(output.status.success(), "git init failed");
-        std::fs::write(main_repo.join("README.md"), b"# test\n").unwrap();
-        let output = std::process::Command::new("git")
-            .args(["add", "README.md"])
-            .current_dir(&main_repo)
-            .output()
-            .expect("git add must succeed");
-        assert!(output.status.success(), "git add failed");
-        let output = std::process::Command::new("git")
-            .args(["commit", "-m", "initial"])
-            .current_dir(&main_repo)
-            .output()
-            .expect("git commit must succeed");
-        assert!(output.status.success(), "git commit failed");
-
-        // Create linked worktree
-        let output = std::process::Command::new("git")
-            .args(["worktree", "add", "--detach"])
-            .arg(&wt_path)
-            .arg("main")
-            .current_dir(&main_repo)
-            .output()
-            .expect("git worktree add must succeed");
-        assert!(output.status.success(), "git worktree add failed");
+        // Initialize main repo with a commit and a linked worktree
+        crate::config::git::test_support::init_repo_with_linked_worktree(&main_repo, &wt_path);
 
         // Build sandbox config from the worktree using the full resolution chain
         let config = SandboxConfig::build_with_policy(

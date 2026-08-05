@@ -19,10 +19,36 @@ use std::{
     time::{Duration, Instant},
 };
 
-use support::TestEnv;
+use support::{GIT_REPOSITORY_ENV_VARS, TestEnv};
 
 fn cake_env() -> TestEnv {
     TestEnv::new("cake-stdin-test")
+}
+
+/// Build a `git` command for a fixture repository at `working_dir`.
+///
+/// The fixture never inherits a repository from the environment, never reads
+/// or writes the developer's git configuration, and never runs their hooks.
+/// It lives here rather than in `support` because only this test crate builds
+/// git fixtures, and an unused helper there would trip `dead_code`.
+fn git(working_dir: &std::path::Path) -> std::process::Command {
+    let mut cmd = std::process::Command::new("git");
+    cmd.current_dir(working_dir);
+    for var in GIT_REPOSITORY_ENV_VARS {
+        cmd.env_remove(var);
+    }
+    cmd.env_remove("GIT_CONFIG");
+    cmd.env("GIT_CONFIG_GLOBAL", "/dev/null");
+    cmd.env("GIT_CONFIG_NOSYSTEM", "1");
+    cmd.args([
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-c",
+        "user.name=Cake Test",
+        "-c",
+        "user.email=cake-test@example.invalid",
+    ]);
+    cmd
 }
 
 #[test]
@@ -181,9 +207,8 @@ fn test_worktree_early_failure_cleans_up() {
     // upstream, making has_changes return an error.
     init_git_repo(&env.workspace_dir);
     assert!(
-        std::process::Command::new("git")
+        git(&env.workspace_dir)
             .args(["config", "branch.autoSetupMerge", "false"])
-            .current_dir(&env.workspace_dir)
             .output()
             .unwrap()
             .status
@@ -224,32 +249,26 @@ fn test_worktree_early_failure_cleans_up() {
 
 /// Init a minimal git repo with an initial commit at `dir`.
 fn init_git_repo(dir: &std::path::Path) {
-    let init = std::process::Command::new("git")
+    let init = git(dir)
         .args(["init"])
-        .current_dir(dir)
         .output()
         .expect("failed to init git repo");
     assert!(init.status.success(), "git init should succeed");
-    std::process::Command::new("git")
-        .args(["config", "user.email", "test@test"])
-        .current_dir(dir)
+    // Pin hooks off in the fixture itself: cake runs its own git commands
+    // against this repository and must not pick up the developer's hooks.
+    let hooks = git(dir)
+        .args(["config", "core.hooksPath", "/dev/null"])
         .output()
-        .expect("failed to set user.email");
-    std::process::Command::new("git")
-        .args(["config", "user.name", "test"])
-        .current_dir(dir)
-        .output()
-        .expect("failed to set user.name");
+        .expect("failed to disable hooks");
+    assert!(hooks.status.success(), "git config should succeed");
     std::fs::write(dir.join("initial"), "content").expect("failed to write initial file");
-    let add = std::process::Command::new("git")
+    let add = git(dir)
         .args(["add", "."])
-        .current_dir(dir)
         .output()
         .expect("failed to git add");
     assert!(add.status.success(), "git add should succeed");
-    let commit = std::process::Command::new("git")
+    let commit = git(dir)
         .args(["commit", "-m", "initial"])
-        .current_dir(dir)
         .output()
         .expect("failed to git commit");
     assert!(commit.status.success(), "git commit should succeed");
@@ -257,9 +276,8 @@ fn init_git_repo(dir: &std::path::Path) {
 
 /// Count registered git worktrees in `dir`.
 fn count_worktrees(dir: &std::path::Path) -> usize {
-    let output = std::process::Command::new("git")
+    let output = git(dir)
         .args(["worktree", "list"])
-        .current_dir(dir)
         .output()
         .expect("failed to list worktrees");
     String::from_utf8_lossy(&output.stdout).lines().count()

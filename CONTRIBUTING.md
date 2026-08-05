@@ -72,6 +72,7 @@ If an applicable check cannot run, report the exact reason and the narrower chec
 - Keep imports at module scope unless conditional compilation makes that impossible.
 - Use absolute `crate::` imports in production code; verified by `just lint-imports`.
 - Preserve public behavior during refactors unless the task explicitly changes it.
+- Spawn `git` through `config::git::command`, and in tests through `config::git::test_support` or the `git` helper in `tests/`. Git exports `GIT_DIR` and its siblings into hooks and everything they spawn, so a command that inherits them operates on the exporting repository rather than the directory it was given.
 
 Tests and snapshots should encode behavior close to its implementation. Add documentation only when the change affects a user workflow, external contract, security boundary, durable architectural invariant, or contributor workflow.
 
