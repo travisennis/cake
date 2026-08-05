@@ -81,6 +81,10 @@ missing_errors_doc = "deny"
 allow_attributes = "deny"
 allow_attributes_without_reason = "deny"
 
+# Cognitive-complexity ceiling for production code (threshold in clippy.toml;
+# grandfathered functions carry #[expect(clippy::cognitive_complexity)]).
+cognitive_complexity = "warn"
+
 # Panic prevention (restriction category, high-value)
 string_slice = "warn"
 

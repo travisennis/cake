@@ -245,6 +245,10 @@ pub(super) fn check_git_commit_backticks(
 /// Handles both `-m "..."` (space-separated) and `-m="..."` / `-m"..."`
 /// (no space / equals sign) forms. Respects single-quote contexts where
 /// backticks are literal and harmless.
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "grandfathered McCabe CC 38 / cognitive 19; reduction tracked in #96"
+)]
 fn has_unsafe_message_flag(command: &str, start: usize) -> bool {
     let bytes = command.as_bytes();
     let len = bytes.len();
@@ -433,6 +437,10 @@ fn is_allowed_rm_target(target: &str) -> bool {
 ///
 /// This is a soft warning — the command still executes, but the agent is
 /// alerted that the output may not be what they expect.
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "grandfathered McCabe CC 27 / cognitive 17; reduction tracked in #96"
+)]
 pub(super) fn check_rg_replace_flag(
     segment: &str,
     _normalized: &str,

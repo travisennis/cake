@@ -7,7 +7,8 @@ usage() {
     cat <<'EOF'
 Usage: scripts/check-coverage.sh [--cargo-crap-format summary|github]
 
-Runs the local/GitHub coverage and cargo-crap change-risk gate.
+Runs the local/GitHub coverage, cargo-crap change-risk, and per-function
+cyclomatic-complexity gates.
 Set COVERAGE_THRESHOLD to override the default threshold of 90.
 Set CRAP_REGRESSION_EPSILON to override the default CRAP regression tolerance of 0.5.
 EOF
@@ -101,6 +102,20 @@ if [ "$crap_exit" -ne 0 ]; then
     failed=1
 else
     echo "PASS: No CRAP regression detected"
+fi
+
+# === Gate 3: Cyclomatic Complexity ===
+echo ""
+echo "=== Cyclomatic Complexity Gate ==="
+
+cc_exit=0
+scripts/check-cc.sh --lcov lcov.info --baseline ci/cargo-crap-baseline.json || cc_exit=$?
+
+if [ "$cc_exit" -ne 0 ]; then
+    echo "FAIL: Cyclomatic complexity gate failed (exit code ${cc_exit})"
+    failed=1
+else
+    echo "PASS: No cyclomatic complexity exceedance"
 fi
 
 # === Summary ===

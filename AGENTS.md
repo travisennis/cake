@@ -17,7 +17,7 @@ Users depend on CLI shape and exit behavior, machine-readable output formats, to
 7. If work is managed, track it in a GitHub issue: set Status to In Progress when you start. Before opening a pull request, complete the acceptance notes, routed verification, documentation assessment, and any ExecPlan archival; include `Closes #<number>` in the pull request body and follow the issue lifecycle in [docs/workflow/tasks.md](docs/workflow/tasks.md).
 8. Make surgical edits and run risk-proportionate checks. Keep the diff narrow: do not mix behavior changes, dependency updates, formatting passes, snapshot regeneration, change-risk baseline updates, and unrelated cleanup unless the task requires it. Mechanical churn hides the change a reviewer needs to see.
 9. After implementation edits, run reviews in a subagent and address findings until the reviewer gives an all clear. If a third round reports findings of the same class, stop patching: report the finding class and the suspected design flaw, and escalate to a design decision.
-10. Perform preflight.
+10. Run `just cc-check` to confirm no new or modified function exceeds the cyclomatic-complexity targets (see [Code complexity targets](docs/guardrails/complexity-targets.md)), then perform preflight.
 11. Hand off the branch and its pull request, exact checks, skipped checks, and remaining risk.
 
 Large or cross-cutting work requires an ExecPlan per [docs/workflow/exec-plans.md](docs/workflow/exec-plans.md).
@@ -174,8 +174,8 @@ Use for cyclomatic complexity targets, CRAP scores, coverage requirements, and t
 
 Consult:
 
-- [Code complexity targets](docs/guardrails/complexity-targets.md), for CC and CRAP targets and the refactoring workflow.
-- `cargo-crap` and `just cargo-crap-report`, for the CI CRAP gate.
+- [Code complexity targets](docs/guardrails/complexity-targets.md), for CC and CRAP targets, the grandfathered-function record, and the refactoring workflow.
+- `just cc-check`, for the per-function cyclomatic-complexity gate; `scripts/check-coverage.sh`, for the CI CRAP and CC gates.
 - Issue #103, for enforcement mechanisms.
 
 ## Repository rules

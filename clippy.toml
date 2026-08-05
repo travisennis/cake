@@ -5,3 +5,9 @@ allow-expect-in-tests = true
 allow-dbg-in-tests = true
 allow-indexing-slicing-in-tests = true
 allow-panic-in-tests = true
+
+# Ceiling for clippy cognitive complexity in production code (see #103).
+# Enabled via Cargo.toml [lints.clippy] cognitive_complexity = "warn";
+# functions above the ceiling carry #[expect(clippy::cognitive_complexity)]
+# with a reason referencing their reduction task.
+cognitive-complexity-threshold = 15
