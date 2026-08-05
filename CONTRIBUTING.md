@@ -53,7 +53,7 @@ This checks toolchain synchronization, Linux compilation, formatting, strict Cli
 
 Additional checks:
 
-- Dependency changes: `just check-deps`.
+- Dependency changes: `just check-deps`. [Dependency and supply chain posture](docs/dependencies.md) is the authority for pin ownership and update review.
 - Rust-version changes: `just rust-version-check`.
 - Linux-sensitive changes on macOS: `just clippy-linux` when the target and cross-compiler are installed.
 - Snapshot changes: `just snapshots`, then `cargo insta review`.
