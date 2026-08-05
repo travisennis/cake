@@ -38,6 +38,12 @@ Analyze persisted session records, with supporting references loaded only when n
 
 Triage a recent failed, interrupted, empty, or truncated cake run.
 
+### CI Runner Images and Required Checks
+
+[CI Runner Images and Required Checks](ci-runner-images-and-required-checks.md)
+
+Change a runner label or a workflow job name without breaking branch protection or silently moving platform coverage.
+
 ## Skill Pointer Stub
 
 When a procedure moves from `.agents/skills/<name>/SKILL.md` into this directory, retain the catalog entry as a pointer stub:
