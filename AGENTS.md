@@ -15,7 +15,7 @@ Users depend on CLI shape and exit behavior, machine-readable output formats, to
 5. Read the smallest relevant code and tests. [ARCHITECTURE.md](ARCHITECTURE.md) names the code authority for each surface.
 6. Preserve compatibility unless the task explicitly changes it.
 7. If work is managed, track it in a GitHub issue: set Status to In Progress when you start, and close the issue with acceptance notes before the commit that contains its implementation.
-8. Make surgical edits and run risk-proportionate checks.
+8. Make surgical edits and run risk-proportionate checks. Keep the diff narrow: do not mix behavior changes, dependency updates, formatting passes, snapshot regeneration, change-risk baseline updates, and unrelated cleanup unless the task requires it. Mechanical churn hides the change a reviewer needs to see.
 9. After implementation edits, run reviews in a subagent and address findings until the reviewer gives an all clear. If a third round reports findings of the same class, stop patching: report the finding class and the suspected design flaw, and escalate to a design decision.
 10. Perform preflight.
 11. Hand off the branch and its pull request, exact checks, skipped checks, and remaining risk.
@@ -141,6 +141,18 @@ Consult:
 
 - [Agent-facing instructions](docs/guardrails/agent-instructions.md), for the evidence a behavior-shaping edit requires.
 
+### Documentation-Only Changes
+
+Use for README, runbooks, ADRs, ExecPlans, research notes, and process documentation, when no code, configuration, or fixture changes with them.
+
+Consult:
+
+- [CONTRIBUTING.md](CONTRIBUTING.md), for the documentation check commands.
+- [Agent-facing instructions](docs/guardrails/agent-instructions.md), when the prose exists to change how an agent behaves, which is a behavior-shaping edit rather than a documentation edit.
+- The route above for the surface being documented, when the document states a contract, security boundary, or invariant.
+
+Documentation-only changes may skip the Rust gate. Run the targeted Panache format and lint checks for the changed documents, validate links, and run `git diff --check`. State in the pull request that the change is documentation-only. A change that touches any code, configuration, fixture, or snapshot is not documentation-only, whatever proportion of its diff is prose.
+
 ### Dependencies, Build, Verification, And Release
 
 Use for `Cargo.toml`, `Cargo.lock`, the `justfile`, CI, toolchain, and release work.
@@ -148,11 +160,13 @@ Use for `Cargo.toml`, `Cargo.lock`, the `justfile`, CI, toolchain, and release w
 Consult:
 
 - [CONTRIBUTING.md](CONTRIBUTING.md), the canonical command catalog and verification policy.
+- [Dependency and supply chain posture](docs/dependencies.md), for pin ownership, tooling pins, and the review a dependency update requires.
+- [Automation conventions](docs/automations/README.md), for scheduled maintenance, its reporting rules, and which surfaces each automation owns.
 - [Working on branches and worktrees runbook](docs/runbooks/parallel-worktrees.md), for branch, worktree, and pull-request mechanics.
 - [CI Runner Images and Required Checks runbook](docs/runbooks/ci-runner-images-and-required-checks.md), for runner labels, workflow job names, and the branch-protection contexts they feed.
 - [Auditing Binary Size runbook](docs/runbooks/auditing-binary-size.md), for investigating release binary bloat.
 
-Dependency changes require explicit scope and `Cargo.toml`/`Cargo.lock` consistency. A workflow job name is a branch-protection identifier; renaming one without updating the ruleset blocks every pull request.
+Dependency changes require explicit scope and `Cargo.toml`/`Cargo.lock` consistency. Classify a dependency update from its upstream diff, not from the repository-side diff or a green CI run. A workflow job name is a branch-protection identifier; renaming one without updating the ruleset blocks every pull request.
 
 ### Code Quality, Complexity, And Coverage
 
@@ -162,7 +176,7 @@ Consult:
 
 - [Code complexity targets](docs/guardrails/complexity-targets.md), for CC and CRAP targets and the refactoring workflow.
 - `cargo-crap` and `just cargo-crap-report`, for the CI CRAP gate.
-- Issue #335, for enforcement mechanisms.
+- Issue #103, for enforcement mechanisms.
 
 ## Repository rules
 
@@ -177,6 +191,14 @@ Consult:
 - Future work and unresolved questions belong in GitHub issues, not durable docs.
 - Update architecture documentation only when a durable boundary or invariant changes, not when symbols or files move.
 - Before broad edits and before handoff, inspect `git status --short`.
+
+## Pull requests
+
+State the change class and its compatibility impact. If the change touches a compatibility surface named under [Project](#project), say which one and what preserves it.
+
+Label every pull request with exactly one `type:*` and at least one `area:*` from `.github/labels.yml`. Add a `risk:*` label when the change breaks a compatibility surface, depends on external service behavior, or touches a security boundary; those labels route review, so omitting one silently skips it. Dependabot applies `dependencies`, `github_actions`, and `rust` automatically; leave them in place.
+
+Record which checks ran and which did not. A skipped check belongs in the pull request with the reason, not only in the handoff message, because the pull request is what survives the session.
 
 ## Verification
 
