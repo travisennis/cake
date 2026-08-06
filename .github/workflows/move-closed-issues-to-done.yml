@@ -25,7 +25,11 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.CAKE_BACKLOG_PAT }}
       GH_REPO: ${{ github.repository }}
-      PROJECT_OWNER: travisennis
+      # @me resolves the project as the token's own viewer identity. A fixed
+      # login makes gh resolve the owner via a user/organization query that
+      # fails under some PAT types ("unknown owner type"). The PAT must belong
+      # to the account that owns project 1.
+      PROJECT_OWNER: "@me"
       PROJECT_NUMBER: "1"
     steps:
       - name: Collect issues closed by this PR
@@ -33,11 +37,14 @@ jobs:
         env:
           BODY: ${{ github.event.pull_request.body }}
         run: |
-          # Keep lines that pair a closing keyword with a reference, then pull
-          # every #N from those lines so `Fixes #1, #2` moves both. The `|| true`
-          # sits inside the substitution so a PR with no closing keyword stays
-          # green under pipefail without polluting the issues value.
-          ISSUES="$(printf '%s' "$BODY" | grep -iE '(close|closes|closed|closing|fix|fixes|fixed|fixing|resolve|resolves|resolved|resolving)[[:space:]]*:?[[:space:]]*#[0-9]+' | grep -oE '#[0-9]+' | tr -d '#' | sort -u | tr '\n' ' ' || true)"
+          # Match GitHub's exact closing keywords, word-bounded, followed by
+          # whitespace and a comma-separated reference list (GitHub's documented
+          # multi-ref form). Prose like "(see #115)" is never collected, and
+          # keyword lookalikes ("prefixes #1", "closing #5", "fixes: #5") do
+          # not match because GitHub would not close them. The `|| true` sits
+          # inside the substitution so a PR with no closing keyword stays green
+          # under pipefail without polluting the issues value.
+          ISSUES="$(printf '%s' "$BODY" | grep -oiE '[[:<:]](close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)[[:space:]]+(#[0-9]+([[:space:]]*,[[:space:]]*#[0-9]+)*)' | grep -oE '#[0-9]+' | tr -d '#' | sort -u | tr '\n' ' ' || true)"
           echo "issues=${ISSUES}" >> "$GITHUB_OUTPUT"
 
       - name: Move each closed issue to Done
