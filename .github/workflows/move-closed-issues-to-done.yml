@@ -72,12 +72,25 @@ jobs:
             exit 1
           fi
 
-          # One call; gh paginates internally up to --limit (Projects v2 caps
-          # each page at 100 items).
-          board="$(gh project item-list 1 --owner @me --format json --limit 1000)"
+          # Fetch the whole board via node(id:) — gh's `project item-list`
+          # queries the project owner's organization, which needs the read:org
+          # scope the PAT does not have. The node query touches only the
+          # project and issue numbers, so it works with `project` scope alone.
+          # Projects v2 caps each page at 100 items; loop over the cursor.
+          board=""
+          cursor="null"
+          while :; do
+            page="$(gh api graphql -f query='query($pid: ID!, $cursor: String) { node(id: $pid) { ... on ProjectV2 { items(first: 100, after: $cursor) { pageInfo { hasNextPage endCursor } nodes { id content { ... on Issue { number } } } } } } }' -f pid="${PROJECT_ID}" -F cursor="${cursor}" --jq '.data.node.items')"
+            board="${board}$(printf '%s' "${page}" | jq -r '.nodes[] | select(.content != null) | "\(.content.number) \(.id)"')"$'\n'
+            if [ "$(printf '%s' "${page}" | jq -r '.pageInfo.hasNextPage')" = "true" ]; then
+              cursor="\"$(printf '%s' "${page}" | jq -r '.pageInfo.endCursor')\""
+            else
+              break
+            fi
+          done
 
           for n in ${ISSUES}; do
-            item_id="$(printf '%s' "${board}" | jq -r --argjson num "${n}" '.items[] | select(.content.number == $num) | .id' | head -1)"
+            item_id="$(printf '%s' "${board}" | awk -v n="${n}" '$1==n {print $2; exit}')"
             if [ -z "${item_id}" ]; then
               echo "warning: #${n} is not on the Cake Backlog board (see #115)"
               continue
