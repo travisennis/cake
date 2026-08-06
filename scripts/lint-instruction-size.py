@@ -79,7 +79,6 @@ DEFAULT_BUDGET = 1500
 # switched off. Rounding absorbs that without permitting real growth --- 50
 # words on a document this size is under 3%.
 ALLOWANCES: dict[str, int] = {
-    "docs/workflow/exec-plans.md": 2350,
     "docs/runbooks/analyzing-cake-sessions/index.md": 1750,
     ".agents/skills/finding-improvements/SKILL.md": 2750,
 }
