@@ -73,7 +73,7 @@ Follow this procedure for every implementation issue, whether or not it has an E
 
    When all three apply, work in conceptual order: research evidence, architectural decision, then execution planning. Do not require research records or documentation changes for every issue.
 
-4. Implement only the issue's problem and acceptance scope. Preserve unrelated worktree changes, and do not commit unless the user explicitly asks.
+4. Implement only the issue's problem and acceptance scope. Preserve unrelated worktree changes, and commit as you go on the branch.
 
 5. Before opening the pull request, run the repository's routed verification commands. Record material results in an issue comment and update the acceptance notes so the record explains how the outcome was verified. Opening the pull request is the contributor's assertion that the implementation is ready to merge; review may still require changes.
 

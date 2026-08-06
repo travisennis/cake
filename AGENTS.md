@@ -180,12 +180,12 @@ Consult:
 
 ## Repository rules
 
-- Do not commit or push unless explicitly asked.
+- Commit and push freely on a feature branch; commit often. Stage specific paths, never `git add -A`. Ask before force-pushing or opening a pull request.
 - Work on a branch cut from an up-to-date `master`, never on `master` itself. Integration happens through a pull request. [Working on branches and worktrees](docs/runbooks/parallel-worktrees.md) has the mechanics.
 - One branch holds one task. Do not carry unrelated work across on the same branch.
 - Preserve unrelated user changes; never clean or revert them.
 - Never resolve a merge conflict in `ci/cargo-crap-baseline.json` by hand or by three-way merge. Take `master`'s copy, then regenerate it with `just change-risk-baseline`.
-- The issue lifecycle (ready-to-merge work before the pull request, automatic issue closure when the pull request reaches `master`, and the post-merge summary) is defined in [docs/workflow/tasks.md](docs/workflow/tasks.md); issue state, links, and sub-issues are the managed record.
+- The issue lifecycle is defined in [docs/workflow/tasks.md](docs/workflow/tasks.md); issue state, links, and sub-issues are the managed record.
 - Use Conventional Commits when writing commit messages; verified by the commit-msg hook.
 - Labels on GitHub issues and pull requests: use only the vocabulary in `.github/labels.yml`; never invent or rename labels. `just labels-check` verifies the repo matches it, and the label-governance workflow removes out-of-vocabulary labels from issues.
 - Future work and unresolved questions belong in GitHub issues, not durable docs.

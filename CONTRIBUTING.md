@@ -60,7 +60,7 @@ Additional checks:
 - Label changes: `just labels-check-file` (file validation, also CI), `just labels-check` (repo drift vs `.github/labels.yml`), `just labels` (apply), `just labels-prune` (delete unlisted labels).
 - Full release-oriented validation: `just check-full`.
 - Documentation-only changes: targeted `panache format --check` and `panache lint` for changed living documents, link validation, and `git diff --check`. Use `just docs-check` when intentionally validating the complete Markdown corpus; it also runs `just lint-instruction-size`.
-- Instruction changes (AGENTS.md, `.agents/skills/`, guardrails, runbooks): `just lint-instruction-size` enforces per-document word budgets. It is part of both `just ci` and `just docs-check`, so neither path can skip it. [Agent-facing instructions](docs/guardrails/agent-instructions.md) is the authority for what an added instruction must justify.
+- Instruction changes (AGENTS.md, `.agents/skills/`, guardrails, runbooks): `just lint-instruction-size` enforces per-document word budgets and also runs in `just ci`. [Agent-facing instructions](docs/guardrails/agent-instructions.md) is the authority for what an added instruction must justify.
 
 ### Pre-push routing
 
@@ -91,13 +91,13 @@ Tests and snapshots should encode behavior close to its implementation. Add docu
 
 ## Managed work
 
-Issues, research notes, ExecPlans, and ADRs are managed records. Work is tracked in GitHub Issues. Use the workflow references in AGENTS.md (task, ExecPlan, ADR, and research workflows), never edit generated indexes (there are none), and follow the issue lifecycle in [docs/workflow/tasks.md](docs/workflow/tasks.md).
+Issues, research notes, ExecPlans, and ADRs are managed records. Work is tracked in GitHub Issues. Use the workflow references in AGENTS.md, and follow the issue lifecycle in [docs/workflow/tasks.md](docs/workflow/tasks.md).
 
 ## Git and commits
 
-Do not overwrite unrelated changes. Commit only when requested.
+Commit and push freely on a feature branch, and commit often --- uncommitted work is the fragile state. Stage the paths you changed rather than `git add -A`, so unrelated in-flight edits stay out of your pull request. Ask first before force-pushing, which discards history, and before opening a pull request, which asserts the change is ready to merge.
 
-All work happens on a branch. `master` is protected: a GitHub ruleset rejects direct pushes and requires a pull request with passing checks, and the `branch-guard` hook in `prek.toml` rejects a commit made on `master` before you spend a verification gate on it. Branch names use the commit type as a prefix, such as `feat/turn-limits` or `fix/sandbox-read-only`. [Working on branches and worktrees](docs/runbooks/parallel-worktrees.md) covers the mechanics, including running several branches at once in linked worktrees.
+All work happens on a branch, which is what makes that safe: `master` is protected by a GitHub ruleset rejecting direct pushes, and by the `branch-guard` hook in `prek.toml`, which rejects commits and pushes on `master` at both `pre-commit` and `pre-push`. Branch names use the commit type as a prefix, such as `feat/turn-limits` or `fix/sandbox-read-only`. [Working on branches and worktrees](docs/runbooks/parallel-worktrees.md) covers the mechanics, including running several branches at once in linked worktrees.
 
 `ci/cargo-crap-baseline.json` is generated and committed, so parallel branches conflict on it. A three-way merge of that file is meaningless. Take `master`'s copy and regenerate with `just change-risk-baseline`.
 
