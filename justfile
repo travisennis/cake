@@ -159,8 +159,8 @@ pre-push:
     else \
         echo "pre-push: $class change — running full gate"; \
         just ci; \
-        if [ "$class" = "mixed" ]; then \
-            echo "pre-push: mixed change — also running documentation checks"; \
+        if [ "$class" = "mixed" ] || [ "$class" = "unknown" ]; then \
+            echo "pre-push: $class change — also running documentation checks"; \
             just pre-push-docs; \
         fi; \
     fi
@@ -168,14 +168,17 @@ pre-push:
 # Escape hatch: always run the full pre-push gate, whatever the changed path class
 pre-push-force: ci
 
-# Run the documentation-only pre-push checks on changed living documents
+# Run the documentation-only pre-push checks on changed living documents.
+# panache is required only when Markdown changed; run `just setup` to install it (pinned to 3.0.0 in CI).
 pre-push-docs:
     @set -e; files=$(scripts/classify-changes.sh --files); \
     if [ -n "$files" ]; then \
+        command -v panache >/dev/null 2>&1 || { echo "ERROR: panache not found — run \`just setup\` (installs panache 3.0.0)" >&2; exit 1; }; \
         echo "pre-push-docs: checking changed Markdown files"; \
         printf '%s\n' "$files"; \
-        panache format --check --force-exclude $files --quiet; \
-        panache lint --force-exclude $files --quiet; \
+        set -f; IFS=$(printf '\n.'); IFS=${IFS%.}; \
+        printf '%s\0' $files | xargs -0 panache format --check --force-exclude --quiet; \
+        printf '%s\0' $files | xargs -0 panache lint --force-exclude --quiet; \
     else \
         echo "pre-push-docs: no changed Markdown files"; \
     fi; \

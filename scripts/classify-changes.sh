@@ -55,8 +55,9 @@ done
 # path filter the `changes` job in .github/workflows/ci.yml used before this
 # script existed, with `.github/workflows/` widened from ci.yml to every
 # workflow. Everything else that is not Markdown is "unknown" and fails closed.
-# The alternation must stay literal in each case statement: a pattern read from
-# a variable is one literal glob on some POSIX shells.
+# The alternation lives in exactly one case statement below, shared by the
+# class and --files modes: a pattern read from a variable is one literal glob
+# on some POSIX shells, so a new code path must be added here only.
 
 if [ -z "$base" ]; then
     if base="$(git rev-parse --abbrev-ref --symbolic-full-name @{upstream} 2>/dev/null)"; then
@@ -65,38 +66,25 @@ if [ -z "$base" ]; then
         base="origin/master"
     else
         # No base to diff against (for example a fresh clone with no origin);
-        # fail closed so the caller runs the full gate.
-        echo "unknown"
+        # fail closed so the caller runs the full gate (class mode) or finds
+        # no files (--files mode).
+        [ "$mode" != "files" ] && echo "unknown"
         exit 0
     fi
 fi
 
 if ! changed="$(git diff --name-only "$base...$head" 2>/dev/null)"; then
     # Unresolvable base (for example a first push where the CI base sha is the
-    # all-zeros sha); fail closed so the caller runs the full gate.
-    echo "unknown"
-    exit 0
-fi
-
-if [ "$mode" = "files" ]; then
-    if [ -n "$changed" ]; then
-        IFS='
-'
-        for file in $changed; do
-            case "$file" in
-                src/*|tests/*|Cargo.toml|Cargo.lock|rust-toolchain.toml|.cargo/*|.github/workflows/*|justfile|ci/*) ;;
-                *.md|*.markdown)
-                    [ -f "$file" ] && printf '%s\n' "$file"
-                    ;;
-            esac
-        done
-    fi
+    # all-zeros sha); fail closed so the caller runs the full gate (class mode)
+    # or finds no files (--files mode).
+    [ "$mode" != "files" ] && echo "unknown"
     exit 0
 fi
 
 code=0
 docs=0
 unknown=0
+markdown_files=""
 
 if [ -n "$changed" ]; then
     IFS='
@@ -108,12 +96,21 @@ if [ -n "$changed" ]; then
                 ;;
             *.md|*.markdown)
                 docs=1
+                # Accumulate existing Markdown files for --files mode; deletions
+                # are skipped so removed documents are not checked.
+                [ -f "$file" ] && markdown_files="$markdown_files$file
+"
                 ;;
             *)
                 unknown=1
                 ;;
         esac
     done
+fi
+
+if [ "$mode" = "files" ]; then
+    printf '%s' "$markdown_files"
+    exit 0
 fi
 
 if [ "$unknown" -eq 1 ]; then
