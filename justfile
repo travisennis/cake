@@ -183,6 +183,11 @@ coverage-summary:
 check-coverage:
     scripts/check-coverage.sh
 
+# Check per-function cyclomatic complexity against the baseline (no coverage pass needed).
+# New functions must stay at or below the CC target; existing functions may not exceed their baseline CC.
+cc-check:
+    scripts/check-cc.sh
+
 # Run coverage and open report
 coverage-open:
     cargo llvm-cov --html --open

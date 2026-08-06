@@ -51,6 +51,10 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
 /// If none of these sources produce a readable file, the built-in default is used.
 /// The first readable file found wins. Empty files are valid (intentional blank prompt).
 /// Unreadable files produce a warning and are skipped.
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "inherently dispatch-heavy precedence scan (McCabe 14, cognitive 17; within the <= 15 McCabe allowance); reduction tracked in #102"
+)]
 pub fn resolve_system_prompt(
     working_dir: &Path,
     config_dir: &Path,
