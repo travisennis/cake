@@ -37,14 +37,18 @@ jobs:
         env:
           BODY: ${{ github.event.pull_request.body }}
         run: |
-          # Match GitHub's exact closing keywords, word-bounded, followed by
-          # whitespace and a comma-separated reference list (GitHub's documented
-          # multi-ref form). Prose like "(see #115)" is never collected, and
-          # keyword lookalikes ("prefixes #1", "closing #5", "fixes: #5") do
-          # not match because GitHub would not close them. The `|| true` sits
-          # inside the substitution so a PR with no closing keyword stays green
-          # under pipefail without polluting the issues value.
-          ISSUES="$(printf '%s' "$BODY" | grep -oiE '[[:<:]](close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)[[:space:]]+(#[0-9]+([[:space:]]*,[[:space:]]*#[0-9]+)*)' | grep -oE '#[0-9]+' | tr -d '#' | sort -u | tr '\n' ' ' || true)"
+          # Match GitHub's exact closing keywords, preceded by a line start or
+          # a character that is neither alphanumeric nor underscore, followed
+          # by whitespace and a
+          # comma-separated reference list (GitHub's documented multi-ref
+          # form). Prose like "(see #115)" is never collected, and keyword
+          # lookalikes ("prefixes #1", "closing #5", "fixes: #5") do not
+          # match because GitHub would not close them. The boundary is POSIX
+          # ERE only (GNU grep rejects [[:<:]] with "Invalid character class
+          # name"). The `|| true` sits inside the substitution so a PR with no
+          # closing keyword stays green under pipefail without polluting the
+          # issues value.
+          ISSUES="$(printf '%s' "$BODY" | grep -oiE '(^|[^[:alnum:]_])(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)[[:space:]]+(#[0-9]+([[:space:]]*,[[:space:]]*#[0-9]+)*)' | grep -oE '#[0-9]+' | tr -d '#' | sort -u | tr '\n' ' ' || true)"
           echo "issues=${ISSUES}" >> "$GITHUB_OUTPUT"
 
       - name: Move each closed issue to Done
