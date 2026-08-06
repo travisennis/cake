@@ -124,6 +124,8 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
+      - name: Check instruction word budgets
+        run: python3 scripts/lint-instruction-size.py
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.96.0
