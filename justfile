@@ -147,10 +147,16 @@ ci: rust-version-check check-linux fmt-check clippy-strict clippy-no-default-fea
 pre-push-classify:
     @scripts/classify-changes.sh
 
+# Run the classify-changes.sh fixture matrix in a scratch repo (also wired into CI's `changes` job)
+test-classify-changes:
+    @scripts/test-classify-changes.sh
+
 # Run the pre-push gate, routed by changed path class (see CONTRIBUTING.md).
 # Documentation-only changes run the targeted docs checks; code-class changes run the full Rust
 # gate; mixed changes run both. Fail closed: an unclassifiable changed file (or an unresolvable
-# base) runs the full gate. Use `just pre-push-force` to always run the full gate.
+# base) runs the full gate. The class is measured for the checked-out branch only: the hook runner
+# (prek) does not forward git's pushed-ref list, so pushing another branch is gated by the checkout's
+# class. Use `just pre-push-force` to always run the full gate.
 pre-push:
     @set -e; class=$(scripts/classify-changes.sh); \
     if [ "$class" = "docs" ] || [ "$class" = "none" ]; then \
@@ -170,6 +176,8 @@ pre-push-force: ci
 
 # Run the documentation-only pre-push checks on changed living documents.
 # panache is required only when Markdown changed; run `just setup` to install it (pinned to 3.0.0 in CI).
+# Ends with a whitespace check over the same <base>...<head> range the classifier measures (the pushed
+# commits), via scripts/classify-changes.sh --check.
 pre-push-docs:
     @set -e; files=$(scripts/classify-changes.sh --files); \
     if [ -n "$files" ]; then \
@@ -182,7 +190,7 @@ pre-push-docs:
     else \
         echo "pre-push-docs: no changed Markdown files"; \
     fi; \
-    git diff --check
+    scripts/classify-changes.sh --check
 
 # Run the macOS correctness path used by GitHub Actions
 ci-macos: rust-version-check fmt-check clippy-strict clippy-no-default-features test-all-features

@@ -7,7 +7,7 @@
 # classifier so the hook and CI cannot drift apart.
 #
 # Usage:
-#   scripts/classify-changes.sh [--base <ref>] [--head <ref>] [--files]
+#   scripts/classify-changes.sh [--base <ref>] [--head <ref>] [--files|--check]
 #
 # With --base/--head (CI passes these), the changed set is
 # `git diff --name-only <base>...<head>`. Without them, the base is the
@@ -26,6 +26,10 @@
 # --files prints the changed Markdown files that still exist (deletions are
 # skipped), one per line, for targeted panache checks. Code-class files are
 # excluded even when they carry a .md extension (for example src/prompts/).
+# --check runs `git diff --check` over the same <base>...<head> range the
+# classifier measures, for the pre-push whitespace gate. Both --files and
+# --check skip silently when no base can be resolved; class mode fails closed
+# to "unknown" instead.
 set -eu
 
 base=""
@@ -43,9 +47,10 @@ while [ "$#" -gt 0 ]; do
             if [ "$#" -ge 2 ]; then shift 2; else shift 1; fi
             ;;
         --files) mode="files"; shift ;;
+        --check) mode="check"; shift ;;
         *)
             echo "ERROR: unknown argument '$1'" >&2
-            echo "usage: scripts/classify-changes.sh [--base <ref>] [--head <ref>] [--files]" >&2
+            echo "usage: scripts/classify-changes.sh [--base <ref>] [--head <ref>] [--files|--check]" >&2
             exit 2
             ;;
     esac
@@ -66,9 +71,9 @@ if [ -z "$base" ]; then
         base="origin/master"
     else
         # No base to diff against (for example a fresh clone with no origin);
-        # fail closed so the caller runs the full gate (class mode) or finds
-        # no files (--files mode).
-        [ "$mode" != "files" ] && echo "unknown"
+        # fail closed so the caller runs the full gate (class mode) or skips
+        # quietly (--files and --check modes).
+        [ "$mode" = "class" ] && echo "unknown"
         exit 0
     fi
 fi
@@ -76,8 +81,16 @@ fi
 if ! changed="$(git diff --name-only "$base...$head" 2>/dev/null)"; then
     # Unresolvable base (for example a first push where the CI base sha is the
     # all-zeros sha); fail closed so the caller runs the full gate (class mode)
-    # or finds no files (--files mode).
-    [ "$mode" != "files" ] && echo "unknown"
+    # or skips quietly (--files and --check modes).
+    [ "$mode" = "class" ] && echo "unknown"
+    exit 0
+fi
+
+if [ "$mode" = "check" ]; then
+    # Same range the classifier measures, so the pre-push whitespace gate sees
+    # the pushed commits rather than (as with a bare `git diff --check`) only
+    # unstaged worktree changes. git exits 2 on whitespace errors.
+    git diff --check "$base...$head"
     exit 0
 fi
 

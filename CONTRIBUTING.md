@@ -63,9 +63,9 @@ Additional checks:
 
 ### Pre-push routing
 
-The pre-push hook routes by changed path class instead of running the full gate unconditionally. The classifier is `scripts/classify-changes.sh`, shared with the `changes` job in `.github/workflows/ci.yml`, and it measures the changed set against the upstream branch when one is set, otherwise against `origin/master` (branches from `just branch` and `just worktree` have no upstream):
+The pre-push hook routes by changed path class instead of running the full gate unconditionally. The classifier is `scripts/classify-changes.sh`, shared with the `changes` job in `.github/workflows/ci.yml`, and it measures the changed set against the upstream branch when one is set, otherwise against `origin/master` (branches from `just branch` and `just worktree` have no upstream). The gate covers the checked-out branch: the hook runner does not forward git's pushed-ref list, so pushing a branch other than the one checked out is gated by the checkout's class. The classifier is fixture-tested by `scripts/test-classify-changes.sh`, run in CI's `changes` job and locally via `just test-classify-changes`:
 
-- Markdown-only pushes run `just pre-push-docs`: targeted `panache format --check` and `panache lint` on the changed living documents plus `git diff --check`.
+- Markdown-only pushes run `just pre-push-docs`: targeted `panache format --check` and `panache lint` on the changed living documents plus `git diff --check` over the same `<base>...<head>` range the classifier measures.
 - Pushes touching `src/`, `tests/`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `.cargo/`, `.github/workflows/`, `justfile`, or `ci/` run the full `just ci` gate.
 - Mixed pushes run both.
 - A changed file in no class (for example `prek.toml` or `.mise.toml`) fails closed to the full gate --- and also runs the docs checks when Markdown changed --- as does an unresolvable base.

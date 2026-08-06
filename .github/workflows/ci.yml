@@ -53,6 +53,9 @@ jobs:
           else
             echo "coverage=false" >> "$GITHUB_OUTPUT"
           fi
+      - name: Classifier fixture tests
+        shell: bash
+        run: scripts/test-classify-changes.sh
 
   linux-check:
     name: Linux Check
