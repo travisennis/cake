@@ -1,0 +1,63 @@
+name: move-closed-issues-to-done
+
+# Moves the Cake Backlog project Status field to Done for every issue a merged
+# pull request closes via a `Closes #N`-style keyword in its body.
+#
+# GitHub closes the linked issue automatically on merge; this workflow keeps the
+# board's Status field in sync, which nothing else updates.
+#
+# Requires a PAT with `repo` + `project` scopes (or a fine-grained PAT scoped to
+# this repository with Issues and Projects read/write) stored as the
+# CAKE_BACKLOG_PAT repository secret. GITHUB_TOKEN is scoped to the repository
+# and cannot access Projects v2.
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: read
+
+jobs:
+  move-to-done:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.CAKE_BACKLOG_PAT }}
+      GH_REPO: ${{ github.repository }}
+      PROJECT_OWNER: travisennis
+      PROJECT_NUMBER: "1"
+    steps:
+      - name: Collect issues closed by this PR
+        id: closed
+        env:
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          # Keep lines that pair a closing keyword with a reference, then pull
+          # every #N from those lines so `Fixes #1, #2` moves both. The `|| true`
+          # sits inside the substitution so a PR with no closing keyword stays
+          # green under pipefail without polluting the issues value.
+          ISSUES="$(printf '%s' "$BODY" | grep -iE '(close|closes|closed|closing|fix|fixes|fixed|fixing|resolve|resolves|resolved|resolving)[[:space:]]*:?[[:space:]]*#[0-9]+' | grep -oE '#[0-9]+' | tr -d '#' | sort -u | tr '\n' ' ' || true)"
+          echo "issues=${ISSUES}" >> "$GITHUB_OUTPUT"
+
+      - name: Move each closed issue to Done
+        env:
+          ISSUES: ${{ steps.closed.outputs.issues }}
+        run: |
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "CAKE_BACKLOG_PAT is not available for this event (fork PR?); skipping."
+            exit 0
+          fi
+          if [ -z "${ISSUES}" ]; then
+            echo "No issues referenced in the PR body; nothing to move."
+            exit 0
+          fi
+          for n in ${ISSUES}; do
+            if out="$(gh project item-edit "${PROJECT_NUMBER}" --owner "${PROJECT_OWNER}" \
+                --url "https://github.com/${GH_REPO}/issues/${n}" \
+                --field Status --value Done 2>&1)"; then
+              echo "moved #${n} to Done"
+            else
+              echo "warning: #${n} not moved: ${out}"
+            fi
+          done
