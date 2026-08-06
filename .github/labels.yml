@@ -19,6 +19,8 @@
 #   Dependabot and must not be removed.
 # - `bug` and `enhancement` (GitHub defaults) and the repo's `documentation`
 #   label were retired in favor of `type:bug`, `type:docs`, and `type:feature`.
+# - `needs-review` is a pull-request trigger, applied by hand and consumed by an
+#   external reviewer that polls for it. No workflow in this repo reads it.
 
 labels:
   - name: area:agent
@@ -114,6 +116,9 @@ labels:
   - name: invalid
     color: "e4e669"
     description: This doesn't seem right
+  - name: needs-review
+    color: "0e8a16"
+    description: Requests an automated code review of this pull request
   - name: question
     color: "d876e3"
     description: Further information is requested
