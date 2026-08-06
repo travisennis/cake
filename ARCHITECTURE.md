@@ -71,3 +71,11 @@ Persisted sessions are append-only, versioned JSONL logs. Stream-json is a curre
 ## Authorities
 
 Use `src/main.rs` and `cake --help` for CLI shape, `src/config/` for configuration and sessions, `src/types/` for internal and serialized records, `src/clients/` for providers and the agent loop, `src/clients/tools/` for tool and sandbox behavior, snapshots for wire examples, and `justfile` for repository commands. Architecture changes only when the boundaries or invariants above change.
+
+## Related decisions
+
+- [ADR 001](docs/adr/001-agent-loop-architecture.md), the agent loop.
+- [ADR 008](docs/adr/008-structured-provider-headers.md), structured provider headers.
+- [ADR 011](docs/adr/011-interrupt-handling.md), interrupt handling and graceful shutdown.
+- [ADR 012](docs/adr/012-schema-constrained-final-output.md), schema-constrained final output.
+- [ADR 013](docs/adr/013-per-path-serialization-of-mutating-tool-calls.md), serialization of mutating tool calls.

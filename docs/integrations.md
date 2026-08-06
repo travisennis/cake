@@ -134,3 +134,10 @@ Toolbox executables are trusted and run outside the Bash sandbox. Their calls ma
 ## Compatibility changes
 
 Changes to session versioning, record names or required fields, stream ordering, exit-code meaning, hook decisions, toolbox framing, or machine-readable stdout are compatibility changes. They require focused serialization or integration tests, migration analysis where applicable, and an update to this document's semantics.
+
+## Related decisions
+
+- [ADR 004](adr/004-append-only-session-task-events.md), append-only task events.
+- [ADR 005](adr/005-command-hooks.md), command hooks.
+- [ADR 007](adr/007-per-session-telemetry-sidecar.md), the telemetry sidecar.
+- [ADR 017](adr/017-trusted-executable-toolbox-tools.md), trusted toolbox executables.

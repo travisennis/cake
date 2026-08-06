@@ -70,3 +70,10 @@ Before editing a security boundary, enumerate the bypass classes the change must
 A review-reported bypass class that was not enumerated is a signal that the design is wrong, not that another check is missing. Patching each reported bypass in turn converges slowly or not at all: a boundary that can only be held by enumerating evasions is not a boundary. Stop and revisit the approach instead.
 
 Validating an untrusted command string by parsing it is the recurring instance of this. Shell quoting, expansion, chaining, symlinked targets, and a child process's own configuration flags each reopen the boundary independently, so a parser that rejects today's evasions does not constrain tomorrow's.
+
+## Related decisions
+
+- [ADR 014](adr/014-sandbox-policy-cli-flag.md), the sandbox policy flag.
+- [ADR 015](adr/015-declarative-command-policy.md), declarative command policy.
+- [ADR 016](adr/016-nested-seatbelt-sandbox-fallback.md), the recognized nested-Seatbelt fallback.
+- [ADR 017](adr/017-trusted-executable-toolbox-tools.md), trusted toolbox executables.
