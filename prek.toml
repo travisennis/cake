@@ -53,7 +53,7 @@ repo = "local"
 hooks = [
   {
     id = "pre-push-ci",
-    name = "just pre-push",
+    name = "just pre-push (path-routed)",
     language = "system",
     entry = "just pre-push",
     stages = ["pre-push"],

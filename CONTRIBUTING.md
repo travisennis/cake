@@ -61,6 +61,16 @@ Additional checks:
 - Full release-oriented validation: `just check-full`.
 - Documentation-only changes: targeted `panache format --check` and `panache lint` for changed living documents, link validation, and `git diff --check`. Use `just docs-check` when intentionally validating the complete Markdown corpus.
 
+### Pre-push routing
+
+The pre-push hook routes by changed path class instead of running the full gate unconditionally. The classifier is `scripts/classify-changes.sh`, shared with the `changes` job in `.github/workflows/ci.yml`, and it measures the changed set against the upstream branch when one is set, otherwise against `origin/master` (branches from `just branch` and `just worktree` have no upstream):
+
+- Markdown-only pushes run `just pre-push-docs`: targeted `panache format --check` and `panache lint` on the changed living documents plus `git diff --check`.
+- Pushes touching `src/`, `tests/`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `.cargo/`, `.github/workflows/`, `justfile`, or `ci/` run the full `just ci` gate.
+- Mixed pushes run both.
+- A changed file in no class (for example `prek.toml` or `.mise.toml`) fails closed to the full gate, as does an unresolvable base.
+- `just pre-push-force` always runs the full gate; `just pre-push-classify` prints the classification for the current branch.
+
 If an applicable check cannot run, report the exact reason and the narrower checks that did run. Do not describe a failing primary branch as unrelated without investigating it.
 
 ## Code conventions

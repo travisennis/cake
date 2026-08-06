@@ -143,8 +143,43 @@ lint-deps:
 ci: rust-version-check check-linux fmt-check clippy-strict clippy-no-default-features test-all-features check-coverage lint-imports lint-deps lint-module-size
     echo "All checks passed!"
 
-# Run the required pre-push gate for code, config, CI, fixture, and dependency changes
-pre-push: ci
+# Print the changed-path classification the pre-push gate routes on: docs | code | mixed | unknown | none
+pre-push-classify:
+    @scripts/classify-changes.sh
+
+# Run the pre-push gate, routed by changed path class (see CONTRIBUTING.md).
+# Documentation-only changes run the targeted docs checks; code-class changes run the full Rust
+# gate; mixed changes run both. Fail closed: an unclassifiable changed file (or an unresolvable
+# base) runs the full gate. Use `just pre-push-force` to always run the full gate.
+pre-push:
+    @set -e; class=$(scripts/classify-changes.sh); \
+    if [ "$class" = "docs" ] || [ "$class" = "none" ]; then \
+        echo "pre-push: $class change — running documentation checks"; \
+        just pre-push-docs; \
+    else \
+        echo "pre-push: $class change — running full gate"; \
+        just ci; \
+        if [ "$class" = "mixed" ]; then \
+            echo "pre-push: mixed change — also running documentation checks"; \
+            just pre-push-docs; \
+        fi; \
+    fi
+
+# Escape hatch: always run the full pre-push gate, whatever the changed path class
+pre-push-force: ci
+
+# Run the documentation-only pre-push checks on changed living documents
+pre-push-docs:
+    @set -e; files=$(scripts/classify-changes.sh --files); \
+    if [ -n "$files" ]; then \
+        echo "pre-push-docs: checking changed Markdown files"; \
+        printf '%s\n' "$files"; \
+        panache format --check --force-exclude $files --quiet; \
+        panache lint --force-exclude $files --quiet; \
+    else \
+        echo "pre-push-docs: no changed Markdown files"; \
+    fi; \
+    git diff --check
 
 # Run the macOS correctness path used by GitHub Actions
 ci-macos: rust-version-check fmt-check clippy-strict clippy-no-default-features test-all-features

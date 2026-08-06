@@ -28,7 +28,7 @@ Managed work starts here too: set the GitHub issue's Status to In Progress on th
 
 ### 2. Work and verify
 
-Follow the development loop in [CONTRIBUTING.md](../../CONTRIBUTING.md). The pre-push hook runs `just pre-push`, which is the full `just ci` gate.
+Follow the development loop in [CONTRIBUTING.md](../../CONTRIBUTING.md). The pre-push hook runs `just pre-push`, which routes by changed path class: documentation-only pushes run the targeted docs checks, everything else runs the full `just ci` gate (see [Pre-push routing](../../CONTRIBUTING.md#pre-push-routing)).
 
 ### 3. Open the pull request
 

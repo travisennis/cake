@@ -1,0 +1,129 @@
+#!/usr/bin/env sh
+# classify-changes.sh — classify the changed file set of the current branch.
+#
+# The pre-push gate routes by changed path class so a documentation-only push
+# pays for targeted documentation checks instead of the full Rust gate. The
+# GitHub Actions `changes` job in .github/workflows/ci.yml shares this
+# classifier so the hook and CI cannot drift apart.
+#
+# Usage:
+#   scripts/classify-changes.sh [--base <ref>] [--head <ref>] [--files]
+#
+# With --base/--head (CI passes these), the changed set is
+# `git diff --name-only <base>...<head>`. Without them, the base is the
+# upstream branch when one is set, otherwise origin/master. `just branch` and
+# `just worktree` create branches with --no-track, so the origin/master
+# fallback is the common local case.
+#
+# Output, one word on stdout:
+#   docs    — every changed file is Markdown
+#   code    — every changed file is a code, manifest, toolchain, or CI path
+#   mixed   — both Markdown and code paths changed
+#   unknown — at least one changed file matches neither class (fail closed:
+#             the caller runs the full gate)
+#   none    — no changed files between base and head
+#
+# --files prints the changed Markdown files that still exist (deletions are
+# skipped), one per line, for targeted panache checks. Code-class files are
+# excluded even when they carry a .md extension (for example src/prompts/).
+set -eu
+
+base=""
+head="HEAD"
+mode="class"
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --base)
+            base="${2:-}"
+            if [ "$#" -ge 2 ]; then shift 2; else shift 1; fi
+            ;;
+        --head)
+            head="${2:-}"
+            if [ "$#" -ge 2 ]; then shift 2; else shift 1; fi
+            ;;
+        --files) mode="files"; shift ;;
+        *)
+            echo "ERROR: unknown argument '$1'" >&2
+            echo "usage: scripts/classify-changes.sh [--base <ref>] [--head <ref>] [--files]" >&2
+            exit 2
+            ;;
+    esac
+done
+
+# Code class: any path that can break or exercise the Rust gate. Mirrors the
+# path filter the `changes` job in .github/workflows/ci.yml used before this
+# script existed, with `.github/workflows/` widened from ci.yml to every
+# workflow. Everything else that is not Markdown is "unknown" and fails closed.
+# The alternation must stay literal in each case statement: a pattern read from
+# a variable is one literal glob on some POSIX shells.
+
+if [ -z "$base" ]; then
+    if base="$(git rev-parse --abbrev-ref --symbolic-full-name @{upstream} 2>/dev/null)"; then
+        :
+    elif git rev-parse --verify --quiet origin/master >/dev/null 2>&1; then
+        base="origin/master"
+    else
+        # No base to diff against (for example a fresh clone with no origin);
+        # fail closed so the caller runs the full gate.
+        echo "unknown"
+        exit 0
+    fi
+fi
+
+if ! changed="$(git diff --name-only "$base...$head" 2>/dev/null)"; then
+    # Unresolvable base (for example a first push where the CI base sha is the
+    # all-zeros sha); fail closed so the caller runs the full gate.
+    echo "unknown"
+    exit 0
+fi
+
+if [ "$mode" = "files" ]; then
+    if [ -n "$changed" ]; then
+        IFS='
+'
+        for file in $changed; do
+            case "$file" in
+                src/*|tests/*|Cargo.toml|Cargo.lock|rust-toolchain.toml|.cargo/*|.github/workflows/*|justfile|ci/*) ;;
+                *.md|*.markdown)
+                    [ -f "$file" ] && printf '%s\n' "$file"
+                    ;;
+            esac
+        done
+    fi
+    exit 0
+fi
+
+code=0
+docs=0
+unknown=0
+
+if [ -n "$changed" ]; then
+    IFS='
+'
+    for file in $changed; do
+        case "$file" in
+            src/*|tests/*|Cargo.toml|Cargo.lock|rust-toolchain.toml|.cargo/*|.github/workflows/*|justfile|ci/*)
+                code=1
+                ;;
+            *.md|*.markdown)
+                docs=1
+                ;;
+            *)
+                unknown=1
+                ;;
+        esac
+    done
+fi
+
+if [ "$unknown" -eq 1 ]; then
+    echo "unknown"
+elif [ "$code" -eq 1 ] && [ "$docs" -eq 1 ]; then
+    echo "mixed"
+elif [ "$code" -eq 1 ]; then
+    echo "code"
+elif [ "$docs" -eq 1 ]; then
+    echo "docs"
+else
+    echo "none"
+fi
