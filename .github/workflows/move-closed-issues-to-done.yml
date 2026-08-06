@@ -6,10 +6,10 @@ name: move-closed-issues-to-done
 # GitHub closes the linked issue automatically on merge; this workflow keeps the
 # board's Status field in sync, which nothing else updates.
 #
-# Requires a PAT with `repo` + `project` scopes (or a fine-grained PAT scoped to
-# this repository with Issues and Projects read/write) stored as the
+# Requires a classic PAT with `repo` + `project` scopes stored as the
 # CAKE_BACKLOG_PAT repository secret. GITHUB_TOKEN is scoped to the repository
-# and cannot access Projects v2.
+# and cannot access Projects v2, and a fine-grained PAT cannot reach a
+# user-owned project board.
 
 on:
   pull_request:
@@ -24,13 +24,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.CAKE_BACKLOG_PAT }}
-      GH_REPO: ${{ github.repository }}
-      # @me resolves the project as the token's own viewer identity. A fixed
-      # login makes gh resolve the owner via a user/organization query that
-      # fails under some PAT types ("unknown owner type"). The PAT must belong
-      # to the account that owns project 1.
-      PROJECT_OWNER: "@me"
-      PROJECT_NUMBER: "1"
     steps:
       - name: Collect issues closed by this PR
         id: closed
@@ -63,10 +56,33 @@ jobs:
             echo "No issues referenced in the PR body; nothing to move."
             exit 0
           fi
+          # Cake Backlog board (project 1) node IDs, resolved via
+          # `gh project field-list 1 --owner @me`. The moves go through
+          # `gh api graphql` rather than `gh project item-edit` because the
+          # runner's gh (2.96) predates the by-name --owner/--url form; gh api
+          # is version-stable.
+          PROJECT_ID="PVT_kwHNFebOAX0lXg"
+          STATUS_FIELD_ID="PVTSSF_lAHNFebOAX0lXs4WZke6"
+          DONE_OPTION_ID="245762e9"
+
+          # Fail loudly if the board id is stale or the PAT cannot see it
+          # (a fine-grained PAT cannot reach a user-owned board).
+          if ! gh api graphql -f query='query($pid: ID!) { node(id: $pid) { ... on ProjectV2 { id } } }' -f pid="${PROJECT_ID}" --jq '.data.node.id' >/dev/null 2>&1; then
+            echo "error: board ${PROJECT_ID} not found or not visible to CAKE_BACKLOG_PAT; re-resolve the node IDs with \`gh project field-list 1 --owner @me\`" >&2
+            exit 1
+          fi
+
+          # One call; gh paginates internally up to --limit (Projects v2 caps
+          # each page at 100 items).
+          board="$(gh project item-list 1 --owner @me --format json --limit 1000)"
+
           for n in ${ISSUES}; do
-            if out="$(gh project item-edit "${PROJECT_NUMBER}" --owner "${PROJECT_OWNER}" \
-                --url "https://github.com/${GH_REPO}/issues/${n}" \
-                --field Status --value Done 2>&1)"; then
+            item_id="$(printf '%s' "${board}" | jq -r --argjson num "${n}" '.items[] | select(.content.number == $num) | .id' | head -1)"
+            if [ -z "${item_id}" ]; then
+              echo "warning: #${n} is not on the Cake Backlog board (see #115)"
+              continue
+            fi
+            if out="$(gh api graphql -f query='mutation($pid: ID!, $iid: ID!, $fid: ID!, $oid: String!) { updateProjectV2ItemFieldValue(input: {projectId: $pid, itemId: $iid, fieldId: $fid, value: {singleSelectOptionId: $oid}}) { projectV2Item { id } } }' -f pid="${PROJECT_ID}" -f iid="${item_id}" -f fid="${STATUS_FIELD_ID}" -f oid="${DONE_OPTION_ID}" --jq '.data.updateProjectV2ItemFieldValue.projectV2Item.id' 2>&1 >/dev/null)"; then
               echo "moved #${n} to Done"
             else
               echo "warning: #${n} not moved: ${out}"
