@@ -77,6 +77,30 @@ fn truncate_output_passes_through_small_output() {
 }
 
 #[test]
+fn bash_timeout_argument_is_clamped() {
+    let policy = crate::clients::tools::sandbox::SandboxPolicy::DangerFullAccess;
+
+    // Below the floor: a `0` timeout would fail instantly.
+    let args =
+        BashExecutionArgs::from_json(r#"{"command": "true", "timeout": 0}"#, policy).unwrap();
+    assert_eq!(args.timeout, BASH_TIMEOUT_MIN_SECS);
+
+    // Above the ceiling: cap huge values.
+    let args =
+        BashExecutionArgs::from_json(r#"{"command": "true", "timeout": 999999}"#, policy).unwrap();
+    assert_eq!(args.timeout, BASH_TIMEOUT_MAX_SECS);
+
+    // Missing timeout keeps the documented default of 60 seconds.
+    let args = BashExecutionArgs::from_json(r#"{"command": "true"}"#, policy).unwrap();
+    assert_eq!(args.timeout, 60);
+
+    // In-range values pass through untouched.
+    let args =
+        BashExecutionArgs::from_json(r#"{"command": "true", "timeout": 42}"#, policy).unwrap();
+    assert_eq!(args.timeout, 42);
+}
+
+#[test]
 fn truncate_output_passes_through_at_limit() {
     let exact = "a".repeat(BASH_OUTPUT_MAX_BYTES);
     let result = truncate_output(&exact, 0, 50, false);
