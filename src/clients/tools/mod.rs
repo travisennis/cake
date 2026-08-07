@@ -905,7 +905,10 @@ pub(super) fn resolve_path_for_write_scheduling(
     // correctly (<cwd>/missing/../target → <cwd>/target).
     let (resolved_base, pending) = resolve_write_path(path);
 
-    // Validate the resolved base is within allowed directories
+    // Validate the resolved base is within allowed directories. Compare via
+    // `path_starts_with` (which canonicalizes each dir) so a symlinked cwd,
+    // temp, or settings dir is accepted for new files exactly as the
+    // existing-file path accepts it in `validate_path_with_dirs`.
     let canonical_base = resolved_base.canonicalize().map_err(|e| {
         format!(
             "Parent directory not found '{}': {e}",
@@ -913,16 +916,10 @@ pub(super) fn resolve_path_for_write_scheduling(
         )
     })?;
 
-    let is_in_cwd = canonical_base.starts_with(&context.cwd);
-    let is_in_temp = get_temp_directories(context)
-        .iter()
-        .any(|temp_dir| canonical_base.starts_with(temp_dir));
-    let is_in_settings = get_settings_dirs(context)
-        .iter()
-        .any(|settings_dir| canonical_base.starts_with(settings_dir));
-    let is_in_read_only = get_additional_dirs(context)
-        .iter()
-        .any(|add_dir| canonical_base.starts_with(add_dir));
+    let is_in_cwd = path_starts_with(&canonical_base, std::slice::from_ref(&context.cwd));
+    let is_in_temp = path_starts_with(&canonical_base, get_temp_directories(context));
+    let is_in_settings = path_starts_with(&canonical_base, get_settings_dirs(context));
+    let is_in_read_only = path_starts_with(&canonical_base, get_additional_dirs(context));
 
     if is_in_read_only {
         return Err(format!(
@@ -1306,6 +1303,103 @@ mod tests {
             assert_eq!(handle_a.join().unwrap(), (PathAccess::ReadOnly, true));
             assert_eq!(handle_b.join().unwrap(), (PathAccess::ReadOnly, true));
         });
+    }
+
+    /// A new file under a symlinked settings directory must be accepted for
+    /// writes, matching the existing-file path (`validate_path_with_dirs`
+    /// canonicalizes each directory before comparing).
+    #[cfg(unix)]
+    #[test]
+    fn write_scheduling_accepts_new_file_under_symlinked_settings_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real_dir = tmp.path().join("real-settings");
+        let link_dir = tmp.path().join("link-settings");
+        fs::create_dir_all(&real_dir).unwrap();
+        std::os::unix::fs::symlink(&real_dir, &link_dir).unwrap();
+
+        let cwd = tmp.path().join("project");
+        fs::create_dir_all(&cwd).unwrap();
+
+        let context = ToolContext::with_temp_dirs(
+            cwd,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![link_dir.clone()],
+        );
+
+        let target = link_dir.join("new-file.txt");
+        let resolved =
+            resolve_path_for_write_scheduling(&context, target.to_str().unwrap()).unwrap();
+        // The deepest existing ancestor is canonicalized (the symlink is
+        // followed), so the resolved target points into the real directory.
+        let expected = fs::canonicalize(&real_dir).unwrap().join("new-file.txt");
+        assert_eq!(resolved, expected);
+    }
+
+    /// A new file under a read-only additional directory must be rejected,
+    /// matching the existing-file path.
+    #[test]
+    fn write_scheduling_rejects_new_file_in_read_only_additional_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path().join("project");
+        let additional = tmp.path().join("reference");
+        fs::create_dir_all(&cwd).unwrap();
+        fs::create_dir_all(&additional).unwrap();
+
+        let context = ToolContext::with_temp_dirs(
+            cwd,
+            Vec::new(),
+            vec![additional.clone()],
+            Vec::new(),
+            Vec::new(),
+        );
+
+        let target = additional.join("new-file.txt");
+        let err =
+            resolve_path_for_write_scheduling(&context, target.to_str().unwrap()).unwrap_err();
+        assert!(
+            err.contains("read-only"),
+            "expected a read-only rejection, got: {err}"
+        );
+    }
+
+    /// A new file outside the cwd, temp, settings, and additional directories
+    /// must be rejected.
+    #[test]
+    fn write_scheduling_rejects_new_file_outside_allowed_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path().join("project");
+        let outside = tmp.path().join("elsewhere");
+        fs::create_dir_all(&cwd).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+
+        let context =
+            ToolContext::with_temp_dirs(cwd, Vec::new(), Vec::new(), Vec::new(), Vec::new());
+
+        let target = outside.join("new-file.txt");
+        let err =
+            resolve_path_for_write_scheduling(&context, target.to_str().unwrap()).unwrap_err();
+        assert!(
+            err.contains("outside the working directory"),
+            "expected an outside-working-directory rejection, got: {err}"
+        );
+    }
+
+    /// An empty path has no resolvable base and must be rejected.
+    #[test]
+    fn write_scheduling_rejects_empty_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path().join("project");
+        fs::create_dir_all(&cwd).unwrap();
+
+        let context =
+            ToolContext::with_temp_dirs(cwd, Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let err = resolve_path_for_write_scheduling(&context, "").unwrap_err();
+        assert!(
+            err.contains("Parent directory not found"),
+            "expected a parent-directory error, got: {err}"
+        );
     }
 
     fn fixture_toolbox_tool() -> crate::config::toolbox::ToolboxTool {
