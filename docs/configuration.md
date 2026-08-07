@@ -148,3 +148,8 @@ Toolbox executables are trusted and unsandboxed. Under `read-only`, Cake skips t
 `CAKE_DATA_DIR` overrides Cake's cache and session data roots. Otherwise logs and telemetry use `~/.cache/cake/`, while resumable sessions use `~/.local/share/cake/sessions/`.
 
 Set `RUST_LOG=cake=debug` or `RUST_LOG=cake=trace` for verbose file logging. Normal command output is unchanged.
+
+## Related decisions
+
+- [ADR 002](adr/002-agent-skills.md), the skills system.
+- [ADR 003](adr/003-settings-profiles.md), settings profiles.

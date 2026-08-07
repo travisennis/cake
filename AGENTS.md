@@ -2,204 +2,120 @@
 
 ## Project
 
-Cake is a Rust 2024 binary-only AI coding assistant CLI with sandboxed tool execution, persisted sessions, and OpenAI-compatible Chat Completions and Responses API backends.
+Cake is a Rust 2024 binary-only AI coding assistant CLI with sandboxed tool execution, persisted sessions, and OpenAI-compatible Chat Completions and Responses backends.
 
-Users depend on CLI shape and exit behavior, machine-readable output formats, tool execution and sandbox semantics, persisted session records, hook and toolbox protocols, settings precedence, and prompt construction. Treat those as compatibility surfaces and preserve them unless the task explicitly changes them.
+Users depend on CLI shape and exit behavior, machine-readable output, tool and sandbox semantics, session records, hook and toolbox protocols, settings precedence, and prompt construction. Treat those as compatibility surfaces; preserve them unless the task explicitly changes them.
 
 ## Operating loop
 
-1. List open issues with `gh issue list --state open` before any work.
-2. If the request names an issue, ExecPlan, ADR, or research record, inspect it (`gh issue view <number>` or the file itself) before choosing implementation work.
-3. Create the branch before the first edit: `just branch <type>/<slug>`, or `just worktree <type>/<slug>` when another agent is working in parallel. `master` is protected and rejects commits and pushes.
-4. Classify the change, select the route below, and load only that route's documents.
-5. Read the smallest relevant code and tests. [ARCHITECTURE.md](ARCHITECTURE.md) names the code authority for each surface.
-6. Preserve compatibility unless the task explicitly changes it.
-7. If work is managed, track it in a GitHub issue: set Status to In Progress when you start. Before opening a pull request, complete the acceptance notes, routed verification, documentation assessment, and any ExecPlan archival; include `Closes #<number>` in the pull request body and follow the issue lifecycle in [docs/workflow/tasks.md](docs/workflow/tasks.md).
-8. Make surgical edits and run risk-proportionate checks. Keep the diff narrow: do not mix behavior changes, dependency updates, formatting passes, snapshot regeneration, change-risk baseline updates, and unrelated cleanup unless the task requires it. Mechanical churn hides the change a reviewer needs to see.
-9. After implementation edits, run reviews in a subagent and address findings until the reviewer gives an all clear. If a third round reports findings of the same class, stop patching: report the finding class and the suspected design flaw, and escalate to a design decision.
-10. Run `just cc-check` to confirm no new or modified function exceeds the cyclomatic-complexity targets (see [Code complexity targets](docs/guardrails/complexity-targets.md)), then perform preflight.
-11. Hand off the branch and its pull request, exact checks, skipped checks, and remaining risk.
+1. Classify the change, pick the route below, and load only that route's documents.
+2. Create the branch before the first edit: `just branch <type>/<slug>`, or `just worktree <type>/<slug>` beside another agent.
+3. Read the smallest relevant code and tests. [ARCHITECTURE.md](ARCHITECTURE.md) names the code authority for each surface.
+4. Keep the diff narrow: no mixing behavior changes, dependency updates, formatting, snapshot regeneration, or unrelated cleanup. Churn hides the change a reviewer needs to see.
+5. Run checks proportionate to the risk, per [CONTRIBUTING.md](CONTRIBUTING.md), and preflight before handoff.
+6. Track managed work in a GitHub issue and follow the lifecycle in [docs/workflow/tasks.md](docs/workflow/tasks.md).
+7. Hand off the branch and pull request with the checks run, the checks skipped, and remaining risk.
 
 Large or cross-cutting work requires an ExecPlan per [docs/workflow/exec-plans.md](docs/workflow/exec-plans.md).
 
 ## Workflow routing
 
-### Managed Work: Issues, ExecPlans, ADRs, And Research
+Load the matching route. Each document named is its surface's authority and links the decisions behind it.
 
-Use for choosing, preparing, and closing work; authoring execution plans; recording research evidence; and writing architecture decision records.
+### Managed work: issues, ExecPlans, ADRs, research
 
-Consult:
+Choosing, preparing, and closing work; execution plans; research evidence; architecture decisions.
 
-- [Task workflow](docs/workflow/tasks.md), for the GitHub Issues lifecycle: queue selection, triage, the work procedure, and closing.
-- [ExecPlan workflow](docs/workflow/exec-plans.md), for authoring execution plans.
-- [ADR README](docs/adr/README.md), for when and how to write architecture decision records.
-- [Research workflow](docs/workflow/research.md), for research note conventions.
-- `docs/exec-plans/`, `docs/research/`, and `docs/adr/`, which are the authority for records.
+- [Task workflow](docs/workflow/tasks.md), for the issue lifecycle.
+- [ExecPlan workflow](docs/workflow/exec-plans.md), [ADR README](docs/adr/README.md), and [Research workflow](docs/workflow/research.md), for authoring each record.
 
-### CLI, Output Formats, And Exit Behavior
+### CLI, output formats, and exit behavior
 
-Use for CLI flags, defaults, `--help`, exit codes, stdout and stderr, completion JSON, and stream JSON.
+Flags, defaults, `--help`, exit codes, stdout and stderr, completion JSON, stream JSON.
 
-Consult:
-
-- [Integration contracts](docs/integrations.md), for exit codes, completion JSON, and stream-json shape.
-- [ARCHITECTURE.md](ARCHITECTURE.md), for the CLI and agent boundary.
+- [Integration contracts](docs/integrations.md), for exit codes and JSON shapes.
 - `src/main.rs`, `src/cli/`, and `cake --help`, which are the authority for CLI shape.
 
-Machine-readable stdout carries only its declared JSON format.
+### Tools, scheduling, and model-visible errors
 
-### Tools, Scheduling, And Model-Visible Errors
+Tool schemas, execution semantics, per-path scheduling, and the errors a model sees.
 
-Use for tool schemas, tool execution semantics, per-path scheduling, and the errors a model sees.
-
-Consult:
-
-- [ARCHITECTURE.md](ARCHITECTURE.md), for the agent and tool boundary and the tool invariants.
-- [ADR 013](docs/adr/013-per-path-serialization-of-mutating-tool-calls.md), for serialization of mutating tool calls.
-- [ADR 012](docs/adr/012-schema-constrained-final-output.md), for schema-constrained final output.
+- [ARCHITECTURE.md](ARCHITECTURE.md), for the agent and tool boundary.
 - `src/clients/tools/`, its `*-description.txt` files, and its snapshots, which are the authority for schemas and model-visible text.
 
-No prose document owns tool schemas end to end. Treat the code, descriptions, and snapshots as the contract, and add focused tests for changes.
+No prose document owns tool schemas. The code, descriptions, and snapshots are the contract; add focused tests.
 
-### Sandbox, Filesystem Access, And Trusted Extensions
+### Sandbox, filesystem access, and trusted extensions
 
-Use for sandbox policies, allowed paths, command policy, and trusted hook or toolbox executables.
+Sandbox policies, allowed paths, command policy, trusted hook and toolbox executables, and the hook and toolbox wire protocols.
 
-Consult:
+- [Security and trust boundaries](docs/security.md), the authority for the trust boundary.
+- [Integration contracts](docs/integrations.md), for the hook and toolbox wire protocols.
+- [Debugging sandbox denials](docs/runbooks/debugging-sandbox.md), for denials in practice.
 
-- [Security and trust boundaries](docs/security.md), for the threat model, policies, enforcement layers, and what the sandbox does not restrict.
-- [Debugging Sandbox Denials runbook](docs/runbooks/debugging-sandbox.md), for platform-specific operational diagnosis and recovery.
-- [ADR 014](docs/adr/014-sandbox-policy-cli-flag.md), for the sandbox policy flag.
-- [ADR 016](docs/adr/016-nested-seatbelt-sandbox-fallback.md), for the recognized nested-Seatbelt fallback.
-- [ADR 015](docs/adr/015-declarative-command-policy.md), for declarative command policy.
-- [ADR 017](docs/adr/017-trusted-executable-toolbox-tools.md), for trusted toolbox executables.
+Sandboxing is default-on and fails closed. Security-boundary work requires that document's impact analysis and platform verification.
 
-Sandboxing is default-on and availability failures fail closed. Security-boundary changes require explicit impact analysis and platform-specific verification.
+### Providers, agent loop, and request shaping
 
-Before editing a security boundary, enumerate the bypass classes you intend to defend against. A review-reported bypass class you did not enumerate is a signal to revisit the design, not to add another check.
-
-### Providers, Agent Loop, And Request Shaping
-
-Use for backends, wire formats, retries, headers, interrupts, and agent-loop control flow.
-
-Consult:
+Backends, wire formats, retries, headers, interrupts, and agent-loop control flow.
 
 - [ARCHITECTURE.md](ARCHITECTURE.md), for the conversation and backend boundary.
-- [Integration contracts](docs/integrations.md), for provider retry behavior.
-- [Debugging Failed Cake Runs runbook](docs/runbooks/debugging-cake.md), for reactive agent-loop failure triage.
-- [ADR 001](docs/adr/001-agent-loop-architecture.md), for the agent loop.
-- [ADR 008](docs/adr/008-structured-provider-headers.md), for structured provider headers.
-- [ADR 011](docs/adr/011-interrupt-handling.md), for interrupt handling and graceful shutdown.
+- [Debugging failed runs](docs/runbooks/debugging-cake.md), for agent-loop failure triage.
 - `src/clients/` and its snapshots, which are the authority for wire examples.
 
-Provider-specific behavior stays at provider and backend boundaries.
+### Settings, profiles, skills, and prompt construction
 
-### Settings, Profiles, Skills, And Prompt Construction
+Settings keys and precedence, profiles, model selection, skills, AGENTS.md discovery, system prompts.
 
-Use for settings keys and precedence, profiles, model selection, skills, AGENTS.md discovery, and system prompts.
-
-Consult:
-
-- [Configuration](docs/configuration.md), for locations and precedence, models, filesystem access, skills, instructions, and hooks.
-- [ADR 003](docs/adr/003-settings-profiles.md), for settings profiles.
-- [ADR 002](docs/adr/002-agent-skills.md), for the skills system.
+- [Configuration](docs/configuration.md).
 - `src/config/` and `src/prompts/`, which are the authority for resolution order and prompt assembly.
 
-### Sessions, Persistence, And Telemetry
+### Sessions, persistence, and telemetry
 
-Use for session JSONL, record semantics, resume, and telemetry sidecars.
+Session JSONL, record semantics, resume, and telemetry sidecars.
 
-Consult:
-
-- [Integration contracts](docs/integrations.md), for persisted-session layout and record semantics.
-- [Analyzing Cake Sessions runbook](docs/runbooks/analyzing-cake-sessions/index.md), for evidence-backed review of a persisted session.
-- [Debugging Failed Cake Runs runbook](docs/runbooks/debugging-cake.md), for reactive triage before deeper session analysis.
-- [ADR 004](docs/adr/004-append-only-session-task-events.md), for append-only task events.
-- [ADR 007](docs/adr/007-per-session-telemetry-sidecar.md), for the telemetry sidecar.
+- [Integration contracts](docs/integrations.md), for layout and record semantics.
+- [Analyzing sessions](docs/runbooks/analyzing-cake-sessions/index.md), for reviewing a session.
 - `src/types/session.rs` and its snapshots, which are the authority for serialized records.
 
-Session files are append-only and versioned. Serialized-format changes require compatibility analysis.
+### Documentation and agent instructions
 
-### Hook And Toolbox Protocols
+Prose changes, whether they document a surface or change how an agent behaves.
 
-Use for the hook protocol, hook effects, and the toolbox describe and execute contracts.
+- [Agent-facing instructions](docs/guardrails/agent-instructions.md), when the prose exists to change how an agent behaves.
+- [CONTRIBUTING.md](CONTRIBUTING.md), for the documentation checks.
+- The route for the surface, when the document states a contract or invariant.
 
-Consult:
+Documentation-only changes may skip the Rust gate and must say so in the pull request. A change touching any code, configuration, fixture, or snapshot is not documentation-only, whatever its prose ratio.
 
-- [Integration contracts](docs/integrations.md), for the hook and toolbox wire protocols.
-- [Security and trust boundaries](docs/security.md), for the trusted-extension boundary.
-- [ADR 005](docs/adr/005-command-hooks.md), for command hooks.
-- [ADR 017](docs/adr/017-trusted-executable-toolbox-tools.md), for trusted toolbox executables.
+### Dependencies, build, verification, and release
 
-Untrusted model actions never implicitly acquire the authority of trusted hooks or toolbox executables.
+`Cargo.toml`, `Cargo.lock`, the `justfile`, CI, toolchain, and release work.
 
-### Agent Instructions And Skills
+- [CONTRIBUTING.md](CONTRIBUTING.md), the command catalog and verification policy.
+- [Dependency posture](docs/dependencies.md), [Automation conventions](docs/automations/README.md), [Branches and worktrees](docs/runbooks/parallel-worktrees.md), and [CI runner images](docs/runbooks/ci-runner-images-and-required-checks.md).
 
-Use for changes to this file, `.agents/skills/`, or any other prose whose purpose is to change how an agent behaves.
+A workflow job name is a branch-protection identifier; renaming one without updating the ruleset blocks every pull request.
 
-Consult:
+### Code quality, complexity, and coverage
 
-- [Agent-facing instructions](docs/guardrails/agent-instructions.md), for the evidence an added instruction requires.
+Complexity targets, CRAP scores, coverage, and the coverage-first refactoring workflow. Relevant when writing or modifying functions.
 
-### Documentation-Only Changes
-
-Use for README, runbooks, ADRs, ExecPlans, research notes, and process documentation, when no code, configuration, or fixture changes with them.
-
-Consult:
-
-- [CONTRIBUTING.md](CONTRIBUTING.md), for the documentation check commands.
-- [Agent-facing instructions](docs/guardrails/agent-instructions.md), when the prose exists to change how an agent behaves rather than to document it.
-- The route above for the surface being documented, when the document states a contract, security boundary, or invariant.
-
-Documentation-only changes may skip the Rust gate. Run the targeted Panache format and lint checks for the changed documents, validate links, and run `git diff --check`. State in the pull request that the change is documentation-only. A change that touches any code, configuration, fixture, or snapshot is not documentation-only, whatever proportion of its diff is prose.
-
-### Dependencies, Build, Verification, And Release
-
-Use for `Cargo.toml`, `Cargo.lock`, the `justfile`, CI, toolchain, and release work.
-
-Consult:
-
-- [CONTRIBUTING.md](CONTRIBUTING.md), the canonical command catalog and verification policy.
-- [Dependency and supply chain posture](docs/dependencies.md), for pin ownership, tooling pins, and the review a dependency update requires.
-- [Automation conventions](docs/automations/README.md), for scheduled maintenance, its reporting rules, and which surfaces each automation owns.
-- [Working on branches and worktrees runbook](docs/runbooks/parallel-worktrees.md), for branch, worktree, and pull-request mechanics.
-- [CI Runner Images and Required Checks runbook](docs/runbooks/ci-runner-images-and-required-checks.md), for runner labels, workflow job names, and the branch-protection contexts they feed.
-- [Auditing Binary Size runbook](docs/runbooks/auditing-binary-size.md), for investigating release binary bloat.
-
-Dependency changes require explicit scope and `Cargo.toml`/`Cargo.lock` consistency. Classify a dependency update from its upstream diff, not from the repository-side diff or a green CI run. A workflow job name is a branch-protection identifier; renaming one without updating the ruleset blocks every pull request.
-
-### Code Quality, Complexity, And Coverage
-
-Use for cyclomatic complexity targets, CRAP scores, coverage requirements, and the coverage-first refactoring workflow. Relevant when writing or modifying functions, or when reviewing code quality.
-
-Consult:
-
-- [Code complexity targets](docs/guardrails/complexity-targets.md), for CC and CRAP targets, the grandfathered-function record, and the refactoring workflow.
-- `just cc-check`, for the per-function cyclomatic-complexity gate; `scripts/check-coverage.sh`, for the CI CRAP and CC gates.
-- Issue #103, for enforcement mechanisms.
+- [Code complexity targets](docs/guardrails/complexity-targets.md), the authority; `just cc-check` is the gate.
 
 ## Repository rules
 
 - Commit and push freely on a feature branch; commit often. Stage specific paths, never `git add -A`. Ask before force-pushing or opening a pull request.
-- Work on a branch cut from an up-to-date `master`, never on `master` itself. Integration happens through a pull request. [Working on branches and worktrees](docs/runbooks/parallel-worktrees.md) has the mechanics.
-- One branch holds one task. Do not carry unrelated work across on the same branch.
+- One branch holds one task, cut from an up-to-date `master`.
 - Preserve unrelated user changes; never clean or revert them.
-- Never resolve a merge conflict in `ci/cargo-crap-baseline.json` by hand or by three-way merge. Take `master`'s copy, then regenerate it with `just change-risk-baseline`.
-- The issue lifecycle is defined in [docs/workflow/tasks.md](docs/workflow/tasks.md); issue state, links, and sub-issues are the managed record.
-- Use Conventional Commits when writing commit messages; verified by the commit-msg hook.
-- Labels on GitHub issues and pull requests: use only the vocabulary in `.github/labels.yml`; never invent or rename labels. `just labels-check` verifies the repo matches it, and the label-governance workflow removes out-of-vocabulary labels from issues.
+- Never resolve a merge conflict in `ci/cargo-crap-baseline.json` by hand. Take `master`'s copy, then regenerate it with `just change-risk-baseline`.
+- Use Conventional Commits; verified by the commit-msg hook.
 - Future work and unresolved questions belong in GitHub issues, not durable docs.
-- Update architecture documentation only when a durable boundary or invariant changes, not when symbols or files move.
-- Before broad edits and before handoff, inspect `git status --short`.
 
 ## Pull requests
 
-State the change class and its compatibility impact. If the change touches a compatibility surface named under [Project](#project), say which one and what preserves it.
+State the change class and its compatibility impact. If it touches a compatibility surface named under [Project](#project), say which one and what preserves it.
 
-Label every pull request with exactly one `type:*` and at least one `area:*` from `.github/labels.yml`. Add a `risk:*` label when the change breaks a compatibility surface, depends on external service behavior, or touches a security boundary; those labels route review, so omitting one silently skips it. Dependabot applies `dependencies`, `github_actions`, and `rust` automatically; leave them in place.
+Label with exactly one `type:*` and at least one `area:*` from `.github/labels.yml`; never invent or rename labels. Add a `risk:*` label when the change breaks a compatibility surface, depends on external service behavior, or touches a security boundary; those labels route review, so omitting one silently skips it.
 
-Record which checks ran and which did not. A skipped check belongs in the pull request with the reason, not only in the handoff message, because the pull request is what survives the session.
-
-## Verification
-
-Use focused checks first. `just ci` is the normal code-change gate; documentation-only work uses targeted Panache format/lint checks for changed living documents and link validation. Follow [CONTRIBUTING.md](CONTRIBUTING.md) for exceptions and specialized checks.
+Record which checks ran and which did not; a skipped check belongs in the pull request with its reason.
