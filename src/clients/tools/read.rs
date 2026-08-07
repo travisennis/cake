@@ -121,7 +121,7 @@ fn read_file(
 
     // Default line range (1-indexed from caller, convert to 0-indexed)
     // When start_line is provided without end_line, expand the window from start_line
-    // instead of keeping the absolute default of 500.
+    // instead of keeping the absolute default of 200.
     let start = start_line.unwrap_or(1).saturating_sub(1);
     let end_requested = match end_line {
         Some(end) => end.saturating_sub(1),
