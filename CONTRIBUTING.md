@@ -117,7 +117,7 @@ Scopes are optional and at most one, from the `scopes` allowlist in `cog.toml`, 
 agent  cli  config  extensions  prompts  providers  sandbox  session  tools
 ```
 
-The vocabulary names the architecture domain that owns the change; the file or tool belongs in the subject. It is coarser than `.ahm` `area:*` labels, and cross-cutting changes stay unscoped. Adding a scope is a vocabulary change proposed in the PR that updates the allowlist; history predates the allowlist, so `cog check` is not a gate.
+The vocabulary names the architecture domain that owns the change; the file or tool belongs in the subject. It is coarser than `.ahm` `area:*` labels, and cross-cutting changes stay unscoped. Adding a scope is a vocabulary change proposed in the PR that updates the allowlist; history predates the allowlist, so `cog check` is not a gate, and amended messages must comply.
 
 ## Pull requests
 

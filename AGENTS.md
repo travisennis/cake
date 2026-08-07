@@ -109,7 +109,7 @@ Complexity targets, CRAP scores, coverage, and the coverage-first refactoring wo
 - One branch holds one task, cut from an up-to-date `master`.
 - Preserve unrelated user changes; never clean or revert them.
 - Never resolve a merge conflict in `ci/cargo-crap-baseline.json` by hand. Take `master`'s copy, then regenerate it with `just change-risk-baseline`.
-- Use Conventional Commits with a scope from the `cog.toml` allowlist; verified by the commit-msg hook. See [CONTRIBUTING.md](CONTRIBUTING.md) for scope selection.
+- Use Conventional Commits, scoped only from the `cog.toml` allowlist; verified by the commit-msg hook. See [CONTRIBUTING.md](CONTRIBUTING.md) for scope selection.
 - Future work and unresolved questions belong in GitHub issues, not durable docs.
 
 ## Pull requests
