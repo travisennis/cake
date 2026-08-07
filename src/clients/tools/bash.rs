@@ -32,6 +32,14 @@ pub(super) const BASH_OUTPUT_MAX_BYTES: usize = 50_000;
 /// has enough data for a useful head+tail preview and temp-file dump.
 pub(super) const BASH_READ_CAP: usize = BASH_OUTPUT_MAX_BYTES * 2;
 
+/// Floor for the model-supplied Bash timeout in seconds. A `0` timeout would
+/// fail instantly, so requests below the floor are raised to it.
+const BASH_TIMEOUT_MIN_SECS: u64 = 1;
+
+/// Ceiling for the model-supplied Bash timeout in seconds. Larger values are
+/// capped so a runaway command cannot pin the process for an unbounded time.
+const BASH_TIMEOUT_MAX_SECS: u64 = 600;
+
 /// Arguments for bash execution, including the sandbox policy
 struct BashExecutionArgs {
     command: String,
@@ -52,7 +60,10 @@ impl BashExecutionArgs {
 
         Ok(Self {
             command: args.command,
-            timeout: args.timeout.unwrap_or(60),
+            timeout: args
+                .timeout
+                .unwrap_or(60)
+                .clamp(BASH_TIMEOUT_MIN_SECS, BASH_TIMEOUT_MAX_SECS),
             policy,
         })
     }
@@ -215,7 +226,7 @@ fn handle_binary_output(
             return format!(
                 "[Binary output detected - {size_bytes} bytes ({size_kb} KB)]\n\
                  Detected type: {}\n\
-                 Failed to save binary data to temp file: could not create\
+                 Failed to save binary data to temp file: could not create \
                  secure directory: {e}\n\
                  The command produced binary output which cannot be displayed as text.\n\
                  {}",
