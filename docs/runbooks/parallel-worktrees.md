@@ -28,7 +28,13 @@ Managed work starts here too: set the GitHub issue's Status to In Progress on th
 
 ### 2. Work and verify
 
-Follow the development loop in [CONTRIBUTING.md](../../CONTRIBUTING.md). The pre-push hook runs `just pre-push`, which routes by changed path class: documentation-only pushes run the targeted docs checks, everything else runs the full `just ci` gate (see [Pre-push routing](../../CONTRIBUTING.md#pre-push-routing)).
+Follow the development loop in [CONTRIBUTING.md](../../CONTRIBUTING.md). The pre-push hook runs `just pre-push`, which routes by changed path class: documentation-only pushes run the targeted docs checks, everything else runs the full `just ci` gate. [Pre-push routing](../../CONTRIBUTING.md#pre-push-routing) lists the classes.
+
+The classifier is `scripts/classify-changes.sh`, shared with the `changes` job in `.github/workflows/ci.yml` so the local gate and CI agree on what a change touches. It measures the changed set against the upstream branch when one is set, otherwise against `origin/master` --- branches from `just branch` and `just worktree` deliberately have no upstream, so they take the second path.
+
+The gate covers the checked-out branch rather than the branch being pushed. The hook runner does not forward git's pushed-ref list, so pushing a branch other than the one checked out is gated by the checkout's class. Check out the branch you intend to push.
+
+`scripts/test-classify-changes.sh` fixture-tests the classifier. It runs in CI's `changes` job and locally via `just test-classify-changes`.
 
 ### 3. Open the pull request
 

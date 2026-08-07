@@ -51,9 +51,21 @@ INSTRUCTION_FILES = [
 
 # Per-document budgets in prose words. AGENTS.md is the routing document every
 # session pays for, so it carries the tightest budget.
+#
+# Like the allowances below, these carry headroom above the document's current
+# size rather than pinning it. A budget set to the exact current count rejects
+# the next honest addition no matter how small, which turns every unrelated
+# change into a negotiation with this file and makes switching the gate off the
+# path of least resistance. That is not hypothetical: CONTRIBUTING.md was first
+# budgeted at its exact size, and the next merge to touch it --- documenting a
+# new gate, in good faith --- broke this check.
+#
+# Each budget is the document's count plus at least 50 words, rounded up to the
+# next 50. Headroom is not permission to grow: crossing it should still cost
+# something elsewhere in the document.
 BUDGETS = {
-    "AGENTS.md": 900,
-    "CONTRIBUTING.md": 1000,
+    "AGENTS.md": 950,
+    "CONTRIBUTING.md": 1150,
 }
 DEFAULT_BUDGET = 1500
 
