@@ -515,10 +515,32 @@ impl SeatbeltProfileBuilder {
             .push(format!("(allow {permissions} ({matcher} \"{escaped}\"))"));
     }
 
+    /// Escape a path for embedding in a Seatbelt profile string literal.
+    ///
+    /// Backslashes, double quotes, and control characters (notably newline)
+    /// are escaped so a configured path cannot break out of the literal and
+    /// inject profile rules. If the platform profile parser does not decode an
+    /// escape, the rule simply fails to match that path, which fails closed
+    /// (denied) rather than allowing unintended access.
     fn escape_path(path: &Path) -> String {
         path.to_string_lossy()
-            .replace('\\', "\\\\")
-            .replace('"', "\\\"")
+            .chars()
+            .map(Self::escape_char)
+            .collect()
+    }
+
+    /// Escape a single character for a Seatbelt profile string literal,
+    /// returning it unchanged when it needs no escaping.
+    fn escape_char(c: char) -> String {
+        match c {
+            '\\' => "\\\\".to_string(),
+            '"' => "\\\"".to_string(),
+            '\n' => "\\n".to_string(),
+            '\r' => "\\r".to_string(),
+            '\t' => "\\t".to_string(),
+            c if c.is_control() => format!("\\x{:02x}", c as u32),
+            c => c.to_string(),
+        }
     }
 
     fn finish(self) -> String {
@@ -755,6 +777,27 @@ mod tests {
         let path = PathBuf::from("/path/with\"quote\\backslash (and spaces)");
         let escaped = SeatbeltProfileBuilder::escape_path(&path);
         assert_eq!(escaped, "/path/with\\\"quote\\\\backslash (and spaces)");
+    }
+
+    #[test]
+    fn test_profile_escaping_control_characters() {
+        let path = PathBuf::from("/tmp/dir\nname\t\"quote\"\\backslash\r");
+        let escaped = SeatbeltProfileBuilder::escape_path(&path);
+        assert_eq!(escaped, "/tmp/dir\\nname\\t\\\"quote\\\"\\\\backslash\\r");
+
+        // A configured path containing a control character must not break out
+        // of the profile string literal.
+        let mut config = test_config();
+        config.writable.push(PathBuf::from("/tmp/line\nbreak"));
+        let profile = MacOsSandbox::generate_profile(&config);
+        assert!(
+            !profile.contains("/tmp/line\nbreak"),
+            "raw newline in a path must not appear in the generated profile"
+        );
+        assert!(
+            profile.contains("/tmp/line\\nbreak"),
+            "newline should be escaped inside the profile string literal"
+        );
     }
 
     #[test]
