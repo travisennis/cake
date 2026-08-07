@@ -140,7 +140,7 @@ lint-deps:
     @echo "Dependency lint passed!"
 
 # Run the primary local checks, including the always-on CI command set
-ci: rust-version-check check-linux fmt-check clippy-strict clippy-no-default-features test-all-features check-coverage lint-imports lint-deps lint-module-size
+ci: rust-version-check check-linux fmt-check clippy-strict clippy-no-default-features test-all-features check-coverage lint-imports lint-deps lint-module-size lint-instruction-size
     echo "All checks passed!"
 
 # Print the changed-path classification the pre-push gate routes on: docs | code | mixed | unknown | none
@@ -208,6 +208,10 @@ check-full: ci check-deps doc build
 lint-module-size:
     python3 scripts/lint-module-size.py
 
+# Check the agent instruction corpus against its word budgets (enforcing)
+lint-instruction-size:
+    python3 scripts/lint-instruction-size.py
+
 # Check for denied/advisory dependencies (requires cargo-deny)
 check-deps:
     cargo deny check advisories
@@ -258,7 +262,7 @@ update-dependencies:
     cargo upgrade -i allow && cargo update    
 
 # Check markdown formatting and lint (requires panache; installed by `just setup`)
-docs-check:
+docs-check: lint-instruction-size
 	panache format --check . --quiet
 	-panache lint . --quiet
 

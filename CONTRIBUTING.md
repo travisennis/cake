@@ -59,17 +59,20 @@ Additional checks:
 - Snapshot changes: `just snapshots`, then `cargo insta review`.
 - Label changes: `just labels-check-file` (file validation, also CI), `just labels-check` (repo drift vs `.github/labels.yml`), `just labels` (apply), `just labels-prune` (delete unlisted labels).
 - Full release-oriented validation: `just check-full`.
-- Documentation-only changes: targeted `panache format --check` and `panache lint` for changed living documents, link validation, and `git diff --check`. Use `just docs-check` when intentionally validating the complete Markdown corpus.
+- Documentation-only changes: targeted `panache format --check` and `panache lint` for changed living documents, link validation, and `git diff --check`. Use `just docs-check` when intentionally validating the complete Markdown corpus; it also runs `just lint-instruction-size`.
+- Instruction changes (AGENTS.md, `.agents/skills/`, guardrails, runbooks): `just lint-instruction-size` enforces per-document word budgets. It is part of both `just ci` and `just docs-check`, so neither path can skip it. [Agent-facing instructions](docs/guardrails/agent-instructions.md) is the authority for what an added instruction must justify.
 
 ### Pre-push routing
 
-The pre-push hook routes by changed path class instead of running the full gate unconditionally. The classifier is `scripts/classify-changes.sh`, shared with the `changes` job in `.github/workflows/ci.yml`, and it measures the changed set against the upstream branch when one is set, otherwise against `origin/master` (branches from `just branch` and `just worktree` have no upstream). The gate covers the checked-out branch: the hook runner does not forward git's pushed-ref list, so pushing a branch other than the one checked out is gated by the checkout's class. The classifier is fixture-tested by `scripts/test-classify-changes.sh`, run in CI's `changes` job and locally via `just test-classify-changes`:
+The pre-push hook routes by changed path class instead of running the full gate unconditionally.
 
-- Markdown-only pushes run `just pre-push-docs`: targeted `panache format --check` and `panache lint` on the changed living documents plus `git diff --check` over the same `<base>...<head>` range the classifier measures.
+- Markdown-only pushes run `just pre-push-docs`: targeted `panache format --check` and `panache lint` on the changed living documents, plus `git diff --check`.
 - Pushes touching `src/`, `tests/`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `.cargo/`, `.github/workflows/`, `justfile`, or `ci/` run the full `just ci` gate.
 - Mixed pushes run both.
-- A changed file in no class (for example `prek.toml` or `.mise.toml`) fails closed to the full gate --- and also runs the docs checks when Markdown changed --- as does an unresolvable base.
+- Anything unclassified fails closed to the full gate, as does an unresolvable base.
 - `just pre-push-force` always runs the full gate; `just pre-push-classify` prints the classification for the current branch.
+
+[Working on branches and worktrees](docs/runbooks/parallel-worktrees.md) covers how the base is resolved and why the gate follows the checkout rather than the pushed ref.
 
 If an applicable check cannot run, report the exact reason and the narrower checks that did run. Do not describe a failing primary branch as unrelated without investigating it.
 

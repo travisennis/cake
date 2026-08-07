@@ -139,7 +139,7 @@ Use for changes to this file, `.agents/skills/`, or any other prose whose purpos
 
 Consult:
 
-- [Agent-facing instructions](docs/guardrails/agent-instructions.md), for the evidence a behavior-shaping edit requires.
+- [Agent-facing instructions](docs/guardrails/agent-instructions.md), for the evidence an added instruction requires.
 
 ### Documentation-Only Changes
 
@@ -148,7 +148,7 @@ Use for README, runbooks, ADRs, ExecPlans, research notes, and process documenta
 Consult:
 
 - [CONTRIBUTING.md](CONTRIBUTING.md), for the documentation check commands.
-- [Agent-facing instructions](docs/guardrails/agent-instructions.md), when the prose exists to change how an agent behaves, which is a behavior-shaping edit rather than a documentation edit.
+- [Agent-facing instructions](docs/guardrails/agent-instructions.md), when the prose exists to change how an agent behaves rather than to document it.
 - The route above for the surface being documented, when the document states a contract, security boundary, or invariant.
 
 Documentation-only changes may skip the Rust gate. Run the targeted Panache format and lint checks for the changed documents, validate links, and run `git diff --check`. State in the pull request that the change is documentation-only. A change that touches any code, configuration, fixture, or snapshot is not documentation-only, whatever proportion of its diff is prose.
