@@ -9,8 +9,12 @@ name: CI
 on:
   push:
     branches: [master, main]
+  # Deliberately unfiltered by base branch. A stacked pull request targets the
+  # branch below it rather than master, and a `branches:` filter here would give
+  # it no checks at all -- silently, since GitHub reports an unrun workflow as
+  # absent rather than failed. Pushes stay filtered: an open pull request
+  # already covers its own branch.
   pull_request:
-    branches: [master, main]
 
 env:
   CARGO_TERM_COLOR: always
