@@ -12,11 +12,11 @@ mise install
 just setup
 ```
 
-`mise trust` marks the repository's `.mise.toml` as trusted; mise refuses to read an untrusted config, so it must run before `mise install`. It is a one-time step per clone location --- mise keys trust to the config file's path, so a new worktree path asks again.
+`mise trust` marks the repository's `.mise.toml` as trusted; mise refuses to read an untrusted config, so it must run before `mise install`. It is a one-time step per clone location --- mise keys trust to the config file's path.
 
-`just setup` installs the Cargo utilities used by repository recipes and the git hooks declared in `prek.toml` (`pre-commit`, `pre-push`, and `commit-msg`). Re-running it is safe: the hook install is idempotent. To refresh hooks without the full setup, run `prek install --hook-type pre-commit --hook-type pre-push --hook-type commit-msg` yourself. Run `just --list` for the authoritative command catalog.
+`just setup` installs the Cargo utilities used by repository recipes and the git hooks declared in `prek.toml` (`pre-commit`, `pre-push`, and `commit-msg`). Re-running it is safe: the hook install is idempotent. Run `just --list` for the authoritative command catalog.
 
-`mise install` also provides `sccache` and points `RUSTC_WRAPPER` at it, so a newly created worktree reuses already-compiled dependencies instead of rebuilding the graph from cold. The setting is scoped to `.mise.toml`, so it applies to local development only. Without mise, install `sccache` and export `RUSTC_WRAPPER=sccache` yourself, or accept a cold build per worktree.
+`mise install` also provides `sccache` and points `RUSTC_WRAPPER` at it, so a newly created worktree reuses already-compiled dependencies instead of rebuilding the graph from cold. The setting applies to local development only. Without mise, install `sccache` and export `RUSTC_WRAPPER=sccache` yourself.
 
 Binary-size audits additionally require `cargo-bloat`:
 
@@ -24,7 +24,7 @@ Binary-size audits additionally require `cargo-bloat`:
 cargo install cargo-bloat
 ```
 
-Follow the [Auditing Binary Size runbook](docs/runbooks/auditing-binary-size.md) for the release build and analysis commands.
+Follow the [Auditing Binary Size runbook](docs/runbooks/auditing-binary-size.md).
 
 ## Development loop
 
@@ -91,7 +91,7 @@ Tests and snapshots should encode behavior close to its implementation. Add docu
 
 ## Managed work
 
-Issues, research notes, ExecPlans, and ADRs are managed records. Work is tracked in GitHub Issues. Use the workflow references in AGENTS.md, and follow the issue lifecycle in [docs/workflow/tasks.md](docs/workflow/tasks.md).
+Issues, research notes, ExecPlans, and ADRs are managed records. Use the workflow references in AGENTS.md, and follow the issue lifecycle in [docs/workflow/tasks.md](docs/workflow/tasks.md).
 
 ## Git and commits
 
@@ -110,6 +110,14 @@ docs: simplify contributor guidance
 ```
 
 Common types are `feat`, `fix`, `docs`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, and `revert`. Keep a commit focused and ensure required hooks and checks pass before pushing.
+
+Scopes are optional and at most one, from the `scopes` allowlist in `cog.toml`, enforced by the commit-msg hook:
+
+```text
+agent  cli  config  extensions  prompts  providers  sandbox  session  tools
+```
+
+The vocabulary names the architecture domain that owns the change; the file or tool belongs in the subject. It is coarser than `.ahm` `area:*` labels, and cross-cutting changes stay unscoped. Adding a scope is a vocabulary change proposed in the PR that updates the allowlist; history predates the allowlist, so `cog check` is not a gate, and amended messages must comply.
 
 ## Pull requests
 
