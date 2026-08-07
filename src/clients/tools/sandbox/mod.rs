@@ -462,6 +462,9 @@ impl SandboxConfig {
         writable.extend([
             // Rust
             home.join("Library/Caches/cargo"),
+            // sccache's default disk cache on macOS (config lives in
+            // Library/Application Support/Mozilla.sccache below).
+            home.join("Library/Caches/Mozilla.sccache"),
             home.join("Library/Caches/sccache"),
             home.join("Library/Application Support/Mozilla.sccache"),
             // Runtime managers
@@ -1008,6 +1011,21 @@ mod tests {
                 bun.display()
             );
 
+            // sccache's cache dir must be read-only, not writable, under the
+            // read-only policy (covers the Linux default `~/.cache/sccache` and
+            // the macOS default `~/Library/Caches/Mozilla.sccache`).
+            let sccache_cache = home.join(".cache/sccache");
+            assert!(
+                !config.writable.contains(&sccache_cache),
+                "read-only policy must not grant writes to {}",
+                sccache_cache.display()
+            );
+            assert!(
+                config.readable.contains(&sccache_cache),
+                "read-only policy must grant reads to {}",
+                sccache_cache.display()
+            );
+
             // Temp directories stay writable so commands can produce output.
             assert!(
                 config.writable.contains(&temp_dir),
@@ -1212,6 +1230,8 @@ mod tests {
                 // Bun / Deno
                 home.join(".bun"),
                 home.join(".deno"),
+                // Rust build cache (sccache default on Linux)
+                home.join(".cache/sccache"),
                 // Go
                 home.join("go"),
                 home.join(".cache/go-build"),
@@ -1256,6 +1276,8 @@ mod tests {
 
             #[cfg(target_os = "macos")]
             for expected in [
+                // Rust build cache (sccache default on macOS)
+                home.join("Library/Caches/Mozilla.sccache"),
                 home.join("Library/Caches/npm"),
                 home.join("Library/pnpm"),
                 home.join("Library/Caches/Yarn"),

@@ -567,6 +567,40 @@ async fn test_sandbox_workspace_write_allows_write_in_cwd() {
     );
 }
 
+/// Workspace-write policy grants sccache's default macOS cache dir
+/// (~/Library/Caches/Mozilla.sccache) so `RUSTC_WRAPPER=sccache` builds work
+/// under the sandbox.
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn test_sandbox_workspace_write_allows_sccache_cache_dir() {
+    if skip_if_sandbox_unavailable() {
+        return;
+    }
+
+    let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
+        panic!("HOME must be set for the sccache cache dir probe");
+    };
+    let probe_dir = home
+        .join("Library/Caches/Mozilla.sccache")
+        .join(format!("cake_sccache_probe_{}", uuid::Uuid::new_v4()));
+    let probe = probe_dir.display();
+    let args =
+        format!(r#"{{"command": "mkdir -p {probe} && touch {probe}/probe && rm -rf {probe}"}}"#);
+    let result = Box::pin(execute_bash(
+        &context_with_policy(SandboxPolicy::WorkspaceWrite),
+        &args,
+    ))
+    .await
+    .unwrap();
+    assert!(
+        result.output.contains("[exit:0 |"),
+        "workspace-write policy should allow writes to sccache's default cache dir, got: {}",
+        result.output
+    );
+    // Clean up just in case the sandbox did not remove the probe dir.
+    _ = std::fs::remove_dir_all(&probe_dir);
+}
+
 /// Danger-full-access policy skips the sandbox entirely.
 #[cfg(target_os = "macos")]
 #[tokio::test]
