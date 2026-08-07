@@ -1,6 +1,21 @@
 # Cocogitto configuration
 # https://github.com/cocogitto/cocogitto
 
+# Approved Conventional Commit scopes: Cake's architecture domains. Keep in sync
+# with the scope guidance in CONTRIBUTING.md; adding one is a vocabulary change.
+# Must stay at top level (before any table) so Cocogitto reads it.
+scopes = [
+  "agent",
+  "cli",
+  "config",
+  "extensions",
+  "prompts",
+  "providers",
+  "sandbox",
+  "session",
+  "tools",
+]
+
 # Commit types for changelog generation
 [commit_types]
 feat = { changelog_title = "Features" }
