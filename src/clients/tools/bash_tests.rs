@@ -584,8 +584,10 @@ async fn test_sandbox_workspace_write_allows_sccache_cache_dir() {
         .join("Library/Caches/Mozilla.sccache")
         .join(format!("cake_sccache_probe_{}", uuid::Uuid::new_v4()));
     let probe = probe_dir.display();
-    let args =
-        format!(r#"{{"command": "mkdir -p {probe} && touch {probe}/probe && rm -rf {probe}"}}"#);
+    // `rm -rf` is blocked by the command policy outside /tmp and /var/tmp, so
+    // the probe is removed by the (unsandboxed) test process below instead of
+    // inside the sandboxed command.
+    let args = format!(r#"{{"command": "mkdir -p {probe} && touch {probe}/probe"}}"#);
     let result = Box::pin(execute_bash(
         &context_with_policy(SandboxPolicy::WorkspaceWrite),
         &args,
