@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: superseded by ADR-018
 date: 2026-07-12
 decision-makers: Travis Ennis
 ---
@@ -80,6 +80,7 @@ Policy decisions are written as metadata-only records in the existing per-sessio
 
 ## More Information
 
+- Superseded by [ADR-018](./018-llm-judge-command-gate.md), `LLM Judge Command Gate` (2026-08-08): issue #72 replaced the planned declarative engine with a default-on LLM judge as the only non-sandbox command gate. This ADR was proposed but never accepted, and the declarative engine is not built. The historical decision above is retained as the record of the direction at the time.
 - Implements the architectural direction required by task 241, `Convert bash_safety Into a Declarative Command-Policy Engine`.
 - Builds on ADR-007, `Per-Session Telemetry Sidecar`, for structured policy decision records.
 - Preserves ADR-014, `Sandbox Policy CLI Flag`: command policy remains active independently of the selected filesystem sandbox policy.
