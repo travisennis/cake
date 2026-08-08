@@ -12,11 +12,11 @@ mise install
 just setup
 ```
 
-`mise trust` marks the repository's `.mise.toml` as trusted; mise refuses to read an untrusted config, so it must run before `mise install`. It is a one-time step per clone location --- mise keys trust to the config file's path.
+`mise trust` marks the repository's `.mise.toml` as trusted; mise refuses to read an untrusted config, so it must run before `mise install`. It is a one-time step per clone location.
 
 `just setup` installs the Cargo utilities used by repository recipes and the git hooks declared in `prek.toml` (`pre-commit`, `pre-push`, and `commit-msg`). Re-running it is safe: the hook install is idempotent. Run `just --list` for the authoritative command catalog.
 
-`mise install` also provides `sccache` and points `RUSTC_WRAPPER` at it, so a newly created worktree reuses already-compiled dependencies instead of rebuilding the graph from cold. The setting applies to local development only. Without mise, install `sccache` and export `RUSTC_WRAPPER=sccache` yourself.
+`mise install` also provides `sccache` and points `RUSTC_WRAPPER` at it, so a newly created worktree reuses already-compiled dependencies instead of rebuilding the graph from cold. Without mise, install `sccache` and export `RUSTC_WRAPPER=sccache` yourself.
 
 Binary-size audits additionally require `cargo-bloat`:
 
@@ -38,6 +38,10 @@ Follow the [Auditing Binary Size runbook](docs/runbooks/auditing-binary-size.md)
 8. Push the branch and open a pull request with `just pr`.
 
 The crate has no library target. Do not use `cargo test --lib`.
+
+## bash_safety regression cases
+
+Append one line to `src/clients/tools/bash_safety/corpus/commands.jsonl` to add a `bash_safety` regression case; nothing else changes. `expect` is `blocked`, `warned`, or `allowed`; `note` is optional. The runner checks every case and reports every mismatch.
 
 ## Verification
 
@@ -69,7 +73,7 @@ The pre-push hook routes by changed path class instead of running the full gate 
 - Markdown-only pushes run `just pre-push-docs`: targeted `panache format --check` and `panache lint` on the changed living documents, plus `git diff --check`.
 - Pushes touching `src/`, `tests/`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `.cargo/`, `.github/workflows/`, `justfile`, or `ci/` run the full `just ci` gate.
 - Mixed pushes run both.
-- Anything unclassified fails closed to the full gate, as does an unresolvable base.
+- Anything unclassified or unresolvable fails closed to the full gate.
 - `just pre-push-force` always runs the full gate; `just pre-push-classify` prints the classification for the current branch.
 
 [Working on branches and worktrees](docs/runbooks/parallel-worktrees.md) covers how the base is resolved and why the gate follows the checkout rather than the pushed ref.
@@ -91,11 +95,11 @@ Tests and snapshots should encode behavior close to its implementation. Add docu
 
 ## Managed work
 
-Issues, research notes, ExecPlans, and ADRs are managed records. Use the workflow references in AGENTS.md, and follow the issue lifecycle in [docs/workflow/tasks.md](docs/workflow/tasks.md).
+Issues, research notes, ExecPlans, and ADRs are managed records; follow the issue lifecycle in [docs/workflow/tasks.md](docs/workflow/tasks.md).
 
 ## Git and commits
 
-Commit and push freely on a feature branch, and commit often --- uncommitted work is the fragile state. Stage the paths you changed rather than `git add -A`, so unrelated in-flight edits stay out of your pull request. Ask first before force-pushing, which discards history, and before opening a pull request, which asserts the change is ready to merge.
+Commit and push freely on a feature branch, and commit often --- uncommitted work is the fragile state. Stage the paths you changed rather than `git add -A`, so unrelated in-flight edits stay out of your pull request. Ask first before force-pushing (it discards history) or opening a pull request.
 
 All work happens on a branch, which is what makes that safe: `master` is protected by a GitHub ruleset rejecting direct pushes, and by the `branch-guard` hook in `prek.toml`, which rejects commits and pushes on `master` at both `pre-commit` and `pre-push`. Branch names use the commit type as a prefix, such as `feat/turn-limits` or `fix/sandbox-read-only`. [Working on branches and worktrees](docs/runbooks/parallel-worktrees.md) covers the mechanics, including running several branches at once in linked worktrees.
 
