@@ -9,3 +9,6 @@ lcov.info
 target/llvm-cov/
 
 .local.justfile
+
+# Eval harness generated output (sessions, telemetry, run results)
+scripts/evals/results/

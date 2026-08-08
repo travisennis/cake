@@ -1,0 +1,12 @@
+{
+  "name": "multi-file-change",
+  "description": "Rename a helper function and every call site across three source files.",
+  "prompt": "Rename the helper function `format_price` to `format_amount` across the codebase: update the definition in src/lib.py and every call site in src/app.py and src/report.py. Then make `python3 tests/test_rename.py` print ok. The old name `format_price` must no longer appear anywhere in src/ or tests/.",
+  "verify": "bash \"$EVAL_CASE_DIR/verify.sh\"",
+  "timeout_seconds": 300,
+  "tags": [
+    "edit",
+    "multi-file"
+  ],
+  "expected": "correct"
+}

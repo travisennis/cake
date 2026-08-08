@@ -105,6 +105,18 @@ rust-version-check:
 session-metrics *args:
     @python3 scripts/session-metrics/report.py {{args}}
 
+# List the committed model-evaluation fixture cases (no model credentials needed)
+eval-cases:
+    @python3 scripts/evals/run_eval.py --list-cases
+
+# Run the controlled model evaluation harness (e.g. `just eval --model NAME --repetitions 3`; requires credentials and authorized spend)
+eval *args:
+    @python3 scripts/evals/run_eval.py {{args}}
+
+# Run the evaluation harness test suite with a fake cake executable (no credentials, no network)
+eval-check:
+    @python3 -m unittest discover -s scripts/evals/tests -v
+
 # Synchronize repository labels with the committed vocabulary in .github/labels.yml
 labels:
     @python3 scripts/sync-labels.py
