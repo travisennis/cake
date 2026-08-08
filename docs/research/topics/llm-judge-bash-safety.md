@@ -1,14 +1,18 @@
 # LLM-as-Judge for Bash Command Safety
 
-Status: synthesized Created: 2026-07-18 Updated: 2026-07-18 Related tasks: 241 Related plans: docs/exec-plans/active/declarative-command-policy.md Confidence: medium
+Status: synthesized Created: 2026-07-18 Updated: 2026-08-08 Related tasks: #64 (formerly task 241), #72 (formerly task 278) Related plans: docs/exec-plans/active/llm-judge-command-safety.md Confidence: medium
 
 ## Summary
 
 Explored a bitter-lesson-style alternative to the static `bash_safety` guard: call an LLM per Bash invocation to judge whether the command is destructive or malicious, block with a tailored safer-alternative recommendation when it is, and add a `reason` argument to the Bash tool so the judge can evaluate stated intent alongside the command.
 
-Conclusion: the judge and the declarative command policy (ADR-015 / task 241) are not competing designs. The declarative policy is the deterministic, user-ownable substrate; an LLM judge only works safely as an optional escalation tier layered above it. Ship 241 unchanged first. The `reason` argument is worth adding independently of any judge.
+Conclusion (2026-07-18, superseded): the judge and the declarative command policy (ADR-015 / task 241) were not competing designs. The declarative policy was the deterministic, user-ownable substrate; an LLM judge could only work safely as an optional escalation tier layered above it. Ship 241 unchanged first. The `reason` argument was worth adding independently of any judge.
+
+Reversal (2026-08-08): issue #72 replaces the declarative engine and the mechanical `bash_safety` guard rather than layering above them. The LLM judge becomes Cake's only non-sandbox command gate, fail-closed, with no deterministic floor; ADR-018 records the decision and ADR-015 is superseded. The trade-off analysis below is retained as the risk record for the accepted design: the judge's strengths and weaknesses are now accepted rather than disqualifying. The `reason` argument remains part of the design, documented as untrusted self-report.
 
 ## Notes / Evidence
+
+The arguments below were written against the 2026-07-18 design (judge as an optional tier above a deterministic floor) and are retained as the risk evidence for the accepted judge-only gate. They are historical analysis, not the current conclusion; see the Reversal in the Summary.
 
 ### Current state
 
@@ -35,11 +39,21 @@ Conclusion: the judge and the declarative command policy (ADR-015 / task 241) ar
 
 ## Implications for this project
 
+Original implications (2026-07-18, superseded):
+
 1. Ship ADR-015 / task 241 unchanged. Its structured evaluation results, stable rule IDs, and telemetry plumbing are prerequisites for threading any judge verdict through the system.
 2. If a judge is added (task 278), it is an opt-in escalation tier: deterministic policy evaluates first; hard blocks are never overturned by the judge; the judge only sees commands policy did not decide; verdicts default to warn (advisory); fail open with a telemetry event; judge model is user-configured; whether a judge verdict may block is a `policy.toml` decision, not a harness default.
 3. Add a `reason` argument to the Bash tool independently (also task 278 scope, severable). Treat it as untrusted self-report everywhere: the judge must weigh the command over the reason and flag incongruence; a benign reason must never launder a hostile command.
 
+Reversed (2026-08-08): implications 1 and 2 do not stand. The declarative engine is cancelled and the judge is not an opt-in tier: the LLM judge replaces both the mechanical guard and the planned engine, per ADR-018 and #72. Implication 3 survives as part of the judge design.
+
+Current implications (2026-08-08):
+
+1. The judge is default-on, fail-closed, with a bounded timeout, an exact-match allowlist as the only hard override, and a telemetry-logged emergency bypass. The full decision set is recorded in ADR-018 and the ExecPlan `docs/exec-plans/active/llm-judge-command-safety.md`.
+2. The analysis in Notes / Evidence stands as the accepted-risk record: non-determinism, latency and cost, provider availability, weaker local models, and correlated prompt-injection failure are accepted rather than designed away, and the sandbox does not cover in-project or remote effects.
+
 ## Follow-ups
 
-- Task 278 (blocked on 241): opt-in LLM-judge escalation tier + Bash `reason` argument.
-- When 241's telemetry lands, per-rule fire counts can quantify how much destructive-command traffic escapes the deterministic rules --- evidence for or against the judge tier being worth its cost.
+- Reversed (2026-08-08): task 278's opt-in escalation tier is obsolete; #72 now tracks a default-on judge-only gate with the Bash `reason` argument.
+- Default-on waits on the evaluation prerequisites recorded in ADR-018 and the ExecPlan: #84 (controlled evaluation harness), #106 Phase A (external case corpus), and #66 (verdict counters).
+- Verdict caching is deferred until latency and cost data exist; once #66's verdict counters land, per-verdict counts can quantify how much destructive-command traffic the judge catches or misses.
