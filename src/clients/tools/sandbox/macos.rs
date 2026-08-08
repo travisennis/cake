@@ -312,7 +312,7 @@ impl MacOsSandbox {
         if !config.writable.is_empty() {
             profile.comment("Read-write access: working directory, temp dirs, and toolchains");
             for path in &config.writable {
-                profile.allow_subpath("file-read* file-write*", path);
+                Self::allow_path_access(&mut profile, "file-read* file-write*", path);
             }
             profile.blank();
         }
@@ -321,7 +321,7 @@ impl MacOsSandbox {
         if !config.system_paths.is_empty() {
             profile.comment("Read + execute access: system paths");
             for path in &config.system_paths {
-                profile.allow_subpath("file-read*", path);
+                Self::allow_path_access(&mut profile, "file-read*", path);
             }
             profile.blank();
         }
@@ -330,7 +330,7 @@ impl MacOsSandbox {
         if !config.readable.is_empty() {
             profile.comment("Read-only access: config and device paths");
             for path in &config.readable {
-                profile.allow_subpath("file-read*", path);
+                Self::allow_path_access(&mut profile, "file-read*", path);
             }
             profile.blank();
         }
@@ -350,6 +350,21 @@ impl MacOsSandbox {
         profile.allow("file-lock");
 
         profile.finish()
+    }
+
+    /// Emit a rule for one configured path: a literal rule for a file, a
+    /// subpath rule for a directory.
+    ///
+    /// A file literal grants access to exactly that file (ancestor directory
+    /// reads are already emitted above), so a sibling file in the same
+    /// directory stays denied. Nonexistent paths fall back to subpath, which
+    /// matches historical behavior for paths that only exist at runtime.
+    fn allow_path_access(profile: &mut SeatbeltProfileBuilder, permissions: &str, path: &Path) {
+        if path.is_file() {
+            profile.allow_literal(permissions, path);
+        } else {
+            profile.allow_subpath(permissions, path);
+        }
     }
 
     /// Write the profile to a temp file and return its path
@@ -738,6 +753,61 @@ mod tests {
         let profile = MacOsSandbox::generate_profile(&config);
 
         assert!(profile.contains("(allow file-read* (subpath \"/etc\"))"));
+    }
+
+    #[test]
+    fn readable_file_emits_literal_rule_and_denies_siblings() {
+        let tmp = tempfile::tempdir().unwrap();
+        let allowed = tmp.path().join("tool");
+        let sibling = tmp.path().join("other-tool");
+        std::fs::write(&allowed, b"#!/bin/sh\n").unwrap();
+        std::fs::write(&sibling, b"#!/bin/sh\n").unwrap();
+
+        let config = SandboxConfig {
+            writable: vec![],
+            system_paths: vec![],
+            readable: vec![allowed.clone()],
+            policy: SandboxPolicy::WorkspaceWrite,
+        };
+
+        let profile = MacOsSandbox::generate_profile(&config);
+
+        // The configured file is readable and executable via a literal rule.
+        let allowed_escaped = SeatbeltProfileBuilder::escape_path(&allowed);
+        assert!(profile.contains(&format!(
+            "(allow file-read* (literal \"{allowed_escaped}\"))"
+        )));
+        // No subpath rule grants the parent directory, so the sibling file
+        // has no matching rule and is denied by the deny-default profile.
+        let sibling_escaped = SeatbeltProfileBuilder::escape_path(&sibling);
+        assert!(!profile.contains(&format!(
+            "(allow file-read* (literal \"{sibling_escaped}\"))"
+        )));
+        assert!(!profile.contains(&format!(
+            "(allow file-read* (subpath \"{}\"))",
+            tmp.path().display()
+        )));
+    }
+
+    #[test]
+    fn writable_file_emits_literal_read_write_rule() {
+        let tmp = tempfile::tempdir().unwrap();
+        let allowed = tmp.path().join("state");
+        std::fs::write(&allowed, b"state\n").unwrap();
+
+        let config = SandboxConfig {
+            writable: vec![allowed.clone()],
+            system_paths: vec![],
+            readable: vec![],
+            policy: SandboxPolicy::WorkspaceWrite,
+        };
+
+        let profile = MacOsSandbox::generate_profile(&config);
+
+        let allowed_escaped = SeatbeltProfileBuilder::escape_path(&allowed);
+        assert!(profile.contains(&format!(
+            "(allow file-read* file-write* (literal \"{allowed_escaped}\"))"
+        )));
     }
 
     #[test]

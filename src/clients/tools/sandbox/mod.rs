@@ -978,12 +978,14 @@ mod tests {
         temp_env::with_var("HOME", Some("/tmp/cake-sandbox-test-home"), || {
             let home = PathBuf::from("/tmp/cake-sandbox-test-home");
             let temp_dir = PathBuf::from("/tmp/cake-sandbox-ro-temp");
+            let settings_dir = tempfile::tempdir().unwrap();
+            let settings_dir_path = settings_dir.path().to_path_buf();
             let config = SandboxConfig::build_with_policy(
                 SandboxPolicy::ReadOnly,
                 Path::new("/workspace"),
                 std::slice::from_ref(&temp_dir),
                 &[],
-                &[],
+                std::slice::from_ref(&settings_dir_path),
                 &[],
             );
 
@@ -1030,6 +1032,20 @@ mod tests {
             assert!(
                 config.writable.contains(&temp_dir),
                 "read-only policy must keep temp dirs writable"
+            );
+
+            // Settings dirs ([sandbox].writable and directories) demote to
+            // read-only under the read-only policy, matching workspace and
+            // toolchain paths.
+            assert!(
+                !config.writable.contains(&settings_dir_path),
+                "read-only policy must not grant writes to {}",
+                settings_dir_path.display()
+            );
+            assert!(
+                config.readable.contains(&settings_dir_path),
+                "read-only policy must grant reads to {}",
+                settings_dir_path.display()
             );
         });
     }

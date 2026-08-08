@@ -18,7 +18,11 @@ Cake does not attempt to make an untrusted model safe to run with arbitrary cred
 
 An explicit CLI policy takes precedence over `CAKE_SANDBOX`. For compatibility, `CAKE_SANDBOX=off` selects danger-full-access when no flag is present.
 
-`--add-dir` adds a read-only path for one invocation. `directories` in settings adds persistent read-write paths. Treat both as grants of authority.
+`--add-dir` adds a read-only path for one invocation. `directories` in settings adds persistent read-write paths. The `[sandbox]` section in settings adds persistent grants in two classes: `read_only` (read + execute, for files or directories) and `writable` (read + write + execute). Treat all of these as grants of authority.
+
+The `[sandbox]` and `directories` path lists feed both the in-process Read/Edit/Write/Grep validation and the OS sandbox, so the two enforcement layers cannot diverge. A `read_only` entry naming a single executable grants exactly that file (plus read access to its ancestor directories), so sibling files in the same directory remain denied.
+
+Project-level `.cake/settings.toml` is fully trusted by design, the same trust model as the rest of project `.cake/` configuration. There is no deny-list and no trust prompt: any path a project declares in `[sandbox]` becomes accessible to model-generated commands. Treat a cloned repository's `.cake/settings.toml` the way you treat its hooks.
 
 ## Enforcement layers
 
@@ -77,3 +81,4 @@ Validating an untrusted command string by parsing it is the recurring instance o
 - [ADR 015](adr/015-declarative-command-policy.md), declarative command policy.
 - [ADR 016](adr/016-nested-seatbelt-sandbox-fallback.md), the recognized nested-Seatbelt fallback.
 - [ADR 017](adr/017-trusted-executable-toolbox-tools.md), trusted toolbox executables.
+- [ADR 018](adr/018-project-customizable-sandbox-paths.md), project-customizable sandbox paths.
