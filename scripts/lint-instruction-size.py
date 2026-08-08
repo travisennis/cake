@@ -25,8 +25,8 @@ import os
 import sys
 
 # Directories walked recursively for Markdown instructions, relative to the
-# repo root. Excluded by omission: docs/adr, docs/exec-plans, and docs/research
-# hold records rather than instructions.
+# repo root. Excluded by omission: docs/adr and docs/exec-plans hold records
+# rather than instructions.
 INSTRUCTION_DIRS = [
     "docs/guardrails",
     "docs/workflow",
