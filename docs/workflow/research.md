@@ -1,49 +1,44 @@
 # Research Notes Workflow
 
-This document explains how research artifacts are handled in this repository. When you are asked to create, update, organize, or use research, read this document first, then use the directory layout under `docs/research/` as the map and open the relevant source files directly.
+This document explains how research artifacts are handled in this repository. When you are asked to create, update, organize, or use research, read this document first, then use the Notion Research database as the map and open the relevant notes directly.
 
 Research is evidence, not an authoritative decision or implementation contract. Architectural decisions belong in ADRs, actionable scope belongs in GitHub issues, and broad implementation guidance belongs in ExecPlans.
 
 ## Research Storage
 
-Research lives under `docs/research/` in this repository. The directory is intentionally lightweight: it should be easy to capture rough notes, but durable notes should make their status, source, and relationship to project work clear.
+Research lives in the **Research** database in Notion (under the Cake page), not in this repository:
 
-Use these subdirectories:
+- Cake page (hub): https://app.notion.com/p/Cake-3b630bc66cc781809af4d98454822ce6
+- Research database: https://app.notion.com/p/e4b33f5fa8cb438e93dd85727b26e928
+- Research Home (workflow summary): https://app.notion.com/p/Research-Home-3b630bc66cc7812d9298c5172428a7c7
 
-- `inbox/` for raw ideas, pasted notes, and thin captures that have not been triaged.
-- `investigations/` for project-specific findings from debugging, profiling, code reading, session analysis, or behavior checks.
-- `sources/` for notes from external articles, papers, documentation, tools, or open source repositories.
-- `topics/` for synthesized, durable notes about an area of this project or an idea that may feed several tasks or plans.
-- `archived/` for stale or superseded notes kept for historical reference.
+Each note is a database page. The **Type** property mirrors the former `docs/research/` subdirectories and is the primary map:
 
-The directory layout is the research map. Orient yourself with `ls`/glob, but always open the source research file before relying on a note.
+- `Inbox` for raw ideas, pasted notes, and thin captures that have not been triaged.
+- `Investigations` for project-specific findings from debugging, profiling, code reading, session analysis, or behavior checks.
+- `Sources` for notes from external articles, papers, documentation, tools, or open source repositories.
+- `Topics` for synthesized, durable notes about an area of this project or an idea that may feed several tasks or plans.
+- `Archived` for stale or superseded notes kept for historical reference.
+
+The database views are the research map: *By type* groups the former subdirectories, *Inbox review* filters stale inbox notes for disposition, and *Active* / *Archived* filter by status. Always open the note itself before relying on it.
+
+Notes moved from the repository carry a provenance footer (`Source: docs/research/... · moved from the cake repository to Notion on 2026-08-08`).
 
 ## Creating Research
 
-Put rough, untriaged material in `inbox/` unless the user or context clearly identifies a better location. Prefer a short, descriptive kebab-case filename.
+Put rough, untriaged material in `Inbox` unless the user or context clearly identifies a better location. Prefer a short, descriptive title.
 
-Create durable research (investigation, source, or topic notes) when material factual or technical investigation should survive the current session, needs to inform more than one task, plan, or ADR, or supplies evidence for an architectural decision or cross-cutting implementation guidance. Keep brief, task-specific code reading and implementation observations in the issue or ExecPlan rather than creating research note churn; not every question during implementation needs a durable record.
+Create durable research (investigation, source, or topic notes) when factual or technical investigation should survive the current session, needs to inform more than one task, plan, or ADR, or supplies evidence for an architectural decision or cross-cutting implementation guidance. Keep brief, task-specific code reading and implementation observations in the issue or ExecPlan rather than creating research note churn; not every question during implementation needs a durable record.
 
-Use this header for durable research documents when it is useful. Raw inbox notes may be shorter.
+Set these database properties on durable research notes. Raw inbox notes may leave them unset.
 
-```md
-# Title
-
-Status: inbox | active | synthesized | superseded | archived
-Created: YYYY-MM-DD
-Updated: YYYY-MM-DD
-Related tasks: -
-Related plans: -
-Confidence: low | medium | high
-
-## Summary
-
-## Notes / Evidence
-
-## Implications for this project
-
-## Follow-ups
-```
+  | Property                      | Values                                           |
+  | ----------------------------- | ------------------------------------------------ |
+  | Type                          | Inbox, Investigations, Sources, Topics, Archived |
+  | Status                        | inbox, active, synthesized, superseded, archived |
+  | Confidence                    | low, medium, high                                |
+  | Created / Updated             | ISO dates                                        |
+  | Related tasks / Related plans | Free text linking issues or ExecPlans            |
 
 ## Using Research
 
@@ -63,10 +58,8 @@ Research should usually flow from rough capture to durable project work:
 inbox note -> investigation/source/topic synthesis -> ADR, issue, or ExecPlan -> completed artifact
 ```
 
-Inbox notes must eventually receive a disposition. When reviewing `docs/research/inbox/`, choose one of these outcomes for each stale note: promote useful synthesis to `topics/`, create an issue for actionable work, or delete material that has no continuing value. Reviews report age and staleness but never choose or apply the disposition automatically.
+Inbox notes must eventually receive a disposition. When reviewing notes with Type = Inbox, choose one of these outcomes for each stale note: promote useful synthesis to `Topics`, create an issue for actionable work, or delete material that has no continuing value. Reviews report age and staleness but never choose or apply the disposition automatically.
 
 ## Updating Research
 
-When a note becomes stale, do not silently delete useful context. Mark it `superseded` or move it to `archived/` with `git mv`, and add a short note explaining what replaced it.
-
-When adding, moving, archiving, or renaming research files, use `git mv` so the move is recorded; no index regeneration is needed.
+When a note becomes stale, do not silently delete useful context. Set its Status to `superseded` or move it to `Archived`, and add a short note explaining what replaced it.

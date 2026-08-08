@@ -2,7 +2,7 @@
 
 This ExecPlan is a living document, maintained per docs/workflow/exec-plans.md. The sections Progress, Surprises & Discoveries, Decision Log, and Outcomes & Retrospective must be kept current as work proceeds.
 
-This plan implements issue 71. The architecture decision is recorded in ADR 018 (`docs/adr/018-project-customizable-sandbox-paths.md`), which this plan cites and implements.
+This plan implements issue 71. The architecture decision is recorded in ADR 019 (`docs/adr/019-project-customizable-sandbox-paths.md`), which this plan cites and implements.
 
 ## Purpose / Big Picture
 
@@ -20,7 +20,7 @@ How to see it working: `cargo test` passes with new settings-merge, tilde-expans
 
 ## Progress
 
-- [x] (2026-08-08) ExecPlan written; ADR 018 created; issue 71 claimed; branch `feat/sandbox-settings` cut.
+- [x] (2026-08-08) ExecPlan written; ADR 019 created; issue 71 claimed; branch `feat/sandbox-settings` cut.
 - [x] (2026-08-08) Milestone 1: `[sandbox]` settings schema, union merge, `~` expansion, shared `expand_home` helper. Committed as `feat(sandbox): add [sandbox] path grants with tilde expansion` (3347eee).
 - [x] (2026-08-08) Milestone 2: `main.rs` plumbing --- `[sandbox].read_only` into `additional_dirs`, `[sandbox].writable` into `settings_dirs` (same commit).
 - [x] (2026-08-08) Milestone 3: macOS Seatbelt file-vs-directory rules; Linux Landlock file-grant test. Committed as `feat(sandbox): emit literal Seatbelt rules for file grants` (f8f056a).
@@ -39,7 +39,7 @@ How to see it working: `cargo test` passes with new settings-merge, tilde-expans
 
 ## Decision Log
 
-- Decision: Follow ADR 018 --- structured `[sandbox]` section with `read_only` (read + execute) and `writable` (read + write + execute), union-merged across global, project, and profile, exactly like `directories`. Rationale: matches existing precedence semantics and keeps one schema for both access classes. Date/Author: 2026-08-08, cake agent.
+- Decision: Follow ADR 019 --- structured `[sandbox]` section with `read_only` (read + execute) and `writable` (read + write + execute), union-merged across global, project, and profile, exactly like `directories`. Rationale: matches existing precedence semantics and keeps one schema for both access classes. Date/Author: 2026-08-08, cake agent.
 - Decision: Expand `~` at settings-merge time (in `SettingsLoader`), so `LoadedSettings.directories` and `.sandbox` already carry expanded paths, and keep relative paths untouched (they resolve from invocation cwd as today). Rationale: single expansion site, matches the issue's "canonicalization and warnings once at settings-load time". Date/Author: 2026-08-08, cake agent.
 - Decision: `[sandbox].writable` entries must be existing directories (same filter as `directories`); `[sandbox].read_only` entries may be existing files or directories (the whole point is a single executable). Rationale: a writable grant to a file is not a supported use case in this task; read-only file grants are. Date/Author: 2026-08-08, cake agent.
 - Decision: Apply the file-vs-directory rule emission to all three Seatbelt path classes (writable, system_paths, readable), not only readable, because the same latent bug would bite `[sandbox].writable` file entries. Date/Author: 2026-08-08, cake agent.

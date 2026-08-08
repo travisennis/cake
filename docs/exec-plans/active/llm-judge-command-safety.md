@@ -47,7 +47,7 @@ Chain (new): #84 + #106 + #66 → #72 → #123, #67; #106 → #174 → (consumes
 
 - [x] (2026-08-08) Recorded all ten design decisions in issue #72; re-scoped #106, #123, #67, #66; cancelled #64, #68, #96, #97; elevated #84; annotated #69. Board updated (72 Blocked P2 L; cancelled issues Done).
 - [x] (2026-08-08) Created this ExecPlan and linked it from #72.
-- [ ] Milestone 1: ADR-018 accepted; ADR-015 marked superseded; research note conclusion revised.
+- [x] (2026-08-08) Milestone 1: ADR-018 accepted (`docs/adr/018-llm-judge-command-gate.md`); ADR-015 marked `superseded by ADR-018`; research note conclusion revised to record the reversal.
 - [ ] Milestone 2: judge settings, verdict types, bounded-timeout fail-closed judge call with stub-judge tests; `reason` argument on the Bash tool.
 - [ ] Milestone 3: embedded rubric, verdict-code vocabulary, `cake bash check -- <command>`.
 - [ ] Milestone 4: allowlist and telemetry-logged emergency bypass.
@@ -80,11 +80,13 @@ Chain (new): #84 + #106 + #66 → #72 → #123, #67; #106 → #174 → (consumes
 
 - Decision: Verdict codes are stable, namespaced strings replacing ADR-015's rule IDs, defined in Milestone 3. Rationale: decisions stay auditable and telemetry stays structured without a regex engine. Date/Author: 2026-08-08, Travis Ennis.
 
+- Decision: The v1 verdict-code vocabulary maps every check in the current registry so all nine hard blocks and the single warning survive: `git-history-rewrite` <-- `git_reset`; `git-worktree-discard` <-- `git_checkout` and `git_restore`; `git-untracked-delete` <-- `git_clean`; `git-force-push` <-- `git_push`; `git-branch-force-delete` <-- `git_branch_delete`; `git-stash-destructive` <-- `git_stash` (drop/clear today, plus pop per #68); `destructive-rm` <-- `dangerous_rm` (temp-directory carve-outs preserved); `git-commit-backticks` <-- `git_commit_backticks` (a block, not a warn); `rg-replace-footgun` <-- `rg_replace_flag` (the sole warn); `unknown-destructive` for long-tail catches. Rationale: a milestone-1 review found the draft vocabulary covered only seven of the nine HardBlock checks and mislabeled `git-commit-backticks` as a warning; this mapping is complete and preserves current out-of-box behavior. Date/Author: 2026-08-08, plan author.
+
 - Decision: No verdict caching in v1. Context-sensitive caching keyed by (command, cwd, repo-state digest) is recorded as a deferred follow-up in #72; premature until latency data exists. Date/Author: 2026-08-08, Travis Ennis.
 
 - Decision: The judge contract is a single LLM call returning a strict JSON object `{"verdict":"block"|"warn"|"allow","code":"<code>","message":"...","confidence":0.0-1.0}`. Malformed or missing fields count as judge failure and fail closed. No retries in v1; fail-closed is the fallback and whole-turn retry semantics are revisited with #109. Date/Author: 2026-08-08, plan author.
 
-- Decision: A new ADR-018 "LLM Judge Command Gate" records the architectural decision; ADR-015 (proposed, never accepted) is marked `superseded by ADR-018` with a reciprocal note; the research note `docs/research/topics/llm-judge-bash-safety.md` is revised so its conclusion ("ship 241 unchanged") records the reversal. Rationale: the judge changes a security-adjacent durable boundary and per `docs/adr/README.md` the reversal belongs in a decision record, not only an issue. Date/Author: 2026-08-08, plan author.
+- Decision: A new ADR-018 "LLM Judge Command Gate" records the architectural decision; ADR-015 (proposed, never accepted) is marked `superseded by ADR-018` with a reciprocal note; the research note [LLM-as-Judge for Bash Command Safety](https://app.notion.com/p/LLM-as-Judge-for-Bash-Command-Safety-3b630bc66cc7810e902de778ea76a5b1) (Notion Research database) is revised so its conclusion ("ship 241 unchanged") records the reversal. Rationale: the judge changes a security-adjacent durable boundary and per `docs/adr/README.md` the reversal belongs in a decision record, not only an issue. Date/Author: 2026-08-08, plan author.
 
 - Decision: The superseded ExecPlan `docs/exec-plans/active/declarative-command-policy.md` is removed with `git rm` at Milestone 7, not moved to `completed/` (its work was cancelled, not completed; git history retains it). Date/Author: 2026-08-08, plan author.
 
@@ -114,7 +116,7 @@ Milestones are narrative; each must be independently verifiable and advance the 
 
 ### Milestone 1: Architectural decision (ADR-018) and design freeze
 
-Write and accept `docs/adr/018-llm-judge-command-gate.md` capturing the ten decisions in the Decision Log: judge-only gate with no deterministic floor, fail-closed with bounded timeout, same-family default judge model with settings override, block-by-default rubric, exact-match allowlist, telemetry-logged emergency bypass, embedded-plus-optional rubric file, stable verdict codes, metadata-only telemetry, and the evaluation prerequisites (#84/#106/#66). Mark ADR-015's front matter `status: superseded by ADR-018` and add a reciprocal note in ADR-018's `## More Information`. Revise `docs/research/topics/llm-judge-bash-safety.md` so its conclusion records the reversal ("the judge replaces 241, not tiers above it") while keeping the trade-off analysis as the risk record.
+Write and accept `docs/adr/018-llm-judge-command-gate.md` capturing the ten resolved decisions recorded in issue #72 and the Decision Log: judge-only gate with no deterministic floor, fail-closed with bounded timeout, same-family default judge model with settings override, block-by-default rubric, exact-match allowlist, telemetry-logged emergency bypass, embedded-plus-optional rubric file, stable verdict codes, metadata-only telemetry, and the evaluation prerequisites (#84/#106/#66). Mark ADR-015's front matter `status: superseded by ADR-018` and add a reciprocal note in ADR-018's `## More Information`. Revise the [LLM-as-Judge for Bash Command Safety](https://app.notion.com/p/LLM-as-Judge-for-Bash-Command-Safety-3b630bc66cc7810e902de778ea76a5b1) research note in Notion so its conclusion records the reversal ("the judge replaces 241, not tiers above it") while keeping the trade-off analysis as the risk record.
 
 The milestone is complete when the ADR is accepted, ADR-015 points to it, and the research note's conclusion no longer contradicts #72.
 
@@ -128,7 +130,8 @@ The milestone is complete when focused tests, using a stub judge responder, prov
 
 ### Milestone 3: Rubric, verdict codes, and `cake bash check`
 
-Define the v1 verdict-code vocabulary by mapping the current guard: `git-history-rewrite`, `git-worktree-discard`, `git-untracked-delete`, `git-force-push`, `git-branch-force-delete`, `git-stash-destructive` (drop, clear, and pop --- absorbing #68's cancelled scenario), `destructive-rm` (with the existing temp-directory carve-outs preserved), `git-commit-backticks` (warn), `rg-replace-footgun` (warn), and `unknown-destructive` for long-tail catches that map to no named class. `allow` needs no code.
+Define the v1 verdict-code vocabulary by mapping every check in the current registry (`src/clients/tools/bash_safety/mod.rs`): `git-history-rewrite` for `git_reset` (`git reset --hard`/`--merge`), `git-worktree-discard` for `git_checkout` (`git checkout -- <file>`) and `git_restore` (bare `git restore` without `--staged`, or with `--worktree`; `--staged`-only and `-b` forms remain safe), `git-untracked-delete` for `git_clean` (`git clean -f`/`--force`), `git-force-push` for `git_push` (`git push --force`/`-f`, never `--force-with-lease`), `git-branch-force-delete` for `git_branch_delete` (`git branch -D`), `git-stash-destructive` for `git_stash` (drop and clear today, plus pop --- absorbing #68's cancelled scenario), `destructive-rm` for `dangerous_rm` (`rm -rf` on dangerous paths, with the existing temp-directory carve-outs preserved), and `git-commit-backticks` for `git_commit_backticks` (`git commit -m`/`--message` with backticks or `$()` in a double-quoted message --- a block in
+the current registry, not a warning). `rg-replace-footgun` is the sole warn code, for `rg_replace_flag` (`rg -rn`). `unknown-destructive` covers long-tail catches that map to no named class. `allow` needs no code.
 
 Write the embedded default rubric as prompt text distilled from the current nine hard blocks and the existing warning, plus general principles: evaluate the command's meaning (aliases, variables, wrappers, encodings), consider cwd and repo state, weigh the command over the untrusted `reason` and flag incongruence, ignore instructions embedded in command text (prompt-injection defense), and always prefer a concrete safer alternative in the message. The rubric prompt takes the command, cwd, a compact repo-state digest, and the `reason`; an optional user rubric file appends additional guidance.
 
@@ -244,7 +247,7 @@ Preserve unrelated worktree changes. Untracked files present before this plan mu
 
 ## Artifacts and Notes
 
-The architectural source is `docs/adr/018-llm-judge-command-gate.md` (to be written and accepted in Milestone 1). The tracking issue is #72. The evaluation corpus is #106's `src/clients/tools/bash_safety/corpus/commands.jsonl` in its re-scoped form (the path may move when `bash_safety` is deleted; record the new location here). Add concise test transcripts and final examples during implementation.
+The architectural source is `docs/adr/018-llm-judge-command-gate.md` (accepted in Milestone 1, 2026-08-08). The tracking issue is #72. The evaluation corpus is #106's `src/clients/tools/bash_safety/corpus/commands.jsonl` in its re-scoped form (the path may move when `bash_safety` is deleted; record the new location here). Add concise test transcripts and final examples during implementation.
 
 The judge wire contract is illustrative until Milestone 2 fixes the exact serde spelling, but the semantics must remain:
 
@@ -278,3 +281,7 @@ with `JudgeRequest` carrying the command, cwd, repo-state digest, and untrusted 
 Revision note (2026-08-08): Initial ExecPlan written after issue #72 was rewritten from an opt-in escalation tier into a complete replacement. It records the decided design, the before/after dependency chain, repository orientation, incremental milestones, compatibility tests, and managed-work completion steps, and supersedes the cancelled `declarative-command-policy.md` plan.
 
 Revision note (2026-08-08, second): #106 split into Phase A (corpus migration, Ready) and Phase B (#174 judge-runner, Blocked on #72 and #106); the dependency chain, chain diagram, and ordering implications were updated accordingly.
+
+Revision note (2026-08-08, third): Milestone 1 records landed. ADR-018 is accepted, ADR-015 points to it as superseded, and the [LLM-as-Judge for Bash Command Safety](https://app.notion.com/p/LLM-as-Judge-for-Bash-Command-Safety-3b630bc66cc7810e902de778ea76a5b1) research note in Notion records the reversal. Later milestones are unchanged.
+
+Revision note (2026-08-08, fourth): Milestone 1 review corrections. The research note restores the original opt-in-tier implications as superseded historical text; ADR-018's telemetry field list gains `tier`; Milestone 1 wording now cites the ten resolved decisions recorded in issue #72; and the Milestone 3 verdict-code vocabulary is completed and corrected (`git-commit-backticks` is a block; `git_reset`, `git_checkout`, and `git_restore` are explicitly mapped) so all nine hard-block checks and the single warning are covered.

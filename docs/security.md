@@ -65,6 +65,8 @@ Changes to allowed paths, sandbox policy, fallback behavior, command checks, hoo
 - fail-closed behavior review;
 - updated documentation when the guarantee or limitation changes.
 
+Focused allow/deny cases for the command checks live in `src/clients/tools/bash_safety/corpus/commands.jsonl`; a regression case is a one-line append (see CONTRIBUTING.md).
+
 Convenience is not sufficient justification for widening authority.
 
 ### Enumerate bypass classes first
@@ -81,4 +83,4 @@ Validating an untrusted command string by parsing it is the recurring instance o
 - [ADR 015](adr/015-declarative-command-policy.md), declarative command policy.
 - [ADR 016](adr/016-nested-seatbelt-sandbox-fallback.md), the recognized nested-Seatbelt fallback.
 - [ADR 017](adr/017-trusted-executable-toolbox-tools.md), trusted toolbox executables.
-- [ADR 018](adr/018-project-customizable-sandbox-paths.md), project-customizable sandbox paths.
+- [ADR 019](adr/019-project-customizable-sandbox-paths.md), project-customizable sandbox paths.

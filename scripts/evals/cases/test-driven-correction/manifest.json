@@ -1,0 +1,12 @@
+{
+  "name": "test-driven-correction",
+  "description": "Implement real email validation so the failing test suite passes.",
+  "prompt": "The email-validation tests fail because is_valid_email in src/validate.py accepts everything. Implement real validation so `python3 tests/test_validate.py` prints ok. Valid addresses contain exactly one @, a non-empty local part, no spaces, and a domain with a dot. Do not modify the tests.",
+  "verify": "bash \"$EVAL_CASE_DIR/verify.sh\"",
+  "timeout_seconds": 300,
+  "tags": [
+    "tdd",
+    "tests"
+  ],
+  "expected": "correct"
+}
