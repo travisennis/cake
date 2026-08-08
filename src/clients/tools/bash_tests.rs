@@ -528,6 +528,57 @@ async fn test_sandbox_blocks_read_outside_cwd() {
     );
 }
 
+/// A `[sandbox].read_only` file grant (which flows into `additional_dirs`)
+/// lets sandboxed Bash execute exactly that file; a sibling file in the same
+/// directory stays denied.
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn test_sandbox_read_only_file_grant_runs_file_but_denies_sibling() {
+    if skip_if_sandbox_unavailable() {
+        return;
+    }
+
+    let outside =
+        path_outside_cwd_for_sandbox_test().expect("should find a parent directory outside cwd");
+    let temp_dir = tempfile::TempDir::new_in(outside).expect("should create test dir outside cwd");
+    let allowed = temp_dir.path().join("allowed.sh");
+    let sibling = temp_dir.path().join("sibling.sh");
+    std::fs::write(&allowed, "#!/bin/sh\nprintf 'allowed-ran\\n'\n").unwrap();
+    std::fs::write(&sibling, "#!/bin/sh\nprintf 'sibling-ran\\n'\n").unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&allowed, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&sibling, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    // `[sandbox].read_only` paths are loaded into `additional_dirs` by main.rs;
+    // mirror that wiring here.
+    let mut context = ToolContext::from_current_process();
+    context.additional_dirs = vec![allowed.clone()];
+    let context = Arc::new(context);
+
+    let allowed_args = format!(r#"{{"command": "{}"}}"#, allowed.display());
+    let result = Box::pin(execute_bash(&context, &allowed_args))
+        .await
+        .unwrap();
+    assert!(
+        result.output.contains("allowed-ran"),
+        "sandbox should run a configured [sandbox].read_only file, got: {}",
+        result.output
+    );
+
+    let sibling_args = format!(r#"{{"command": "{}"}}"#, sibling.display());
+    let result = Box::pin(execute_bash(&context, &sibling_args))
+        .await
+        .unwrap();
+    assert!(
+        result.output.contains("Operation not permitted")
+            || result.output.contains("Permission denied"),
+        "sandbox should deny a sibling file next to a [sandbox].read_only file, got: {}",
+        result.output
+    );
+}
+
 // ===========================================================================
 // Sandbox Policy Tests (task 195)
 // ===========================================================================
