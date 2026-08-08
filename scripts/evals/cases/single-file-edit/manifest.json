@@ -1,0 +1,12 @@
+{
+  "name": "single-file-edit",
+  "description": "Align the configured service port in src/config.py with the documented value.",
+  "prompt": "README.md documents that the service listens on port 9090, but src/config.py still sets PORT = 8080. Update src/config.py so the configured port matches the documentation. Change nothing else.",
+  "verify": "bash \"$EVAL_CASE_DIR/verify.sh\"",
+  "timeout_seconds": 300,
+  "tags": [
+    "edit",
+    "single-file"
+  ],
+  "expected": "correct"
+}

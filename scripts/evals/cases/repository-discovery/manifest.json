@@ -1,0 +1,12 @@
+{
+  "name": "repository-discovery",
+  "description": "Find the documented build command in README.md and record it in build_command.txt.",
+  "prompt": "Read README.md and write the documented build command into a file named build_command.txt at the repository root. The file must contain exactly the build command and nothing else.",
+  "verify": "bash \"$EVAL_CASE_DIR/verify.sh\"",
+  "timeout_seconds": 300,
+  "tags": [
+    "discovery",
+    "repository"
+  ],
+  "expected": "correct"
+}
