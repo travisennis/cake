@@ -23,6 +23,8 @@ pub mod skills;
 pub mod toolbox;
 pub mod worktree;
 
+use std::path::PathBuf;
+
 #[doc(inline)]
 pub use config_dir::config_dir;
 #[doc(inline)]
@@ -42,3 +44,30 @@ pub use skills::{
     DiagnosticLevel, SkillCatalog, discover_skills, discover_skills_with_paths,
     parse_skill_path_list,
 };
+
+/// Expand a leading `~` (or a bare `~`) to the user's home directory.
+///
+/// Returns the path unchanged when it is not a home-relative path, when the
+/// home directory cannot be determined, or when the path is not valid UTF-8.
+pub fn expand_home(path: PathBuf) -> PathBuf {
+    let Some(path_str) = path.to_str() else {
+        return path;
+    };
+
+    if path_str == "~" {
+        if let Some(home_dir) = dirs::home_dir() {
+            return home_dir;
+        }
+        return path;
+    }
+
+    if let Some(rest) = path_str
+        .strip_prefix("~/")
+        .or_else(|| path_str.strip_prefix("~\\"))
+        && let Some(home_dir) = dirs::home_dir()
+    {
+        return home_dir.join(rest);
+    }
+
+    path
+}
