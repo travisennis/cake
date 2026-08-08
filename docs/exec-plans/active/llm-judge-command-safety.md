@@ -24,9 +24,10 @@ Chain (old): #64 was the hub. #72 and #67 depended on #64. The mechanical `bash_
 
 ### After #72 (this plan, decided 2026-08-08)
 
-- #72 "Replace bash_safety With a Default-On LLM Judge and Bash reason Argument" (board Blocked P2 L) is the hub. It depends on #84, #106 (re-scoped), and #66 (re-scoped).
-- #84 "Establish a Controlled Model Evaluation Harness" (Backlog P2 M) is a hard prerequisite: a judge that is the only gate must be measured for bypass rate, not trusted.
-- #106 "Drive the LLM-Judge Command-Safety Gate From an External Case Corpus" (Backlog P2 M) is a prerequisite and the judge's regression suite, seeded from the old guard's own test cases before `bash_safety` is deleted.
+- #72 "Replace bash_safety With a Default-On LLM Judge and Bash reason Argument" (board Blocked P2 L) is the hub. It depends on #84, #106 (Phase A corpus), and #66 (re-scoped).
+- #84 "Establish a Controlled Model Evaluation Harness" (Ready P2 M) is a hard prerequisite: a judge that is the only gate must be measured for bypass rate, not trusted.
+- #106 "Migrate bash_safety Tests to an External Case Corpus" (Ready P2 M, Phase A) is a prerequisite: it builds the JSONL corpus seeded from the old guard's own test cases before `bash_safety` is deleted. The judge-driven runner half of the re-scope lives in #174.
+- #174 "Drive the LLM-Judge Command-Safety Gate From the External Case Corpus" (Blocked P2 M, Phase B) depends on #72 and #106: it extends the corpus runner to drive the judge path, maps cases to verdict codes, states the non-determinism tolerance policy, and adds judge-specific cases (benign-vs-hostile pairs, reason-laundering, injection in `reason`).
 - #66 "Count Model-Compensation Events in Session Telemetry" (Ready P2 M) is a prerequisite: judge verdict counters must exist before the judge goes default-on.
 - #123 "Record judge-verdict blocks in task completion metadata" (Backlog P1 M) depends on #72: it records judge verdict blocks and fail-closed denials.
 - #67 "Add cake init for Project Scaffolding and Recommended Setup" (Blocked P2 M) depends on #72: the recommended "policy" becomes recommended judge configuration and allowlist.
@@ -34,11 +35,11 @@ Chain (old): #64 was the hub. #72 and #67 depended on #64. The mechanical `bash_
 - Cancelled (closed not-planned on 2026-08-08): #64, #68, #96, #97. ADR-015 is withdrawn and the superseded ExecPlan is removed by this plan's Milestone 7.
 - Footnoted in #72: #65 (stale bash_safety mention) and #91 (Bash inheriting the provider API key becomes more load-bearing once the judge runs on the configured backend).
 
-Chain (new): #84 + #106 + #66 → #72 → #123, #67.
+Chain (new): #84 + #106 + #66 → #72 → #123, #67; #106 → #174 → (consumes #72).
 
 ### Ordering implications
 
-- #106 must land before Milestone 5 deletes `bash_safety`, because the corpus seeds from `bash_safety`'s existing test cases.
+- #106 (Phase A) must land before Milestone 5 deletes `bash_safety`, because the corpus seeds from `bash_safety`'s existing test cases; #174 (Phase B) follows the judge path from Milestones 2/3 and can be implemented in parallel with or after #72.
 - #84 and #66 must land before Milestone 5's default-on point; if either lags, default-on waits and the plan records the gap rather than shipping unmeasured.
 - #123's scope is delivered by Milestone 6 of this plan; #67's settings surface by Milestones 2 and 4.
 
@@ -64,17 +65,30 @@ Chain (new): #84 + #106 + #66 → #72 → #123, #67.
 ## Decision Log
 
 - Decision: The LLM judge replaces `bash_safety` and the planned declarative engine entirely; there is no deterministic floor. Rationale: rule systems lose by construction to the long tail, and the user chose the bitter-lesson path of learning how far a judge-only gate can go. Accepted risks: non-determinism, latency on the hottest tool, and correlated prompt-injection failure. Date/Author: 2026-08-08, Travis Ennis.
+
 - Decision: Fail-closed on judge unavailability. A bounded judge timeout (default 30 seconds, `judge_timeout_secs`) turns a timeout, network error, or invalid judge response into a block with a clear message and a metadata-only telemetry event. Bash never runs ungated. Rationale: with no floor, fail-open means no safety layer at all; the user chose fail-close. Date/Author: 2026-08-08, Travis Ennis.
+
 - Decision: The judge model defaults to the agent's configured model family and is overridable via a `judge_model` setting (same provider in v1; a different provider is a later extension). Rationale: same-family is cheap and coherent; the correlated-injection risk is accepted, and #69 documents the different-family hardening path. Date/Author: 2026-08-08, Travis Ennis.
+
 - Decision: The judge blocks destructive classes by default and warns for footguns, via the embedded default rubric distilled from the current nine hard blocks and the existing warning. Rationale: preserves today's out-of-box posture without a compiled default table. Date/Author: 2026-08-08, Travis Ennis.
+
 - Decision: An explicit user allowlist is the only override surface. V1 matches by exact raw-command equality only; pattern matching is deferred. Rationale: ADR-015's broad-allow lesson (an allow pattern can silently neutralize unrelated restrictions) argues against patterns until real usage justifies them. Allowlisted commands are still judged; a block is overridden but the verdict and an `overridden` flag are still telemetried. Date/Author: 2026-08-08, Travis Ennis (refinement of #72's "exact command or pattern").
+
 - Decision: An explicit, telemetry-logged emergency bypass exists (environment variable `CAKE_JUDGE=off` or setting `tools.bash.judge.enabled = false`); every Bash call while bypassed emits a `judge_bypass` telemetry event. Fail-closed remains the default. Rationale: without an escape hatch, a failing judge strands every session's Bash tool. Date/Author: 2026-08-08, Travis Ennis.
+
 - Decision: The default rubric is embedded and immutable; an optional user rubric file may append additional guidance (extra always-block classes, relaxations phrased as guidance). Rubric relaxations are advisory to the judge, not hard overrides --- the allowlist is the only hard override. Rationale: keeps user ownership without re-creating a policy engine. Date/Author: 2026-08-08, Travis Ennis.
+
 - Decision: Verdict codes are stable, namespaced strings replacing ADR-015's rule IDs, defined in Milestone 3. Rationale: decisions stay auditable and telemetry stays structured without a regex engine. Date/Author: 2026-08-08, Travis Ennis.
+
 - Decision: No verdict caching in v1. Context-sensitive caching keyed by (command, cwd, repo-state digest) is recorded as a deferred follow-up in #72; premature until latency data exists. Date/Author: 2026-08-08, Travis Ennis.
+
 - Decision: The judge contract is a single LLM call returning a strict JSON object `{"verdict":"block"|"warn"|"allow","code":"<code>","message":"...","confidence":0.0-1.0}`. Malformed or missing fields count as judge failure and fail closed. No retries in v1; fail-closed is the fallback and whole-turn retry semantics are revisited with #109. Date/Author: 2026-08-08, plan author.
+
 - Decision: A new ADR-018 "LLM Judge Command Gate" records the architectural decision; ADR-015 (proposed, never accepted) is marked `superseded by ADR-018` with a reciprocal note; the research note `docs/research/topics/llm-judge-bash-safety.md` is revised so its conclusion ("ship 241 unchanged") records the reversal. Rationale: the judge changes a security-adjacent durable boundary and per `docs/adr/README.md` the reversal belongs in a decision record, not only an issue. Date/Author: 2026-08-08, plan author.
+
 - Decision: The superseded ExecPlan `docs/exec-plans/active/declarative-command-policy.md` is removed with `git rm` at Milestone 7, not moved to `completed/` (its work was cancelled, not completed; git history retains it). Date/Author: 2026-08-08, plan author.
+
+- Decision: #106 split into Phase A (corpus migration; board Ready) and Phase B (#174 judge-runner; board Blocked on #72 and #106). Rationale: one branch holds one task, and Phase A is startable now while Phase B needs the judge path from Milestones 2/3. Date/Author: 2026-08-08, Travis Ennis.
 
 ## Outcomes & Retrospective
 
@@ -132,9 +146,9 @@ The milestone is complete when tests prove: allowlist overrides a stub judge's b
 
 Replace the `validate_command_safety` preflight in `src/clients/tools/bash.rs` with the judge path. A block prevents spawn and returns the judge's message as the tool error. A warn executes normally and prepends the message after ordinary output formatting, without changing exit status or error classification. A judge failure fails closed: the command is blocked, the model-visible message explains that the safety judge was unavailable, and a metadata-only event records the skip. The judge remains active under `danger-full-access` and `CAKE_SANDBOX=off`, matching the current policy's independence from the sandbox.
 
-Before deleting `bash_safety`, confirm the #106 corpus is in place and seeded from the current guard's cases (the corpus is a prerequisite issue; if it lags, record the gap and keep `bash_safety` until migration completes). Then remove `src/clients/tools/bash_safety/` entirely, including its tests, and delete the preflight call site. Preserve the guard's known safe exceptions in the rubric and corpus (for example temp-directory destructive-rm carve-outs and safe restore forms) so out-of-box behavior does not regress.
+Before deleting `bash_safety`, confirm the #106 (Phase A) corpus is in place and seeded from the current guard's cases (the corpus is a prerequisite issue; if it lags, record the gap and keep `bash_safety` until migration completes). Then remove `src/clients/tools/bash_safety/` entirely, including its tests, and delete the preflight call site. Preserve the guard's known safe exceptions in the rubric and corpus (for example temp-directory destructive-rm carve-outs and safe restore forms) so out-of-box behavior does not regress.
 
-The milestone is complete when: the judge is default-on for every Bash call, the nine hard-block classes block out of the box against a stub judge configured to reproduce the rubric, warnings prepend without reclassification, judge failure blocks with the fail-closed message, `bash_safety` is gone, and the #106 corpus drives the judge's regression run.
+The milestone is complete when: the judge is default-on for every Bash call, the nine hard-block classes block out of the box against a stub judge configured to reproduce the rubric, warnings prepend without reclassification, judge failure blocks with the fail-closed message, `bash_safety` is gone, and the #106 corpus (Phase A data) drives the judge's regression run via #174's runner.
 
 ### Milestone 6: Denials and telemetry
 
@@ -262,3 +276,5 @@ pub async fn judge(&self, request: JudgeRequest) -> Result<JudgeVerdict, JudgeEr
 with `JudgeRequest` carrying the command, cwd, repo-state digest, and untrusted reason, and `JudgeVerdict` carrying decision, code, message, and confidence. The Bash tool, `cake bash check`, telemetry, and denial recording consume the same verdict type so decisions are recorded once. Normal Bash output must not expose candidate internals; `bash check` may.
 
 Revision note (2026-08-08): Initial ExecPlan written after issue #72 was rewritten from an opt-in escalation tier into a complete replacement. It records the decided design, the before/after dependency chain, repository orientation, incremental milestones, compatibility tests, and managed-work completion steps, and supersedes the cancelled `declarative-command-policy.md` plan.
+
+Revision note (2026-08-08, second): #106 split into Phase A (corpus migration, Ready) and Phase B (#174 judge-runner, Blocked on #72 and #106); the dependency chain, chain diagram, and ordering implications were updated accordingly.
