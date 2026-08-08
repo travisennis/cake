@@ -471,12 +471,13 @@ impl SettingsLoader {
         for dir in settings.directories {
             acc.directories.insert(expand_home_str(&dir));
         }
-        if let Some(sandbox) = settings.sandbox {
-            acc.sandbox_read_only
-                .extend(sandbox.read_only.iter().map(|p| expand_home_str(p)));
-            acc.sandbox_writable
-                .extend(sandbox.writable.iter().map(|p| expand_home_str(p)));
-        }
+        // `unwrap_or_default` keeps this function at baseline complexity: an
+        // absent `[sandbox]` section contributes no grants.
+        let sandbox = settings.sandbox.unwrap_or_default();
+        acc.sandbox_read_only
+            .extend(sandbox.read_only.iter().map(|p| expand_home_str(p)));
+        acc.sandbox_writable
+            .extend(sandbox.writable.iter().map(|p| expand_home_str(p)));
         if let Some(settings_skills) = settings.skills {
             acc.skills = settings_skills;
         }
