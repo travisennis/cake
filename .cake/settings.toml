@@ -3,6 +3,8 @@ directories = [
   "/Users/travisennis/.cache/cake",
   "/Users/travisennis/.local/share/cake",
   "/Users/travisennis/.config/cake",
-  "/Users/travisennis/.local/bin",
-  "/Users/travisennis/.config/notion",
 ]
+
+[sandbox]
+read_only = ["/Users/travisennis/.local/bin"]
+writable = ["/Users/travisennis/.config/notion"]

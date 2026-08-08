@@ -163,14 +163,16 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let writable = temp.path().join("writable");
         let readable = temp.path().join("readable");
+        let readable_file = temp.path().join("tool");
         std::fs::create_dir(&writable).unwrap();
         std::fs::create_dir(&readable).unwrap();
+        std::fs::write(&readable_file, b"#!/bin/sh\n").unwrap();
         let missing = temp.path().join("missing");
 
         let config = SandboxConfig {
             writable: vec![missing.clone(), writable.clone()],
             system_paths: vec![missing],
-            readable: vec![readable.clone()],
+            readable: vec![readable.clone(), readable_file.clone()],
             policy: crate::clients::tools::sandbox::SandboxPolicy::WorkspaceWrite,
         };
 
@@ -179,7 +181,10 @@ mod tests {
             RulePaths {
                 writable: vec![writable],
                 system_paths: Vec::new(),
-                readable: vec![readable],
+                // A `[sandbox].read_only` file grant survives classification
+                // and is handed to `path_beneath_rules`, which applies the
+                // rights to the file object itself.
+                readable: vec![readable, readable_file],
             }
         );
     }

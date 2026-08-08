@@ -1,0 +1,12 @@
+{
+  "name": "stale-context-edit",
+  "description": "Fix the catalog page size against the changelog and tests despite stale README/comment context.",
+  "prompt": "The catalog test suite currently fails. The README and the code comment describe a 20-item page size, but CHANGELOG.md records that v2.0.0 raised the page size to 50, and the test expects 50. Make `python3 tests/test_catalog.py` print ok. Do not modify the tests.",
+  "verify": "bash \"$EVAL_CASE_DIR/verify.sh\"",
+  "timeout_seconds": 300,
+  "tags": [
+    "edit",
+    "stale-context"
+  ],
+  "expected": "correct"
+}

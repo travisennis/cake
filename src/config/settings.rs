@@ -1,8 +1,9 @@
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::config::expand_home;
 use crate::config::model::{ApiType, ModelConfig, ModelProvider, ProviderHeaders, ReasoningEffort};
 use crate::config::skills::SkillConfig;
 
@@ -50,6 +51,25 @@ impl SkillSettings {
     }
 }
 
+/// Sandbox path grants loaded from settings.toml.
+///
+/// Controls which extra filesystem paths the Bash sandbox and the in-process
+/// Read/Edit/Write/Grep path validation allow, on top of the built-in
+/// toolchain paths, `--add-dir`, and `directories`.
+///
+/// Entries may be absolute or relative paths and support `~` expansion.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SandboxSettings {
+    /// Paths granted read + execute access. Entries may be files or
+    /// directories.
+    #[serde(default)]
+    pub read_only: Vec<String>,
+    /// Paths granted read + write + execute access. Entries may be files or
+    /// directories.
+    #[serde(default)]
+    pub writable: Vec<String>,
+}
+
 /// Profile-specific behavior settings.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProfileSettings {
@@ -62,6 +82,10 @@ pub struct ProfileSettings {
     /// Additional directories for read-write access.
     #[serde(default)]
     pub directories: Vec<String>,
+    /// Sandbox path grants overlaid onto the merged top-level `[sandbox]`
+    /// section. Merged as a union, like `directories`.
+    #[serde(default)]
+    pub sandbox: Option<SandboxSettings>,
     /// Path to a custom system prompt file for this profile.
     #[serde(default)]
     pub system_prompt: Option<String>,
@@ -95,6 +119,10 @@ pub struct Settings {
     /// Merged from global and project settings.
     #[serde(default)]
     pub directories: Vec<String>,
+    /// Sandbox path grants. Merged as a union from global and project settings
+    /// plus the selected profile, like `directories`.
+    #[serde(default)]
+    pub sandbox: Option<SandboxSettings>,
     /// Path to a custom system prompt file.
     #[serde(default)]
     pub system_prompt: Option<String>,
@@ -116,6 +144,9 @@ pub struct LoadedSettings {
     pub default_model: Option<String>,
     /// Additional directories for read-write access (global + project merged)
     pub directories: Vec<String>,
+    /// Effective sandbox path grants (global + project + selected profile),
+    /// merged as a union.
+    pub sandbox: SandboxSettings,
     /// Effective skill settings (global + project + selected profile)
     pub skills: SkillSettings,
     /// Resolved system prompt path from settings (global + project + selected profile).
@@ -374,44 +405,21 @@ impl SettingsLoader {
         project_dir: Option<&Path>,
         profile: Option<&str>,
     ) -> Result<LoadedSettings, SettingsError> {
-        let mut models: HashMap<String, ModelDefinition> = HashMap::new();
-        let mut default_model: Option<String> = None;
-        let mut directories: HashSet<String> = HashSet::new();
-        let mut skills = SkillSettings::default();
-        let mut profiles: HashMap<String, Vec<ProfileSettings>> = HashMap::new();
-        let mut system_prompt: Option<String> = None;
+        let mut acc = SettingsAccumulator::default();
 
-        // Load global settings first.
+        // Load global settings first, then project settings (they override).
         let global_path = crate::config::config_dir()
             .join("cake")
             .join("settings.toml");
         if let Some(settings) = Self::load_file(&global_path)? {
             Self::validate_profiles(&settings.profiles)?;
-            Self::merge_settings(
-                settings,
-                &mut models,
-                &mut default_model,
-                &mut directories,
-                &mut skills,
-                &mut profiles,
-                &mut system_prompt,
-            )?;
+            Self::merge_settings(settings, &mut acc)?;
         }
-
-        // Load project settings last so they override global settings.
         if let Some(project_dir) = project_dir {
             let project_path = project_dir.join(".cake").join("settings.toml");
             if let Some(settings) = Self::load_file(&project_path)? {
                 Self::validate_profiles(&settings.profiles)?;
-                Self::merge_settings(
-                    settings,
-                    &mut models,
-                    &mut default_model,
-                    &mut directories,
-                    &mut skills,
-                    &mut profiles,
-                    &mut system_prompt,
-                )?;
+                Self::merge_settings(settings, &mut acc)?;
             }
         }
 
@@ -423,8 +431,8 @@ impl SettingsLoader {
                 });
             }
 
-            let Some(overlays) = profiles.get(name) else {
-                let mut available: Vec<_> = profiles.keys().cloned().collect();
+            let Some(overlays) = acc.profiles.get(name) else {
+                let mut available: Vec<_> = acc.profiles.keys().cloned().collect();
                 available.sort();
                 let available = if available.is_empty() {
                     String::new()
@@ -437,58 +445,47 @@ impl SettingsLoader {
                 });
             };
 
-            for overlay in overlays {
-                if let Some(ref profile_default) = overlay.default_model {
-                    default_model = Some(profile_default.clone());
-                }
-                system_prompt.clone_from(&overlay.system_prompt);
-                for dir in &overlay.directories {
-                    directories.insert(dir.clone());
-                }
-                skills.apply_overlay(overlay.skills.clone());
+            for overlay in overlays.clone() {
+                acc.apply_profile_overlay(&overlay);
             }
         }
 
         // Validate that default_model (if set) refers to an existing model.
-        if let Some(ref name) = default_model
-            && !models.contains_key(name.as_str())
+        if let Some(ref name) = acc.default_model
+            && !acc.models.contains_key(name.as_str())
         {
             return Err(SettingsError::DefaultModelNotFound { name: name.clone() });
         }
 
-        Ok(LoadedSettings {
-            models,
-            default_model,
-            directories: directories.into_iter().collect(),
-            skills,
-            system_prompt,
-        })
+        Ok(acc.into_loaded())
     }
 
     fn merge_settings(
         settings: Settings,
-        models: &mut HashMap<String, ModelDefinition>,
-        default_model: &mut Option<String>,
-        directories: &mut HashSet<String>,
-        skills: &mut SkillSettings,
-        profiles: &mut HashMap<String, Vec<ProfileSettings>>,
-        system_prompt: &mut Option<String>,
+        acc: &mut SettingsAccumulator,
     ) -> Result<(), SettingsError> {
-        Self::add_models_to_map(models, settings.models)?;
+        Self::add_models_to_map(&mut acc.models, settings.models)?;
         if settings.default_model.is_some() {
-            *default_model = settings.default_model;
+            acc.default_model = settings.default_model;
         }
         for dir in settings.directories {
-            directories.insert(dir);
+            acc.directories.insert(expand_home_str(&dir));
         }
+        // `unwrap_or_default` keeps this function at baseline complexity: an
+        // absent `[sandbox]` section contributes no grants.
+        let sandbox = settings.sandbox.unwrap_or_default();
+        acc.sandbox_read_only
+            .extend(sandbox.read_only.iter().map(|p| expand_home_str(p)));
+        acc.sandbox_writable
+            .extend(sandbox.writable.iter().map(|p| expand_home_str(p)));
         if let Some(settings_skills) = settings.skills {
-            *skills = settings_skills;
+            acc.skills = settings_skills;
         }
         if settings.system_prompt.is_some() {
-            *system_prompt = settings.system_prompt;
+            acc.system_prompt = settings.system_prompt;
         }
         for (name, profile) in settings.profiles {
-            profiles.entry(name).or_default().push(profile);
+            acc.profiles.entry(name).or_default().push(profile);
         }
         Ok(())
     }
@@ -543,6 +540,61 @@ impl SettingsLoader {
 
         Ok(())
     }
+}
+
+/// Mutable merge state shared by [`SettingsLoader`] while combining global,
+/// project, and profile settings.
+#[derive(Default)]
+struct SettingsAccumulator {
+    models: HashMap<String, ModelDefinition>,
+    default_model: Option<String>,
+    directories: HashSet<String>,
+    sandbox_read_only: HashSet<String>,
+    sandbox_writable: HashSet<String>,
+    skills: SkillSettings,
+    profiles: HashMap<String, Vec<ProfileSettings>>,
+    system_prompt: Option<String>,
+}
+
+impl SettingsAccumulator {
+    /// Union a profile overlay into the accumulated settings.
+    fn apply_profile_overlay(&mut self, overlay: &ProfileSettings) {
+        if let Some(ref profile_default) = overlay.default_model {
+            self.default_model = Some(profile_default.clone());
+        }
+        self.system_prompt.clone_from(&overlay.system_prompt);
+        self.directories
+            .extend(overlay.directories.iter().map(|d| expand_home_str(d)));
+        if let Some(ref overlay_sandbox) = overlay.sandbox {
+            self.sandbox_read_only
+                .extend(overlay_sandbox.read_only.iter().map(|p| expand_home_str(p)));
+            self.sandbox_writable
+                .extend(overlay_sandbox.writable.iter().map(|p| expand_home_str(p)));
+        }
+        self.skills.apply_overlay(overlay.skills.clone());
+    }
+
+    /// Convert the accumulated merge state into the final [`LoadedSettings`].
+    fn into_loaded(self) -> LoadedSettings {
+        LoadedSettings {
+            models: self.models,
+            default_model: self.default_model,
+            directories: self.directories.into_iter().collect(),
+            sandbox: SandboxSettings {
+                read_only: self.sandbox_read_only.into_iter().collect(),
+                writable: self.sandbox_writable.into_iter().collect(),
+            },
+            skills: self.skills,
+            system_prompt: self.system_prompt,
+        }
+    }
+}
+
+/// Expand `~` in a settings path string, returning the expanded string.
+fn expand_home_str(path: &str) -> String {
+    expand_home(PathBuf::from(path))
+        .to_string_lossy()
+        .into_owned()
 }
 
 #[cfg(test)]

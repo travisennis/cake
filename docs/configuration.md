@@ -53,11 +53,23 @@ Optional model fields are `api_type` (`chat_completions` or `responses`), `provi
 
 Set the selected model explicitly with `--model`, through a selected `--profile`, or with `default_model`. Reasoning and output-token CLI flags override the resolved model for one invocation.
 
-Relative `system_prompt`, `skills.path`, and `directories` values resolve from the invocation working directory, including the created worktree when `--worktree` is active. Use absolute paths for global settings that must work from every project. Invalid files and unknown selected models fail before the provider request.
+Relative `system_prompt`, `skills.path`, `directories`, and `[sandbox]` values resolve from the invocation working directory, including the created worktree when `--worktree` is active. Use absolute paths for global settings that must work from every project. Invalid files and unknown selected models fail before the provider request.
 
 ## Filesystem access
 
 Top-level and profile `directories` grant persistent read-write access to the listed directories under `workspace-write`. Global and project entries are merged. The `read-only` policy demotes these paths to read-only access.
+
+The `[sandbox]` section grants the Bash sandbox and the Read/Edit/Write/Grep path checks extra filesystem access on top of the built-in toolchain paths, `--add-dir`, and `directories`:
+
+```toml
+[sandbox]
+read_only = ["~/.local/bin/claude"]   # read + execute
+writable = ["~/.claude", "~/.cache/claude"]  # read + write + execute
+```
+
+`read_only` entries may be files or directories and grant read plus execute access (enough to run a single binary such as `~/.local/bin/claude` without opening its whole directory). `writable` entries grant read, write, and execute access. Both keys accept absolute paths, relative paths, and `~` expansion, and merge as a union across global settings, project settings, and the selected profile. Entries that do not exist are ignored with a warning in the log file. Under `--sandbox read-only`, `writable` entries are demoted to read-only, matching `directories`.
+
+`directories = ["~/shared"]` also expands `~` (historically the path was ignored).
 
 `--add-dir <PATH>` grants additional read-only access for one invocation and may be repeated. `--sandbox` selects `read-only`, `workspace-write`, or `danger-full-access`.
 
