@@ -25,6 +25,8 @@ gh project item-list 1 --owner travisennis --query 'status:Blocked' --limit 200
 gh issue list --state open --label 'area:clients'
 ```
 
+`just ready-queue` prints the Ready queue with the board's Priority field applied (P0 first, one issue per line).
+
 GitHub issue search does not index Projects v2 Status fields, so query the project with `gh project item-list` rather than `gh issue list --search 'status:...'`.
 
 The committed vocabulary in `.github/labels.yml` is the single source of truth for labels; verify it with `just labels-check-file`.
@@ -64,7 +66,7 @@ Follow this procedure for every implementation issue, whether or not it has an E
 
 1. Run `gh issue view <number>`. Confirm that the issue still matches the repository, is ready to work, and has no incomplete dependencies. During this inspection, consult `docs/workflow/research.md` if resolving material uncertainty requires evidence that should survive the session or inform multiple artifacts. Keep brief issue-local code reading in the issue rather than creating research note churn. Leave the issue `Backlog` while material research questions prevent clear scope or acceptance.
 
-2. Set the Status field to `In Progress`. If the user explicitly asks to resume an existing `In Progress` issue, continue it without restarting the lifecycle.
+2. Claim the issue: `just claim <number>` moves the board Status field to `In Progress`; `scripts/claim-issue.sh --assign <number>` also assigns the claimer. If the user explicitly asks to resume an existing `In Progress` issue, continue it without restarting the lifecycle.
 
 3. Before implementation, route any required decision or planning work:
    - Consult `docs/workflow/research.md` when factual or technical uncertainty requires durable evidence that may feed an ADR, issue, or ExecPlan. Research is evidence, not a decision or implementation contract.
@@ -106,6 +108,8 @@ gh issue comment <number> --body <text>          # progress, acceptance notes, o
 gh issue close <number>                          # fallback only after a merged PR lacked a closing keyword
 gh issue close <number> --reason "not planned"   # cancel (with a comment explaining why)
 gh issue reopen <number>                         # reopen
+just claim <number>                              # Ready -> In Progress (claim)
+just unclaim <number>                            # In Progress -> Ready (hand back)
 ```
 
 Set the Projects v2 Status field to reflect queue state: Backlog (untriaged), Ready (accepted, workable), In Progress (claimed), Blocked (waiting on a dependency or decision), Done (merged to the default branch and closed).
