@@ -256,14 +256,6 @@ impl SandboxConfig {
             home.join(".local/state/glab-cli"),
         ]);
 
-        // AI coding assistant CLI: codex (config, cache, state).
-        writable.extend([
-            home.join(".codex"),
-            home.join(".cache/codex"),
-            home.join(".local/share/codex"),
-            home.join(".local/state/codex"),
-        ]);
-
         // Cross-language runtime managers.
         writable.extend([
             // mise
@@ -509,9 +501,6 @@ impl SandboxConfig {
             home.join("Library/Caches/cpanm"),
             // PHP
             home.join("Library/Caches/composer"),
-            // AI coding assistant: codex
-            home.join("Library/Caches/codex"),
-            home.join("Library/Application Support/codex"),
         ]);
     }
 
@@ -978,12 +967,14 @@ mod tests {
         temp_env::with_var("HOME", Some("/tmp/cake-sandbox-test-home"), || {
             let home = PathBuf::from("/tmp/cake-sandbox-test-home");
             let temp_dir = PathBuf::from("/tmp/cake-sandbox-ro-temp");
+            let settings_dir = tempfile::tempdir().unwrap();
+            let settings_dir_path = settings_dir.path().to_path_buf();
             let config = SandboxConfig::build_with_policy(
                 SandboxPolicy::ReadOnly,
                 Path::new("/workspace"),
                 std::slice::from_ref(&temp_dir),
                 &[],
-                &[],
+                std::slice::from_ref(&settings_dir_path),
                 &[],
             );
 
@@ -1030,6 +1021,20 @@ mod tests {
             assert!(
                 config.writable.contains(&temp_dir),
                 "read-only policy must keep temp dirs writable"
+            );
+
+            // Settings dirs ([sandbox].writable and directories) demote to
+            // read-only under the read-only policy, matching workspace and
+            // toolchain paths.
+            assert!(
+                !config.writable.contains(&settings_dir_path),
+                "read-only policy must not grant writes to {}",
+                settings_dir_path.display()
+            );
+            assert!(
+                config.readable.contains(&settings_dir_path),
+                "read-only policy must grant reads to {}",
+                settings_dir_path.display()
             );
         });
     }
@@ -1256,11 +1261,6 @@ mod tests {
                 // Perl / PHP
                 home.join(".cpanm"),
                 home.join(".composer"),
-                // AI coding assistant: codex
-                home.join(".codex"),
-                home.join(".cache/codex"),
-                home.join(".local/share/codex"),
-                home.join(".local/state/codex"),
                 // Runtime managers
                 home.join(".proto"),
                 home.join(".pkgx"),
@@ -1289,9 +1289,6 @@ mod tests {
                 home.join("Library/Caches/uv"),
                 home.join("Library/Caches/bundle"),
                 home.join("Library/Caches/composer"),
-                // AI coding assistant: codex
-                home.join("Library/Caches/codex"),
-                home.join("Library/Application Support/codex"),
             ] {
                 assert!(
                     config.writable.contains(&expected),

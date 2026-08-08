@@ -511,31 +511,8 @@ pub fn discover_skills_with_paths(
 pub fn parse_skill_path_list(path_list: &str) -> Vec<PathBuf> {
     std::env::split_paths(path_list)
         .filter(|p| !p.as_os_str().is_empty())
-        .map(expand_home)
+        .map(crate::config::expand_home)
         .collect()
-}
-
-fn expand_home(path: PathBuf) -> PathBuf {
-    let Some(path_str) = path.to_str() else {
-        return path;
-    };
-
-    if path_str == "~" {
-        if let Some(home_dir) = dirs::home_dir() {
-            return home_dir;
-        }
-        return path;
-    }
-
-    if let Some(rest) = path_str
-        .strip_prefix("~/")
-        .or_else(|| path_str.strip_prefix("~\\"))
-        && let Some(home_dir) = dirs::home_dir()
-    {
-        return home_dir.join(rest);
-    }
-
-    path
 }
 
 /// Recursively scan a directory for SKILL.md files.

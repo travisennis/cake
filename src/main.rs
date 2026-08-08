@@ -507,6 +507,10 @@ impl CodingAssistant {
             .collect();
 
         let settings_dirs = Self::valid_settings_dirs(&loaded);
+        // `[sandbox].read_only` grants join `--add-dir` entries as read-only
+        // sandbox paths; both are consumed identically downstream.
+        let mut additional_dirs = additional_dirs;
+        additional_dirs.extend(Self::valid_sandbox_read_only_dirs(&loaded));
         let sandbox_policy = resolve_sandbox_policy(self.sandbox);
         let tool_context = ToolContext::new(
             current_dir.to_path_buf(),
@@ -557,8 +561,10 @@ impl CodingAssistant {
         })
     }
 
+    /// Resolve the persistent read-write sandbox directories from settings:
+    /// the `directories` key plus `[sandbox].writable` paths.
     fn valid_settings_dirs(loaded: &LoadedSettings) -> Vec<PathBuf> {
-        loaded
+        let mut dirs: Vec<PathBuf> = loaded
             .directories
             .iter()
             .map(PathBuf::from)
@@ -568,6 +574,43 @@ impl CodingAssistant {
                 } else {
                     tracing::warn!(
                         "settings.toml directory '{}' does not exist or is not a directory, ignoring",
+                        p.display()
+                    );
+                    false
+                }
+            })
+            .collect();
+        dirs.extend(loaded.sandbox.writable.iter().map(PathBuf::from).filter(|p| {
+            if p.exists() && p.is_dir() {
+                true
+            } else {
+                tracing::warn!(
+                    "settings.toml [sandbox].writable path '{}' does not exist or is not a directory, ignoring",
+                    p.display()
+                );
+                false
+            }
+        }));
+        dirs
+    }
+
+    /// Resolve `[sandbox].read_only` paths for read-only sandbox access.
+    ///
+    /// Unlike writable grants, entries may be individual executable files
+    /// (e.g. `~/.local/bin/claude`) as well as directories. Nonexistent paths
+    /// are ignored with a file-only log warning.
+    fn valid_sandbox_read_only_dirs(loaded: &LoadedSettings) -> Vec<PathBuf> {
+        loaded
+            .sandbox
+            .read_only
+            .iter()
+            .map(PathBuf::from)
+            .filter(|p| {
+                if p.exists() {
+                    true
+                } else {
+                    tracing::warn!(
+                        "settings.toml [sandbox].read_only path '{}' does not exist, ignoring",
                         p.display()
                     );
                     false

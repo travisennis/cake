@@ -975,3 +975,187 @@ models = []
         Err(SettingsError::ProfileModelsUnsupported { name }) if name == "fast"
     ));
 }
+
+#[test]
+fn test_sandbox_merge_global_and_project() {
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"
+[sandbox]
+read_only = ["/global/bin", "/shared/bin"]
+writable = ["/global/state"]
+"#,
+    );
+
+    let project_dir = create_project_settings(
+        r#"
+[sandbox]
+read_only = ["/project/bin", "/shared/bin"]
+writable = ["/project/state"]
+"#,
+    );
+
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load(Some(project_dir.path()))
+    })
+    .unwrap();
+
+    // Both keys merge as a union without duplicates.
+    assert_eq!(loaded.sandbox.read_only.len(), 3);
+    assert!(
+        loaded
+            .sandbox
+            .read_only
+            .contains(&"/global/bin".to_string())
+    );
+    assert!(
+        loaded
+            .sandbox
+            .read_only
+            .contains(&"/shared/bin".to_string())
+    );
+    assert!(
+        loaded
+            .sandbox
+            .read_only
+            .contains(&"/project/bin".to_string())
+    );
+
+    assert_eq!(loaded.sandbox.writable.len(), 2);
+    assert!(
+        loaded
+            .sandbox
+            .writable
+            .contains(&"/global/state".to_string())
+    );
+    assert!(
+        loaded
+            .sandbox
+            .writable
+            .contains(&"/project/state".to_string())
+    );
+}
+
+#[test]
+fn test_sandbox_profile_merge_and_deduplicate() {
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"
+[sandbox]
+read_only = ["/global/bin"]
+writable = ["/global/state"]
+
+[[models]]
+name = "base"
+model = "base/model"
+base_url = "https://example.com"
+api_key_env = "KEY"
+
+[profiles.expanded]
+
+[profiles.expanded.sandbox]
+read_only = ["/profile/bin", "/global/bin"]
+writable = ["/profile/state"]
+"#,
+    );
+
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load_with_profile(None, Some("expanded"))
+    })
+    .unwrap();
+
+    assert_eq!(loaded.sandbox.read_only.len(), 2);
+    assert!(
+        loaded
+            .sandbox
+            .read_only
+            .contains(&"/global/bin".to_string())
+    );
+    assert!(
+        loaded
+            .sandbox
+            .read_only
+            .contains(&"/profile/bin".to_string())
+    );
+
+    assert_eq!(loaded.sandbox.writable.len(), 2);
+    assert!(
+        loaded
+            .sandbox
+            .writable
+            .contains(&"/global/state".to_string())
+    );
+    assert!(
+        loaded
+            .sandbox
+            .writable
+            .contains(&"/profile/state".to_string())
+    );
+}
+
+#[test]
+fn test_sandbox_empty_by_default() {
+    let dir = create_project_settings(
+        r#"
+[[models]]
+name = "zen"
+model = "glm-5.1"
+base_url = "https://example.com"
+api_key_env = "KEY"
+"#,
+    );
+
+    let home = create_home_dir();
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load(Some(dir.path()))
+    })
+    .unwrap();
+
+    assert!(loaded.sandbox.read_only.is_empty());
+    assert!(loaded.sandbox.writable.is_empty());
+}
+
+#[test]
+fn test_directories_and_sandbox_expand_tilde() {
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"
+directories = ["~/shared", "~/.cache/global"]
+
+[sandbox]
+read_only = ["~/.local/bin/tool", "~/.cache/binaries"]
+writable = ["~/.cache/claude"]
+"#,
+    );
+
+    let loaded = with_var("HOME", Some(home.path()), || SettingsLoader::load(None)).unwrap();
+
+    let home_str = home.path().to_string_lossy().into_owned();
+    assert!(loaded.directories.contains(&format!("{home_str}/shared")));
+    assert!(
+        loaded
+            .directories
+            .contains(&format!("{home_str}/.cache/global"))
+    );
+    assert!(
+        loaded
+            .sandbox
+            .read_only
+            .contains(&format!("{home_str}/.local/bin/tool"))
+    );
+    assert!(
+        loaded
+            .sandbox
+            .read_only
+            .contains(&format!("{home_str}/.cache/binaries"))
+    );
+    assert!(
+        loaded
+            .sandbox
+            .writable
+            .contains(&format!("{home_str}/.cache/claude"))
+    );
+}
