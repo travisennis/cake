@@ -21,18 +21,21 @@ How to see it working: `cargo test` passes with new settings-merge, tilde-expans
 ## Progress
 
 - [x] (2026-08-08) ExecPlan written; ADR 018 created; issue 71 claimed; branch `feat/sandbox-settings` cut.
-- [ ] Milestone 1: `[sandbox]` settings schema, union merge, `~` expansion, shared `expand_home` helper.
-- [ ] Milestone 2: `main.rs` plumbing --- `[sandbox].read_only` into `additional_dirs`, `[sandbox].writable` into `settings_dirs`.
-- [ ] Milestone 3: macOS Seatbelt file-vs-directory rules; Linux Landlock verification tests.
-- [ ] Milestone 4: read-only policy demotion coverage; docs (configuration.md, security.md).
-- [ ] Milestone 5: codex hard-coded path removal commit; personal settings.toml migration.
-- [ ] Full verification: `cargo fmt`, focused tests, `just ci`, `just cc-check`.
+- [x] (2026-08-08) Milestone 1: `[sandbox]` settings schema, union merge, `~` expansion, shared `expand_home` helper. Committed as `feat(sandbox): add [sandbox] path grants with tilde expansion` (3347eee).
+- [x] (2026-08-08) Milestone 2: `main.rs` plumbing --- `[sandbox].read_only` into `additional_dirs`, `[sandbox].writable` into `settings_dirs` (same commit).
+- [x] (2026-08-08) Milestone 3: macOS Seatbelt file-vs-directory rules; Linux Landlock file-grant test. Committed as `feat(sandbox): emit literal Seatbelt rules for file grants` (f8f056a).
+- [x] (2026-08-08) Milestone 4: read-only demotion coverage; docs (configuration.md, security.md) (same commit).
+- [x] (2026-08-08) Milestone 5: codex hard-coded path removal commit; personal settings.toml migration. Committed as `refactor(sandbox): remove hard-coded codex paths in favor of settings` (edb3731).
+- [x] (2026-08-08) Full verification: `cargo fmt`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --bins` (1134 passed), `just ci` (green, including coverage and CC gates), plus a new macOS end-to-end sandbox test (`test_sandbox_read_only_file_grant_runs_file_but_denies_sibling`). Fix commit `fix(sandbox): restore merge_settings baseline complexity` (94d4ac5); test commit `test(sandbox): verify read-only file grants end-to-end on macOS` (e239c10).
 
 ## Surprises & Discoveries
 
 - Observation: `valid_settings_dirs` in `src/main.rs` filters on `p.is_dir()`, which would silently drop `[sandbox].read_only` file entries. The read-only filter must accept existing files and directories. Evidence: `src/main.rs:560` `fn valid_settings_dirs`.
 - Observation: `push_dirs_with_canonical` and `deduplicated_with_canonical` in `src/clients/tools/sandbox/mod.rs` only require `exists()`, so they already accept file paths; only the macOS Seatbelt rule emission (always `allow_subpath`) needs file-vs-directory handling. Evidence: `src/clients/tools/sandbox/mod.rs:590` and `macos.rs:330`.
 - Observation: `Path::is_file()` returns false for the synthetic paths used in existing unit tests (`/workspace`, `/usr`, `/etc`), so the file-vs-directory seatbelt logic preserves existing snapshot expectations.
+- Observation: adding sandbox unions to `SettingsLoader::load_with_profile` pushed it past clippy's 100-line `too_many_lines` and 7-argument `too_many_arguments` gates. Refactored the loader around a `SettingsAccumulator` struct, which also keeps the grandfathered CC-18 `load_with_profile` from growing. Evidence: clippy clean after refactor.
+- Observation: `SettingsAccumulator` profile overlays had to be cloned before iteration (`overlays.clone()`) because `apply_profile_overlay(&mut self)` conflicts with the immutable borrow of `acc.profiles`. Evidence: E0502 during Milestone 1.
+- Observation: the Edit tool's backslash-quote escaping is fragile for Rust string literals containing `\"`; one malformed edit produced an unterminated string literal. Fixed with a byte-exact python patch and verified with `od -c`. Evidence: `src/clients/tools/sandbox/macos.rs` line 787.
 
 ## Decision Log
 
@@ -40,8 +43,13 @@ How to see it working: `cargo test` passes with new settings-merge, tilde-expans
 - Decision: Expand `~` at settings-merge time (in `SettingsLoader`), so `LoadedSettings.directories` and `.sandbox` already carry expanded paths, and keep relative paths untouched (they resolve from invocation cwd as today). Rationale: single expansion site, matches the issue's "canonicalization and warnings once at settings-load time". Date/Author: 2026-08-08, cake agent.
 - Decision: `[sandbox].writable` entries must be existing directories (same filter as `directories`); `[sandbox].read_only` entries may be existing files or directories (the whole point is a single executable). Rationale: a writable grant to a file is not a supported use case in this task; read-only file grants are. Date/Author: 2026-08-08, cake agent.
 - Decision: Apply the file-vs-directory rule emission to all three Seatbelt path classes (writable, system_paths, readable), not only readable, because the same latent bug would bite `[sandbox].writable` file entries. Date/Author: 2026-08-08, cake agent.
+- Decision: Refactor the settings loader around a `SettingsAccumulator` struct to satisfy clippy gates while keeping `load_with_profile`'s grandfathered CC unchanged. Rationale: avoids growing a grandfathered function and reduces `merge_settings` from 9 to 2 arguments. Date/Author: 2026-08-08, cake agent.
 
 ## Outcomes & Retrospective
+
+The `[sandbox]` settings mechanism landed as planned and all acceptance criteria are met on macOS: a `[sandbox].read_only` file grant runs from sandboxed Bash while a sibling file is denied (verified end to end through a real `sandbox-exec` run), `[sandbox].writable` paths feed the read-write sandbox set and demote under `--sandbox read-only`, `directories = ["~/foo"]` now expands `~`, and the hard-coded codex paths are gone from the source with the user's `~/.config/cake/settings.toml` carrying the replacement grants. Linux Landlock file grants are covered by a unit test on rule-path classification; live Landlock enforcement could not be exercised on macOS and remains a stated verification gap for Linux CI/review.
+
+Implementation notes: the loader was refactored around `SettingsAccumulator` to satisfy clippy's line/argument gates without growing the grandfathered `load_with_profile`; `merge_settings` kept its baseline CC by merging the `[sandbox]` section unconditionally via `unwrap_or_default`. The `~` expansion helper moved from `skills.rs` to `config/mod.rs` and is shared by `directories`, `[sandbox]`, and `skills.path`.
 
 ## Context and Orientation
 
