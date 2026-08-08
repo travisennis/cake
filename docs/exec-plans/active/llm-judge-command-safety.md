@@ -282,6 +282,6 @@ Revision note (2026-08-08): Initial ExecPlan written after issue #72 was rewritt
 
 Revision note (2026-08-08, second): #106 split into Phase A (corpus migration, Ready) and Phase B (#174 judge-runner, Blocked on #72 and #106); the dependency chain, chain diagram, and ordering implications were updated accordingly.
 
-Revision note (2026-08-08, third): Milestone 1 records landed. ADR-018 is accepted, ADR-015 points to it as superseded, and the research note `docs/research/topics/llm-judge-bash-safety.md` records the reversal. Later milestones are unchanged.
+Revision note (2026-08-08, third): Milestone 1 records landed. ADR-018 is accepted, ADR-015 points to it as superseded, and the [LLM-as-Judge for Bash Command Safety](https://app.notion.com/p/LLM-as-Judge-for-Bash-Command-Safety-3b630bc66cc7810e902de778ea76a5b1) research note in Notion records the reversal. Later milestones are unchanged.
 
 Revision note (2026-08-08, fourth): Milestone 1 review corrections. The research note restores the original opt-in-tier implications as superseded historical text; ADR-018's telemetry field list gains `tier`; Milestone 1 wording now cites the ten resolved decisions recorded in issue #72; and the Milestone 3 verdict-code vocabulary is completed and corrected (`git-commit-backticks` is a block; `git_reset`, `git_checkout`, and `git_restore` are explicitly mapped) so all nine hard-block checks and the single warning are covered.

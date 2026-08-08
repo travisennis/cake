@@ -67,7 +67,7 @@ Default-on requires the evaluation prerequisites first: #84 (a controlled model-
 
 - Supersedes [ADR-015](./015-declarative-command-policy.md), `Declarative Command Policy` (proposed, never accepted): the deterministic policy engine it planned is replaced entirely by the LLM judge. The judge is the only non-sandbox command gate; the declarative engine is not built.
 - Implements the direction of issue #72, `Replace bash_safety With a Default-On LLM Judge and Bash reason Argument`.
-- Reverses the 2026-07-18 conclusion of `docs/research/topics/llm-judge-bash-safety.md`; that note's trade-off analysis is retained as the risk record.
+- Reverses the 2026-07-18 conclusion of the [LLM-as-Judge for Bash Command Safety](https://app.notion.com/p/LLM-as-Judge-for-Bash-Command-Safety-3b630bc66cc7810e902de778ea76a5b1) research note in Notion; that note's trade-off analysis is retained as the risk record.
 - Execution plan: `docs/exec-plans/active/llm-judge-command-safety.md`.
 - Preserves ADR-014, `Sandbox Policy CLI Flag`: the judge is independent of the OS sandbox policy and remains active under `danger-full-access` and `CAKE_SANDBOX=off`.
 - Builds on ADR-007, `Per-Session Telemetry Sidecar`, for metadata-only judge decision events.
