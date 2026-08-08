@@ -72,7 +72,7 @@ Key files:
 - `src/clients/tools/edit.rs`: The production `Edit` tool implementation and current unit tests.
 - `src/clients/tools/mod.rs`: Shared tool definitions and path validation used by `Edit`.
 - `Cargo.toml`: Rust dependency manifest. Add a Rust test dependency here only if property testing requires one.
-- `docs/research/topics/provers.md`: Existing research summary that motivates using a small formal model as a practical bug-finding and test-strengthening tool.
+- [Provers research note](https://app.notion.com/p/provers-3b630bc66cc781ab951cef7be888f840) (Notion Research database, Type=Topics): Existing research summary that motivates using a small formal model as a practical bug-finding and test-strengthening tool.
 - `docs/exec-plans/active/edit-tool-lean.md`: This plan.
 
 ## What We're NOT Doing
@@ -93,7 +93,7 @@ Proceed in small, verifiable steps. First isolate the pure edit algorithm in Rus
 
 The implementation should preserve existing `Edit` tool behavior. Existing tests in `src/clients/tools/edit.rs` should continue to pass. New tests should focus on the algorithmic core: exact-match validation, duplicate-match rejection, overlap rejection, reverse-order application, and preservation of untouched content.
 
-The Lean artifact can live outside the production build path. A suitable location is `docs/research/investigations/edit-tool-lean/` because the current decision is to treat Lean as research support rather than product code. If the experiment later becomes a maintained workflow, a future plan can move the model to a more formal location and add documented toolchain setup.
+The Lean artifact can live outside the production build path. Research evidence lives in the [Notion Research database](https://app.notion.com/p/e4b33f5fa8cb438e93dd85727b26e928) (a new page, Type=Investigations) because the current decision is to treat Lean as research support rather than product code; do not commit Lean files to the repository. If the experiment later becomes a maintained workflow, a future plan can move the model to a more formal location and add documented toolchain setup.
 
 ## Milestones
 
@@ -220,7 +220,7 @@ Implementation Note: After completing this milestone and automated verification,
 
 Overview: This milestone uses Lean to model the algorithm at the right abstraction level. At the end, there should be a small Lean research artifact that models non-overlapping replacements and records what was proved, attempted, or learned.
 
-Repository Context: Create a research directory such as `docs/research/investigations/edit-tool-lean/`. Do not add Lean files to production source directories. Do not add Lean execution to `just ci` in this milestone.
+Repository Context: Create a page in the [Notion Research database](https://app.notion.com/p/e4b33f5fa8cb438e93dd85727b26e928) (Type=Investigations) for the Lean experiment evidence. Do not add Lean files to production source directories or commit them to the repository. Do not add Lean execution to `just ci` in this milestone.
 
 Plan of Work: Model content as a list of abstract symbols rather than Rust UTF-8 strings. Model an edit as a start index, a length, and replacement content. Define what it means for edits to be sorted and non-overlapping. Define replacement in two ways: reverse-order application and simultaneous left-to-right reconstruction. Prove, or at minimum machine-check through examples while documenting the gap, that reverse-order application on sorted non-overlapping edits produces the same result as simultaneous replacement.
 
@@ -238,13 +238,13 @@ Check whether Lean is available:
 lean --version
 ```
 
-If Lean is available, create `docs/research/investigations/edit-tool-lean/` and add a small Lean file, for example `docs/research/investigations/edit-tool-lean/EditModel.lean`. Keep it independent of lake packages unless a package becomes clearly necessary.
+If Lean is available, draft a small Lean model (for example `EditModel.lean`) as local scratch, then record the model and results in the Notion Research database page (Type=Investigations). Keep it independent of lake packages unless a package becomes clearly necessary.
 
 If Lean is not available, stop before installing anything and record the blocker in `Surprises & Discoveries`. Ask the human whether to install Lean or continue with a paper model and Rust tests only.
 
 Validation and Acceptance: The Lean file should be understandable to a Rust contributor who is new to Lean. It should contain comments explaining how each definition maps back to `src/clients/tools/edit.rs`.
 
-Idempotence and Recovery: The research directory is additive. If the Lean proof becomes too time-consuming, keep the examples and partial definitions, then explicitly document what was learned and what remains unproved.
+Idempotence and Recovery: The Notion research page is additive. If the Lean proof becomes too time-consuming, keep the examples and partial definitions, then explicitly document what was learned and what remains unproved.
 
 Artifacts and Evidence: Record the `lean --version` output and any successful Lean check command. If the proof is partial, include the exact theorem statement that remains unfinished.
 
@@ -266,7 +266,7 @@ Implementation Note: After completing this milestone and automated verification,
 
 Overview: This milestone turns the learning into durable project value. At the end, cake should have stronger Rust tests and a short reusable guide explaining how Lean was used.
 
-Repository Context: Update `src/clients/tools/edit.rs` tests with any edge cases discovered from the model. Keep experiment evidence and formal-model working notes in `docs/research/investigations/edit-tool-lean/README.md`. Add durable prose only if the work changes a user workflow, external contract, security boundary, or architectural invariant, following `DOCUMENTATION.md`.
+Repository Context: Update `src/clients/tools/edit.rs` tests with any edge cases discovered from the model. Keep experiment evidence and formal-model working notes in the [Notion Research database](https://app.notion.com/p/e4b33f5fa8cb438e93dd85727b26e928) page (Type=Investigations). Add durable prose only if the work changes a user workflow, external contract, security boundary, or architectural invariant, following `DOCUMENTATION.md`.
 
 Plan of Work: Compare the Lean model to the Rust test suite. For each property modeled in Lean, ensure there is either a Rust test or a documented reason it is not applicable to production code. Write the workflow documentation in plain language: why this target was chosen, how the pure function was extracted, how the abstract model was scoped, what commands were run, what was learned, and what should be done differently next time.
 
@@ -349,7 +349,7 @@ Do not use destructive git commands to roll back work. Prefer small manual patch
 
 ## References
 
-- Existing prover research: `docs/research/topics/provers.md`
+- Existing prover research: [Provers](https://app.notion.com/p/provers-3b630bc66cc781ab951cef7be888f840) (Notion Research database)
 - Production edit implementation: `src/clients/tools/edit.rs`
 - Shared tool path validation: `src/clients/tools/mod.rs`
 - Full project validation command: `just ci`
