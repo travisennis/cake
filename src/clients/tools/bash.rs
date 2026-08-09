@@ -6,7 +6,14 @@ use tokio::process::{Child, Command};
 use tokio::time::{Duration, timeout};
 use tracing::debug;
 
+#[cfg(test)]
+use crate::clients::judge::JudgeContext;
+use crate::clients::judge::{
+    JudgeClient, JudgeDecision, JudgeOutcome, JudgeRequest, evaluate_command, judge_is_enabled,
+    read_user_rubric, repo_state_digest, resolve_judge_client_config,
+};
 use crate::clients::tools::secure_temp_dir::secure_temp_dir;
+use crate::config::settings::JUDGE_BYPASS_ENV;
 use crate::config::toolbox::ToolboxProcessGuard;
 use crate::time_format::format_seconds_tenths;
 
@@ -45,16 +52,8 @@ struct BashExecutionArgs {
     command: String,
     timeout: u64,
     policy: super::sandbox::SandboxPolicy,
-    /// The model's untrusted self-report of intent. Not yet consumed until
-    /// the LLM-judge preflight lands (Milestone 5); carried here so the judge
-    /// request can include it.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "reason feeds the judge request in ExecPlan Milestone 5"
-        )
-    )]
+    /// The model's untrusted self-report of intent, weighed against the
+    /// command by the LLM judge preflight.
     reason: Option<String>,
 }
 
@@ -386,9 +385,11 @@ async fn execute_bash_with_args(
     context: &super::ToolContext,
     args: BashExecutionArgs,
 ) -> Result<super::ToolResult, String> {
-    // Pre-execution safety check: block known-destructive commands,
-    // collect soft warnings to prepend to output.
-    let safety_warnings = super::bash_safety::validate_command_safety(&args.command)?;
+    // Command-safety preflight: the LLM judge is the only non-sandbox command
+    // gate. A block prevents spawn and returns the judge's message as the tool
+    // error; a warn prepends guidance to the output; a judge failure fails
+    // closed (blocks) with an explanation.
+    let judge_warnings = bash_judge_preflight(context, &args).await?;
 
     let use_sandbox = args.policy != super::sandbox::SandboxPolicy::DangerFullAccess;
 
@@ -546,10 +547,13 @@ async fn execute_bash_with_args(
     let exit_code = status.and_then(|s| s.code()).unwrap_or(-1);
     let warn_exit_zero_stderr = should_warn_exit_zero_stderr(success, &stderr_str);
 
-    // Check for binary data before converting to string
+    // Check for binary data before converting to string. Judge warnings still
+    // prepend here: a `warn` verdict ran the command, so its guidance must
+    // reach the model even when the output is binary.
     if is_binary_data(&buf) {
+        let output = handle_binary_output(&buf, exit_code, elapsed_ms, warn_exit_zero_stderr);
         return Ok(super::ToolResult {
-            output: handle_binary_output(&buf, exit_code, elapsed_ms, warn_exit_zero_stderr),
+            output: prepend_safety_warnings(output, &judge_warnings),
         });
     }
 
@@ -589,17 +593,147 @@ async fn execute_bash_with_args(
     let result = annotate_empty_search_result(&args.command, result, exit_code, &stderr_str);
     let result = truncate_output(&result, exit_code, elapsed_ms, warn_exit_zero_stderr);
 
-    let output = prepend_safety_warnings(result, &safety_warnings);
+    let output = prepend_safety_warnings(result, &judge_warnings);
 
     Ok(super::ToolResult { output })
 }
 
+/// Run the LLM-judge command-safety preflight for one Bash call.
+///
+/// The judge is the only non-sandbox command gate (`ExecPlan` Milestone 5):
+/// every command is evaluated before spawn, and the judge stays active under
+/// `danger-full-access` and `CAKE_SANDBOX=off`, matching the old guard's
+/// independence from the sandbox.
+///
+/// Returns the warnings to prepend to the output (a `warn` verdict), an empty
+/// vec when the command may run unannotated (allow, an allowlist-overridden
+/// block, or the emergency bypass), and `Err` — blocking the command — for a
+/// `block` verdict or any judge failure (fail-closed).
+async fn bash_judge_preflight(
+    context: &super::ToolContext,
+    args: &BashExecutionArgs,
+) -> Result<Vec<String>, String> {
+    // Empty commands have nothing to judge; `bash -c ""` is harmless and the
+    // old guard skipped them too.
+    if args.command.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let Some(judge) = context.judge.as_deref() else {
+        return Err(fail_closed_message(
+            "the command-safety judge is not configured for this run",
+        ));
+    };
+
+    // The emergency bypass short-circuits before any judge setup: a disabled
+    // judge must not fail on an unusable model or rubric, because the bypass
+    // is the recovery path when judge configuration is broken.
+    let bypass_env = std::env::var(JUDGE_BYPASS_ENV).ok();
+    if !judge_is_enabled(&judge.settings, bypass_env.as_deref()) {
+        return Ok(Vec::new());
+    }
+
+    let config = resolve_judge_client_config(&judge.settings, &judge.agent_model, &judge.models)
+        .map_err(fail_closed_message)?;
+    let client = JudgeClient::new(config, Duration::from_secs(judge.settings.timeout_secs))
+        .with_user_rubric(read_user_rubric(&judge.settings).map_err(fail_closed_message)?);
+    let request = JudgeRequest::new(
+        args.command.clone(),
+        context.cwd.clone(),
+        args.reason.clone(),
+    )
+    .with_repo_digest(repo_state_digest(&context.cwd));
+    let outcome = evaluate_command(&client, &judge.settings, request, bypass_env.as_deref())
+        .await
+        .map_err(fail_closed_message)?;
+
+    judge_preflight_warnings(outcome)
+}
+
+/// Map a judge-path outcome to the preflight result: the warnings to prepend,
+/// or an `Err` that blocks the command.
+///
+/// A `warn` verdict prepends its message as a `NOTICE`; an allow verdict, an
+/// allowlist-overridden block (the verdict is preserved for telemetry,
+/// Milestone 6), and the bypass run unannotated; a real `block` or any judge
+/// failure blocks with the verdict reason or the fail-closed message.
+fn judge_preflight_warnings(outcome: JudgeOutcome) -> Result<Vec<String>, String> {
+    match outcome {
+        JudgeOutcome::Bypassed => Ok(Vec::new()),
+        JudgeOutcome::Verdict {
+            verdict,
+            overridden,
+        } => match verdict.decision {
+            JudgeDecision::Block if !overridden => {
+                Err(format!("BLOCKED\n\nReason: {}", verdict.message))
+            },
+            JudgeDecision::Warn => Ok(vec![format!("NOTICE: {}", verdict.message)]),
+            JudgeDecision::Block | JudgeDecision::Allow => Ok(Vec::new()),
+        },
+    }
+}
+
+/// Format a fail-closed block message for judge failures: the command is not
+/// executed and the model sees why.
+fn fail_closed_message(error: impl std::fmt::Display) -> String {
+    format!(
+        "BLOCKED\n\nThe command-safety judge was unavailable, so this command was \
+         not executed (fail-closed).\n\n{error}"
+    )
+}
+
 #[cfg(test)]
 async fn execute_bash_unsandboxed(arguments: &str) -> Result<super::ToolResult, String> {
+    execute_bash_with_judge(arguments, Some(bypassed_judge_context())).await
+}
+
+/// Run one Bash call unsandboxed with an explicit judge context, so tests
+/// can drive the judge preflight (`None` exercises the fail-closed path).
+#[cfg(test)]
+async fn execute_bash_with_judge(
+    arguments: &str,
+    judge: Option<std::sync::Arc<JudgeContext>>,
+) -> Result<super::ToolResult, String> {
     let args =
         BashExecutionArgs::from_json(arguments, super::sandbox::SandboxPolicy::DangerFullAccess)?;
-    let context = super::ToolContext::from_current_process();
+    let context = super::ToolContext::from_current_process().with_judge(judge);
     Box::pin(execute_bash_with_args(&context, args)).await
+}
+
+/// A judge context with the emergency bypass enabled, used by tests that
+/// exercise Bash output handling rather than the judge path: the judge is
+/// never called and commands run ungated.
+#[cfg(test)]
+fn bypassed_judge_context() -> std::sync::Arc<JudgeContext> {
+    use crate::config::model::{ApiType, ModelConfig};
+    use std::collections::HashMap;
+
+    let model_config = ModelConfig {
+        model: "bypass/model".to_string(),
+        api_type: ApiType::ChatCompletions,
+        base_url: "http://127.0.0.1:9".to_string(),
+        api_key_env: "JUDGE_TEST_KEY".to_string(),
+        provider: None,
+        provider_headers: None,
+        temperature: None,
+        top_p: None,
+        max_output_tokens: None,
+        reasoning_effort: None,
+        reasoning_summary: None,
+        reasoning_max_tokens: None,
+        providers: vec![],
+    };
+    std::sync::Arc::new(JudgeContext {
+        settings: crate::config::settings::JudgeSettings {
+            enabled: false,
+            ..crate::config::settings::JudgeSettings::default()
+        },
+        agent_model: crate::config::model::ResolvedModelConfig {
+            model_config,
+            api_key: String::new(),
+        },
+        models: HashMap::new(),
+    })
 }
 
 /// If `output` exceeds [`BASH_OUTPUT_MAX_BYTES`], write the full text to a

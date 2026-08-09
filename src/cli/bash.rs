@@ -15,7 +15,7 @@ use clap::{Parser, Subcommand};
 use crate::cli::{CmdRunner, CommandRunOptions};
 use crate::clients::judge::{
     JudgeClient, JudgeOutcome, JudgeRequest, JudgeVerdict, evaluate_command, judge_is_enabled,
-    repo_state_digest,
+    read_user_rubric, repo_state_digest, resolve_judge_client_config,
 };
 use crate::config::settings::{JUDGE_BYPASS_ENV, JudgeSettings, LoadedSettings};
 use crate::config::{DataDir, ResolvedModelConfig, SettingsLoader};
@@ -83,7 +83,7 @@ async fn run_bash_check(
     }
     let model = resolve_judge_model(loaded, cli_model)?;
     let client = JudgeClient::new(model, Duration::from_secs(loaded.judge.timeout_secs))
-        .with_user_rubric(load_user_rubric(loaded)?);
+        .with_user_rubric(read_user_rubric(&loaded.judge).map_err(anyhow::Error::msg)?);
     evaluate_with_client(client, &loaded.judge, bypass_env.as_deref(), cwd, command).await
 }
 
@@ -113,12 +113,17 @@ async fn evaluate_with_client(
 }
 
 /// Resolve the judge model config: the `[tools.bash.judge] model` override if
-/// set, otherwise the run's `--model` flag, otherwise the agent's
-/// `default_model`. The settings override and the flags are `[[models]]` names.
+/// set, otherwise the run's `--model` flag, otherwise `default_model`. The
+/// override and the flags are `[[models]]` names; the shared resolution in
+/// [`resolve_judge_client_config`] keeps this identical to the Bash preflight.
 fn resolve_judge_model(
     loaded: &LoadedSettings,
     cli_model: Option<&str>,
 ) -> anyhow::Result<ResolvedModelConfig> {
+    // `[tools.bash.judge] model` (a `[[models]]` name) wins, then `--model`,
+    // then `default_model`; the shared resolution in
+    // [`resolve_judge_client_config`] applies the override so this stays
+    // identical to the Bash preflight.
     let name = loaded
         .judge
         .model
@@ -128,7 +133,7 @@ fn resolve_judge_model(
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "No model specified for the safety judge. Set default_model (or \
-                 [tools.bash.judge] model) in settings.toml with a [[models]] entry."
+             [tools.bash.judge] model) in settings.toml with a [[models]] entry."
             )
         })?;
     let definition = loaded.models.get(name).ok_or_else(|| {
@@ -137,19 +142,8 @@ fn resolve_judge_model(
              default_model and omit the judge model."
         )
     })?;
-    ResolvedModelConfig::resolve(definition.to_model_config())
-}
-
-/// Read the configured user rubric file, if any. A configured-but-unreadable
-/// file is an error: the user asked for the guidance and the judge should not
-/// silently judge without it.
-fn load_user_rubric(loaded: &LoadedSettings) -> anyhow::Result<Option<String>> {
-    let Some(path) = &loaded.judge.rubric_file else {
-        return Ok(None);
-    };
-    let text = std::fs::read_to_string(path)
-        .map_err(|e| anyhow::anyhow!("Failed to read judge rubric file {}: {e}", path.display()))?;
-    Ok(Some(text))
+    let default = ResolvedModelConfig::resolve(definition.to_model_config())?;
+    resolve_judge_client_config(&loaded.judge, &default, &loaded.models).map_err(anyhow::Error::msg)
 }
 
 /// Render a judge-path outcome as human-readable inspection output on stdout.

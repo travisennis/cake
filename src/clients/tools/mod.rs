@@ -30,6 +30,8 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 
+use crate::clients::judge::JudgeContext;
+
 mod sandbox;
 
 pub use sandbox::{SandboxPolicy, resolve_linked_worktree_dirs, resolve_sandbox_policy};
@@ -69,7 +71,7 @@ fn compute_temp_directories() -> Vec<PathBuf> {
 }
 
 /// Directory context used by tool execution and sandbox construction.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct ToolContext {
     pub cwd: PathBuf,
     pub temp_dirs: Vec<PathBuf>,
@@ -78,6 +80,10 @@ pub struct ToolContext {
     pub settings_dirs: Vec<PathBuf>,
     /// Resolved sandbox policy applied to model-generated shell commands.
     pub sandbox_policy: SandboxPolicy,
+    /// LLM-judge command-safety context for the Bash preflight. `None` when
+    /// the run has no judge configured; the Bash tool fails closed on an
+    /// absent context rather than running a command ungated.
+    pub judge: Option<Arc<JudgeContext>>,
 }
 
 impl ToolContext {
@@ -101,6 +107,12 @@ impl ToolContext {
         context
     }
 
+    /// Attach the LLM-judge command-safety context used by the Bash preflight.
+    pub fn with_judge(mut self, judge: Option<Arc<JudgeContext>>) -> Self {
+        self.judge = judge;
+        self
+    }
+
     /// Build a tool context with explicitly supplied temp directories.
     ///
     /// This keeps construction testable without depending on process-global
@@ -120,6 +132,7 @@ impl ToolContext {
             skill_dirs,
             settings_dirs,
             sandbox_policy: SandboxPolicy::WorkspaceWrite,
+            judge: None,
         }
     }
 
@@ -134,6 +147,7 @@ impl ToolContext {
             skill_dirs: Vec::new(),
             settings_dirs: Vec::new(),
             sandbox_policy: SandboxPolicy::WorkspaceWrite,
+            judge: None,
         }
     }
 }
@@ -158,7 +172,6 @@ pub fn get_settings_dirs(context: &ToolContext) -> &[PathBuf] {
 // =============================================================================
 
 mod bash;
-mod bash_safety;
 mod edit;
 mod json_repair;
 mod read;
@@ -1097,7 +1110,14 @@ mod tests {
             vec![PathBuf::from("/workspace/settings")],
         );
 
-        assert_eq!(first, second);
+        assert_eq!(first.cwd, second.cwd);
+        assert_eq!(first.temp_dirs, second.temp_dirs);
+        assert_eq!(first.additional_dirs, second.additional_dirs);
+        assert_eq!(first.skill_dirs, second.skill_dirs);
+        assert_eq!(first.settings_dirs, second.settings_dirs);
+        assert_eq!(first.sandbox_policy, second.sandbox_policy);
+        assert!(first.judge.is_none(), "no judge context by default");
+        assert!(second.judge.is_none(), "no judge context by default");
     }
 
     /// Verify that `validate_path_with_dirs` accepts paths within skill directories.

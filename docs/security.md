@@ -65,7 +65,7 @@ Changes to allowed paths, sandbox policy, fallback behavior, command checks, hoo
 - fail-closed behavior review;
 - updated documentation when the guarantee or limitation changes.
 
-Focused allow/deny cases for the command checks live in `src/clients/tools/bash_safety/corpus/commands.jsonl`; a regression case is a one-line append (see CONTRIBUTING.md).
+The LLM judge (see ADR-018) is the command-safety gate above the OS sandbox; the corpus at `src/clients/tools/corpus/commands.jsonl` holds the regression cases the judge-driven runner (#174) evaluates.
 
 Convenience is not sufficient justification for widening authority.
 

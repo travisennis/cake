@@ -5,6 +5,8 @@ use crate::clients::tools::ToolContext;
 use crate::clients::tools::sandbox::SandboxPolicy;
 #[cfg(target_os = "macos")]
 use std::sync::Arc;
+use wiremock::matchers::method;
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// Check whether `CAKE_REQUIRE_SANDBOX_TESTS` is set to a truthy value,
 /// indicating that sandbox integration tests must run (and fail if the
@@ -446,7 +448,7 @@ async fn test_sandbox_unavailable_fails_closed() {
     }
 
     let args = r#"{"command": "echo should-not-run"}"#;
-    let result = Box::pin(execute_bash(&ToolContext::from_current_process(), args)).await;
+    let result = Box::pin(execute_bash(&sandbox_context(), args)).await;
     let error = result.expect_err("sandbox initialization failure should fail closed");
     assert!(
         error.contains("macOS sandbox unavailable"),
@@ -467,7 +469,7 @@ async fn test_sandboxed_command_stdout_does_not_trigger_init_failure() {
     }
 
     let args = r#"{"command": "printf 'sandbox-exec: sandbox_apply file-write* /tmp/test\\n'"}"#;
-    let result = Box::pin(execute_bash(&ToolContext::from_current_process(), args))
+    let result = Box::pin(execute_bash(&sandbox_context(), args))
         .await
         .unwrap();
 
@@ -495,7 +497,7 @@ async fn test_sandbox_blocks_write_outside_cwd() {
     let target = outside.join(format!("cake_sandbox_test_{}", uuid::Uuid::new_v4()));
     let target = target.display();
     let args = format!(r#"{{"command": "touch {target}"}}"#);
-    let result = Box::pin(execute_bash(&ToolContext::from_current_process(), &args))
+    let result = Box::pin(execute_bash(&sandbox_context(), &args))
         .await
         .unwrap();
     assert!(
@@ -514,7 +516,7 @@ async fn test_sandbox_allows_read_in_cwd() {
     }
 
     let args = r#"{"command": "ls Cargo.toml"}"#;
-    let result = Box::pin(execute_bash(&ToolContext::from_current_process(), args))
+    let result = Box::pin(execute_bash(&sandbox_context(), args))
         .await
         .unwrap();
     assert!(
@@ -538,7 +540,7 @@ async fn test_sandbox_blocks_read_outside_cwd() {
     let temp_dir = tempfile::TempDir::new_in(outside).expect("should create test dir outside cwd");
     let outside_dir = temp_dir.path().display();
     let args = format!(r#"{{"command": "ls {outside_dir}"}}"#);
-    let result = Box::pin(execute_bash(&ToolContext::from_current_process(), &args))
+    let result = Box::pin(execute_bash(&sandbox_context(), &args))
         .await
         .unwrap();
     assert!(
@@ -574,7 +576,8 @@ async fn test_sandbox_read_only_file_grant_runs_file_but_denies_sibling() {
 
     // `[sandbox].read_only` paths are loaded into `additional_dirs` by main.rs;
     // mirror that wiring here.
-    let mut context = ToolContext::from_current_process();
+    let mut context =
+        ToolContext::from_current_process().with_judge(Some(bypassed_judge_context()));
     context.additional_dirs = vec![allowed.clone()];
     let context = Arc::new(context);
 
@@ -609,9 +612,18 @@ async fn test_sandbox_read_only_file_grant_runs_file_but_denies_sibling() {
 /// args-level default.
 #[cfg(target_os = "macos")]
 fn context_with_policy(policy: SandboxPolicy) -> Arc<ToolContext> {
-    let mut context = ToolContext::from_current_process();
+    let mut context =
+        ToolContext::from_current_process().with_judge(Some(bypassed_judge_context()));
     context.sandbox_policy = policy;
     Arc::new(context)
+}
+
+/// A sandbox-test context with the judge bypassed. These tests exercise
+/// sandbox execution, not the command-safety gate, so commands must not fail
+/// closed on an absent judge context.
+#[cfg(target_os = "macos")]
+fn sandbox_context() -> Arc<ToolContext> {
+    Arc::new(ToolContext::from_current_process().with_judge(Some(bypassed_judge_context())))
 }
 
 /// Read-only policy denies writes to the project directory.
@@ -853,7 +865,8 @@ async fn test_sandbox_linked_worktree_git_operations() {
     );
 
     // Create a ToolContext with cwd set to the linked worktree
-    let mut context = ToolContext::from_current_process();
+    let mut context =
+        ToolContext::from_current_process().with_judge(Some(bypassed_judge_context()));
     context.cwd = wt_path.clone();
     for temp_dir in &context.temp_dirs {
         let canonical_temp = temp_dir.canonicalize().unwrap_or_else(|_| temp_dir.clone());
@@ -1236,50 +1249,179 @@ async fn test_streaming_empty_output_with_stderr() {
     assert!(result.output.contains("[exit:0 |"));
 }
 
-#[tokio::test]
-async fn test_streaming_with_soft_warning() {
-    // A command that triggers a soft safety warning (rg -rn footgun check)
-    // should have the warning prepended to the output.
-    let args = r#"{"command": "rg -rn some_pattern ."}"#;
-    let result = Box::pin(execute_bash_unsandboxed(args)).await;
-    // The safety check allows execution (soft warning), but rg itself may
-    // not be installed or may fail. The key assertion is that the warning
-    // text appears in the output.
-    if let Ok(res) = result {
-        assert!(
-            res.output.contains("rg -rn sets the replacement string"),
-            "Soft warning should be prepended. Output: {}",
-            res.output
-        );
-        assert!(res.output.contains("[exit:"));
-    } else {
-        // If rg is missing the command may fail at the shell level, but
-        // the safety check runs before execution, so we should never get
-        // an Err from validate_command_safety.
-        panic!("rg -rn should not be hard-blocked, got error");
-    }
+// =============================================================================
+// Judge preflight (Milestone 5): warn prepends, block and judge failure block.
+// =============================================================================
+
+/// Build a judge context whose judge client points at a wiremock server.
+fn judge_context(mock_server: &MockServer) -> std::sync::Arc<JudgeContext> {
+    use crate::config::model::{ApiType, ModelConfig};
+    use std::collections::HashMap;
+
+    let model_config = ModelConfig {
+        model: "judge/model".to_string(),
+        api_type: ApiType::ChatCompletions,
+        base_url: mock_server.uri(),
+        api_key_env: "JUDGE_TEST_KEY".to_string(),
+        provider: None,
+        provider_headers: None,
+        temperature: Some(0.0),
+        top_p: None,
+        max_output_tokens: Some(128),
+        reasoning_effort: None,
+        reasoning_summary: None,
+        reasoning_max_tokens: None,
+        providers: vec![],
+    };
+    std::sync::Arc::new(JudgeContext {
+        settings: crate::config::settings::JudgeSettings::default(),
+        agent_model: crate::config::model::ResolvedModelConfig {
+            model_config,
+            api_key: "test-key".to_string(),
+        },
+        models: HashMap::new(),
+    })
+}
+
+/// Chat-completions response carrying one judge verdict for a mock server.
+fn judge_chat_response(verdict_json: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": "chatcmpl-judge",
+        "choices": [{
+            "index": 0,
+            "message": { "role": "assistant", "content": verdict_json },
+            "finish_reason": "stop"
+        }]
+    })
+}
+
+/// Mount a mock judge returning one canned verdict for every request.
+async fn mount_judge_verdict(mock_server: &MockServer, verdict_json: &str) {
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(judge_chat_response(verdict_json)))
+        .mount(mock_server)
+        .await;
 }
 
 #[tokio::test]
-async fn test_streaming_with_soft_warning_and_empty_result() {
-    // A command with a soft warning that produces no output should show
-    // only the warning text (no extra formatting).
-    let args = r#"{"command": "rg -rn some_pattern /dev/null 2>/dev/null; true"}"#;
-    let result = Box::pin(execute_bash_unsandboxed(args)).await;
-    if let Ok(res) = result {
-        assert!(
-            res.output.contains("rg -rn sets the replacement string"),
-            "Soft warning should appear. Output: {}",
-            res.output
-        );
-        assert!(
-            res.output.contains("[exit:0 |"),
-            "Output should contain footer: {}",
-            res.output
-        );
-    } else {
-        panic!("rg -rn should not be hard-blocked, got error");
-    }
+async fn test_judge_warn_prepends_notice() {
+    // A `warn` verdict runs the command and prepends the judge's message as a
+    // NOTICE, mirroring the old soft-warning behavior without reclassification.
+    let mock_server = MockServer::start().await;
+    mount_judge_verdict(
+        &mock_server,
+        r#"{"verdict":"warn","code":"rg-replace-footgun","message":"Use -r with an explicit replacement."}"#,
+    )
+    .await;
+
+    let args = r#"{"command": "echo judge-warn-test"}"#;
+    let result = Box::pin(execute_bash_with_judge(
+        args,
+        Some(judge_context(&mock_server)),
+    ))
+    .await
+    .unwrap();
+    assert!(
+        result
+            .output
+            .contains("NOTICE: Use -r with an explicit replacement."),
+        "warn verdict should prepend NOTICE, got: {}",
+        result.output
+    );
+    assert!(result.output.contains("judge-warn-test"));
+    assert!(result.output.contains("[exit:0 |"));
+}
+
+#[tokio::test]
+async fn test_judge_allow_runs_ungated() {
+    // An `allow` verdict runs the command with no annotation.
+    let mock_server = MockServer::start().await;
+    mount_judge_verdict(&mock_server, r#"{"verdict":"allow","message":"Safe"}"#).await;
+
+    let args = r#"{"command": "echo judge-allow-test"}"#;
+    let result = Box::pin(execute_bash_with_judge(
+        args,
+        Some(judge_context(&mock_server)),
+    ))
+    .await
+    .unwrap();
+    assert!(
+        result.output.contains("judge-allow-test"),
+        "allow verdict should run the command, got: {}",
+        result.output
+    );
+    assert!(
+        !result.output.contains("NOTICE:"),
+        "allow verdict should not annotate output, got: {}",
+        result.output
+    );
+}
+
+#[tokio::test]
+async fn test_judge_block_prevents_execution() {
+    // A `block` verdict prevents spawn and surfaces the judge's reason as the
+    // tool error.
+    let mock_server = MockServer::start().await;
+    mount_judge_verdict(
+        &mock_server,
+        r#"{"verdict":"block","code":"git-force-push","message":"Prefer push --force-with-lease."}"#,
+    )
+    .await;
+
+    let args = r#"{"command": "git push --force"}"#;
+    let err = Box::pin(execute_bash_with_judge(
+        args,
+        Some(judge_context(&mock_server)),
+    ))
+    .await
+    .unwrap_err();
+    assert!(
+        err.contains("BLOCKED"),
+        "block verdict must block, got: {err}"
+    );
+    assert!(
+        err.contains("Prefer push --force-with-lease."),
+        "block must carry the judge's reason, got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn test_judge_missing_context_fails_closed() {
+    // No judge context means the run has no command-safety gate; the command
+    // must not run ungated.
+    let args = r#"{"command": "echo hi"}"#;
+    let err = Box::pin(execute_bash_with_judge(args, None))
+        .await
+        .unwrap_err();
+    assert!(
+        err.contains("BLOCKED"),
+        "missing judge context must fail closed, got: {err}"
+    );
+    assert!(err.contains("not configured"));
+}
+
+#[tokio::test]
+async fn test_judge_unreachable_fails_closed() {
+    // A judge transport failure (here: HTTP 500) blocks the command with the
+    // fail-closed message instead of running it ungated.
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&mock_server)
+        .await;
+
+    let args = r#"{"command": "echo hi"}"#;
+    let err = Box::pin(execute_bash_with_judge(
+        args,
+        Some(judge_context(&mock_server)),
+    ))
+    .await
+    .unwrap_err();
+    assert!(
+        err.contains("BLOCKED"),
+        "unreachable judge must fail closed, got: {err}"
+    );
+    assert!(err.contains("was unavailable"));
 }
 
 /// Produce large stderr output after stdout closes, hitting `BASH_READ_CAP`

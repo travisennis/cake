@@ -1005,6 +1005,7 @@ impl CmdRunner for CodingAssistant {
             &resources.toolbox_tools,
             task_id,
             resources.loaded.system_prompt.as_deref(),
+            &resources.loaded.judge,
         )?;
 
         run_session.attach_output_schema(prepared.output_schema.as_ref());

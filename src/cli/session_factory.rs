@@ -11,7 +11,9 @@ use std::sync::Arc;
 use tracing::info;
 
 use crate::cli::run_mode::{RunMode, SessionStorage};
+use crate::clients::judge::JudgeContext;
 use crate::clients::{Agent, ToolContext};
+use crate::config::settings::JudgeSettings;
 use crate::config::skills::Skill;
 use crate::config::toolbox::ToolboxTool;
 use crate::config::{
@@ -197,6 +199,7 @@ impl crate::CodingAssistant {
         toolbox_tools: &[ToolboxTool],
         task_id: uuid::Uuid,
         loaded_system_prompt: Option<&str>,
+        judge: &JudgeSettings,
     ) -> anyhow::Result<RunSession> {
         let cli_system_prompt = self.system_prompt.as_deref().map(std::path::Path::new);
         let settings_system_prompt = loaded_system_prompt.map(std::path::Path::new);
@@ -231,12 +234,13 @@ impl crate::CodingAssistant {
                     default_model,
                     restored.model.as_deref(),
                 )?;
+                let tool_context = attach_judge(tool_context, &resolved, judge, models);
                 Self::restored_client_and_session(
                     restored,
                     resolved,
                     &initial_messages,
                     &locs,
-                    Arc::clone(tool_context),
+                    tool_context,
                     toolbox_tools.to_vec(),
                     task_id,
                 )
@@ -252,12 +256,13 @@ impl crate::CodingAssistant {
                     default_model,
                     restored.model.as_deref(),
                 )?;
+                let tool_context = attach_judge(tool_context, &resolved, judge, models);
                 Self::restored_client_and_session(
                     restored,
                     resolved,
                     &initial_messages,
                     &locs,
-                    Arc::clone(tool_context),
+                    tool_context,
                     toolbox_tools.to_vec(),
                     task_id,
                 )
@@ -282,13 +287,14 @@ impl crate::CodingAssistant {
                     default_model,
                     restored.model.as_deref(),
                 )?;
+                let tool_context = attach_judge(tool_context, &resolved, judge, models);
                 Self::forked_client_and_session(
                     &restored,
                     resolved,
                     current_dir,
                     &initial_messages,
                     locs,
-                    Arc::clone(tool_context),
+                    tool_context,
                     toolbox_tools.to_vec(),
                     task_id,
                 )
@@ -298,15 +304,35 @@ impl crate::CodingAssistant {
                     self.resolve_model_config(models, default_model)?,
                 )?;
                 Ok(Self::new_client_and_session(
-                    resolved,
+                    resolved.clone(),
                     current_dir,
                     &initial_messages,
                     locs,
-                    Arc::clone(tool_context),
+                    attach_judge(tool_context, &resolved, judge, models),
                     toolbox_tools.to_vec(),
                     task_id,
                 ))
             },
         }
     }
+}
+
+/// Attach the LLM-judge context to the tool context shared by the Bash
+/// preflight.
+///
+/// The judge defaults to the agent's resolved model; a `[tools.bash.judge]
+/// model` override is resolved lazily at call time (after the bypass check) so
+/// a broken judge config cannot defeat the emergency bypass.
+fn attach_judge(
+    tool_context: &Arc<ToolContext>,
+    agent_model: &ResolvedModelConfig,
+    judge: &JudgeSettings,
+    models: &HashMap<String, ModelDefinition>,
+) -> Arc<ToolContext> {
+    let context = JudgeContext {
+        settings: judge.clone(),
+        agent_model: agent_model.clone(),
+        models: models.clone(),
+    };
+    Arc::new((**tool_context).clone().with_judge(Some(Arc::new(context))))
 }

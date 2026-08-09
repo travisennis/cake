@@ -59,7 +59,7 @@ Relative `system_prompt`, `skills.path`, `directories`, and `[sandbox]` values r
 
 ## Bash tool settings
 
-`[tools.bash]` configures the Bash tool. The `[tools.bash.judge]` table holds settings for the LLM command-safety judge. The judge is reserved for the Bash preflight wiring and is not yet active; absent keys preserve current behavior.
+`[tools.bash]` configures the Bash tool. The `[tools.bash.judge]` table holds settings for the LLM command-safety judge, which evaluates every Bash command before it runs and is the command-safety gate above the OS sandbox. The judge is default-on and fail-closed: an unavailable judge (unresolvable model, rubric read failure, timeout, transport error, or malformed verdict) blocks the command rather than running it ungated. A `block` verdict prevents the command from running; a `warn` verdict runs it with the judge's guidance prepended to the output. `enabled = false` or `CAKE_JUDGE=off` disables the judge entirely for every command.
 
 ```toml
 [tools.bash.judge]

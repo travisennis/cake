@@ -13,21 +13,18 @@
 //! validates block/warn verdict codes against that vocabulary, and adds the
 //! spawn-free repository-state digest for judge requests. `Milestone 4` adds
 //! the allowlist override and the emergency bypass: [`evaluate_command`] is
-//! the single judge-path decision point (`cake bash check` today, the Bash
-//! preflight in Milestone 5) applying the bypass check, the bounded call, and
-//! the exact-match allowlist override, returning a [`JudgeOutcome`].
+//! the single judge-path decision point (`cake bash check` and the Bash
+//! preflight) applying the bypass check, the bounded call, and the exact-match
+//! allowlist override, returning a [`JudgeOutcome`]. `Milestone 5` adds
+//! [`JudgeContext`] — the per-run judge configuration carried on the
+//! [`crate::clients::tools::ToolContext`] so the Bash preflight and the agent
+//! loop share one resolution — and [`resolve_judge_client_config`], the shared
+//! judge-model resolution.
 //!
-//! The types and client are consumed by Milestone 3 (`cake bash check`) and
-//! Milestone 5 (Bash preflight wiring); until then they are new API with no
-//! production caller, so `dead_code` is expected outside test builds.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "judge API is consumed by ExecPlan Milestones 3 and 5"
-    )
-)]
+//! The types and client are consumed by `cake bash check` and the Bash
+//! preflight.
 
+use std::collections::HashMap;
 use std::str::FromStr as _;
 use std::time::Duration;
 
@@ -38,8 +35,8 @@ use crate::clients::backend::Backend;
 use crate::clients::judge_rubric::{VerdictCode, build_judge_system_prompt};
 use crate::clients::retry::RequestOverrides;
 use crate::clients::tools::repair_json_args;
-use crate::config::model::{ModelConfig, ResolvedModelConfig};
-use crate::config::settings::JudgeSettings;
+use crate::config::model::ResolvedModelConfig;
+use crate::config::settings::{JudgeSettings, ModelDefinition};
 use crate::session_telemetry::{ProviderTermination, TerminationClassification};
 use crate::types::{ConversationItem, Role};
 
@@ -195,6 +192,64 @@ pub async fn evaluate_command(
     })
 }
 
+/// Per-run judge configuration shared by every Bash preflight call.
+///
+/// Carried on the [`crate::clients::tools::ToolContext`] so the Bash executor
+/// and the agent loop share one resolution of the judge settings against the
+/// run's model. The judge client is built lazily at call time — after the
+/// bypass check — so a broken judge model or rubric cannot defeat the
+/// emergency bypass (`Milestone 4`).
+#[derive(Debug, Clone)]
+pub struct JudgeContext {
+    /// Resolved judge settings (allowlist, bypass, timeout, rubric file).
+    pub settings: JudgeSettings,
+    /// The agent's resolved model config; the default judge model when
+    /// `settings.model` is unset.
+    pub agent_model: ResolvedModelConfig,
+    /// The run's `[[models]]` registry, to resolve a `[tools.bash.judge]
+    /// model` override by name.
+    pub models: HashMap<String, ModelDefinition>,
+}
+
+/// Resolve the model config for a judge client.
+///
+/// The `[tools.bash.judge] model` override (a `[[models]]` name) wins when
+/// set; otherwise the caller's `default` is used — the agent's resolved model
+/// for the Bash preflight, or the `--model`/`default_model` resolution for
+/// `cake bash check`. An unknown override name or an unresolvable override
+/// config is an error the caller fails closed on (the Bash tool blocks the
+/// command; `cake bash check` exits nonzero).
+pub fn resolve_judge_client_config(
+    settings: &JudgeSettings,
+    default: &ResolvedModelConfig,
+    models: &HashMap<String, ModelDefinition>,
+) -> Result<ResolvedModelConfig, String> {
+    let Some(name) = settings.model.as_deref() else {
+        return Ok(default.clone());
+    };
+    let definition = models.get(name).ok_or_else(|| {
+        format!(
+            "Unknown judge model '{name}'. Use a [[models]] name from settings.toml, \
+             or omit [tools.bash.judge] model to use the agent's model."
+        )
+    })?;
+    ResolvedModelConfig::resolve(definition.to_model_config())
+        .map_err(|e| format!("Failed to resolve judge model '{name}': {e}"))
+}
+
+/// Read the configured user rubric file, if any.
+///
+/// A configured-but-unreadable file is an error: the user asked for the
+/// guidance and the judge should not silently judge without it (fail-closed).
+pub fn read_user_rubric(settings: &JudgeSettings) -> Result<Option<String>, String> {
+    let Some(path) = &settings.rubric_file else {
+        return Ok(None);
+    };
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read judge rubric file {}: {e}", path.display()))?;
+    Ok(Some(text))
+}
+
 /// Client issuing single bounded judge calls on a configured backend.
 ///
 /// Reuses the same backend machinery as the agent loop (`Backend` over the
@@ -208,11 +263,11 @@ pub struct JudgeClient {
 }
 
 impl JudgeClient {
-    /// Create a judge client on the agent's resolved model config.
+    /// Create a judge client on a resolved model config.
     ///
-    /// The judge model defaults to `config`'s model ("same family by
-    /// default"); use [`Self::with_model_override`] to switch to a named
-    /// `[[models]]` entry's full configuration.
+    /// Callers resolve the config first: [`resolve_judge_client_config`]
+    /// applies the `[tools.bash.judge] model` override (a `[[models]]` name)
+    /// and falls back to the agent's configured model.
     pub fn new(config: ResolvedModelConfig, timeout: Duration) -> Self {
         Self {
             client: build_http_client(false),
@@ -222,36 +277,11 @@ impl JudgeClient {
         }
     }
 
-    /// Override the judge model with a named `[[models]]` entry's full config.
-    ///
-    /// `config` is the complete `ModelConfig` of the named model — provider,
-    /// base URL, API key environment, temperature, reasoning, and other
-    /// fields — resolved the same way `default_model` and `--model` resolve a
-    /// `[[models]]` name. This is the `[tools.bash.judge] model` setting;
-    /// `None` keeps the agent's configured model.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the named model's `api_key_env` is unset or
-    /// empty, since the judge call needs that provider's credential.
-    pub fn with_model_override(mut self, config: Option<ModelConfig>) -> anyhow::Result<Self> {
-        let Some(config) = config else {
-            return Ok(self);
-        };
-        self.config = ResolvedModelConfig::resolve(config)?;
-        Ok(self)
-    }
-
     /// Append optional user rubric guidance (from `[tools.bash.judge]
     /// rubric_file`) to the embedded default rubric.
     pub fn with_user_rubric(mut self, user_rubric: Option<String>) -> Self {
         self.user_rubric = user_rubric;
         self
-    }
-
-    /// The model identifier this judge client will call.
-    pub fn model_name(&self) -> &str {
-        &self.config.model_config.model
     }
 
     /// Evaluate one command with a single bounded call.
