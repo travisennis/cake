@@ -167,6 +167,10 @@ impl JudgeClient {
 
     /// Evaluate one command with a single bounded call.
     ///
+    /// The whole lifecycle — request, body read, response parse, and verdict
+    /// extraction — runs inside `self.timeout`, so a provider that stalls the
+    /// body cannot exceed the bound.
+    ///
     /// # Errors
     ///
     /// Returns [`JudgeError::Timeout`] when the call exceeds `self.timeout`,
@@ -178,63 +182,70 @@ impl JudgeClient {
         let history = build_judge_history(&request);
         let backend = Backend::from_api_type(self.config.model_config.api_type);
 
-        let timed = tokio::time::timeout(
-            self.timeout,
-            backend.send_request(
-                &self.client,
-                &self.config,
-                &history,
-                &[],
-                &RequestOverrides::default(),
-                None,
-            ),
-        )
+        let result = tokio::time::timeout(self.timeout, async {
+            let response = backend
+                .send_request(
+                    &self.client,
+                    &self.config,
+                    &history,
+                    &[],
+                    &RequestOverrides::default(),
+                    None,
+                )
+                .await
+                .map_err(|e| JudgeError::Transport(e.to_string()))?;
+
+            if !response.status().is_success() {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                return Err(JudgeError::Transport(format!("HTTP {status}: {body}")));
+            }
+
+            let turn = backend
+                .parse_response(response)
+                .await
+                .map_err(|e| JudgeError::Transport(e.to_string()))?;
+
+            let content = assistant_message(&turn.items);
+            let no_verdict_text = content.is_none_or(str::is_empty);
+            if let Some(error) = refusal_error(turn.termination.as_ref(), no_verdict_text) {
+                return Err(error);
+            }
+            let content = content.ok_or_else(|| {
+                JudgeError::Malformed("judge response contained no assistant message".to_string())
+            })?;
+
+            parse_verdict(content)
+        })
         .await;
-        let response = match timed {
-            Ok(Ok(response)) => response,
-            Ok(Err(e)) => return Err(JudgeError::Transport(e.to_string())),
-            Err(_) => return Err(JudgeError::Timeout(self.timeout)),
-        };
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(JudgeError::Transport(format!("HTTP {status}: {body}")));
-        }
-
-        let turn = backend
-            .parse_response(response)
-            .await
-            .map_err(|e| JudgeError::Transport(e.to_string()))?;
-
-        if let Some(error) = refusal_error(turn.termination.as_ref()) {
-            return Err(error);
-        }
-
-        let content = assistant_message(&turn.items).ok_or_else(|| {
-            JudgeError::Malformed("judge response contained no assistant message".to_string())
-        })?;
-
-        parse_verdict(content)
+        result.unwrap_or(Err(JudgeError::Timeout(self.timeout)))
     }
 }
 
 /// Map a provider termination onto a refusal verdict error.
 ///
 /// Returns `None` when the termination does not indicate a refusal (for
-/// example `completed`, or `failed` for a reason other than refusal). A
-/// truncated response (`TokenLimit`) falls through to verdict parsing, which
-/// fails closed on malformed JSON.
-fn refusal_error(termination: Option<&ProviderTermination>) -> Option<JudgeError> {
+/// example `completed`, or a non-refusal `Failed` that still carried verdict
+/// text). A `Failed` termination with no meaningful assistant content is
+/// treated as a refusal: the Chat Completions backend classifies refusals as
+/// `Failed` whether the refusal is signaled by the `refusal` field (with
+/// `finish_reason: "stop"`) or by the finish reason itself, and its empty
+/// assistant message carries no verdict text. A truncated response
+/// (`TokenLimit`) falls through to verdict parsing, which fails closed on
+/// malformed JSON.
+fn refusal_error(
+    termination: Option<&ProviderTermination>,
+    no_verdict_text: bool,
+) -> Option<JudgeError> {
     let termination = termination?;
+    let refusal_reason = termination
+        .provider_reason
+        .as_deref()
+        .is_some_and(|r| r.to_lowercase().contains("refus"));
     match termination.classification {
         TerminationClassification::ContentFilter => Some(JudgeError::Refusal),
-        TerminationClassification::Failed
-            if termination
-                .provider_reason
-                .as_deref()
-                .is_some_and(|r| r.to_lowercase().contains("refus")) =>
-        {
+        TerminationClassification::Failed if refusal_reason || no_verdict_text => {
             Some(JudgeError::Refusal)
         },
         _ => None,
@@ -262,6 +273,13 @@ fn parse_verdict(content: &str) -> Result<JudgeVerdict, JudgeError> {
     let repaired = repair_json_args(content.trim());
     let verdict: JudgeVerdict = serde_json::from_str(&repaired)
         .map_err(|e| JudgeError::Malformed(format!("could not parse judge verdict JSON: {e}")))?;
+    if matches!(verdict.decision, JudgeDecision::Block | JudgeDecision::Warn)
+        && verdict.code.is_none()
+    {
+        return Err(JudgeError::Malformed(
+            "block and warn verdicts must include a verdict code".to_string(),
+        ));
+    }
     if let Some(confidence) = verdict.confidence
         && !(0.0..=1.0).contains(&confidence)
     {

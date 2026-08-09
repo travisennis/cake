@@ -1235,3 +1235,23 @@ model = "project-judge"
     // Default timeout applies when the file does not set one.
     assert_eq!(loaded.judge.timeout_secs, 30);
 }
+
+#[test]
+fn test_judge_settings_zero_timeout_is_clamped() {
+    let home = create_home_dir();
+    let project = create_project_settings(
+        r"
+[tools.bash.judge]
+timeout_secs = 0
+",
+    );
+
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load(Some(project.path()))
+    })
+    .unwrap();
+
+    // A zero timeout would expire before the judge request is polled and fail
+    // every command closed; it is raised to the floor instead.
+    assert_eq!(loaded.judge.timeout_secs, 1);
+}

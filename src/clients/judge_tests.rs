@@ -208,6 +208,28 @@ async fn judge_refusal_yields_refusal_error() {
 }
 
 #[tokio::test]
+async fn judge_refusal_with_stop_finish_reason_yields_refusal_error() {
+    // OpenAI-style refusal: the `refusal` field is set, content is null, and
+    // finish_reason is `stop`. The backend classifies this as Failed via the
+    // refusal field, so the judge must not fall through to Malformed.
+    let mock_server = MockServer::start().await;
+    let mut body = chat_response("");
+    body["choices"][0]["message"]["refusal"] = serde_json::json!("I cannot judge commands");
+    body["choices"][0]["message"]["content"] = serde_json::Value::Null;
+    body["choices"][0]["finish_reason"] = serde_json::json!("stop");
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(&mock_server)
+        .await;
+
+    let error = judge_client(&mock_server)
+        .judge(request("git status", None))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, JudgeError::Refusal));
+}
+
+#[tokio::test]
 async fn judge_works_through_responses_backend() {
     let mock_server = MockServer::start().await;
     let body = serde_json::json!({
@@ -263,5 +285,16 @@ fn parse_verdict_recovers_raw_control_characters() {
 #[test]
 fn parse_verdict_missing_message_is_malformed() {
     let error = parse_verdict(r#"{"verdict":"block"}"#).unwrap_err();
+    assert!(matches!(error, JudgeError::Malformed(_)));
+}
+
+#[test]
+fn parse_verdict_block_without_code_is_malformed() {
+    // The contract permits omitting `code` only for `allow`; a block or warn
+    // without a stable code would run un-audited, so it must fail closed.
+    let error = parse_verdict(r#"{"verdict":"block","message":"x"}"#).unwrap_err();
+    assert!(matches!(error, JudgeError::Malformed(_)));
+
+    let error = parse_verdict(r#"{"verdict":"warn","message":"x"}"#).unwrap_err();
     assert!(matches!(error, JudgeError::Malformed(_)));
 }

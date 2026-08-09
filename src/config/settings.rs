@@ -94,7 +94,7 @@ pub struct BashJudgeSettings {
 pub struct JudgeSettings {
     /// Judge model override. `None` means "use the agent's configured model".
     pub model: Option<String>,
-    /// Bounded judge call timeout in seconds (default 30).
+    /// Bounded judge call timeout in seconds (default 30; never below 1).
     pub timeout_secs: u64,
 }
 
@@ -110,6 +110,11 @@ impl Default for JudgeSettings {
 /// Default bounded judge timeout in seconds when no `[tools.bash.judge]`
 /// setting is present.
 pub const DEFAULT_JUDGE_TIMEOUT_SECS: u64 = 30;
+
+/// Floor for the judge timeout in seconds. A `0` timeout would expire before
+/// the judge request is polled and fail every command closed; values below
+/// the floor are raised to it, matching the Bash tool's own timeout clamp.
+const JUDGE_TIMEOUT_MIN_SECS: u64 = 1;
 
 /// Sandbox path grants loaded from settings.toml.
 ///
@@ -682,7 +687,8 @@ impl SettingsAccumulator {
                 model: self.judge_model,
                 timeout_secs: self
                     .judge_timeout_secs
-                    .unwrap_or(DEFAULT_JUDGE_TIMEOUT_SECS),
+                    .unwrap_or(DEFAULT_JUDGE_TIMEOUT_SECS)
+                    .max(JUDGE_TIMEOUT_MIN_SECS),
             },
         }
     }
