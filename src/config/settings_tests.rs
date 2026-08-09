@@ -1185,6 +1185,65 @@ api_key_env = "KEY"
     assert_eq!(loaded.judge, JudgeSettings::default());
     assert_eq!(loaded.judge.model, None);
     assert_eq!(loaded.judge.timeout_secs, 30);
+    assert!(loaded.judge.enabled, "the judge is enabled by default");
+    assert!(loaded.judge.allowlist.is_empty());
+}
+
+#[test]
+fn test_judge_settings_allowlist_and_enabled_merge() {
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"
+[[models]]
+name = "global-judge"
+model = "glm-5.1"
+base_url = "https://example.com"
+api_key_env = "KEY"
+
+[tools.bash.judge]
+allowlist = ["git status", "ls -la"]
+"#,
+    );
+    let project = create_project_settings(
+        r#"
+[tools.bash.judge]
+enabled = false
+allowlist = ["git push --force-with-lease"]
+"#,
+    );
+
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load(Some(project.path()))
+    })
+    .unwrap();
+
+    // The allowlist is a union across settings files; an explicit `enabled`
+    // in the project overrides the (absent) global value.
+    assert!(!loaded.judge.enabled);
+    assert_eq!(
+        loaded.judge.allowlist,
+        vec!["git status", "ls -la", "git push --force-with-lease"]
+    );
+}
+
+#[test]
+fn test_judge_settings_enabled_absent_defaults_to_true() {
+    let home = create_home_dir();
+    let project = create_project_settings(
+        r#"
+[tools.bash.judge]
+allowlist = ["git status"]
+"#,
+    );
+
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load(Some(project.path()))
+    })
+    .unwrap();
+
+    assert!(loaded.judge.enabled, "absent `enabled` keeps the judge on");
+    assert_eq!(loaded.judge.allowlist, vec!["git status"]);
 }
 
 #[test]
@@ -1259,16 +1318,42 @@ model = "no-such-model"
 "#,
     );
 
-    let err = with_var("HOME", Some(home.path()), || {
-        SettingsLoader::load(Some(project.path()))
+    // An unknown judge model fails at load time, like default_model.
+    // `CAKE_JUDGE=off` is unset so the load validates even under an ambient
+    // bypass env in the shell.
+    let err = with_var("CAKE_JUDGE", None::<&str>, || {
+        with_var("HOME", Some(home.path()), || {
+            SettingsLoader::load(Some(project.path()))
+        })
     })
     .unwrap_err();
-
-    // An unknown judge model fails at load time, like default_model.
     assert!(matches!(
         err,
         SettingsError::JudgeModelNotFound { ref name } if name == "no-such-model"
     ));
+}
+
+#[test]
+fn test_judge_settings_unknown_model_ignored_when_judge_disabled() {
+    let home = create_home_dir();
+    let project = create_project_settings(
+        r#"
+[tools.bash.judge]
+model = "no-such-model"
+enabled = false
+"#,
+    );
+
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load(Some(project.path()))
+    })
+    .unwrap();
+
+    // A bypassed judge's model config is inert: `enabled = false` is the
+    // recovery path even for a misconfigured judge, so the unknown name does
+    // not fail the load.
+    assert!(!loaded.judge.enabled);
+    assert_eq!(loaded.judge.model.as_deref(), Some("no-such-model"));
 }
 
 #[test]

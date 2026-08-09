@@ -1,5 +1,5 @@
 use super::*;
-use crate::clients::judge::JudgeDecision;
+use crate::clients::judge::{JudgeDecision, judge_is_enabled};
 use crate::config::ModelDefinition;
 use crate::config::model::ApiType;
 use crate::config::settings::{JudgeSettings, SandboxSettings, SkillSettings};
@@ -133,6 +133,8 @@ async fn bash_check_renders_allow_verdict() {
 
     let output = evaluate_with_client(
         judge_client(&mock_server),
+        &JudgeSettings::default(),
+        None,
         std::path::Path::new("/work"),
         "git status",
     )
@@ -161,6 +163,8 @@ async fn bash_check_renders_block_verdict() {
 
     let output = evaluate_with_client(
         judge_client(&mock_server),
+        &JudgeSettings::default(),
+        None,
         std::path::Path::new("/work"),
         "git push --force",
     )
@@ -184,6 +188,8 @@ async fn bash_check_renders_warn_verdict() {
 
     let output = evaluate_with_client(
         judge_client(&mock_server),
+        &JudgeSettings::default(),
+        None,
         std::path::Path::new("/work"),
         "rg -rn foo",
     )
@@ -204,6 +210,8 @@ async fn bash_check_judge_error_is_an_error() {
 
     let result = evaluate_with_client(
         judge_client(&mock_server),
+        &JudgeSettings::default(),
+        None,
         std::path::Path::new("/work"),
         "git status",
     )
@@ -211,6 +219,218 @@ async fn bash_check_judge_error_is_an_error() {
     assert!(
         result.is_err(),
         "a judge failure must surface as an error (nonzero exit), not a verdict"
+    );
+}
+
+// =============================================================================
+// Allowlist and emergency bypass (Milestone 4 of the LLM-judge ExecPlan)
+// =============================================================================
+
+#[tokio::test]
+async fn bash_check_allowlist_overrides_block_and_still_judges() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(chat_response(
+            r#"{"verdict":"block","code":"git-force-push","message":"Prefer push --force-with-lease.","confidence":0.93}"#,
+        )))
+        .expect(1) // an allowlisted command is still judged
+        .mount(&mock_server)
+        .await;
+
+    let settings = JudgeSettings {
+        allowlist: vec!["git push --force".to_string()],
+        ..JudgeSettings::default()
+    };
+    let output = evaluate_with_client(
+        judge_client(&mock_server),
+        &settings,
+        None,
+        std::path::Path::new("/work"),
+        "git push --force",
+    )
+    .await
+    .unwrap();
+
+    // The original block verdict and the override flag are both visible.
+    assert!(output.contains("Verdict: block"));
+    assert!(output.contains("Code: git-force-push"));
+    assert!(
+        output.contains("Overridden: allowlist"),
+        "expected an override note:\n{output}"
+    );
+    mock_server.verify().await;
+}
+
+#[tokio::test]
+async fn bash_check_allowlisted_benign_verdict_is_unaffected() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(chat_response(
+            r#"{"verdict":"allow","message":"Safe","confidence":0.9}"#,
+        )))
+        .mount(&mock_server)
+        .await;
+
+    let settings = JudgeSettings {
+        allowlist: vec!["git status".to_string()],
+        ..JudgeSettings::default()
+    };
+    let output = evaluate_with_client(
+        judge_client(&mock_server),
+        &settings,
+        None,
+        std::path::Path::new("/work"),
+        "git status",
+    )
+    .await
+    .unwrap();
+
+    assert!(output.contains("Verdict: allow"));
+    assert!(
+        !output.contains("Overridden"),
+        "a non-block verdict must not be marked overridden:\n{output}"
+    );
+}
+
+#[tokio::test]
+async fn bash_check_block_without_allowlist_match_is_not_overridden() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(chat_response(
+            r#"{"verdict":"block","code":"git-force-push","message":"Prefer push --force-with-lease."}"#,
+        )))
+        .mount(&mock_server)
+        .await;
+
+    let settings = JudgeSettings {
+        allowlist: vec!["git status".to_string()],
+        ..JudgeSettings::default()
+    };
+    let output = evaluate_with_client(
+        judge_client(&mock_server),
+        &settings,
+        None,
+        std::path::Path::new("/work"),
+        "git push --force",
+    )
+    .await
+    .unwrap();
+
+    assert!(output.contains("Verdict: block"));
+    assert!(
+        !output.contains("Overridden"),
+        "a non-matching block must not be overridden:\n{output}"
+    );
+}
+
+#[tokio::test]
+async fn bash_check_bypass_setting_skips_judge() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(chat_response(
+            r#"{"verdict":"block","code":"git-force-push","message":"Prefer push --force-with-lease."}"#,
+        )))
+        .expect(0) // bypassed: no judge call may be made
+        .mount(&mock_server)
+        .await;
+
+    let settings = JudgeSettings {
+        enabled: false,
+        ..JudgeSettings::default()
+    };
+    let output = evaluate_with_client(
+        judge_client(&mock_server),
+        &settings,
+        None,
+        std::path::Path::new("/work"),
+        "git push --force",
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        output.contains("Verdict: bypassed"),
+        "bypass must render as bypassed, got:\n{output}"
+    );
+    mock_server.verify().await;
+}
+
+#[tokio::test]
+async fn bash_check_bypass_env_value_skips_judge() {
+    // The `CAKE_JUDGE=off` value flows through the full judge path. The value
+    // is passed in (not read from the process env), so the test is hermetic
+    // and cannot race other judge-path tests.
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(chat_response(
+            r#"{"verdict":"block","code":"git-force-push","message":"Prefer push --force-with-lease."}"#,
+        )))
+        .expect(0) // bypassed: no judge call may be made
+        .mount(&mock_server)
+        .await;
+
+    let settings = JudgeSettings::default();
+    let output = evaluate_with_client(
+        judge_client(&mock_server),
+        &settings,
+        Some("off"),
+        std::path::Path::new("/work"),
+        "git push --force",
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        output.contains("Verdict: bypassed"),
+        "bypass must render as bypassed, got:\n{output}"
+    );
+    mock_server.verify().await;
+}
+
+#[test]
+fn judge_is_enabled_respects_setting_and_env_bypass() {
+    let enabled = JudgeSettings::default();
+    // The env value is passed in so no test mutates the process-global
+    // `CAKE_JUDGE` while parallel judge-path tests read it.
+    assert!(judge_is_enabled(&enabled, None), "judge is on by default");
+    assert!(
+        judge_is_enabled(&enabled, Some("on")),
+        "only CAKE_JUDGE=off bypasses"
+    );
+    assert!(
+        !judge_is_enabled(&enabled, Some("off")),
+        "CAKE_JUDGE=off disables even when settings enable the judge"
+    );
+
+    let disabled = JudgeSettings {
+        enabled: false,
+        ..JudgeSettings::default()
+    };
+    assert!(
+        !judge_is_enabled(&disabled, None),
+        "enabled = false disables"
+    );
+    assert!(!judge_is_enabled(&disabled, Some("off")));
+}
+
+#[tokio::test]
+async fn bash_check_bypass_short_circuits_broken_judge_config() {
+    // A disabled judge must not fail on unusable judge configuration (here:
+    // no default model at all): the bypass is the recovery path when the
+    // judge itself is broken.
+    let mut settings = loaded_settings("https://example.com");
+    settings.default_model = None;
+    settings.judge = JudgeSettings {
+        enabled: false,
+        ..JudgeSettings::default()
+    };
+
+    let output = run_bash_check(&settings, std::path::Path::new("/work"), "git status", None)
+        .await
+        .unwrap();
+    assert!(
+        output.contains("Verdict: bypassed"),
+        "bypass must win over broken judge setup, got:\n{output}"
     );
 }
 
@@ -222,7 +442,7 @@ fn render_verdict_omits_optional_lines_for_allow() {
         message: "Safe".to_string(),
         confidence: None,
     };
-    let output = render_verdict(&verdict, Duration::from_millis(1234));
+    let output = render_verdict(&verdict, false, Duration::from_millis(1234));
     assert_eq!(
         output, "Verdict: allow\nMessage: Safe\nLatency: 1.23s\n",
         "unexpected output shape:\n{output}"

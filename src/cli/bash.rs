@@ -13,8 +13,11 @@ use std::time::{Duration, Instant};
 use clap::{Parser, Subcommand};
 
 use crate::cli::{CmdRunner, CommandRunOptions};
-use crate::clients::judge::{JudgeClient, JudgeRequest, JudgeVerdict, repo_state_digest};
-use crate::config::settings::LoadedSettings;
+use crate::clients::judge::{
+    JudgeClient, JudgeOutcome, JudgeRequest, JudgeVerdict, evaluate_command, judge_is_enabled,
+    repo_state_digest,
+};
+use crate::config::settings::{JUDGE_BYPASS_ENV, JudgeSettings, LoadedSettings};
 use crate::config::{DataDir, ResolvedModelConfig, SettingsLoader};
 
 /// Inspect and explain Bash command-safety decisions.
@@ -71,17 +74,31 @@ async fn run_bash_check(
     command: &str,
     cli_model: Option<&str>,
 ) -> anyhow::Result<String> {
+    // The emergency bypass short-circuits before any judge setup: a disabled
+    // judge must not fail on an unusable model or rubric, because the bypass
+    // is the recovery path when judge configuration is broken.
+    let bypass_env = std::env::var(JUDGE_BYPASS_ENV).ok();
+    if !judge_is_enabled(&loaded.judge, bypass_env.as_deref()) {
+        return Ok(render_outcome(&JudgeOutcome::Bypassed, Duration::ZERO));
+    }
     let model = resolve_judge_model(loaded, cli_model)?;
     let client = JudgeClient::new(model, Duration::from_secs(loaded.judge.timeout_secs))
         .with_user_rubric(load_user_rubric(loaded)?);
-    evaluate_with_client(client, cwd, command).await
+    evaluate_with_client(client, &loaded.judge, bypass_env.as_deref(), cwd, command).await
 }
 
 /// Evaluate one command with an already-configured judge client and render the
-/// verdict. Exposed to tests so they can drive the exact `cake bash check`
+/// outcome. Exposed to tests so they can drive the exact `cake bash check`
 /// path against a stub judge without touching settings or spawning processes.
+///
+/// The command runs through the full judge path (bypass check, allowlist
+/// override), so the rendered output reflects what the Bash preflight will do.
+/// `bypass_env` is the `CAKE_JUDGE` value passed to the judge path; tests pass
+/// an explicit value so they are hermetic against the ambient environment.
 async fn evaluate_with_client(
     client: JudgeClient,
+    settings: &JudgeSettings,
+    bypass_env: Option<&str>,
     cwd: &Path,
     command: &str,
 ) -> anyhow::Result<String> {
@@ -89,10 +106,10 @@ async fn evaluate_with_client(
         .with_repo_digest(repo_state_digest(cwd));
 
     let started = Instant::now();
-    let verdict = client.judge(request).await?;
+    let outcome = evaluate_command(&client, settings, request, bypass_env).await?;
     let latency = started.elapsed();
 
-    Ok(render_verdict(&verdict, latency))
+    Ok(render_outcome(&outcome, latency))
 }
 
 /// Resolve the judge model config: the `[tools.bash.judge] model` override if
@@ -135,8 +152,23 @@ fn load_user_rubric(loaded: &LoadedSettings) -> anyhow::Result<Option<String>> {
     Ok(Some(text))
 }
 
+/// Render a judge-path outcome as human-readable inspection output on stdout.
+fn render_outcome(outcome: &JudgeOutcome, latency: Duration) -> String {
+    match outcome {
+        JudgeOutcome::Bypassed => {
+            "Verdict: bypassed\nMessage: the command-safety judge is disabled \
+             (CAKE_JUDGE=off or [tools.bash.judge] enabled = false); no judge call was made.\n"
+                .to_string()
+        },
+        JudgeOutcome::Verdict {
+            verdict,
+            overridden,
+        } => render_verdict(verdict, *overridden, latency),
+    }
+}
+
 /// Render a verdict as human-readable inspection output on stdout.
-fn render_verdict(verdict: &JudgeVerdict, latency: Duration) -> String {
+fn render_verdict(verdict: &JudgeVerdict, overridden: bool, latency: Duration) -> String {
     use std::fmt::Write as _;
 
     let decision = match verdict.decision {
@@ -149,6 +181,9 @@ fn render_verdict(verdict: &JudgeVerdict, latency: Duration) -> String {
         && !code.is_empty()
     {
         _ = writeln!(out, "Code: {code}");
+    }
+    if overridden {
+        _ = writeln!(out, "Overridden: allowlist");
     }
     if let Some(confidence) = verdict.confidence {
         _ = writeln!(out, "Confidence: {confidence}");
