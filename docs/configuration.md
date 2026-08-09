@@ -61,11 +61,11 @@ Relative `system_prompt`, `skills.path`, `directories`, and `[sandbox]` values r
 
 ```toml
 [tools.bash.judge]
-model = "gpt-5"     # optional raw provider model identifier
+model = "zen"       # optional [[models]] name
 timeout_secs = 30   # default 30; never below 1
 ```
 
-- `model`: optional raw provider model identifier sent to the agent's provider. It uses the same vocabulary as `model` inside a `[[models]]` entry --- not a named model like `default_model`, `--model`, or profiles reference. When unset, the judge uses the agent's configured model. A value that matches a `[[models]]` name is a likely mistake and warns at load time.
+- `model`: optional `[[models]]` name for the judge's model, in the same vocabulary as `default_model` and `--model`. The name indexes a fully configured `[[models]]` entry, so the judge uses that entry's provider, base URL, API key, temperature, reasoning, and other fields. When unset, the judge uses the agent's configured model. An unknown name fails at load time.
 - `timeout_secs`: bounded judge call timeout in seconds. Defaults to 30; values below 1 are raised to 1.
 
 ## Filesystem access

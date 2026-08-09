@@ -31,7 +31,7 @@ use crate::clients::agent_runner::build_http_client;
 use crate::clients::backend::Backend;
 use crate::clients::retry::RequestOverrides;
 use crate::clients::tools::repair_json_args;
-use crate::config::model::ResolvedModelConfig;
+use crate::config::model::{ModelConfig, ResolvedModelConfig};
 use crate::session_telemetry::{ProviderTermination, TerminationClassification};
 use crate::types::{ConversationItem, Role};
 
@@ -139,8 +139,8 @@ impl JudgeClient {
     /// Create a judge client on the agent's resolved model config.
     ///
     /// The judge model defaults to `config`'s model ("same family by
-    /// default"); use [`Self::with_model_override`] to swap the model
-    /// identifier while keeping the same provider config.
+    /// default"); use [`Self::with_model_override`] to switch to a named
+    /// `[[models]]` entry's full configuration.
     pub fn new(config: ResolvedModelConfig, timeout: Duration) -> Self {
         Self {
             client: build_http_client(false),
@@ -149,17 +149,24 @@ impl JudgeClient {
         }
     }
 
-    /// Override the judge model identifier, keeping the same provider config.
+    /// Override the judge model with a named `[[models]]` entry's full config.
     ///
-    /// `model` is a raw provider model identifier in the same vocabulary as
-    /// `model` inside a `[[models]]` entry — not a named model like
-    /// `default_model` or profiles reference. This is the `[tools.bash.judge]
-    /// model` setting; `None` keeps the agent's model.
-    pub fn with_model_override(mut self, model: Option<&str>) -> Self {
-        if let Some(model) = model {
-            self.config.model_config.model = model.to_string();
-        }
-        self
+    /// `config` is the complete `ModelConfig` of the named model — provider,
+    /// base URL, API key environment, temperature, reasoning, and other
+    /// fields — resolved the same way `default_model` and `--model` resolve a
+    /// `[[models]]` name. This is the `[tools.bash.judge] model` setting;
+    /// `None` keeps the agent's configured model.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the named model's `api_key_env` is unset or
+    /// empty, since the judge call needs that provider's credential.
+    pub fn with_model_override(mut self, config: Option<ModelConfig>) -> anyhow::Result<Self> {
+        let Some(config) = config else {
+            return Ok(self);
+        };
+        self.config = ResolvedModelConfig::resolve(config)?;
+        Ok(self)
     }
 
     /// The model identifier this judge client will call.
