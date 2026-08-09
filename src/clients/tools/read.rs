@@ -3,6 +3,7 @@ use std::io::{BufRead, BufReader, Read as _};
 use std::path::Path;
 
 use crate::clients::tools::{ToolContext, validate_path_in_cwd};
+use crate::session_telemetry::{CompensationEventTelemetry, CompensationKind};
 
 const DEFAULT_END_LINE: usize = 200;
 const MAX_OUTPUT_BYTES: usize = 100_000;
@@ -177,6 +178,7 @@ fn read_file(
                 "File: {}\n{total_lines} lines total\n(start_line > end_line, no content to show)",
                 path.display()
             ),
+            compensation_events: Vec::new(),
         });
     }
 
@@ -189,6 +191,7 @@ fn read_file(
         numbered_lines.join("\n")
     );
 
+    let mut compensation_events = Vec::new();
     // Truncate if too large, respecting the byte cap at valid UTF-8 boundaries
     if output.len() > MAX_OUTPUT_BYTES {
         use std::fmt::Write;
@@ -206,6 +209,10 @@ fn read_file(
             "\n[... output truncated at {MAX_OUTPUT_BYTES} bytes ...]"
         );
         output = truncated;
+        compensation_events.push(CompensationEventTelemetry::new(
+            CompensationKind::OutputTruncation,
+            Some("Read".to_string()),
+        ));
     }
 
     // Note remaining lines if applicable
@@ -215,7 +222,10 @@ fn read_file(
         _ = write!(output, "\n[... {remaining} more lines ...]");
     }
 
-    Ok(super::ToolResult { output })
+    Ok(super::ToolResult {
+        output,
+        compensation_events,
+    })
 }
 
 #[cfg(test)]
@@ -484,6 +494,21 @@ mod tests {
         assert!(
             !output.contains('\u{FFFD}'),
             "Output contains replacement character (split code point)"
+        );
+
+        // The truncation is recorded as a compensation event for telemetry.
+        assert_eq!(
+            result.compensation_events.len(),
+            1,
+            "truncated read must record one compensation event"
+        );
+        assert_eq!(
+            result.compensation_events[0].kind,
+            crate::session_telemetry::CompensationKind::OutputTruncation
+        );
+        assert_eq!(
+            result.compensation_events[0].detail.as_deref(),
+            Some("Read")
         );
     }
 

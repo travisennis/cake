@@ -117,6 +117,10 @@ eval *args:
 eval-check:
     @python3 -m unittest discover -s scripts/evals/tests -v
 
+# Run the session-metrics suite tests (stdlib only, no network)
+session-metrics-check:
+    @python3 -m unittest discover -s scripts/session-metrics/tests -v
+
 # Synchronize repository labels with the committed vocabulary in .github/labels.yml
 labels:
     @python3 scripts/sync-labels.py

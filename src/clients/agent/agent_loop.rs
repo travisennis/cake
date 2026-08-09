@@ -5,12 +5,15 @@ use std::time::{Duration, Instant};
 use crate::clients::agent::{Agent, TurnResult};
 use crate::clients::backend::FinalOutputConstraint;
 use crate::clients::retry::{RequestOverrides, RetryReason, RetryStatus};
-use crate::clients::tools::{Tool, ToolRegistry, read_extract_path, schedule_tool_calls};
+use crate::clients::tools::{
+    ScheduledToolCall, Tool, ToolRegistry, argument_compensation_events, read_extract_path,
+    schedule_tool_calls,
+};
 use crate::config::output_schema::{OutputSchema, OutputSchemaError};
 use crate::hooks::{HookRunner, ToolHookPlan};
 use crate::session_telemetry::{
-    AgentRunnerTelemetryEvent, RetryScheduledTelemetry, TerminationClassification,
-    ToolCallTelemetry,
+    AgentRunnerTelemetryEvent, CompensationEventTelemetry, CompensationKind,
+    RetryScheduledTelemetry, TerminationClassification, ToolCallTelemetry,
 };
 use crate::types::{ConversationItem, CutOffError, SessionRecord};
 
@@ -43,6 +46,7 @@ struct ToolRunResult {
     output: String,
     skill_activation: Option<SkillActivation>,
     telemetry: ToolCallTelemetry,
+    compensation_events: Vec<CompensationEventTelemetry>,
 }
 
 /// Result of checking whether a Read tool call targeted a known skill path.
@@ -71,6 +75,7 @@ fn immediate_tool_error_result(
         call_id: call_id.to_string(),
         output,
         skill_activation: None,
+        compensation_events: Vec::new(),
     }
 }
 
@@ -260,14 +265,7 @@ impl Agent {
         tool_plans: Vec<(String, String, ToolHookPlan)>,
     ) -> Vec<ToolRunResult> {
         let groups = schedule_tool_calls(&self.tools, self.tool_context.as_ref(), tool_plans);
-        let group_futures = groups.into_iter().map(|group| async move {
-            let mut results = Vec::with_capacity(group.len());
-            for call in group {
-                let result = self.run_tool_call(call.call_id, call.name, call.plan).await;
-                results.push((call.index, result));
-            }
-            results
-        });
+        let group_futures = groups.into_iter().map(|group| self.run_group(group));
         let mut results: Vec<(usize, ToolRunResult)> = futures::future::join_all(group_futures)
             .await
             .into_iter()
@@ -275,6 +273,29 @@ impl Agent {
             .collect();
         results.sort_unstable_by_key(|(index, _)| *index);
         results.into_iter().map(|(_, result)| result).collect()
+    }
+
+    /// Execute one scheduling group: members run sequentially in issue order,
+    /// each seeing the previous call's effects. Every member after the first
+    /// is a same-path serialization reordering the model needed compensated,
+    /// recorded as a telemetry event.
+    async fn run_group(&self, group: Vec<ScheduledToolCall>) -> Vec<(usize, ToolRunResult)> {
+        let mut results = Vec::with_capacity(group.len());
+        for (position, call) in group.into_iter().enumerate() {
+            let mut result = self.run_tool_call(call.call_id, call.name, call.plan).await;
+            if position > 0
+                && let Some(path) = call.target.as_ref()
+            {
+                result
+                    .compensation_events
+                    .push(CompensationEventTelemetry::new(
+                        CompensationKind::SamePathSerialization,
+                        Some(path.display().to_string()),
+                    ));
+            }
+            results.push((call.index, result));
+        }
+        results
     }
 
     async fn run_tool_call(
@@ -318,10 +339,23 @@ impl Agent {
                 .await;
 
                 let was_error = result.is_err();
+                let mut compensation_events = Vec::new();
                 let mut output = match result {
-                    Ok(result) => result.output,
+                    Ok(result) => {
+                        compensation_events = result.compensation_events;
+                        result.output
+                    },
                     Err(error) => format!("Error: {error}"),
                 };
+                // Classify argument-driven compensations centrally: the
+                // repair pass and Edit parse are the source of truth, and the
+                // events survive calls that fail after a repair. Unregistered
+                // tools never reached an argument parser, so they cannot
+                // carry argument compensations.
+                let registered = self.tools.has(&name);
+                compensation_events.extend(argument_compensation_events(
+                    &name, &arguments, was_error, registered,
+                ));
 
                 let skill_activation = if was_error {
                     None
@@ -357,6 +391,7 @@ impl Agent {
                     call_id,
                     output,
                     skill_activation,
+                    compensation_events,
                 }
             },
         }
@@ -365,6 +400,7 @@ impl Agent {
     fn record_tool_results(&mut self, results: Vec<ToolRunResult>) -> anyhow::Result<()> {
         for result in results {
             self.append_tool_call_telemetry(result.telemetry);
+            self.record_compensation_events(result.compensation_events);
             if let Some(skill_activation) = result.skill_activation {
                 let record = SessionRecord::SkillActivated {
                     session_id: self.session_id.to_string(),
@@ -381,6 +417,12 @@ impl Agent {
             self.stream_item(&item)?;
         }
         Ok(())
+    }
+
+    fn record_compensation_events(&mut self, events: Vec<CompensationEventTelemetry>) {
+        for event in events {
+            self.append_compensation_telemetry(event);
+        }
     }
 
     async fn complete_turn_with_output_schema_fallback(

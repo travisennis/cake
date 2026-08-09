@@ -8,7 +8,7 @@ Data sources:
   task_start, task_complete, result, skill_activated.
 - Telemetry sidecars: ~/.cache/cake/session-telemetry/{uuid}.ndjson
   Record types: telemetry_init, api_attempt, retry_scheduled, tool_call,
-  session_summary. One file can span multiple invocations (continue/resume).
+  compensation, session_summary. One file can span multiple invocations (continue/resume).
 """
 
 from __future__ import annotations
@@ -130,6 +130,7 @@ class Invocation:
     attempts: list[dict] = field(default_factory=list)
     retries: list[dict] = field(default_factory=list)
     tool_calls: list[dict] = field(default_factory=list)
+    compensations: list[dict] = field(default_factory=list)
     summary: dict | None = None
 
     @property
@@ -272,6 +273,8 @@ def load_telemetry(
                         inv.retries.append(rec)
                     elif t == "tool_call":
                         inv.tool_calls.append(rec)
+                    elif t == "compensation":
+                        inv.compensations.append(rec)
                     elif t == "session_summary":
                         inv.summary = rec
         except OSError:

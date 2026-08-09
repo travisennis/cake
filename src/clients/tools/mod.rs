@@ -30,6 +30,8 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 
+use crate::session_telemetry::{CompensationEventTelemetry, CompensationKind};
+
 mod sandbox;
 
 pub use sandbox::{SandboxPolicy, resolve_linked_worktree_dirs, resolve_sandbox_policy};
@@ -169,8 +171,62 @@ mod write;
 
 pub(super) use json_repair::repair_json_args;
 pub use read::extract_path as read_extract_path;
-pub(super) use scheduling::schedule_tool_calls;
+pub(super) use scheduling::{ScheduledToolCall, schedule_tool_calls};
 pub(super) use toolbox::toolbox_tool_entry;
+
+/// Compensation events derivable from a tool call's arguments and outcome,
+/// computed in the agent loop so the detection rules cannot drift from the
+/// tool parse paths and so events survive calls that fail after a repair.
+///
+/// - `json_repair`: the conservative repair pass modified the arguments and
+///   the repaired payload parses as valid JSON. Applies to every registered
+///   repair-using tool (Edit, Write, `tb__*`), whether or not the call later
+///   failed; an unregistered tool never reaches an argument parser.
+/// - `edit_invalid_arguments`: a registered Edit call failed and its
+///   arguments still fail to parse after the repair pass.
+pub(super) fn argument_compensation_events(
+    name: &str,
+    arguments: &str,
+    was_error: bool,
+    registered: bool,
+) -> Vec<CompensationEventTelemetry> {
+    let mut events = Vec::new();
+    if registered && uses_repair_pass(name) {
+        let repaired = repair_json_args(arguments);
+        if repaired != arguments && serde_json::from_str::<serde_json::Value>(&repaired).is_ok() {
+            events.push(CompensationEventTelemetry::new(
+                CompensationKind::JsonRepair,
+                Some(name.to_string()),
+            ));
+        }
+    }
+    if was_error && registered && name == "Edit" && edit::arguments_are_invalid(arguments) {
+        events.push(CompensationEventTelemetry::new(
+            CompensationKind::EditInvalidArguments,
+            None,
+        ));
+    }
+    events
+}
+
+fn uses_repair_pass(name: &str) -> bool {
+    name == "Edit" || name == "Write" || name.starts_with(crate::config::toolbox::TOOLBOX_PREFIX)
+}
+
+/// Push an `output_truncation` compensation event when a tool's output hit an
+/// inline cap or spilled to a temp file. One event per truncated run.
+pub(super) fn push_output_truncation_event_if(
+    events: &mut Vec<CompensationEventTelemetry>,
+    tool_name: &str,
+    truncated: bool,
+) {
+    if truncated {
+        events.push(CompensationEventTelemetry::new(
+            CompensationKind::OutputTruncation,
+            Some(tool_name.to_string()),
+        ));
+    }
+}
 
 // =============================================================================
 // JSON Parse Error Formatting
@@ -527,10 +583,13 @@ pub struct Tool {
 /// Result of executing a tool.
 ///
 /// Contains the output string from tool execution, which may be stdout/stderr
-/// for Bash or file contents for Read operations.
+/// for Bash or file contents for Read operations, plus any model-compensation
+/// events observed while running the tool (recorded to session telemetry by
+/// the agent loop).
 #[derive(Debug)]
 pub struct ToolResult {
     pub output: String,
+    pub compensation_events: Vec<CompensationEventTelemetry>,
 }
 
 type ToolFuture = Pin<Box<dyn Future<Output = Result<ToolResult, String>> + Send>>;
@@ -638,6 +697,11 @@ impl ToolRegistry {
         };
 
         (entry.execute)(context, arguments.to_string()).await
+    }
+
+    /// Return whether a tool with `name` is registered.
+    pub(super) fn has(&self, name: &str) -> bool {
+        self.find(name).is_some()
     }
 
     /// Return the canonical path a mutating path-aware tool would write.
@@ -1466,5 +1530,72 @@ mod tests {
         registry.retain_read_safe_tools();
         assert_eq!(registry.names(), vec!["Bash", "Read"]);
         assert_eq!(registry.definitions().len(), 2);
+    }
+
+    // ── argument compensation classification ──
+
+    #[test]
+    fn repair_event_fires_when_repair_modified_arguments() {
+        // A raw newline inside a JSON string: repaired and parseable.
+        let arguments = "{\"path\":\"f\",\"edits\":[{\"old_text\":\"a\n\",\"new_text\":\"b\"}]}";
+        let events = argument_compensation_events("Edit", arguments, false, true);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, CompensationKind::JsonRepair);
+        assert_eq!(events[0].detail.as_deref(), Some("Edit"));
+    }
+
+    #[test]
+    fn repair_event_survives_a_failed_call() {
+        // Repair applied but the call later failed: still counted.
+        let arguments = "{\"path\":\"f\",\"edits\":[{\"old_text\":\"a\n\",\"new_text\":\"b\"}]}";
+        let events = argument_compensation_events("Edit", arguments, true, true);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, CompensationKind::JsonRepair);
+    }
+
+    #[test]
+    fn unregistered_tools_do_not_carry_argument_compensations() {
+        // A hallucinated toolbox name with repairable arguments never reached
+        // an argument parser, so no repair event fires.
+        let arguments = "{\"a\":\"line1\nline2\"}";
+        let events = argument_compensation_events("tb__nonexistent", arguments, true, false);
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn invalid_edit_arguments_event_fires_only_on_failure() {
+        let arguments = r#"{"path":"f","edits":[{"new_string":"x"}]}"#;
+        let events = argument_compensation_events("Edit", arguments, true, true);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, CompensationKind::EditInvalidArguments);
+
+        let events = argument_compensation_events("Edit", arguments, false, true);
+        assert!(
+            events.is_empty(),
+            "successful call must not fire the counter"
+        );
+    }
+
+    #[test]
+    fn no_compensation_events_for_valid_arguments() {
+        let arguments = r#"{"path":"f","edits":[{"old_text":"a","new_text":"b"}]}"#;
+        let events = argument_compensation_events("Edit", arguments, true, true);
+        assert!(
+            events.is_empty(),
+            "valid Edit args that failed later are not classified"
+        );
+
+        let events = argument_compensation_events("Bash", "echo hi", false, true);
+        assert!(events.is_empty(), "Bash does not use the repair pass");
+    }
+
+    #[test]
+    fn repair_event_requires_parseable_result() {
+        // A raw tab inside an unterminated string: the repair pass escapes
+        // the control character but the payload still is not valid JSON, so
+        // the repair did not apply and no event fires.
+        let arguments = "{\"a\":\"\t";
+        let events = argument_compensation_events("Write", arguments, true, true);
+        assert!(events.is_empty());
     }
 }
