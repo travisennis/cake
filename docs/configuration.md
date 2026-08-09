@@ -65,10 +65,12 @@ Relative `system_prompt`, `skills.path`, `directories`, and `[sandbox]` values r
 [tools.bash.judge]
 model = "zen"       # optional [[models]] name
 timeout_secs = 30   # default 30; never below 1
+rubric_file = ".cake/judge-rubric.md"  # optional user rubric guidance
 ```
 
 - `model`: optional `[[models]]` name for the judge's model, in the same vocabulary as `default_model` and `--model`. The name indexes a fully configured `[[models]]` entry, so the judge uses that entry's provider, base URL, API key, temperature, reasoning, and other fields. When unset, the judge uses the agent's configured model. An unknown name fails at load time.
 - `timeout_secs`: bounded judge call timeout in seconds. Defaults to 30; values below 1 are raised to 1.
+- `rubric_file`: optional path to a user rubric file whose text is appended to the embedded default rubric as additional judge guidance (extra always-block classes, relaxations phrased as guidance). Relative paths resolve from the invocation working directory. Relaxations are advisory to the judge, not hard overrides; the allowlist is the only hard override.
 
 ## Filesystem access
 

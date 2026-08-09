@@ -1,5 +1,19 @@
 use crate::config::DataDir;
 
+/// Run-mode options a subcommand may need to mirror the agent run's model and
+/// profile selection.
+///
+/// Passed to [`CmdRunner::run`] so introspection commands like
+/// `cake bash check` resolve the judge model the same way an agent turn would
+/// (`--model`, then `default_model` under the selected profile).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CommandRunOptions<'a> {
+    /// The top-level `--model` flag value, when provided.
+    pub model: Option<&'a str>,
+    /// The top-level `--profile` flag value, when provided.
+    pub profile: Option<&'a str>,
+}
+
 /// A trait representing a command runner.
 ///
 /// This trait defines the interface for commands that can be executed by the CLI.
@@ -16,5 +30,5 @@ pub trait CmdRunner {
     /// # Errors
     ///
     /// Returns an error if the command execution fails.
-    async fn run(&self, data_dir: &DataDir) -> anyhow::Result<()>;
+    async fn run(&self, data_dir: &DataDir, options: &CommandRunOptions<'_>) -> anyhow::Result<()>;
 }

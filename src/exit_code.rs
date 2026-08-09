@@ -69,24 +69,67 @@ pub fn classify_to_u8(err: &anyhow::Error) -> u8 {
 fn classify_typed_error(err: &anyhow::Error) -> Option<u8> {
     // Check for structured ApiError first — this gives us reliable status codes.
     if let Some(api_err) = err.downcast_ref::<ApiError>() {
-        return Some(match api_err.status {
-            401 | 403 | 429 => code::API_ERROR,
-            _ => code::AGENT_ERROR,
-        });
+        return Some(classify_api_error_status(api_err.status));
     }
 
     // Typed output-schema errors: pre-run schema file problems are input
     // errors; a run that cannot satisfy the schema is an agent error.
     if let Some(schema_err) = err.downcast_ref::<crate::config::OutputSchemaError>() {
-        return Some(match schema_err {
-            crate::config::OutputSchemaError::Unreadable { .. }
-            | crate::config::OutputSchemaError::InvalidJson { .. }
-            | crate::config::OutputSchemaError::InvalidSchema { .. } => code::INPUT_ERROR,
-            crate::config::OutputSchemaError::Unsatisfied { .. } => code::AGENT_ERROR,
-        });
+        return Some(classify_schema_error(schema_err));
+    }
+
+    // Judge failures are provider/agent errors: a timeout or transport
+    // failure is an API/network error, while a malformed verdict or refusal
+    // is a judge (agent) error. Matches the ApiError convention: auth and
+    // rate-limit HTTP statuses are API errors.
+    if let Some(judge_err) = err.downcast_ref::<crate::clients::judge::JudgeError>() {
+        return Some(classify_judge_error(judge_err));
     }
 
     None
+}
+
+/// Classify a structured [`ApiError`]'s HTTP status.
+const fn classify_api_error_status(status: u16) -> u8 {
+    match status {
+        401 | 403 | 429 => code::API_ERROR,
+        _ => code::AGENT_ERROR,
+    }
+}
+
+/// Classify a typed output-schema error.
+const fn classify_schema_error(error: &crate::config::OutputSchemaError) -> u8 {
+    match error {
+        crate::config::OutputSchemaError::Unreadable { .. }
+        | crate::config::OutputSchemaError::InvalidJson { .. }
+        | crate::config::OutputSchemaError::InvalidSchema { .. } => code::INPUT_ERROR,
+        crate::config::OutputSchemaError::Unsatisfied { .. } => code::AGENT_ERROR,
+    }
+}
+
+/// Classify a judge failure: timeouts and network/auth/rate-limit transport
+/// failures are API errors; other HTTP failures, malformed verdicts, and
+/// refusals are judge errors.
+fn classify_judge_error(error: &crate::clients::judge::JudgeError) -> u8 {
+    match error {
+        crate::clients::judge::JudgeError::Timeout(_) => code::API_ERROR,
+        crate::clients::judge::JudgeError::Transport {
+            status: Some(status),
+            ..
+        } => classify_api_error_status(*status),
+        crate::clients::judge::JudgeError::Transport {
+            status: None,
+            detail,
+        } => {
+            if is_api_network_error(detail) {
+                code::API_ERROR
+            } else {
+                code::AGENT_ERROR
+            }
+        },
+        crate::clients::judge::JudgeError::Malformed(_)
+        | crate::clients::judge::JudgeError::Refusal => code::AGENT_ERROR,
+    }
 }
 
 fn classify_error_cause(cause: &(dyn std::error::Error + 'static)) -> Option<u8> {
@@ -147,6 +190,7 @@ const INPUT_ERROR_PATTERNS: &[&str] = &[
     "Invalid session reference",
     "No previous session found",
     "Failed to open session file",
+    "Failed to read judge rubric file",
     "Working directory mismatch",
     "Session model mismatch",
     "Failed to cd into worktree",
@@ -471,6 +515,74 @@ mod tests {
     }
 
     // --- Agent error classification (default) ---
+
+    #[test]
+    fn classify_judge_timeout_as_api_error() {
+        let err = anyhow::Error::new(crate::clients::judge::JudgeError::Timeout(
+            std::time::Duration::from_secs(30),
+        ));
+        assert_eq!(classify_to_u8(&err), code::API_ERROR);
+    }
+
+    #[test]
+    fn classify_judge_auth_transport_as_api_error() {
+        let err = anyhow::Error::new(crate::clients::judge::JudgeError::Transport {
+            status: Some(401),
+            detail: "invalid api key".to_string(),
+        });
+        assert_eq!(classify_to_u8(&err), code::API_ERROR);
+
+        let err = anyhow::Error::new(crate::clients::judge::JudgeError::Transport {
+            status: Some(429),
+            detail: "rate limited".to_string(),
+        });
+        assert_eq!(classify_to_u8(&err), code::API_ERROR);
+    }
+
+    #[test]
+    fn classify_judge_network_transport_as_api_error() {
+        let err = anyhow::Error::new(crate::clients::judge::JudgeError::Transport {
+            status: None,
+            detail: "error sending request: connection refused".to_string(),
+        });
+        assert_eq!(classify_to_u8(&err), code::API_ERROR);
+    }
+
+    #[test]
+    fn classify_judge_server_transport_as_agent_error() {
+        let err = anyhow::Error::new(crate::clients::judge::JudgeError::Transport {
+            status: Some(500),
+            // Provider bodies often quote upstream failures; the structured
+            // status must win over status-like text in the body.
+            detail: "upstream said HTTP 401: auth failed".to_string(),
+        });
+        assert_eq!(classify_to_u8(&err), code::AGENT_ERROR);
+
+        let err = anyhow::Error::new(crate::clients::judge::JudgeError::Transport {
+            status: Some(502),
+            detail: "error sending request to upstream".to_string(),
+        });
+        assert_eq!(classify_to_u8(&err), code::AGENT_ERROR);
+    }
+
+    #[test]
+    fn classify_judge_malformed_and_refusal_as_agent_error() {
+        let err = anyhow::Error::new(crate::clients::judge::JudgeError::Malformed(
+            "bad json".to_string(),
+        ));
+        assert_eq!(classify_to_u8(&err), code::AGENT_ERROR);
+
+        let err = anyhow::Error::new(crate::clients::judge::JudgeError::Refusal);
+        assert_eq!(classify_to_u8(&err), code::AGENT_ERROR);
+    }
+
+    #[test]
+    fn classify_unreadable_judge_rubric_as_input_error() {
+        let err = anyhow::anyhow!(
+            "Failed to read judge rubric file /work/rubric.md: No such file or directory"
+        );
+        assert_eq!(classify_to_u8(&err), code::INPUT_ERROR);
+    }
 
     #[test]
     fn classify_generic_error_as_agent_error() {
