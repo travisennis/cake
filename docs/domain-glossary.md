@@ -6,7 +6,7 @@ It is a glossary and nothing else. It is not a specification, not a design recor
 
 ## When to read it
 
-Read an entry before reporting that two functions, types, or code paths duplicate each other. If a glossary entry says they answer different questions, the divergence is intended and there is no finding. A survey that is about to file duplicated logic should consult this document first.
+Read an entry before reporting that two functions, types, or code paths duplicate each other. If a glossary entry says they answer different questions, the divergence is intended and there is no finding. The redundant-derivation check in the `finding-improvements` skill routes here, and any survey about to file duplicated logic should consult this document first.
 
 ## When to add an entry
 
