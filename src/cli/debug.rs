@@ -1,4 +1,4 @@
-use crate::cli::CmdRunner;
+use crate::cli::{CmdRunner, CommandRunOptions};
 use crate::config::model::ApiType;
 use crate::config::{DataDir, ModelDefinition, SettingsLoader};
 use clap::{Parser, Subcommand};
@@ -21,7 +21,11 @@ enum DebugSubcommand {
 }
 
 impl CmdRunner for DebugCommand {
-    async fn run(&self, _data_dir: &DataDir) -> anyhow::Result<()> {
+    async fn run(
+        &self,
+        _data_dir: &DataDir,
+        _options: &CommandRunOptions<'_>,
+    ) -> anyhow::Result<()> {
         match &self.command {
             DebugSubcommand::Models { json } => {
                 let current_dir = std::env::current_dir()

@@ -86,6 +86,10 @@ pub struct BashJudgeSettings {
     /// Bounded judge call timeout in seconds. When unset, defaults to 30.
     #[serde(default)]
     pub timeout_secs: Option<u64>,
+    /// Optional path to a user rubric file whose text is appended to the
+    /// embedded default rubric as additional judge guidance.
+    #[serde(default)]
+    pub rubric_file: Option<PathBuf>,
 }
 
 /// Resolved LLM judge settings for Bash command safety.
@@ -101,6 +105,9 @@ pub struct JudgeSettings {
     pub model: Option<String>,
     /// Bounded judge call timeout in seconds (default 30; never below 1).
     pub timeout_secs: u64,
+    /// Optional path to a user rubric file appended to the embedded default
+    /// rubric. Relative paths resolve from the invocation working directory.
+    pub rubric_file: Option<PathBuf>,
 }
 
 impl Default for JudgeSettings {
@@ -108,6 +115,7 @@ impl Default for JudgeSettings {
         Self {
             model: None,
             timeout_secs: DEFAULT_JUDGE_TIMEOUT_SECS,
+            rubric_file: None,
         }
     }
 }
@@ -227,13 +235,6 @@ pub struct LoadedSettings {
     /// but before `~/.config/cake/system.md` in the precedence chain.
     pub system_prompt: Option<String>,
     /// Effective LLM judge settings (global + project merged, defaults applied).
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "judge settings are consumed by ExecPlan Milestones 3 and 5"
-        )
-    )]
     pub judge: JudgeSettings,
 }
 
@@ -605,6 +606,9 @@ impl SettingsLoader {
         if judge.timeout_secs.is_some() {
             acc.judge_timeout_secs = judge.timeout_secs;
         }
+        if judge.rubric_file.is_some() {
+            acc.judge_rubric_file = judge.rubric_file;
+        }
     }
 
     fn validate_profiles(profiles: &HashMap<String, ProfileSettings>) -> Result<(), SettingsError> {
@@ -673,6 +677,7 @@ struct SettingsAccumulator {
     system_prompt: Option<String>,
     judge_model: Option<String>,
     judge_timeout_secs: Option<u64>,
+    judge_rubric_file: Option<PathBuf>,
 }
 
 impl SettingsAccumulator {
@@ -711,6 +716,7 @@ impl SettingsAccumulator {
                     .judge_timeout_secs
                     .unwrap_or(DEFAULT_JUDGE_TIMEOUT_SECS)
                     .max(JUDGE_TIMEOUT_MIN_SECS),
+                rubric_file: self.judge_rubric_file,
             },
         }
     }

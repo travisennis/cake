@@ -17,7 +17,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
-use crate::cli::{CliOutputSink, CmdRunner, Commands, RunMode, SessionStorage, TurnResult};
+use crate::cli::{
+    CliOutputSink, CmdRunner, CommandRunOptions, Commands, RunMode, SessionStorage, TurnResult,
+};
 use crate::clients::resolve_linked_worktree_dirs;
 use crate::clients::{Agent, SandboxPolicy, ToolContext, resolve_sandbox_policy};
 use crate::config::settings::LoadedSettings;
@@ -973,9 +975,9 @@ impl CmdRunner for CodingAssistant {
         clippy::too_many_lines,
         reason = "top-level run orchestration wires every session resource together"
     )]
-    async fn run(&self, data_dir: &DataDir) -> anyhow::Result<()> {
+    async fn run(&self, data_dir: &DataDir, options: &CommandRunOptions<'_>) -> anyhow::Result<()> {
         if let Some(command) = &self.command {
-            return command.run(data_dir).await;
+            return command.run(data_dir, options).await;
         }
 
         let prepared = self.prepare_run()?;
@@ -1251,7 +1253,11 @@ async fn main() -> std::process::ExitCode {
 
     info!("data dir: {}", data_dir.get_cache_dir().display());
 
-    match args.run(&data_dir).await {
+    let options = CommandRunOptions {
+        model: args.model.as_deref(),
+        profile: args.profile.as_deref(),
+    };
+    match args.run(&data_dir, &options).await {
         Ok(()) => std::process::ExitCode::from(exit_code::code::SUCCESS),
         Err(e) => {
             if e.is::<Interrupted>() {

@@ -6,6 +6,7 @@
 //! - [`RunMode`] / [`SessionStorage`] for session lifecycle.
 //! - [`RunSession`] and [`skill_locations`] for session construction.
 
+mod bash;
 mod cmd_runner;
 mod debug;
 mod output;
@@ -14,7 +15,8 @@ mod session_factory;
 mod sessions;
 
 #[doc(inline)]
-pub use cmd_runner::CmdRunner;
+pub use bash::BashCommand;
+pub use cmd_runner::{CmdRunner, CommandRunOptions};
 pub use debug::DebugCommand;
 pub use output::{CliOutputSink, TurnResult};
 pub use sessions::SessionsCommand;
@@ -29,13 +31,34 @@ pub enum Commands {
     Debug(DebugCommand),
     /// Session browsing commands
     Sessions(SessionsCommand),
+    /// Inspect and explain Bash command-safety decisions
+    Bash(BashCommand),
 }
 
 impl CmdRunner for Commands {
-    async fn run(&self, data_dir: &crate::config::DataDir) -> anyhow::Result<()> {
+    async fn run(
+        &self,
+        data_dir: &crate::config::DataDir,
+        options: &CommandRunOptions<'_>,
+    ) -> anyhow::Result<()> {
+        self.dispatch(data_dir, options).await
+    }
+}
+
+impl Commands {
+    /// Dispatch to the selected subcommand's [`CmdRunner`].
+    ///
+    /// Extracted so [`CmdRunner::run`] stays at baseline complexity as
+    /// subcommands are added.
+    async fn dispatch(
+        &self,
+        data_dir: &crate::config::DataDir,
+        options: &CommandRunOptions<'_>,
+    ) -> anyhow::Result<()> {
         match self {
-            Self::Debug(command) => command.run(data_dir).await,
-            Self::Sessions(command) => command.run(data_dir).await,
+            Self::Debug(command) => command.run(data_dir, options).await,
+            Self::Sessions(command) => command.run(data_dir, options).await,
+            Self::Bash(command) => command.run(data_dir, options).await,
         }
     }
 }

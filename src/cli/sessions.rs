@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
 use serde::Serialize;
 
-use crate::cli::CmdRunner;
+use crate::cli::{CmdRunner, CommandRunOptions};
 use crate::config::DataDir;
 use crate::config::session::CURRENT_FORMAT_VERSION;
 
@@ -28,7 +28,11 @@ enum SessionsSubcommand {
 }
 
 impl CmdRunner for SessionsCommand {
-    async fn run(&self, data_dir: &DataDir) -> anyhow::Result<()> {
+    async fn run(
+        &self,
+        data_dir: &DataDir,
+        _options: &CommandRunOptions<'_>,
+    ) -> anyhow::Result<()> {
         match &self.command {
             SessionsSubcommand::List { json } => {
                 let current_dir = std::env::current_dir()
