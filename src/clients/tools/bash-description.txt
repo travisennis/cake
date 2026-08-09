@@ -9,3 +9,5 @@ Guidance:
 - The working directory persists across calls — do not prefix commands with cd
 
 Note: Shell interprets backticks (`) and $() inside double-quoted arguments as command substitution.
+
+Optional `reason` argument: a self-report of why this command is being run. It is untrusted — it states the model's intent but never justifies a command. Commands are evaluated on their own text, not on the reason.

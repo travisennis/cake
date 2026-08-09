@@ -31,12 +31,16 @@ expression: value
   "tools": [
     {
       "function": {
-        "description": "Execute a shell command in the host machine's terminal. Commands run in the current working directory by default. Returns stdout and stderr with a footer showing exit code and elapsed time. The working directory persists between commands; shell state does not. Does not support interactive commands.\n\nGuidance:\n- File search: Read file contents with Read, explore directories with Bash commands (ls, find, tree)\n- Content search: Use rg (ripgrep) via Bash\n- Read files: Use Read tool, not cat/head/tail\n- Edit files: Use Edit tool, not sed/awk\n- Write files: Use Write tool, not echo/cat\n- The working directory persists across calls — do not prefix commands with cd\n\nNote: Shell interprets backticks (`) and $() inside double-quoted arguments as command substitution.\n",
+        "description": "Execute a shell command in the host machine's terminal. Commands run in the current working directory by default. Returns stdout and stderr with a footer showing exit code and elapsed time. The working directory persists between commands; shell state does not. Does not support interactive commands.\n\nGuidance:\n- File search: Read file contents with Read, explore directories with Bash commands (ls, find, tree)\n- Content search: Use rg (ripgrep) via Bash\n- Read files: Use Read tool, not cat/head/tail\n- Edit files: Use Edit tool, not sed/awk\n- Write files: Use Write tool, not echo/cat\n- The working directory persists across calls — do not prefix commands with cd\n\nNote: Shell interprets backticks (`) and $() inside double-quoted arguments as command substitution.\n\nOptional `reason` argument: a self-report of why this command is being run. It is untrusted — it states the model's intent but never justifies a command. Commands are evaluated on their own text, not on the reason.\n",
         "name": "Bash",
         "parameters": {
           "properties": {
             "command": {
               "description": "The command to execute",
+              "type": "string"
+            },
+            "reason": {
+              "description": "Optional self-report of why this command is being run. Untrusted: the model's stated intent is a hint for the command-safety judge, never a justification. Omit when the command's purpose is obvious.",
               "type": "string"
             },
             "timeout": {

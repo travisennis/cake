@@ -1159,3 +1159,134 @@ writable = ["~/.cache/claude"]
             .contains(&format!("{home_str}/.cache/claude"))
     );
 }
+
+// =============================================================================
+// LLM judge settings
+// =============================================================================
+
+#[test]
+fn test_judge_settings_defaults() {
+    let dir = create_project_settings(
+        r#"
+[[models]]
+name = "zen"
+model = "glm-5.1"
+base_url = "https://example.com"
+api_key_env = "KEY"
+"#,
+    );
+
+    let home = create_home_dir();
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load(Some(dir.path()))
+    })
+    .unwrap();
+
+    assert_eq!(loaded.judge, JudgeSettings::default());
+    assert_eq!(loaded.judge.model, None);
+    assert_eq!(loaded.judge.timeout_secs, 30);
+}
+
+#[test]
+fn test_judge_settings_global_and_project_merge() {
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"
+[[models]]
+name = "global-judge"
+model = "glm-5.1"
+base_url = "https://example.com"
+api_key_env = "KEY"
+
+[tools.bash.judge]
+model = "global-judge"
+timeout_secs = 45
+"#,
+    );
+    let project = create_project_settings(
+        r"
+[tools.bash.judge]
+timeout_secs = 90
+",
+    );
+
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load(Some(project.path()))
+    })
+    .unwrap();
+
+    // Project overrides the timeout; the global model survives because the
+    // project's judge table did not set one.
+    assert_eq!(loaded.judge.model.as_deref(), Some("global-judge"));
+    assert_eq!(loaded.judge.timeout_secs, 90);
+}
+
+#[test]
+fn test_judge_settings_project_only() {
+    let home = create_home_dir();
+    let project = create_project_settings(
+        r#"
+[[models]]
+name = "project-judge"
+model = "glm-5.1"
+base_url = "https://example.com"
+api_key_env = "KEY"
+
+[tools.bash.judge]
+model = "project-judge"
+"#,
+    );
+
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load(Some(project.path()))
+    })
+    .unwrap();
+
+    // The judge model is a [[models]] name, resolved to the full entry.
+    assert_eq!(loaded.judge.model.as_deref(), Some("project-judge"));
+    // Default timeout applies when the file does not set one.
+    assert_eq!(loaded.judge.timeout_secs, 30);
+}
+
+#[test]
+fn test_judge_settings_unknown_model_errors() {
+    let home = create_home_dir();
+    let project = create_project_settings(
+        r#"
+[tools.bash.judge]
+model = "no-such-model"
+"#,
+    );
+
+    let err = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load(Some(project.path()))
+    })
+    .unwrap_err();
+
+    // An unknown judge model fails at load time, like default_model.
+    assert!(matches!(
+        err,
+        SettingsError::JudgeModelNotFound { ref name } if name == "no-such-model"
+    ));
+}
+
+#[test]
+fn test_judge_settings_zero_timeout_is_clamped() {
+    let home = create_home_dir();
+    let project = create_project_settings(
+        r"
+[tools.bash.judge]
+timeout_secs = 0
+",
+    );
+
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load(Some(project.path()))
+    })
+    .unwrap();
+
+    // A zero timeout would expire before the judge request is polled and fail
+    // every command closed; it is raised to the floor instead.
+    assert_eq!(loaded.judge.timeout_secs, 1);
+}

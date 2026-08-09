@@ -53,7 +53,22 @@ Optional model fields are `api_type` (`chat_completions` or `responses`), `provi
 
 Set the selected model explicitly with `--model`, through a selected `--profile`, or with `default_model`. Reasoning and output-token CLI flags override the resolved model for one invocation.
 
+All model references --- `default_model`, `--model`, profiles, and `[tools.bash.judge] model` --- use a `[[models]]` entry's `name` as the index into that entry's full configuration (provider, base URL, API key, temperature, reasoning, and other fields). The `model` field inside a `[[models]]` entry is the raw provider model identifier and is not used to reference a model elsewhere.
+
 Relative `system_prompt`, `skills.path`, `directories`, and `[sandbox]` values resolve from the invocation working directory, including the created worktree when `--worktree` is active. Use absolute paths for global settings that must work from every project. Invalid files and unknown selected models fail before the provider request.
+
+## Bash tool settings
+
+`[tools.bash]` configures the Bash tool. The `[tools.bash.judge]` table holds settings for the LLM command-safety judge. The judge is reserved for the Bash preflight wiring and is not yet active; absent keys preserve current behavior.
+
+```toml
+[tools.bash.judge]
+model = "zen"       # optional [[models]] name
+timeout_secs = 30   # default 30; never below 1
+```
+
+- `model`: optional `[[models]]` name for the judge's model, in the same vocabulary as `default_model` and `--model`. The name indexes a fully configured `[[models]]` entry, so the judge uses that entry's provider, base URL, API key, temperature, reasoning, and other fields. When unset, the judge uses the agent's configured model. An unknown name fails at load time.
+- `timeout_secs`: bounded judge call timeout in seconds. Defaults to 30; values below 1 are raised to 1.
 
 ## Filesystem access
 

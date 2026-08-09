@@ -45,6 +45,17 @@ struct BashExecutionArgs {
     command: String,
     timeout: u64,
     policy: super::sandbox::SandboxPolicy,
+    /// The model's untrusted self-report of intent. Not yet consumed until
+    /// the LLM-judge preflight lands (Milestone 5); carried here so the judge
+    /// request can include it.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "reason feeds the judge request in ExecPlan Milestone 5"
+        )
+    )]
+    reason: Option<String>,
 }
 
 impl BashExecutionArgs {
@@ -53,6 +64,8 @@ impl BashExecutionArgs {
         struct BashArgs {
             command: String,
             timeout: Option<u64>,
+            #[serde(default)]
+            reason: Option<String>,
         }
 
         let args: BashArgs =
@@ -65,6 +78,7 @@ impl BashExecutionArgs {
                 .unwrap_or(60)
                 .clamp(BASH_TIMEOUT_MIN_SECS, BASH_TIMEOUT_MAX_SECS),
             policy,
+            reason: args.reason,
         })
     }
 }
@@ -89,6 +103,10 @@ pub(super) fn bash_tool() -> super::Tool {
                 "timeout": {
                     "type": "number",
                     "description": "Timeout in seconds (default: 60)"
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Optional self-report of why this command is being run. Untrusted: the model's stated intent is a hint for the command-safety judge, never a justification. Omit when the command's purpose is obvious."
                 }
             },
             "required": ["command"]
