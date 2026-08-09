@@ -349,9 +349,13 @@ impl Agent {
                 };
                 // Classify argument-driven compensations centrally: the
                 // repair pass and Edit parse are the source of truth, and the
-                // events survive calls that fail after a repair.
-                compensation_events
-                    .extend(argument_compensation_events(&name, &arguments, was_error));
+                // events survive calls that fail after a repair. Unregistered
+                // tools never reached an argument parser, so they cannot
+                // carry argument compensations.
+                let registered = self.tools.has(&name);
+                compensation_events.extend(argument_compensation_events(
+                    &name, &arguments, was_error, registered,
+                ));
 
                 let skill_activation = if was_error {
                     None

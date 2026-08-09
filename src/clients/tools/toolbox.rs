@@ -185,9 +185,18 @@ fn finish_toolbox_result(
         ));
     }
 
+    // A capped tool was killed after partial output; that is an output
+    // truncation compensation even though the result is an error.
+    let mut compensation_events = Vec::new();
+    crate::clients::tools::push_output_truncation_event_if(
+        &mut compensation_events,
+        tool_name,
+        streams.stdout_capped,
+    );
+
     Ok(ToolResult {
         output: truncate_output(String::from_utf8_lossy(&streams.stdout).into_owned()),
-        compensation_events: Vec::new(),
+        compensation_events,
     })
 }
 

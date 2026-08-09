@@ -7,7 +7,8 @@ that the compensation is a deletion candidate: review the compensation and
 delete it (or rework the prompt) before it becomes unmeasured cruft.
 
 Source: telemetry `compensation` records, plus context-overflow retries
-derived from `retry_scheduled` records (reason=context_overflow).
+counted from `retry_scheduled` records (reason=context_overflow), which exist
+in sidecars written before the compensation record landed.
 """
 
 from collections import Counter
@@ -15,7 +16,9 @@ from collections import Counter
 import cakelib
 from cakelib import fmt_int, fmt_ms, percentile, print_header, print_table
 
-# The stable counter vocabulary, in the order shown in the per-model table.
+# The stable per-model counter vocabulary, in table order. Context-overflow
+# retries are reported separately from `retry_scheduled` records rather than
+# here, so legacy sidecars count too.
 KINDS = [
     "json_repair",
     "judge_verdict",
@@ -38,6 +41,7 @@ def count_events(data: cakelib.Dataset) -> tuple[Counter, Counter, list[int], Co
     by_model: dict[str, Counter] = {}
     by_kind_detail: Counter = Counter()
     judge_latencies: list[int] = []
+    overflow_by_model: Counter = Counter()
 
     for inv in data.invocations:
         for c in inv.compensations:
@@ -47,9 +51,6 @@ def count_events(data: cakelib.Dataset) -> tuple[Counter, Counter, list[int], Co
             by_kind_detail[(kind, detail)] += 1
             if kind == "judge_verdict" and c.get("latency_ms") is not None:
                 judge_latencies.append(c["latency_ms"])
-
-    overflow_by_model: Counter = Counter()
-    for inv in data.invocations:
         for r in inv.retries:
             if r.get("reason") == "context_overflow":
                 overflow_by_model[inv.model] += 1
@@ -61,23 +62,26 @@ def run(data: cakelib.Dataset) -> None:
     print_header("MODEL COMPENSATIONS")
     print(cakelib.describe_window(data))
 
-    by_model, by_kind_detail, judge_latencies, overflow_by_model = count_events(data)
-    all_models = sorted(set(by_model) | set(overflow_by_model))
-
-    if not all_models:
-        print("\nNo compensation events in window.")
+    if not data.invocations:
+        print("\nNo telemetry invocations in window.")
         return
+
+    by_model, by_kind_detail, judge_latencies, overflow_by_model = count_events(data)
+    # Every model with telemetry coverage appears, including flatlined-zero
+    # models: a zero row is exactly the deletion-candidate signal.
+    all_models = sorted({inv.model for inv in data.invocations})
 
     print("\nPer model (compensation events):")
     rows = []
     for model in all_models:
         counts = by_model.get(model, Counter())
         overflow = overflow_by_model.get(model, 0)
+        kind_total = sum(counts.get(kind, 0) for kind in KINDS)
         rows.append(
             [model]
             + [fmt_int(counts.get(kind, 0)) for kind in KINDS]
             + [fmt_int(overflow)]
-            + [fmt_int(sum(counts.values()))]
+            + [fmt_int(kind_total + overflow)]
         )
     print_table(["model"] + KINDS + ["context-overflow retries", "total"], rows)
 

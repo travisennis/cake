@@ -5,6 +5,8 @@ Run with `just session-metrics-check` or:
   python3 -m unittest discover -s scripts/session-metrics/tests -v
 """
 
+import contextlib
+import io
 import json
 import os
 import pathlib
@@ -129,6 +131,37 @@ class CountEventsTest(unittest.TestCase):
         self.assertEqual(by_kind_detail[("future_kind", "-")], 1)
         self.assertEqual(latencies, [])
         self.assertEqual(dict(overflow), {})
+
+    def test_flatlined_models_appear_in_report(self):
+        # A model with telemetry coverage but zero compensation events is the
+        # deletion-candidate signal; it must show as a zero row, not vanish.
+        flatlined = invocation("s1", "i1", "alpha")
+        active = invocation("s2", "i2", "beta")
+        active.compensations = [{"kind": "json_repair", "detail": "Edit"}]
+
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            compensations.run(make_dataset([flatlined, active]))
+        output = buffer.getvalue()
+
+        self.assertIn("alpha", output)
+        self.assertIn("beta", output)
+        self.assertIn("json_repair", output)
+
+    def test_total_includes_retry_derived_overflow(self):
+        # A legacy sidecar has the retry_scheduled record but no compensation
+        # record; the total must still count the overflow retry.
+        legacy = invocation("s1", "i1", "alpha")
+        legacy.retries = [{"reason": "context_overflow"}]
+
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            compensations.run(make_dataset([legacy]))
+        output = buffer.getvalue()
+
+        self.assertIn("context-overflow retries", output)
+        # The alpha row must show overflow 1 and total 1.
+        self.assertRegex(output, r"alpha\s+0\s+0\s+0\s+0\s+0\s+0\s+1\s+1")
 
 
 if __name__ == "__main__":
