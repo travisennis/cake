@@ -272,6 +272,20 @@ async fn test_streaming_large_output_is_capped() {
     assert!(!result.output.is_empty());
     // Should contain metadata footer
     assert!(result.output.contains("[exit:"));
+    // The read-cap truncation is recorded as a compensation event.
+    assert_eq!(
+        result.compensation_events.len(),
+        1,
+        "read-cap truncation must record one compensation event"
+    );
+    assert_eq!(
+        result.compensation_events[0].kind,
+        crate::session_telemetry::CompensationKind::OutputTruncation
+    );
+    assert_eq!(
+        result.compensation_events[0].detail.as_deref(),
+        Some("Bash")
+    );
 }
 
 #[tokio::test]

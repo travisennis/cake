@@ -108,7 +108,10 @@ pub(super) fn execute_write(
         bytes_written
     );
 
-    Ok(super::ToolResult { output: result })
+    Ok(super::ToolResult {
+        output: result,
+        compensation_events: Vec::new(),
+    })
 }
 
 #[cfg(test)]

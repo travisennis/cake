@@ -335,3 +335,109 @@ async fn semantic_incomplete_recovery_reports_text_progress() {
         "Retrying incomplete model turn (semantic_incomplete, attempt 1/1)\n"
     );
 }
+
+#[tokio::test]
+async fn session_telemetry_records_compensation_events() {
+    let env = TestEnv::new("cake-session-telemetry-compensation-test");
+    let mock_server = MockServer::start().await;
+    write_responses_settings(&env, &mock_server.uri());
+
+    let file = env.workspace_dir.join("notes.txt");
+    fs::write(&file, "hello").expect("fixture file should be writable");
+
+    // Turn 1: two Edit calls on the same file. The first carries trailing
+    // garbage after its balanced object, which the repair pass removes; the
+    // second is plain valid JSON. Both mutate the same path, so the scheduler
+    // serializes them (one reordering).
+    let clean_arguments =
+        serde_json::json!({ "path": &file, "edits": [{ "old_text": "hello", "new_text": "hi" }] })
+            .to_string();
+    let repaired_arguments = format!("{clean_arguments}}}extra");
+    let second_arguments =
+        serde_json::json!({ "path": &file, "edits": [{ "old_text": "hi", "new_text": "hey" }] })
+            .to_string();
+
+    let tool_call_response = serde_json::json!({
+        "id": "resp-tool",
+        "output": [
+            {
+                "type": "function_call",
+                "id": "fc-1",
+                "call_id": "call-1",
+                "name": "Edit",
+                "arguments": repaired_arguments,
+            },
+            {
+                "type": "function_call",
+                "id": "fc-2",
+                "call_id": "call-2",
+                "name": "Edit",
+                "arguments": second_arguments,
+            },
+        ],
+        "usage": { "input_tokens": 10, "output_tokens": 5, "total_tokens": 15 },
+    });
+
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(tool_call_response))
+        .expect(1)
+        .up_to_n_times(1)
+        .mount(&mock_server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(success_response()))
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let output = env
+        .command()
+        .arg("--output-format")
+        .arg("json")
+        .arg("test prompt")
+        .env("SESSION_TELEMETRY_TEST_KEY", "test-token")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute cake");
+
+    assert!(
+        output.status.success(),
+        "cake should succeed. stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let records = telemetry_records(&env);
+    let compensations = records
+        .iter()
+        .filter(|record| record["type"] == "compensation")
+        .collect::<Vec<_>>();
+    let kinds = compensations
+        .iter()
+        .map(|record| {
+            (
+                record["kind"].as_str().unwrap_or_default(),
+                record["detail"].as_str().unwrap_or_default(),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        kinds.contains(&("json_repair", "Edit")),
+        "expected a json_repair compensation for Edit: {kinds:#?} in {records:#?}"
+    );
+    assert!(
+        kinds.iter().any(|(kind, detail)| {
+            *kind == "same_path_serialization" && detail.ends_with("notes.txt")
+        }),
+        "expected a same-path serialization compensation: {kinds:#?} in {records:#?}"
+    );
+    assert!(
+        records
+            .iter()
+            .all(|record| record["session_id"].is_string()),
+        "compensation records carry session identity"
+    );
+}

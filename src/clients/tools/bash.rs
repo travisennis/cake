@@ -8,6 +8,7 @@ use tracing::debug;
 
 use crate::clients::tools::secure_temp_dir::secure_temp_dir;
 use crate::config::toolbox::ToolboxProcessGuard;
+use crate::session_telemetry::{CompensationEventTelemetry, CompensationKind};
 use crate::time_format::format_seconds_tenths;
 
 /// Maximum number of null bytes or control characters (excluding common whitespace)
@@ -550,6 +551,7 @@ async fn execute_bash_with_args(
     if is_binary_data(&buf) {
         return Ok(super::ToolResult {
             output: handle_binary_output(&buf, exit_code, elapsed_ms, warn_exit_zero_stderr),
+            compensation_events: Vec::new(),
         });
     }
 
@@ -587,11 +589,34 @@ async fn execute_bash_with_args(
     };
 
     let result = annotate_empty_search_result(&args.command, result, exit_code, &stderr_str);
+    let spilled = result.len() > BASH_OUTPUT_MAX_BYTES;
     let result = truncate_output(&result, exit_code, elapsed_ms, warn_exit_zero_stderr);
+    let mut compensation_events = Vec::new();
+    push_truncation_event_if(&mut compensation_events, "Bash", hit_cap, spilled);
 
     let output = prepend_safety_warnings(result, &safety_warnings);
 
-    Ok(super::ToolResult { output })
+    Ok(super::ToolResult {
+        output,
+        compensation_events,
+    })
+}
+
+/// Push an `output_truncation` compensation event when a Bash run hit the
+/// read cap (process killed) or its output spilled to a temp file. One event
+/// per run that truncated, whichever mechanism fired.
+fn push_truncation_event_if(
+    events: &mut Vec<CompensationEventTelemetry>,
+    tool: &str,
+    read_cap: bool,
+    spilled: bool,
+) {
+    if read_cap || spilled {
+        events.push(CompensationEventTelemetry::new(
+            CompensationKind::OutputTruncation,
+            Some(tool.to_string()),
+        ));
+    }
 }
 
 #[cfg(test)]

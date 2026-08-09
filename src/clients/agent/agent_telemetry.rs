@@ -1,6 +1,7 @@
 use crate::clients::agent::Agent;
 use crate::session_telemetry::{
-    AgentRunnerTelemetryEvent, SessionTelemetryContext, SessionTelemetryRecord, ToolCallTelemetry,
+    AgentRunnerTelemetryEvent, CompensationEventTelemetry, SessionTelemetryContext,
+    SessionTelemetryRecord, ToolCallTelemetry,
 };
 
 impl Agent {
@@ -14,22 +15,7 @@ impl Agent {
         let Some(context) = self.telemetry_context() else {
             return;
         };
-        let record = match event {
-            AgentRunnerTelemetryEvent::ApiAttempt(attempt) => SessionTelemetryRecord::ApiAttempt {
-                session_id: context.session_id,
-                invocation_id: context.invocation_id,
-                timestamp: chrono::Utc::now(),
-                attempt,
-            },
-            AgentRunnerTelemetryEvent::RetryScheduled(retry) => {
-                SessionTelemetryRecord::RetryScheduled {
-                    session_id: context.session_id,
-                    invocation_id: context.invocation_id,
-                    timestamp: chrono::Utc::now(),
-                    retry,
-                }
-            },
-        };
+        let record = runner_telemetry_record(context, event);
         self.append_telemetry_record(&record);
     }
 
@@ -46,6 +32,19 @@ impl Agent {
         self.append_telemetry_record(&record);
     }
 
+    pub(super) fn append_compensation_telemetry(&mut self, event: CompensationEventTelemetry) {
+        let Some(context) = self.telemetry_context() else {
+            return;
+        };
+        let record = SessionTelemetryRecord::Compensation {
+            session_id: context.session_id,
+            invocation_id: context.invocation_id,
+            timestamp: chrono::Utc::now(),
+            event,
+        };
+        self.append_telemetry_record(&record);
+    }
+
     pub(super) fn append_telemetry_record(&mut self, record: &SessionTelemetryRecord) {
         let Some(telemetry) = &mut self.telemetry else {
             return;
@@ -57,5 +56,33 @@ impl Agent {
             );
             self.telemetry = None;
         }
+    }
+}
+
+fn runner_telemetry_record(
+    context: SessionTelemetryContext,
+    event: AgentRunnerTelemetryEvent,
+) -> SessionTelemetryRecord {
+    match event {
+        AgentRunnerTelemetryEvent::ApiAttempt(attempt) => SessionTelemetryRecord::ApiAttempt {
+            session_id: context.session_id,
+            invocation_id: context.invocation_id,
+            timestamp: chrono::Utc::now(),
+            attempt,
+        },
+        AgentRunnerTelemetryEvent::RetryScheduled(retry) => {
+            SessionTelemetryRecord::RetryScheduled {
+                session_id: context.session_id,
+                invocation_id: context.invocation_id,
+                timestamp: chrono::Utc::now(),
+                retry,
+            }
+        },
+        AgentRunnerTelemetryEvent::Compensation(event) => SessionTelemetryRecord::Compensation {
+            session_id: context.session_id,
+            invocation_id: context.invocation_id,
+            timestamp: chrono::Utc::now(),
+            event,
+        },
     }
 }

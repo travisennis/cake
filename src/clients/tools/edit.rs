@@ -214,7 +214,10 @@ pub(super) fn execute_edit(
             skipped_noop_summary(&skipped_noop_indexes, args.edits.len()),
             path.display()
         );
-        return Ok(super::ToolResult { output: result });
+        return Ok(super::ToolResult {
+            output: result,
+            compensation_events: Vec::new(),
+        });
     }
 
     // Apply edits in reverse order (highest position first)
@@ -247,7 +250,10 @@ pub(super) fn execute_edit(
         diff
     );
 
-    Ok(super::ToolResult { output: result })
+    Ok(super::ToolResult {
+        output: result,
+        compensation_events: Vec::new(),
+    })
 }
 
 /// Expected JSON shape for the Edit tool arguments.
@@ -260,6 +266,7 @@ const fn expected_edit_summary_shape() -> &'static str {
     r#"{"path":"file.txt"}"#
 }
 
+/// Parse Edit arguments with the conservative JSON repair pass.
 fn parse_edit_args(arguments: &str) -> Result<EditArgs, String> {
     let repaired = repair_json_args(arguments);
     serde_json::from_str(&repaired).map_err(|e| {
@@ -270,6 +277,15 @@ fn parse_edit_args(arguments: &str) -> Result<EditArgs, String> {
             expected_edit_arguments_shape(),
         )
     })
+}
+
+/// True when Edit arguments fail to parse after the conservative repair pass.
+///
+/// Mirrors the parse that runs first inside [`execute_edit`]; used to classify
+/// invalid-argument failures for compensation telemetry without changing tool
+/// error plumbing.
+pub(super) fn arguments_are_invalid(arguments: &str) -> bool {
+    parse_edit_args(arguments).is_err()
 }
 
 // =============================================================================
