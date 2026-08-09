@@ -28,6 +28,11 @@ KINDS = [
     "edit_invalid_arguments",
 ]
 
+# The compensation-record label for a context-overflow retry. Newer sidecars
+# carry both the `compensation` record and the `retry_scheduled` record for
+# the same event; the total must count it once, via the retry-derived column.
+RETRY_DERIVED_KIND = "context_overflow_retry"
+
 
 def count_events(data: cakelib.Dataset) -> tuple[Counter, Counter, list[int], Counter]:
     """Aggregate compensation events for testing.
@@ -76,7 +81,13 @@ def run(data: cakelib.Dataset) -> None:
     for model in all_models:
         counts = by_model.get(model, Counter())
         overflow = overflow_by_model.get(model, 0)
-        kind_total = sum(counts.get(kind, 0) for kind in KINDS)
+        # Sum every recorded kind, including kinds added after this script
+        # froze its vocabulary (consumers must tolerate additive enum values).
+        # Exclude only the retry-derived label: newer sidecars record it as a
+        # compensation event and the overflow column counts the same event.
+        kind_total = sum(
+            count for kind, count in counts.items() if kind != RETRY_DERIVED_KIND
+        )
         rows.append(
             [model]
             + [fmt_int(counts.get(kind, 0)) for kind in KINDS]

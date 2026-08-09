@@ -148,6 +148,36 @@ class CountEventsTest(unittest.TestCase):
         self.assertIn("beta", output)
         self.assertIn("json_repair", output)
 
+    def test_total_includes_unknown_kinds(self):
+        # A compensation kind added after the script froze its vocabulary must
+        # still count toward the model total (additive enum tolerance).
+        inv = invocation("s1", "i1", "alpha")
+        inv.compensations = [{"kind": "future_kind", "detail": "-"}]
+
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            compensations.run(make_dataset([inv]))
+        output = buffer.getvalue()
+
+        # Six known-kind columns show 0; the total column shows 1.
+        self.assertRegex(output, r"alpha\s+0\s+0\s+0\s+0\s+0\s+0\s+0\s+1")
+
+    def test_total_excludes_retry_derived_compensation_kind(self):
+        # A newer sidecar records the context-overflow retry both as a
+        # compensation event and as a retry_scheduled record; the total must
+        # count it once, via the retry-derived column.
+        inv = invocation("s1", "i1", "alpha")
+        inv.compensations = [{"kind": "context_overflow_retry"}]
+        inv.retries = [{"reason": "context_overflow"}]
+
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            compensations.run(make_dataset([inv]))
+        output = buffer.getvalue()
+
+        # Overflow column 1, total column 1, not 2.
+        self.assertRegex(output, r"alpha\s+0\s+0\s+0\s+0\s+0\s+0\s+1\s+1")
+
     def test_total_includes_retry_derived_overflow(self):
         # A legacy sidecar has the retry_scheduled record but no compensation
         # record; the total must still count the overflow retry.
