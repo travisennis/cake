@@ -151,8 +151,10 @@ impl JudgeClient {
 
     /// Override the judge model identifier, keeping the same provider config.
     ///
-    /// This is the `judge_model` setting from `[tools.bash.judge]`. `None`
-    /// keeps the agent's model.
+    /// `model` is a raw provider model identifier in the same vocabulary as
+    /// `model` inside a `[[models]]` entry — not a named model like
+    /// `default_model` or profiles reference. This is the `[tools.bash.judge]
+    /// model` setting; `None` keeps the agent's model.
     pub fn with_model_override(mut self, model: Option<&str>) -> Self {
         if let Some(model) = model {
             self.config.model_config.model = model.to_string();

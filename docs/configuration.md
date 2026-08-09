@@ -55,6 +55,19 @@ Set the selected model explicitly with `--model`, through a selected `--profile`
 
 Relative `system_prompt`, `skills.path`, `directories`, and `[sandbox]` values resolve from the invocation working directory, including the created worktree when `--worktree` is active. Use absolute paths for global settings that must work from every project. Invalid files and unknown selected models fail before the provider request.
 
+## Bash tool settings
+
+`[tools.bash]` configures the Bash tool. The `[tools.bash.judge]` table holds settings for the LLM command-safety judge. The judge is reserved for the Bash preflight wiring and is not yet active; absent keys preserve current behavior.
+
+```toml
+[tools.bash.judge]
+model = "gpt-5"     # optional raw provider model identifier
+timeout_secs = 30   # default 30; never below 1
+```
+
+- `model`: optional raw provider model identifier sent to the agent's provider. It uses the same vocabulary as `model` inside a `[[models]]` entry --- not a named model like `default_model`, `--model`, or profiles reference. When unset, the judge uses the agent's configured model. A value that matches a `[[models]]` name is a likely mistake and warns at load time.
+- `timeout_secs`: bounded judge call timeout in seconds. Defaults to 30; values below 1 are raised to 1.
+
 ## Filesystem access
 
 Top-level and profile `directories` grant persistent read-write access to the listed directories under `workspace-write`. Global and project entries are merged. The `read-only` policy demotes these paths to read-only access.

@@ -1255,3 +1255,42 @@ timeout_secs = 0
     // every command closed; it is raised to the floor instead.
     assert_eq!(loaded.judge.timeout_secs, 1);
 }
+
+#[test]
+fn test_judge_model_name_collision_detection() {
+    let mut models = HashMap::new();
+    models.insert(
+        "zen".to_string(),
+        ModelDefinition {
+            name: "zen".to_string(),
+            model: "glm-5.1".to_string(),
+            base_url: "https://example.com".to_string(),
+            api_key_env: "KEY".to_string(),
+            provider: None,
+            provider_headers: None,
+            api_type: ApiType::ChatCompletions,
+            temperature: None,
+            top_p: None,
+            max_output_tokens: None,
+            reasoning_effort: None,
+            reasoning_summary: None,
+            reasoning_max_tokens: None,
+            providers: Vec::new(),
+        },
+    );
+
+    // A judge model that names a [[models]] entry is flagged for the warning.
+    assert_eq!(
+        SettingsLoader::judge_model_name_collision(Some("zen"), &models),
+        Some("zen")
+    );
+    // A raw provider identifier that matches no model name is not flagged.
+    assert_eq!(
+        SettingsLoader::judge_model_name_collision(Some("glm-5.1"), &models),
+        None
+    );
+    assert_eq!(
+        SettingsLoader::judge_model_name_collision(None, &models),
+        None
+    );
+}

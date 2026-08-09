@@ -76,8 +76,11 @@ pub struct BashToolSettings {
 /// resolved defaults live in [`JudgeSettings`].
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BashJudgeSettings {
-    /// Judge model override. When unset, the judge uses the agent's configured
-    /// model (same provider, same family).
+    /// Judge model override: a raw provider model identifier on the agent's
+    /// provider, in the same vocabulary as `model` inside a `[[models]]` entry
+    /// — not a named model like `default_model`, `--model`, or profiles
+    /// reference. When unset, the judge uses the agent's configured model
+    /// (same provider, same family).
     #[serde(default)]
     pub model: Option<String>,
     /// Bounded judge call timeout in seconds. When unset, defaults to 30.
@@ -92,7 +95,9 @@ pub struct BashJudgeSettings {
 /// `Milestone 4` of the LLM-judge `ExecPlan`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JudgeSettings {
-    /// Judge model override. `None` means "use the agent's configured model".
+    /// Judge model override: a raw provider model identifier on the agent's
+    /// provider (the `model` vocabulary of a `[[models]]` entry, not a named
+    /// model). `None` means "use the agent's configured model".
     pub model: Option<String>,
     /// Bounded judge call timeout in seconds (default 30; never below 1).
     pub timeout_secs: u64,
@@ -534,6 +539,8 @@ impl SettingsLoader {
             return Err(SettingsError::DefaultModelNotFound { name: name.clone() });
         }
 
+        Self::warn_on_judge_model_name_collision(&acc);
+
         Ok(acc.into_loaded())
     }
 
@@ -583,6 +590,38 @@ impl SettingsLoader {
         if judge.timeout_secs.is_some() {
             acc.judge_timeout_secs = judge.timeout_secs;
         }
+    }
+
+    /// Warn when `[tools.bash.judge] model` names a `[[models]]` entry.
+    ///
+    /// `judge.model` is a raw provider model identifier — the same vocabulary
+    /// as `model` inside a `[[models]]` entry — not a named model like
+    /// `default_model`, `--model`, or profiles reference. A value that matches
+    /// a defined model name is almost certainly that confusion: the identifier
+    /// would be sent verbatim to the agent's provider and fail every judge
+    /// call, with no load-time signal.
+    fn warn_on_judge_model_name_collision(acc: &SettingsAccumulator) {
+        let Some(model) = Self::judge_model_name_collision(acc.judge_model.as_deref(), &acc.models)
+        else {
+            return;
+        };
+        tracing::warn!(
+            "[tools.bash.judge] model = {model:?} names a [[models]] entry; \
+             judge `model` is a raw provider model identifier sent to the \
+             agent's provider, not a named model, so this is likely a mistake"
+        );
+    }
+
+    /// The `[[models]]` name colliding with the judge model override, if any.
+    ///
+    /// Extracted from [`Self::warn_on_judge_model_name_collision`] so the
+    /// detection is unit-testable without a tracing subscriber.
+    fn judge_model_name_collision<'a>(
+        judge_model: Option<&'a str>,
+        models: &HashMap<String, ModelDefinition>,
+    ) -> Option<&'a str> {
+        let model = judge_model?;
+        models.contains_key(model).then_some(model)
     }
 
     fn validate_profiles(profiles: &HashMap<String, ProfileSettings>) -> Result<(), SettingsError> {
