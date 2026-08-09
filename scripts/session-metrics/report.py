@@ -9,6 +9,7 @@ Usage:
 
 import api
 import cakelib
+import compensations
 import hooks
 import outcomes
 import overview
@@ -20,7 +21,16 @@ import tools
 def main() -> None:
     ns = cakelib.build_arg_parser(__doc__).parse_args()
     data = cakelib.load(ns)
-    for module in (overview, tokens, tools, api, time_breakdown, outcomes, hooks):
+    for module in (
+        overview,
+        tokens,
+        tools,
+        api,
+        time_breakdown,
+        outcomes,
+        hooks,
+        compensations,
+    ):
         module.run(data)
     print()
 

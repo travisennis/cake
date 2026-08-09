@@ -1,0 +1,135 @@
+#!/usr/bin/env python3
+"""Unit tests for compensation telemetry loading and metrics.
+
+Run with `just session-metrics-check` or:
+  python3 -m unittest discover -s scripts/session-metrics/tests -v
+"""
+
+import json
+import os
+import pathlib
+import sys
+import tempfile
+import unittest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import cakelib
+import compensations
+
+
+def make_dataset(invocations: list[cakelib.Invocation]) -> cakelib.Dataset:
+    return cakelib.Dataset(
+        sessions=[],
+        invocations=invocations,
+        sessions_dir=None,
+        telemetry_dir=None,
+        cutoff=None,
+    )
+
+
+def invocation(session_id: str, invocation_id: str, model: str) -> cakelib.Invocation:
+    inv = cakelib.Invocation(session_id, invocation_id)
+    inv.init = {"model": model, "working_directory": "/proj"}
+    return inv
+
+
+class LoadTelemetryTest(unittest.TestCase):
+    def test_compensation_records_load_per_invocation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "session.ndjson")
+            with open(path, "w", encoding="utf-8") as fh:
+                records = [
+                    {
+                        "type": "telemetry_init",
+                        "session_id": "s1",
+                        "invocation_id": "i1",
+                        "model": "deepseek",
+                        "working_directory": "/proj",
+                    },
+                    {
+                        "type": "compensation",
+                        "session_id": "s1",
+                        "invocation_id": "i1",
+                        "kind": "json_repair",
+                        "detail": "Edit",
+                    },
+                    {
+                        "type": "retry_scheduled",
+                        "session_id": "s1",
+                        "invocation_id": "i1",
+                        "reason": "context_overflow",
+                    },
+                    {
+                        "type": "compensation",
+                        "session_id": "s1",
+                        "invocation_id": "i1",
+                        "kind": "output_truncation",
+                        "detail": "Read",
+                    },
+                ]
+                for record in records:
+                    fh.write(json.dumps(record) + "\n")
+
+            invocations, errors = cakelib.load_telemetry(pathlib.Path(directory), None)
+            self.assertEqual(errors, 0)
+            self.assertEqual(len(invocations), 1)
+            inv = invocations[0]
+            self.assertEqual(inv.model, "deepseek")
+            self.assertEqual(
+                [c["kind"] for c in inv.compensations],
+                ["json_repair", "output_truncation"],
+            )
+
+
+class CountEventsTest(unittest.TestCase):
+    def test_counts_by_model_and_detail(self):
+        alpha_1 = invocation("s1", "i1", "alpha")
+        alpha_1.compensations = [
+            {"kind": "json_repair", "detail": "Edit"},
+            {"kind": "json_repair", "detail": "Write"},
+            {"kind": "same_path_serialization", "detail": "/p/f.txt"},
+            {"kind": "judge_verdict", "detail": "block:rm-rf", "latency_ms": 120},
+            {"kind": "judge_verdict", "detail": "allow", "latency_ms": 60},
+        ]
+        alpha_1.retries = [{"reason": "context_overflow"}]
+
+        alpha_2 = invocation("s2", "i2", "alpha")
+        alpha_2.compensations = [{"kind": "json_repair", "detail": "Edit"}]
+
+        beta = invocation("s3", "i3", "beta")
+        beta.compensations = [{"kind": "edit_invalid_arguments"}]
+
+        by_model, by_kind_detail, latencies, overflow = compensations.count_events(
+            make_dataset([alpha_1, alpha_2, beta])
+        )
+
+        self.assertEqual(by_model["alpha"]["json_repair"], 3)
+        self.assertEqual(by_model["alpha"]["same_path_serialization"], 1)
+        self.assertEqual(by_model["alpha"]["judge_verdict"], 2)
+        self.assertEqual(by_model["alpha"]["edit_invalid_arguments"], 0)
+        self.assertEqual(by_model["beta"]["edit_invalid_arguments"], 1)
+        self.assertEqual(by_model.get("beta", {}).get("json_repair", 0), 0)
+
+        self.assertEqual(by_kind_detail[("json_repair", "Edit")], 2)
+        self.assertEqual(by_kind_detail[("json_repair", "Write")], 1)
+        self.assertEqual(by_kind_detail[("same_path_serialization", "/p/f.txt")], 1)
+        self.assertEqual(by_kind_detail[("edit_invalid_arguments", "-")], 1)
+
+        self.assertEqual(sorted(latencies), [60, 120])
+        self.assertEqual(overflow["alpha"], 1)
+
+    def test_unknown_kinds_do_not_break_aggregation(self):
+        inv = invocation("s1", "i1", "alpha")
+        inv.compensations = [{"kind": "future_kind"}]
+        by_model, by_kind_detail, latencies, overflow = compensations.count_events(
+            make_dataset([inv])
+        )
+        self.assertEqual(by_model["alpha"]["future_kind"], 1)
+        self.assertEqual(by_kind_detail[("future_kind", "-")], 1)
+        self.assertEqual(latencies, [])
+        self.assertEqual(dict(overflow), {})
+
+
+if __name__ == "__main__":
+    unittest.main()
