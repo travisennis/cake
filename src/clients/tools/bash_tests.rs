@@ -1207,6 +1207,44 @@ async fn binary_output_with_exit_zero_stderr_includes_warning() {
 }
 
 #[tokio::test]
+async fn binary_output_above_max_records_truncation_event() {
+    // Binary output above BASH_OUTPUT_MAX_BYTES spills to a temp file and
+    // replaces the displayable output, so it must record an output_truncation
+    // compensation event exactly like oversized text does. 60_000 bytes is
+    // over the 50_000 max but under the 100_000 read cap, so only the spill
+    // mechanism fires.
+    let args = r#"{"command": "head -c 60000 /dev/zero"}"#;
+    let result = Box::pin(execute_bash_unsandboxed(args)).await.unwrap();
+    assert!(result.output.contains("[Binary output detected"));
+    assert_eq!(
+        result.compensation_events.len(),
+        1,
+        "oversized binary spill must record one compensation event"
+    );
+    assert_eq!(
+        result.compensation_events[0].kind,
+        crate::session_telemetry::CompensationKind::OutputTruncation
+    );
+    assert_eq!(
+        result.compensation_events[0].detail.as_deref(),
+        Some("Bash")
+    );
+}
+
+#[tokio::test]
+async fn small_binary_output_records_no_truncation_event() {
+    // Binary output below the max bytes is summarized for display, but the
+    // model lost no content above the inline cap, so no truncation event.
+    let args = r#"{"command": "printf '\\0%.0s' {1..16}"}"#;
+    let result = Box::pin(execute_bash_unsandboxed(args)).await.unwrap();
+    assert!(result.output.contains("[Binary output detected"));
+    assert!(
+        result.compensation_events.is_empty(),
+        "small binary output must not record a truncation event"
+    );
+}
+
+#[tokio::test]
 async fn test_text_output_not_detected_as_binary() {
     // Normal text output should not be detected as binary
     let args = r#"{"command": "echo 'Hello, world!'"}"#;

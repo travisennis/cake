@@ -550,7 +550,8 @@ async fn execute_bash_with_args(
     // Check for binary data before converting to string
     if is_binary_data(&buf) {
         let mut compensation_events = Vec::new();
-        push_truncation_event_if(&mut compensation_events, "Bash", hit_cap, false);
+        let spilled = buf.len() > BASH_OUTPUT_MAX_BYTES;
+        push_truncation_event_if(&mut compensation_events, "Bash", hit_cap, spilled);
         return Ok(super::ToolResult {
             output: handle_binary_output(&buf, exit_code, elapsed_ms, warn_exit_zero_stderr),
             compensation_events,
