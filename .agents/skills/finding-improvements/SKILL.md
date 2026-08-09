@@ -55,10 +55,10 @@ Every finding uses this format:
 - **Effort**: S (hours) / M (a day-ish) / L (multi-day) — for the *fix*,
   including tests.
 - **Risk**: What the fix could break; LOW/MED/HIGH plus one line why.
-- **Confidence**: HIGH (read the code, certain) / MED (strong signal,
-  needs verification) / LOW (smell, needs investigation). LOW-confidence
-  findings may be reported but get an "investigate" plan, not a "fix"
-  plan.
+- **Confidence**: HIGH (executed — probe output quoted) / MED (read the
+  code, certain, but not run) / LOW (smell, needs investigation).
+  LOW-confidence findings may be reported but get an "investigate" plan,
+  not a "fix" plan.
 - **Fix sketch**: 1–3 sentences. Not the plan — just enough to judge
   effort honestly.
 ```
@@ -72,6 +72,7 @@ The highest-trust category --- real bugs found by reading, not speculation.
 - **Null/undefined flows**: non-null assertions (`!`) on values that can be null, optional chaining hiding a value that must exist, unchecked array indexing.
 - **Boundary conditions**: off-by-one, empty-collection handling, timezone/locale assumptions, integer overflow in counters/IDs.
 - **State machines**: impossible-state combinations representable in types, status enums with unhandled branches (look for `default:` that silently no-ops).
+- **Redundant derivation**: one fact computed independently at two or more sites — a payload parsed twice, a path resolved by two functions. Enumerate every consumer and compare answers; divergence is a correctness or security finding, not Category 5 duplication.
 - **Concurrency**: check-then-act on shared resources, missing transactions around multi-write operations, idempotency of retried operations (webhooks, queues).
 - **Type escape hatches**: `any` / `as` casts / `@ts-ignore` / lint- suppress clusters --- each one is a place the compiler was overruled.
 - **Resource leaks**: unclosed handles, connections, subscriptions; missing `finally`.
@@ -85,11 +86,11 @@ Review only what is directly supported by code evidence. Keep findings framed as
 **By-design is not a finding:** standard platform conventions are intentional behavior --- honoring `https_proxy`/`NO_PROXY`, reading `~/.netrc`, an explicitly local dev tool shelling out to configured package managers. A tradeoff explicitly recorded in an ADR or decision doc is likewise settled, not a finding. Flag these only when the *implementation* adds risk beyond the convention or the documented decision itself --- and note that a **stale ADR is itself a finding**: if the code has drifted from what the decision doc says, report the decision drift (the doc or the code is wrong; either way the team should know), don't use the doc to suppress it.
 
 - **Credential hygiene**: hardcoded keys/tokens/passwords, credentials in committed `.env` files, credentials logged or persisted in event/history stores. Findings name only the credential type and location, then recommend removal, rotation, and a safer configuration path.
-- **Data crossing into interpreters**: SQL or shell operations assembled from request data (injection), HTML sinks fed by user-controlled content (XSS), dynamic execution APIs used with runtime input, or filesystem paths derived from request data (path traversal). Describe the safer API or validation boundary; do not provide runnable examples.
-- **Access control**: endpoints/server actions that lack server-side identity checks, authorization enforced only in the client, object access by ID without ownership or tenant checks (IDOR), or missing request authenticity checks (CSRF) on state-changing routes.
+- **Data crossing into interpreters**: SQL or shell operations assembled from untrusted data (injection), dynamic execution APIs used with runtime input, or filesystem paths derived from it (path traversal). Describe the safer API or validation boundary; do not provide runnable examples.
+- **Access control**: entry points lacking identity checks, authorization enforced only on the caller's side, or object access by ID without ownership checks (IDOR).
 - **Input contracts**: API boundaries that trust request bodies without schema validation, file upload handling without clear type/size/storage constraints, or broad object assignment from request data into persistence models (mass assignment).
 - **Dependency posture**: run the ecosystem's audit command (`npm audit`, `pip-audit`, `cargo audit`, `go vulncheck`) in read-only mode. Report only critical/high advisories that affect reachable runtime code or build/distribution paths; avoid low-signal audit noise.
-- **Production configuration**: overly broad CORS where credentials are allowed, missing response-hardening headers (e.g. CSP) where sensitive browser surfaces exist, cookies missing appropriate `HttpOnly`/ `Secure`/`SameSite` attributes, or debug/verbose behavior enabled in production configuration.
+- **Production configuration**: debug or verbose behavior enabled by default, or hardening options left off where the deployment surface supports them.
 - **Data minimization**: PII or sensitive operational data in logs, stack traces returned to clients, or internal error details exposed through API responses.
 
 #### 3. Performance
@@ -100,7 +101,6 @@ Look for the algorithmic and architectural wins, not micro-optimizations.
 - **Wrong complexity**: nested scans over the same collection, repeated `find`/`filter` inside hot loops where a Map/keyed lookup belongs.
 - **Caching gaps**: identical expensive computations or fetches repeated per request/render; missing memoization at clear function boundaries; no HTTP/data-layer caching on stable data.
 - **Payload size**: over-fetching (select \*, full objects where IDs suffice), missing pagination on unbounded lists, large JSON shipped to clients.
-- **Frontend** (if applicable): bundle composition (heavyweight deps for trivial use), missing code-splitting on rarely-hit routes, unoptimized images/fonts, client-side fetching for data available at render time, render waterfalls. Defer to the repo's framework conventions.
 - **Backend**: synchronous work that belongs in a queue, missing indexes implied by query patterns (flag for verification --- don't claim without schema evidence), connection-per-request patterns where pooling exists.
 - **Build/CI**: slow CI from missing caching, redundant pipeline steps, test suites that could parallelize.
 
@@ -137,7 +137,6 @@ The goal is not a percentage --- it's *which untested code is dangerous*.
 - **Missing or broken**: typecheck script, lint config, formatter, pre-commit hooks, editorconfig.
 - **Slow feedback loops**: dev-server or test startup measured in minutes, no watch mode, CI without caching.
 - **Onboarding friction**: README setup steps that are wrong/incomplete, undocumented required env vars, no `.env.example`.
-- **Missing `AGENTS.md`** --- for repos where agents will execute the tasks, this is high-leverage: recommend one and include its outline as a plan.
 - **Error messages/logging**: unstructured logs on services, missing request IDs/correlation, debugging requiring code changes.
 
 #### 8. Docs
@@ -174,6 +173,8 @@ Order findings by **leverage = impact ÷ effort, discounted by confidence and fi
 ### Phase 3 --- Vet, prioritize, present
 
 **Vet before presenting.** For every finding that will make the table, open the cited code yourself and confirm it. Reject by-design behavior, mis- attributed evidence, and duplicates. Record rejections so they aren't re-audited next run.
+
+**Prefer execution to reading.** When a finding claims two code paths disagree, write a throwaway test printing what each actually produces, run it, quote the output, then revert. Reading establishes a hypothesis; running establishes a fact. Cap any finding you could not execute at MED confidence and say so.
 
 Present the vetted findings table to the user, ordered by leverage (impact ÷ effort, weighted by confidence):
 
