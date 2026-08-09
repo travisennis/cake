@@ -72,7 +72,7 @@ The highest-trust category --- real bugs found by reading, not speculation.
 - **Null/undefined flows**: non-null assertions (`!`) on values that can be null, optional chaining hiding a value that must exist, unchecked array indexing.
 - **Boundary conditions**: off-by-one, empty-collection handling, timezone/locale assumptions, integer overflow in counters/IDs.
 - **State machines**: impossible-state combinations representable in types, status enums with unhandled branches (look for `default:` that silently no-ops).
-- **Redundant derivation**: one fact computed independently at two or more sites — a payload parsed twice, a path resolved by two functions. Enumerate every consumer and compare answers; divergence is a correctness or security finding, not Category 5 duplication.
+- **Redundant derivation**: one fact computed independently at 2+ sites --- a payload parsed twice, a path resolved by two functions. Enumerate every consumer and compare answers; divergence is a correctness or security finding, not Category 5 duplication. Untyped is not a defect: where the consumer reads prose, ask whether one that cannot --- control flow, exit codes --- needs the distinction.
 - **Concurrency**: check-then-act on shared resources, missing transactions around multi-write operations, idempotency of retried operations (webhooks, queues).
 - **Type escape hatches**: `any` / `as` casts / `@ts-ignore` / lint- suppress clusters --- each one is a place the compiler was overruled.
 - **Resource leaks**: unclosed handles, connections, subscriptions; missing `finally`.
@@ -129,15 +129,14 @@ The goal is not a percentage --- it's *which untested code is dangerous*.
 - **Deprecated APIs** in use that have announced removal timelines.
 - **Abandoned dependencies** (no release in years, archived repos) on critical paths.
 - **Duplicate dependencies** solving the same problem (two date libs, two HTTP clients).
-- **Lockfile/manifest drift**, version pinning inconsistencies across a monorepo.
 - For each migration candidate, estimate **blast radius** (files touched) --- that drives effort and whether to recommend it at all.
 
 #### 7. DX & Tooling
 
 - **Missing or broken**: typecheck script, lint config, formatter, pre-commit hooks, editorconfig.
 - **Slow feedback loops**: dev-server or test startup measured in minutes, no watch mode, CI without caching.
-- **Onboarding friction**: README setup steps that are wrong/incomplete, undocumented required env vars, no `.env.example`.
-- **Error messages/logging**: unstructured logs on services, missing request IDs/correlation, debugging requiring code changes.
+- **Onboarding friction**: README setup steps that are wrong/incomplete, undocumented required env vars.
+- **Error messages/logging**: unstructured or uncorrelated logs; debugging that requires code changes.
 
 #### 8. Docs
 
@@ -174,7 +173,7 @@ Order findings by **leverage = impact ÷ effort, discounted by confidence and fi
 
 **Vet before presenting.** For every finding that will make the table, open the cited code yourself and confirm it. Reject by-design behavior, mis- attributed evidence, and duplicates. Record rejections so they aren't re-audited next run.
 
-**Prefer execution to reading.** When a finding claims two code paths disagree, write a throwaway test printing what each actually produces, run it, quote the output, then revert. Reading establishes a hypothesis; running establishes a fact. Cap any finding you could not execute at MED confidence and say so.
+**Prefer execution to reading.** When a finding claims two code paths disagree, write a throwaway test printing what each produces, run it, quote the output, then revert. Reading gives a hypothesis; running gives a fact. Cap unexecuted findings at MED.
 
 Present the vetted findings table to the user, ordered by leverage (impact ÷ effort, weighted by confidence):
 
