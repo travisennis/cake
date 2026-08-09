@@ -51,6 +51,66 @@ impl SkillSettings {
     }
 }
 
+/// Tool-scoped settings loaded from `settings.toml`.
+///
+/// Holds per-tool configuration tables. Currently only the Bash tool has
+/// settings (`[tools.bash]`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ToolsSettings {
+    /// Bash tool settings.
+    #[serde(default)]
+    pub bash: Option<BashToolSettings>,
+}
+
+/// Bash tool settings loaded from `[tools.bash]`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BashToolSettings {
+    /// LLM judge settings for Bash command safety (`[tools.bash.judge]`).
+    #[serde(default)]
+    pub judge: Option<BashJudgeSettings>,
+}
+
+/// TOML-facing LLM judge settings for the Bash tool.
+///
+/// Absent fields keep the value from lower-precedence settings files; the
+/// resolved defaults live in [`JudgeSettings`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BashJudgeSettings {
+    /// Judge model override. When unset, the judge uses the agent's configured
+    /// model (same provider, same family).
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Bounded judge call timeout in seconds. When unset, defaults to 30.
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
+}
+
+/// Resolved LLM judge settings for Bash command safety.
+///
+/// Produced by [`SettingsLoader`] after merging global, project, and profile
+/// settings with defaults applied. The allowlist and emergency bypass land in
+/// `Milestone 4` of the LLM-judge `ExecPlan`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JudgeSettings {
+    /// Judge model override. `None` means "use the agent's configured model".
+    pub model: Option<String>,
+    /// Bounded judge call timeout in seconds (default 30).
+    pub timeout_secs: u64,
+}
+
+impl Default for JudgeSettings {
+    fn default() -> Self {
+        Self {
+            model: None,
+            timeout_secs: DEFAULT_JUDGE_TIMEOUT_SECS,
+        }
+    }
+}
+
+/// Default bounded judge timeout in seconds when no `[tools.bash.judge]`
+/// setting is present.
+pub const DEFAULT_JUDGE_TIMEOUT_SECS: u64 = 30;
+
 /// Sandbox path grants loaded from settings.toml.
 ///
 /// Controls which extra filesystem paths the Bash sandbox and the in-process
@@ -129,6 +189,9 @@ pub struct Settings {
     /// Named behavior profiles.
     #[serde(default)]
     pub profiles: HashMap<String, ProfileSettings>,
+    /// Tool-scoped settings.
+    #[serde(default)]
+    pub tools: Option<ToolsSettings>,
 }
 
 /// Result of loading and merging settings from all sources.
@@ -153,6 +216,15 @@ pub struct LoadedSettings {
     /// This is a path to a custom prompt file, checked after `.cake/system.md`
     /// but before `~/.config/cake/system.md` in the precedence chain.
     pub system_prompt: Option<String>,
+    /// Effective LLM judge settings (global + project merged, defaults applied).
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "judge settings are consumed by ExecPlan Milestones 3 and 5"
+        )
+    )]
+    pub judge: JudgeSettings,
 }
 
 /// Definition of a named model in settings.toml.
@@ -484,10 +556,28 @@ impl SettingsLoader {
         if settings.system_prompt.is_some() {
             acc.system_prompt = settings.system_prompt;
         }
+        Self::merge_judge_settings(settings.tools, acc);
         for (name, profile) in settings.profiles {
             acc.profiles.entry(name).or_default().push(profile);
         }
         Ok(())
+    }
+
+    /// Merge `[tools.bash.judge]` fields into the accumulator.
+    ///
+    /// Extracted so [`Self::merge_settings`] stays at baseline complexity.
+    /// Absent fields keep lower-precedence values; defaults are applied later
+    /// in [`SettingsAccumulator::into_loaded`].
+    fn merge_judge_settings(tools: Option<ToolsSettings>, acc: &mut SettingsAccumulator) {
+        let Some(judge) = tools.and_then(|t| t.bash).and_then(|b| b.judge) else {
+            return;
+        };
+        if judge.model.is_some() {
+            acc.judge_model = judge.model;
+        }
+        if judge.timeout_secs.is_some() {
+            acc.judge_timeout_secs = judge.timeout_secs;
+        }
     }
 
     fn validate_profiles(profiles: &HashMap<String, ProfileSettings>) -> Result<(), SettingsError> {
@@ -554,6 +644,8 @@ struct SettingsAccumulator {
     skills: SkillSettings,
     profiles: HashMap<String, Vec<ProfileSettings>>,
     system_prompt: Option<String>,
+    judge_model: Option<String>,
+    judge_timeout_secs: Option<u64>,
 }
 
 impl SettingsAccumulator {
@@ -586,6 +678,12 @@ impl SettingsAccumulator {
             },
             skills: self.skills,
             system_prompt: self.system_prompt,
+            judge: JudgeSettings {
+                model: self.judge_model,
+                timeout_secs: self
+                    .judge_timeout_secs
+                    .unwrap_or(DEFAULT_JUDGE_TIMEOUT_SECS),
+            },
         }
     }
 }

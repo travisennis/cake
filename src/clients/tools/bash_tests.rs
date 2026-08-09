@@ -101,6 +101,27 @@ fn bash_timeout_argument_is_clamped() {
 }
 
 #[test]
+fn bash_reason_argument_round_trips() {
+    let policy = crate::clients::tools::sandbox::SandboxPolicy::DangerFullAccess;
+
+    // Present: the reason is preserved on the parsed args.
+    let args = BashExecutionArgs::from_json(
+        r#"{"command": "git status", "reason": "inspect working tree"}"#,
+        policy,
+    )
+    .unwrap();
+    assert_eq!(args.reason.as_deref(), Some("inspect working tree"));
+
+    // Absent: the field is None, not an error.
+    let args = BashExecutionArgs::from_json(r#"{"command": "git status"}"#, policy).unwrap();
+    assert_eq!(args.reason, None);
+
+    // Non-string reason is rejected like any other invalid argument.
+    let result = BashExecutionArgs::from_json(r#"{"command": "true", "reason": 42}"#, policy);
+    assert!(result.is_err());
+}
+
+#[test]
 fn truncate_output_passes_through_at_limit() {
     let exact = "a".repeat(BASH_OUTPUT_MAX_BYTES);
     let result = truncate_output(&exact, 0, 50, false);
