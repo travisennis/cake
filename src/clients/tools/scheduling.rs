@@ -21,6 +21,9 @@ pub struct ScheduledToolCall {
     pub call_id: String,
     pub name: String,
     pub plan: ToolHookPlan,
+    /// Canonical mutating target path, when the call mutates a resolvable
+    /// path. Shared by every call in the same serialized group.
+    pub target: Option<PathBuf>,
 }
 
 /// Partition a turn's tool-call plans into execution groups.
@@ -50,20 +53,22 @@ pub fn schedule_tool_calls(
             },
             ToolHookPlan::Block { .. } => None,
         };
-        let call = ScheduledToolCall {
+        let mut call = ScheduledToolCall {
             index,
             call_id,
             name,
             plan,
+            target,
         };
 
-        if let Some(&group) = target
+        if let Some(&group) = call
+            .target
             .as_ref()
             .and_then(|path| mutating_path_groups.get(path))
         {
             groups[group].push(call);
         } else {
-            if let Some(path) = target {
+            if let Some(path) = call.target.take() {
                 mutating_path_groups.insert(path, groups.len());
             }
             groups.push(vec![call]);

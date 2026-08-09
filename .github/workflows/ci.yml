@@ -126,6 +126,8 @@ jobs:
       - uses: actions/checkout@v7
       - name: Check instruction word budgets
         run: python3 scripts/lint-instruction-size.py
+      - name: Check domain glossary anchors
+        run: python3 scripts/lint-domain-glossary.py
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.96.0

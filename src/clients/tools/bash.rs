@@ -15,6 +15,7 @@ use crate::clients::judge::{
 use crate::clients::tools::secure_temp_dir::secure_temp_dir;
 use crate::config::settings::JUDGE_BYPASS_ENV;
 use crate::config::toolbox::ToolboxProcessGuard;
+use crate::session_telemetry::{CompensationEventTelemetry, CompensationKind};
 use crate::time_format::format_seconds_tenths;
 
 /// Maximum number of null bytes or control characters (excluding common whitespace)
@@ -551,9 +552,13 @@ async fn execute_bash_with_args(
     // prepend here: a `warn` verdict ran the command, so its guidance must
     // reach the model even when the output is binary.
     if is_binary_data(&buf) {
+        let mut compensation_events = Vec::new();
+        let spilled = buf.len() > BASH_OUTPUT_MAX_BYTES;
+        push_truncation_event_if(&mut compensation_events, "Bash", hit_cap, spilled);
         let output = handle_binary_output(&buf, exit_code, elapsed_ms, warn_exit_zero_stderr);
         return Ok(super::ToolResult {
             output: prepend_safety_warnings(output, &judge_warnings),
+            compensation_events,
         });
     }
 
@@ -591,11 +596,34 @@ async fn execute_bash_with_args(
     };
 
     let result = annotate_empty_search_result(&args.command, result, exit_code, &stderr_str);
+    let spilled = result.len() > BASH_OUTPUT_MAX_BYTES;
     let result = truncate_output(&result, exit_code, elapsed_ms, warn_exit_zero_stderr);
+    let mut compensation_events = Vec::new();
+    push_truncation_event_if(&mut compensation_events, "Bash", hit_cap, spilled);
 
     let output = prepend_safety_warnings(result, &judge_warnings);
 
-    Ok(super::ToolResult { output })
+    Ok(super::ToolResult {
+        output,
+        compensation_events,
+    })
+}
+
+/// Push an `output_truncation` compensation event when a Bash run hit the
+/// read cap (process killed) or its output spilled to a temp file. One event
+/// per run that truncated, whichever mechanism fired.
+fn push_truncation_event_if(
+    events: &mut Vec<CompensationEventTelemetry>,
+    tool: &str,
+    read_cap: bool,
+    spilled: bool,
+) {
+    if read_cap || spilled {
+        events.push(CompensationEventTelemetry::new(
+            CompensationKind::OutputTruncation,
+            Some(tool.to_string()),
+        ));
+    }
 }
 
 /// Run the LLM-judge command-safety preflight for one Bash call.

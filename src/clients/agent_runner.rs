@@ -9,8 +9,8 @@ use crate::clients::retry::{self, HttpFailure, RequestOverrides, RetryPolicy, Re
 use crate::clients::tools::Tool;
 use crate::config::model::ResolvedModelConfig;
 use crate::session_telemetry::{
-    AgentRunnerTelemetryEvent, ApiAttemptTelemetry, RequestOverridesSnapshot,
-    RetryScheduledTelemetry,
+    AgentRunnerTelemetryEvent, ApiAttemptTelemetry, CompensationEventTelemetry, CompensationKind,
+    RequestOverridesSnapshot, RetryScheduledTelemetry,
 };
 use crate::types::ConversationItem;
 
@@ -169,6 +169,12 @@ impl AgentRunner {
                             report_telemetry(AgentRunnerTelemetryEvent::RetryScheduled(
                                 RetryScheduledTelemetry::from_status(
                                     &status, turn_index, true, &overrides,
+                                ),
+                            ));
+                            report_telemetry(AgentRunnerTelemetryEvent::Compensation(
+                                CompensationEventTelemetry::new(
+                                    CompensationKind::ContextOverflowRetry,
+                                    None,
                                 ),
                             ));
                             request_overrides = overrides;

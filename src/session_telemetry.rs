@@ -113,6 +113,7 @@ pub struct ToolCallTelemetry {
 pub enum AgentRunnerTelemetryEvent {
     ApiAttempt(ApiAttemptTelemetry),
     RetryScheduled(RetryScheduledTelemetry),
+    Compensation(CompensationEventTelemetry),
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -128,6 +129,95 @@ impl From<&RequestOverrides> for RequestOverridesSnapshot {
             max_output_tokens: overrides.max_output_tokens,
             reasoning_max_tokens: overrides.reasoning_max_tokens,
             context_overflow_retry_used: overrides.context_overflow_retry_used,
+        }
+    }
+}
+
+/// A model weakness cake compensates for during a session.
+///
+/// Every variant maps to one compensation: hand-coded knowledge that rescues
+/// the model. A flatlined counter for a given model is the signal that the
+/// compensation is a deletion candidate (see the expiration-review discipline
+/// documented next to the counters in `scripts/session-metrics`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompensationKind {
+    /// Recoverable malformed tool-call arguments repaired before parsing.
+    /// `detail` names the tool whose arguments were repaired.
+    JsonRepair,
+    /// LLM judge verdict on a Bash command. `detail` is `block:<code>`,
+    /// `warn:<code>`, or `allow`; `latency_ms` is the judge call duration.
+    JudgeVerdict,
+    /// The judge failed (timeout, transport, malformed, refusal) and the
+    /// command was blocked. `detail` names the failure class.
+    JudgeFailClosed,
+    /// A second same-path mutation reordered into serial execution.
+    /// `detail` is the canonical target path.
+    SamePathSerialization,
+    /// Tool output exceeded its inline cap and was truncated or spilled to a
+    /// temp file. `detail` names the tool.
+    OutputTruncation,
+    /// A request exceeded context and was retried with reduced output tokens.
+    ContextOverflowRetry,
+    /// A tool call's arguments failed to parse after the repair pass.
+    EditInvalidArguments,
+}
+
+/// One model-compensation event. The sidecar records one of these per event;
+/// the metrics suite counts them per model over a date range.
+#[derive(Debug, Clone, Serialize)]
+pub struct CompensationEventTelemetry {
+    pub kind: CompensationKind,
+    /// Kind-specific detail; see [`CompensationKind`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// Judge verdict call duration, when the event is a judge verdict.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<u64>,
+}
+
+impl CompensationEventTelemetry {
+    pub const fn new(kind: CompensationKind, detail: Option<String>) -> Self {
+        Self {
+            kind,
+            detail,
+            latency_ms: None,
+        }
+    }
+
+    /// Build a judge verdict event: decision and verdict code (block and warn
+    /// verdicts carry a code; allow omits it), plus the judge call latency.
+    /// Metadata only — never the command or reason text.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "recorded by the judge preflight in ExecPlan Milestone 5"
+        )
+    )]
+    pub fn judge_verdict(decision: &str, code: Option<&str>, latency_ms: u64) -> Self {
+        let detail = code.map_or_else(|| decision.to_string(), |code| format!("{decision}:{code}"));
+        Self {
+            kind: CompensationKind::JudgeVerdict,
+            detail: Some(detail),
+            latency_ms: Some(latency_ms),
+        }
+    }
+
+    /// Build a fail-closed judge event: the judge error class that blocked
+    /// the command instead of a verdict.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "recorded by the judge preflight in ExecPlan Milestone 5"
+        )
+    )]
+    pub fn judge_fail_closed(error_class: &str) -> Self {
+        Self {
+            kind: CompensationKind::JudgeFailClosed,
+            detail: Some(error_class.to_string()),
+            latency_ms: None,
         }
     }
 }
@@ -216,6 +306,13 @@ pub enum SessionTelemetryRecord {
         #[serde(flatten)]
         tool_call: ToolCallTelemetry,
     },
+    Compensation {
+        session_id: String,
+        invocation_id: String,
+        timestamp: DateTime<Utc>,
+        #[serde(flatten)]
+        event: CompensationEventTelemetry,
+    },
     SessionSummary {
         session_id: String,
         invocation_id: String,
@@ -295,6 +392,88 @@ mod tests {
 
         let without_termination = serde_json::to_value(api_attempt(None)).unwrap();
         assert!(without_termination.get("termination").is_none());
+    }
+
+    #[test]
+    fn compensation_kind_labels_match_serialized_values() {
+        let cases = [
+            (CompensationKind::JsonRepair, "json_repair"),
+            (CompensationKind::JudgeVerdict, "judge_verdict"),
+            (CompensationKind::JudgeFailClosed, "judge_fail_closed"),
+            (
+                CompensationKind::SamePathSerialization,
+                "same_path_serialization",
+            ),
+            (CompensationKind::OutputTruncation, "output_truncation"),
+            (
+                CompensationKind::ContextOverflowRetry,
+                "context_overflow_retry",
+            ),
+            (
+                CompensationKind::EditInvalidArguments,
+                "edit_invalid_arguments",
+            ),
+        ];
+
+        for (kind, expected) in cases {
+            assert_eq!(
+                serde_json::to_value(kind).unwrap(),
+                serde_json::json!(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn compensation_event_omits_empty_fields() {
+        let event =
+            CompensationEventTelemetry::new(CompensationKind::JsonRepair, Some("Edit".into()));
+        let value = serde_json::to_value(event).unwrap();
+        assert_eq!(value["kind"], "json_repair");
+        assert_eq!(value["detail"], "Edit");
+        assert!(value.get("latency_ms").is_none());
+
+        let bare = CompensationEventTelemetry::new(CompensationKind::ContextOverflowRetry, None);
+        let value = serde_json::to_value(bare).unwrap();
+        assert_eq!(value["kind"], "context_overflow_retry");
+        assert!(value.get("detail").is_none());
+        assert!(value.get("latency_ms").is_none());
+    }
+
+    #[test]
+    fn judge_verdict_event_carries_decision_code_and_latency() {
+        let event = CompensationEventTelemetry::judge_verdict("block", Some("rm-rf"), 42);
+        let value = serde_json::to_value(event).unwrap();
+        assert_eq!(value["kind"], "judge_verdict");
+        assert_eq!(value["detail"], "block:rm-rf");
+        assert_eq!(value["latency_ms"], 42);
+
+        let allow = CompensationEventTelemetry::judge_verdict("allow", None, 7);
+        let value = serde_json::to_value(allow).unwrap();
+        assert_eq!(value["detail"], "allow");
+
+        let fail_closed = CompensationEventTelemetry::judge_fail_closed("timeout");
+        let value = serde_json::to_value(fail_closed).unwrap();
+        assert_eq!(value["kind"], "judge_fail_closed");
+        assert_eq!(value["detail"], "timeout");
+        assert!(value.get("latency_ms").is_none());
+    }
+
+    #[test]
+    fn compensation_record_serializes_flattened_event() {
+        let record = SessionTelemetryRecord::Compensation {
+            session_id: "session".to_string(),
+            invocation_id: "invocation".to_string(),
+            timestamp: Utc::now(),
+            event: CompensationEventTelemetry::new(
+                CompensationKind::OutputTruncation,
+                Some("Read".into()),
+            ),
+        };
+        let value = serde_json::to_value(record).unwrap();
+        assert_eq!(value["type"], "compensation");
+        assert_eq!(value["kind"], "output_truncation");
+        assert_eq!(value["detail"], "Read");
+        assert_eq!(value["session_id"], "session");
     }
 
     #[test]

@@ -80,7 +80,7 @@ DEFAULT_BUDGET = 1500
 # words on a document this size is under 3%.
 ALLOWANCES: dict[str, int] = {
     "docs/runbooks/analyzing-cake-sessions/index.md": 1750,
-    ".agents/skills/finding-improvements/SKILL.md": 2750,
+    ".agents/skills/finding-improvements/SKILL.md": 2800,
 }
 
 

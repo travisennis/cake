@@ -80,6 +80,8 @@ Persisted sessions have operational telemetry under `~/.cache/cake/session-telem
 
 Records cover initialization, API attempts, retries, tool calls, and summaries. They include timing and usage metadata but intentionally omit prompts, assistant text, and raw tool-output bodies. Successful `api_attempt` records may include an optional `termination` object with Cake's provider-neutral `classification` and the provider's raw `provider_status` or `provider_reason` when supplied. A `retry_scheduled` record whose reason is `semantic_incomplete` identifies the zero-delay continuation described above. Consumers must tolerate this and other additional enum values or optional fields; older sidecars and providers that omit termination metadata will not contain it. Sidecars are never used for continue, resume, fork, or session discovery.
 
+A `compensation` record counts one model-compensation event. It carries a `kind` (`json_repair`, `judge_verdict`, `judge_fail_closed`, `same_path_serialization`, `output_truncation`, `context_overflow_retry`, `edit_invalid_arguments`), an optional `detail`, and optional `latency_ms` for judge verdicts. Judge records are metadata only, never the command or reason text. Each counter maps to a compensation that is a deletion candidate when it flatlines at zero for a model (`scripts/session-metrics/README.md`).
+
 ## Hook protocol
 
 Hook commands receive one versioned JSON object on stdin. Common fields include `session_id`, `task_id`, `transcript_path`, `cwd`, `hook_event_name`, `model`, and `timestamp`. Tool events also carry tool identity and input; post-tool events carry the result.
