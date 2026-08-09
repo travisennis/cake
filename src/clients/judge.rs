@@ -11,7 +11,11 @@
 //! `Milestone 3` replaces the seed prompt with the embedded default rubric and
 //! the stable verdict-code vocabulary (see [`crate::clients::judge_rubric`]),
 //! validates block/warn verdict codes against that vocabulary, and adds the
-//! spawn-free repository-state digest for judge requests.
+//! spawn-free repository-state digest for judge requests. `Milestone 4` adds
+//! the allowlist override and the emergency bypass: [`evaluate_command`] is
+//! the single judge-path decision point (`cake bash check` today, the Bash
+//! preflight in Milestone 5) applying the bypass check, the bounded call, and
+//! the exact-match allowlist override, returning a [`JudgeOutcome`].
 //!
 //! The types and client are consumed by Milestone 3 (`cake bash check`) and
 //! Milestone 5 (Bash preflight wiring); until then they are new API with no
@@ -35,6 +39,7 @@ use crate::clients::judge_rubric::{VerdictCode, build_judge_system_prompt};
 use crate::clients::retry::RequestOverrides;
 use crate::clients::tools::repair_json_args;
 use crate::config::model::{ModelConfig, ResolvedModelConfig};
+use crate::config::settings::JudgeSettings;
 use crate::session_telemetry::{ProviderTermination, TerminationClassification};
 use crate::types::{ConversationItem, Role};
 
@@ -125,6 +130,69 @@ impl JudgeRequest {
         self.repo_digest = digest;
         self
     }
+}
+
+/// Result of the judge path after bypass and allowlist handling.
+///
+/// `cake bash check` (Milestone 3) and the Bash preflight wiring (Milestone 5)
+/// consume the same outcome so bypass, override, and fail-closed behavior stay
+/// consistent across callers.
+#[derive(Debug, Clone, PartialEq)]
+pub enum JudgeOutcome {
+    /// The judge produced a verdict. `overridden` is true when the verdict was
+    /// a `block` and an exact allowlist entry overrode it to allow: the
+    /// command may run, but the original verdict and the flag are preserved
+    /// for telemetry.
+    Verdict {
+        verdict: JudgeVerdict,
+        overridden: bool,
+    },
+    /// The judge is disabled (emergency bypass); no judge call was made.
+    Bypassed,
+}
+
+/// Whether the judge is active for this process.
+///
+/// `bypass_env` is the value of the `CAKE_JUDGE` environment variable
+/// (`None` when unset). The judge is disabled by `[tools.bash.judge]
+/// enabled = false` or by `CAKE_JUDGE=off`; the environment variable wins
+/// because it is the escape hatch when a failing judge strands sessions.
+pub fn judge_is_enabled(settings: &JudgeSettings, bypass_env: Option<&str>) -> bool {
+    settings.enabled && bypass_env != Some("off")
+}
+
+/// Evaluate a command through the full judge path: emergency bypass check,
+/// the bounded judge call, and the allowlist override.
+///
+/// `bypass_env` is the value of the `CAKE_JUDGE` environment variable (`None`
+/// when unset), passed in so callers control the single env read and tests
+/// stay hermetic.
+///
+/// An allowlisted command is still judged. A `block` verdict on an exact
+/// allowlist match is overridden to allow (the original verdict and the
+/// `overridden` flag are returned for telemetry); every other verdict is
+/// returned unchanged. A disabled judge (bypass) returns
+/// [`JudgeOutcome::Bypassed`] without making a judge call. Any
+/// [`JudgeError`] fails closed.
+pub async fn evaluate_command(
+    client: &JudgeClient,
+    settings: &JudgeSettings,
+    request: JudgeRequest,
+    bypass_env: Option<&str>,
+) -> Result<JudgeOutcome, JudgeError> {
+    if !judge_is_enabled(settings, bypass_env) {
+        return Ok(JudgeOutcome::Bypassed);
+    }
+    let verdict = client.judge(request.clone()).await?;
+    let overridden = verdict.decision == JudgeDecision::Block
+        && settings
+            .allowlist
+            .iter()
+            .any(|entry| entry == &request.command);
+    Ok(JudgeOutcome::Verdict {
+        verdict,
+        overridden,
+    })
 }
 
 /// Client issuing single bounded judge calls on a configured backend.

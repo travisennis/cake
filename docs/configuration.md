@@ -66,11 +66,15 @@ Relative `system_prompt`, `skills.path`, `directories`, and `[sandbox]` values r
 model = "zen"       # optional [[models]] name
 timeout_secs = 30   # default 30; never below 1
 rubric_file = ".cake/judge-rubric.md"  # optional user rubric guidance
+enabled = true      # default true; false is the emergency bypass
+allowlist = ["git status"]  # exact raw commands whose blocks are overridden
 ```
 
-- `model`: optional `[[models]]` name for the judge's model, in the same vocabulary as `default_model` and `--model`. The name indexes a fully configured `[[models]]` entry, so the judge uses that entry's provider, base URL, API key, temperature, reasoning, and other fields. When unset, the judge uses the agent's configured model. An unknown name fails at load time.
+- `model`: optional `[[models]]` name for the judge's model, in the same vocabulary as `default_model` and `--model`. The name indexes a fully configured `[[models]]` entry, so the judge uses that entry's provider, base URL, API key, temperature, reasoning, and other fields. When unset, the judge uses the agent's configured model. An unknown name fails at load time, unless the judge is bypassed (`enabled = false` or `CAKE_JUDGE=off`), in which case the unused model config is inert.
 - `timeout_secs`: bounded judge call timeout in seconds. Defaults to 30; values below 1 are raised to 1.
 - `rubric_file`: optional path to a user rubric file whose text is appended to the embedded default rubric as additional judge guidance (extra always-block classes, relaxations phrased as guidance). Relative paths resolve from the invocation working directory. Relaxations are advisory to the judge, not hard overrides; the allowlist is the only hard override.
+- `enabled`: emergency bypass. `false` disables the judge for every command, equivalent to the `CAKE_JUDGE=off` environment variable; the environment variable wins when both are set. Off by default means the judge is enabled, and there are no allowlist entries in shipped defaults.
+- `allowlist`: list of exact raw-command strings whose `block` verdicts are overridden to allow. An allowlisted command is still judged, and the verdict plus an `overridden` flag are recorded; only a `block` is overridden, so the command still cannot hide a judge failure. Matching is exact raw-command equality (no patterns, aliases, or normalization). Entries from global and project settings are merged.
 
 ## Filesystem access
 

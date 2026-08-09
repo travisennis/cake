@@ -90,12 +90,21 @@ pub struct BashJudgeSettings {
     /// embedded default rubric as additional judge guidance.
     #[serde(default)]
     pub rubric_file: Option<PathBuf>,
+    /// Emergency bypass: `false` disables the judge for every command,
+    /// equivalent to `CAKE_JUDGE=off`. Off by default (the judge is enabled).
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    /// Exact raw-command strings whose `block` verdicts are overridden to
+    /// allow. An allowlisted command is still judged; the verdict and the
+    /// `overridden` flag are recorded. No entries in shipped defaults.
+    #[serde(default)]
+    pub allowlist: Option<Vec<String>>,
 }
 
 /// Resolved LLM judge settings for Bash command safety.
 ///
 /// Produced by [`SettingsLoader`] after merging global, project, and profile
-/// settings with defaults applied. The allowlist and emergency bypass land in
+/// settings with defaults applied. The allowlist and emergency bypass landed in
 /// `Milestone 4` of the LLM-judge `ExecPlan`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JudgeSettings {
@@ -108,6 +117,14 @@ pub struct JudgeSettings {
     /// Optional path to a user rubric file appended to the embedded default
     /// rubric. Relative paths resolve from the invocation working directory.
     pub rubric_file: Option<PathBuf>,
+    /// Emergency bypass: `false` disables the judge for every command
+    /// (equivalent to `CAKE_JUDGE=off`). Default true; off by default means
+    /// the judge is enabled.
+    pub enabled: bool,
+    /// Exact raw-command strings whose `block` verdict is overridden to allow.
+    /// An allowlisted command is still judged; the verdict and the `overridden`
+    /// flag are recorded for telemetry. Empty by default.
+    pub allowlist: Vec<String>,
 }
 
 impl Default for JudgeSettings {
@@ -116,6 +133,8 @@ impl Default for JudgeSettings {
             model: None,
             timeout_secs: DEFAULT_JUDGE_TIMEOUT_SECS,
             rubric_file: None,
+            enabled: true,
+            allowlist: Vec::new(),
         }
     }
 }
@@ -123,6 +142,12 @@ impl Default for JudgeSettings {
 /// Default bounded judge timeout in seconds when no `[tools.bash.judge]`
 /// setting is present.
 pub const DEFAULT_JUDGE_TIMEOUT_SECS: u64 = 30;
+
+/// Emergency-bypass environment variable: `CAKE_JUDGE=off` disables the judge
+/// for every command, regardless of settings. It is the escape hatch when a
+/// failing judge strands sessions. Lives in the config layer so settings
+/// validation can honor it without importing client modules.
+pub const JUDGE_BYPASS_ENV: &str = "CAKE_JUDGE";
 
 /// Floor for the judge timeout in seconds. A `0` timeout would expire before
 /// the judge request is polled and fail every command closed; values below
@@ -549,15 +574,31 @@ impl SettingsLoader {
         }
 
         // Validate that the judge model (if set) refers to an existing model,
-        // mirroring default_model: a `[[models]]` name, resolved to that
-        // entry's full configuration.
-        if let Some(ref name) = acc.judge_model
+        // mirroring default_model (see [`Self::validate_judge_model`]).
+        Self::validate_judge_model(&acc)?;
+
+        Ok(acc.into_loaded())
+    }
+
+    /// Validate that the judge model (if set) refers to an existing model,
+    /// mirroring `default_model`: a `[[models]]` name, resolved to that entry's
+    /// full configuration. A bypassed judge's unused model config is inert, so
+    /// validation is skipped: `CAKE_JUDGE=off` or `enabled = false` stays the
+    /// recovery path even for a misconfigured judge.
+    fn validate_judge_model(acc: &SettingsAccumulator) -> Result<(), SettingsError> {
+        if !Self::judge_is_bypassed(acc)
+            && let Some(ref name) = acc.judge_model
             && !acc.models.contains_key(name.as_str())
         {
             return Err(SettingsError::JudgeModelNotFound { name: name.clone() });
         }
+        Ok(())
+    }
 
-        Ok(acc.into_loaded())
+    /// Whether the judge is bypassed at settings load: `enabled = false` or
+    /// the `CAKE_JUDGE=off` environment variable.
+    fn judge_is_bypassed(acc: &SettingsAccumulator) -> bool {
+        acc.judge_enabled == Some(false) || std::env::var(JUDGE_BYPASS_ENV).as_deref() == Ok("off")
     }
 
     fn merge_settings(
@@ -609,6 +650,14 @@ impl SettingsLoader {
         if judge.rubric_file.is_some() {
             acc.judge_rubric_file = judge.rubric_file;
         }
+        if judge.enabled.is_some() {
+            acc.judge_enabled = judge.enabled;
+        }
+        // The allowlist is a union across precedence levels: every explicit
+        // entry in any settings file is honored. An absent key contributes
+        // nothing, matching the other list-valued settings.
+        acc.judge_allowlist
+            .extend(judge.allowlist.unwrap_or_default());
     }
 
     fn validate_profiles(profiles: &HashMap<String, ProfileSettings>) -> Result<(), SettingsError> {
@@ -678,6 +727,8 @@ struct SettingsAccumulator {
     judge_model: Option<String>,
     judge_timeout_secs: Option<u64>,
     judge_rubric_file: Option<PathBuf>,
+    judge_enabled: Option<bool>,
+    judge_allowlist: Vec<String>,
 }
 
 impl SettingsAccumulator {
@@ -717,6 +768,8 @@ impl SettingsAccumulator {
                     .unwrap_or(DEFAULT_JUDGE_TIMEOUT_SECS)
                     .max(JUDGE_TIMEOUT_MIN_SECS),
                 rubric_file: self.judge_rubric_file,
+                enabled: self.judge_enabled.unwrap_or(true),
+                allowlist: self.judge_allowlist,
             },
         }
     }
