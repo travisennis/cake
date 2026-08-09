@@ -168,7 +168,7 @@ lint-deps:
     @echo "Dependency lint passed!"
 
 # Run the primary local checks, including the always-on CI command set
-ci: rust-version-check check-linux fmt-check clippy-strict clippy-no-default-features test-all-features check-coverage lint-imports lint-deps lint-module-size lint-instruction-size
+ci: rust-version-check check-linux fmt-check clippy-strict clippy-no-default-features test-all-features check-coverage lint-imports lint-deps lint-module-size lint-instruction-size lint-domain-glossary
     echo "All checks passed!"
 
 # Print the changed-path classification the pre-push gate routes on: docs | code | mixed | unknown | none
@@ -219,6 +219,7 @@ pre-push-docs:
         echo "pre-push-docs: no changed Markdown files"; \
     fi; \
     scripts/classify-changes.sh --check
+    @python3 scripts/lint-domain-glossary.py
 
 # Run the macOS correctness path used by GitHub Actions
 ci-macos: rust-version-check fmt-check clippy-strict clippy-no-default-features test-all-features
@@ -239,6 +240,10 @@ lint-module-size:
 # Check the agent instruction corpus against its word budgets (enforcing)
 lint-instruction-size:
     python3 scripts/lint-instruction-size.py
+
+# Check that docs/domain-glossary.md still matches the code it describes
+lint-domain-glossary:
+    python3 scripts/lint-domain-glossary.py
 
 # Check for denied/advisory dependencies (requires cargo-deny)
 check-deps:
