@@ -1,8 +1,9 @@
 //! End-to-end coverage for the session modes that restore or fork a prior
 //! session (`--continue`, `--fork <UUID>`): the run resolves the restored
-//! session's model, attaches the command-safety judge context, and reaches
-//! the provider, exercising the `ContinueLatest` and `Fork` arms of
-//! `build_client_and_session`.
+//! session's model and reaches the provider, exercising the `ContinueLatest`
+//! and `Fork` arms of `build_client_and_session`. The command-safety judge
+//! context those arms attach is unit-tested in `session_factory` (these e2e
+//! tests never invoke Bash, so they cannot observe the wiring themselves).
 
 #![expect(clippy::expect_used, reason = "test code uses expect for assertions")]
 

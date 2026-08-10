@@ -125,6 +125,12 @@ impl Agent {
         self.tools.names()
     }
 
+    /// Returns the tool context attached to this agent (for tests).
+    #[cfg(test)]
+    pub(crate) const fn tool_context(&self) -> &Arc<ToolContext> {
+        &self.tool_context
+    }
+
     #[cfg(test)]
     fn history(&self) -> &[ConversationItem] {
         self.conversation.history()

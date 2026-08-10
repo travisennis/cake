@@ -26,6 +26,7 @@
 
 use std::collections::HashMap;
 use std::str::FromStr as _;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -219,9 +220,11 @@ pub async fn evaluate_command(
 ///
 /// Carried on the [`crate::clients::tools::ToolContext`] so the Bash executor
 /// and the agent loop share one resolution of the judge settings against the
-/// run's model. The judge client is built lazily at call time — after the
-/// bypass check — so a broken judge model or rubric cannot defeat the
-/// emergency bypass (`Milestone 4`).
+/// run's model. The judge client is built lazily — on the first non-bypassed
+/// call, after the bypass check — so a broken judge model or rubric cannot
+/// defeat the emergency bypass (`Milestone 4`). The built client is cached for
+/// the rest of the run so per-command HTTP connection setup and rubric reads
+/// happen once instead of on every Bash call (`review F-002`).
 #[derive(Debug, Clone)]
 pub struct JudgeContext {
     /// Resolved judge settings (allowlist, bypass, timeout, rubric file).
@@ -232,6 +235,55 @@ pub struct JudgeContext {
     /// The run's `[[models]]` registry, to resolve a `[tools.bash.judge]
     /// model` override by name.
     pub models: HashMap<String, ModelDefinition>,
+    /// The run's judge client, built once on the first non-bypassed call. A
+    /// fail-closed build error is cached too, so a broken judge configuration
+    /// denies consistently for the whole run. Managed by [`Self::judge_client`];
+    /// constructors initialize it empty.
+    pub client: OnceLock<Result<Arc<JudgeClient>, JudgeClientError>>,
+}
+
+/// Why the run's judge client could not be built.
+///
+/// Cached alongside the client so the fail-closed denial stays consistent
+/// across Bash calls: the telemetry failure class plus the message the model
+/// sees when the command is blocked.
+#[derive(Debug, Clone)]
+pub struct JudgeClientError {
+    /// The stable fail-closed class recorded in session telemetry
+    /// (`config` or `rubric`).
+    pub class: &'static str,
+    /// The message shown to the model when the command is blocked.
+    pub message: String,
+}
+
+impl JudgeContext {
+    /// The run's judge client, built once after the bypass check.
+    ///
+    /// Construction is deferred to the first non-bypassed call so a broken
+    /// judge model or rubric cannot defeat the emergency bypass. The resolved
+    /// client — or the fail-closed build error — is cached for the rest of
+    /// the run.
+    pub fn judge_client(&self) -> Result<&JudgeClient, &JudgeClientError> {
+        self.client
+            .get_or_init(|| {
+                let config =
+                    resolve_judge_client_config(&self.settings, &self.agent_model, &self.models)
+                        .map_err(|message| JudgeClientError {
+                            class: "config",
+                            message,
+                        })?;
+                let user_rubric =
+                    read_user_rubric(&self.settings).map_err(|message| JudgeClientError {
+                        class: "rubric",
+                        message,
+                    })?;
+                Ok(Arc::new(
+                    JudgeClient::new(config, Duration::from_secs(self.settings.timeout_secs))
+                        .with_user_rubric(user_rubric),
+                ))
+            })
+            .as_deref()
+    }
 }
 
 /// Resolve the model config for a judge client.
@@ -278,6 +330,7 @@ pub fn read_user_rubric(settings: &JudgeSettings) -> Result<Option<String>, Stri
 /// Reuses the same backend machinery as the agent loop (`Backend` over the
 /// configured `ApiType`) so the judge speaks the same wire protocol as the
 /// agent, with the agent's resolved model config: "same family by default".
+#[derive(Debug)]
 pub struct JudgeClient {
     client: reqwest::Client,
     config: ResolvedModelConfig,

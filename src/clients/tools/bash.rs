@@ -9,8 +9,8 @@ use tracing::debug;
 #[cfg(test)]
 use crate::clients::judge::JudgeContext;
 use crate::clients::judge::{
-    JudgeClient, JudgeDecision, JudgeOutcome, JudgeRequest, evaluate_command, judge_is_enabled,
-    read_user_rubric, repo_state_digest, resolve_judge_client_config,
+    JudgeDecision, JudgeOutcome, JudgeRequest, evaluate_command, judge_is_enabled,
+    repo_state_digest,
 };
 use crate::clients::tools::secure_temp_dir::secure_temp_dir;
 use crate::config::settings::JUDGE_BYPASS_ENV;
@@ -422,8 +422,14 @@ async fn execute_bash_with_args(
     // resources (e.g., macOS temp profile files) are cleaned up
     // deterministically.
     let sandbox_guard = if use_sandbox {
-        if let Some(strategy) = super::sandbox::detect_platform()? {
-            Some(strategy.apply(&mut command, &sandbox_config)?)
+        if let Some(strategy) = super::sandbox::detect_platform()
+            .map_err(|e| judge_tool_error(judge_events.clone(), e))?
+        {
+            Some(
+                strategy
+                    .apply(&mut command, &sandbox_config)
+                    .map_err(|e| judge_tool_error(judge_events.clone(), e))?,
+            )
         } else {
             None
         }
@@ -442,17 +448,26 @@ async fn execute_bash_with_args(
     }
 
     // Spawn the command with piped stdout/stderr for streaming
-    let mut child = command
-        .spawn()
-        .map_err(|e| format!("Failed to spawn command: {e}"))?;
+    let mut child = command.spawn().map_err(|e| {
+        judge_tool_error(
+            judge_events.clone(),
+            format!("Failed to spawn command: {e}"),
+        )
+    })?;
 
     // RAII guard: kills the whole process group on drop unless defused.
     // This ensures Ctrl-C or any other future cancellation terminates
     // descendant processes, not just the direct child.
     let mut guard = ToolboxProcessGuard::new(child.id());
 
-    let mut stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
-    let mut stderr = child.stderr.take().ok_or("Failed to capture stderr")?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| judge_tool_error(judge_events.clone(), "Failed to capture stdout"))?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| judge_tool_error(judge_events.clone(), "Failed to capture stderr"))?;
 
     // The configured timeout covers the full lifecycle: reading both
     // streams, optionally killing the process group on cap, and reaping
@@ -529,7 +544,7 @@ async fn execute_bash_with_args(
 
     let (buf, stderr_buf, hit_cap, status) = match lifecycle_result {
         Ok(Ok(tuple)) => tuple,
-        Ok(Err(e)) => return Err(super::ToolError::new(e)),
+        Ok(Err(e)) => return Err(judge_tool_error(judge_events, e)),
         Err(_) => {
             // Timed out: terminate the process group and reap with a
             // short grace period so the OS has time to deliver SIGKILL.
@@ -539,10 +554,10 @@ async fn execute_bash_with_args(
             terminate_process_group(&mut child);
             // Grace period: give the OS time to deliver SIGKILL.
             let _grace = timeout(Duration::from_secs(5), child.wait()).await;
-            return Err(super::ToolError::new(format!(
-                "Command timed out after {} seconds",
-                args.timeout
-            )));
+            return Err(judge_tool_error(
+                judge_events,
+                format!("Command timed out after {} seconds", args.timeout),
+            ));
         },
     };
 
@@ -576,15 +591,18 @@ async fn execute_bash_with_args(
     let output_str = String::from_utf8_lossy(&buf);
 
     if is_sandbox_initialization_failure(sandbox_applied, &stderr_str) {
-        return Err(super::ToolError::new(format!(
-            "{}\n\n\
-            macOS sandbox unavailable: sandbox-exec could not apply a sandbox profile, \
-            so the requested command did not run. This commonly happens when cake is \
-            itself running inside another Seatbelt sandbox. Run cake with \
-            --sandbox danger-full-access (or set CAKE_SANDBOX=off) to run Bash \
-            commands without filesystem sandboxing.",
-            output_str.trim_end()
-        )));
+        return Err(judge_tool_error(
+            judge_events,
+            format!(
+                "{}\n\n\
+                macOS sandbox unavailable: sandbox-exec could not apply a sandbox profile, \
+                so the requested command did not run. This commonly happens when cake is \
+                itself running inside another Seatbelt sandbox. Run cake with \
+                --sandbox danger-full-access (or set CAKE_SANDBOX=off) to run Bash \
+                commands without filesystem sandboxing.",
+                output_str.trim_end()
+            ),
+        ));
     }
 
     let result = if output_str.is_empty() {
@@ -688,12 +706,9 @@ async fn bash_judge_preflight(
         });
     }
 
-    let config = resolve_judge_client_config(&judge.settings, &judge.agent_model, &judge.models)
-        .map_err(|e| fail_closed_tool_error("config", e))?;
-    let client = JudgeClient::new(config, Duration::from_secs(judge.settings.timeout_secs))
-        .with_user_rubric(
-            read_user_rubric(&judge.settings).map_err(|e| fail_closed_tool_error("rubric", e))?,
-        );
+    let client = judge
+        .judge_client()
+        .map_err(|e| fail_closed_tool_error(e.class, &e.message))?;
     let request = JudgeRequest::new(
         args.command.clone(),
         context.cwd.clone(),
@@ -702,7 +717,7 @@ async fn bash_judge_preflight(
     .with_repo_digest(repo_state_digest(&context.cwd));
 
     let started = std::time::Instant::now();
-    let outcome = evaluate_command(&client, &judge.settings, request, bypass_env.as_deref())
+    let outcome = evaluate_command(client, &judge.settings, request, bypass_env.as_deref())
         .await
         .map_err(|e| fail_closed_tool_error(e.error_class(), e))?;
     let latency_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
@@ -779,6 +794,22 @@ fn fail_closed_tool_error(class: &'static str, error: impl std::fmt::Display) ->
     }
 }
 
+/// Attach the judge preflight's telemetry events to a post-preflight tool
+/// error, so an `allow`/`warn` verdict stays observable even when the command
+/// itself fails after the gate (timeout, spawn failure, sandbox-init failure,
+/// lifecycle read error). Without this the verdict recorded by the preflight
+/// would be silently dropped on exactly the sessions the metrics exist to
+/// analyze (`review F-001`).
+fn judge_tool_error(
+    events: Vec<CompensationEventTelemetry>,
+    message: impl Into<String>,
+) -> super::ToolError {
+    super::ToolError {
+        message: message.into(),
+        compensation_events: events,
+    }
+}
+
 /// Judge messages are model-generated text entering the agent loop. Cap the
 /// length and strip control characters so a compromised or confused judge
 /// cannot inject terminal control sequences or unbounded text into the
@@ -791,21 +822,49 @@ fn sanitize_judge_message(message: &str) -> String {
         .collect()
 }
 
+/// Run one Bash call unsandboxed in a fresh temporary directory with a
+/// bypassed judge, used by tests that exercise Bash output handling rather
+/// than the judge path: the judge is never called and commands run ungated.
 #[cfg(test)]
 async fn execute_bash_unsandboxed(arguments: &str) -> Result<super::ToolResult, super::ToolError> {
     execute_bash_with_judge(arguments, Some(bypassed_judge_context())).await
 }
 
-/// Run one Bash call unsandboxed with an explicit judge context, so tests
-/// can drive the judge preflight (`None` exercises the fail-closed path).
+/// Run one Bash call unsandboxed in a fresh temporary directory with an
+/// explicit judge context, so tests can drive the judge preflight (`None`
+/// exercises the fail-closed path).
+///
+/// The working directory is a fresh temp dir: tests never execute against the
+/// developer's real checkout. Tests needing a specific fixture directory use
+/// [`execute_bash_with_judge_in`] instead.
 #[cfg(test)]
 async fn execute_bash_with_judge(
     arguments: &str,
     judge: Option<std::sync::Arc<JudgeContext>>,
 ) -> Result<super::ToolResult, super::ToolError> {
+    let dir = tempfile::tempdir().expect("hermetic temp dir for bash test");
+    let result = execute_bash_with_judge_in(arguments, judge, dir.path()).await;
+    drop(dir);
+    result
+}
+
+/// Run one Bash call unsandboxed in an explicit fixture working directory
+/// with an explicit judge context (`None` exercises the fail-closed path).
+///
+/// The working directory is explicit so tests never execute against the
+/// developer's real checkout: pass a hermetic fixture (a `tempfile` directory,
+/// or a temporary Git repository when a repository is needed).
+#[cfg(test)]
+async fn execute_bash_with_judge_in(
+    arguments: &str,
+    judge: Option<std::sync::Arc<JudgeContext>>,
+    cwd: &std::path::Path,
+) -> Result<super::ToolResult, super::ToolError> {
     let args =
         BashExecutionArgs::from_json(arguments, super::sandbox::SandboxPolicy::DangerFullAccess)?;
-    let context = super::ToolContext::from_current_process().with_judge(judge);
+    let mut context = super::ToolContext::from_current_process();
+    context.cwd = cwd.to_path_buf();
+    context.judge = judge;
     Box::pin(execute_bash_with_args(&context, args)).await
 }
 
@@ -842,6 +901,7 @@ fn bypassed_judge_context() -> std::sync::Arc<JudgeContext> {
             api_key: String::new(),
         },
         models: HashMap::new(),
+        client: std::sync::OnceLock::new(),
     })
 }
 

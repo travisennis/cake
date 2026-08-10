@@ -437,8 +437,18 @@ async fn failed_command_stderr_does_not_get_exit_zero_warning() {
 
 #[tokio::test]
 async fn grep_no_match_output_is_disambiguated() {
+    // Run in a hermetic fixture directory containing a Cargo.toml, never the
+    // developer's real checkout.
+    let dir = tempfile::tempdir().expect("fixture temp dir for grep test");
+    std::fs::write(dir.path().join("Cargo.toml"), "[package]\n").expect("write fixture");
     let args = r#"{"command": "grep definitely_missing Cargo.toml"}"#;
-    let result = Box::pin(execute_bash_unsandboxed(args)).await.unwrap();
+    let result = Box::pin(execute_bash_with_judge_in(
+        args,
+        Some(bypassed_judge_context()),
+        dir.path(),
+    ))
+    .await
+    .unwrap();
 
     assert!(
         result.output.starts_with(EMPTY_SEARCH_NO_MATCH_ANNOTATION),
@@ -1349,6 +1359,7 @@ fn judge_context(mock_server: &MockServer) -> std::sync::Arc<JudgeContext> {
             api_key: "test-key".to_string(),
         },
         models: HashMap::new(),
+        client: std::sync::OnceLock::new(),
     })
 }
 
@@ -1457,6 +1468,38 @@ async fn test_judge_allow_runs_ungated() {
         Some("allow")
     );
     assert_eq!(result.compensation_events[0].overridden, None);
+}
+
+#[tokio::test]
+async fn test_judge_verdict_survives_command_timeout() {
+    // A judge `allow` verdict followed by a command timeout must still reach
+    // telemetry: the gate's decision stays observable even when the tool call
+    // fails after the preflight (review F-001).
+    let mock_server = MockServer::start().await;
+    mount_judge_verdict(&mock_server, r#"{"verdict":"allow","message":"Safe"}"#).await;
+
+    let args = r#"{"command": "sleep 5", "timeout": 1}"#;
+    let err = Box::pin(execute_bash_with_judge(
+        args,
+        Some(judge_context(&mock_server)),
+    ))
+    .await
+    .unwrap_err();
+    assert!(
+        err.message.contains("timed out"),
+        "expected a timeout error, got: {err}"
+    );
+    assert_eq!(
+        err.compensation_events.len(),
+        1,
+        "a timeout after an allow verdict must keep the judge verdict event, got: {:?}",
+        err.compensation_events
+    );
+    assert_eq!(
+        err.compensation_events[0].kind,
+        CompensationKind::JudgeVerdict
+    );
+    assert_eq!(err.compensation_events[0].detail.as_deref(), Some("allow"));
 }
 
 #[tokio::test]
