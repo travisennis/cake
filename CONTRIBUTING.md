@@ -39,9 +39,9 @@ Follow the [Auditing Binary Size runbook](docs/runbooks/auditing-binary-size.md)
 
 The crate has no library target. Do not use `cargo test --lib`.
 
-## bash_safety regression cases
+## Command-safety corpus cases
 
-Append one line to `src/clients/tools/bash_safety/corpus/commands.jsonl` to add a `bash_safety` regression case; nothing else changes. `expect` is `blocked`, `warned`, or `allowed`; `note` is optional. The runner checks every case and reports every mismatch.
+Append one line to `src/clients/tools/corpus/commands.jsonl` to add a command-safety regression case; nothing else changes. `expect` is `blocked`, `warned`, or `allowed`; `note` is optional. The judge-driven runner (issue #174) checks these cases.
 
 ## Verification
 

@@ -5,6 +5,8 @@ use crate::clients::tools::ToolContext;
 use crate::clients::tools::sandbox::SandboxPolicy;
 #[cfg(target_os = "macos")]
 use std::sync::Arc;
+use wiremock::matchers::method;
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// Check whether `CAKE_REQUIRE_SANDBOX_TESTS` is set to a truthy value,
 /// indicating that sandbox integration tests must run (and fail if the
@@ -272,19 +274,25 @@ async fn test_streaming_large_output_is_capped() {
     assert!(!result.output.is_empty());
     // Should contain metadata footer
     assert!(result.output.contains("[exit:"));
-    // The read-cap truncation is recorded as a compensation event.
+    // The read-cap truncation is recorded as a compensation event (plus the
+    // judge bypass event from the bypassed judge context used here).
+    let truncations: Vec<_> = result
+        .compensation_events
+        .iter()
+        .filter(|e| e.kind == crate::session_telemetry::CompensationKind::OutputTruncation)
+        .collect();
     assert_eq!(
-        result.compensation_events.len(),
+        truncations.len(),
         1,
-        "read-cap truncation must record one compensation event"
+        "read-cap truncation must record one output_truncation event"
     );
-    assert_eq!(
-        result.compensation_events[0].kind,
-        crate::session_telemetry::CompensationKind::OutputTruncation
-    );
-    assert_eq!(
-        result.compensation_events[0].detail.as_deref(),
-        Some("Bash")
+    assert_eq!(truncations[0].detail.as_deref(), Some("Bash"));
+    assert!(
+        result
+            .compensation_events
+            .iter()
+            .any(|e| e.kind == crate::session_telemetry::CompensationKind::JudgeBypass),
+        "bypassed judge must record a judge_bypass event"
     );
 }
 
@@ -294,7 +302,7 @@ async fn test_streaming_timeout() {
     let args = r#"{"command": "sleep 999", "timeout": 1}"#;
     let result = Box::pin(execute_bash_unsandboxed(args)).await;
     assert!(result.is_err());
-    assert!(result.unwrap_err().contains("timed out"));
+    assert!(result.unwrap_err().message.contains("timed out"));
 }
 
 #[tokio::test]
@@ -309,7 +317,7 @@ async fn test_streaming_closed_streams_does_not_hang() {
         "expected timeout error but got: {result:?}"
     );
     assert!(
-        result.unwrap_err().contains("timed out"),
+        result.unwrap_err().message.contains("timed out"),
         "expected 'timed out' in error"
     );
 }
@@ -346,7 +354,7 @@ async fn test_streaming_timeout_kills_descendants() {
         "expected timeout error but got: {result:?}"
     );
     assert!(
-        result.unwrap_err().contains("timed out"),
+        result.unwrap_err().message.contains("timed out"),
         "expected 'timed out' in error"
     );
 
@@ -429,8 +437,18 @@ async fn failed_command_stderr_does_not_get_exit_zero_warning() {
 
 #[tokio::test]
 async fn grep_no_match_output_is_disambiguated() {
+    // Run in a hermetic fixture directory containing a Cargo.toml, never the
+    // developer's real checkout.
+    let dir = tempfile::tempdir().expect("fixture temp dir for grep test");
+    std::fs::write(dir.path().join("Cargo.toml"), "[package]\n").expect("write fixture");
     let args = r#"{"command": "grep definitely_missing Cargo.toml"}"#;
-    let result = Box::pin(execute_bash_unsandboxed(args)).await.unwrap();
+    let result = Box::pin(execute_bash_with_judge_in(
+        args,
+        Some(bypassed_judge_context()),
+        dir.path(),
+    ))
+    .await
+    .unwrap();
 
     assert!(
         result.output.starts_with(EMPTY_SEARCH_NO_MATCH_ANNOTATION),
@@ -460,10 +478,10 @@ async fn test_sandbox_unavailable_fails_closed() {
     }
 
     let args = r#"{"command": "echo should-not-run"}"#;
-    let result = Box::pin(execute_bash(&ToolContext::from_current_process(), args)).await;
+    let result = Box::pin(execute_bash(&sandbox_context(), args)).await;
     let error = result.expect_err("sandbox initialization failure should fail closed");
     assert!(
-        error.contains("macOS sandbox unavailable"),
+        error.message.contains("macOS sandbox unavailable"),
         "Expected sandbox unavailable error, got: {error}"
     );
 }
@@ -481,7 +499,7 @@ async fn test_sandboxed_command_stdout_does_not_trigger_init_failure() {
     }
 
     let args = r#"{"command": "printf 'sandbox-exec: sandbox_apply file-write* /tmp/test\\n'"}"#;
-    let result = Box::pin(execute_bash(&ToolContext::from_current_process(), args))
+    let result = Box::pin(execute_bash(&sandbox_context(), args))
         .await
         .unwrap();
 
@@ -509,7 +527,7 @@ async fn test_sandbox_blocks_write_outside_cwd() {
     let target = outside.join(format!("cake_sandbox_test_{}", uuid::Uuid::new_v4()));
     let target = target.display();
     let args = format!(r#"{{"command": "touch {target}"}}"#);
-    let result = Box::pin(execute_bash(&ToolContext::from_current_process(), &args))
+    let result = Box::pin(execute_bash(&sandbox_context(), &args))
         .await
         .unwrap();
     assert!(
@@ -528,7 +546,7 @@ async fn test_sandbox_allows_read_in_cwd() {
     }
 
     let args = r#"{"command": "ls Cargo.toml"}"#;
-    let result = Box::pin(execute_bash(&ToolContext::from_current_process(), args))
+    let result = Box::pin(execute_bash(&sandbox_context(), args))
         .await
         .unwrap();
     assert!(
@@ -552,7 +570,7 @@ async fn test_sandbox_blocks_read_outside_cwd() {
     let temp_dir = tempfile::TempDir::new_in(outside).expect("should create test dir outside cwd");
     let outside_dir = temp_dir.path().display();
     let args = format!(r#"{{"command": "ls {outside_dir}"}}"#);
-    let result = Box::pin(execute_bash(&ToolContext::from_current_process(), &args))
+    let result = Box::pin(execute_bash(&sandbox_context(), &args))
         .await
         .unwrap();
     assert!(
@@ -588,7 +606,8 @@ async fn test_sandbox_read_only_file_grant_runs_file_but_denies_sibling() {
 
     // `[sandbox].read_only` paths are loaded into `additional_dirs` by main.rs;
     // mirror that wiring here.
-    let mut context = ToolContext::from_current_process();
+    let mut context =
+        ToolContext::from_current_process().with_judge(Some(bypassed_judge_context()));
     context.additional_dirs = vec![allowed.clone()];
     let context = Arc::new(context);
 
@@ -623,9 +642,18 @@ async fn test_sandbox_read_only_file_grant_runs_file_but_denies_sibling() {
 /// args-level default.
 #[cfg(target_os = "macos")]
 fn context_with_policy(policy: SandboxPolicy) -> Arc<ToolContext> {
-    let mut context = ToolContext::from_current_process();
+    let mut context =
+        ToolContext::from_current_process().with_judge(Some(bypassed_judge_context()));
     context.sandbox_policy = policy;
     Arc::new(context)
+}
+
+/// A sandbox-test context with the judge bypassed. These tests exercise
+/// sandbox execution, not the command-safety gate, so commands must not fail
+/// closed on an absent judge context.
+#[cfg(target_os = "macos")]
+fn sandbox_context() -> Arc<ToolContext> {
+    Arc::new(ToolContext::from_current_process().with_judge(Some(bypassed_judge_context())))
 }
 
 /// Read-only policy denies writes to the project directory.
@@ -867,7 +895,8 @@ async fn test_sandbox_linked_worktree_git_operations() {
     );
 
     // Create a ToolContext with cwd set to the linked worktree
-    let mut context = ToolContext::from_current_process();
+    let mut context =
+        ToolContext::from_current_process().with_judge(Some(bypassed_judge_context()));
     context.cwd = wt_path.clone();
     for temp_dir in &context.temp_dirs {
         let canonical_temp = temp_dir.canonicalize().unwrap_or_else(|_| temp_dir.clone());
@@ -1216,18 +1245,25 @@ async fn binary_output_above_max_records_truncation_event() {
     let args = r#"{"command": "head -c 60000 /dev/zero"}"#;
     let result = Box::pin(execute_bash_unsandboxed(args)).await.unwrap();
     assert!(result.output.contains("[Binary output detected"));
+    // One spill truncation event (plus the judge bypass event from the
+    // bypassed judge context used by this test harness).
+    let truncations: Vec<_> = result
+        .compensation_events
+        .iter()
+        .filter(|e| e.kind == crate::session_telemetry::CompensationKind::OutputTruncation)
+        .collect();
     assert_eq!(
-        result.compensation_events.len(),
+        truncations.len(),
         1,
-        "oversized binary spill must record one compensation event"
+        "oversized binary spill must record one output_truncation event"
     );
-    assert_eq!(
-        result.compensation_events[0].kind,
-        crate::session_telemetry::CompensationKind::OutputTruncation
-    );
-    assert_eq!(
-        result.compensation_events[0].detail.as_deref(),
-        Some("Bash")
+    assert_eq!(truncations[0].detail.as_deref(), Some("Bash"));
+    assert!(
+        result
+            .compensation_events
+            .iter()
+            .any(|e| e.kind == crate::session_telemetry::CompensationKind::JudgeBypass),
+        "bypassed judge must record a judge_bypass event"
     );
 }
 
@@ -1239,8 +1275,12 @@ async fn small_binary_output_records_no_truncation_event() {
     let result = Box::pin(execute_bash_unsandboxed(args)).await.unwrap();
     assert!(result.output.contains("[Binary output detected"));
     assert!(
-        result.compensation_events.is_empty(),
-        "small binary output must not record a truncation event"
+        result
+            .compensation_events
+            .iter()
+            .all(|e| e.kind == crate::session_telemetry::CompensationKind::JudgeBypass),
+        "small binary output must record only the judge bypass event, got: {:?}",
+        result.compensation_events
     );
 }
 
@@ -1288,50 +1328,392 @@ async fn test_streaming_empty_output_with_stderr() {
     assert!(result.output.contains("[exit:0 |"));
 }
 
-#[tokio::test]
-async fn test_streaming_with_soft_warning() {
-    // A command that triggers a soft safety warning (rg -rn footgun check)
-    // should have the warning prepended to the output.
-    let args = r#"{"command": "rg -rn some_pattern ."}"#;
-    let result = Box::pin(execute_bash_unsandboxed(args)).await;
-    // The safety check allows execution (soft warning), but rg itself may
-    // not be installed or may fail. The key assertion is that the warning
-    // text appears in the output.
-    if let Ok(res) = result {
-        assert!(
-            res.output.contains("rg -rn sets the replacement string"),
-            "Soft warning should be prepended. Output: {}",
-            res.output
-        );
-        assert!(res.output.contains("[exit:"));
-    } else {
-        // If rg is missing the command may fail at the shell level, but
-        // the safety check runs before execution, so we should never get
-        // an Err from validate_command_safety.
-        panic!("rg -rn should not be hard-blocked, got error");
-    }
+// =============================================================================
+// Judge preflight (Milestone 5): warn prepends, block and judge failure block.
+// =============================================================================
+
+/// Build a judge context whose judge client points at a wiremock server.
+fn judge_context(mock_server: &MockServer) -> std::sync::Arc<JudgeContext> {
+    use crate::config::model::{ApiType, ModelConfig};
+    use std::collections::HashMap;
+
+    let model_config = ModelConfig {
+        model: "judge/model".to_string(),
+        api_type: ApiType::ChatCompletions,
+        base_url: mock_server.uri(),
+        api_key_env: "JUDGE_TEST_KEY".to_string(),
+        provider: None,
+        provider_headers: None,
+        temperature: Some(0.0),
+        top_p: None,
+        max_output_tokens: Some(128),
+        reasoning_effort: None,
+        reasoning_summary: None,
+        reasoning_max_tokens: None,
+        providers: vec![],
+    };
+    std::sync::Arc::new(JudgeContext {
+        settings: crate::config::settings::JudgeSettings::default(),
+        agent_model: crate::config::model::ResolvedModelConfig {
+            model_config,
+            api_key: "test-key".to_string(),
+        },
+        models: HashMap::new(),
+        client: std::sync::OnceLock::new(),
+    })
+}
+
+/// Chat-completions response carrying one judge verdict for a mock server.
+fn judge_chat_response(verdict_json: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": "chatcmpl-judge",
+        "choices": [{
+            "index": 0,
+            "message": { "role": "assistant", "content": verdict_json },
+            "finish_reason": "stop"
+        }]
+    })
+}
+
+/// Mount a mock judge returning one canned verdict for every request.
+async fn mount_judge_verdict(mock_server: &MockServer, verdict_json: &str) {
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(judge_chat_response(verdict_json)))
+        .mount(mock_server)
+        .await;
 }
 
 #[tokio::test]
-async fn test_streaming_with_soft_warning_and_empty_result() {
-    // A command with a soft warning that produces no output should show
-    // only the warning text (no extra formatting).
-    let args = r#"{"command": "rg -rn some_pattern /dev/null 2>/dev/null; true"}"#;
-    let result = Box::pin(execute_bash_unsandboxed(args)).await;
-    if let Ok(res) = result {
-        assert!(
-            res.output.contains("rg -rn sets the replacement string"),
-            "Soft warning should appear. Output: {}",
-            res.output
-        );
-        assert!(
-            res.output.contains("[exit:0 |"),
-            "Output should contain footer: {}",
-            res.output
-        );
-    } else {
-        panic!("rg -rn should not be hard-blocked, got error");
-    }
+async fn test_judge_warn_prepends_notice() {
+    // A `warn` verdict runs the command and prepends the judge's message as a
+    // NOTICE, mirroring the old soft-warning behavior without reclassification.
+    let mock_server = MockServer::start().await;
+    mount_judge_verdict(
+        &mock_server,
+        r#"{"verdict":"warn","code":"rg-replace-footgun","message":"Use -r with an explicit replacement."}"#,
+    )
+    .await;
+
+    let args = r#"{"command": "echo judge-warn-test"}"#;
+    let result = Box::pin(execute_bash_with_judge(
+        args,
+        Some(judge_context(&mock_server)),
+    ))
+    .await
+    .unwrap();
+    assert!(
+        result
+            .output
+            .contains("NOTICE: Use -r with an explicit replacement."),
+        "warn verdict should prepend NOTICE, got: {}",
+        result.output
+    );
+    assert!(result.output.contains("judge-warn-test"));
+    assert!(result.output.contains("[exit:0 |"));
+    // The warn verdict is recorded for telemetry with its code and latency.
+    assert_eq!(
+        result.compensation_events.len(),
+        1,
+        "warn verdict must record one judge verdict event"
+    );
+    assert_eq!(
+        result.compensation_events[0].kind,
+        CompensationKind::JudgeVerdict
+    );
+    assert_eq!(
+        result.compensation_events[0].detail.as_deref(),
+        Some("warn:rg-replace-footgun")
+    );
+    assert!(
+        result.compensation_events[0].latency_ms.is_some(),
+        "judge verdict event must carry the call latency"
+    );
+}
+
+#[tokio::test]
+async fn test_judge_allow_runs_ungated() {
+    // An `allow` verdict runs the command with no annotation.
+    let mock_server = MockServer::start().await;
+    mount_judge_verdict(&mock_server, r#"{"verdict":"allow","message":"Safe"}"#).await;
+
+    let args = r#"{"command": "echo judge-allow-test"}"#;
+    let result = Box::pin(execute_bash_with_judge(
+        args,
+        Some(judge_context(&mock_server)),
+    ))
+    .await
+    .unwrap();
+    assert!(
+        result.output.contains("judge-allow-test"),
+        "allow verdict should run the command, got: {}",
+        result.output
+    );
+    assert!(
+        !result.output.contains("NOTICE:"),
+        "allow verdict should not annotate output, got: {}",
+        result.output
+    );
+    // The allow verdict is still recorded for telemetry.
+    assert_eq!(
+        result.compensation_events.len(),
+        1,
+        "allow verdict must record one judge verdict event"
+    );
+    assert_eq!(
+        result.compensation_events[0].kind,
+        CompensationKind::JudgeVerdict
+    );
+    assert_eq!(
+        result.compensation_events[0].detail.as_deref(),
+        Some("allow")
+    );
+    assert_eq!(result.compensation_events[0].overridden, None);
+}
+
+#[tokio::test]
+async fn test_judge_verdict_survives_command_timeout() {
+    // A judge `allow` verdict followed by a command timeout must still reach
+    // telemetry: the gate's decision stays observable even when the tool call
+    // fails after the preflight (review F-001).
+    let mock_server = MockServer::start().await;
+    mount_judge_verdict(&mock_server, r#"{"verdict":"allow","message":"Safe"}"#).await;
+
+    let args = r#"{"command": "sleep 5", "timeout": 1}"#;
+    let err = Box::pin(execute_bash_with_judge(
+        args,
+        Some(judge_context(&mock_server)),
+    ))
+    .await
+    .unwrap_err();
+    assert!(
+        err.message.contains("timed out"),
+        "expected a timeout error, got: {err}"
+    );
+    assert_eq!(
+        err.compensation_events.len(),
+        1,
+        "a timeout after an allow verdict must keep the judge verdict event, got: {:?}",
+        err.compensation_events
+    );
+    assert_eq!(
+        err.compensation_events[0].kind,
+        CompensationKind::JudgeVerdict
+    );
+    assert_eq!(err.compensation_events[0].detail.as_deref(), Some("allow"));
+}
+
+#[tokio::test]
+async fn test_judge_block_prevents_execution() {
+    // A `block` verdict prevents spawn and surfaces the judge's reason as the
+    // tool error.
+    let mock_server = MockServer::start().await;
+    mount_judge_verdict(
+        &mock_server,
+        r#"{"verdict":"block","code":"git-force-push","message":"Prefer push --force-with-lease."}"#,
+    )
+    .await;
+
+    let args = r#"{"command": "git push --force"}"#;
+    let err = Box::pin(execute_bash_with_judge(
+        args,
+        Some(judge_context(&mock_server)),
+    ))
+    .await
+    .unwrap_err();
+    assert!(
+        err.message.contains("BLOCKED"),
+        "block verdict must block, got: {err}"
+    );
+    assert!(
+        err.message.contains("Prefer push --force-with-lease."),
+        "block must carry the judge's reason, got: {err}"
+    );
+    // The block verdict reaches telemetry even though the tool call failed.
+    assert_eq!(
+        err.compensation_events.len(),
+        1,
+        "block verdict must record one judge verdict event on the error path"
+    );
+    assert_eq!(
+        err.compensation_events[0].kind,
+        CompensationKind::JudgeVerdict
+    );
+    assert_eq!(
+        err.compensation_events[0].detail.as_deref(),
+        Some("block:git-force-push")
+    );
+    assert_eq!(err.compensation_events[0].overridden, None);
+}
+
+#[tokio::test]
+async fn test_judge_missing_context_fails_closed() {
+    // No judge context means the run has no command-safety gate; the command
+    // must not run ungated.
+    let args = r#"{"command": "echo hi"}"#;
+    let err = Box::pin(execute_bash_with_judge(args, None))
+        .await
+        .unwrap_err();
+    assert!(
+        err.message.contains("BLOCKED"),
+        "missing judge context must fail closed, got: {err}"
+    );
+    assert!(err.message.contains("not configured"));
+    // The fail-closed denial is recorded with its failure class.
+    assert_eq!(
+        err.compensation_events.len(),
+        1,
+        "missing context must record one fail-closed event"
+    );
+    assert_eq!(
+        err.compensation_events[0].kind,
+        CompensationKind::JudgeFailClosed
+    );
+    assert_eq!(
+        err.compensation_events[0].detail.as_deref(),
+        Some("missing_context")
+    );
+}
+
+#[tokio::test]
+async fn test_judge_unreachable_fails_closed() {
+    // A judge transport failure (here: HTTP 500) blocks the command with the
+    // fail-closed message instead of running it ungated.
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&mock_server)
+        .await;
+
+    let args = r#"{"command": "echo hi"}"#;
+    let err = Box::pin(execute_bash_with_judge(
+        args,
+        Some(judge_context(&mock_server)),
+    ))
+    .await
+    .unwrap_err();
+    assert!(
+        err.message.contains("BLOCKED"),
+        "unreachable judge must fail closed, got: {err}"
+    );
+    assert!(err.message.contains("was unavailable"));
+    // The transport failure is recorded as a fail-closed denial.
+    assert_eq!(
+        err.compensation_events.len(),
+        1,
+        "unreachable judge must record one fail-closed event"
+    );
+    assert_eq!(
+        err.compensation_events[0].kind,
+        CompensationKind::JudgeFailClosed
+    );
+    assert_eq!(
+        err.compensation_events[0].detail.as_deref(),
+        Some("transport")
+    );
+}
+
+#[tokio::test]
+async fn test_judge_bypass_records_bypass_event() {
+    // A bypassed judge records one judge_bypass event per call, so the
+    // escape hatch cannot be used silently (ADR-018 decision log).
+    let args = r#"{"command": "echo bypass-test"}"#;
+    let result = Box::pin(execute_bash_with_judge(
+        args,
+        Some(bypassed_judge_context()),
+    ))
+    .await
+    .unwrap();
+    assert!(result.output.contains("bypass-test"));
+    assert_eq!(
+        result.compensation_events.len(),
+        1,
+        "bypassed call must record one judge_bypass event"
+    );
+    assert_eq!(
+        result.compensation_events[0].kind,
+        CompensationKind::JudgeBypass
+    );
+    assert_eq!(result.compensation_events[0].detail, None);
+}
+
+#[tokio::test]
+async fn test_judge_allowlist_override_records_verdict_and_flag() {
+    // An allowlisted command is still judged; a block verdict is overridden
+    // and the original verdict plus the override flag reach telemetry. The
+    // allowlisted command is deliberately harmless (a bare echo) so the test
+    // never executes anything destructive.
+    let mock_server = MockServer::start().await;
+    mount_judge_verdict(
+        &mock_server,
+        r#"{"verdict":"block","code":"destructive-rm","message":"Refusing."}"#,
+    )
+    .await;
+
+    let mut context = judge_context(&mock_server);
+    std::sync::Arc::get_mut(&mut context)
+        .unwrap()
+        .settings
+        .allowlist = vec!["echo allowlisted".to_string()];
+
+    let args = r#"{"command": "echo allowlisted"}"#;
+    let result = Box::pin(execute_bash_with_judge(args, Some(context)))
+        .await
+        .unwrap();
+    assert!(
+        !result.output.contains("BLOCKED"),
+        "an allowlisted block must run unannotated, got: {}",
+        result.output
+    );
+    assert_eq!(
+        result.compensation_events.len(),
+        1,
+        "overridden block must record one judge verdict event"
+    );
+    assert_eq!(
+        result.compensation_events[0].kind,
+        CompensationKind::JudgeVerdict
+    );
+    assert_eq!(
+        result.compensation_events[0].detail.as_deref(),
+        Some("block:destructive-rm")
+    );
+    assert_eq!(result.compensation_events[0].overridden, Some(true));
+}
+
+#[tokio::test]
+async fn test_judge_message_is_sanitized_before_entering_agent_loop() {
+    // A judge message is model-generated text entering the agent loop:
+    // control characters (here ANSI escapes) are stripped and the length is
+    // capped so a compromised or confused judge cannot inject terminal
+    // sequences or unbounded text into the model-visible output. The `[31m`
+    // marker text survives — only the ESC byte is a control character.
+    let mock_server = MockServer::start().await;
+    let payload = format!(
+        r#"{{"verdict":"warn","code":"rg-replace-footgun","message":"\u001b[31mANSI\u001b[0m{}"}}"#,
+        "x".repeat(2000)
+    );
+    mount_judge_verdict(&mock_server, &payload).await;
+
+    let args = r#"{"command": "echo judge-sanitize-test"}"#;
+    let result = Box::pin(execute_bash_with_judge(
+        args,
+        Some(judge_context(&mock_server)),
+    ))
+    .await
+    .unwrap();
+    assert!(
+        result.output.contains("NOTICE: [31mANSI[0m"),
+        "escape bytes must be stripped, got: {}",
+        result.output
+    );
+    assert!(
+        !result.output.contains('\u{1b}'),
+        "escape characters must not reach the agent loop"
+    );
+    assert!(
+        result.output.matches('x').count() <= 1000,
+        "judge message must be length-capped"
+    );
 }
 
 /// Produce large stderr output after stdout closes, hitting `BASH_READ_CAP`
@@ -1354,9 +1736,9 @@ async fn test_streaming_stderr_drain_after_stdout_close_hits_cap() {
             );
         },
         Err(e)
-            if e.contains("command not found")
-                || e.contains("python3: cannot open")
-                || e.contains("python3: not found") =>
+            if e.message.contains("command not found")
+                || e.message.contains("python3: cannot open")
+                || e.message.contains("python3: not found") =>
         {
             // python3 not available on this system — skip
             eprintln!("skipping: python3 not available");
@@ -1385,9 +1767,9 @@ async fn test_streaming_stdout_drain_after_stderr_close_hits_cap() {
             );
         },
         Err(e)
-            if e.contains("command not found")
-                || e.contains("python3: cannot open")
-                || e.contains("python3: not found") =>
+            if e.message.contains("command not found")
+                || e.message.contains("python3: cannot open")
+                || e.message.contains("python3: not found") =>
         {
             // python3 not available on this system — skip
             eprintln!("skipping: python3 not available");

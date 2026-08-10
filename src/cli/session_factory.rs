@@ -11,7 +11,9 @@ use std::sync::Arc;
 use tracing::info;
 
 use crate::cli::run_mode::{RunMode, SessionStorage};
+use crate::clients::judge::JudgeContext;
 use crate::clients::{Agent, ToolContext};
+use crate::config::settings::JudgeSettings;
 use crate::config::skills::Skill;
 use crate::config::toolbox::ToolboxTool;
 use crate::config::{
@@ -197,6 +199,7 @@ impl crate::CodingAssistant {
         toolbox_tools: &[ToolboxTool],
         task_id: uuid::Uuid,
         loaded_system_prompt: Option<&str>,
+        judge: &JudgeSettings,
     ) -> anyhow::Result<RunSession> {
         let cli_system_prompt = self.system_prompt.as_deref().map(std::path::Path::new);
         let settings_system_prompt = loaded_system_prompt.map(std::path::Path::new);
@@ -231,12 +234,13 @@ impl crate::CodingAssistant {
                     default_model,
                     restored.model.as_deref(),
                 )?;
+                let tool_context = attach_judge(tool_context, &resolved, judge, models);
                 Self::restored_client_and_session(
                     restored,
                     resolved,
                     &initial_messages,
                     &locs,
-                    Arc::clone(tool_context),
+                    tool_context,
                     toolbox_tools.to_vec(),
                     task_id,
                 )
@@ -252,12 +256,13 @@ impl crate::CodingAssistant {
                     default_model,
                     restored.model.as_deref(),
                 )?;
+                let tool_context = attach_judge(tool_context, &resolved, judge, models);
                 Self::restored_client_and_session(
                     restored,
                     resolved,
                     &initial_messages,
                     &locs,
-                    Arc::clone(tool_context),
+                    tool_context,
                     toolbox_tools.to_vec(),
                     task_id,
                 )
@@ -282,13 +287,14 @@ impl crate::CodingAssistant {
                     default_model,
                     restored.model.as_deref(),
                 )?;
+                let tool_context = attach_judge(tool_context, &resolved, judge, models);
                 Self::forked_client_and_session(
                     &restored,
                     resolved,
                     current_dir,
                     &initial_messages,
                     locs,
-                    Arc::clone(tool_context),
+                    tool_context,
                     toolbox_tools.to_vec(),
                     task_id,
                 )
@@ -298,15 +304,115 @@ impl crate::CodingAssistant {
                     self.resolve_model_config(models, default_model)?,
                 )?;
                 Ok(Self::new_client_and_session(
-                    resolved,
+                    resolved.clone(),
                     current_dir,
                     &initial_messages,
                     locs,
-                    Arc::clone(tool_context),
+                    attach_judge(tool_context, &resolved, judge, models),
                     toolbox_tools.to_vec(),
                     task_id,
                 ))
             },
         }
+    }
+}
+
+/// Attach the LLM-judge context to the tool context shared by the Bash
+/// preflight.
+///
+/// The judge defaults to the agent's resolved model; a `[tools.bash.judge]
+/// model` override is resolved lazily at call time (after the bypass check) so
+/// a broken judge config cannot defeat the emergency bypass.
+fn attach_judge(
+    tool_context: &Arc<ToolContext>,
+    agent_model: &ResolvedModelConfig,
+    judge: &JudgeSettings,
+    models: &HashMap<String, ModelDefinition>,
+) -> Arc<ToolContext> {
+    let context = JudgeContext {
+        settings: judge.clone(),
+        agent_model: agent_model.clone(),
+        models: models.clone(),
+        client: std::sync::OnceLock::new(),
+    };
+    Arc::new((**tool_context).clone().with_judge(Some(Arc::new(context))))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::SandboxPolicy;
+    use crate::config::settings::ModelDefinition;
+    use crate::config::skills::SkillCatalog;
+    use clap::Parser;
+
+    /// A session built through `build_client_and_session` must carry the
+    /// command-safety judge context on the agent's tool context.
+    ///
+    /// The e2e session-mode tests (`tests/session_modes.rs`) never invoke
+    /// Bash, so they cannot observe this wiring; this unit test closes that
+    /// gap (review F-003): without `attach_judge`, every Bash call in a real
+    /// session fails closed.
+    #[test]
+    fn new_session_carries_judge_on_tool_context() {
+        temp_env::with_var("SESSION_FACTORY_TEST_KEY", Some("test-key"), || {
+            let cli = crate::CodingAssistant::parse_from(["cake"]);
+            let data_dir_dir = tempfile::tempdir().expect("temp data dir");
+            let data_dir = DataDir::new_in_dir(data_dir_dir.path());
+            let working_dir = tempfile::tempdir().expect("temp working dir");
+            let config_dir = tempfile::tempdir().expect("temp config dir");
+            let models = HashMap::from([(
+                "test".to_string(),
+                ModelDefinition {
+                    name: "test".to_string(),
+                    model: "glm-5.1".to_string(),
+                    base_url: "https://example.invalid/v1".to_string(),
+                    api_key_env: "SESSION_FACTORY_TEST_KEY".to_string(),
+                    provider: None,
+                    provider_headers: None,
+                    api_type: crate::config::model::ApiType::Responses,
+                    temperature: None,
+                    top_p: None,
+                    max_output_tokens: None,
+                    reasoning_effort: None,
+                    reasoning_summary: None,
+                    reasoning_max_tokens: None,
+                    providers: vec![],
+                },
+            )]);
+            let tool_context = Arc::new(ToolContext::new(
+                working_dir.path().to_path_buf(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                SandboxPolicy::WorkspaceWrite,
+            ));
+
+            let run_session = cli
+                .build_client_and_session(
+                    &RunMode::NewSession,
+                    &data_dir,
+                    working_dir.path().to_path_buf(),
+                    config_dir.path(),
+                    &[],
+                    &models,
+                    Some("test"),
+                    &SkillCatalog {
+                        skills: Vec::new(),
+                        diagnostics: Vec::new(),
+                    },
+                    &tool_context,
+                    &[],
+                    uuid::Uuid::new_v4(),
+                    None,
+                    &JudgeSettings::default(),
+                )
+                .expect("session construction should succeed");
+
+            assert!(
+                run_session.agent.tool_context().judge.is_some(),
+                "the run's tool context must carry the command-safety judge"
+            );
+        });
     }
 }

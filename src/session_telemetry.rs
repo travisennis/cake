@@ -146,11 +146,16 @@ pub enum CompensationKind {
     /// `detail` names the tool whose arguments were repaired.
     JsonRepair,
     /// LLM judge verdict on a Bash command. `detail` is `block:<code>`,
-    /// `warn:<code>`, or `allow`; `latency_ms` is the judge call duration.
+    /// `warn:<code>`, or `allow`; `latency_ms` is the judge call duration;
+    /// `overridden` is set when an allowlist entry overrode the verdict.
     JudgeVerdict,
     /// The judge failed (timeout, transport, malformed, refusal) and the
     /// command was blocked. `detail` names the failure class.
     JudgeFailClosed,
+    /// The judge was disabled for the call (emergency bypass: `CAKE_JUDGE=off`
+    /// or `enabled = false`), so the command ran without a judge verdict.
+    /// Emitted per bypassed call so the escape hatch cannot be used silently.
+    JudgeBypass,
     /// A second same-path mutation reordered into serial execution.
     /// `detail` is the canonical target path.
     SamePathSerialization,
@@ -174,6 +179,9 @@ pub struct CompensationEventTelemetry {
     /// Judge verdict call duration, when the event is a judge verdict.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub latency_ms: Option<u64>,
+    /// Set on a judge verdict event when an allowlist entry overrode a block.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overridden: Option<bool>,
 }
 
 impl CompensationEventTelemetry {
@@ -182,42 +190,48 @@ impl CompensationEventTelemetry {
             kind,
             detail,
             latency_ms: None,
+            overridden: None,
         }
     }
 
     /// Build a judge verdict event: decision and verdict code (block and warn
-    /// verdicts carry a code; allow omits it), plus the judge call latency.
-    /// Metadata only — never the command or reason text.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "recorded by the judge preflight in ExecPlan Milestone 5"
-        )
-    )]
-    pub fn judge_verdict(decision: &str, code: Option<&str>, latency_ms: u64) -> Self {
+    /// verdicts carry a code; allow omits it), the judge call latency, and
+    /// whether an allowlist entry overrode the verdict. Metadata only — never
+    /// the command or reason text.
+    pub fn judge_verdict(
+        decision: &str,
+        code: Option<&str>,
+        latency_ms: u64,
+        overridden: bool,
+    ) -> Self {
         let detail = code.map_or_else(|| decision.to_string(), |code| format!("{decision}:{code}"));
         Self {
             kind: CompensationKind::JudgeVerdict,
             detail: Some(detail),
             latency_ms: Some(latency_ms),
+            overridden: overridden.then_some(true),
         }
     }
 
     /// Build a fail-closed judge event: the judge error class that blocked
     /// the command instead of a verdict.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "recorded by the judge preflight in ExecPlan Milestone 5"
-        )
-    )]
     pub fn judge_fail_closed(error_class: &str) -> Self {
         Self {
             kind: CompensationKind::JudgeFailClosed,
             detail: Some(error_class.to_string()),
             latency_ms: None,
+            overridden: None,
+        }
+    }
+
+    /// Build a judge-bypass event: the judge was disabled for this call, so
+    /// the command ran without a verdict. One event per bypassed call.
+    pub const fn judge_bypass() -> Self {
+        Self {
+            kind: CompensationKind::JudgeBypass,
+            detail: None,
+            latency_ms: None,
+            overridden: None,
         }
     }
 }
@@ -400,6 +414,7 @@ mod tests {
             (CompensationKind::JsonRepair, "json_repair"),
             (CompensationKind::JudgeVerdict, "judge_verdict"),
             (CompensationKind::JudgeFailClosed, "judge_fail_closed"),
+            (CompensationKind::JudgeBypass, "judge_bypass"),
             (
                 CompensationKind::SamePathSerialization,
                 "same_path_serialization",
@@ -441,20 +456,31 @@ mod tests {
 
     #[test]
     fn judge_verdict_event_carries_decision_code_and_latency() {
-        let event = CompensationEventTelemetry::judge_verdict("block", Some("rm-rf"), 42);
+        let event = CompensationEventTelemetry::judge_verdict("block", Some("rm-rf"), 42, false);
         let value = serde_json::to_value(event).unwrap();
         assert_eq!(value["kind"], "judge_verdict");
         assert_eq!(value["detail"], "block:rm-rf");
         assert_eq!(value["latency_ms"], 42);
+        assert!(value.get("overridden").is_none());
 
-        let allow = CompensationEventTelemetry::judge_verdict("allow", None, 7);
+        let allow = CompensationEventTelemetry::judge_verdict("allow", None, 7, false);
         let value = serde_json::to_value(allow).unwrap();
         assert_eq!(value["detail"], "allow");
+
+        let overridden = CompensationEventTelemetry::judge_verdict("block", Some("rm-rf"), 9, true);
+        let value = serde_json::to_value(overridden).unwrap();
+        assert_eq!(value["overridden"], true);
 
         let fail_closed = CompensationEventTelemetry::judge_fail_closed("timeout");
         let value = serde_json::to_value(fail_closed).unwrap();
         assert_eq!(value["kind"], "judge_fail_closed");
         assert_eq!(value["detail"], "timeout");
+        assert!(value.get("latency_ms").is_none());
+
+        let bypass = CompensationEventTelemetry::judge_bypass();
+        let value = serde_json::to_value(bypass).unwrap();
+        assert_eq!(value["kind"], "judge_bypass");
+        assert!(value.get("detail").is_none());
         assert!(value.get("latency_ms").is_none());
     }
 

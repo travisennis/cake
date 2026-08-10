@@ -327,7 +327,7 @@ impl Agent {
                 let hook_result = result
                     .as_ref()
                     .map(|result| result.output.clone())
-                    .map_err(std::clone::Clone::clone);
+                    .map_err(|error| error.message.clone());
 
                 let post_context = post_tool_context(
                     self.hook_runner.as_ref(),
@@ -339,13 +339,19 @@ impl Agent {
                 .await;
 
                 let was_error = result.is_err();
-                let mut compensation_events = Vec::new();
+                let mut compensation_events;
                 let mut output = match result {
                     Ok(result) => {
                         compensation_events = result.compensation_events;
                         result.output
                     },
-                    Err(error) => format!("Error: {error}"),
+                    Err(error) => {
+                        // Tool errors carry the events observed while the tool
+                        // failed (e.g. a judge block verdict or fail-closed
+                        // denial), so they still reach session telemetry.
+                        compensation_events = error.compensation_events;
+                        format!("Error: {}", error.message)
+                    },
                 };
                 // Classify argument-driven compensations centrally: the
                 // repair pass and Edit parse are the source of truth, and the

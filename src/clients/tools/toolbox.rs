@@ -17,7 +17,7 @@ use tokio::process::Command;
 use tokio::time::{Duration, timeout};
 use tracing::warn;
 
-use crate::clients::tools::{Tool, ToolEntry, ToolResult, repair_json_args};
+use crate::clients::tools::{Tool, ToolEntry, ToolError, ToolResult, repair_json_args};
 use crate::config::toolbox::{
     BoundedStreams, ToolboxFormat, ToolboxProcessGuard, ToolboxTool, place_in_own_process_group,
     read_streams_bounded, validate_text_argument_name,
@@ -63,7 +63,7 @@ async fn execute_toolbox_tool(
     session_id: &str,
     cwd: &std::path::Path,
     arguments: &str,
-) -> Result<ToolResult, String> {
+) -> Result<ToolResult, ToolError> {
     let stdin_payload = prepare_stdin_payload(tool.format, &tool.registered_name, arguments)?;
 
     let mut command = Command::new(&tool.path);
@@ -158,7 +158,7 @@ fn finish_toolbox_result(
     tool_name: &str,
     streams: &BoundedStreams,
     status: Option<std::process::ExitStatus>,
-) -> Result<ToolResult, String> {
+) -> Result<ToolResult, ToolError> {
     let stderr = String::from_utf8_lossy(&streams.stderr);
     if !stderr.trim().is_empty() {
         // Tool diagnostics go to cake's log file, not the model (the
@@ -180,9 +180,9 @@ fn finish_toolbox_result(
             stderr
         };
         let detail: String = detail.trim().chars().take(MAX_STDERR_IN_ERROR).collect();
-        return Err(format!(
+        return Err(ToolError::new(format!(
             "Toolbox tool '{tool_name}' exited with {status}: {detail}"
-        ));
+        )));
     }
 
     // A capped tool was killed after partial output; that is an output

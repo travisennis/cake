@@ -59,7 +59,7 @@ Relative `system_prompt`, `skills.path`, `directories`, and `[sandbox]` values r
 
 ## Bash tool settings
 
-`[tools.bash]` configures the Bash tool. The `[tools.bash.judge]` table holds settings for the LLM command-safety judge. The judge is reserved for the Bash preflight wiring and is not yet active; absent keys preserve current behavior.
+`[tools.bash]` configures the Bash tool. The `[tools.bash.judge]` table holds settings for the LLM command-safety judge, which evaluates every Bash command before it runs and is the command-safety gate above the OS sandbox. The judge is default-on and fail-closed: an unavailable judge (unresolvable model, rubric read failure, timeout, transport error, or malformed verdict) blocks the command rather than running it ungated. A `block` verdict prevents the command from running; a `warn` verdict runs it with the judge's guidance prepended to the output. `enabled = false` or `CAKE_JUDGE=off` disables the judge entirely for every command.
 
 ```toml
 [tools.bash.judge]
@@ -70,7 +70,7 @@ enabled = true      # default true; false is the emergency bypass
 allowlist = ["git status"]  # exact raw commands whose blocks are overridden
 ```
 
-- `model`: optional `[[models]]` name for the judge's model, in the same vocabulary as `default_model` and `--model`. The name indexes a fully configured `[[models]]` entry, so the judge uses that entry's provider, base URL, API key, temperature, reasoning, and other fields. When unset, the judge uses the agent's configured model. An unknown name fails at load time, unless the judge is bypassed (`enabled = false` or `CAKE_JUDGE=off`), in which case the unused model config is inert.
+- `model`: optional `[[models]]` name for the judge's model, in the same vocabulary as `default_model` and `--model`. The name indexes a fully configured `[[models]]` entry, so the judge uses that entry's provider, base URL, API key, temperature, reasoning, and other fields. When unset, the judge uses the agent's configured model. An unknown name fails at load time, unless the judge is bypassed (`enabled = false` or `CAKE_JUDGE=off`), in which case the unused model config is inert. Every Bash command's text is transmitted to the judge's provider for evaluation; with the default it is the same provider the conversation already uses, and setting a different `model` sends command text to a provider the conversation never touches. The judge's request carries no conversation history.
 - `timeout_secs`: bounded judge call timeout in seconds. Defaults to 30; values below 1 are raised to 1.
 - `rubric_file`: optional path to a user rubric file whose text is appended to the embedded default rubric as additional judge guidance (extra always-block classes, relaxations phrased as guidance). Relative paths resolve from the invocation working directory. Relaxations are advisory to the judge, not hard overrides; the allowlist is the only hard override.
 - `enabled`: emergency bypass. `false` disables the judge for every command, equivalent to the `CAKE_JUDGE=off` environment variable; the environment variable wins when both are set. Off by default means the judge is enabled, and there are no allowlist entries in shipped defaults.

@@ -132,7 +132,8 @@ async fn judge_model_override_uses_named_model_full_config() {
 
     // A named `[[models]]` entry's full configuration, resolved the same way
     // `default_model` resolves a name.
-    let named = crate::config::model::ModelConfig {
+    let definition = crate::config::settings::ModelDefinition {
+        name: "judge-model-v2".to_string(),
         model: "judge-model-v2".to_string(),
         api_type: crate::config::model::ApiType::ChatCompletions,
         base_url: mock_server.uri(),
@@ -147,13 +148,20 @@ async fn judge_model_override_uses_named_model_full_config() {
         reasoning_max_tokens: None,
         providers: vec![],
     };
+    let settings = crate::config::settings::JudgeSettings {
+        model: Some("judge-model-v2".to_string()),
+        ..crate::config::settings::JudgeSettings::default()
+    };
+    let models = std::collections::HashMap::from([("judge-model-v2".to_string(), definition)]);
 
     // The override resolves the named model's own API key from its env var.
-    let client = temp_env::with_var("JUDGE_TEST_KEY", Some("test-key"), || {
-        judge_client(&mock_server).with_model_override(Some(named))
+    let resolved = temp_env::with_var("JUDGE_TEST_KEY", Some("test-key"), || {
+        resolve_judge_client_config(&settings, &test_config(mock_server.uri()), &models)
     })
     .unwrap();
-    assert_eq!(client.model_name(), "judge-model-v2");
+    assert_eq!(resolved.model_config.model, "judge-model-v2");
+
+    let client = JudgeClient::new(resolved, Duration::from_secs(5));
     client.judge(request("git status", None)).await.unwrap();
 
     let requests = mock_server.received_requests().await.unwrap();

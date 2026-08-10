@@ -30,6 +30,7 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 
+use crate::clients::judge::JudgeContext;
 use crate::session_telemetry::{CompensationEventTelemetry, CompensationKind};
 
 mod sandbox;
@@ -71,7 +72,7 @@ fn compute_temp_directories() -> Vec<PathBuf> {
 }
 
 /// Directory context used by tool execution and sandbox construction.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct ToolContext {
     pub cwd: PathBuf,
     pub temp_dirs: Vec<PathBuf>,
@@ -80,6 +81,10 @@ pub struct ToolContext {
     pub settings_dirs: Vec<PathBuf>,
     /// Resolved sandbox policy applied to model-generated shell commands.
     pub sandbox_policy: SandboxPolicy,
+    /// LLM-judge command-safety context for the Bash preflight. `None` when
+    /// the run has no judge configured; the Bash tool fails closed on an
+    /// absent context rather than running a command ungated.
+    pub judge: Option<Arc<JudgeContext>>,
 }
 
 impl ToolContext {
@@ -103,6 +108,12 @@ impl ToolContext {
         context
     }
 
+    /// Attach the LLM-judge command-safety context used by the Bash preflight.
+    pub fn with_judge(mut self, judge: Option<Arc<JudgeContext>>) -> Self {
+        self.judge = judge;
+        self
+    }
+
     /// Build a tool context with explicitly supplied temp directories.
     ///
     /// This keeps construction testable without depending on process-global
@@ -122,6 +133,7 @@ impl ToolContext {
             skill_dirs,
             settings_dirs,
             sandbox_policy: SandboxPolicy::WorkspaceWrite,
+            judge: None,
         }
     }
 
@@ -136,6 +148,7 @@ impl ToolContext {
             skill_dirs: Vec::new(),
             settings_dirs: Vec::new(),
             sandbox_policy: SandboxPolicy::WorkspaceWrite,
+            judge: None,
         }
     }
 }
@@ -160,7 +173,6 @@ pub fn get_settings_dirs(context: &ToolContext) -> &[PathBuf] {
 // =============================================================================
 
 mod bash;
-mod bash_safety;
 mod edit;
 mod json_repair;
 mod read;
@@ -592,7 +604,47 @@ pub struct ToolResult {
     pub compensation_events: Vec<CompensationEventTelemetry>,
 }
 
-type ToolFuture = Pin<Box<dyn Future<Output = Result<ToolResult, String>> + Send>>;
+/// Error from executing a tool.
+///
+/// Carries the model-visible message plus any model-compensation events
+/// observed while the tool failed (for example a judge `block` verdict or a
+/// fail-closed denial), so they still reach session telemetry on the error
+/// path instead of being dropped.
+#[derive(Debug, Clone)]
+pub struct ToolError {
+    pub message: String,
+    pub compensation_events: Vec<CompensationEventTelemetry>,
+}
+
+impl ToolError {
+    /// Build an error with no compensation events (the common case).
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            compensation_events: Vec::new(),
+        }
+    }
+}
+
+impl std::fmt::Display for ToolError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl From<String> for ToolError {
+    fn from(message: String) -> Self {
+        Self::new(message)
+    }
+}
+
+impl From<&str> for ToolError {
+    fn from(message: &str) -> Self {
+        Self::new(message.to_string())
+    }
+}
+
+type ToolFuture = Pin<Box<dyn Future<Output = Result<ToolResult, ToolError>> + Send>>;
 type ToolExecutor = Arc<dyn Fn(Arc<ToolContext>, String) -> ToolFuture + Send + Sync>;
 
 /// Registered behavior for a callable tool.
@@ -691,9 +743,9 @@ impl ToolRegistry {
         context: Arc<ToolContext>,
         name: &str,
         arguments: &str,
-    ) -> Result<ToolResult, String> {
+    ) -> Result<ToolResult, ToolError> {
         let Some(entry) = self.find(name) else {
-            return Err(format!("Unknown tool: {name}"));
+            return Err(ToolError::new(format!("Unknown tool: {name}")));
         };
 
         (entry.execute)(context, arguments.to_string()).await
@@ -1024,7 +1076,8 @@ fn execute_edit_tool(context: Arc<ToolContext>, arguments: String) -> ToolFuture
     Box::pin(async move {
         tokio::task::spawn_blocking(move || edit::execute_edit(&context, &arguments))
             .await
-            .map_err(|e| format!("Task join error: {e}"))?
+            .map_err(|e| ToolError::new(format!("Task join error: {e}")))?
+            .map_err(ToolError::from)
     })
 }
 
@@ -1032,7 +1085,8 @@ fn execute_read_tool(context: Arc<ToolContext>, arguments: String) -> ToolFuture
     Box::pin(async move {
         tokio::task::spawn_blocking(move || read::execute_read(&context, &arguments))
             .await
-            .map_err(|e| format!("Task join error: {e}"))?
+            .map_err(|e| ToolError::new(format!("Task join error: {e}")))?
+            .map_err(ToolError::from)
     })
 }
 
@@ -1040,7 +1094,8 @@ fn execute_write_tool(context: Arc<ToolContext>, arguments: String) -> ToolFutur
     Box::pin(async move {
         tokio::task::spawn_blocking(move || write::execute_write(&context, &arguments))
             .await
-            .map_err(|e| format!("Task join error: {e}"))?
+            .map_err(|e| ToolError::new(format!("Task join error: {e}")))?
+            .map_err(ToolError::from)
     })
 }
 
@@ -1161,7 +1216,14 @@ mod tests {
             vec![PathBuf::from("/workspace/settings")],
         );
 
-        assert_eq!(first, second);
+        assert_eq!(first.cwd, second.cwd);
+        assert_eq!(first.temp_dirs, second.temp_dirs);
+        assert_eq!(first.additional_dirs, second.additional_dirs);
+        assert_eq!(first.skill_dirs, second.skill_dirs);
+        assert_eq!(first.settings_dirs, second.settings_dirs);
+        assert_eq!(first.sandbox_policy, second.sandbox_policy);
+        assert!(first.judge.is_none(), "no judge context by default");
+        assert!(second.judge.is_none(), "no judge context by default");
     }
 
     /// Verify that `validate_path_with_dirs` accepts paths within skill directories.

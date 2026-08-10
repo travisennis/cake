@@ -6,7 +6,14 @@ use tokio::process::{Child, Command};
 use tokio::time::{Duration, timeout};
 use tracing::debug;
 
+#[cfg(test)]
+use crate::clients::judge::JudgeContext;
+use crate::clients::judge::{
+    JudgeDecision, JudgeOutcome, JudgeRequest, evaluate_command, judge_is_enabled,
+    repo_state_digest,
+};
 use crate::clients::tools::secure_temp_dir::secure_temp_dir;
+use crate::config::settings::JUDGE_BYPASS_ENV;
 use crate::config::toolbox::ToolboxProcessGuard;
 use crate::session_telemetry::{CompensationEventTelemetry, CompensationKind};
 use crate::time_format::format_seconds_tenths;
@@ -41,21 +48,18 @@ const BASH_TIMEOUT_MIN_SECS: u64 = 1;
 /// capped so a runaway command cannot pin the process for an unbounded time.
 const BASH_TIMEOUT_MAX_SECS: u64 = 600;
 
+/// Maximum characters of judge-provided message text allowed into the agent
+/// loop, so a verbose or compromised judge cannot flood the model-visible
+/// tool error or output.
+const JUDGE_MESSAGE_MAX_CHARS: usize = 1000;
+
 /// Arguments for bash execution, including the sandbox policy
 struct BashExecutionArgs {
     command: String,
     timeout: u64,
     policy: super::sandbox::SandboxPolicy,
-    /// The model's untrusted self-report of intent. Not yet consumed until
-    /// the LLM-judge preflight lands (Milestone 5); carried here so the judge
-    /// request can include it.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "reason feeds the judge request in ExecPlan Milestone 5"
-        )
-    )]
+    /// The model's untrusted self-report of intent, weighed against the
+    /// command by the LLM judge preflight.
     reason: Option<String>,
 }
 
@@ -374,7 +378,7 @@ fn terminate_process_group(child: &mut Child) {
 pub(super) async fn execute_bash(
     context: &super::ToolContext,
     arguments: &str,
-) -> Result<super::ToolResult, String> {
+) -> Result<super::ToolResult, super::ToolError> {
     let args = BashExecutionArgs::from_json(arguments, context.sandbox_policy)?;
     Box::pin(execute_bash_with_args(context, args)).await
 }
@@ -386,10 +390,15 @@ pub(super) async fn execute_bash(
 async fn execute_bash_with_args(
     context: &super::ToolContext,
     args: BashExecutionArgs,
-) -> Result<super::ToolResult, String> {
-    // Pre-execution safety check: block known-destructive commands,
-    // collect soft warnings to prepend to output.
-    let safety_warnings = super::bash_safety::validate_command_safety(&args.command)?;
+) -> Result<super::ToolResult, super::ToolError> {
+    // Command-safety preflight: the LLM judge is the only non-sandbox command
+    // gate. A block prevents spawn and returns the judge's message as the tool
+    // error; a warn prepends guidance to the output; a judge failure fails
+    // closed (blocks) with an explanation. Judge decisions and denials are
+    // recorded as telemetry compensation events.
+    let preflight = bash_judge_preflight(context, &args).await?;
+    let judge_warnings = preflight.warnings;
+    let judge_events = preflight.compensation_events;
 
     let use_sandbox = args.policy != super::sandbox::SandboxPolicy::DangerFullAccess;
 
@@ -413,8 +422,14 @@ async fn execute_bash_with_args(
     // resources (e.g., macOS temp profile files) are cleaned up
     // deterministically.
     let sandbox_guard = if use_sandbox {
-        if let Some(strategy) = super::sandbox::detect_platform()? {
-            Some(strategy.apply(&mut command, &sandbox_config)?)
+        if let Some(strategy) = super::sandbox::detect_platform()
+            .map_err(|e| judge_tool_error(judge_events.clone(), e))?
+        {
+            Some(
+                strategy
+                    .apply(&mut command, &sandbox_config)
+                    .map_err(|e| judge_tool_error(judge_events.clone(), e))?,
+            )
         } else {
             None
         }
@@ -433,17 +448,26 @@ async fn execute_bash_with_args(
     }
 
     // Spawn the command with piped stdout/stderr for streaming
-    let mut child = command
-        .spawn()
-        .map_err(|e| format!("Failed to spawn command: {e}"))?;
+    let mut child = command.spawn().map_err(|e| {
+        judge_tool_error(
+            judge_events.clone(),
+            format!("Failed to spawn command: {e}"),
+        )
+    })?;
 
     // RAII guard: kills the whole process group on drop unless defused.
     // This ensures Ctrl-C or any other future cancellation terminates
     // descendant processes, not just the direct child.
     let mut guard = ToolboxProcessGuard::new(child.id());
 
-    let mut stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
-    let mut stderr = child.stderr.take().ok_or("Failed to capture stderr")?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| judge_tool_error(judge_events.clone(), "Failed to capture stdout"))?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| judge_tool_error(judge_events.clone(), "Failed to capture stderr"))?;
 
     // The configured timeout covers the full lifecycle: reading both
     // streams, optionally killing the process group on cap, and reaping
@@ -520,7 +544,7 @@ async fn execute_bash_with_args(
 
     let (buf, stderr_buf, hit_cap, status) = match lifecycle_result {
         Ok(Ok(tuple)) => tuple,
-        Ok(Err(e)) => return Err(e),
+        Ok(Err(e)) => return Err(judge_tool_error(judge_events, e)),
         Err(_) => {
             // Timed out: terminate the process group and reap with a
             // short grace period so the OS has time to deliver SIGKILL.
@@ -530,7 +554,10 @@ async fn execute_bash_with_args(
             terminate_process_group(&mut child);
             // Grace period: give the OS time to deliver SIGKILL.
             let _grace = timeout(Duration::from_secs(5), child.wait()).await;
-            return Err(format!("Command timed out after {} seconds", args.timeout));
+            return Err(judge_tool_error(
+                judge_events,
+                format!("Command timed out after {} seconds", args.timeout),
+            ));
         },
     };
 
@@ -547,13 +574,16 @@ async fn execute_bash_with_args(
     let exit_code = status.and_then(|s| s.code()).unwrap_or(-1);
     let warn_exit_zero_stderr = should_warn_exit_zero_stderr(success, &stderr_str);
 
-    // Check for binary data before converting to string
+    // Check for binary data before converting to string. Judge warnings still
+    // prepend here: a `warn` verdict ran the command, so its guidance must
+    // reach the model even when the output is binary.
     if is_binary_data(&buf) {
-        let mut compensation_events = Vec::new();
+        let mut compensation_events = judge_events;
         let spilled = buf.len() > BASH_OUTPUT_MAX_BYTES;
         push_truncation_event_if(&mut compensation_events, "Bash", hit_cap, spilled);
+        let output = handle_binary_output(&buf, exit_code, elapsed_ms, warn_exit_zero_stderr);
         return Ok(super::ToolResult {
-            output: handle_binary_output(&buf, exit_code, elapsed_ms, warn_exit_zero_stderr),
+            output: prepend_safety_warnings(output, &judge_warnings),
             compensation_events,
         });
     }
@@ -561,14 +591,17 @@ async fn execute_bash_with_args(
     let output_str = String::from_utf8_lossy(&buf);
 
     if is_sandbox_initialization_failure(sandbox_applied, &stderr_str) {
-        return Err(format!(
-            "{}\n\n\
-            macOS sandbox unavailable: sandbox-exec could not apply a sandbox profile, \
-            so the requested command did not run. This commonly happens when cake is \
-            itself running inside another Seatbelt sandbox. Run cake with \
-            --sandbox danger-full-access (or set CAKE_SANDBOX=off) to run Bash \
-            commands without filesystem sandboxing.",
-            output_str.trim_end()
+        return Err(judge_tool_error(
+            judge_events,
+            format!(
+                "{}\n\n\
+                macOS sandbox unavailable: sandbox-exec could not apply a sandbox profile, \
+                so the requested command did not run. This commonly happens when cake is \
+                itself running inside another Seatbelt sandbox. Run cake with \
+                --sandbox danger-full-access (or set CAKE_SANDBOX=off) to run Bash \
+                commands without filesystem sandboxing.",
+                output_str.trim_end()
+            ),
         ));
     }
 
@@ -594,10 +627,10 @@ async fn execute_bash_with_args(
     let result = annotate_empty_search_result(&args.command, result, exit_code, &stderr_str);
     let spilled = result.len() > BASH_OUTPUT_MAX_BYTES;
     let result = truncate_output(&result, exit_code, elapsed_ms, warn_exit_zero_stderr);
-    let mut compensation_events = Vec::new();
+    let mut compensation_events = judge_events;
     push_truncation_event_if(&mut compensation_events, "Bash", hit_cap, spilled);
 
-    let output = prepend_safety_warnings(result, &safety_warnings);
+    let output = prepend_safety_warnings(result, &judge_warnings);
 
     Ok(super::ToolResult {
         output,
@@ -622,12 +655,254 @@ fn push_truncation_event_if(
     }
 }
 
+/// The result of a judge preflight that allows the command to run: the
+/// warnings to prepend to the output plus the telemetry events recorded for
+/// this call.
+struct JudgePreflight {
+    warnings: Vec<String>,
+    compensation_events: Vec<CompensationEventTelemetry>,
+}
+
+/// Run the LLM-judge command-safety preflight for one Bash call.
+///
+/// The judge is the only non-sandbox command gate (`ExecPlan` Milestone 5):
+/// every command is evaluated before spawn, and the judge stays active under
+/// `danger-full-access` and `CAKE_SANDBOX=off`, matching the old guard's
+/// independence from the sandbox.
+///
+/// Every judge decision and every fail-closed denial is recorded as a
+/// telemetry compensation event (verdict + code + latency, bypass, or failure
+/// class), including on the `Err` path, so the gate's behavior stays
+/// observable even when the tool call fails.
+async fn bash_judge_preflight(
+    context: &super::ToolContext,
+    args: &BashExecutionArgs,
+) -> Result<JudgePreflight, super::ToolError> {
+    // Empty commands have nothing to judge; `bash -c ""` is harmless and the
+    // old guard skipped them too.
+    if args.command.trim().is_empty() {
+        return Ok(JudgePreflight {
+            warnings: Vec::new(),
+            compensation_events: Vec::new(),
+        });
+    }
+
+    let Some(judge) = context.judge.as_deref() else {
+        return Err(fail_closed_tool_error(
+            "missing_context",
+            "the command-safety judge is not configured for this run",
+        ));
+    };
+
+    // The emergency bypass short-circuits before any judge setup: a disabled
+    // judge must not fail on an unusable model or rubric, because the bypass
+    // is the recovery path when judge configuration is broken. The bypass is
+    // still recorded so the escape hatch cannot be used silently.
+    let bypass_env = std::env::var(JUDGE_BYPASS_ENV).ok();
+    if !judge_is_enabled(&judge.settings, bypass_env.as_deref()) {
+        return Ok(JudgePreflight {
+            warnings: Vec::new(),
+            compensation_events: vec![CompensationEventTelemetry::judge_bypass()],
+        });
+    }
+
+    let client = judge
+        .judge_client()
+        .map_err(|e| fail_closed_tool_error(e.class, &e.message))?;
+    let request = JudgeRequest::new(
+        args.command.clone(),
+        context.cwd.clone(),
+        args.reason.clone(),
+    )
+    .with_repo_digest(repo_state_digest(&context.cwd));
+
+    let started = std::time::Instant::now();
+    let outcome = evaluate_command(client, &judge.settings, request, bypass_env.as_deref())
+        .await
+        .map_err(|e| fail_closed_tool_error(e.error_class(), e))?;
+    let latency_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+
+    judge_preflight_outcome(outcome, latency_ms)
+}
+
+/// Map a judge-path outcome to the preflight result: the warnings to prepend
+/// plus the telemetry event recorded for the decision.
+///
+/// A `warn` verdict prepends its message as a `NOTICE`; an allow verdict, an
+/// allowlist-overridden block (the verdict and the override flag are
+/// preserved for telemetry), and the bypass run unannotated; a real `block`
+/// blocks with the verdict reason as the tool error, carrying the verdict
+/// event on the error path.
+fn judge_preflight_outcome(
+    outcome: JudgeOutcome,
+    latency_ms: u64,
+) -> Result<JudgePreflight, super::ToolError> {
+    match outcome {
+        JudgeOutcome::Bypassed => Ok(JudgePreflight {
+            warnings: Vec::new(),
+            compensation_events: vec![CompensationEventTelemetry::judge_bypass()],
+        }),
+        JudgeOutcome::Verdict {
+            verdict,
+            overridden,
+        } => {
+            let event = CompensationEventTelemetry::judge_verdict(
+                verdict.decision.as_str(),
+                verdict.code.as_deref(),
+                latency_ms,
+                overridden,
+            );
+            match verdict.decision {
+                JudgeDecision::Block if !overridden => Err(super::ToolError {
+                    message: format!(
+                        "BLOCKED\n\nReason: {}",
+                        sanitize_judge_message(&verdict.message)
+                    ),
+                    compensation_events: vec![event],
+                }),
+                JudgeDecision::Warn => Ok(JudgePreflight {
+                    warnings: vec![format!(
+                        "NOTICE: {}",
+                        sanitize_judge_message(&verdict.message)
+                    )],
+                    compensation_events: vec![event],
+                }),
+                JudgeDecision::Block | JudgeDecision::Allow => Ok(JudgePreflight {
+                    warnings: Vec::new(),
+                    compensation_events: vec![event],
+                }),
+            }
+        },
+    }
+}
+
+/// Format a fail-closed block message for judge failures: the command is not
+/// executed and the model sees why.
+fn fail_closed_message(error: impl std::fmt::Display) -> String {
+    format!(
+        "BLOCKED\n\nThe command-safety judge was unavailable, so this command was \
+         not executed (fail-closed).\n\n{error}"
+    )
+}
+
+/// Build the tool error for a fail-closed denial, recording the failure class
+/// so the denial is observable in telemetry.
+fn fail_closed_tool_error(class: &'static str, error: impl std::fmt::Display) -> super::ToolError {
+    super::ToolError {
+        message: fail_closed_message(error),
+        compensation_events: vec![CompensationEventTelemetry::judge_fail_closed(class)],
+    }
+}
+
+/// Attach the judge preflight's telemetry events to a post-preflight tool
+/// error, so an `allow`/`warn` verdict stays observable even when the command
+/// itself fails after the gate (timeout, spawn failure, sandbox-init failure,
+/// lifecycle read error). Without this the verdict recorded by the preflight
+/// would be silently dropped on exactly the sessions the metrics exist to
+/// analyze (`review F-001`).
+fn judge_tool_error(
+    events: Vec<CompensationEventTelemetry>,
+    message: impl Into<String>,
+) -> super::ToolError {
+    super::ToolError {
+        message: message.into(),
+        compensation_events: events,
+    }
+}
+
+/// Judge messages are model-generated text entering the agent loop. Cap the
+/// length and strip control characters so a compromised or confused judge
+/// cannot inject terminal control sequences or unbounded text into the
+/// model-visible tool error or output. Line breaks are kept for readability.
+fn sanitize_judge_message(message: &str) -> String {
+    message
+        .chars()
+        .filter(|c| !c.is_control() || matches!(c, '\n' | '\r' | '\t'))
+        .take(JUDGE_MESSAGE_MAX_CHARS)
+        .collect()
+}
+
+/// Run one Bash call unsandboxed in a fresh temporary directory with a
+/// bypassed judge, used by tests that exercise Bash output handling rather
+/// than the judge path: the judge is never called and commands run ungated.
 #[cfg(test)]
-async fn execute_bash_unsandboxed(arguments: &str) -> Result<super::ToolResult, String> {
+async fn execute_bash_unsandboxed(arguments: &str) -> Result<super::ToolResult, super::ToolError> {
+    execute_bash_with_judge(arguments, Some(bypassed_judge_context())).await
+}
+
+/// Run one Bash call unsandboxed in a fresh temporary directory with an
+/// explicit judge context, so tests can drive the judge preflight (`None`
+/// exercises the fail-closed path).
+///
+/// The working directory is a fresh temp dir: tests never execute against the
+/// developer's real checkout. Tests needing a specific fixture directory use
+/// [`execute_bash_with_judge_in`] instead.
+#[cfg(test)]
+async fn execute_bash_with_judge(
+    arguments: &str,
+    judge: Option<std::sync::Arc<JudgeContext>>,
+) -> Result<super::ToolResult, super::ToolError> {
+    let dir = tempfile::tempdir().expect("hermetic temp dir for bash test");
+    let result = execute_bash_with_judge_in(arguments, judge, dir.path()).await;
+    drop(dir);
+    result
+}
+
+/// Run one Bash call unsandboxed in an explicit fixture working directory
+/// with an explicit judge context (`None` exercises the fail-closed path).
+///
+/// The working directory is explicit so tests never execute against the
+/// developer's real checkout: pass a hermetic fixture (a `tempfile` directory,
+/// or a temporary Git repository when a repository is needed).
+#[cfg(test)]
+async fn execute_bash_with_judge_in(
+    arguments: &str,
+    judge: Option<std::sync::Arc<JudgeContext>>,
+    cwd: &std::path::Path,
+) -> Result<super::ToolResult, super::ToolError> {
     let args =
         BashExecutionArgs::from_json(arguments, super::sandbox::SandboxPolicy::DangerFullAccess)?;
-    let context = super::ToolContext::from_current_process();
+    let mut context = super::ToolContext::from_current_process();
+    context.cwd = cwd.to_path_buf();
+    context.judge = judge;
     Box::pin(execute_bash_with_args(&context, args)).await
+}
+
+/// A judge context with the emergency bypass enabled, used by tests that
+/// exercise Bash output handling rather than the judge path: the judge is
+/// never called and commands run ungated.
+#[cfg(test)]
+fn bypassed_judge_context() -> std::sync::Arc<JudgeContext> {
+    use crate::config::model::{ApiType, ModelConfig};
+    use std::collections::HashMap;
+
+    let model_config = ModelConfig {
+        model: "bypass/model".to_string(),
+        api_type: ApiType::ChatCompletions,
+        base_url: "http://127.0.0.1:9".to_string(),
+        api_key_env: "JUDGE_TEST_KEY".to_string(),
+        provider: None,
+        provider_headers: None,
+        temperature: None,
+        top_p: None,
+        max_output_tokens: None,
+        reasoning_effort: None,
+        reasoning_summary: None,
+        reasoning_max_tokens: None,
+        providers: vec![],
+    };
+    std::sync::Arc::new(JudgeContext {
+        settings: crate::config::settings::JudgeSettings {
+            enabled: false,
+            ..crate::config::settings::JudgeSettings::default()
+        },
+        agent_model: crate::config::model::ResolvedModelConfig {
+            model_config,
+            api_key: String::new(),
+        },
+        models: HashMap::new(),
+        client: std::sync::OnceLock::new(),
+    })
 }
 
 /// If `output` exceeds [`BASH_OUTPUT_MAX_BYTES`], write the full text to a

@@ -23,6 +23,7 @@ KINDS = [
     "json_repair",
     "judge_verdict",
     "judge_fail_closed",
+    "judge_bypass",
     "same_path_serialization",
     "output_truncation",
     "edit_invalid_arguments",

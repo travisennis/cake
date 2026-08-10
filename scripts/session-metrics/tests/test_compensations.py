@@ -159,8 +159,8 @@ class CountEventsTest(unittest.TestCase):
             compensations.run(make_dataset([inv]))
         output = buffer.getvalue()
 
-        # Six known-kind columns show 0; the total column shows 1.
-        self.assertRegex(output, r"alpha\s+0\s+0\s+0\s+0\s+0\s+0\s+0\s+1")
+        # Seven known-kind columns show 0; the total column shows 1.
+        self.assertRegex(output, r"alpha\s+0\s+0\s+0\s+0\s+0\s+0\s+0\s+0\s+1")
 
     def test_total_excludes_retry_derived_compensation_kind(self):
         # A newer sidecar records the context-overflow retry both as a
@@ -176,7 +176,7 @@ class CountEventsTest(unittest.TestCase):
         output = buffer.getvalue()
 
         # Overflow column 1, total column 1, not 2.
-        self.assertRegex(output, r"alpha\s+0\s+0\s+0\s+0\s+0\s+0\s+1\s+1")
+        self.assertRegex(output, r"alpha\s+0\s+0\s+0\s+0\s+0\s+0\s+0\s+1\s+1")
 
     def test_total_includes_retry_derived_overflow(self):
         # A legacy sidecar has the retry_scheduled record but no compensation
@@ -191,7 +191,7 @@ class CountEventsTest(unittest.TestCase):
 
         self.assertIn("context-overflow retries", output)
         # The alpha row must show overflow 1 and total 1.
-        self.assertRegex(output, r"alpha\s+0\s+0\s+0\s+0\s+0\s+0\s+1\s+1")
+        self.assertRegex(output, r"alpha\s+0\s+0\s+0\s+0\s+0\s+0\s+0\s+1\s+1")
 
 
 if __name__ == "__main__":
