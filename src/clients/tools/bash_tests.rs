@@ -274,19 +274,25 @@ async fn test_streaming_large_output_is_capped() {
     assert!(!result.output.is_empty());
     // Should contain metadata footer
     assert!(result.output.contains("[exit:"));
-    // The read-cap truncation is recorded as a compensation event.
+    // The read-cap truncation is recorded as a compensation event (plus the
+    // judge bypass event from the bypassed judge context used here).
+    let truncations: Vec<_> = result
+        .compensation_events
+        .iter()
+        .filter(|e| e.kind == crate::session_telemetry::CompensationKind::OutputTruncation)
+        .collect();
     assert_eq!(
-        result.compensation_events.len(),
+        truncations.len(),
         1,
-        "read-cap truncation must record one compensation event"
+        "read-cap truncation must record one output_truncation event"
     );
-    assert_eq!(
-        result.compensation_events[0].kind,
-        crate::session_telemetry::CompensationKind::OutputTruncation
-    );
-    assert_eq!(
-        result.compensation_events[0].detail.as_deref(),
-        Some("Bash")
+    assert_eq!(truncations[0].detail.as_deref(), Some("Bash"));
+    assert!(
+        result
+            .compensation_events
+            .iter()
+            .any(|e| e.kind == crate::session_telemetry::CompensationKind::JudgeBypass),
+        "bypassed judge must record a judge_bypass event"
     );
 }
 
@@ -1229,18 +1235,25 @@ async fn binary_output_above_max_records_truncation_event() {
     let args = r#"{"command": "head -c 60000 /dev/zero"}"#;
     let result = Box::pin(execute_bash_unsandboxed(args)).await.unwrap();
     assert!(result.output.contains("[Binary output detected"));
+    // One spill truncation event (plus the judge bypass event from the
+    // bypassed judge context used by this test harness).
+    let truncations: Vec<_> = result
+        .compensation_events
+        .iter()
+        .filter(|e| e.kind == crate::session_telemetry::CompensationKind::OutputTruncation)
+        .collect();
     assert_eq!(
-        result.compensation_events.len(),
+        truncations.len(),
         1,
-        "oversized binary spill must record one compensation event"
+        "oversized binary spill must record one output_truncation event"
     );
-    assert_eq!(
-        result.compensation_events[0].kind,
-        crate::session_telemetry::CompensationKind::OutputTruncation
-    );
-    assert_eq!(
-        result.compensation_events[0].detail.as_deref(),
-        Some("Bash")
+    assert_eq!(truncations[0].detail.as_deref(), Some("Bash"));
+    assert!(
+        result
+            .compensation_events
+            .iter()
+            .any(|e| e.kind == crate::session_telemetry::CompensationKind::JudgeBypass),
+        "bypassed judge must record a judge_bypass event"
     );
 }
 
@@ -1252,8 +1265,12 @@ async fn small_binary_output_records_no_truncation_event() {
     let result = Box::pin(execute_bash_unsandboxed(args)).await.unwrap();
     assert!(result.output.contains("[Binary output detected"));
     assert!(
-        result.compensation_events.is_empty(),
-        "small binary output must not record a truncation event"
+        result
+            .compensation_events
+            .iter()
+            .all(|e| e.kind == crate::session_telemetry::CompensationKind::JudgeBypass),
+        "small binary output must record only the judge bypass event, got: {:?}",
+        result.compensation_events
     );
 }
 
