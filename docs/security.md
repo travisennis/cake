@@ -26,14 +26,16 @@ Project-level `.cake/settings.toml` is fully trusted by design, the same trust m
 
 ## Enforcement layers
 
-Read, Edit, and Write validate target paths in-process. Bash first applies best-effort deterministic command checks, then runs under an OS filesystem sandbox:
+Read, Edit, and Write validate target paths in-process. Bash runs every command through the LLM judge before spawn, then runs under an OS filesystem sandbox:
 
 - macOS uses Seatbelt through `sandbox-exec`;
 - Linux uses Landlock and requires a kernel capable of fully enforcing the configured ruleset.
 
-Sandbox availability errors fail closed. On macOS, a process already inside Seatbelt may receive the recognized nested-profile `sandbox_apply: Operation not permitted` failure. In that one case Cake warns and relies on the inherited parent sandbox. The parent policy may be more or less restrictive than Cake's selected policy.
+The LLM judge (ADR-018) is the command-safety gate above the OS sandbox. It replaced the compiled `bash_safety` guard: there is no deterministic rule floor. The judge is default-on and fail-closed --- a `block` verdict or any judge failure (missing context, unresolvable model, rubric read failure, timeout, transport error, or malformed verdict) prevents the command from running; a `warn` verdict runs it with guidance prepended. Because the gate is stochastic, its verdicts are model-dependent and must be measured, not trusted: every judge decision (verdict + code + latency, fail-closed class, or bypass) is recorded in the session telemetry sidecar, and the regression corpus at `src/clients/tools/corpus/commands.jsonl` is evaluated by the judge-driven runner (#174).
 
-Command checks are workflow protection, not a shell parser or security boundary. They cannot recognize every equivalent spelling or prevent every remote side effect.
+The judge is workflow protection above the OS sandbox, not a shell parser or a security boundary by itself: it cannot guarantee that every equivalent spelling is recognized, and it covers effects the sandbox cannot (such as remote git pushes).
+
+Sandbox availability errors fail closed. On macOS, a process already inside Seatbelt may receive the recognized nested-profile `sandbox_apply: Operation not permitted` failure. In that one case Cake warns and relies on the inherited parent sandbox. The parent policy may be more or less restrictive than Cake's selected policy.
 
 For operational diagnosis and platform-specific recovery, follow the [Debugging Sandbox Denials runbook](runbooks/debugging-sandbox.md).
 
@@ -64,8 +66,6 @@ Changes to allowed paths, sandbox policy, fallback behavior, command checks, hoo
 - macOS and Linux consideration;
 - fail-closed behavior review;
 - updated documentation when the guarantee or limitation changes.
-
-The LLM judge (see ADR-018) is the command-safety gate above the OS sandbox; the corpus at `src/clients/tools/corpus/commands.jsonl` holds the regression cases the judge-driven runner (#174) evaluates.
 
 Convenience is not sufficient justification for widening authority.
 
