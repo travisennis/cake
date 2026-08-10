@@ -296,7 +296,7 @@ async fn test_streaming_timeout() {
     let args = r#"{"command": "sleep 999", "timeout": 1}"#;
     let result = Box::pin(execute_bash_unsandboxed(args)).await;
     assert!(result.is_err());
-    assert!(result.unwrap_err().contains("timed out"));
+    assert!(result.unwrap_err().message.contains("timed out"));
 }
 
 #[tokio::test]
@@ -311,7 +311,7 @@ async fn test_streaming_closed_streams_does_not_hang() {
         "expected timeout error but got: {result:?}"
     );
     assert!(
-        result.unwrap_err().contains("timed out"),
+        result.unwrap_err().message.contains("timed out"),
         "expected 'timed out' in error"
     );
 }
@@ -348,7 +348,7 @@ async fn test_streaming_timeout_kills_descendants() {
         "expected timeout error but got: {result:?}"
     );
     assert!(
-        result.unwrap_err().contains("timed out"),
+        result.unwrap_err().message.contains("timed out"),
         "expected 'timed out' in error"
     );
 
@@ -465,7 +465,7 @@ async fn test_sandbox_unavailable_fails_closed() {
     let result = Box::pin(execute_bash(&sandbox_context(), args)).await;
     let error = result.expect_err("sandbox initialization failure should fail closed");
     assert!(
-        error.contains("macOS sandbox unavailable"),
+        error.message.contains("macOS sandbox unavailable"),
         "Expected sandbox unavailable error, got: {error}"
     );
 }
@@ -1382,6 +1382,24 @@ async fn test_judge_warn_prepends_notice() {
     );
     assert!(result.output.contains("judge-warn-test"));
     assert!(result.output.contains("[exit:0 |"));
+    // The warn verdict is recorded for telemetry with its code and latency.
+    assert_eq!(
+        result.compensation_events.len(),
+        1,
+        "warn verdict must record one judge verdict event"
+    );
+    assert_eq!(
+        result.compensation_events[0].kind,
+        CompensationKind::JudgeVerdict
+    );
+    assert_eq!(
+        result.compensation_events[0].detail.as_deref(),
+        Some("warn:rg-replace-footgun")
+    );
+    assert!(
+        result.compensation_events[0].latency_ms.is_some(),
+        "judge verdict event must carry the call latency"
+    );
 }
 
 #[tokio::test]
@@ -1407,6 +1425,21 @@ async fn test_judge_allow_runs_ungated() {
         "allow verdict should not annotate output, got: {}",
         result.output
     );
+    // The allow verdict is still recorded for telemetry.
+    assert_eq!(
+        result.compensation_events.len(),
+        1,
+        "allow verdict must record one judge verdict event"
+    );
+    assert_eq!(
+        result.compensation_events[0].kind,
+        CompensationKind::JudgeVerdict
+    );
+    assert_eq!(
+        result.compensation_events[0].detail.as_deref(),
+        Some("allow")
+    );
+    assert_eq!(result.compensation_events[0].overridden, None);
 }
 
 #[tokio::test]
@@ -1428,13 +1461,28 @@ async fn test_judge_block_prevents_execution() {
     .await
     .unwrap_err();
     assert!(
-        err.contains("BLOCKED"),
+        err.message.contains("BLOCKED"),
         "block verdict must block, got: {err}"
     );
     assert!(
-        err.contains("Prefer push --force-with-lease."),
+        err.message.contains("Prefer push --force-with-lease."),
         "block must carry the judge's reason, got: {err}"
     );
+    // The block verdict reaches telemetry even though the tool call failed.
+    assert_eq!(
+        err.compensation_events.len(),
+        1,
+        "block verdict must record one judge verdict event on the error path"
+    );
+    assert_eq!(
+        err.compensation_events[0].kind,
+        CompensationKind::JudgeVerdict
+    );
+    assert_eq!(
+        err.compensation_events[0].detail.as_deref(),
+        Some("block:git-force-push")
+    );
+    assert_eq!(err.compensation_events[0].overridden, None);
 }
 
 #[tokio::test]
@@ -1446,10 +1494,24 @@ async fn test_judge_missing_context_fails_closed() {
         .await
         .unwrap_err();
     assert!(
-        err.contains("BLOCKED"),
+        err.message.contains("BLOCKED"),
         "missing judge context must fail closed, got: {err}"
     );
-    assert!(err.contains("not configured"));
+    assert!(err.message.contains("not configured"));
+    // The fail-closed denial is recorded with its failure class.
+    assert_eq!(
+        err.compensation_events.len(),
+        1,
+        "missing context must record one fail-closed event"
+    );
+    assert_eq!(
+        err.compensation_events[0].kind,
+        CompensationKind::JudgeFailClosed
+    );
+    assert_eq!(
+        err.compensation_events[0].detail.as_deref(),
+        Some("missing_context")
+    );
 }
 
 #[tokio::test]
@@ -1470,10 +1532,128 @@ async fn test_judge_unreachable_fails_closed() {
     .await
     .unwrap_err();
     assert!(
-        err.contains("BLOCKED"),
+        err.message.contains("BLOCKED"),
         "unreachable judge must fail closed, got: {err}"
     );
-    assert!(err.contains("was unavailable"));
+    assert!(err.message.contains("was unavailable"));
+    // The transport failure is recorded as a fail-closed denial.
+    assert_eq!(
+        err.compensation_events.len(),
+        1,
+        "unreachable judge must record one fail-closed event"
+    );
+    assert_eq!(
+        err.compensation_events[0].kind,
+        CompensationKind::JudgeFailClosed
+    );
+    assert_eq!(
+        err.compensation_events[0].detail.as_deref(),
+        Some("transport")
+    );
+}
+
+#[tokio::test]
+async fn test_judge_bypass_records_bypass_event() {
+    // A bypassed judge records one judge_bypass event per call, so the
+    // escape hatch cannot be used silently (ADR-018 decision log).
+    let args = r#"{"command": "echo bypass-test"}"#;
+    let result = Box::pin(execute_bash_with_judge(
+        args,
+        Some(bypassed_judge_context()),
+    ))
+    .await
+    .unwrap();
+    assert!(result.output.contains("bypass-test"));
+    assert_eq!(
+        result.compensation_events.len(),
+        1,
+        "bypassed call must record one judge_bypass event"
+    );
+    assert_eq!(
+        result.compensation_events[0].kind,
+        CompensationKind::JudgeBypass
+    );
+    assert_eq!(result.compensation_events[0].detail, None);
+}
+
+#[tokio::test]
+async fn test_judge_allowlist_override_records_verdict_and_flag() {
+    // An allowlisted command is still judged; a block verdict is overridden
+    // and the original verdict plus the override flag reach telemetry. The
+    // allowlisted command is deliberately harmless (a bare echo) so the test
+    // never executes anything destructive.
+    let mock_server = MockServer::start().await;
+    mount_judge_verdict(
+        &mock_server,
+        r#"{"verdict":"block","code":"destructive-rm","message":"Refusing."}"#,
+    )
+    .await;
+
+    let mut context = judge_context(&mock_server);
+    std::sync::Arc::get_mut(&mut context)
+        .unwrap()
+        .settings
+        .allowlist = vec!["echo allowlisted".to_string()];
+
+    let args = r#"{"command": "echo allowlisted"}"#;
+    let result = Box::pin(execute_bash_with_judge(args, Some(context)))
+        .await
+        .unwrap();
+    assert!(
+        !result.output.contains("BLOCKED"),
+        "an allowlisted block must run unannotated, got: {}",
+        result.output
+    );
+    assert_eq!(
+        result.compensation_events.len(),
+        1,
+        "overridden block must record one judge verdict event"
+    );
+    assert_eq!(
+        result.compensation_events[0].kind,
+        CompensationKind::JudgeVerdict
+    );
+    assert_eq!(
+        result.compensation_events[0].detail.as_deref(),
+        Some("block:destructive-rm")
+    );
+    assert_eq!(result.compensation_events[0].overridden, Some(true));
+}
+
+#[tokio::test]
+async fn test_judge_message_is_sanitized_before_entering_agent_loop() {
+    // A judge message is model-generated text entering the agent loop:
+    // control characters (here ANSI escapes) are stripped and the length is
+    // capped so a compromised or confused judge cannot inject terminal
+    // sequences or unbounded text into the model-visible output. The `[31m`
+    // marker text survives — only the ESC byte is a control character.
+    let mock_server = MockServer::start().await;
+    let payload = format!(
+        r#"{{"verdict":"warn","code":"rg-replace-footgun","message":"\u001b[31mANSI\u001b[0m{}"}}"#,
+        "x".repeat(2000)
+    );
+    mount_judge_verdict(&mock_server, &payload).await;
+
+    let args = r#"{"command": "echo judge-sanitize-test"}"#;
+    let result = Box::pin(execute_bash_with_judge(
+        args,
+        Some(judge_context(&mock_server)),
+    ))
+    .await
+    .unwrap();
+    assert!(
+        result.output.contains("NOTICE: [31mANSI[0m"),
+        "escape bytes must be stripped, got: {}",
+        result.output
+    );
+    assert!(
+        !result.output.contains('\u{1b}'),
+        "escape characters must not reach the agent loop"
+    );
+    assert!(
+        result.output.matches('x').count() <= 1000,
+        "judge message must be length-capped"
+    );
 }
 
 /// Produce large stderr output after stdout closes, hitting `BASH_READ_CAP`
@@ -1496,9 +1676,9 @@ async fn test_streaming_stderr_drain_after_stdout_close_hits_cap() {
             );
         },
         Err(e)
-            if e.contains("command not found")
-                || e.contains("python3: cannot open")
-                || e.contains("python3: not found") =>
+            if e.message.contains("command not found")
+                || e.message.contains("python3: cannot open")
+                || e.message.contains("python3: not found") =>
         {
             // python3 not available on this system — skip
             eprintln!("skipping: python3 not available");
@@ -1527,9 +1707,9 @@ async fn test_streaming_stdout_drain_after_stderr_close_hits_cap() {
             );
         },
         Err(e)
-            if e.contains("command not found")
-                || e.contains("python3: cannot open")
-                || e.contains("python3: not found") =>
+            if e.message.contains("command not found")
+                || e.message.contains("python3: cannot open")
+                || e.message.contains("python3: not found") =>
         {
             // python3 not available on this system — skip
             eprintln!("skipping: python3 not available");

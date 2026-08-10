@@ -98,7 +98,7 @@ fn truncate_output_retreats_to_utf8_boundary() {
 mod subprocess {
     use super::*;
 
-    async fn run(tool: &ToolboxTool, cwd: &Path, arguments: &str) -> Result<ToolResult, String> {
+    async fn run(tool: &ToolboxTool, cwd: &Path, arguments: &str) -> Result<ToolResult, ToolError> {
         let session_id = "11111111-2222-3333-4444-555555555555";
         execute_toolbox_tool(tool, session_id, cwd, arguments).await
     }
@@ -137,7 +137,7 @@ mod subprocess {
         let err = run(&tool, dir.path(), r#"{"message": "hello\nadmin=true"}"#)
             .await
             .unwrap_err();
-        assert!(err.contains("multiline"), "unexpected error: {err}");
+        assert!(err.message.contains("multiline"), "unexpected error: {err}");
         assert!(!marker.exists(), "invalid arguments must fail before spawn");
     }
 
@@ -182,8 +182,14 @@ mod subprocess {
         let tool = fixture_tool(path, ToolboxFormat::Json);
 
         let err = run(&tool, dir.path(), "{}").await.unwrap_err();
-        assert!(err.contains("tb__fixture"), "unexpected error: {err}");
-        assert!(err.contains("diagnostic detail"), "unexpected error: {err}");
+        assert!(
+            err.message.contains("tb__fixture"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            err.message.contains("diagnostic detail"),
+            "unexpected error: {err}"
+        );
     }
 
     #[tokio::test]
@@ -197,7 +203,10 @@ mod subprocess {
         let tool = fixture_tool(path, ToolboxFormat::Json);
 
         let err = run(&tool, dir.path(), "{}").await.unwrap_err();
-        assert!(err.contains("stdout detail"), "unexpected error: {err}");
+        assert!(
+            err.message.contains("stdout detail"),
+            "unexpected error: {err}"
+        );
     }
 
     #[tokio::test]
@@ -207,9 +216,12 @@ mod subprocess {
         let tool = fixture_tool(path.clone(), ToolboxFormat::Json);
 
         let err = run(&tool, dir.path(), "{}").await.unwrap_err();
-        assert!(err.contains("tb__fixture"), "unexpected error: {err}");
         assert!(
-            err.contains(&path.display().to_string()),
+            err.message.contains("tb__fixture"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            err.message.contains(&path.display().to_string()),
             "unexpected error: {err}"
         );
     }
@@ -222,7 +234,10 @@ mod subprocess {
         tool.timeout_secs = 1;
 
         let err = run(&tool, dir.path(), "{}").await.unwrap_err();
-        assert!(err.contains("timed out after 1"), "unexpected error: {err}");
+        assert!(
+            err.message.contains("timed out after 1"),
+            "unexpected error: {err}"
+        );
     }
 
     #[tokio::test]
@@ -238,7 +253,10 @@ mod subprocess {
         tool.timeout_secs = 1;
 
         let err = run(&tool, dir.path(), "{}").await.unwrap_err();
-        assert!(err.contains("timed out after 1"), "unexpected error: {err}");
+        assert!(
+            err.message.contains("timed out after 1"),
+            "unexpected error: {err}"
+        );
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
         assert!(
             !marker.exists(),
@@ -260,7 +278,10 @@ mod subprocess {
         let arguments = format!("{{\"payload\": \"{big_value}\"}}");
         let started = std::time::Instant::now();
         let err = run(&tool, dir.path(), &arguments).await.unwrap_err();
-        assert!(err.contains("timed out after 1"), "unexpected error: {err}");
+        assert!(
+            err.message.contains("timed out after 1"),
+            "unexpected error: {err}"
+        );
         assert!(
             started.elapsed() < std::time::Duration::from_secs(5),
             "call must not hang past the timeout"

@@ -52,6 +52,17 @@ pub enum JudgeDecision {
     Allow,
 }
 
+impl JudgeDecision {
+    /// The stable lowercase label used in telemetry detail strings.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Block => "block",
+            Self::Warn => "warn",
+            Self::Allow => "allow",
+        }
+    }
+}
+
 /// A single judge verdict, matching the wire contract in ADR-018.
 ///
 /// `code` and `confidence` are optional on the wire: `allow` needs no code and
@@ -94,6 +105,18 @@ pub enum JudgeError {
     /// The judge refused to evaluate the command (content filter or refusal).
     #[error("safety judge refused to evaluate the command")]
     Refusal,
+}
+
+impl JudgeError {
+    /// The stable fail-closed class recorded in session telemetry.
+    pub const fn error_class(&self) -> &'static str {
+        match self {
+            Self::Timeout(_) => "timeout",
+            Self::Transport { .. } => "transport",
+            Self::Malformed(_) => "malformed",
+            Self::Refusal => "refusal",
+        }
+    }
 }
 
 /// Inputs to a single judge call.

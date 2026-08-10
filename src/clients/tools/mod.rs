@@ -604,7 +604,47 @@ pub struct ToolResult {
     pub compensation_events: Vec<CompensationEventTelemetry>,
 }
 
-type ToolFuture = Pin<Box<dyn Future<Output = Result<ToolResult, String>> + Send>>;
+/// Error from executing a tool.
+///
+/// Carries the model-visible message plus any model-compensation events
+/// observed while the tool failed (for example a judge `block` verdict or a
+/// fail-closed denial), so they still reach session telemetry on the error
+/// path instead of being dropped.
+#[derive(Debug, Clone)]
+pub struct ToolError {
+    pub message: String,
+    pub compensation_events: Vec<CompensationEventTelemetry>,
+}
+
+impl ToolError {
+    /// Build an error with no compensation events (the common case).
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            compensation_events: Vec::new(),
+        }
+    }
+}
+
+impl std::fmt::Display for ToolError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl From<String> for ToolError {
+    fn from(message: String) -> Self {
+        Self::new(message)
+    }
+}
+
+impl From<&str> for ToolError {
+    fn from(message: &str) -> Self {
+        Self::new(message.to_string())
+    }
+}
+
+type ToolFuture = Pin<Box<dyn Future<Output = Result<ToolResult, ToolError>> + Send>>;
 type ToolExecutor = Arc<dyn Fn(Arc<ToolContext>, String) -> ToolFuture + Send + Sync>;
 
 /// Registered behavior for a callable tool.
@@ -703,9 +743,9 @@ impl ToolRegistry {
         context: Arc<ToolContext>,
         name: &str,
         arguments: &str,
-    ) -> Result<ToolResult, String> {
+    ) -> Result<ToolResult, ToolError> {
         let Some(entry) = self.find(name) else {
-            return Err(format!("Unknown tool: {name}"));
+            return Err(ToolError::new(format!("Unknown tool: {name}")));
         };
 
         (entry.execute)(context, arguments.to_string()).await
@@ -1036,7 +1076,8 @@ fn execute_edit_tool(context: Arc<ToolContext>, arguments: String) -> ToolFuture
     Box::pin(async move {
         tokio::task::spawn_blocking(move || edit::execute_edit(&context, &arguments))
             .await
-            .map_err(|e| format!("Task join error: {e}"))?
+            .map_err(|e| ToolError::new(format!("Task join error: {e}")))?
+            .map_err(ToolError::from)
     })
 }
 
@@ -1044,7 +1085,8 @@ fn execute_read_tool(context: Arc<ToolContext>, arguments: String) -> ToolFuture
     Box::pin(async move {
         tokio::task::spawn_blocking(move || read::execute_read(&context, &arguments))
             .await
-            .map_err(|e| format!("Task join error: {e}"))?
+            .map_err(|e| ToolError::new(format!("Task join error: {e}")))?
+            .map_err(ToolError::from)
     })
 }
 
@@ -1052,7 +1094,8 @@ fn execute_write_tool(context: Arc<ToolContext>, arguments: String) -> ToolFutur
     Box::pin(async move {
         tokio::task::spawn_blocking(move || write::execute_write(&context, &arguments))
             .await
-            .map_err(|e| format!("Task join error: {e}"))?
+            .map_err(|e| ToolError::new(format!("Task join error: {e}")))?
+            .map_err(ToolError::from)
     })
 }
 
