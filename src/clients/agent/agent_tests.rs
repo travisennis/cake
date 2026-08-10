@@ -236,6 +236,46 @@ fn emit_task_complete_record_with_permission_denials() {
 }
 
 #[test]
+fn judge_denial_label_maps_only_real_denials() {
+    use crate::clients::agent::agent_loop::judge_denial_label;
+    use crate::session_telemetry::{CompensationEventTelemetry, CompensationKind};
+
+    // A block verdict is a denial carrying its verdict code.
+    let block =
+        CompensationEventTelemetry::judge_verdict("block", Some("git-force-push"), 42, false);
+    assert_eq!(
+        judge_denial_label(&block).as_deref(),
+        Some("judge block: git-force-push")
+    );
+
+    // A fail-closed denial carries its failure class.
+    let fail_closed = CompensationEventTelemetry::judge_fail_closed("transport");
+    assert_eq!(
+        judge_denial_label(&fail_closed).as_deref(),
+        Some("judge fail-closed: transport")
+    );
+
+    // Everything else is not a denial: the command ran.
+    let warn =
+        CompensationEventTelemetry::judge_verdict("warn", Some("rg-replace-footgun"), 3, false);
+    assert_eq!(judge_denial_label(&warn), None);
+    let allow = CompensationEventTelemetry::judge_verdict("allow", None, 2, false);
+    assert_eq!(judge_denial_label(&allow), None);
+    let bypass = CompensationEventTelemetry::judge_bypass();
+    assert_eq!(judge_denial_label(&bypass), None);
+
+    // An allowlist-overridden block ran, so it is not a denial.
+    let overridden =
+        CompensationEventTelemetry::judge_verdict("block", Some("destructive-rm"), 5, true);
+    assert_eq!(judge_denial_label(&overridden), None);
+
+    // Non-judge compensations are not denials.
+    let unrelated =
+        CompensationEventTelemetry::new(CompensationKind::OutputTruncation, Some("Read".into()));
+    assert_eq!(judge_denial_label(&unrelated), None);
+}
+
+#[test]
 fn emit_task_start_record() {
     let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let captured_clone = captured.clone();
@@ -566,6 +606,7 @@ fn stream_item_emits_function_call_output() {
 mod error_tests {
     use super::*;
     use crate::clients::agent::agent_loop::SEMANTIC_RECOVERY_PROMPT;
+    use crate::clients::judge::JudgeContext;
     use crate::config::hooks::{HookCommand, HookEvent, HookGroup, HookMatcher, LoadedHooks};
     use crate::config::model::ApiType;
     use crate::hooks::{HookContext, HookRunner};
@@ -1075,6 +1116,181 @@ mod error_tests {
 
         // No dangling function_call items remain.
         assert_no_dangling_function_calls(agent.history());
+    }
+
+    /// Build a judge context whose judge client points at a wiremock server,
+    /// mirroring the helper in `src/clients/tools/bash_tests.rs`. The agent
+    /// runs the Responses API against `/responses`; the judge runs Chat
+    /// Completions against `/chat/completions` on the same server.
+    fn judge_context(mock_server: &MockServer) -> std::sync::Arc<JudgeContext> {
+        use crate::config::model::ModelConfig;
+        use std::collections::HashMap;
+
+        let model_config = ModelConfig {
+            model: "judge/model".to_string(),
+            api_type: ApiType::ChatCompletions,
+            base_url: mock_server.uri(),
+            api_key_env: "JUDGE_TEST_KEY".to_string(),
+            provider: None,
+            provider_headers: None,
+            temperature: Some(0.0),
+            top_p: None,
+            max_output_tokens: Some(128),
+            reasoning_effort: None,
+            reasoning_summary: None,
+            reasoning_max_tokens: None,
+            providers: vec![],
+        };
+        std::sync::Arc::new(JudgeContext {
+            settings: crate::config::settings::JudgeSettings::default(),
+            agent_model: crate::config::model::ResolvedModelConfig {
+                model_config,
+                api_key: "test-key".to_string(),
+            },
+            models: HashMap::new(),
+            client: std::sync::OnceLock::new(),
+        })
+    }
+
+    /// Chat-completions response carrying one judge verdict for a mock server.
+    fn judge_chat_response(verdict_json: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": "chatcmpl-judge",
+            "choices": [{
+                "index": 0,
+                "message": { "role": "assistant", "content": verdict_json },
+                "finish_reason": "stop"
+            }]
+        })
+    }
+
+    /// Build an agent whose Bash tool runs behind a judge context pointing at
+    /// `mock_server`, with the default tool registry so Bash exists.
+    fn test_agent_with_judge(mock_server: &MockServer) -> Agent {
+        test_agent_with_url(&mock_server.uri())
+            .with_tools(crate::clients::tools::default_tool_registry())
+            .with_tool_context(Arc::new(
+                ToolContext::from_current_process().with_judge(Some(judge_context(mock_server))),
+            ))
+    }
+
+    #[tokio::test]
+    async fn judge_block_records_permission_denial_with_verdict_code() {
+        // A judge `block` verdict prevents the Bash command from spawning and
+        // appears in `task_complete.permission_denials` carrying the verdict
+        // code, through the same path hook denials use (#123).
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(tool_call_response()))
+            .up_to_n_times(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(success_response()))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(judge_chat_response(
+                r#"{"verdict":"block","code":"git-force-push","message":"Prefer push --force-with-lease."}"#,
+            )))
+            .mount(&mock_server)
+            .await;
+
+        let captured = Arc::new(Mutex::new(String::new()));
+        let captured_clone = captured.clone();
+        let telemetry_dir = tempfile::TempDir::new().unwrap();
+        let telemetry_path = telemetry_dir.path().join("sidecar.ndjson");
+        let mut agent = test_agent_with_judge(&mock_server)
+            .with_streaming_json(move |json| {
+                *captured_clone.lock().unwrap() = json.to_string();
+            })
+            .with_session_telemetry(
+                SessionTelemetryWriter::open(&telemetry_path).unwrap(),
+                uuid::Uuid::new_v4(),
+            );
+        let result = agent.send("run a command".to_string()).await.unwrap();
+
+        assert_eq!(result, "Hello!");
+        assert_eq!(
+            agent.permission_denials(),
+            &["Bash(call-1): judge block: git-force-push".to_string()]
+        );
+        // The blocked call surfaced the judge's reason to the model.
+        assert!(agent.history().iter().any(|item| matches!(
+            item,
+            ConversationItem::FunctionCallOutput { output, .. }
+                if output.contains("BLOCKED") && output.contains("Prefer push --force-with-lease.")
+        )));
+
+        // The denial reaches `task_complete.permission_denials` with its
+        // verdict code (#123).
+        agent
+            .emit_task_complete_record(TaskOutcome::Success { result: None }, 1000)
+            .unwrap();
+        drop(agent);
+        let json: serde_json::Value = serde_json::from_str(&captured.lock().unwrap()).unwrap();
+        assert_eq!(json["type"], "task_complete");
+        assert_eq!(
+            json["permission_denials"],
+            serde_json::json!(["Bash(call-1): judge block: git-force-push"])
+        );
+
+        // The sidecar records the verdict as metadata only: the code and
+        // latency, never the command or reason text.
+        let sidecar = std::fs::read_to_string(&telemetry_path).unwrap();
+        let records: Vec<serde_json::Value> = sidecar
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let compensation = records
+            .iter()
+            .find(|record| record["type"] == "compensation")
+            .expect("judge verdict must reach the telemetry sidecar");
+        assert_eq!(compensation["kind"], "judge_verdict");
+        assert_eq!(compensation["detail"], "block:git-force-push");
+        assert!(compensation.get("latency_ms").is_some());
+        assert!(compensation.get("overridden").is_none());
+        assert!(
+            !sidecar.contains("printf"),
+            "telemetry must not carry the command text, got: {sidecar}"
+        );
+    }
+
+    #[tokio::test]
+    async fn judge_fail_closed_records_distinct_permission_denial() {
+        // A judge failure (here: HTTP 500) fails closed and is recorded as a
+        // denial distinct from both hook denials and verdict blocks.
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(tool_call_response()))
+            .up_to_n_times(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(success_response()))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&mock_server)
+            .await;
+
+        let mut agent = test_agent_with_judge(&mock_server);
+        let result = agent.send("run a command".to_string()).await.unwrap();
+
+        assert_eq!(result, "Hello!");
+        assert_eq!(
+            agent.permission_denials(),
+            &["Bash(call-1): judge fail-closed: transport".to_string()]
+        );
     }
 
     // =========================================================================
