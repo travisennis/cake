@@ -1,7 +1,7 @@
 use crate::clients::agent::Agent;
 use crate::session_telemetry::{
-    AgentRunnerTelemetryEvent, CompensationEventTelemetry, SessionTelemetryContext,
-    SessionTelemetryRecord, ToolCallTelemetry,
+    AgentRunnerTelemetryEvent, CompensationEventTelemetry, JudgeAttemptTelemetry,
+    SessionTelemetryContext, SessionTelemetryRecord, ToolCallTelemetry,
 };
 
 impl Agent {
@@ -28,6 +28,19 @@ impl Agent {
             invocation_id: context.invocation_id,
             timestamp: chrono::Utc::now(),
             tool_call,
+        };
+        self.append_telemetry_record(&record);
+    }
+
+    pub(super) fn append_judge_attempt_telemetry(&mut self, attempt: JudgeAttemptTelemetry) {
+        let Some(context) = self.telemetry_context() else {
+            return;
+        };
+        let record = SessionTelemetryRecord::JudgeAttempt {
+            session_id: context.session_id,
+            invocation_id: context.invocation_id,
+            timestamp: chrono::Utc::now(),
+            attempt,
         };
         self.append_telemetry_record(&record);
     }

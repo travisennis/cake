@@ -9,7 +9,7 @@ use tracing::debug;
 #[cfg(test)]
 use crate::clients::judge::JudgeContext;
 use crate::clients::judge::{
-    JudgeDecision, JudgeOutcome, JudgeRequest, evaluate_command, judge_is_enabled,
+    JudgeDecision, JudgeOutcome, JudgeRequest, evaluate_command_observed, judge_is_enabled,
     repo_state_digest,
 };
 use crate::clients::tools::secure_temp_dir::secure_temp_dir;
@@ -716,13 +716,35 @@ async fn bash_judge_preflight(
     )
     .with_repo_digest(repo_state_digest(&context.cwd));
 
-    let started = std::time::Instant::now();
-    let outcome = evaluate_command(client, &judge.settings, request, bypass_env.as_deref())
-        .await
-        .map_err(|e| fail_closed_tool_error(e.error_class(), e))?;
-    let latency_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+    let evaluation = evaluate_command_observed(
+        client,
+        &judge.settings,
+        request,
+        bypass_env.as_deref(),
+        false,
+    )
+    .await;
+    observed_evaluation_to_preflight(evaluation)
+}
 
-    judge_preflight_outcome(outcome, latency_ms)
+fn observed_evaluation_to_preflight(
+    evaluation: crate::clients::judge::JudgeEvaluation,
+) -> Result<JudgePreflight, super::ToolError> {
+    let latency_ms = evaluation
+        .attempts
+        .last()
+        .map_or(0, |attempt| attempt.total_ms);
+    match evaluation.outcome {
+        Ok(outcome) => judge_preflight_outcome(outcome, latency_ms, evaluation.attempts),
+        Err(error) => {
+            let class = error.error_class();
+            let mut tool_error = fail_closed_tool_error(class, error);
+            if let Some(event) = tool_error.compensation_events.first_mut() {
+                *event = event.clone().with_judge_attempts(evaluation.attempts);
+            }
+            Err(tool_error)
+        },
+    }
 }
 
 /// Map a judge-path outcome to the preflight result: the warnings to prepend
@@ -736,6 +758,7 @@ async fn bash_judge_preflight(
 fn judge_preflight_outcome(
     outcome: JudgeOutcome,
     latency_ms: u64,
+    attempts: Vec<crate::session_telemetry::JudgeAttemptTelemetry>,
 ) -> Result<JudgePreflight, super::ToolError> {
     match outcome {
         JudgeOutcome::Bypassed => Ok(JudgePreflight {
@@ -751,7 +774,8 @@ fn judge_preflight_outcome(
                 verdict.code.as_deref(),
                 latency_ms,
                 overridden,
-            );
+            )
+            .with_judge_attempts(attempts);
             match verdict.decision {
                 JudgeDecision::Block if !overridden => Err(super::ToolError {
                     message: format!(

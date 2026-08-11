@@ -3,7 +3,7 @@
 Stdlib-only Python scripts that report how well cake is working, from the two places cake records evidence:
 
 - **Session transcripts** --- `~/.local/share/cake/sessions/{uuid}.jsonl` (or `{CAKE_DATA_DIR}/sessions`). Conversation records: `session_meta`, `message`, `function_call`/`function_call_output`, `reasoning`, `hook_event`, `task_start`/`task_complete`, `skill_activated`, plus legacy `session_start`/`init`/`result` from older format versions.
-- **Telemetry sidecars** --- `~/.cache/cake/session-telemetry/{uuid}.ndjson`. Operational records: `telemetry_init` (run mode, api type, settings), `api_attempt` (latency, status, token usage per request), `retry_scheduled`, `tool_call` (duration, output bytes, error flag), `session_summary` (success, duration, turns, total usage).
+- **Telemetry sidecars** --- `~/.cache/cake/session-telemetry/{uuid}.ndjson`. Operational records: `telemetry_init` (run mode, api type, settings), `api_attempt` (conversation-model latency, status, and token usage per request), `judge_attempt` (command-safety judge model controls, phase timing, status, termination, and token usage without raw prompts), `retry_scheduled`, `tool_call` (duration, output bytes, error flag), `session_summary` (success, duration, turns, total usage).
 
 ## Usage
 

@@ -14,8 +14,9 @@ use clap::{Parser, Subcommand};
 
 use crate::cli::{CmdRunner, CommandRunOptions};
 use crate::clients::judge::{
-    JudgeClient, JudgeOutcome, JudgeRequest, JudgeVerdict, evaluate_command, judge_is_enabled,
-    read_user_rubric, repo_state_digest, resolve_judge_client_config,
+    JudgeClient, JudgeEvaluation, JudgeOutcome, JudgeRequest, JudgeVerdict, evaluate_command,
+    evaluate_command_observed, judge_is_enabled, read_user_rubric, repo_state_digest,
+    resolve_judge_client_config,
 };
 use crate::config::settings::{JUDGE_BYPASS_ENV, JudgeSettings, LoadedSettings};
 use crate::config::{DataDir, ResolvedModelConfig, SettingsLoader};
@@ -36,6 +37,9 @@ enum BashSubcommand {
 
 #[derive(Clone, Debug, Parser)]
 struct BashCheckCommand {
+    /// Show the sensitive effective prompts, request JSON, and parsed response
+    #[arg(long)]
+    diagnostic: bool,
     /// The raw command text to evaluate
     #[arg(value_name = "COMMAND")]
     command: String,
@@ -53,8 +57,14 @@ impl CmdRunner for BashCommand {
                     .map_err(|e| anyhow::anyhow!("Failed to get current directory: {e}"))?;
                 let loaded =
                     SettingsLoader::load_with_profile(Some(&current_dir), options.profile)?;
-                let output =
-                    run_bash_check(&loaded, &current_dir, &check.command, options.model).await?;
+                let output = run_bash_check_with_diagnostic(
+                    &loaded,
+                    &current_dir,
+                    &check.command,
+                    options.model,
+                    check.diagnostic,
+                )
+                .await?;
                 print!("{output}");
                 Ok(())
             },
@@ -68,11 +78,22 @@ impl CmdRunner for BashCommand {
 /// back to the `--model` flag, then the agent's `default_model`), appends any
 /// configured user rubric file, and renders the verdict without executing
 /// anything.
+#[cfg(test)]
 async fn run_bash_check(
     loaded: &LoadedSettings,
     cwd: &Path,
     command: &str,
     cli_model: Option<&str>,
+) -> anyhow::Result<String> {
+    run_bash_check_with_diagnostic(loaded, cwd, command, cli_model, false).await
+}
+
+async fn run_bash_check_with_diagnostic(
+    loaded: &LoadedSettings,
+    cwd: &Path,
+    command: &str,
+    cli_model: Option<&str>,
+    include_raw_diagnostic: bool,
 ) -> anyhow::Result<String> {
     // The emergency bypass short-circuits before any judge setup: a disabled
     // judge must not fail on an unusable model or rubric, because the bypass
@@ -84,7 +105,12 @@ async fn run_bash_check(
     let model = resolve_judge_model(loaded, cli_model)?;
     let client = JudgeClient::new(model, Duration::from_secs(loaded.judge.timeout_secs))
         .with_user_rubric(read_user_rubric(&loaded.judge).map_err(anyhow::Error::msg)?);
-    evaluate_with_client(client, &loaded.judge, bypass_env.as_deref(), cwd, command).await
+    if include_raw_diagnostic {
+        evaluate_with_client_diagnostic(client, &loaded.judge, bypass_env.as_deref(), cwd, command)
+            .await
+    } else {
+        evaluate_with_client(client, &loaded.judge, bypass_env.as_deref(), cwd, command).await
+    }
 }
 
 /// Evaluate one command with an already-configured judge client and render the
@@ -110,6 +136,86 @@ async fn evaluate_with_client(
     let latency = started.elapsed();
 
     Ok(render_outcome(&outcome, latency))
+}
+
+async fn evaluate_with_client_diagnostic(
+    client: JudgeClient,
+    settings: &JudgeSettings,
+    bypass_env: Option<&str>,
+    cwd: &Path,
+    command: &str,
+) -> anyhow::Result<String> {
+    let request = JudgeRequest::new(command.to_string(), cwd.to_path_buf(), None)
+        .with_repo_digest(repo_state_digest(cwd));
+    let evaluation = evaluate_command_observed(&client, settings, request, bypass_env, true).await;
+    render_diagnostic_evaluation(evaluation)
+}
+
+fn render_diagnostic_evaluation(evaluation: JudgeEvaluation) -> anyhow::Result<String> {
+    use std::fmt::Write as _;
+
+    let JudgeEvaluation {
+        outcome,
+        attempts,
+        diagnostic,
+    } = evaluation;
+    let outcome = outcome?;
+    let Some(attempt) = attempts.last() else {
+        return Ok(format!(
+            "WARNING: raw judge diagnostics may contain command text, paths, repository state, reason text, and secrets embedded in those values.\n\n{}",
+            render_outcome(&outcome, Duration::ZERO)
+        ));
+    };
+    let raw = diagnostic.ok_or_else(|| anyhow::anyhow!("judge diagnostic data was unavailable"))?;
+
+    let mut out = String::from(
+        "WARNING: raw judge diagnostics contain command text, paths, repository state, reason text, and may contain secrets embedded in those values. Handle this output as sensitive.\n\n",
+    );
+    _ = writeln!(out, "Resolved model: {}", attempt.model);
+    _ = writeln!(out, "API type: {:?}", attempt.api_type);
+    _ = writeln!(out, "Reasoning effort: {:?}", attempt.reasoning_effort);
+    _ = writeln!(out, "Temperature: {:?}", attempt.temperature);
+    _ = writeln!(out, "Top-p: {:?}", attempt.top_p);
+    _ = writeln!(out, "Max output tokens: {:?}", attempt.max_output_tokens);
+    _ = writeln!(
+        out,
+        "Reasoning max tokens: {:?}",
+        attempt.reasoning_max_tokens
+    );
+    _ = writeln!(
+        out,
+        "Configured timeout: {}ms",
+        attempt.configured_timeout_ms
+    );
+    _ = writeln!(out, "Tool count: {}", attempt.tool_count);
+    _ = writeln!(out, "Tool choice: {:?}", attempt.tool_choice);
+    _ = writeln!(out, "\nSystem prompt:\n{}", raw.system_prompt);
+    _ = writeln!(out, "\nUser prompt:\n{}", raw.user_prompt);
+    _ = writeln!(
+        out,
+        "\nTransformed request JSON:\n{}",
+        serde_json::to_string_pretty(&raw.request_json)?
+    );
+    _ = writeln!(
+        out,
+        "\nParsed response:\n{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "assistant_content": raw.assistant_content,
+            "usage": raw.usage,
+            "termination": raw.termination,
+        }))?
+    );
+    _ = writeln!(
+        out,
+        "\nAttempt metadata:\n{}",
+        serde_json::to_string_pretty(attempt)?
+    );
+    _ = write!(
+        out,
+        "\n{}",
+        render_outcome(&outcome, Duration::from_millis(attempt.total_ms))
+    );
+    Ok(out)
 }
 
 /// Resolve the judge model config: the `[tools.bash.judge] model` override if

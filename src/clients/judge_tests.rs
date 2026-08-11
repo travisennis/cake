@@ -294,6 +294,136 @@ async fn judge_works_through_responses_backend() {
     assert_eq!(verdict.code.as_deref(), Some("rg-replace-footgun"));
 }
 
+#[tokio::test]
+async fn observed_judge_attempt_records_metadata_and_exact_diagnostic_request() {
+    let mock_server = MockServer::start().await;
+    let mut body = chat_response(r#"{"verdict":"allow","message":"Safe"}"#);
+    body["usage"] = serde_json::json!({
+        "prompt_tokens": 21,
+        "completion_tokens": 4,
+        "total_tokens": 25,
+        "prompt_tokens_details": {"cached_tokens": 3},
+        "completion_tokens_details": {"reasoning_tokens": 2}
+    });
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-request-id", "req-judge-123")
+                .set_body_json(body),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let command = "git status --short";
+    let call = judge_client(&mock_server)
+        .judge_observed(request(command, Some("inspect state")), true)
+        .await;
+    assert!(call.result.is_ok());
+    assert_eq!(call.attempt.attempt, 1);
+    assert_eq!(call.attempt.retry_ordinal, 0);
+    assert_eq!(call.attempt.status_code, Some(200));
+    assert_eq!(
+        call.attempt.provider_request_id.as_deref(),
+        Some("req-judge-123")
+    );
+    assert_eq!(
+        call.attempt.terminal_class,
+        crate::session_telemetry::JudgeAttemptTerminalClass::Verdict
+    );
+    assert_eq!(call.attempt.tool_count, 0);
+    assert_eq!(call.attempt.tool_choice, None);
+    let usage = call.attempt.usage.unwrap();
+    assert_eq!(usage.input_tokens, 21);
+    assert_eq!(usage.input_tokens_details.cached_tokens, 3);
+    assert_eq!(usage.output_tokens, 4);
+    assert_eq!(usage.output_tokens_details.reasoning_tokens, 2);
+
+    let diagnostic = call.diagnostic.unwrap();
+    let requests = mock_server.received_requests().await.unwrap();
+    let wire_json: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(diagnostic.request_json, wire_json);
+    assert_eq!(diagnostic.request_json.get("tools"), None);
+    assert_eq!(diagnostic.request_json.get("tool_choice"), None);
+    assert!(diagnostic.system_prompt.contains("git-history-rewrite"));
+    assert!(diagnostic.user_prompt.contains(command));
+
+    let metadata = serde_json::to_string(&call.attempt).unwrap();
+    assert!(!metadata.contains(command));
+    assert!(!metadata.contains("inspect state"));
+    assert!(!metadata.contains("/work/project"));
+    assert!(!metadata.contains("test-key"));
+}
+
+#[tokio::test]
+async fn observed_timeout_records_elapsed_active_phase() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(chat_response(r#"{"verdict":"allow","message":"Safe"}"#))
+                .set_delay(Duration::from_millis(250)),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let client = JudgeClient::new(test_config(mock_server.uri()), Duration::from_millis(50));
+    let call = client
+        .judge_observed(request("git status", None), false)
+        .await;
+    assert!(matches!(call.result, Err(JudgeError::Timeout(_))));
+    assert_eq!(
+        call.attempt.terminal_class,
+        crate::session_telemetry::JudgeAttemptTerminalClass::Timeout
+    );
+    assert!(call.attempt.total_ms >= 40, "{:#?}", call.attempt);
+    assert!(call.attempt.request_ms >= 40, "{:#?}", call.attempt);
+    assert_eq!(call.attempt.configured_timeout_ms, 50);
+}
+
+#[tokio::test]
+async fn observed_malformed_verdict_keeps_missing_usage_explicit() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(chat_response("not json")))
+        .mount(&mock_server)
+        .await;
+
+    let call = judge_client(&mock_server)
+        .judge_observed(request("git status", None), false)
+        .await;
+    assert!(matches!(call.result, Err(JudgeError::Malformed(_))));
+    assert_eq!(call.attempt.status_code, Some(200));
+    assert!(call.attempt.usage.is_none());
+    assert_eq!(
+        call.attempt.terminal_class,
+        crate::session_telemetry::JudgeAttemptTerminalClass::MalformedVerdict
+    );
+    let value = serde_json::to_value(call.attempt).unwrap();
+    assert!(value["usage"].is_null());
+    assert!(value["response_parse_ms"].is_u64());
+    assert!(value["verdict_parse_ms"].is_u64());
+}
+
+#[tokio::test]
+async fn observed_transport_error_has_no_status_or_raw_error_body() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let uri = format!("http://{}", listener.local_addr().unwrap());
+    drop(listener);
+
+    let client = JudgeClient::new(test_config(uri), Duration::from_secs(1));
+    let call = client
+        .judge_observed(request("git status", None), false)
+        .await;
+    assert!(matches!(call.result, Err(JudgeError::Transport { .. })));
+    assert_eq!(call.attempt.status_code, None);
+    assert_eq!(
+        call.attempt.terminal_class,
+        crate::session_telemetry::JudgeAttemptTerminalClass::Transport
+    );
+    let value = serde_json::to_value(call.attempt).unwrap();
+    assert!(value.get("error").is_none());
+}
+
 // =============================================================================
 // parse_verdict unit tests
 // =============================================================================

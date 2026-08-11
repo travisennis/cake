@@ -35,12 +35,12 @@ sidecar parsing remain unchanged.
 - [x] (2026-08-11 19:00Z) Read issue #206, selected Ready P1 child #202, claimed it, and created `feat/judge-attempt-diagnostics` from `origin/master`.
 - [x] (2026-08-11 19:00Z) Read the task and ExecPlan workflows plus the architecture, integration, security, telemetry, provider, judge, Bash preflight, and CLI authorities.
 - [x] (2026-08-11 19:00Z) Chose the additive telemetry and opt-in `cake bash check --diagnostic` design recorded below.
-- [ ] Add reusable provider request construction and focused Chat Completions and Responses request-shape tests.
-- [ ] Instrument the bounded judge call and return one metadata-only attempt for every provider call outcome.
-- [ ] Carry judge attempts from Bash tool success and error paths into session telemetry without changing compensation or denial behavior.
-- [ ] Add and verify the opt-in raw diagnostic renderer, sensitivity warning, and secret-redaction boundary.
-- [ ] Update the sidecar parser and tests so old and new telemetry coexist, then update integration and security documentation.
-- [ ] Run focused tests, complexity checks, preflight, and `just ci`; record the results and finish the issue and plan handoff records.
+- [x] (2026-08-11 19:25Z) Added reusable provider request construction and focused Chat Completions and Responses request-shape coverage.
+- [x] (2026-08-11 19:25Z) Instrumented the bounded judge call and returned one metadata-only attempt for every provider call outcome.
+- [x] (2026-08-11 19:25Z) Carried judge attempts from Bash tool success and error paths into session telemetry without changing compensation or denial behavior.
+- [x] (2026-08-11 19:25Z) Added and verified the opt-in raw diagnostic renderer, sensitivity warning, and API-key redaction boundary.
+- [x] (2026-08-11 19:25Z) Updated the sidecar parser and tests so old and new telemetry coexist, then updated integration and security documentation.
+- [ ] Run final verification and preflight, record results, finish the issue acceptance notes, and archive this plan (completed: focused unit and Python tests, strict Clippy, CC, and module-size checks; remaining: preflight and `just ci`).
 
 ## Surprises & Discoveries
 
@@ -68,6 +68,18 @@ sidecar parsing remain unchanged.
   gains a separate collection. Evidence:
   `scripts/session-metrics/cakelib.py::load_telemetry` dispatches known record
   names with an `if` chain and otherwise continues.
+
+- Observation: provider request identifiers are available in both response
+  headers and parsed response envelopes. Evidence: the observer first checks
+  `x-request-id`, `request-id`, and `openai-request-id`, then falls back to the
+  Chat Completions or Responses body `id` retained on `TurnResult`.
+
+- Observation: keeping request, parse, timeout, diagnostic, and verdict paths
+  in `JudgeClient::judge_observed` exceeded the new-function CC target and
+  pushed `src/clients/judge.rs` over the module-size threshold. Evidence: the
+  initial `just cc-check` reported CC 16; extracting the phase state machine to
+  `src/clients/judge_observer.rs` reduced the gate to zero exceedances and left
+  `src/clients/judge.rs` at 686 lines.
 
 ## Decision Log
 
@@ -112,6 +124,13 @@ sidecar parsing remain unchanged.
   provider-secret headers, and changing request transformation between the
   displayed and sent bodies. Tests must prove the first three remain absent and
   captured-wire equality must prove the fourth. Date/Author: 2026-08-11 / Codex.
+
+- Decision: transport judge attempts through a serde-skipped collection on the
+  existing compensation event, then emit them as first-class records before
+  serializing the compensation. Rationale: compensation events already survive
+  concurrent tool success and error paths; the skipped carrier reuses that
+  proven path without nesting attempt data in compensation JSON or widening
+  every generic tool result type. Date/Author: 2026-08-11 / Codex.
 
 ## Outcomes & Retrospective
 
@@ -377,3 +396,7 @@ existing telemetry and backend abstractions provide the required behavior.
 Revision note (2026-08-11): created the initial self-contained plan after
 selecting issue #202 as issue #206's next Ready child and inspecting the current
 judge, provider, telemetry, CLI, and security paths.
+
+Revision note (2026-08-11): recorded the implemented request builder, observed
+phase state machine, sidecar transport, diagnostic redaction, metrics and
+documentation work, plus the complexity-driven observer-module extraction.

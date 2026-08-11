@@ -33,6 +33,7 @@ pub(super) struct TurnResult {
     pub(super) items: Vec<ConversationItem>,
     pub(super) usage: Option<Usage>,
     pub(super) termination: Option<ProviderTermination>,
+    pub(super) provider_request_id: Option<String>,
 }
 
 struct AgentTelemetry {

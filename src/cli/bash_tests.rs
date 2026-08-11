@@ -105,6 +105,27 @@ fn cli_parses_bash_check_without_double_dash() {
 }
 
 #[test]
+fn cli_parses_bash_check_diagnostic_flag() {
+    let args = crate::CodingAssistant::parse_from([
+        "cake",
+        "bash",
+        "check",
+        "--diagnostic",
+        "--",
+        "printf test-key",
+    ]);
+    match args.command {
+        Some(crate::cli::Commands::Bash(cmd)) => match cmd.command {
+            BashSubcommand::Check(check) => {
+                assert!(check.diagnostic);
+                assert_eq!(check.command, "printf test-key");
+            },
+        },
+        other => panic!("expected bash check, got {other:?}"),
+    }
+}
+
+#[test]
 fn bash_help_documents_check_without_executing() {
     let help = BashCommand::command().render_help().to_string();
     assert!(
@@ -115,6 +136,43 @@ fn bash_help_documents_check_without_executing() {
         help.contains("without executing"),
         "help should state check never executes:\n{help}"
     );
+}
+
+#[tokio::test]
+async fn bash_check_diagnostic_shows_exact_sensitive_request_without_credentials() {
+    let mock_server = MockServer::start().await;
+    let mut body = chat_response(r#"{"verdict":"allow","message":"Safe"}"#);
+    body["usage"] = serde_json::json!({
+        "prompt_tokens": 12,
+        "completion_tokens": 3,
+        "total_tokens": 15
+    });
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(&mock_server)
+        .await;
+
+    let output = evaluate_with_client_diagnostic(
+        judge_client(&mock_server),
+        &JudgeSettings::default(),
+        None,
+        std::path::Path::new("/work"),
+        "printf test-key",
+    )
+    .await
+    .unwrap();
+
+    assert!(output.contains("WARNING: raw judge diagnostics"));
+    assert!(output.contains("System prompt:"));
+    assert!(output.contains("User prompt:"));
+    assert!(output.contains("Transformed request JSON:"));
+    assert!(output.contains("Parsed response:"));
+    assert!(output.contains("Attempt metadata:"));
+    assert!(output.contains("Tool count: 0"));
+    assert!(output.contains("Verdict: allow"));
+    assert!(output.contains("printf <redacted>"));
+    assert!(!output.contains("test-key"));
+    assert!(!output.contains("Authorization"));
 }
 
 // =============================================================================

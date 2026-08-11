@@ -1254,6 +1254,27 @@ mod error_tests {
         assert_eq!(compensation["detail"], "block:git-force-push");
         assert!(compensation.get("latency_ms").is_some());
         assert!(compensation.get("overridden").is_none());
+        let attempt = records
+            .iter()
+            .find(|record| record["type"] == "judge_attempt")
+            .expect("judge provider attempt must reach the telemetry sidecar");
+        assert_eq!(attempt["attempt"], 1);
+        assert_eq!(attempt["retry_ordinal"], 0);
+        assert_eq!(attempt["status_code"], 200);
+        assert_eq!(attempt["terminal_class"], "verdict");
+        assert_eq!(attempt["tool_count"], 0);
+        assert!(attempt["usage"].is_null());
+        let attempt_index = records
+            .iter()
+            .position(|record| record["type"] == "judge_attempt")
+            .unwrap();
+        let compensation_index = records
+            .iter()
+            .position(|record| {
+                record["type"] == "compensation" && record["kind"] == "judge_verdict"
+            })
+            .unwrap();
+        assert!(attempt_index < compensation_index);
         assert!(
             !sidecar.contains("printf"),
             "telemetry must not carry the command text, got: {sidecar}"

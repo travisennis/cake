@@ -53,6 +53,40 @@ impl Backend {
         }
     }
 
+    /// Build the exact provider-transformed JSON body for a request.
+    pub(super) fn build_request_json<'a>(
+        self,
+        config: &ResolvedModelConfig,
+        history: &'a [ConversationItem],
+        tools: &'a [Tool],
+        overrides: &RequestOverrides,
+        constraint: Option<FinalOutputConstraint<'a>>,
+    ) -> anyhow::Result<serde_json::Value> {
+        match self {
+            Self::Responses => {
+                responses::build_request_json(config, history, tools, overrides, constraint)
+            },
+            Self::ChatCompletions => {
+                chat_completions::build_request_json(config, history, tools, overrides, constraint)
+            },
+        }
+    }
+
+    /// Send one request body previously returned by [`Self::build_request_json`].
+    pub(super) async fn send_request_json(
+        self,
+        client: &reqwest::Client,
+        config: &ResolvedModelConfig,
+        request: &serde_json::Value,
+    ) -> anyhow::Result<reqwest::Response> {
+        match self {
+            Self::Responses => responses::send_request_json(client, config, request).await,
+            Self::ChatCompletions => {
+                chat_completions::send_request_json(client, config, request).await
+            },
+        }
+    }
+
     pub(super) async fn parse_response(
         self,
         response: reqwest::Response,

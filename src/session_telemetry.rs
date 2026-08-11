@@ -87,6 +87,52 @@ pub struct ApiAttemptTelemetry {
     pub request_overrides: RequestOverridesSnapshot,
 }
 
+/// Terminal outcome of one command-safety judge provider attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JudgeAttemptTerminalClass {
+    Verdict,
+    Timeout,
+    Transport,
+    HttpError,
+    ResponseParse,
+    MalformedVerdict,
+    Refusal,
+}
+
+/// Metadata-only diagnostics for one command-safety judge provider attempt.
+///
+/// Raw prompts, command text, reason text, cwd, request and response bodies,
+/// credentials, and authorization headers must never enter this type.
+#[derive(Debug, Clone, Serialize)]
+pub struct JudgeAttemptTelemetry {
+    pub attempt: u32,
+    pub retry_ordinal: u32,
+    pub request_build_ms: u64,
+    pub request_ms: u64,
+    pub response_parse_ms: u64,
+    pub verdict_parse_ms: u64,
+    pub total_ms: u64,
+    pub history_items: usize,
+    pub system_prompt_bytes: usize,
+    pub user_prompt_bytes: usize,
+    pub model: String,
+    pub api_type: ApiType,
+    pub reasoning_effort: Option<ReasoningEffort>,
+    pub temperature: Option<f32>,
+    pub top_p: Option<f32>,
+    pub max_output_tokens: Option<u32>,
+    pub reasoning_max_tokens: Option<u32>,
+    pub configured_timeout_ms: u64,
+    pub tool_count: usize,
+    pub tool_choice: Option<String>,
+    pub status_code: Option<u16>,
+    pub provider_request_id: Option<String>,
+    pub terminal_class: JudgeAttemptTerminalClass,
+    pub usage: Option<Usage>,
+    pub termination: Option<ProviderTermination>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct RetryScheduledTelemetry {
     pub turn_index: u32,
@@ -182,6 +228,10 @@ pub struct CompensationEventTelemetry {
     /// Set on a judge verdict event when an allowlist entry overrode a block.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub overridden: Option<bool>,
+    /// Judge attempts travel with the existing compensation event across the
+    /// concurrent tool boundary, then serialize as their own sidecar records.
+    #[serde(skip)]
+    judge_attempts: Vec<JudgeAttemptTelemetry>,
 }
 
 impl CompensationEventTelemetry {
@@ -191,6 +241,7 @@ impl CompensationEventTelemetry {
             detail,
             latency_ms: None,
             overridden: None,
+            judge_attempts: Vec::new(),
         }
     }
 
@@ -210,6 +261,7 @@ impl CompensationEventTelemetry {
             detail: Some(detail),
             latency_ms: Some(latency_ms),
             overridden: overridden.then_some(true),
+            judge_attempts: Vec::new(),
         }
     }
 
@@ -221,6 +273,7 @@ impl CompensationEventTelemetry {
             detail: Some(error_class.to_string()),
             latency_ms: None,
             overridden: None,
+            judge_attempts: Vec::new(),
         }
     }
 
@@ -232,7 +285,20 @@ impl CompensationEventTelemetry {
             detail: None,
             latency_ms: None,
             overridden: None,
+            judge_attempts: Vec::new(),
         }
+    }
+
+    /// Attach provider-attempt records for transport through tool execution.
+    pub fn with_judge_attempts(mut self, attempts: Vec<JudgeAttemptTelemetry>) -> Self {
+        self.judge_attempts = attempts;
+        self
+    }
+
+    /// Remove the attached provider-attempt records before compensation
+    /// serialization. They are written as first-class sidecar records.
+    pub fn take_judge_attempts(&mut self) -> Vec<JudgeAttemptTelemetry> {
+        std::mem::take(&mut self.judge_attempts)
     }
 }
 
@@ -305,6 +371,13 @@ pub enum SessionTelemetryRecord {
         timestamp: DateTime<Utc>,
         #[serde(flatten)]
         attempt: ApiAttemptTelemetry,
+    },
+    JudgeAttempt {
+        session_id: String,
+        invocation_id: String,
+        timestamp: DateTime<Utc>,
+        #[serde(flatten)]
+        attempt: JudgeAttemptTelemetry,
     },
     RetryScheduled {
         session_id: String,
@@ -386,6 +459,40 @@ mod tests {
         }
     }
 
+    fn judge_attempt() -> JudgeAttemptTelemetry {
+        JudgeAttemptTelemetry {
+            attempt: 1,
+            retry_ordinal: 0,
+            request_build_ms: 1,
+            request_ms: 10,
+            response_parse_ms: 2,
+            verdict_parse_ms: 1,
+            total_ms: 14,
+            history_items: 2,
+            system_prompt_bytes: 4000,
+            user_prompt_bytes: 180,
+            model: "provider/judge".to_string(),
+            api_type: ApiType::Responses,
+            reasoning_effort: Some(ReasoningEffort::Low),
+            temperature: Some(0.0),
+            top_p: None,
+            max_output_tokens: Some(128),
+            reasoning_max_tokens: None,
+            configured_timeout_ms: 30_000,
+            tool_count: 0,
+            tool_choice: None,
+            status_code: Some(200),
+            provider_request_id: Some("req-123".to_string()),
+            terminal_class: JudgeAttemptTerminalClass::Verdict,
+            usage: None,
+            termination: Some(ProviderTermination {
+                classification: TerminationClassification::Completed,
+                provider_status: Some("completed".to_string()),
+                provider_reason: None,
+            }),
+        }
+    }
+
     #[test]
     fn api_attempt_serializes_optional_termination_metadata() {
         let with_termination = serde_json::to_value(api_attempt(Some(ProviderTermination {
@@ -406,6 +513,43 @@ mod tests {
 
         let without_termination = serde_json::to_value(api_attempt(None)).unwrap();
         assert!(without_termination.get("termination").is_none());
+    }
+
+    #[test]
+    fn judge_attempt_is_first_class_metadata_only_record() {
+        let record = SessionTelemetryRecord::JudgeAttempt {
+            session_id: "session".to_string(),
+            invocation_id: "invocation".to_string(),
+            timestamp: Utc::now(),
+            attempt: judge_attempt(),
+        };
+        let value = serde_json::to_value(record).unwrap();
+        assert_eq!(value["type"], "judge_attempt");
+        assert_eq!(value["terminal_class"], "verdict");
+        assert_eq!(value["provider_request_id"], "req-123");
+        assert_eq!(value["tool_count"], 0);
+        assert!(value["usage"].is_null());
+        for forbidden in [
+            "command",
+            "reason",
+            "cwd",
+            "request_json",
+            "response_body",
+            "api_key",
+            "authorization",
+        ] {
+            assert!(value.get(forbidden).is_none(), "unexpected {forbidden}");
+        }
+    }
+
+    #[test]
+    fn attached_judge_attempt_does_not_serialize_inside_compensation() {
+        let mut event = CompensationEventTelemetry::judge_verdict("allow", None, 14, false)
+            .with_judge_attempts(vec![judge_attempt()]);
+        let value = serde_json::to_value(&event).unwrap();
+        assert!(value.get("judge_attempts").is_none());
+        assert_eq!(event.take_judge_attempts().len(), 1);
+        assert!(event.take_judge_attempts().is_empty());
     }
 
     #[test]

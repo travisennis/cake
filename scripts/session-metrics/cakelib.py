@@ -7,7 +7,7 @@ Data sources:
   function_call_output, reasoning, hook_event, prompt_context,
   task_start, task_complete, result, skill_activated.
 - Telemetry sidecars: ~/.cache/cake/session-telemetry/{uuid}.ndjson
-  Record types: telemetry_init, api_attempt, retry_scheduled, tool_call,
+  Record types: telemetry_init, api_attempt, judge_attempt, retry_scheduled, tool_call,
   compensation, session_summary. One file can span multiple invocations (continue/resume).
 """
 
@@ -128,6 +128,7 @@ class Invocation:
     invocation_id: str
     init: dict | None = None
     attempts: list[dict] = field(default_factory=list)
+    judge_attempts: list[dict] = field(default_factory=list)
     retries: list[dict] = field(default_factory=list)
     tool_calls: list[dict] = field(default_factory=list)
     compensations: list[dict] = field(default_factory=list)
@@ -269,6 +270,8 @@ def load_telemetry(
                         inv.init = rec
                     elif t == "api_attempt":
                         inv.attempts.append(rec)
+                    elif t == "judge_attempt":
+                        inv.judge_attempts.append(rec)
                     elif t == "retry_scheduled":
                         inv.retries.append(rec)
                     elif t == "tool_call":
