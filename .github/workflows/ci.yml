@@ -1,8 +1,9 @@
 # Primary CI workflow.
 #
 # macOS is the primary development and validation platform for cake. Linux is
-# currently an aspirational compatibility target, so CI keeps Linux blocking at
-# compile level only and runs full correctness checks on macOS.
+# currently an aspirational compatibility target, so CI keeps Linux at compile
+# level plus the Landlock sandbox tests (`Linux Test`) and runs the full
+# correctness checks on macOS.
 
 name: CI
 
@@ -72,6 +73,23 @@ jobs:
           toolchain: 1.96.0
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --all-features
+
+  # Executes the Landlock enforcement path's tests, which are `#[cfg(test)]`
+  # unit tests and do not require the runner kernel to support a specific
+  # Landlock ABI. Scoped to the sandbox module: the rest of the suite already
+  # runs on macOS, and the known timing-flaky unix process tests belong in a
+  # broader Linux coverage effort, not a required security gate.
+  linux-test:
+    name: Linux Test
+    needs: linux-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.96.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --all-features --quiet clients::tools::sandbox
 
   fmt:
     name: Format

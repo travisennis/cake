@@ -16,6 +16,8 @@ The contexts come from each job's `name:` in `.github/workflows/ci.yml`, with ma
 
 `Detect Changes` and `Coverage` are deliberately absent from the required list. `Coverage` carries an `if:` condition, and a conditional job makes a poor required context because its reporting depends on which paths a pull request touched.
 
+`Linux Test` is required alongside `Test`: it reports on every run and covers the Landlock security path.
+
 ## Updating the ruleset
 
 Ruleset edits are repository configuration, not a git change, so they do not travel with the branch. `gh ruleset` can read but not write; updates go through `gh api`. Fetch the ruleset, keep only its editable fields, edit the contexts, and put it back:
@@ -40,7 +42,9 @@ Cake's sandbox is platform-specific, so the runner label decides which enforceme
 
 `Test` and `Coverage` run on `macos-latest`, so the Seatbelt path in `src/clients/tools/sandbox/` is exercised there. `sandbox-exec` behavior and profile handling vary across macOS releases, so a `macos-latest` migration to a new image family can change sandbox test results with no change to Cake. When investigating a sandbox test that began failing without a related code change, check whether the runner image moved before looking for a regression; see [Debugging Sandbox Denials](debugging-sandbox.md).
 
-The Linux side is weaker than the labels suggest. `Linux Check` runs `cargo check --all-features` only, and no CI job runs `cargo test` on Linux, so the Landlock tests in `src/clients/tools/sandbox/linux.rs` are type-checked but never executed. Pinning the Ubuntu label does not address that gap; running the tests would.
+The Linux side runs `cargo check --all-features` (`Linux Check`) plus the sandbox module tests (`Linux Test`), so the Landlock tests in `src/clients/tools/sandbox/linux.rs` execute in CI. `Linux Test` is scoped to `clients::tools::sandbox`; the rest of the suite runs only on macOS, and Linux coverage beyond the sandbox module is a deliberate future step.
+
+The sandbox-module tests are pure unit tests and do not require the runner kernel to support a specific Landlock ABI. If kernel-dependent tests are added later, pin the Ubuntu label and make the tests degrade gracefully for unsupported ABI levels.
 
 Prefer an explicit image label over `*-latest` for a job whose coverage must be stable and explainable. Use `*-latest` only where tracking GitHub's moving default is the intent. Do not add a second label that merely duplicates what `*-latest` currently aliases.
 
