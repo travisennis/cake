@@ -208,6 +208,73 @@ async fn bash_check_diagnostic_retains_request_on_malformed_verdict() {
     );
 }
 
+#[tokio::test]
+async fn bash_check_diagnostic_redacts_verdict_echoing_api_key() {
+    let mock_server = MockServer::start().await;
+    let content = serde_json::json!({
+        "verdict": "allow",
+        "message": "authorize with test-key and retry",
+    })
+    .to_string();
+    let body = chat_response(&content);
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(&mock_server)
+        .await;
+
+    let output = evaluate_with_client_diagnostic(
+        judge_client(&mock_server),
+        &JudgeSettings::default(),
+        None,
+        std::path::Path::new("/work"),
+        "ls",
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        !output.contains("test-key"),
+        "diagnostic verdict output must redact the API key:\n{output}"
+    );
+    assert!(output.contains("Verdict: allow"));
+    assert!(output.contains("Message: authorize with <redacted> and retry"));
+}
+
+#[tokio::test]
+async fn bash_check_diagnostic_redacts_transport_error_echoing_api_key() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(401).set_body_string("invalid api key test-key"))
+        .mount(&mock_server)
+        .await;
+
+    let error = evaluate_with_client_diagnostic(
+        judge_client(&mock_server),
+        &JudgeSettings::default(),
+        None,
+        std::path::Path::new("/work"),
+        "ls",
+    )
+    .await
+    .unwrap_err();
+
+    let rendered = error.to_string();
+    assert!(
+        !rendered.contains("test-key"),
+        "diagnostic transport error must redact the API key:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("HTTP 401 Unauthorized: invalid api key <redacted>"),
+        "expected redacted transport detail, got:\n{rendered}"
+    );
+    assert!(
+        error
+            .downcast_ref::<crate::clients::judge::JudgeError>()
+            .is_some(),
+        "typed JudgeError must remain for exit classification"
+    );
+}
+
 // =============================================================================
 // Judge verdict rendering (allow / block / warn / error)
 // =============================================================================

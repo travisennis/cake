@@ -61,7 +61,7 @@ impl Backend {
         tools: &'a [Tool],
         overrides: &RequestOverrides,
         constraint: Option<FinalOutputConstraint<'a>>,
-    ) -> anyhow::Result<serde_json::Value> {
+    ) -> anyhow::Result<Vec<u8>> {
         match self {
             Self::Responses => {
                 responses::build_request_json(config, history, tools, overrides, constraint)
@@ -77,7 +77,7 @@ impl Backend {
         self,
         client: &reqwest::Client,
         config: &ResolvedModelConfig,
-        request: &serde_json::Value,
+        request: &[u8],
     ) -> anyhow::Result<reqwest::Response> {
         match self {
             Self::Responses => responses::send_request_json(client, config, request).await,

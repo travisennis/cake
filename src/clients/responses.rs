@@ -42,13 +42,19 @@ pub(super) async fn send_request<'a>(
 ///
 /// Keeping construction separate from transport lets opt-in diagnostics show
 /// the effective wire request without duplicating provider transformation.
+///
+/// The body is serialized straight from the typed request so `f32` sampling
+/// fields keep their exact provider-facing form; round-tripping through
+/// `serde_json::Value` would promote each `f32` to an `f64` (for example
+/// turning `0.9` into `0.8999999761581421`) on the wire. Diagnostics parse
+/// these bytes rather than re-serializing a promoted value.
 pub(super) fn build_request_json<'a>(
     config: &ResolvedModelConfig,
     history: &'a [ConversationItem],
     tools: &'a [Tool],
     overrides: &RequestOverrides,
     constraint: Option<FinalOutputConstraint<'a>>,
-) -> anyhow::Result<serde_json::Value> {
+) -> anyhow::Result<Vec<u8>> {
     let strategy = ProviderStrategy::from_config(config);
     let provider_config = strategy.responses_provider_config();
 
@@ -97,14 +103,14 @@ pub(super) fn build_request_json<'a>(
         }),
     };
 
-    serde_json::to_value(prompt).map_err(Into::into)
+    serde_json::to_vec(&prompt).map_err(Into::into)
 }
 
 /// Send one already-built Responses API JSON request.
 pub(super) async fn send_request_json(
     client: &reqwest::Client,
     config: &ResolvedModelConfig,
-    request: &serde_json::Value,
+    request: &[u8],
 ) -> anyhow::Result<reqwest::Response> {
     let strategy = ProviderStrategy::from_config(config);
 
@@ -114,12 +120,17 @@ pub(super) async fn send_request_json(
     );
     debug!(target: "cake", "{url}");
     if tracing::enabled!(tracing::Level::TRACE) {
-        let prompt_json = serde_json::to_string(request)?;
+        let prompt_json = String::from_utf8_lossy(request);
         trace!(target: "cake", "{prompt_json}");
     }
 
     let response = strategy
-        .apply_headers(client.post(&url).json(request))
+        .apply_headers(
+            client
+                .post(&url)
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .body(request.to_vec()),
+        )
         .bearer_auth(&config.api_key)
         .send()
         .await?;

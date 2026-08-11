@@ -43,7 +43,7 @@ pub(super) async fn judge_observed(
 struct ObservedJudgeCall {
     backend: Backend,
     total_start: Instant,
-    request_json: serde_json::Value,
+    request_json: Vec<u8>,
     attempt: JudgeAttemptTelemetry,
     diagnostic: Option<JudgeDiagnostic>,
 }
@@ -270,13 +270,17 @@ fn initial_attempt(client: &JudgeClient, history: &[ConversationItem]) -> JudgeA
 fn initial_diagnostic(
     client: &JudgeClient,
     history: &[ConversationItem],
-    request_json: &serde_json::Value,
+    request_json: &[u8],
 ) -> JudgeDiagnostic {
     let (system_prompt, user_prompt) = prompt_text_refs(history);
+    // The request body already serialized successfully in `build_request_json`,
+    // so parsing it back is best-effort; fall back to null rather than losing
+    // the whole diagnostic.
+    let request_json = serde_json::from_slice(request_json).unwrap_or(serde_json::Value::Null);
     JudgeDiagnostic {
         system_prompt: redact_secret(system_prompt, &client.config.api_key),
         user_prompt: redact_secret(user_prompt, &client.config.api_key),
-        request_json: redact_json(request_json.clone(), &client.config.api_key),
+        request_json: redact_json(request_json, &client.config.api_key),
         assistant_content: None,
         usage: None,
         termination: None,

@@ -14,9 +14,9 @@ use clap::{Parser, Subcommand};
 
 use crate::cli::{CmdRunner, CommandRunOptions};
 use crate::clients::judge::{
-    JudgeClient, JudgeEvaluation, JudgeOutcome, JudgeRequest, JudgeVerdict, evaluate_command,
-    evaluate_command_observed, judge_is_enabled, read_user_rubric, repo_state_digest,
-    resolve_judge_client_config,
+    JudgeClient, JudgeError, JudgeEvaluation, JudgeOutcome, JudgeRequest, JudgeVerdict,
+    evaluate_command, evaluate_command_observed, judge_is_enabled, read_user_rubric,
+    repo_state_digest, resolve_judge_client_config,
 };
 use crate::config::settings::{JUDGE_BYPASS_ENV, JudgeSettings, LoadedSettings};
 use crate::config::{DataDir, ResolvedModelConfig, SettingsLoader};
@@ -145,13 +145,17 @@ async fn evaluate_with_client_diagnostic(
     cwd: &Path,
     command: &str,
 ) -> anyhow::Result<String> {
+    let api_key = client.api_key().to_string();
     let request = JudgeRequest::new(command.to_string(), cwd.to_path_buf(), None)
         .with_repo_digest(repo_state_digest(cwd));
     let evaluation = evaluate_command_observed(&client, settings, request, bypass_env, true).await;
-    render_diagnostic_evaluation(evaluation)
+    render_diagnostic_evaluation(evaluation, &api_key)
 }
 
-fn render_diagnostic_evaluation(evaluation: JudgeEvaluation) -> anyhow::Result<String> {
+fn render_diagnostic_evaluation(
+    evaluation: JudgeEvaluation,
+    api_key: &str,
+) -> anyhow::Result<String> {
     use std::fmt::Write as _;
 
     let JudgeEvaluation {
@@ -163,7 +167,7 @@ fn render_diagnostic_evaluation(evaluation: JudgeEvaluation) -> anyhow::Result<S
         let outcome = outcome?;
         return Ok(format!(
             "WARNING: raw judge diagnostics may contain command text, paths, repository state, reason text, and secrets embedded in those values.\n\n{}",
-            render_outcome(&outcome, Duration::ZERO)
+            redact_secret(&render_outcome(&outcome, Duration::ZERO), api_key)
         ));
     };
     let raw = diagnostic.ok_or_else(|| anyhow::anyhow!("judge diagnostic data was unavailable"))?;
@@ -212,17 +216,39 @@ fn render_diagnostic_evaluation(evaluation: JudgeEvaluation) -> anyhow::Result<S
     );
     match outcome {
         Ok(outcome) => {
-            _ = write!(
-                out,
-                "\n{}",
-                render_outcome(&outcome, Duration::from_millis(attempt.total_ms))
-            );
+            let rendered = render_outcome(&outcome, Duration::from_millis(attempt.total_ms));
+            _ = write!(out, "\n{}", redact_secret(&rendered, api_key));
             Ok(out)
         },
         Err(error) => {
+            let error = redact_judge_error(error, api_key);
             _ = write!(out, "\nJudge error: {error}\n");
             Err(anyhow::Error::new(error).context(out))
         },
+    }
+}
+
+/// Replace every occurrence of a resolved API key with `<redacted>`. An empty
+/// secret is left untouched so callers with no configured key are unaffected.
+fn redact_secret(text: &str, secret: &str) -> String {
+    if secret.is_empty() {
+        text.to_string()
+    } else {
+        text.replace(secret, "<redacted>")
+    }
+}
+
+/// Redact the API key from a [`JudgeError`]'s human-readable fields while
+/// preserving the concrete type, so exit-code classification via
+/// `downcast_ref::<JudgeError>()` still works.
+fn redact_judge_error(error: JudgeError, secret: &str) -> JudgeError {
+    match error {
+        JudgeError::Transport { status, detail } => JudgeError::Transport {
+            status,
+            detail: redact_secret(&detail, secret),
+        },
+        JudgeError::Malformed(message) => JudgeError::Malformed(redact_secret(&message, secret)),
+        other => other,
     }
 }
 

@@ -417,6 +417,12 @@ impl JudgeClient {
         self
     }
 
+    /// The resolved API key, exposed so diagnostic output can redact it from
+    /// model-supplied verdict or error text before printing.
+    pub fn api_key(&self) -> &str {
+        &self.config.api_key
+    }
+
     /// Evaluate one command with a single bounded call.
     ///
     /// The whole lifecycle — request, body read, response parse, and verdict
