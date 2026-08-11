@@ -117,6 +117,14 @@ eval *args:
 eval-check:
     @python3 -m unittest discover -s scripts/evals/tests -v
 
+# Validate the command-safety corpus schema without calling a model provider
+judge-corpus-check:
+    cargo test judge_corpus
+
+# Run the command-safety corpus through the configured live judge (requires credentials and authorized spend)
+judge-corpus:
+    cargo test judge_corpus_live_meets_tolerance -- --ignored --nocapture
+
 # Run the session-metrics suite tests (stdlib only, no network)
 session-metrics-check:
     @python3 -m unittest discover -s scripts/session-metrics/tests -v
