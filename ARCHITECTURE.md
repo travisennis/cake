@@ -15,7 +15,7 @@ Agent loop -----> API backend -----> OpenAI-compatible provider
    +-----> tool registry
               |
               +-----> Read / Edit / Write path validation
-              +-----> Bash command checks and OS sandbox
+              +-----> Bash LLM-judge preflight and OS sandbox
               +-----> toolbox executables (trusted extensions)
    |
    +-----> session transcript / stream output / telemetry
@@ -49,7 +49,7 @@ Built-in Edit and Write calls targeting the same canonical path execute sequenti
 
 ### Host and model-generated commands
 
-Read, Edit, and Write enforce allowed paths in-process. Bash adds deterministic command checks and an operating-system filesystem sandbox: Seatbelt on macOS and Landlock on Linux. Hooks and toolbox executables are trusted control-plane extensions outside that sandbox. [Security](docs/security.md) defines the guarantees and limitations.
+Read, Edit, and Write enforce allowed paths in-process. Bash adds an LLM-judge command-safety preflight (ADR-018) and an operating-system filesystem sandbox: Seatbelt on macOS and Landlock on Linux. Every non-empty command is judged before spawn; the judge is default-on and fail-closed with no deterministic rule floor, and it replaced the compiled `bash_safety` guard. Hooks and toolbox executables are trusted control-plane extensions outside that sandbox. [Security](docs/security.md) defines the guarantees and limitations.
 
 ### Persistence and integrations
 
@@ -79,3 +79,4 @@ Use `src/main.rs` and `cake --help` for CLI shape, `src/config/` for configurati
 - [ADR 011](docs/adr/011-interrupt-handling.md), interrupt handling and graceful shutdown.
 - [ADR 012](docs/adr/012-schema-constrained-final-output.md), schema-constrained final output.
 - [ADR 013](docs/adr/013-per-path-serialization-of-mutating-tool-calls.md), serialization of mutating tool calls.
+- [ADR 018](docs/adr/018-llm-judge-command-gate.md), the LLM judge command gate.

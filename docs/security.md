@@ -4,7 +4,7 @@ This document defines Cake's security intent and limitations. It is the authorit
 
 ## Threat model
 
-Cake treats model-generated tool calls and shell commands as untrusted. It aims to limit filesystem effects to paths allowed by the selected policy and to block a small set of known-destructive command patterns before execution.
+Cake treats model-generated tool calls and shell commands as untrusted. It aims to limit filesystem effects to paths allowed by the selected policy and to judge every Bash command for destructive intent before execution.
 
 Cake does not attempt to make an untrusted model safe to run with arbitrary credentials, network access, trusted hooks, or toolbox executables. The user remains responsible for the repository, configuration, secrets available to child processes, and authority granted through sandbox policy.
 
@@ -32,6 +32,8 @@ Read, Edit, and Write validate target paths in-process. Bash runs every command 
 - Linux uses Landlock and requires a kernel capable of fully enforcing the configured ruleset.
 
 The LLM judge (ADR-018) is the command-safety gate above the OS sandbox. It replaced the compiled `bash_safety` guard: there is no deterministic rule floor. The judge is default-on and fail-closed --- a `block` verdict or any judge failure (missing context, unresolvable model, rubric read failure, timeout, transport error, or malformed verdict) prevents the command from running; a `warn` verdict runs it with guidance prepended. Because the gate is stochastic, its verdicts are model-dependent and must be measured, not trusted: every judge decision (verdict + code + latency, fail-closed class, or bypass) is recorded in the session telemetry sidecar, and the regression corpus at `src/clients/tools/corpus/commands.jsonl` is evaluated by the judge-driven runner (#174).
+
+The judge's only override surface is an explicit allowlist of exact raw-command strings: an allowlisted command is still judged, and a `block` verdict is overridden but recorded with an `overridden` flag. An emergency bypass (`CAKE_JUDGE=off` or `tools.bash.judge.enabled = false`) disables the judge for every command, emits a bypass telemetry event per call, and is off by default. The accepted risks are non-determinism (the same command may be judged differently across calls, models, or days), latency and cost on the hottest tool, and correlated prompt-injection failure --- the judge is weakest exactly where it is needed most. The OS sandbox remains the filesystem boundary; effects the sandbox cannot bound (in-project destruction, remote Git effects) are the residual risk surface.
 
 The judge is workflow protection above the OS sandbox, not a shell parser or a security boundary by itself: it cannot guarantee that every equivalent spelling is recognized, and it covers effects the sandbox cannot (such as remote git pushes).
 
@@ -80,7 +82,7 @@ Validating an untrusted command string by parsing it is the recurring instance o
 ## Related decisions
 
 - [ADR 014](adr/014-sandbox-policy-cli-flag.md), the sandbox policy flag.
-- [ADR 015](adr/015-declarative-command-policy.md), declarative command policy.
 - [ADR 016](adr/016-nested-seatbelt-sandbox-fallback.md), the recognized nested-Seatbelt fallback.
 - [ADR 017](adr/017-trusted-executable-toolbox-tools.md), trusted toolbox executables.
+- [ADR 018](adr/018-llm-judge-command-gate.md), the LLM judge command gate.
 - [ADR 019](adr/019-project-customizable-sandbox-paths.md), project-customizable sandbox paths.

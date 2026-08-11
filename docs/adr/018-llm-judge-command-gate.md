@@ -47,7 +47,7 @@ A telemetry-logged emergency bypass exists (`CAKE_JUDGE=off` or `tools.bash.judg
 
 Verdicts carry stable, namespaced verdict codes, replacing ADR-015's rule IDs so decisions stay auditable without a regex engine; the version-1 vocabulary is enumerated in the implementation plan, and `allow` needs no code. `cake bash check -- <command>` replaces `cake policy check`: it runs the same judge path, prints verdict, code, message, and latency, and never executes the command.
 
-Telemetry is metadata-only: the decision, verdict code, tier, latency, confidence, and the overridden and fail-closed flags, never the command, `reason`, or message text. Judge blocks and fail-closed denials are recorded in `task_complete.permission_denials`.
+Telemetry is metadata-only and never contains the command, `reason`, or message text. The judge decision events in the session telemetry sidecar are compensation records: `judge_verdict` carries the decision and verdict code (`block:<code>`, `warn:<code>`, or `allow` in `detail`), the judge call latency, and an `overridden` flag when an allowlist entry overrode a block; `judge_fail_closed` carries the failure class; `judge_bypass` records that the judge was disabled for the call. Judge blocks and fail-closed denials are recorded in `task_complete.permission_denials`.
 
 Default-on requires the evaluation prerequisites first: #84 (a controlled model-evaluation harness measuring bypass rate, because a judge that is the only gate must be measured, not trusted), #106 Phase A (an external case corpus seeded from the current guard's cases as the judge's regression data), and re-scoped #66 (verdict counters in session telemetry before default-on).
 
@@ -68,7 +68,7 @@ Default-on requires the evaluation prerequisites first: #84 (a controlled model-
 - Supersedes [ADR-015](./015-declarative-command-policy.md), `Declarative Command Policy` (proposed, never accepted): the deterministic policy engine it planned is replaced entirely by the LLM judge. The judge is the only non-sandbox command gate; the declarative engine is not built.
 - Implements the direction of issue #72, `Replace bash_safety With a Default-On LLM Judge and Bash reason Argument`.
 - Reverses the 2026-07-18 conclusion of the [LLM-as-Judge for Bash Command Safety](https://app.notion.com/p/LLM-as-Judge-for-Bash-Command-Safety-3b630bc66cc7810e902de778ea76a5b1) research note in Notion; that note's trade-off analysis is retained as the risk record.
-- Execution plan: `docs/exec-plans/active/llm-judge-command-safety.md`.
+- Execution plan: `docs/exec-plans/completed/llm-judge-command-safety.md`.
 - Preserves ADR-014, `Sandbox Policy CLI Flag`: the judge is independent of the OS sandbox policy and remains active under `danger-full-access` and `CAKE_SANDBOX=off`.
 - Builds on ADR-007, `Per-Session Telemetry Sidecar`, for metadata-only judge decision events.
 - Current durable authorities are `docs/security.md`, `docs/configuration.md`, `docs/integrations.md`, and `ARCHITECTURE.md`.
