@@ -40,7 +40,7 @@ sidecar parsing remain unchanged.
 - [x] (2026-08-11 19:25Z) Carried judge attempts from Bash tool success and error paths into session telemetry without changing compensation or denial behavior.
 - [x] (2026-08-11 19:25Z) Added and verified the opt-in raw diagnostic renderer, sensitivity warning, and API-key redaction boundary.
 - [x] (2026-08-11 19:25Z) Updated the sidecar parser and tests so old and new telemetry coexist, then updated integration and security documentation.
-- [ ] Run final verification and preflight, record results, finish the issue acceptance notes, and archive this plan (completed: focused unit and Python tests, strict Clippy, CC, and module-size checks; remaining: preflight and `just ci`).
+- [x] (2026-08-11 20:20Z) Completed the three-pass large-change preflight, applied its request-parity, timing, failure-diagnostic, and clone-removal findings, and ran `just ci` successfully (1,090 unit tests, integration suites, 92.47% line coverage, no CRAP or complexity regressions, and all repository lints).
 
 ## Surprises & Discoveries
 
@@ -80,6 +80,18 @@ sidecar parsing remain unchanged.
   initial `just cc-check` reported CC 16; extracting the phase state machine to
   `src/clients/judge_observer.rs` reduced the gate to zero exceedances and left
   `src/clients/judge.rs` at 686 lines.
+
+- Observation: failure-path diagnostics initially returned the typed judge
+  error before rendering the captured request. Evidence: preflight showed
+  `render_diagnostic_evaluation` applied `?` to the outcome first; it now
+  renders the sensitive diagnostic as error context while preserving the
+  underlying `JudgeError` for exit classification.
+
+- Observation: the repository instruction-size gate requires new integration
+  guidance to displace existing wording. Evidence: the first final `just ci`
+  run reported `docs/integrations.md` above 1,700 words; consolidating the
+  telemetry and Bash-check contracts reduced it to 1,665 without dropping
+  compatibility or security semantics.
 
 ## Decision Log
 
@@ -134,9 +146,24 @@ sidecar parsing remain unchanged.
 
 ## Outcomes & Retrospective
 
-Implementation is in progress. This section will record the delivered
-behavior, checks, documentation assessment, and any residual risk before the
-plan moves to `docs/exec-plans/completed/`.
+Cake now emits one metadata-only `judge_attempt` sidecar record for each actual
+judge provider call, including phase timing, resolved controls, status/request
+identity, terminal classification, and optional provider-neutral usage and
+termination. Existing verdict, fail-closed, model-visible error, session, and
+machine-output behavior remains intact. `cake bash check --diagnostic` is an
+explicit sensitive surface that renders the exact redacted wire request and
+parsed result on both verdict and failure paths; Chat Completions and Responses
+tests compare it with the captured request body.
+
+Verification covered success, timeout, transport, malformed verdict, missing
+usage, API-key redaction, zero tools, sidecar correlation, old/new metrics
+parsing, and failure exit typing. `just ci` passed with 1,090 unit tests plus
+all integration suites, 92.47% line coverage, no CRAP or cyclomatic-complexity
+regression, and every repository lint. The compatibility impact is additive:
+one optional CLI flag and one new sidecar record type. Residual risk is limited
+to provider-specific response headers or usage shapes not represented by the
+stubbed Chat Completions and Responses fixtures; unknown/missing fields remain
+optional and fail closed under existing judge semantics.
 
 ## Context and Orientation
 
@@ -400,3 +427,7 @@ judge, provider, telemetry, CLI, and security paths.
 Revision note (2026-08-11): recorded the implemented request builder, observed
 phase state machine, sidecar transport, diagnostic redaction, metrics and
 documentation work, plus the complexity-driven observer-module extraction.
+
+Revision note (2026-08-11): completed large-change preflight, retained raw
+diagnostics on typed failure paths, added exact Responses request coverage,
+passed `just ci`, and closed the plan for archival.
