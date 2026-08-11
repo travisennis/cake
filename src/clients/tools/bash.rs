@@ -740,7 +740,7 @@ fn observed_evaluation_to_preflight(
             let class = error.error_class();
             let mut tool_error = fail_closed_tool_error(class, error);
             if let Some(event) = tool_error.compensation_events.first_mut() {
-                *event = event.clone().with_judge_attempts(evaluation.attempts);
+                event.attach_judge_attempts(evaluation.attempts);
             }
             Err(tool_error)
         },
@@ -769,13 +769,13 @@ fn judge_preflight_outcome(
             verdict,
             overridden,
         } => {
-            let event = CompensationEventTelemetry::judge_verdict(
+            let mut event = CompensationEventTelemetry::judge_verdict(
                 verdict.decision.as_str(),
                 verdict.code.as_deref(),
                 latency_ms,
                 overridden,
-            )
-            .with_judge_attempts(attempts);
+            );
+            event.attach_judge_attempts(attempts);
             match verdict.decision {
                 JudgeDecision::Block if !overridden => Err(super::ToolError {
                     message: format!(

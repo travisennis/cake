@@ -290,9 +290,8 @@ impl CompensationEventTelemetry {
     }
 
     /// Attach provider-attempt records for transport through tool execution.
-    pub fn with_judge_attempts(mut self, attempts: Vec<JudgeAttemptTelemetry>) -> Self {
+    pub fn attach_judge_attempts(&mut self, attempts: Vec<JudgeAttemptTelemetry>) {
         self.judge_attempts = attempts;
-        self
     }
 
     /// Remove the attached provider-attempt records before compensation
@@ -544,8 +543,8 @@ mod tests {
 
     #[test]
     fn attached_judge_attempt_does_not_serialize_inside_compensation() {
-        let mut event = CompensationEventTelemetry::judge_verdict("allow", None, 14, false)
-            .with_judge_attempts(vec![judge_attempt()]);
+        let mut event = CompensationEventTelemetry::judge_verdict("allow", None, 14, false);
+        event.attach_judge_attempts(vec![judge_attempt()]);
         let value = serde_json::to_value(&event).unwrap();
         assert!(value.get("judge_attempts").is_none());
         assert_eq!(event.take_judge_attempts().len(), 1);

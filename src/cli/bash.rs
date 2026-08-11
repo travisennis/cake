@@ -159,8 +159,8 @@ fn render_diagnostic_evaluation(evaluation: JudgeEvaluation) -> anyhow::Result<S
         attempts,
         diagnostic,
     } = evaluation;
-    let outcome = outcome?;
     let Some(attempt) = attempts.last() else {
+        let outcome = outcome?;
         return Ok(format!(
             "WARNING: raw judge diagnostics may contain command text, paths, repository state, reason text, and secrets embedded in those values.\n\n{}",
             render_outcome(&outcome, Duration::ZERO)
@@ -210,12 +210,20 @@ fn render_diagnostic_evaluation(evaluation: JudgeEvaluation) -> anyhow::Result<S
         "\nAttempt metadata:\n{}",
         serde_json::to_string_pretty(attempt)?
     );
-    _ = write!(
-        out,
-        "\n{}",
-        render_outcome(&outcome, Duration::from_millis(attempt.total_ms))
-    );
-    Ok(out)
+    match outcome {
+        Ok(outcome) => {
+            _ = write!(
+                out,
+                "\n{}",
+                render_outcome(&outcome, Duration::from_millis(attempt.total_ms))
+            );
+            Ok(out)
+        },
+        Err(error) => {
+            _ = write!(out, "\nJudge error: {error}\n");
+            Err(anyhow::Error::new(error).context(out))
+        },
+    }
 }
 
 /// Resolve the judge model config: the `[tools.bash.judge] model` override if

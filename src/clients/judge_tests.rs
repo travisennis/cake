@@ -288,10 +288,26 @@ async fn judge_works_through_responses_backend() {
     let mut config = test_config(mock_server.uri());
     config.model_config.api_type = crate::config::model::ApiType::Responses;
     let client = JudgeClient::new(config, Duration::from_secs(5));
-    let verdict = client.judge(request("rg -rn foo", None)).await.unwrap();
+    let call = client
+        .judge_observed(request("rg -rn foo", None), true)
+        .await;
+    let verdict = call.result.unwrap();
 
     assert_eq!(verdict.decision, JudgeDecision::Warn);
     assert_eq!(verdict.code.as_deref(), Some("rg-replace-footgun"));
+    assert_eq!(
+        call.attempt.provider_request_id.as_deref(),
+        Some("resp-judge")
+    );
+    assert_eq!(call.attempt.tool_count, 0);
+    assert_eq!(call.attempt.tool_choice, None);
+
+    let diagnostic = call.diagnostic.unwrap();
+    let requests = mock_server.received_requests().await.unwrap();
+    let wire_json: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(diagnostic.request_json, wire_json);
+    assert_eq!(diagnostic.request_json.get("tools"), None);
+    assert_eq!(diagnostic.request_json.get("tool_choice"), None);
 }
 
 #[tokio::test]

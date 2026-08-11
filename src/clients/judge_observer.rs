@@ -55,10 +55,10 @@ impl ObservedJudgeCall {
         include_raw_diagnostic: bool,
     ) -> Result<Self, Box<JudgeCall>> {
         let total_start = Instant::now();
+        let build_start = Instant::now();
         let history = build_judge_history(request, client.user_rubric.as_deref());
         let backend = Backend::from_api_type(client.config.model_config.api_type);
         let mut attempt = initial_attempt(client, &history);
-        let build_start = Instant::now();
         let request_json = backend.build_request_json(
             &client.config,
             &history,

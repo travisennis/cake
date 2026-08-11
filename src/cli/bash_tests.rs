@@ -175,6 +175,39 @@ async fn bash_check_diagnostic_shows_exact_sensitive_request_without_credentials
     assert!(!output.contains("Authorization"));
 }
 
+#[tokio::test]
+async fn bash_check_diagnostic_retains_request_on_malformed_verdict() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(chat_response("not json")))
+        .mount(&mock_server)
+        .await;
+
+    let error = evaluate_with_client_diagnostic(
+        judge_client(&mock_server),
+        &JudgeSettings::default(),
+        None,
+        std::path::Path::new("/work"),
+        "printf test-key",
+    )
+    .await
+    .unwrap_err();
+
+    let rendered = error.to_string();
+    assert!(rendered.contains("WARNING: raw judge diagnostics"));
+    assert!(rendered.contains("Transformed request JSON:"));
+    assert!(rendered.contains("Attempt metadata:"));
+    assert!(rendered.contains("malformed_verdict"));
+    assert!(rendered.contains("Judge error:"));
+    assert!(rendered.contains("printf <redacted>"));
+    assert!(!rendered.contains("test-key"));
+    assert!(
+        error
+            .downcast_ref::<crate::clients::judge::JudgeError>()
+            .is_some()
+    );
+}
+
 // =============================================================================
 // Judge verdict rendering (allow / block / warn / error)
 // =============================================================================
