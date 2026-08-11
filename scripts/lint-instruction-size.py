@@ -66,6 +66,12 @@ INSTRUCTION_FILES = [
 BUDGETS = {
     "AGENTS.md": 950,
     "CONTRIBUTING.md": 1150,
+    # Compatibility-contract authority that grew a mandated section (Bash
+    # `reason`, `cake bash check` exit codes, compensation-record shapes,
+    # Milestone 7 of #72). It sat exactly at the flat 1500 default with no
+    # headroom; the addition displaced ~90 words of redundancy and still
+    # lands over the default, so it gets the standard count-plus-50 budget.
+    "docs/integrations.md": 1700,
 }
 DEFAULT_BUDGET = 1500
 

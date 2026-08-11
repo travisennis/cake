@@ -21,7 +21,7 @@ Retries are bounded. Cake retries transport failures and HTTP `408`, `409`, `429
 
 A parseable `Retry-After` value takes precedence over exponential backoff, but is capped by the active maximum backoff. Transport recovery temporarily disables idle connection reuse. A parseable context-window overflow may be retried once with reduced output and reasoning-token budgets when enough output space remains.
 
-Cake also makes one zero-delay semantic continuation turn when a successful provider response contains partial output but no final assistant message, unless the provider identifies a non-retryable termination such as content filtering, failure, or refusal. This continuation stays in the same session and task, preserves cumulative usage and counters, asks only for the missing final answer, and offers no tools so completed tool work is not repeated. Text mode reports the `semantic_incomplete` retry on stderr; JSON and stream-JSON keep prose progress suppressed. If that turn is also incomplete, Cake emits the existing cut-off outcome once and includes an explicit `cake --resume <UUID> "try again"` command.
+Cake also makes one zero-delay semantic continuation turn when a successful provider response has partial output but no final assistant message, unless the provider identifies non-retryable termination such as content filtering, failure, or refusal. The continuation stays in the same session and task, preserves usage and counters, asks only for the missing final answer, and offers no tools so completed tool work is not repeated. Text mode reports the `semantic_incomplete` retry on stderr; JSON and stream-JSON suppress it. If that turn is also incomplete, Cake emits the cut-off outcome once and includes an explicit `cake --resume <UUID> "try again"` command.
 
 ## Completion JSON
 
@@ -78,9 +78,17 @@ For evidence-backed review of a persisted session, follow the [Analyzing Cake Se
 
 Persisted sessions have operational telemetry under `~/.cache/cake/session-telemetry/{session_id}.ndjson` or the corresponding `CAKE_DATA_DIR` path. A sidecar may span several invocations; `invocation_id` separates them.
 
-Records cover initialization, API attempts, retries, tool calls, and summaries. They include timing and usage metadata but intentionally omit prompts, assistant text, and raw tool-output bodies. Successful `api_attempt` records may include an optional `termination` object with Cake's provider-neutral `classification` and the provider's raw `provider_status` or `provider_reason` when supplied. A `retry_scheduled` record whose reason is `semantic_incomplete` identifies the zero-delay continuation described above. Consumers must tolerate this and other additional enum values or optional fields; older sidecars and providers that omit termination metadata will not contain it. Sidecars are never used for continue, resume, fork, or session discovery.
+Records cover initialization, API attempts, retries, tool calls, and summaries. They include timing and usage metadata but intentionally omit prompts, assistant text, and raw tool-output bodies. Successful `api_attempt` records may include an optional `termination` object with Cake's provider-neutral `classification` and the provider's raw `provider_status` or `provider_reason` when supplied. A `retry_scheduled` record whose reason is `semantic_incomplete` identifies the zero-delay continuation described above. Consumers must tolerate these and other additional enum values or optional fields; older sidecars and providers that omit them remain valid. Sidecars are never used for continue, resume, fork, or session discovery.
 
-A `compensation` record counts one model-compensation event. It carries a `kind` (`json_repair`, `judge_verdict`, `judge_fail_closed`, `judge_bypass`, `same_path_serialization`, `output_truncation`, `context_overflow_retry`, `edit_invalid_arguments`), an optional `detail`, and optional `latency_ms` for judge verdicts. Judge records are metadata only, never the command or reason text. Each counter maps to a compensation that is a deletion candidate when it flatlines at zero for a model (`scripts/session-metrics/README.md`).
+A `compensation` record counts one model-compensation event. It carries a `kind` (`json_repair`, `judge_verdict`, `judge_fail_closed`, `judge_bypass`, `same_path_serialization`, `output_truncation`, `context_overflow_retry`, `edit_invalid_arguments`), optional `detail`, `latency_ms` for judge verdicts, and `overridden` when an allowlist entry overrode a block. Judge details are `block:<code>`, `warn:<code>`, or `allow`; fail-closed details name the failure class. Judge records are metadata only, never the command or reason text. Each counter maps to a compensation that is a deletion candidate when it flatlines at zero for a model (`scripts/session-metrics/README.md`).
+
+## Bash tool and command-safety checks
+
+The Bash tool schema accepts an optional `reason` argument: the model's untrusted self-report of intent. The judge weighs it against the command text; the argument appears in transcripts and session analysis, never in telemetry.
+
+Every non-empty Bash command runs through the LLM judge (ADR-018) before spawn. [Security](security.md) defines the gate semantics and [Configuration](configuration.md) the `[tools.bash.judge]` settings.
+
+`cake bash check -- <command>` reports what the judge would do without executing. It uses the same judge path and prompt as the preflight and exits `0` for a verdict, including an allowlist override or a bypassed judge. Judge errors exit nonzero: timeouts and network, auth, or rate-limit failures exit `2`; other transport failures, malformed verdicts, and refusals exit `1`; an unknown judge model fails settings load with exit `3`.
 
 ## Hook protocol
 
