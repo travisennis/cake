@@ -56,6 +56,32 @@ struct SkillActivation {
     path: PathBuf,
 }
 
+/// The permission-denial label for a judge compensation event, when the event
+/// records a denied command (#123).
+///
+/// A `block` verdict carries its verdict code (`block:<code>` in `detail`) and
+/// a fail-closed denial carries its failure class. `warn` and `allow` verdicts,
+/// bypasses, and allowlist-overridden blocks are not denials --- the command
+/// ran --- so they map to `None`. This keeps the `task_complete` denials
+/// distinct from hook denials (`{name}({call_id}): blocked by hook`) while
+/// carrying the same stable code the telemetry `compensation` record uses.
+pub(super) fn judge_denial_label(event: &CompensationEventTelemetry) -> Option<String> {
+    match event.kind {
+        CompensationKind::JudgeVerdict => {
+            if event.overridden == Some(true) {
+                return None;
+            }
+            let code = event.detail.as_deref()?.strip_prefix("block:")?;
+            Some(format!("judge block: {code}"))
+        },
+        CompensationKind::JudgeFailClosed => {
+            let class = event.detail.as_deref()?;
+            Some(format!("judge fail-closed: {class}"))
+        },
+        _ => None,
+    }
+}
+
 /// Build a synchronous error `ToolRunResult` (no tool execution, immediate).
 fn immediate_tool_error_result(
     name: &str,
@@ -405,6 +431,11 @@ impl Agent {
 
     fn record_tool_results(&mut self, results: Vec<ToolRunResult>) -> anyhow::Result<()> {
         for result in results {
+            self.record_judge_denials(
+                &result.telemetry.name,
+                &result.call_id,
+                &result.compensation_events,
+            );
             self.append_tool_call_telemetry(result.telemetry);
             self.record_compensation_events(result.compensation_events);
             if let Some(skill_activation) = result.skill_activation {
@@ -428,6 +459,27 @@ impl Agent {
     fn record_compensation_events(&mut self, events: Vec<CompensationEventTelemetry>) {
         for event in events {
             self.append_compensation_telemetry(event);
+        }
+    }
+
+    /// Record judge blocks and fail-closed denials into `permission_denials`
+    /// through the same path hook denials use, so `task_complete` reports
+    /// command-safety denials with a distinct label carrying the verdict code
+    /// or failure class (#123). The label comes from the compensation events
+    /// the Bash preflight recorded on the tool error path, so a denial is
+    /// never inferred from a generic tool failure.
+    fn record_judge_denials(
+        &mut self,
+        name: &str,
+        call_id: &str,
+        events: &[CompensationEventTelemetry],
+    ) {
+        for event in events {
+            let Some(label) = judge_denial_label(event) else {
+                continue;
+            };
+            self.permission_denials
+                .push(format!("{name}({call_id}): {label}"));
         }
     }
 
