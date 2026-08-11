@@ -9,7 +9,7 @@ use crate::session_telemetry::{
 };
 use crate::types::{ConversationItem, Role};
 
-use super::{
+use crate::clients::judge::{
     JudgeClient, JudgeDiagnostic, JudgeError, JudgeRequest, JudgeVerdict, assistant_message,
     build_judge_history, parse_verdict, refusal_error,
 };
