@@ -1,5 +1,5 @@
 use super::*;
-use crate::clients::judge::{JudgeDecision, judge_is_enabled};
+use crate::clients::judge::{JudgeDecision, JudgeError, judge_is_enabled};
 use crate::config::ModelDefinition;
 use crate::config::model::ApiType;
 use crate::config::settings::{JudgeSettings, SandboxSettings, SkillSettings};
@@ -152,7 +152,7 @@ async fn bash_check_diagnostic_shows_exact_sensitive_request_without_credentials
         .mount(&mock_server)
         .await;
 
-    let output = evaluate_with_client_diagnostic(
+    let report = evaluate_with_client_diagnostic(
         judge_client(&mock_server),
         &JudgeSettings::default(),
         None,
@@ -162,6 +162,8 @@ async fn bash_check_diagnostic_shows_exact_sensitive_request_without_credentials
     .await
     .unwrap();
 
+    let output = &report.report;
+    assert!(report.error.is_none());
     assert!(output.contains("WARNING: raw judge diagnostics"));
     assert!(output.contains("System prompt:"));
     assert!(output.contains("User prompt:"));
@@ -183,7 +185,7 @@ async fn bash_check_diagnostic_retains_request_on_malformed_verdict() {
         .mount(&mock_server)
         .await;
 
-    let error = evaluate_with_client_diagnostic(
+    let report = evaluate_with_client_diagnostic(
         judge_client(&mock_server),
         &JudgeSettings::default(),
         None,
@@ -191,9 +193,9 @@ async fn bash_check_diagnostic_retains_request_on_malformed_verdict() {
         "printf test-key",
     )
     .await
-    .unwrap_err();
+    .unwrap();
 
-    let rendered = error.to_string();
+    let rendered = &report.report;
     assert!(rendered.contains("WARNING: raw judge diagnostics"));
     assert!(rendered.contains("Transformed request JSON:"));
     assert!(rendered.contains("Attempt metadata:"));
@@ -202,9 +204,8 @@ async fn bash_check_diagnostic_retains_request_on_malformed_verdict() {
     assert!(rendered.contains("printf <redacted>"));
     assert!(!rendered.contains("test-key"));
     assert!(
-        error
-            .downcast_ref::<crate::clients::judge::JudgeError>()
-            .is_some()
+        matches!(report.error, Some(JudgeError::Malformed(_))),
+        "malformed verdict must carry a typed JudgeError for exit classification"
     );
 }
 
@@ -222,7 +223,7 @@ async fn bash_check_diagnostic_redacts_verdict_echoing_api_key() {
         .mount(&mock_server)
         .await;
 
-    let output = evaluate_with_client_diagnostic(
+    let report = evaluate_with_client_diagnostic(
         judge_client(&mock_server),
         &JudgeSettings::default(),
         None,
@@ -232,6 +233,8 @@ async fn bash_check_diagnostic_redacts_verdict_echoing_api_key() {
     .await
     .unwrap();
 
+    let output = &report.report;
+    assert!(report.error.is_none());
     assert!(
         !output.contains("test-key"),
         "diagnostic verdict output must redact the API key:\n{output}"
@@ -248,7 +251,7 @@ async fn bash_check_diagnostic_redacts_transport_error_echoing_api_key() {
         .mount(&mock_server)
         .await;
 
-    let error = evaluate_with_client_diagnostic(
+    let report = evaluate_with_client_diagnostic(
         judge_client(&mock_server),
         &JudgeSettings::default(),
         None,
@@ -256,22 +259,26 @@ async fn bash_check_diagnostic_redacts_transport_error_echoing_api_key() {
         "ls",
     )
     .await
-    .unwrap_err();
+    .unwrap();
 
-    let rendered = error.to_string();
+    let rendered = &report.report;
     assert!(
         !rendered.contains("test-key"),
-        "diagnostic transport error must redact the API key:\n{rendered}"
+        "diagnostic transport report must redact the API key:\n{rendered}"
     );
     assert!(
         rendered.contains("HTTP 401 Unauthorized: invalid api key <redacted>"),
         "expected redacted transport detail, got:\n{rendered}"
     );
     assert!(
-        error
-            .downcast_ref::<crate::clients::judge::JudgeError>()
-            .is_some(),
-        "typed JudgeError must remain for exit classification"
+        matches!(
+            report.error,
+            Some(JudgeError::Transport {
+                status: Some(401),
+                ..
+            })
+        ),
+        "transport failure must carry a typed JudgeError for exit classification"
     );
 }
 
@@ -590,6 +597,30 @@ async fn bash_check_bypass_short_circuits_broken_judge_config() {
         output.contains("Verdict: bypassed"),
         "bypass must win over broken judge setup, got:\n{output}"
     );
+}
+
+#[tokio::test]
+async fn bash_check_diagnostic_bypass_short_circuits_broken_judge_config() {
+    // The `--diagnostic` runner must keep the bypass contract: a disabled
+    // judge returns a bypass report without attempting judge setup, even when
+    // the model configuration is unusable.
+    let mut settings = loaded_settings("https://example.com");
+    settings.default_model = None;
+    settings.judge = JudgeSettings {
+        enabled: false,
+        ..JudgeSettings::default()
+    };
+
+    let report =
+        run_bash_check_diagnostic(&settings, std::path::Path::new("/work"), "git status", None)
+            .await
+            .unwrap();
+    assert!(
+        report.report.contains("Verdict: bypassed"),
+        "bypass must win over broken judge setup, got:\n{}",
+        report.report
+    );
+    assert!(report.error.is_none());
 }
 
 #[test]
