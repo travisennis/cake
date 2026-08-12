@@ -388,7 +388,7 @@ async fn observed_judge_attempt_redacts_provider_echoed_metadata() {
     Mock::given(method("POST"))
         .respond_with(
             ResponseTemplate::new(200)
-                .insert_header("x-request-id", "hdr-test-key-echo")
+                .insert_header("x-request-id", "hdr-test-key-status-echo")
                 .set_body_json(body),
         )
         .mount(&mock_server)
@@ -400,8 +400,8 @@ async fn observed_judge_attempt_redacts_provider_echoed_metadata() {
     assert!(call.result.is_ok());
     assert_eq!(
         call.attempt.provider_request_id.as_deref(),
-        Some("hdr-<redacted>-echo"),
-        "provider-echoed API key must be redacted from the request id"
+        Some("hdr-<redacted>-<redacted>-echo"),
+        "provider-echoed API key and command token must be redacted from the request id"
     );
     assert_eq!(
         call.attempt

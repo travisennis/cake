@@ -36,7 +36,7 @@ pub(super) async fn send_request<'a>(
     constraint: Option<FinalOutputConstraint<'a>>,
 ) -> anyhow::Result<reqwest::Response> {
     let request = build_request_json(config, history, tools, overrides, constraint)?;
-    send_request_json(client, config, &request).await
+    send_request_json(client, config, request).await
 }
 
 /// Build the exact provider-transformed JSON body sent to Chat Completions.
@@ -94,10 +94,13 @@ pub(super) fn build_request_json<'a>(
 }
 
 /// Send one already-built Chat Completions JSON request.
+///
+/// Takes ownership of the serialized body so the transport does not allocate a
+/// second copy that stays live across the HTTP send.
 pub(super) async fn send_request_json(
     client: &reqwest::Client,
     config: &ResolvedModelConfig,
-    request: &[u8],
+    request: Vec<u8>,
 ) -> anyhow::Result<reqwest::Response> {
     let strategy = ProviderStrategy::from_config(config);
 
@@ -107,7 +110,7 @@ pub(super) async fn send_request_json(
     );
     debug!(target: "cake", "{url}");
     if tracing::enabled!(tracing::Level::TRACE) {
-        let request_json = String::from_utf8_lossy(request);
+        let request_json = String::from_utf8_lossy(&request);
         trace!(target: "cake", "{request_json}");
     }
 
@@ -116,7 +119,7 @@ pub(super) async fn send_request_json(
             client
                 .post(&url)
                 .header(reqwest::header::CONTENT_TYPE, "application/json")
-                .body(request.to_vec()),
+                .body(request),
         )
         .bearer_auth(&config.api_key)
         .send()

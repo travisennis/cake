@@ -285,12 +285,12 @@ fn render_diagnostic_evaluation(
         Ok(outcome) => {
             let rendered = render_outcome(&outcome, Duration::from_millis(attempt.total_ms));
             _ = write!(out, "\n{}", redact_secret(&rendered, api_key));
-            (out, Ok(()))
+            (redact_secret(&out, api_key), Ok(()))
         },
         Err(error) => {
             let error = redact_judge_error(error, api_key);
             _ = write!(out, "\nJudge error: {error}\n");
-            (out, Err(error))
+            (redact_secret(&out, api_key), Err(error))
         },
     }
 }

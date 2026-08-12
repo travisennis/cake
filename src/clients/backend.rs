@@ -77,7 +77,7 @@ impl Backend {
         self,
         client: &reqwest::Client,
         config: &ResolvedModelConfig,
-        request: &[u8],
+        request: Vec<u8>,
     ) -> anyhow::Result<reqwest::Response> {
         match self {
             Self::Responses => responses::send_request_json(client, config, request).await,

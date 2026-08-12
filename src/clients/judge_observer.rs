@@ -94,8 +94,11 @@ impl ObservedJudgeCall {
         let request_start = Instant::now();
         let result = tokio::time::timeout(
             self.remaining(client.timeout),
-            self.backend
-                .send_request_json(&client.client, &client.config, &self.request_json),
+            self.backend.send_request_json(
+                &client.client,
+                &client.config,
+                std::mem::take(&mut self.request_json),
+            ),
         )
         .await;
         self.attempt.request_ms = elapsed_ms(request_start);
@@ -373,23 +376,41 @@ fn redact_termination(mut termination: ProviderTermination, secret: &str) -> Pro
 
 /// The API key and judge inputs that must never reach telemetry or the
 /// diagnostic attempt metadata: the resolved key plus the command, reason, and
-/// cwd sent to the judge. A provider could echo any of them in its request id
-/// or termination status/reason.
+/// cwd sent to the judge, and their whitespace- or path-separated tokens. A
+/// provider could echo any of them, in whole or in part, in its request id or
+/// termination status/reason.
 fn redaction_secrets(client: &JudgeClient, request: &JudgeRequest) -> Vec<String> {
-    let mut secrets = vec![client.config.api_key.clone()];
-    secrets.push(request.command.clone());
+    let mut secrets = Vec::new();
+    push_redaction_secret(&mut secrets, &client.config.api_key);
+    push_redaction_secret(&mut secrets, &request.command);
     if let Some(reason) = &request.reason {
-        secrets.push(reason.clone());
+        push_redaction_secret(&mut secrets, reason);
     }
-    secrets.push(request.cwd.to_string_lossy().into_owned());
+    push_redaction_secret(&mut secrets, &request.cwd.to_string_lossy());
     secrets
 }
 
-/// Redact the API key and judge inputs from the provider-controlled attempt
-/// fields (request id, termination status/reason) before the attempt is
-/// recorded, so telemetry and the diagnostic attempt metadata cannot carry
-/// credentials or command/reason/cwd values echoed back by a provider.
+/// Add a value plus its whitespace- or path-separated tokens (length >= 2) so
+/// a provider echoing only part of the command, reason, or cwd still gets the
+/// fragment redacted.
+fn push_redaction_secret(secrets: &mut Vec<String>, value: &str) {
+    secrets.push(value.to_string());
+    for token in value
+        .split_whitespace()
+        .flat_map(|part| part.split(['/', '\\']))
+    {
+        if token.len() >= 2 {
+            secrets.push(token.to_string());
+        }
+    }
+}
+
+/// Redact the API key and judge inputs from the attempt fields before the
+/// attempt is recorded, so telemetry and the diagnostic attempt metadata
+/// cannot carry credentials or command/reason/cwd values echoed back by a
+/// provider.
 fn redact_attempt_provider_metadata(attempt: &mut JudgeAttemptTelemetry, secrets: &[String]) {
+    attempt.model = redact_secrets(&attempt.model, secrets);
     if let Some(id) = &mut attempt.provider_request_id {
         *id = redact_secrets(id, secrets);
     }

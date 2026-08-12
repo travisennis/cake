@@ -282,6 +282,40 @@ async fn bash_check_diagnostic_redacts_transport_error_echoing_api_key() {
     );
 }
 
+#[tokio::test]
+async fn bash_check_diagnostic_redacts_api_key_embedded_in_model_name() {
+    // A custom/local provider may put the API key inside the model identifier;
+    // every rendering of that identifier (metadata lines, attempt metadata,
+    // request JSON) must still omit the key.
+    let mock_server = MockServer::start().await;
+    let body = chat_response(r#"{"verdict":"allow","message":"Safe"}"#);
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(&mock_server)
+        .await;
+
+    let mut config = test_config(mock_server.uri());
+    config.model_config.model = "local/sk-test-key-123-model".to_string();
+    let client = JudgeClient::new(config, Duration::from_secs(5));
+
+    let report = evaluate_with_client_diagnostic(
+        client,
+        &JudgeSettings::default(),
+        None,
+        std::path::Path::new("/work"),
+        "ls",
+    )
+    .await
+    .unwrap();
+
+    assert!(report.error.is_none());
+    assert!(
+        !report.report.contains("test-key"),
+        "API key embedded in the model name must be redacted from the report:\n{}",
+        report.report
+    );
+}
+
 // =============================================================================
 // Judge verdict rendering (allow / block / warn / error)
 // =============================================================================
