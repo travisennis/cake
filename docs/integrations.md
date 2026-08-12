@@ -37,7 +37,7 @@ A redirected stream is an event feed, not a resumable session file. Consumers sh
 
 Malformed model tool arguments remain visible on the `function_call` record and produce a corresponding error output instead of making the stream invalid.
 
-An automatic semantic continuation is visible as the provider's partial conversation records followed by one Cake-authored user continuation message. These records precede the recovered assistant message or terminal cut-off. The invocation still emits exactly one final `task_complete`; recovery does not create another task boundary.
+An automatic semantic continuation is visible as the provider's partial conversation records followed by one Cake-authored user continuation message. The invocation still emits exactly one final `task_complete`; recovery does not create another task boundary.
 
 ## Persisted sessions
 
@@ -72,7 +72,7 @@ An interrupted task can leave a `function_call` whose `function_call_output` was
 
 Serialization snapshots under `src/types/snapshots/` provide canonical record examples.
 
-For evidence-backed review of a persisted session, follow the [Analyzing Cake Sessions runbook](runbooks/analyzing-cake-sessions/index.md). For reactive triage of a recent failed, interrupted, empty, or truncated run, follow the [Debugging Failed Cake Runs runbook](runbooks/debugging-cake.md).
+For evidence-backed review of a persisted session, see the [Analyzing Cake Sessions runbook](runbooks/analyzing-cake-sessions/index.md). For reactive triage of a recent failed run, see the [Debugging Failed Cake Runs runbook](runbooks/debugging-cake.md).
 
 ## Telemetry sidecars
 
@@ -88,7 +88,7 @@ Consumers must tolerate added enum values and optional fields; old sidecars rema
 
 ## Bash tool and command-safety checks
 
-The Bash tool's optional `reason` is the model's untrusted intent report. The judge weighs it against the command; it appears in transcripts, never telemetry.
+The Bash tool's optional `reason` is the model's untrusted intent report; guidance directs agents to supply it for state-changing, destructive-looking, and remote-effect commands, stating the intended effect and known user authorization. The judge weighs it against the command; it appears in transcripts, never telemetry. Each judge evaluation is stateless --- command, cwd, repository digest, and reason only --- so remediation recommends a self-contained guarded command the next request can judge alone.
 
 Every non-empty Bash command runs through the LLM judge (ADR-018) before spawn. [Security](security.md) defines the gate semantics and [Configuration](configuration.md) the `[tools.bash.judge]` settings.
 

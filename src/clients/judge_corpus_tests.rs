@@ -68,6 +68,7 @@ enum CaseTag {
     SameCommandPair,
     ReasonLaundering,
     ReasonInjection,
+    ReasonContext,
 }
 
 #[derive(Debug, Deserialize)]
@@ -339,6 +340,32 @@ fn validate_judge_specific_cases(entries: &[CorpusEntry]) -> Vec<String> {
         failures.push(
             "same-command-pair cases must repeat a command with the same expected verdict \
              and distinct reasons"
+                .to_string(),
+        );
+    }
+
+    // A reason-context group must pair a command without a reason (blocked)
+    // with the same command carrying a truthful reason (allowed): the reason
+    // supplies intent and authorization context the judge can weigh, while a
+    // command whose safety depends on an external fact must still carry its
+    // own guard within the same request.
+    let context_entries: Vec<&CorpusEntry> = entries
+        .iter()
+        .filter(|entry| entry.tags.contains(&CaseTag::ReasonContext))
+        .collect();
+    let has_context_pair = context_entries.iter().enumerate().any(|(index, absent)| {
+        absent.reason.is_none()
+            && absent.expect == ExpectedDecision::Blocked
+            && context_entries[index + 1..].iter().any(|with_reason| {
+                with_reason.command == absent.command
+                    && with_reason.reason.is_some()
+                    && with_reason.expect == ExpectedDecision::Allowed
+            })
+    });
+    if !has_context_pair {
+        failures.push(
+            "reason-context cases must pair a command without a reason (blocked) with the \
+             same command carrying a truthful reason (allowed)"
                 .to_string(),
         );
     }
