@@ -48,6 +48,94 @@ async fn command_hook_receives_stdin_json() {
     assert!(matches!(plan, ToolHookPlan::Execute { .. }));
 }
 
+/// The hook command allows when the payload's structured `tool_input` carries
+/// the expected fragment, and denies otherwise. `fragment` must be a
+/// single-quoted shell literal: the quotes keep its content literal in the
+/// `case` pattern. It must only appear unescaped inside `tool_input`
+/// (`tool_input_json` is a JSON string, so its quotes are escaped within the
+/// payload).
+fn allow_when_tool_input_has(fragment: &str) -> String {
+    format!(
+        "payload=$(cat); case \"$payload\" in *{fragment}*) printf '{{\"permission\":\"allow\"}}' ;; *) printf '{{\"permission\":\"deny\",\"reason\":\"tool_input missing expected field\"}}' ;; esac"
+    )
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn write_hook_sees_repaired_tool_input() {
+    // The `content` string carries a raw newline, invalid strict JSON but
+    // repaired by `repair_json_args` before the Write executor parses it. The
+    // hook must evaluate the repaired `tool_input` (with `path`), not `{}`
+    // (see #185).
+    let runner = runner(
+        &allow_when_tool_input_has("'\"path\":\"/etc/passwd\"'"),
+        false,
+    );
+
+    let arguments = "{\"path\":\"/etc/passwd\",\"content\":\"a\nb\"}";
+    let plan = runner
+        .pre_tool_use("Write", "call-1", arguments)
+        .await
+        .unwrap();
+
+    assert!(matches!(plan, ToolHookPlan::Execute { .. }));
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn edit_hook_sees_repaired_tool_input() {
+    let runner = runner(
+        &allow_when_tool_input_has("'\"path\":\"/etc/passwd\"'"),
+        false,
+    );
+
+    let arguments =
+        "{\"path\":\"/etc/passwd\",\"edits\":[{\"old_text\":\"a\nb\",\"new_text\":\"c\"}]}";
+    let plan = runner
+        .pre_tool_use("Edit", "call-1", arguments)
+        .await
+        .unwrap();
+
+    assert!(matches!(plan, ToolHookPlan::Execute { .. }));
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn toolbox_hook_sees_repaired_tool_input() {
+    // Toolbox arguments are arbitrary JSON per the tool's parameter schema;
+    // a string value with a literal newline is ordinary, and the toolbox
+    // process runs unsandboxed, so the hook view matters most here (#185).
+    let runner = runner(&allow_when_tool_input_has("'\"text\":\"a\\nb\"'"), false);
+
+    let arguments = "{\"text\":\"a\nb\"}";
+    let plan = runner
+        .pre_tool_use("tb__example", "call-1", arguments)
+        .await
+        .unwrap();
+
+    assert!(matches!(plan, ToolHookPlan::Execute { .. }));
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn bash_hook_keeps_strict_tool_input() {
+    // Bash's executor parses strictly without the repair pass, so the hook
+    // must see the same strict view: a payload with a raw newline stays `{}`
+    // and the call fails rather than executing (see #185).
+    let runner = runner(
+        &allow_when_tool_input_has("'\"command\":\"printf ok\"'"),
+        false,
+    );
+
+    let arguments = "{\"command\":\"printf ok\na\"}";
+    let plan = runner
+        .pre_tool_use("Bash", "call-1", arguments)
+        .await
+        .unwrap();
+
+    assert!(matches!(plan, ToolHookPlan::Block { .. }));
+}
+
 #[tokio::test]
 #[cfg(unix)]
 async fn exit_two_blocks_pre_tool_use() {
@@ -671,7 +759,7 @@ fn resolved_decision_label_explicit_allow_is_allow() {
 
 #[test]
 fn tool_input_summary_prefers_command() {
-    let summary = tool_input_summary(r#"{"command":"just ci","timeout":120}"#);
+    let summary = tool_input_summary("Bash", r#"{"command":"just ci","timeout":120}"#);
 
     assert_eq!(summary, "just ci");
 }

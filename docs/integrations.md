@@ -100,6 +100,8 @@ Every non-empty Bash command runs through the LLM judge (ADR-018) before spawn. 
 
 Hook commands receive one versioned JSON object on stdin. Common fields include `session_id`, `task_id`, `transcript_path`, `cwd`, `hook_event_name`, `model`, and `timestamp`. Tool events also carry tool identity and input; post-tool events carry the result.
 
+For tool events, `tool_input` is the parsed arguments object a `PreToolUse` decision gates: after Cake's conservative JSON repair pass for Edit, Write, and `tb__*` tools (the input those executors act on), strict otherwise. `tool_input_json` is the raw argument string as issued. `tool_input` is `{}` only when parsing fails; such a call fails rather than executing.
+
 Exit status and stdout determine behavior:
 
 - status `0` with empty output continues;
