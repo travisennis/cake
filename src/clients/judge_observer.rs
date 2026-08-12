@@ -223,12 +223,11 @@ impl ObservedJudgeCall {
     fn finish(mut self, result: Result<JudgeVerdict, JudgeError>) -> JudgeCall {
         self.attempt.total_ms = elapsed_ms(self.total_start);
         redact_attempt_provider_metadata(&mut self.attempt, &self.api_key, &self.redaction_secrets);
-        // Bound the stored request id only after redaction: truncating first
-        // could cut an echoed secret so its exact-value redaction never
-        // matches and the fragment gets persisted.
-        if let Some(id) = &mut self.attempt.provider_request_id {
-            *id = id.chars().take(256).collect();
-        }
+        // Strictly validate the provider-controlled fields: substring redaction
+        // alone cannot exclude a normalized fragment (for example a command
+        // token echoed without its surrounding quotes), so anything that does
+        // not match the safe boundary is omitted rather than persisted.
+        sanitize_attempt_provider_fields(&mut self.attempt);
         JudgeCall {
             result,
             attempt: self.attempt,
@@ -423,7 +422,9 @@ fn sort_redaction_secrets(secrets: &mut Vec<String>) {
 
 /// Add a value plus its whitespace- or path-separated tokens (length >= 2) so
 /// a provider echoing only part of the command, reason, or cwd still gets the
-/// fragment redacted.
+/// fragment redacted. Tokens are also added with surrounding quotes stripped,
+/// so a normalized echo (for example `secret` from `printf 'secret'`) still
+/// matches.
 fn push_redaction_secret(secrets: &mut Vec<String>, value: &str) {
     secrets.push(value.to_string());
     for token in value
@@ -432,6 +433,10 @@ fn push_redaction_secret(secrets: &mut Vec<String>, value: &str) {
     {
         if token.len() >= 2 {
             secrets.push(token.to_string());
+        }
+        let normalized = token.trim_matches(|c| matches!(c, '\'' | '"' | '`' | '(' | ')'));
+        if normalized.len() >= 2 && normalized != token {
+            secrets.push(normalized.to_string());
         }
     }
 }
@@ -469,6 +474,73 @@ fn redact_secrets(text: &str, secrets: &[String]) -> String {
         redacted = redact_secret(&redacted, secret);
     }
     redacted
+}
+
+/// Strictly validate the provider-controlled attempt fields against a safe
+/// boundary that does not depend on substring matching: termination
+/// status/reason must be a known provider vocabulary value, and the request id
+/// must be a clean opaque identifier after redaction. Anything else is
+/// omitted, so a provider echoing normalized command, reason, cwd, digest, or
+/// rubric fragments cannot get them into telemetry.
+fn sanitize_attempt_provider_fields(attempt: &mut JudgeAttemptTelemetry) {
+    if let Some(id) = &mut attempt.provider_request_id {
+        if is_safe_request_id(id) {
+            *id = id.chars().take(256).collect();
+        } else {
+            attempt.provider_request_id = None;
+        }
+    }
+    if let Some(termination) = &mut attempt.termination {
+        if !termination
+            .provider_status
+            .as_deref()
+            .is_some_and(is_safe_termination_value)
+        {
+            termination.provider_status = None;
+        }
+        if !termination
+            .provider_reason
+            .as_deref()
+            .is_some_and(is_safe_termination_value)
+        {
+            termination.provider_reason = None;
+        }
+    }
+}
+
+/// The known provider termination status/reason vocabulary. Values outside it
+/// are omitted rather than persisted: arbitrary provider text cannot be proven
+/// free of prompt fragments.
+fn is_safe_termination_value(value: &str) -> bool {
+    matches!(
+        value,
+        "stop"
+            | "tool_calls"
+            | "function_call"
+            | "length"
+            | "max_tokens"
+            | "max_output_tokens"
+            | "content_filter"
+            | "refusal"
+            | "refused"
+            | "failed"
+            | "cancelled"
+            | "incomplete"
+            | "in_progress"
+            | "queued"
+            | "completed"
+    )
+}
+
+/// A strict opaque-identifier shape for provider request ids. A redacted id
+/// contains the `<redacted>` marker and fails this shape, so an id that
+/// echoed any known secret or token is omitted entirely.
+fn is_safe_request_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 256
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
 fn elapsed_ms(started: Instant) -> u64 {

@@ -409,34 +409,110 @@ async fn observed_judge_attempt_redacts_provider_echoed_metadata() {
         Some("call-9"),
         "attempt must carry the originating tool call identifier"
     );
+    assert!(
+        call.attempt.provider_request_id.is_none(),
+        "request id echoing provider secrets must be omitted, not persisted"
+    );
+    assert!(
+        call.attempt
+            .termination
+            .as_ref()
+            .and_then(|termination| termination.provider_reason.as_deref())
+            .is_none(),
+        "termination reason outside the safe vocabulary must be omitted"
+    );
+    let serialized = serde_json::to_string(&call.attempt).unwrap();
+    for forbidden in [
+        "test-key",
+        "git status --short",
+        "inspect state",
+        "/work/project",
+        "repo-digest-abc",
+        "rubric-guidance",
+    ] {
+        assert!(!serialized.contains(forbidden), "leaked {forbidden}");
+    }
+}
+
+#[tokio::test]
+async fn observed_judge_attempt_keeps_safe_provider_metadata() {
+    // Clean opaque request ids and known-vocabulary termination values are
+    // still recorded.
+    let mock_server = MockServer::start().await;
+    let body = chat_response(r#"{"verdict":"allow","message":"Safe"}"#);
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-request-id", "req-opaque-123")
+                .set_body_json(body),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let call = judge_client(&mock_server)
+        .judge_observed(request("ls", None), false)
+        .await;
+    assert!(call.result.is_ok());
     assert_eq!(
         call.attempt.provider_request_id.as_deref(),
-        Some("hdr-<redacted>-<redacted>-<redacted>-echo"),
-        "provider-echoed API key, command token, and user rubric must be redacted from the request id"
+        Some("req-opaque-123")
     );
     assert_eq!(
         call.attempt
             .termination
             .as_ref()
             .and_then(|termination| termination.provider_reason.as_deref()),
-        Some("stop <redacted> <redacted> <redacted> in <redacted>"),
-        "provider-echoed command, reason token, repo digest, and cwd must be redacted from the termination reason"
+        Some("stop")
     );
-    let serialized = serde_json::to_string(&call.attempt).unwrap();
-    assert!(!serialized.contains("test-key"));
-    assert!(!serialized.contains("git status --short"));
-    assert!(!serialized.contains("inspect state"));
-    assert!(!serialized.contains("/work/project"));
-    assert!(!serialized.contains("repo-digest-abc"));
-    assert!(!serialized.contains("rubric-guidance"));
 }
 
 #[tokio::test]
-async fn observed_judge_attempt_redacts_long_request_id_before_truncation() {
-    // A request id longer than the 256-char storage bound that echoes a
-    // command longer than the bound must be redacted before truncation:
-    // truncating first would cut the echoed value so its exact-value
-    // redaction never matches and a command prefix leaks into telemetry.
+async fn observed_judge_attempt_omits_normalized_provider_fragments() {
+    // A provider echoing a normalized command fragment (quotes stripped, so
+    // exact substring redaction cannot match) must not get it into telemetry:
+    // the request id and termination reason are omitted.
+    let mock_server = MockServer::start().await;
+    let mut body = chat_response(r#"{"verdict":"allow","message":"Safe"}"#);
+    body["choices"][0]["finish_reason"] = serde_json::json!("secret");
+    body["usage"] = serde_json::json!({
+        "prompt_tokens": 5,
+        "completion_tokens": 3,
+        "total_tokens": 8
+    });
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-request-id", "secret")
+                .set_body_json(body),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let call = judge_client(&mock_server)
+        .judge_observed(request("printf 'secret'", None), false)
+        .await;
+    assert!(call.result.is_ok());
+    assert!(
+        call.attempt.provider_request_id.is_none(),
+        "request id echoing a normalized command token must be omitted"
+    );
+    assert!(
+        call.attempt
+            .termination
+            .as_ref()
+            .and_then(|termination| termination.provider_reason.as_deref())
+            .is_none(),
+        "termination reason echoing a normalized command token must be omitted"
+    );
+    let serialized = serde_json::to_string(&call.attempt).unwrap();
+    assert!(!serialized.contains("secret"));
+}
+
+#[tokio::test]
+async fn observed_judge_attempt_omits_long_echoed_request_id() {
+    // A request id that echoes a command is omitted entirely rather than
+    // stored with a fragment, whether the echo is longer than the storage
+    // bound or normalized.
     let mock_server = MockServer::start().await;
     let body = chat_response(r#"{"verdict":"allow","message":"Safe"}"#);
     let command = format!("echo {}", "secret-echo-token".repeat(20));
@@ -454,26 +530,18 @@ async fn observed_judge_attempt_redacts_long_request_id_before_truncation() {
         .judge_observed(request(&command, None), false)
         .await;
     assert!(call.result.is_ok());
-    let id = call
-        .attempt
-        .provider_request_id
-        .expect("request id recorded");
     assert!(
-        id.len() <= 256,
-        "stored request id must respect the storage bound, got {} chars",
-        id.len()
+        call.attempt.provider_request_id.is_none(),
+        "request id echoing a command must be omitted"
     );
-    assert!(
-        !id.contains("secret-echo-token"),
-        "long echoed command must be redacted before truncation, got: {id}"
-    );
+    let serialized = serde_json::to_string(&call.attempt).unwrap();
+    assert!(!serialized.contains("secret-echo-token"));
 }
 
 #[tokio::test]
-async fn observed_judge_attempt_redacts_overlapping_secrets_longest_first() {
-    // A command containing the API key must be redacted as a whole before the
-    // key: otherwise the containing value no longer matches after the inner
-    // replacement and its fragments survive into telemetry.
+async fn observed_judge_attempt_omits_unknown_termination_reason() {
+    // A termination reason outside the known provider vocabulary (for example
+    // a command containing the API key) is omitted rather than redacted.
     let mock_server = MockServer::start().await;
     let mut body = chat_response(r#"{"verdict":"allow","message":"Safe"}"#);
     body["choices"][0]["finish_reason"] = serde_json::json!("stop xytest-keyzz");
@@ -491,13 +559,13 @@ async fn observed_judge_attempt_redacts_overlapping_secrets_longest_first() {
         .judge_observed(request("xytest-keyzz", None), false)
         .await;
     assert!(call.result.is_ok());
-    assert_eq!(
+    assert!(
         call.attempt
             .termination
             .as_ref()
-            .and_then(|termination| termination.provider_reason.as_deref()),
-        Some("stop <redacted>"),
-        "command containing the API key must be redacted as a whole"
+            .and_then(|termination| termination.provider_reason.as_deref())
+            .is_none(),
+        "termination reason outside the safe vocabulary must be omitted"
     );
     let serialized = serde_json::to_string(&call.attempt).unwrap();
     assert!(!serialized.contains("xytest-keyzz"));
