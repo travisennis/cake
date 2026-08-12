@@ -14,8 +14,9 @@ use clap::{Parser, Subcommand};
 
 use crate::cli::{CmdRunner, CommandRunOptions};
 use crate::clients::judge::{
-    JudgeClient, JudgeOutcome, JudgeRequest, JudgeVerdict, evaluate_command, judge_is_enabled,
-    read_user_rubric, repo_state_digest, resolve_judge_client_config,
+    JudgeClient, JudgeError, JudgeEvaluation, JudgeOutcome, JudgeRequest, JudgeVerdict,
+    evaluate_command, evaluate_command_observed, judge_is_enabled, read_user_rubric,
+    repo_state_digest, resolve_judge_client_config,
 };
 use crate::config::settings::{JUDGE_BYPASS_ENV, JudgeSettings, LoadedSettings};
 use crate::config::{DataDir, ResolvedModelConfig, SettingsLoader};
@@ -36,6 +37,9 @@ enum BashSubcommand {
 
 #[derive(Clone, Debug, Parser)]
 struct BashCheckCommand {
+    /// Show the sensitive effective prompts, request JSON, and parsed response
+    #[arg(long)]
+    diagnostic: bool,
     /// The raw command text to evaluate
     #[arg(value_name = "COMMAND")]
     command: String,
@@ -48,18 +52,36 @@ impl CmdRunner for BashCommand {
         options: &CommandRunOptions<'_>,
     ) -> anyhow::Result<()> {
         match &self.command {
-            BashSubcommand::Check(check) => {
-                let current_dir = std::env::current_dir()
-                    .map_err(|e| anyhow::anyhow!("Failed to get current directory: {e}"))?;
-                let loaded =
-                    SettingsLoader::load_with_profile(Some(&current_dir), options.profile)?;
-                let output =
-                    run_bash_check(&loaded, &current_dir, &check.command, options.model).await?;
-                print!("{output}");
-                Ok(())
-            },
+            BashSubcommand::Check(check) => run_bash_check_command(check, options).await,
         }
     }
+}
+
+/// Run one `cake bash check` (or `check --diagnostic`) against the configured
+/// judge, printing the verdict or raw inspection report to stdout.
+async fn run_bash_check_command(
+    check: &BashCheckCommand,
+    options: &CommandRunOptions<'_>,
+) -> anyhow::Result<()> {
+    let current_dir = std::env::current_dir()
+        .map_err(|e| anyhow::anyhow!("Failed to get current directory: {e}"))?;
+    let loaded = SettingsLoader::load_with_profile(Some(&current_dir), options.profile)?;
+    if check.diagnostic {
+        // The raw diagnostic report always goes to stdout, even when the judge
+        // fails; the fail-closed error is returned separately so it reaches
+        // stderr and the exit code without duplicating the sensitive report
+        // there.
+        let report =
+            run_bash_check_diagnostic(&loaded, &current_dir, &check.command, options.model).await?;
+        print!("{}", report.report);
+        if let Some(error) = report.error {
+            return Err(anyhow::Error::new(error));
+        }
+    } else {
+        let output = run_bash_check(&loaded, &current_dir, &check.command, options.model).await?;
+        print!("{output}");
+    }
+    Ok(())
 }
 
 /// Run one `cake bash check` evaluation against the configured judge.
@@ -74,17 +96,53 @@ async fn run_bash_check(
     command: &str,
     cli_model: Option<&str>,
 ) -> anyhow::Result<String> {
-    // The emergency bypass short-circuits before any judge setup: a disabled
-    // judge must not fail on an unusable model or rubric, because the bypass
-    // is the recovery path when judge configuration is broken.
+    let (client, bypass_env) = resolve_run_judge_client(loaded, cli_model)?;
+    let Some(client) = client else {
+        return Ok(render_outcome(&JudgeOutcome::Bypassed, Duration::ZERO));
+    };
+    evaluate_with_client(client, &loaded.judge, bypass_env.as_deref(), cwd, command).await
+}
+
+/// Run `cake bash check --diagnostic`: render the raw inspection report, which
+/// always goes to stdout even when the judge fails; the fail-closed error is
+/// carried separately so the caller can propagate it for exit classification.
+async fn run_bash_check_diagnostic(
+    loaded: &LoadedSettings,
+    cwd: &Path,
+    command: &str,
+    cli_model: Option<&str>,
+) -> anyhow::Result<DiagnosticReport> {
+    let (client, bypass_env) = resolve_run_judge_client(loaded, cli_model)?;
+    let Some(client) = client else {
+        return Ok(DiagnosticReport {
+            report: render_outcome(&JudgeOutcome::Bypassed, Duration::ZERO),
+            error: None,
+        });
+    };
+    evaluate_with_client_diagnostic(client, &loaded.judge, bypass_env.as_deref(), cwd, command)
+        .await
+}
+
+/// Resolve the judge client for one `cake bash check` run, or `None` when the
+/// judge is disabled.
+///
+/// The emergency bypass short-circuits before any judge setup: a disabled
+/// judge must not fail on an unusable model or rubric, because the bypass is
+/// the recovery path when judge configuration is broken. The `CAKE_JUDGE`
+/// value is returned alongside so the shared judge path re-reads the same
+/// value without another environment access.
+fn resolve_run_judge_client(
+    loaded: &LoadedSettings,
+    cli_model: Option<&str>,
+) -> anyhow::Result<(Option<JudgeClient>, Option<String>)> {
     let bypass_env = std::env::var(JUDGE_BYPASS_ENV).ok();
     if !judge_is_enabled(&loaded.judge, bypass_env.as_deref()) {
-        return Ok(render_outcome(&JudgeOutcome::Bypassed, Duration::ZERO));
+        return Ok((None, bypass_env));
     }
     let model = resolve_judge_model(loaded, cli_model)?;
     let client = JudgeClient::new(model, Duration::from_secs(loaded.judge.timeout_secs))
         .with_user_rubric(read_user_rubric(&loaded.judge).map_err(anyhow::Error::msg)?);
-    evaluate_with_client(client, &loaded.judge, bypass_env.as_deref(), cwd, command).await
+    Ok((Some(client), bypass_env))
 }
 
 /// Evaluate one command with an already-configured judge client and render the
@@ -110,6 +168,179 @@ async fn evaluate_with_client(
     let latency = started.elapsed();
 
     Ok(render_outcome(&outcome, latency))
+}
+
+/// Rendered `--diagnostic` output and the fail-closed judge outcome.
+///
+/// The report always goes to stdout, even when the judge fails; `error` is
+/// `Some` only then, so the caller can propagate a redacted [`JudgeError`] for
+/// exit classification without duplicating the report on stderr.
+struct DiagnosticReport {
+    report: String,
+    error: Option<JudgeError>,
+}
+
+async fn evaluate_with_client_diagnostic(
+    client: JudgeClient,
+    settings: &JudgeSettings,
+    bypass_env: Option<&str>,
+    cwd: &Path,
+    command: &str,
+) -> anyhow::Result<DiagnosticReport> {
+    let secrets = diagnostic_redaction_secrets(&client);
+    let request = JudgeRequest::new(command.to_string(), cwd.to_path_buf(), None)
+        .with_repo_digest(repo_state_digest(cwd));
+    let evaluation = evaluate_command_observed(&client, settings, request, bypass_env, true).await;
+    let (report, result) = render_diagnostic_evaluation(evaluation, &secrets);
+    Ok(DiagnosticReport {
+        report,
+        error: result.err(),
+    })
+}
+
+/// The values the `--diagnostic` output must omit: the resolved API key plus
+/// any configured provider header values (for example `OpenRouter`'s
+/// `HTTP-Referer` and `X-Title`), which an endpoint could echo back in a
+/// response body or error. Ordered longest-first so a value containing
+/// another secret (for example a header value containing the API key) is
+/// redacted before its inner secret is replaced.
+fn diagnostic_redaction_secrets(client: &JudgeClient) -> Vec<String> {
+    let mut secrets = vec![client.api_key().to_string()];
+    secrets.extend(client.provider_header_values());
+    secrets.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+    secrets.dedup();
+    secrets
+}
+
+fn render_diagnostic_evaluation(
+    evaluation: JudgeEvaluation,
+    secrets: &[String],
+) -> (String, Result<(), JudgeError>) {
+    use std::fmt::Write as _;
+
+    let JudgeEvaluation {
+        outcome,
+        attempts,
+        diagnostic,
+    } = evaluation;
+    let Some(attempt) = attempts.last() else {
+        return match outcome {
+            Ok(outcome) => (
+                format!(
+                    "WARNING: raw judge diagnostics may contain command text, paths, repository state, reason text, and secrets embedded in those values.\n\n{}",
+                    redact_all(&render_outcome(&outcome, Duration::ZERO), secrets)
+                ),
+                Ok(()),
+            ),
+            Err(error) => {
+                let error = redact_judge_error(error, secrets);
+                (
+                    format!(
+                        "WARNING: raw judge diagnostics may contain command text, paths, repository state, reason text, and secrets embedded in those values.\n\nJudge error: {error}\n"
+                    ),
+                    Err(error),
+                )
+            },
+        };
+    };
+    let Some(raw) = diagnostic else {
+        let report = "WARNING: raw judge diagnostics contain command text, paths, repository state, reason text, and may contain secrets embedded in those values. Handle this output as sensitive.\n\nJudge diagnostic data was unavailable.\n"
+            .to_string();
+        let result = outcome
+            .err()
+            .map(|error| redact_judge_error(error, secrets));
+        return (report, result.map_or(Ok(()), Err));
+    };
+
+    let mut out = String::from(
+        "WARNING: raw judge diagnostics contain command text, paths, repository state, reason text, and may contain secrets embedded in those values. Handle this output as sensitive.\n\n",
+    );
+    _ = writeln!(out, "Resolved model: {}", attempt.model);
+    _ = writeln!(out, "API type: {:?}", attempt.api_type);
+    _ = writeln!(out, "Reasoning effort: {:?}", attempt.reasoning_effort);
+    _ = writeln!(out, "Temperature: {:?}", attempt.temperature);
+    _ = writeln!(out, "Top-p: {:?}", attempt.top_p);
+    _ = writeln!(out, "Max output tokens: {:?}", attempt.max_output_tokens);
+    _ = writeln!(
+        out,
+        "Reasoning max tokens: {:?}",
+        attempt.reasoning_max_tokens
+    );
+    _ = writeln!(
+        out,
+        "Configured timeout: {}ms",
+        attempt.configured_timeout_ms
+    );
+    _ = writeln!(out, "Tool count: {}", attempt.tool_count);
+    _ = writeln!(out, "Tool choice: {:?}", attempt.tool_choice);
+    _ = writeln!(out, "\nSystem prompt:\n{}", raw.system_prompt);
+    _ = writeln!(out, "\nUser prompt:\n{}", raw.user_prompt);
+    _ = writeln!(
+        out,
+        "\nTransformed request JSON:\n{}",
+        serde_json::to_string_pretty(&raw.request_json).unwrap_or_default()
+    );
+    _ = writeln!(
+        out,
+        "\nParsed response:\n{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "assistant_content": raw.assistant_content,
+            "usage": raw.usage,
+            "termination": raw.termination,
+        }))
+        .unwrap_or_default()
+    );
+    _ = writeln!(
+        out,
+        "\nAttempt metadata:\n{}",
+        serde_json::to_string_pretty(attempt).unwrap_or_default()
+    );
+    match outcome {
+        Ok(outcome) => {
+            let rendered = render_outcome(&outcome, Duration::from_millis(attempt.total_ms));
+            _ = write!(out, "\n{}", redact_all(&rendered, secrets));
+            (redact_all(&out, secrets), Ok(()))
+        },
+        Err(error) => {
+            let error = redact_judge_error(error, secrets);
+            _ = write!(out, "\nJudge error: {error}\n");
+            (redact_all(&out, secrets), Err(error))
+        },
+    }
+}
+
+/// Replace every occurrence of a resolved secret (API key, configured provider
+/// header value) with `<redacted>`. An empty secret is left untouched so
+/// callers with no configured key are unaffected.
+fn redact_secret(text: &str, secret: &str) -> String {
+    if secret.is_empty() {
+        text.to_string()
+    } else {
+        text.replace(secret, "<redacted>")
+    }
+}
+
+/// Apply [`redact_secret`] for every configured secret.
+fn redact_all(text: &str, secrets: &[String]) -> String {
+    let mut redacted = text.to_string();
+    for secret in secrets {
+        redacted = redact_secret(&redacted, secret);
+    }
+    redacted
+}
+
+/// Redact the configured secrets from a [`JudgeError`]'s human-readable fields
+/// while preserving the concrete type, so exit-code classification via
+/// `downcast_ref::<JudgeError>()` still works.
+fn redact_judge_error(error: JudgeError, secrets: &[String]) -> JudgeError {
+    match error {
+        JudgeError::Transport { status, detail } => JudgeError::Transport {
+            status,
+            detail: redact_all(&detail, secrets),
+        },
+        JudgeError::Malformed(message) => JudgeError::Malformed(redact_all(&message, secrets)),
+        other => other,
+    }
 }
 
 /// Resolve the judge model config: the `[tools.bash.judge] model` override if

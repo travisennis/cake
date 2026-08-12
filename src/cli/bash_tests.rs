@@ -1,5 +1,5 @@
 use super::*;
-use crate::clients::judge::{JudgeDecision, judge_is_enabled};
+use crate::clients::judge::{JudgeDecision, JudgeError, judge_is_enabled};
 use crate::config::ModelDefinition;
 use crate::config::model::ApiType;
 use crate::config::settings::{JudgeSettings, SandboxSettings, SkillSettings};
@@ -105,6 +105,27 @@ fn cli_parses_bash_check_without_double_dash() {
 }
 
 #[test]
+fn cli_parses_bash_check_diagnostic_flag() {
+    let args = crate::CodingAssistant::parse_from([
+        "cake",
+        "bash",
+        "check",
+        "--diagnostic",
+        "--",
+        "printf test-key",
+    ]);
+    match args.command {
+        Some(crate::cli::Commands::Bash(cmd)) => match cmd.command {
+            BashSubcommand::Check(check) => {
+                assert!(check.diagnostic);
+                assert_eq!(check.command, "printf test-key");
+            },
+        },
+        other => panic!("expected bash check, got {other:?}"),
+    }
+}
+
+#[test]
 fn bash_help_documents_check_without_executing() {
     let help = BashCommand::command().render_help().to_string();
     assert!(
@@ -114,6 +135,232 @@ fn bash_help_documents_check_without_executing() {
     assert!(
         help.contains("without executing"),
         "help should state check never executes:\n{help}"
+    );
+}
+
+#[tokio::test]
+async fn bash_check_diagnostic_shows_exact_sensitive_request_without_credentials() {
+    let mock_server = MockServer::start().await;
+    let mut body = chat_response(r#"{"verdict":"allow","message":"Safe"}"#);
+    body["usage"] = serde_json::json!({
+        "prompt_tokens": 12,
+        "completion_tokens": 3,
+        "total_tokens": 15
+    });
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(&mock_server)
+        .await;
+
+    let report = evaluate_with_client_diagnostic(
+        judge_client(&mock_server),
+        &JudgeSettings::default(),
+        None,
+        std::path::Path::new("/work"),
+        "printf test-key",
+    )
+    .await
+    .unwrap();
+
+    let output = &report.report;
+    assert!(report.error.is_none());
+    assert!(output.contains("WARNING: raw judge diagnostics"));
+    assert!(output.contains("System prompt:"));
+    assert!(output.contains("User prompt:"));
+    assert!(output.contains("Transformed request JSON:"));
+    assert!(output.contains("Parsed response:"));
+    assert!(output.contains("Attempt metadata:"));
+    assert!(output.contains("Tool count: 0"));
+    assert!(output.contains("Verdict: allow"));
+    assert!(output.contains("printf <redacted>"));
+    assert!(!output.contains("test-key"));
+    assert!(!output.contains("Authorization"));
+}
+
+#[tokio::test]
+async fn bash_check_diagnostic_retains_request_on_malformed_verdict() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(chat_response("not json")))
+        .mount(&mock_server)
+        .await;
+
+    let report = evaluate_with_client_diagnostic(
+        judge_client(&mock_server),
+        &JudgeSettings::default(),
+        None,
+        std::path::Path::new("/work"),
+        "printf test-key",
+    )
+    .await
+    .unwrap();
+
+    let rendered = &report.report;
+    assert!(rendered.contains("WARNING: raw judge diagnostics"));
+    assert!(rendered.contains("Transformed request JSON:"));
+    assert!(rendered.contains("Attempt metadata:"));
+    assert!(rendered.contains("malformed_verdict"));
+    assert!(rendered.contains("Judge error:"));
+    assert!(rendered.contains("printf <redacted>"));
+    assert!(!rendered.contains("test-key"));
+    assert!(
+        matches!(report.error, Some(JudgeError::Malformed(_))),
+        "malformed verdict must carry a typed JudgeError for exit classification"
+    );
+}
+
+#[tokio::test]
+async fn bash_check_diagnostic_redacts_verdict_echoing_api_key() {
+    let mock_server = MockServer::start().await;
+    let content = serde_json::json!({
+        "verdict": "allow",
+        "message": "authorize with test-key and retry",
+    })
+    .to_string();
+    let body = chat_response(&content);
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(&mock_server)
+        .await;
+
+    let report = evaluate_with_client_diagnostic(
+        judge_client(&mock_server),
+        &JudgeSettings::default(),
+        None,
+        std::path::Path::new("/work"),
+        "ls",
+    )
+    .await
+    .unwrap();
+
+    let output = &report.report;
+    assert!(report.error.is_none());
+    assert!(
+        !output.contains("test-key"),
+        "diagnostic verdict output must redact the API key:\n{output}"
+    );
+    assert!(output.contains("Verdict: allow"));
+    assert!(output.contains("Message: authorize with <redacted> and retry"));
+}
+
+#[tokio::test]
+async fn bash_check_diagnostic_redacts_transport_error_echoing_api_key() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(401).set_body_string("invalid api key test-key"))
+        .mount(&mock_server)
+        .await;
+
+    let report = evaluate_with_client_diagnostic(
+        judge_client(&mock_server),
+        &JudgeSettings::default(),
+        None,
+        std::path::Path::new("/work"),
+        "ls",
+    )
+    .await
+    .unwrap();
+
+    let rendered = &report.report;
+    assert!(
+        !rendered.contains("test-key"),
+        "diagnostic transport report must redact the API key:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("HTTP 401 Unauthorized: invalid api key <redacted>"),
+        "expected redacted transport detail, got:\n{rendered}"
+    );
+    assert!(
+        matches!(
+            report.error,
+            Some(JudgeError::Transport {
+                status: Some(401),
+                ..
+            })
+        ),
+        "transport failure must carry a typed JudgeError for exit classification"
+    );
+}
+
+#[tokio::test]
+async fn bash_check_diagnostic_redacts_api_key_embedded_in_model_name() {
+    // A custom/local provider may put the API key inside the model identifier;
+    // every rendering of that identifier (metadata lines, attempt metadata,
+    // request JSON) must still omit the key.
+    let mock_server = MockServer::start().await;
+    let body = chat_response(r#"{"verdict":"allow","message":"Safe"}"#);
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(&mock_server)
+        .await;
+
+    let mut config = test_config(mock_server.uri());
+    config.model_config.model = "local/sk-test-key-123-model".to_string();
+    let client = JudgeClient::new(config, Duration::from_secs(5));
+
+    let report = evaluate_with_client_diagnostic(
+        client,
+        &JudgeSettings::default(),
+        None,
+        std::path::Path::new("/work"),
+        "ls",
+    )
+    .await
+    .unwrap();
+
+    assert!(report.error.is_none());
+    assert!(
+        !report.report.contains("test-key"),
+        "API key embedded in the model name must be redacted from the report:\n{}",
+        report.report
+    );
+}
+
+#[tokio::test]
+async fn bash_check_diagnostic_redacts_configured_provider_headers() {
+    // Configured provider header values (for example `OpenRouter`'s
+    // `HTTP-Referer`/`X-Title`) must be redacted from the report and the
+    // propagated error when an endpoint echoes them back.
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(401).set_body_string("bad key for cake-app referral"))
+        .mount(&mock_server)
+        .await;
+
+    let mut config = test_config(mock_server.uri());
+    config.model_config.provider_headers = Some(crate::config::model::ProviderHeaders {
+        http_referer: Some("https://cake.example".to_string()),
+        x_title: Some("cake-app".to_string()),
+    });
+    let client = JudgeClient::new(config, Duration::from_secs(5));
+
+    let report = evaluate_with_client_diagnostic(
+        client,
+        &JudgeSettings::default(),
+        None,
+        std::path::Path::new("/work"),
+        "ls",
+    )
+    .await
+    .unwrap();
+
+    let rendered = &report.report;
+    assert!(
+        !rendered.contains("cake-app"),
+        "configured provider header value must be redacted from the report:\n{rendered}"
+    );
+    assert!(rendered.contains("bad key for <redacted> referral"));
+    let error = report.error.expect("401 must carry a judge error");
+    assert!(matches!(
+        error,
+        JudgeError::Transport {
+            status: Some(401),
+            ..
+        }
+    ));
+    assert!(
+        !error.to_string().contains("cake-app"),
+        "propagated error must redact the provider header value"
     );
 }
 
@@ -432,6 +679,30 @@ async fn bash_check_bypass_short_circuits_broken_judge_config() {
         output.contains("Verdict: bypassed"),
         "bypass must win over broken judge setup, got:\n{output}"
     );
+}
+
+#[tokio::test]
+async fn bash_check_diagnostic_bypass_short_circuits_broken_judge_config() {
+    // The `--diagnostic` runner must keep the bypass contract: a disabled
+    // judge returns a bypass report without attempting judge setup, even when
+    // the model configuration is unusable.
+    let mut settings = loaded_settings("https://example.com");
+    settings.default_model = None;
+    settings.judge = JudgeSettings {
+        enabled: false,
+        ..JudgeSettings::default()
+    };
+
+    let report =
+        run_bash_check_diagnostic(&settings, std::path::Path::new("/work"), "git status", None)
+            .await
+            .unwrap();
+    assert!(
+        report.report.contains("Verdict: bypassed"),
+        "bypass must win over broken judge setup, got:\n{}",
+        report.report
+    );
+    assert!(report.error.is_none());
 }
 
 #[test]

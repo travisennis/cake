@@ -50,6 +50,14 @@ class LoadTelemetryTest(unittest.TestCase):
                         "working_directory": "/proj",
                     },
                     {
+                        "type": "judge_attempt",
+                        "session_id": "s1",
+                        "invocation_id": "i1",
+                        "attempt": 1,
+                        "terminal_class": "verdict",
+                        "total_ms": 42,
+                    },
+                    {
                         "type": "compensation",
                         "session_id": "s1",
                         "invocation_id": "i1",
@@ -82,6 +90,30 @@ class LoadTelemetryTest(unittest.TestCase):
                 [c["kind"] for c in inv.compensations],
                 ["json_repair", "output_truncation"],
             )
+            self.assertEqual(len(inv.judge_attempts), 1)
+            self.assertEqual(inv.judge_attempts[0]["terminal_class"], "verdict")
+
+    def test_old_sidecar_without_judge_attempts_remains_compatible(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "old.ndjson")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(
+                    json.dumps(
+                        {
+                            "type": "api_attempt",
+                            "session_id": "s1",
+                            "invocation_id": "i1",
+                            "attempt": 1,
+                        }
+                    )
+                    + "\n"
+                )
+
+            invocations, errors = cakelib.load_telemetry(pathlib.Path(directory), None)
+            self.assertEqual(errors, 0)
+            self.assertEqual(len(invocations), 1)
+            self.assertEqual(len(invocations[0].attempts), 1)
+            self.assertEqual(invocations[0].judge_attempts, [])
 
 
 class CountEventsTest(unittest.TestCase):

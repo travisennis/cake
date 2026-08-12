@@ -76,19 +76,25 @@ For evidence-backed review of a persisted session, follow the [Analyzing Cake Se
 
 ## Telemetry sidecars
 
-Persisted sessions have operational telemetry under `~/.cache/cake/session-telemetry/{session_id}.ndjson` or the corresponding `CAKE_DATA_DIR` path. A sidecar may span several invocations; `invocation_id` separates them.
+Operational telemetry lives under `~/.cache/cake/session-telemetry/{session_id}.ndjson` or the corresponding `CAKE_DATA_DIR` path. `invocation_id` separates invocations in one sidecar.
 
-Records cover initialization, API attempts, retries, tool calls, and summaries. They include timing and usage metadata but intentionally omit prompts, assistant text, and raw tool-output bodies. Successful `api_attempt` records may include an optional `termination` object with Cake's provider-neutral `classification` and the provider's raw `provider_status` or `provider_reason` when supplied. A `retry_scheduled` record whose reason is `semantic_incomplete` identifies the zero-delay continuation described above. Consumers must tolerate these and other additional enum values or optional fields; older sidecars and providers that omit them remain valid. Sidecars are never used for continue, resume, fork, or session discovery.
+Records cover initialization, conversation and judge API attempts, retries, tools, and summaries. They omit prompts, assistant text, tool and provider response bodies, judge command/reason/cwd values, and credentials. An `api_attempt` may include provider-neutral `termination`; `retry_scheduled` reason `semantic_incomplete` marks the continuation above.
 
-A `compensation` record counts one model-compensation event. It carries a `kind` (`json_repair`, `judge_verdict`, `judge_fail_closed`, `judge_bypass`, `same_path_serialization`, `output_truncation`, `context_overflow_retry`, `edit_invalid_arguments`), optional `detail`, `latency_ms` for judge verdicts, and `overridden` when an allowlist entry overrode a block. Judge details are `block:<code>`, `warn:<code>`, or `allow`; fail-closed details name the failure class. Judge records are metadata only, never the command or reason text. Each counter maps to a compensation that is a deletion candidate when it flatlines at zero for a model (`scripts/session-metrics/README.md`).
+Each `judge_attempt` identifies the resolved model, API type, request controls, deadline, zero-tool/tool-choice state, prompt byte counts, attempt/retry ordinal, terminal class, optional request identity digests (one-way SHA-256 of the provider request and originating tool call identifiers), usage, and termination. Timings separate construction, request through headers, response parsing, verdict parsing, and total time. Timeout and transport attempts retain elapsed time; absent usage is `null`. The record supplements the verdict or fail-closed compensation.
+
+A `compensation` carries its `kind`, optional `detail`, judge-verdict `latency_ms`, and allowlist `overridden` flag. Kinds are `json_repair`, `judge_verdict`, `judge_fail_closed`, `judge_bypass`, `same_path_serialization`, `output_truncation`, `context_overflow_retry`, and `edit_invalid_arguments`. Judge details are `block:<code>`, `warn:<code>`, or `allow`; fail-closed details name the failure class.
+
+Consumers must tolerate added enum values and optional fields; old sidecars remain valid. Sidecars never drive continue, resume, fork, or session discovery.
 
 ## Bash tool and command-safety checks
 
-The Bash tool schema accepts an optional `reason` argument: the model's untrusted self-report of intent. The judge weighs it against the command text; the argument appears in transcripts and session analysis, never in telemetry.
+The Bash tool's optional `reason` is the model's untrusted intent report. The judge weighs it against the command; it appears in transcripts, never telemetry.
 
 Every non-empty Bash command runs through the LLM judge (ADR-018) before spawn. [Security](security.md) defines the gate semantics and [Configuration](configuration.md) the `[tools.bash.judge]` settings.
 
-`cake bash check -- <command>` reports what the judge would do without executing. It uses the same judge path and prompt as the preflight and exits `0` for a verdict, including an allowlist override or a bypassed judge. Judge errors exit nonzero: timeouts and network, auth, or rate-limit failures exit `2`; other transport failures, malformed verdicts, and refusals exit `1`; an unknown judge model fails settings load with exit `3`.
+`cake bash check -- <command>` uses the preflight path and prompt without executing. Verdicts, allowlist overrides, and bypass exit `0`; timeout, network, auth, and rate-limit errors exit `2`; other transport errors, malformed verdicts, and refusals exit `1`; unknown judge models exit `3`.
+
+`--diagnostic` also prints effective prompts, transformed request JSON, non-secret controls, zero-tool configuration, parsed response, usage, termination, timing, and verdict. Treat it as sensitive: prompts contain commands, paths, repository state, reasons, and possibly embedded secrets. Cake excludes its API key, authorization headers, and provider headers. It remains inspection-only.
 
 ## Hook protocol
 

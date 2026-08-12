@@ -57,7 +57,9 @@ Only enable hook files and toolbox directories you trust. A cloned repository do
 
 Session transcripts can contain prompts, model responses, tool calls, tool outputs, hook records, paths, and other sensitive project information. Protect `~/.local/share/cake/sessions/` or the configured data directory accordingly.
 
-Telemetry sidecars intentionally omit prompt text, assistant text, and raw tool output bodies, but still contain operational metadata. Logs can contain errors, paths, hook diagnostics, and provider information.
+Telemetry sidecars intentionally omit prompt text, assistant text, raw tool output bodies, judge command/reason/cwd values, provider response bodies, credentials, and authorization headers, but still contain operational metadata. Judge-attempt records include model controls, prompt byte counts, phase timing, status, request identity digests (never raw provider-controlled identifiers), termination, and token usage when available.
+
+`cake bash check --diagnostic` is a separate, explicit raw inspection surface. Its stdout contains the effective judge prompts and transformed request JSON, so it exposes the inspected command, working directory, compact repository state, optional model-supplied reason, and any secrets already embedded in those values. It also renders parsed response metadata. Treat that output like a session transcript and avoid redirecting or sharing it unless the destination is trusted. Cake omits its resolved API key, authorization headers, configured provider headers, and unrelated environment variables; enabling the flag does not make normal Bash preflight telemetry raw.
 
 ## Security-sensitive changes
 

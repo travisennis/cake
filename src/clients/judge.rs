@@ -32,14 +32,17 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::clients::agent_runner::build_http_client;
-use crate::clients::backend::Backend;
 use crate::clients::judge_rubric::{VerdictCode, build_judge_system_prompt};
-use crate::clients::retry::RequestOverrides;
 use crate::clients::tools::repair_json_args;
 use crate::config::model::ResolvedModelConfig;
 use crate::config::settings::{JudgeSettings, ModelDefinition};
-use crate::session_telemetry::{ProviderTermination, TerminationClassification};
-use crate::types::{ConversationItem, Role};
+use crate::session_telemetry::{
+    JudgeAttemptSink, JudgeAttemptTelemetry, ProviderTermination, TerminationClassification,
+};
+use crate::types::{ConversationItem, Role, Usage};
+
+#[path = "judge_observer.rs"]
+mod observer;
 
 /// Verdict decision returned by the judge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -133,6 +136,10 @@ pub struct JudgeRequest {
     /// The model's untrusted self-report of intent for the command. The judge
     /// weighs the command over the reason and treats incongruence as a signal.
     pub reason: Option<String>,
+    /// Stable identifier of the originating tool call, when the evaluation
+    /// came from a tool execution. Carried onto the attempt telemetry so
+    /// concurrent Bash calls stay attributable.
+    pub call_id: Option<String>,
 }
 
 impl JudgeRequest {
@@ -143,12 +150,19 @@ impl JudgeRequest {
             cwd,
             repo_digest: None,
             reason,
+            call_id: None,
         }
     }
 
     /// Attach a repository-state digest (see [`repo_state_digest`]).
     pub fn with_repo_digest(mut self, digest: Option<String>) -> Self {
         self.repo_digest = digest;
+        self
+    }
+
+    /// Attach the originating tool call identifier for attempt telemetry.
+    pub fn with_call_id(mut self, call_id: Option<String>) -> Self {
+        self.call_id = call_id;
         self
     }
 }
@@ -170,6 +184,25 @@ pub enum JudgeOutcome {
     },
     /// The judge is disabled (emergency bypass); no judge call was made.
     Bypassed,
+}
+
+/// Sensitive, in-memory details retained only for an explicit diagnostic call.
+#[derive(Debug, Clone, Serialize)]
+pub struct JudgeDiagnostic {
+    pub system_prompt: String,
+    pub user_prompt: String,
+    pub request_json: serde_json::Value,
+    pub assistant_content: Option<String>,
+    pub usage: Option<Usage>,
+    pub termination: Option<ProviderTermination>,
+}
+
+/// Full observed result of the judge path.
+#[derive(Debug)]
+pub struct JudgeEvaluation {
+    pub outcome: Result<JudgeOutcome, JudgeError>,
+    pub attempts: Vec<JudgeAttemptTelemetry>,
+    pub diagnostic: Option<JudgeDiagnostic>,
 }
 
 /// Whether the judge is active for this process.
@@ -216,6 +249,41 @@ pub async fn evaluate_command(
     })
 }
 
+/// Evaluate a command while retaining metadata for every provider attempt.
+///
+/// `include_raw_diagnostic` must only be true for an explicit user-facing
+/// diagnostic action. Normal Bash preflight telemetry remains metadata-only.
+pub async fn evaluate_command_observed(
+    client: &JudgeClient,
+    settings: &JudgeSettings,
+    request: JudgeRequest,
+    bypass_env: Option<&str>,
+    include_raw_diagnostic: bool,
+) -> JudgeEvaluation {
+    if !judge_is_enabled(settings, bypass_env) {
+        return JudgeEvaluation {
+            outcome: Ok(JudgeOutcome::Bypassed),
+            attempts: Vec::new(),
+            diagnostic: None,
+        };
+    }
+    let command = request.command.clone();
+    let call = client.judge_observed(request, include_raw_diagnostic).await;
+    let outcome = call.result.map(|verdict| {
+        let overridden = verdict.decision == JudgeDecision::Block
+            && settings.allowlist.iter().any(|entry| entry == &command);
+        JudgeOutcome::Verdict {
+            verdict,
+            overridden,
+        }
+    });
+    JudgeEvaluation {
+        outcome,
+        attempts: vec![call.attempt],
+        diagnostic: call.diagnostic,
+    }
+}
+
 /// Per-run judge configuration shared by every Bash preflight call.
 ///
 /// Carried on the [`crate::clients::tools::ToolContext`] so the Bash executor
@@ -240,6 +308,11 @@ pub struct JudgeContext {
     /// denies consistently for the whole run. Managed by [`Self::judge_client`];
     /// constructors initialize it empty.
     pub client: OnceLock<Result<Arc<JudgeClient>, JudgeClientError>>,
+    /// Sink that persists finalized judge attempts to the session telemetry
+    /// sidecar as soon as judging completes, so an interrupted command does
+    /// not drop them. `None` when telemetry is disabled (for example the
+    /// standalone `cake bash check` command).
+    pub record_attempt: Option<JudgeAttemptSink>,
 }
 
 /// Why the run's judge client could not be built.
@@ -360,6 +433,27 @@ impl JudgeClient {
         self
     }
 
+    /// The resolved API key, exposed so diagnostic output can redact it from
+    /// model-supplied verdict or error text before printing.
+    pub fn api_key(&self) -> &str {
+        &self.config.api_key
+    }
+
+    /// Configured provider header values (for example `OpenRouter`'s
+    /// `HTTP-Referer` and `X-Title`), exposed so diagnostic output can redact
+    /// them if an endpoint echoes them back.
+    pub fn provider_header_values(&self) -> Vec<String> {
+        let Some(headers) = &self.config.model_config.provider_headers else {
+            return Vec::new();
+        };
+        headers
+            .http_referer
+            .iter()
+            .chain(headers.x_title.iter())
+            .cloned()
+            .collect()
+    }
+
     /// Evaluate one command with a single bounded call.
     ///
     /// The whole lifecycle — request, body read, response parse, and verdict
@@ -374,57 +468,16 @@ impl JudgeClient {
     /// [`JudgeError::Refusal`] when the model refuses to judge. Callers fail
     /// closed on every variant.
     pub async fn judge(&self, request: JudgeRequest) -> Result<JudgeVerdict, JudgeError> {
-        let history = build_judge_history(&request, self.user_rubric.as_deref());
-        let backend = Backend::from_api_type(self.config.model_config.api_type);
+        self.judge_observed(request, false).await.result
+    }
 
-        let result = tokio::time::timeout(self.timeout, async {
-            let response = backend
-                .send_request(
-                    &self.client,
-                    &self.config,
-                    &history,
-                    &[],
-                    &RequestOverrides::default(),
-                    None,
-                )
-                .await
-                .map_err(|e| JudgeError::Transport {
-                    status: None,
-                    detail: e.to_string(),
-                })?;
-
-            if !response.status().is_success() {
-                let status = response.status();
-                let body = response.text().await.unwrap_or_default();
-                return Err(JudgeError::Transport {
-                    status: Some(status.as_u16()),
-                    detail: format!("HTTP {status}: {body}"),
-                });
-            }
-
-            let turn =
-                backend
-                    .parse_response(response)
-                    .await
-                    .map_err(|e| JudgeError::Transport {
-                        status: None,
-                        detail: e.to_string(),
-                    })?;
-
-            let content = assistant_message(&turn.items);
-            let no_verdict_text = content.is_none_or(str::is_empty);
-            if let Some(error) = refusal_error(turn.termination.as_ref(), no_verdict_text) {
-                return Err(error);
-            }
-            let content = content.ok_or_else(|| {
-                JudgeError::Malformed("judge response contained no assistant message".to_string())
-            })?;
-
-            parse_verdict(content)
-        })
-        .await;
-
-        result.unwrap_or(Err(JudgeError::Timeout(self.timeout)))
+    /// Evaluate one command and retain metadata for the bounded provider call.
+    async fn judge_observed(
+        &self,
+        request: JudgeRequest,
+        include_raw_diagnostic: bool,
+    ) -> observer::JudgeCall {
+        observer::judge_observed(self, &request, include_raw_diagnostic).await
     }
 }
 

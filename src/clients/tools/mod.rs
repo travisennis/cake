@@ -645,7 +645,7 @@ impl From<&str> for ToolError {
 }
 
 type ToolFuture = Pin<Box<dyn Future<Output = Result<ToolResult, ToolError>> + Send>>;
-type ToolExecutor = Arc<dyn Fn(Arc<ToolContext>, String) -> ToolFuture + Send + Sync>;
+type ToolExecutor = Arc<dyn Fn(Arc<ToolContext>, String, String) -> ToolFuture + Send + Sync>;
 
 /// Registered behavior for a callable tool.
 ///
@@ -662,7 +662,7 @@ pub(super) struct ToolEntry {
 impl ToolEntry {
     fn new(
         definition: Tool,
-        execute: impl Fn(Arc<ToolContext>, String) -> ToolFuture + Send + Sync + 'static,
+        execute: impl Fn(Arc<ToolContext>, String, String) -> ToolFuture + Send + Sync + 'static,
     ) -> Self {
         Self {
             definition,
@@ -742,13 +742,14 @@ impl ToolRegistry {
         &self,
         context: Arc<ToolContext>,
         name: &str,
+        call_id: &str,
         arguments: &str,
     ) -> Result<ToolResult, ToolError> {
         let Some(entry) = self.find(name) else {
             return Err(ToolError::new(format!("Unknown tool: {name}")));
         };
 
-        (entry.execute)(context, arguments.to_string()).await
+        (entry.execute)(context, call_id.to_string(), arguments.to_string()).await
     }
 
     /// Return whether a tool with `name` is registered.
@@ -1068,11 +1069,11 @@ pub(super) fn get_temp_directories(context: &ToolContext) -> &[PathBuf] {
 // Tool Execution
 // =============================================================================
 
-fn execute_bash_tool(context: Arc<ToolContext>, arguments: String) -> ToolFuture {
-    Box::pin(async move { bash::execute_bash(&context, &arguments).await })
+fn execute_bash_tool(context: Arc<ToolContext>, call_id: String, arguments: String) -> ToolFuture {
+    Box::pin(async move { bash::execute_bash_for_call(&context, &arguments, Some(call_id)).await })
 }
 
-fn execute_edit_tool(context: Arc<ToolContext>, arguments: String) -> ToolFuture {
+fn execute_edit_tool(context: Arc<ToolContext>, _call_id: String, arguments: String) -> ToolFuture {
     Box::pin(async move {
         tokio::task::spawn_blocking(move || edit::execute_edit(&context, &arguments))
             .await
@@ -1081,7 +1082,7 @@ fn execute_edit_tool(context: Arc<ToolContext>, arguments: String) -> ToolFuture
     })
 }
 
-fn execute_read_tool(context: Arc<ToolContext>, arguments: String) -> ToolFuture {
+fn execute_read_tool(context: Arc<ToolContext>, _call_id: String, arguments: String) -> ToolFuture {
     Box::pin(async move {
         tokio::task::spawn_blocking(move || read::execute_read(&context, &arguments))
             .await
@@ -1090,7 +1091,11 @@ fn execute_read_tool(context: Arc<ToolContext>, arguments: String) -> ToolFuture
     })
 }
 
-fn execute_write_tool(context: Arc<ToolContext>, arguments: String) -> ToolFuture {
+fn execute_write_tool(
+    context: Arc<ToolContext>,
+    _call_id: String,
+    arguments: String,
+) -> ToolFuture {
     Box::pin(async move {
         tokio::task::spawn_blocking(move || write::execute_write(&context, &arguments))
             .await

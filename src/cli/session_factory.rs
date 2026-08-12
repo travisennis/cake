@@ -334,6 +334,7 @@ fn attach_judge(
         agent_model: agent_model.clone(),
         models: models.clone(),
         client: std::sync::OnceLock::new(),
+        record_attempt: None,
     };
     Arc::new((**tool_context).clone().with_judge(Some(Arc::new(context))))
 }

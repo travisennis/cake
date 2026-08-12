@@ -1,4 +1,5 @@
 use super::*;
+use sha2::{Digest, Sha256};
 use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -42,6 +43,14 @@ fn request(command: &str, reason: Option<&str>) -> JudgeRequest {
         std::path::PathBuf::from("/work/project"),
         reason.map(str::to_string),
     )
+}
+
+/// The one-way digest the sidecar stores for a provider-controlled identifier;
+/// consumers reproduce it by hashing the raw value with the same function.
+fn digest(value: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(value.as_bytes());
+    hex::encode(hasher.finalize())
 }
 
 fn judge_client(mock_server: &MockServer) -> JudgeClient {
@@ -288,10 +297,499 @@ async fn judge_works_through_responses_backend() {
     let mut config = test_config(mock_server.uri());
     config.model_config.api_type = crate::config::model::ApiType::Responses;
     let client = JudgeClient::new(config, Duration::from_secs(5));
-    let verdict = client.judge(request("rg -rn foo", None)).await.unwrap();
+    let call = client
+        .judge_observed(request("rg -rn foo", None), true)
+        .await;
+    let verdict = call.result.unwrap();
 
     assert_eq!(verdict.decision, JudgeDecision::Warn);
     assert_eq!(verdict.code.as_deref(), Some("rg-replace-footgun"));
+    assert_eq!(
+        call.attempt.provider_request_id.as_deref(),
+        Some(digest("resp-judge").as_str())
+    );
+    assert_eq!(call.attempt.tool_count, 0);
+    assert_eq!(call.attempt.tool_choice, None);
+
+    let diagnostic = call.diagnostic.unwrap();
+    let requests = mock_server.received_requests().await.unwrap();
+    let wire_json: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(diagnostic.request_json, wire_json);
+    assert_eq!(diagnostic.request_json.get("tools"), None);
+    assert_eq!(diagnostic.request_json.get("tool_choice"), None);
+}
+
+#[tokio::test]
+async fn observed_judge_attempt_records_metadata_and_exact_diagnostic_request() {
+    let mock_server = MockServer::start().await;
+    let mut body = chat_response(r#"{"verdict":"allow","message":"Safe"}"#);
+    body["usage"] = serde_json::json!({
+        "prompt_tokens": 21,
+        "completion_tokens": 4,
+        "total_tokens": 25,
+        "prompt_tokens_details": {"cached_tokens": 3},
+        "completion_tokens_details": {"reasoning_tokens": 2}
+    });
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-request-id", "req-judge-123")
+                .set_body_json(body),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let command = "git status --short";
+    let call = judge_client(&mock_server)
+        .judge_observed(request(command, Some("inspect state")), true)
+        .await;
+    assert!(call.result.is_ok());
+    assert_eq!(call.attempt.attempt, 1);
+    assert_eq!(call.attempt.retry_ordinal, 0);
+    assert_eq!(call.attempt.status_code, Some(200));
+    assert_eq!(
+        call.attempt.provider_request_id.as_deref(),
+        Some(digest("req-judge-123").as_str())
+    );
+    assert_eq!(
+        call.attempt.terminal_class,
+        crate::session_telemetry::JudgeAttemptTerminalClass::Verdict
+    );
+    assert_eq!(call.attempt.tool_count, 0);
+    assert_eq!(call.attempt.tool_choice, None);
+    let usage = call.attempt.usage.unwrap();
+    assert_eq!(usage.input_tokens, 21);
+    assert_eq!(usage.input_tokens_details.cached_tokens, 3);
+    assert_eq!(usage.output_tokens, 4);
+    assert_eq!(usage.output_tokens_details.reasoning_tokens, 2);
+
+    let diagnostic = call.diagnostic.unwrap();
+    let requests = mock_server.received_requests().await.unwrap();
+    let wire_json: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(diagnostic.request_json, wire_json);
+    assert_eq!(diagnostic.request_json.get("tools"), None);
+    assert_eq!(diagnostic.request_json.get("tool_choice"), None);
+    assert!(diagnostic.system_prompt.contains("git-history-rewrite"));
+    assert!(diagnostic.user_prompt.contains(command));
+
+    let metadata = serde_json::to_string(&call.attempt).unwrap();
+    assert!(!metadata.contains(command));
+    assert!(!metadata.contains("inspect state"));
+    assert!(!metadata.contains("/work/project"));
+    assert!(!metadata.contains("test-key"));
+}
+
+#[tokio::test]
+async fn observed_judge_attempt_digests_provider_echoed_metadata() {
+    // A provider that echoes the API key or judge inputs back in its request
+    // id, tool call id, or termination reason must not get those values into
+    // the attempt metadata, which is persisted to the telemetry sidecar and
+    // re-rendered as diagnostic "Attempt metadata". Identifiers are stored
+    // only as one-way digests and termination outside the known vocabulary is
+    // omitted, so the raw text never appears.
+    let mock_server = MockServer::start().await;
+    let mut body = chat_response(r#"{"verdict":"allow","message":"Safe"}"#);
+    body["choices"][0]["finish_reason"] =
+        serde_json::json!("stop git status --short inspect repo-digest-abc in /work/project");
+    body["usage"] = serde_json::json!({
+        "prompt_tokens": 5,
+        "completion_tokens": 3,
+        "total_tokens": 8
+    });
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-request-id", "hdr-test-key-status-rubric-guidance-echo")
+                .set_body_json(body),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let client = judge_client(&mock_server).with_user_rubric(Some("rubric-guidance".to_string()));
+    let call = client
+        .judge_observed(
+            request("git status --short", Some("inspect state"))
+                .with_repo_digest(Some("repo-digest-abc".to_string()))
+                .with_call_id(Some("call-9".to_string())),
+            false,
+        )
+        .await;
+    assert!(call.result.is_ok());
+    assert_eq!(
+        call.attempt.call_id.as_deref(),
+        Some(digest("call-9").as_str()),
+        "attempt must carry the digest of the originating tool call identifier"
+    );
+    assert_eq!(
+        call.attempt.provider_request_id.as_deref(),
+        Some(digest("hdr-test-key-status-rubric-guidance-echo").as_str()),
+        "request id echoing provider secrets must be persisted only as a digest"
+    );
+    assert!(
+        call.attempt
+            .termination
+            .as_ref()
+            .and_then(|termination| termination.provider_reason.as_deref())
+            .is_none(),
+        "termination reason outside the safe vocabulary must be omitted"
+    );
+    let serialized = serde_json::to_string(&call.attempt).unwrap();
+    for forbidden in [
+        "test-key",
+        "git status --short",
+        "inspect state",
+        "/work/project",
+        "repo-digest-abc",
+        "rubric-guidance",
+    ] {
+        assert!(!serialized.contains(forbidden), "leaked {forbidden}");
+    }
+}
+
+#[tokio::test]
+async fn observed_judge_attempt_keeps_safe_provider_metadata() {
+    // Clean opaque request ids and known-vocabulary termination values are
+    // still recorded.
+    let mock_server = MockServer::start().await;
+    let body = chat_response(r#"{"verdict":"allow","message":"Safe"}"#);
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-request-id", "req-opaque-123")
+                .set_body_json(body),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let call = judge_client(&mock_server)
+        .judge_observed(request("ls", None), false)
+        .await;
+    assert!(call.result.is_ok());
+    assert_eq!(
+        call.attempt.provider_request_id.as_deref(),
+        Some(digest("req-opaque-123").as_str())
+    );
+    assert_eq!(
+        call.attempt
+            .termination
+            .as_ref()
+            .and_then(|termination| termination.provider_reason.as_deref()),
+        Some("stop")
+    );
+}
+
+#[tokio::test]
+async fn observed_judge_attempt_digests_dirty_call_id() {
+    // The tool call id is provider-controlled free-form text. Whatever a
+    // provider echoes into it, the sidecar stores only a one-way digest, so
+    // raw command, path, or secret text never appears even when the rest of
+    // the attempt is clean.
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(chat_response(r#"{"verdict":"allow","message":"Safe"}"#)),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let client = judge_client(&mock_server);
+    for dirty in [
+        "git status --short in /work/project",
+        // Clean shape, but it embeds the API key.
+        "call-test-key-9",
+    ] {
+        let call = client
+            .judge_observed(
+                request("git status --short", None).with_call_id(Some(dirty.to_string())),
+                false,
+            )
+            .await;
+        assert!(call.result.is_ok());
+        assert_eq!(
+            call.attempt.call_id.as_deref(),
+            Some(digest(dirty).as_str()),
+            "call id {dirty:?} must be stored only as its digest"
+        );
+        let serialized = serde_json::to_string(&call.attempt).unwrap();
+        assert!(!serialized.contains("test-key"));
+        assert!(!serialized.contains("git status --short"));
+        assert!(!serialized.contains("/work/project"));
+    }
+}
+
+#[tokio::test]
+async fn observed_judge_attempt_preserves_whitelisted_termination_with_common_reason_token() {
+    // A model reason containing a short common word (for example `to`) must
+    // not corrupt a valid whitelisted termination value: the boundary is the
+    // vocabulary, not substring redaction.
+    let mock_server = MockServer::start().await;
+    let mut body = chat_response(r#"{"verdict":"allow","message":"Safe"}"#);
+    body["choices"][0]["finish_reason"] = serde_json::json!("stop");
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(&mock_server)
+        .await;
+
+    let call = judge_client(&mock_server)
+        .judge_observed(request("ls", Some("to inspect the directory")), false)
+        .await;
+    assert!(call.result.is_ok());
+    assert_eq!(
+        call.attempt
+            .termination
+            .as_ref()
+            .and_then(|termination| termination.provider_reason.as_deref()),
+        Some("stop"),
+        "whitelisted termination must survive a reason containing the token `to`"
+    );
+}
+
+#[tokio::test]
+async fn observed_judge_attempt_omits_unsent_reasoning_max_tokens_for_chat_completions() {
+    // Chat Completions requests never carry `reasoning.max_tokens`, so the
+    // attempt metadata must not report it as a sent request control.
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(chat_response(r#"{"verdict":"allow","message":"Safe"}"#)),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let mut config = test_config(mock_server.uri());
+    config.model_config.reasoning_max_tokens = Some(4096);
+    let client = JudgeClient::new(config, Duration::from_secs(5));
+    let call = client
+        .judge_observed(request("git status --short", None), false)
+        .await;
+    assert!(call.result.is_ok());
+    assert_eq!(
+        call.attempt.reasoning_max_tokens, None,
+        "Chat Completions never sends reasoning.max_tokens"
+    );
+    let requests = mock_server.received_requests().await.unwrap();
+    let wire_json: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(
+        wire_json.get("reasoning"),
+        None,
+        "the wire request must not carry a reasoning control"
+    );
+}
+
+#[tokio::test]
+async fn observed_judge_attempt_reports_reasoning_max_tokens_for_responses() {
+    // The Responses backend sends `reasoning.max_tokens` when configured, so
+    // the attempt metadata may report it and must match the wire request.
+    let mock_server = MockServer::start().await;
+    let body = serde_json::json!({
+        "id": "resp-judge",
+        "output": [{
+            "type": "message",
+            "id": "msg-1",
+            "status": "completed",
+            "content": [
+                {"type": "output_text", "text": r#"{"verdict":"allow","message":"Safe"}"#}
+            ]
+        }],
+        "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
+    });
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(&mock_server)
+        .await;
+
+    let mut config = test_config(mock_server.uri());
+    config.model_config.api_type = crate::config::model::ApiType::Responses;
+    config.model_config.reasoning_max_tokens = Some(4096);
+    let client = JudgeClient::new(config, Duration::from_secs(5));
+    let call = client
+        .judge_observed(request("rg -rn foo", None), false)
+        .await;
+    assert!(call.result.is_ok());
+    assert_eq!(call.attempt.reasoning_max_tokens, Some(4096));
+    let requests = mock_server.received_requests().await.unwrap();
+    let wire_json: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(wire_json["reasoning"]["max_tokens"], 4096);
+}
+
+#[tokio::test]
+async fn observed_judge_attempt_bounds_normalized_provider_fragments() {
+    // A provider echoing a normalized command fragment (quotes stripped, so
+    // exact substring redaction cannot match) must not get it into telemetry:
+    // the request id is stored only as a digest and the termination reason is
+    // omitted.
+    let mock_server = MockServer::start().await;
+    let mut body = chat_response(r#"{"verdict":"allow","message":"Safe"}"#);
+    body["choices"][0]["finish_reason"] = serde_json::json!("secret");
+    body["usage"] = serde_json::json!({
+        "prompt_tokens": 5,
+        "completion_tokens": 3,
+        "total_tokens": 8
+    });
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-request-id", "secret")
+                .set_body_json(body),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let call = judge_client(&mock_server)
+        .judge_observed(request("printf 'secret'", None), false)
+        .await;
+    assert!(call.result.is_ok());
+    assert_eq!(
+        call.attempt.provider_request_id.as_deref(),
+        Some(digest("secret").as_str()),
+        "request id echoing a normalized command token must be stored only as a digest"
+    );
+    assert!(
+        call.attempt
+            .termination
+            .as_ref()
+            .and_then(|termination| termination.provider_reason.as_deref())
+            .is_none(),
+        "termination reason echoing a normalized command token must be omitted"
+    );
+    let serialized = serde_json::to_string(&call.attempt).unwrap();
+    assert!(!serialized.contains("secret"));
+}
+
+#[tokio::test]
+async fn observed_judge_attempt_digests_long_echoed_request_id() {
+    // A request id that echoes a command is stored only as its digest, never
+    // as raw text with a fragment.
+    let mock_server = MockServer::start().await;
+    let body = chat_response(r#"{"verdict":"allow","message":"Safe"}"#);
+    let command = format!("echo {}", "secret-echo-token".repeat(20));
+    let long_id = format!("{}{}", "x".repeat(100), command);
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-request-id", &long_id)
+                .set_body_json(body),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let call = judge_client(&mock_server)
+        .judge_observed(request(&command, None), false)
+        .await;
+    assert!(call.result.is_ok());
+    assert_eq!(
+        call.attempt.provider_request_id.as_deref(),
+        Some(digest(&long_id).as_str()),
+        "request id echoing a command must be stored only as a digest"
+    );
+    let serialized = serde_json::to_string(&call.attempt).unwrap();
+    assert!(!serialized.contains("secret-echo-token"));
+}
+
+#[tokio::test]
+async fn observed_judge_attempt_omits_unknown_termination_reason() {
+    // A termination reason outside the known provider vocabulary (for example
+    // a command containing the API key) is omitted rather than redacted.
+    let mock_server = MockServer::start().await;
+    let mut body = chat_response(r#"{"verdict":"allow","message":"Safe"}"#);
+    body["choices"][0]["finish_reason"] = serde_json::json!("stop xytest-keyzz");
+    body["usage"] = serde_json::json!({
+        "prompt_tokens": 5,
+        "completion_tokens": 3,
+        "total_tokens": 8
+    });
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(&mock_server)
+        .await;
+
+    let call = judge_client(&mock_server)
+        .judge_observed(request("xytest-keyzz", None), false)
+        .await;
+    assert!(call.result.is_ok());
+    assert!(
+        call.attempt
+            .termination
+            .as_ref()
+            .and_then(|termination| termination.provider_reason.as_deref())
+            .is_none(),
+        "termination reason outside the safe vocabulary must be omitted"
+    );
+    let serialized = serde_json::to_string(&call.attempt).unwrap();
+    assert!(!serialized.contains("xytest-keyzz"));
+    assert!(!serialized.contains("test-key"));
+}
+
+#[tokio::test]
+async fn observed_timeout_records_elapsed_active_phase() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(chat_response(r#"{"verdict":"allow","message":"Safe"}"#))
+                .set_delay(Duration::from_millis(250)),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let client = JudgeClient::new(test_config(mock_server.uri()), Duration::from_millis(50));
+    let call = client
+        .judge_observed(request("git status", None), false)
+        .await;
+    assert!(matches!(call.result, Err(JudgeError::Timeout(_))));
+    assert_eq!(
+        call.attempt.terminal_class,
+        crate::session_telemetry::JudgeAttemptTerminalClass::Timeout
+    );
+    assert!(call.attempt.total_ms >= 40, "{:#?}", call.attempt);
+    assert!(call.attempt.request_ms >= 40, "{:#?}", call.attempt);
+    assert_eq!(call.attempt.configured_timeout_ms, 50);
+}
+
+#[tokio::test]
+async fn observed_malformed_verdict_keeps_missing_usage_explicit() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(chat_response("not json")))
+        .mount(&mock_server)
+        .await;
+
+    let call = judge_client(&mock_server)
+        .judge_observed(request("git status", None), false)
+        .await;
+    assert!(matches!(call.result, Err(JudgeError::Malformed(_))));
+    assert_eq!(call.attempt.status_code, Some(200));
+    assert!(call.attempt.usage.is_none());
+    assert_eq!(
+        call.attempt.terminal_class,
+        crate::session_telemetry::JudgeAttemptTerminalClass::MalformedVerdict
+    );
+    let value = serde_json::to_value(call.attempt).unwrap();
+    assert!(value["usage"].is_null());
+    assert!(value["response_parse_ms"].is_u64());
+    assert!(value["verdict_parse_ms"].is_u64());
+}
+
+#[tokio::test]
+async fn observed_transport_error_has_no_status_or_raw_error_body() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let uri = format!("http://{}", listener.local_addr().unwrap());
+    drop(listener);
+
+    let client = JudgeClient::new(test_config(uri), Duration::from_secs(1));
+    let call = client
+        .judge_observed(request("git status", None), false)
+        .await;
+    assert!(matches!(call.result, Err(JudgeError::Transport { .. })));
+    assert_eq!(call.attempt.status_code, None);
+    assert_eq!(
+        call.attempt.terminal_class,
+        crate::session_telemetry::JudgeAttemptTerminalClass::Transport
+    );
+    let value = serde_json::to_value(call.attempt).unwrap();
+    assert!(value.get("error").is_none());
 }
 
 // =============================================================================

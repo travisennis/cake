@@ -1735,3 +1735,53 @@ mod response_parsing_tests {
         );
     }
 }
+
+#[test]
+fn build_request_json_preserves_f32_sampling_fields_on_the_wire() {
+    let config = ResolvedModelConfig {
+        model_config: ModelConfig {
+            model: "openai/gpt-5".to_string(),
+            api_type: ApiType::ChatCompletions,
+            base_url: "https://api.example.com/v1".to_string(),
+            api_key_env: "TEST_API_KEY".to_string(),
+            provider: None,
+            provider_headers: None,
+            temperature: Some(0.9),
+            top_p: Some(0.9),
+            max_output_tokens: Some(128),
+            reasoning_effort: None,
+            reasoning_summary: None,
+            reasoning_max_tokens: None,
+            providers: vec![],
+        },
+        api_key: "test-key".to_string(),
+    };
+    let history = vec![ConversationItem::Message {
+        role: Role::User,
+        content: "Hello".to_string(),
+        id: None,
+        status: None,
+        timestamp: None,
+    }];
+    let bytes = super::build_request_json(
+        &config,
+        &history,
+        &[] as &[Tool],
+        &crate::clients::retry::RequestOverrides::default(),
+        None,
+    )
+    .unwrap();
+    let wire = String::from_utf8(bytes).unwrap();
+    assert!(
+        wire.contains("\"temperature\":0.9"),
+        "f32 temperature must serialize as 0.9 on the wire, got: {wire}"
+    );
+    assert!(
+        wire.contains("\"top_p\":0.9"),
+        "f32 top_p must serialize as 0.9 on the wire, got: {wire}"
+    );
+    assert!(
+        !wire.contains("0.8999999761581421"),
+        "wire must not contain the f64-promoted sampling value, got: {wire}"
+    );
+}

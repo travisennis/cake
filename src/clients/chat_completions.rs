@@ -35,6 +35,27 @@ pub(super) async fn send_request<'a>(
     overrides: &RequestOverrides,
     constraint: Option<FinalOutputConstraint<'a>>,
 ) -> anyhow::Result<reqwest::Response> {
+    let request = build_request_json(config, history, tools, overrides, constraint)?;
+    send_request_json(client, config, request).await
+}
+
+/// Build the exact provider-transformed JSON body sent to Chat Completions.
+///
+/// Keeping construction separate from transport lets opt-in diagnostics show
+/// the effective wire request without duplicating provider transformation.
+///
+/// The body is serialized straight from the typed request so `f32` sampling
+/// fields keep their exact provider-facing form; round-tripping through
+/// `serde_json::Value` would promote each `f32` to an `f64` (for example
+/// turning `0.9` into `0.8999999761581421`) on the wire. Diagnostics parse
+/// these bytes rather than re-serializing a promoted value.
+pub(super) fn build_request_json<'a>(
+    config: &ResolvedModelConfig,
+    history: &'a [ConversationItem],
+    tools: &'a [Tool],
+    overrides: &RequestOverrides,
+    constraint: Option<FinalOutputConstraint<'a>>,
+) -> anyhow::Result<Vec<u8>> {
     let strategy = ProviderStrategy::from_config(config);
     let mut messages = build_messages(history);
     strategy.transform_chat_messages(&mut messages);
@@ -69,18 +90,37 @@ pub(super) async fn send_request<'a>(
         }),
     };
 
+    serde_json::to_vec(&request).map_err(Into::into)
+}
+
+/// Send one already-built Chat Completions JSON request.
+///
+/// Takes ownership of the serialized body so the transport does not allocate a
+/// second copy that stays live across the HTTP send.
+pub(super) async fn send_request_json(
+    client: &reqwest::Client,
+    config: &ResolvedModelConfig,
+    request: Vec<u8>,
+) -> anyhow::Result<reqwest::Response> {
+    let strategy = ProviderStrategy::from_config(config);
+
     let url = format!(
         "{}/chat/completions",
         config.model_config.base_url.trim_end_matches('/')
     );
     debug!(target: "cake", "{url}");
     if tracing::enabled!(tracing::Level::TRACE) {
-        let request_json = serde_json::to_string(&request)?;
+        let request_json = String::from_utf8_lossy(&request);
         trace!(target: "cake", "{request_json}");
     }
 
     let response = strategy
-        .apply_headers(client.post(&url).json(&request))
+        .apply_headers(
+            client
+                .post(&url)
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .body(request),
+        )
         .bearer_auth(&config.api_key)
         .send()
         .await?;
@@ -163,6 +203,7 @@ pub(super) async fn parse_response(response: reqwest::Response) -> anyhow::Resul
         items,
         usage,
         termination,
+        provider_request_id: chat_response.id,
     })
 }
 

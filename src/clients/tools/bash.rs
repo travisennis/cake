@@ -9,7 +9,7 @@ use tracing::debug;
 #[cfg(test)]
 use crate::clients::judge::JudgeContext;
 use crate::clients::judge::{
-    JudgeDecision, JudgeOutcome, JudgeRequest, evaluate_command, judge_is_enabled,
+    JudgeDecision, JudgeOutcome, JudgeRequest, evaluate_command_observed, judge_is_enabled,
     repo_state_digest,
 };
 use crate::clients::tools::secure_temp_dir::secure_temp_dir;
@@ -374,13 +374,25 @@ fn terminate_process_group(child: &mut Child) {
     let _ = child.start_kill();
 }
 
-/// Execute a bash command
+/// Execute a bash command. Tests use this convenience wrapper; the tool
+/// executor calls [`execute_bash_for_call`] to attribute judge attempts.
+#[cfg(test)]
 pub(super) async fn execute_bash(
     context: &super::ToolContext,
     arguments: &str,
 ) -> Result<super::ToolResult, super::ToolError> {
+    execute_bash_for_call(context, arguments, None).await
+}
+
+/// Execute a bash command, attributing judge attempts to the originating tool
+/// call when `call_id` is present.
+pub(super) async fn execute_bash_for_call(
+    context: &super::ToolContext,
+    arguments: &str,
+    call_id: Option<String>,
+) -> Result<super::ToolResult, super::ToolError> {
     let args = BashExecutionArgs::from_json(arguments, context.sandbox_policy)?;
-    Box::pin(execute_bash_with_args(context, args)).await
+    Box::pin(execute_bash_with_args(context, args, call_id)).await
 }
 
 #[expect(
@@ -390,13 +402,14 @@ pub(super) async fn execute_bash(
 async fn execute_bash_with_args(
     context: &super::ToolContext,
     args: BashExecutionArgs,
+    call_id: Option<String>,
 ) -> Result<super::ToolResult, super::ToolError> {
     // Command-safety preflight: the LLM judge is the only non-sandbox command
     // gate. A block prevents spawn and returns the judge's message as the tool
     // error; a warn prepends guidance to the output; a judge failure fails
     // closed (blocks) with an explanation. Judge decisions and denials are
     // recorded as telemetry compensation events.
-    let preflight = bash_judge_preflight(context, &args).await?;
+    let preflight = bash_judge_preflight(context, &args, call_id).await?;
     let judge_warnings = preflight.warnings;
     let judge_events = preflight.compensation_events;
 
@@ -677,6 +690,7 @@ struct JudgePreflight {
 async fn bash_judge_preflight(
     context: &super::ToolContext,
     args: &BashExecutionArgs,
+    call_id: Option<String>,
 ) -> Result<JudgePreflight, super::ToolError> {
     // Empty commands have nothing to judge; `bash -c ""` is harmless and the
     // old guard skipped them too.
@@ -714,15 +728,51 @@ async fn bash_judge_preflight(
         context.cwd.clone(),
         args.reason.clone(),
     )
-    .with_repo_digest(repo_state_digest(&context.cwd));
+    .with_repo_digest(repo_state_digest(&context.cwd))
+    .with_call_id(call_id);
 
-    let started = std::time::Instant::now();
-    let outcome = evaluate_command(client, &judge.settings, request, bypass_env.as_deref())
-        .await
-        .map_err(|e| fail_closed_tool_error(e.error_class(), e))?;
-    let latency_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+    let evaluation = evaluate_command_observed(
+        client,
+        &judge.settings,
+        request,
+        bypass_env.as_deref(),
+        false,
+    )
+    .await;
+    // Persist finalized attempts as soon as judging completes: an interrupted
+    // command (for example Ctrl-C on a hung Bash call) cancels the agent
+    // future before the tool result and its compensation events are recorded,
+    // so waiting for that path would drop the attempts.
+    record_judge_attempts(judge, &evaluation.attempts);
+    observed_evaluation_to_preflight(evaluation)
+}
 
-    judge_preflight_outcome(outcome, latency_ms)
+/// Persist finalized judge attempts through the run's telemetry sink, if any.
+fn record_judge_attempts(
+    judge: &crate::clients::judge::JudgeContext,
+    attempts: &[crate::session_telemetry::JudgeAttemptTelemetry],
+) {
+    if let Some(sink) = &judge.record_attempt {
+        for attempt in attempts {
+            sink.record(attempt.clone());
+        }
+    }
+}
+
+fn observed_evaluation_to_preflight(
+    evaluation: crate::clients::judge::JudgeEvaluation,
+) -> Result<JudgePreflight, super::ToolError> {
+    let latency_ms = evaluation
+        .attempts
+        .last()
+        .map_or(0, |attempt| attempt.total_ms);
+    match evaluation.outcome {
+        Ok(outcome) => judge_preflight_outcome(outcome, latency_ms),
+        Err(error) => {
+            let class = error.error_class();
+            Err(fail_closed_tool_error(class, error))
+        },
+    }
 }
 
 /// Map a judge-path outcome to the preflight result: the warnings to prepend
@@ -865,7 +915,7 @@ async fn execute_bash_with_judge_in(
     let mut context = super::ToolContext::from_current_process();
     context.cwd = cwd.to_path_buf();
     context.judge = judge;
-    Box::pin(execute_bash_with_args(&context, args)).await
+    Box::pin(execute_bash_with_args(&context, args, None)).await
 }
 
 /// A judge context with the emergency bypass enabled, used by tests that
@@ -902,6 +952,7 @@ fn bypassed_judge_context() -> std::sync::Arc<JudgeContext> {
         },
         models: HashMap::new(),
         client: std::sync::OnceLock::new(),
+        record_attempt: None,
     })
 }
 
