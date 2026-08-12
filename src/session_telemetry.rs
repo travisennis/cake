@@ -129,6 +129,12 @@ pub struct JudgeAttemptTelemetry {
     pub tool_count: usize,
     pub tool_choice: Option<String>,
     pub status_code: Option<u16>,
+    /// Stable identifier of the originating tool call, when the attempt came
+    /// from a tool execution: concurrent Bash calls record attempts in
+    /// completion order, so consumers use this to attribute an attempt to its
+    /// tool call and verdict.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
     pub provider_request_id: Option<String>,
     pub terminal_class: JudgeAttemptTerminalClass,
     pub usage: Option<Usage>,
@@ -568,6 +574,7 @@ mod tests {
             tool_count: 0,
             tool_choice: None,
             status_code: Some(200),
+            call_id: None,
             provider_request_id: Some("req-123".to_string()),
             terminal_class: JudgeAttemptTerminalClass::Verdict,
             usage: None,

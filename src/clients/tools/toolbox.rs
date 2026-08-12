@@ -48,7 +48,7 @@ pub fn toolbox_tool_entry(tool: ToolboxTool, session_id: uuid::Uuid) -> ToolEntr
     };
     let tool = Arc::new(tool);
     let session_id = session_id.to_string();
-    ToolEntry::new(definition, move |context, arguments| {
+    ToolEntry::new(definition, move |context, _call_id, arguments| {
         let tool = Arc::clone(&tool);
         let session_id = session_id.clone();
         Box::pin(

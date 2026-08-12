@@ -349,7 +349,7 @@ impl Agent {
                 let start = Instant::now();
                 let result = self
                     .tools
-                    .execute(Arc::clone(&self.tool_context), &name, &arguments)
+                    .execute(Arc::clone(&self.tool_context), &name, &call_id, &arguments)
                     .await;
                 let hook_result = result
                     .as_ref()

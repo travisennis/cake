@@ -65,7 +65,7 @@ impl ObservedJudgeCall {
         let build_start = Instant::now();
         let history = build_judge_history(request, client.user_rubric.as_deref());
         let backend = Backend::from_api_type(client.config.model_config.api_type);
-        let mut attempt = initial_attempt(client, &history);
+        let mut attempt = initial_attempt(client, request, &history);
         let request_json = backend.build_request_json(
             &client.config,
             &history,
@@ -255,7 +255,11 @@ impl JudgeCall {
     }
 }
 
-fn initial_attempt(client: &JudgeClient, history: &[ConversationItem]) -> JudgeAttemptTelemetry {
+fn initial_attempt(
+    client: &JudgeClient,
+    request: &JudgeRequest,
+    history: &[ConversationItem],
+) -> JudgeAttemptTelemetry {
     let (system_prompt, user_prompt) = prompt_text_refs(history);
     JudgeAttemptTelemetry {
         attempt: 1,
@@ -279,6 +283,7 @@ fn initial_attempt(client: &JudgeClient, history: &[ConversationItem]) -> JudgeA
         tool_count: 0,
         tool_choice: None,
         status_code: None,
+        call_id: request.call_id.clone(),
         provider_request_id: None,
         terminal_class: JudgeAttemptTerminalClass::Transport,
         usage: None,

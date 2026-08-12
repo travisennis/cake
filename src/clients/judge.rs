@@ -136,6 +136,10 @@ pub struct JudgeRequest {
     /// The model's untrusted self-report of intent for the command. The judge
     /// weighs the command over the reason and treats incongruence as a signal.
     pub reason: Option<String>,
+    /// Stable identifier of the originating tool call, when the evaluation
+    /// came from a tool execution. Carried onto the attempt telemetry so
+    /// concurrent Bash calls stay attributable.
+    pub call_id: Option<String>,
 }
 
 impl JudgeRequest {
@@ -146,12 +150,19 @@ impl JudgeRequest {
             cwd,
             repo_digest: None,
             reason,
+            call_id: None,
         }
     }
 
     /// Attach a repository-state digest (see [`repo_state_digest`]).
     pub fn with_repo_digest(mut self, digest: Option<String>) -> Self {
         self.repo_digest = digest;
+        self
+    }
+
+    /// Attach the originating tool call identifier for attempt telemetry.
+    pub fn with_call_id(mut self, call_id: Option<String>) -> Self {
+        self.call_id = call_id;
         self
     }
 }

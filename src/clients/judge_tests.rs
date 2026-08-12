@@ -398,11 +398,17 @@ async fn observed_judge_attempt_redacts_provider_echoed_metadata() {
     let call = client
         .judge_observed(
             request("git status --short", Some("inspect state"))
-                .with_repo_digest(Some("repo-digest-abc".to_string())),
+                .with_repo_digest(Some("repo-digest-abc".to_string()))
+                .with_call_id(Some("call-9".to_string())),
             false,
         )
         .await;
     assert!(call.result.is_ok());
+    assert_eq!(
+        call.attempt.call_id.as_deref(),
+        Some("call-9"),
+        "attempt must carry the originating tool call identifier"
+    );
     assert_eq!(
         call.attempt.provider_request_id.as_deref(),
         Some("hdr-<redacted>-<redacted>-<redacted>-echo"),

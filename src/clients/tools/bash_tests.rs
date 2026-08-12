@@ -1451,20 +1451,29 @@ async fn test_judge_allow_records_attempt_through_sink() {
             invocation_id: "invocation".to_string(),
         },
     );
-    let mut ctx = (*judge_context(&mock_server)).clone();
-    ctx.record_attempt = Some(sink);
-    let context = std::sync::Arc::new(ctx);
+    let mut judge = (*judge_context(&mock_server)).clone();
+    judge.record_attempt = Some(sink);
+    let mut tool_context = crate::clients::tools::ToolContext::from_current_process();
+    tool_context.judge = Some(std::sync::Arc::new(judge));
 
     let args = r#"{"command": "echo judge-sink-test"}"#;
-    let result = Box::pin(execute_bash_with_judge(args, Some(context)))
-        .await
-        .unwrap();
+    let result = Box::pin(execute_bash_for_call(
+        &tool_context,
+        args,
+        Some("call-42".to_string()),
+    ))
+    .await
+    .unwrap();
     assert!(result.output.contains("judge-sink-test"));
 
     let contents = std::fs::read_to_string(&path).unwrap();
     let record: serde_json::Value = serde_json::from_str(contents.trim()).unwrap();
     assert_eq!(record["type"], "judge_attempt");
     assert_eq!(record["attempt"], 1);
+    assert_eq!(
+        record["call_id"], "call-42",
+        "attempt must carry the originating tool call identifier"
+    );
 }
 
 #[tokio::test]
