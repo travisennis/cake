@@ -724,7 +724,24 @@ async fn bash_judge_preflight(
         false,
     )
     .await;
+    // Persist finalized attempts as soon as judging completes: an interrupted
+    // command (for example Ctrl-C on a hung Bash call) cancels the agent
+    // future before the tool result and its compensation events are recorded,
+    // so waiting for that path would drop the attempts.
+    record_judge_attempts(judge, &evaluation.attempts);
     observed_evaluation_to_preflight(evaluation)
+}
+
+/// Persist finalized judge attempts through the run's telemetry sink, if any.
+fn record_judge_attempts(
+    judge: &crate::clients::judge::JudgeContext,
+    attempts: &[crate::session_telemetry::JudgeAttemptTelemetry],
+) {
+    if let Some(sink) = &judge.record_attempt {
+        for attempt in attempts {
+            sink.record(attempt.clone());
+        }
+    }
 }
 
 fn observed_evaluation_to_preflight(
@@ -735,14 +752,10 @@ fn observed_evaluation_to_preflight(
         .last()
         .map_or(0, |attempt| attempt.total_ms);
     match evaluation.outcome {
-        Ok(outcome) => judge_preflight_outcome(outcome, latency_ms, evaluation.attempts),
+        Ok(outcome) => judge_preflight_outcome(outcome, latency_ms),
         Err(error) => {
             let class = error.error_class();
-            let mut tool_error = fail_closed_tool_error(class, error);
-            if let Some(event) = tool_error.compensation_events.first_mut() {
-                event.attach_judge_attempts(evaluation.attempts);
-            }
-            Err(tool_error)
+            Err(fail_closed_tool_error(class, error))
         },
     }
 }
@@ -758,7 +771,6 @@ fn observed_evaluation_to_preflight(
 fn judge_preflight_outcome(
     outcome: JudgeOutcome,
     latency_ms: u64,
-    attempts: Vec<crate::session_telemetry::JudgeAttemptTelemetry>,
 ) -> Result<JudgePreflight, super::ToolError> {
     match outcome {
         JudgeOutcome::Bypassed => Ok(JudgePreflight {
@@ -769,13 +781,12 @@ fn judge_preflight_outcome(
             verdict,
             overridden,
         } => {
-            let mut event = CompensationEventTelemetry::judge_verdict(
+            let event = CompensationEventTelemetry::judge_verdict(
                 verdict.decision.as_str(),
                 verdict.code.as_deref(),
                 latency_ms,
                 overridden,
             );
-            event.attach_judge_attempts(attempts);
             match verdict.decision {
                 JudgeDecision::Block if !overridden => Err(super::ToolError {
                     message: format!(
@@ -926,6 +937,7 @@ fn bypassed_judge_context() -> std::sync::Arc<JudgeContext> {
         },
         models: HashMap::new(),
         client: std::sync::OnceLock::new(),
+        record_attempt: None,
     })
 }
 

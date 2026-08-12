@@ -458,18 +458,8 @@ impl Agent {
     }
 
     fn record_compensation_events(&mut self, events: Vec<CompensationEventTelemetry>) {
-        for mut event in events {
-            self.record_judge_attempts(event.take_judge_attempts());
+        for event in events {
             self.append_compensation_telemetry(event);
-        }
-    }
-
-    fn record_judge_attempts(
-        &mut self,
-        attempts: Vec<crate::session_telemetry::JudgeAttemptTelemetry>,
-    ) {
-        for attempt in attempts {
-            self.append_judge_attempt_telemetry(attempt);
         }
     }
 

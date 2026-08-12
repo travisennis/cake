@@ -19,8 +19,8 @@ use crate::config::skills::Skill;
 use crate::config::toolbox::ToolboxTool;
 use crate::hooks::HookRunner;
 use crate::session_telemetry::{
-    ProviderTermination, SessionTelemetryContext, SessionTelemetryRecord, SessionTelemetrySettings,
-    SessionTelemetryWriter,
+    JudgeAttemptSink, ProviderTermination, SessionTelemetryContext, SessionTelemetryRecord,
+    SessionTelemetrySettings, SessionTelemetryWriter,
 };
 use crate::types::{
     ConversationItem, Role, SessionRecord, StreamRecord, TaskCompleteData, TaskOutcome,
@@ -38,7 +38,7 @@ pub(super) struct TurnResult {
 
 struct AgentTelemetry {
     context: SessionTelemetryContext,
-    writer: SessionTelemetryWriter,
+    writer: Arc<Mutex<SessionTelemetryWriter>>,
 }
 
 // =============================================================================
@@ -373,19 +373,42 @@ impl Agent {
     }
 
     /// Enables best-effort session telemetry sidecar writing.
+    ///
+    /// The writer is shared with a [`JudgeAttemptSink`] installed into the
+    /// tool context, so the Bash preflight records judge attempts as soon as
+    /// judging completes instead of waiting for the tool result.
     pub fn with_session_telemetry(
         mut self,
         writer: SessionTelemetryWriter,
         invocation_id: uuid::Uuid,
     ) -> Self {
+        let context = SessionTelemetryContext {
+            session_id: self.session_id.to_string(),
+            invocation_id: invocation_id.to_string(),
+        };
+        let writer = Arc::new(Mutex::new(writer));
         self.telemetry = Some(AgentTelemetry {
-            context: SessionTelemetryContext {
-                session_id: self.session_id.to_string(),
-                invocation_id: invocation_id.to_string(),
-            },
-            writer,
+            context: context.clone(),
+            writer: Arc::clone(&writer),
         });
+        self.install_judge_attempt_sink(JudgeAttemptSink::new(writer, context));
         self
+    }
+
+    /// Give the Bash preflight a sink that records judge attempts immediately,
+    /// rebuilding the tool context around the judge context with the sink.
+    fn install_judge_attempt_sink(&mut self, sink: JudgeAttemptSink) {
+        let Some(judge) = self.tool_context.judge.clone() else {
+            return;
+        };
+        let mut judge = (*judge).clone();
+        judge.record_attempt = Some(sink);
+        let context = Arc::new(
+            (*self.tool_context)
+                .clone()
+                .with_judge(Some(Arc::new(judge))),
+        );
+        self.tool_context = context;
     }
 
     /// Emit a task record to persistence and streaming sinks.

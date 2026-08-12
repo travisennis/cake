@@ -187,20 +187,30 @@ async fn evaluate_with_client_diagnostic(
     cwd: &Path,
     command: &str,
 ) -> anyhow::Result<DiagnosticReport> {
-    let api_key = client.api_key().to_string();
+    let secrets = diagnostic_redaction_secrets(&client);
     let request = JudgeRequest::new(command.to_string(), cwd.to_path_buf(), None)
         .with_repo_digest(repo_state_digest(cwd));
     let evaluation = evaluate_command_observed(&client, settings, request, bypass_env, true).await;
-    let (report, result) = render_diagnostic_evaluation(evaluation, &api_key);
+    let (report, result) = render_diagnostic_evaluation(evaluation, &secrets);
     Ok(DiagnosticReport {
         report,
         error: result.err(),
     })
 }
 
+/// The values the `--diagnostic` output must omit: the resolved API key plus
+/// any configured provider header values (for example `OpenRouter`'s
+/// `HTTP-Referer` and `X-Title`), which an endpoint could echo back in a
+/// response body or error.
+fn diagnostic_redaction_secrets(client: &JudgeClient) -> Vec<String> {
+    let mut secrets = vec![client.api_key().to_string()];
+    secrets.extend(client.provider_header_values());
+    secrets
+}
+
 fn render_diagnostic_evaluation(
     evaluation: JudgeEvaluation,
-    api_key: &str,
+    secrets: &[String],
 ) -> (String, Result<(), JudgeError>) {
     use std::fmt::Write as _;
 
@@ -214,12 +224,12 @@ fn render_diagnostic_evaluation(
             Ok(outcome) => (
                 format!(
                     "WARNING: raw judge diagnostics may contain command text, paths, repository state, reason text, and secrets embedded in those values.\n\n{}",
-                    redact_secret(&render_outcome(&outcome, Duration::ZERO), api_key)
+                    redact_all(&render_outcome(&outcome, Duration::ZERO), secrets)
                 ),
                 Ok(()),
             ),
             Err(error) => {
-                let error = redact_judge_error(error, api_key);
+                let error = redact_judge_error(error, secrets);
                 (
                     format!(
                         "WARNING: raw judge diagnostics may contain command text, paths, repository state, reason text, and secrets embedded in those values.\n\nJudge error: {error}\n"
@@ -234,7 +244,7 @@ fn render_diagnostic_evaluation(
             .to_string();
         let result = outcome
             .err()
-            .map(|error| redact_judge_error(error, api_key));
+            .map(|error| redact_judge_error(error, secrets));
         return (report, result.map_or(Ok(()), Err));
     };
 
@@ -284,19 +294,20 @@ fn render_diagnostic_evaluation(
     match outcome {
         Ok(outcome) => {
             let rendered = render_outcome(&outcome, Duration::from_millis(attempt.total_ms));
-            _ = write!(out, "\n{}", redact_secret(&rendered, api_key));
-            (redact_secret(&out, api_key), Ok(()))
+            _ = write!(out, "\n{}", redact_all(&rendered, secrets));
+            (redact_all(&out, secrets), Ok(()))
         },
         Err(error) => {
-            let error = redact_judge_error(error, api_key);
+            let error = redact_judge_error(error, secrets);
             _ = write!(out, "\nJudge error: {error}\n");
-            (redact_secret(&out, api_key), Err(error))
+            (redact_all(&out, secrets), Err(error))
         },
     }
 }
 
-/// Replace every occurrence of a resolved API key with `<redacted>`. An empty
-/// secret is left untouched so callers with no configured key are unaffected.
+/// Replace every occurrence of a resolved secret (API key, configured provider
+/// header value) with `<redacted>`. An empty secret is left untouched so
+/// callers with no configured key are unaffected.
 fn redact_secret(text: &str, secret: &str) -> String {
     if secret.is_empty() {
         text.to_string()
@@ -305,16 +316,25 @@ fn redact_secret(text: &str, secret: &str) -> String {
     }
 }
 
-/// Redact the API key from a [`JudgeError`]'s human-readable fields while
-/// preserving the concrete type, so exit-code classification via
+/// Apply [`redact_secret`] for every configured secret.
+fn redact_all(text: &str, secrets: &[String]) -> String {
+    let mut redacted = text.to_string();
+    for secret in secrets {
+        redacted = redact_secret(&redacted, secret);
+    }
+    redacted
+}
+
+/// Redact the configured secrets from a [`JudgeError`]'s human-readable fields
+/// while preserving the concrete type, so exit-code classification via
 /// `downcast_ref::<JudgeError>()` still works.
-fn redact_judge_error(error: JudgeError, secret: &str) -> JudgeError {
+fn redact_judge_error(error: JudgeError, secrets: &[String]) -> JudgeError {
     match error {
         JudgeError::Transport { status, detail } => JudgeError::Transport {
             status,
-            detail: redact_secret(&detail, secret),
+            detail: redact_all(&detail, secrets),
         },
-        JudgeError::Malformed(message) => JudgeError::Malformed(redact_secret(&message, secret)),
+        JudgeError::Malformed(message) => JudgeError::Malformed(redact_all(&message, secrets)),
         other => other,
     }
 }

@@ -2,6 +2,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{BufWriter, Write},
     path::Path,
+    sync::{Arc, Mutex},
 };
 
 use chrono::{DateTime, Utc};
@@ -228,10 +229,6 @@ pub struct CompensationEventTelemetry {
     /// Set on a judge verdict event when an allowlist entry overrode a block.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub overridden: Option<bool>,
-    /// Judge attempts travel with the existing compensation event across the
-    /// concurrent tool boundary, then serialize as their own sidecar records.
-    #[serde(skip)]
-    judge_attempts: Vec<JudgeAttemptTelemetry>,
 }
 
 impl CompensationEventTelemetry {
@@ -241,7 +238,6 @@ impl CompensationEventTelemetry {
             detail,
             latency_ms: None,
             overridden: None,
-            judge_attempts: Vec::new(),
         }
     }
 
@@ -261,7 +257,6 @@ impl CompensationEventTelemetry {
             detail: Some(detail),
             latency_ms: Some(latency_ms),
             overridden: overridden.then_some(true),
-            judge_attempts: Vec::new(),
         }
     }
 
@@ -273,7 +268,6 @@ impl CompensationEventTelemetry {
             detail: Some(error_class.to_string()),
             latency_ms: None,
             overridden: None,
-            judge_attempts: Vec::new(),
         }
     }
 
@@ -285,19 +279,7 @@ impl CompensationEventTelemetry {
             detail: None,
             latency_ms: None,
             overridden: None,
-            judge_attempts: Vec::new(),
         }
-    }
-
-    /// Attach provider-attempt records for transport through tool execution.
-    pub fn attach_judge_attempts(&mut self, attempts: Vec<JudgeAttemptTelemetry>) {
-        self.judge_attempts = attempts;
-    }
-
-    /// Remove the attached provider-attempt records before compensation
-    /// serialization. They are written as first-class sidecar records.
-    pub fn take_judge_attempts(&mut self) -> Vec<JudgeAttemptTelemetry> {
-        std::mem::take(&mut self.judge_attempts)
     }
 }
 
@@ -434,6 +416,61 @@ impl SessionTelemetryWriter {
     }
 }
 
+/// Shared handle that appends judge-attempt records to the session sidecar as
+/// soon as judging completes.
+///
+/// Judge attempts used to ride tool-result compensation events, so an
+/// interrupted command (for example Ctrl-C during a hung Bash call) dropped
+/// them before the tool result was recorded. The Bash preflight records each
+/// finalized attempt through this sink instead, so the sidecar keeps the
+/// append-only durability the ADR-007 rationale requires even when the run is
+/// cut short.
+#[derive(Clone)]
+pub struct JudgeAttemptSink {
+    writer: Arc<Mutex<SessionTelemetryWriter>>,
+    context: SessionTelemetryContext,
+}
+
+impl JudgeAttemptSink {
+    pub const fn new(
+        writer: Arc<Mutex<SessionTelemetryWriter>>,
+        context: SessionTelemetryContext,
+    ) -> Self {
+        Self { writer, context }
+    }
+
+    /// Append one finalized judge attempt to the sidecar, best-effort.
+    pub fn record(&self, attempt: JudgeAttemptTelemetry) {
+        let record = SessionTelemetryRecord::JudgeAttempt {
+            session_id: self.context.session_id.clone(),
+            invocation_id: self.context.invocation_id.clone(),
+            timestamp: Utc::now(),
+            attempt,
+        };
+        let result = self.writer.lock().map(|mut writer| writer.append(&record));
+        match result {
+            Ok(Ok(())) => {},
+            Ok(Err(error)) => {
+                tracing::warn!(target: "cake", "Failed to record judge attempt: {error}");
+            },
+            Err(_) => {
+                tracing::warn!(
+                    target: "cake",
+                    "Session telemetry writer poisoned; dropping judge attempt"
+                );
+            },
+        }
+    }
+}
+
+impl std::fmt::Debug for JudgeAttemptSink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JudgeAttemptSink")
+            .field("context", &self.context)
+            .finish_non_exhaustive()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -542,13 +579,24 @@ mod tests {
     }
 
     #[test]
-    fn attached_judge_attempt_does_not_serialize_inside_compensation() {
-        let mut event = CompensationEventTelemetry::judge_verdict("allow", None, 14, false);
-        event.attach_judge_attempts(vec![judge_attempt()]);
-        let value = serde_json::to_value(&event).unwrap();
-        assert!(value.get("judge_attempts").is_none());
-        assert_eq!(event.take_judge_attempts().len(), 1);
-        assert!(event.take_judge_attempts().is_empty());
+    fn judge_attempt_sink_appends_first_class_attempt_record() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("telemetry.ndjson");
+        let writer = Arc::new(Mutex::new(SessionTelemetryWriter::open(&path).unwrap()));
+        let sink = JudgeAttemptSink::new(
+            Arc::clone(&writer),
+            SessionTelemetryContext {
+                session_id: "session".to_string(),
+                invocation_id: "invocation".to_string(),
+            },
+        );
+        sink.record(judge_attempt());
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let record: serde_json::Value = serde_json::from_str(contents.trim()).unwrap();
+        assert_eq!(record["type"], "judge_attempt");
+        assert_eq!(record["session_id"], "session");
+        assert_eq!(record["attempt"], 1);
     }
 
     #[test]

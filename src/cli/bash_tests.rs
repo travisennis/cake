@@ -316,6 +316,54 @@ async fn bash_check_diagnostic_redacts_api_key_embedded_in_model_name() {
     );
 }
 
+#[tokio::test]
+async fn bash_check_diagnostic_redacts_configured_provider_headers() {
+    // Configured provider header values (for example `OpenRouter`'s
+    // `HTTP-Referer`/`X-Title`) must be redacted from the report and the
+    // propagated error when an endpoint echoes them back.
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(401).set_body_string("bad key for cake-app referral"))
+        .mount(&mock_server)
+        .await;
+
+    let mut config = test_config(mock_server.uri());
+    config.model_config.provider_headers = Some(crate::config::model::ProviderHeaders {
+        http_referer: Some("https://cake.example".to_string()),
+        x_title: Some("cake-app".to_string()),
+    });
+    let client = JudgeClient::new(config, Duration::from_secs(5));
+
+    let report = evaluate_with_client_diagnostic(
+        client,
+        &JudgeSettings::default(),
+        None,
+        std::path::Path::new("/work"),
+        "ls",
+    )
+    .await
+    .unwrap();
+
+    let rendered = &report.report;
+    assert!(
+        !rendered.contains("cake-app"),
+        "configured provider header value must be redacted from the report:\n{rendered}"
+    );
+    assert!(rendered.contains("bad key for <redacted> referral"));
+    let error = report.error.expect("401 must carry a judge error");
+    assert!(matches!(
+        error,
+        JudgeError::Transport {
+            status: Some(401),
+            ..
+        }
+    ));
+    assert!(
+        !error.to_string().contains("cake-app"),
+        "propagated error must redact the provider header value"
+    );
+}
+
 // =============================================================================
 // Judge verdict rendering (allow / block / warn / error)
 // =============================================================================

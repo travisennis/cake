@@ -46,9 +46,12 @@ struct ObservedJudgeCall {
     request_json: Vec<u8>,
     attempt: JudgeAttemptTelemetry,
     diagnostic: Option<JudgeDiagnostic>,
-    /// The API key plus the judge inputs (command, reason, cwd) that must
-    /// never appear in telemetry, in case a provider echoes them back in a
-    /// request id or termination status/reason.
+    /// The resolved API key, applied to the config-controlled model identifier.
+    api_key: String,
+    /// The API key plus the judge inputs (command, reason, cwd) and their
+    /// whitespace- or path-separated tokens, applied to provider-returned
+    /// fields (request id, termination status/reason) in case a provider
+    /// echoes them back.
     redaction_secrets: Vec<String>,
 }
 
@@ -83,6 +86,7 @@ impl ObservedJudgeCall {
             request_json,
             attempt,
             diagnostic,
+            api_key: client.config.api_key.clone(),
             redaction_secrets: redaction_secrets(client, request),
         })
     }
@@ -218,7 +222,7 @@ impl ObservedJudgeCall {
 
     fn finish(mut self, result: Result<JudgeVerdict, JudgeError>) -> JudgeCall {
         self.attempt.total_ms = elapsed_ms(self.total_start);
-        redact_attempt_provider_metadata(&mut self.attempt, &self.redaction_secrets);
+        redact_attempt_provider_metadata(&mut self.attempt, &self.api_key, &self.redaction_secrets);
         JudgeCall {
             result,
             attempt: self.attempt,
@@ -409,8 +413,16 @@ fn push_redaction_secret(secrets: &mut Vec<String>, value: &str) {
 /// attempt is recorded, so telemetry and the diagnostic attempt metadata
 /// cannot carry credentials or command/reason/cwd values echoed back by a
 /// provider.
-fn redact_attempt_provider_metadata(attempt: &mut JudgeAttemptTelemetry, secrets: &[String]) {
-    attempt.model = redact_secrets(&attempt.model, secrets);
+fn redact_attempt_provider_metadata(
+    attempt: &mut JudgeAttemptTelemetry,
+    api_key: &str,
+    secrets: &[String],
+) {
+    // The model identifier is config-controlled, never provider-returned, so
+    // it is scrubbed only against the API key: scrubbing it against command
+    // tokens would corrupt ordinary identifiers (for example the command
+    // `go test` mangling the model `google/gemini`).
+    attempt.model = redact_secret(&attempt.model, api_key);
     if let Some(id) = &mut attempt.provider_request_id {
         *id = redact_secrets(id, secrets);
     }

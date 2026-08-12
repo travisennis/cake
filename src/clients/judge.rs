@@ -37,7 +37,7 @@ use crate::clients::tools::repair_json_args;
 use crate::config::model::ResolvedModelConfig;
 use crate::config::settings::{JudgeSettings, ModelDefinition};
 use crate::session_telemetry::{
-    JudgeAttemptTelemetry, ProviderTermination, TerminationClassification,
+    JudgeAttemptSink, JudgeAttemptTelemetry, ProviderTermination, TerminationClassification,
 };
 use crate::types::{ConversationItem, Role, Usage};
 
@@ -297,6 +297,11 @@ pub struct JudgeContext {
     /// denies consistently for the whole run. Managed by [`Self::judge_client`];
     /// constructors initialize it empty.
     pub client: OnceLock<Result<Arc<JudgeClient>, JudgeClientError>>,
+    /// Sink that persists finalized judge attempts to the session telemetry
+    /// sidecar as soon as judging completes, so an interrupted command does
+    /// not drop them. `None` when telemetry is disabled (for example the
+    /// standalone `cake bash check` command).
+    pub record_attempt: Option<JudgeAttemptSink>,
 }
 
 /// Why the run's judge client could not be built.
@@ -421,6 +426,21 @@ impl JudgeClient {
     /// model-supplied verdict or error text before printing.
     pub fn api_key(&self) -> &str {
         &self.config.api_key
+    }
+
+    /// Configured provider header values (for example `OpenRouter`'s
+    /// `HTTP-Referer` and `X-Title`), exposed so diagnostic output can redact
+    /// them if an endpoint echoes them back.
+    pub fn provider_header_values(&self) -> Vec<String> {
+        let Some(headers) = &self.config.model_config.provider_headers else {
+            return Vec::new();
+        };
+        headers
+            .http_referer
+            .iter()
+            .chain(headers.x_title.iter())
+            .cloned()
+            .collect()
     }
 
     /// Evaluate one command with a single bounded call.

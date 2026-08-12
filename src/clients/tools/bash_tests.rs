@@ -1360,6 +1360,7 @@ fn judge_context(mock_server: &MockServer) -> std::sync::Arc<JudgeContext> {
         },
         models: HashMap::new(),
         client: std::sync::OnceLock::new(),
+        record_attempt: None,
     })
 }
 
@@ -1428,6 +1429,42 @@ async fn test_judge_warn_prepends_notice() {
         result.compensation_events[0].latency_ms.is_some(),
         "judge verdict event must carry the call latency"
     );
+}
+
+#[tokio::test]
+async fn test_judge_allow_records_attempt_through_sink() {
+    // The Bash preflight persists finalized judge attempts through the run's
+    // telemetry sink as soon as judging completes, instead of riding the tool
+    // result: an interrupted command must not drop the attempt.
+    let mock_server = MockServer::start().await;
+    mount_judge_verdict(&mock_server, r#"{"verdict":"allow","message":"Safe"}"#).await;
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("telemetry.ndjson");
+    let writer = std::sync::Arc::new(std::sync::Mutex::new(
+        crate::session_telemetry::SessionTelemetryWriter::open(&path).unwrap(),
+    ));
+    let sink = crate::session_telemetry::JudgeAttemptSink::new(
+        std::sync::Arc::clone(&writer),
+        crate::session_telemetry::SessionTelemetryContext {
+            session_id: "session".to_string(),
+            invocation_id: "invocation".to_string(),
+        },
+    );
+    let mut ctx = (*judge_context(&mock_server)).clone();
+    ctx.record_attempt = Some(sink);
+    let context = std::sync::Arc::new(ctx);
+
+    let args = r#"{"command": "echo judge-sink-test"}"#;
+    let result = Box::pin(execute_bash_with_judge(args, Some(context)))
+        .await
+        .unwrap();
+    assert!(result.output.contains("judge-sink-test"));
+
+    let contents = std::fs::read_to_string(&path).unwrap();
+    let record: serde_json::Value = serde_json::from_str(contents.trim()).unwrap();
+    assert_eq!(record["type"], "judge_attempt");
+    assert_eq!(record["attempt"], 1);
 }
 
 #[tokio::test]

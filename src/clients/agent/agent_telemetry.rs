@@ -1,7 +1,7 @@
 use crate::clients::agent::Agent;
 use crate::session_telemetry::{
-    AgentRunnerTelemetryEvent, CompensationEventTelemetry, JudgeAttemptTelemetry,
-    SessionTelemetryContext, SessionTelemetryRecord, ToolCallTelemetry,
+    AgentRunnerTelemetryEvent, CompensationEventTelemetry, SessionTelemetryContext,
+    SessionTelemetryRecord, ToolCallTelemetry,
 };
 
 impl Agent {
@@ -32,19 +32,6 @@ impl Agent {
         self.append_telemetry_record(&record);
     }
 
-    pub(super) fn append_judge_attempt_telemetry(&mut self, attempt: JudgeAttemptTelemetry) {
-        let Some(context) = self.telemetry_context() else {
-            return;
-        };
-        let record = SessionTelemetryRecord::JudgeAttempt {
-            session_id: context.session_id,
-            invocation_id: context.invocation_id,
-            timestamp: chrono::Utc::now(),
-            attempt,
-        };
-        self.append_telemetry_record(&record);
-    }
-
     pub(super) fn append_compensation_telemetry(&mut self, event: CompensationEventTelemetry) {
         let Some(context) = self.telemetry_context() else {
             return;
@@ -59,10 +46,14 @@ impl Agent {
     }
 
     pub(super) fn append_telemetry_record(&mut self, record: &SessionTelemetryRecord) {
-        let Some(telemetry) = &mut self.telemetry else {
+        let Some(telemetry) = &self.telemetry else {
             return;
         };
-        if let Err(error) = telemetry.writer.append(record) {
+        let result = telemetry.writer.lock().map_or_else(
+            |_| Err(anyhow::anyhow!("session telemetry writer poisoned")),
+            |mut writer| writer.append(record),
+        );
+        if let Err(error) = result {
             tracing::warn!(
                 target: "cake",
                 "Disabling session telemetry after write failure: {error}"

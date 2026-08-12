@@ -1149,6 +1149,7 @@ mod error_tests {
             },
             models: HashMap::new(),
             client: std::sync::OnceLock::new(),
+            record_attempt: None,
         })
     }
 
