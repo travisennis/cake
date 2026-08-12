@@ -379,7 +379,7 @@ async fn observed_judge_attempt_redacts_provider_echoed_metadata() {
     let mock_server = MockServer::start().await;
     let mut body = chat_response(r#"{"verdict":"allow","message":"Safe"}"#);
     body["choices"][0]["finish_reason"] =
-        serde_json::json!("stop git status --short in /work/project");
+        serde_json::json!("stop git status --short inspect repo-digest-abc in /work/project");
     body["usage"] = serde_json::json!({
         "prompt_tokens": 5,
         "completion_tokens": 3,
@@ -388,34 +388,79 @@ async fn observed_judge_attempt_redacts_provider_echoed_metadata() {
     Mock::given(method("POST"))
         .respond_with(
             ResponseTemplate::new(200)
-                .insert_header("x-request-id", "hdr-test-key-status-echo")
+                .insert_header("x-request-id", "hdr-test-key-status-rubric-guidance-echo")
                 .set_body_json(body),
         )
         .mount(&mock_server)
         .await;
 
-    let call = judge_client(&mock_server)
-        .judge_observed(request("git status --short", Some("inspect state")), false)
+    let client = judge_client(&mock_server).with_user_rubric(Some("rubric-guidance".to_string()));
+    let call = client
+        .judge_observed(
+            request("git status --short", Some("inspect state"))
+                .with_repo_digest(Some("repo-digest-abc".to_string())),
+            false,
+        )
         .await;
     assert!(call.result.is_ok());
     assert_eq!(
         call.attempt.provider_request_id.as_deref(),
-        Some("hdr-<redacted>-<redacted>-echo"),
-        "provider-echoed API key and command token must be redacted from the request id"
+        Some("hdr-<redacted>-<redacted>-<redacted>-echo"),
+        "provider-echoed API key, command token, and user rubric must be redacted from the request id"
     );
     assert_eq!(
         call.attempt
             .termination
             .as_ref()
             .and_then(|termination| termination.provider_reason.as_deref()),
-        Some("stop <redacted> in <redacted>"),
-        "provider-echoed command and cwd must be redacted from the termination reason"
+        Some("stop <redacted> <redacted> <redacted> in <redacted>"),
+        "provider-echoed command, reason token, repo digest, and cwd must be redacted from the termination reason"
     );
     let serialized = serde_json::to_string(&call.attempt).unwrap();
     assert!(!serialized.contains("test-key"));
     assert!(!serialized.contains("git status --short"));
     assert!(!serialized.contains("inspect state"));
     assert!(!serialized.contains("/work/project"));
+    assert!(!serialized.contains("repo-digest-abc"));
+    assert!(!serialized.contains("rubric-guidance"));
+}
+
+#[tokio::test]
+async fn observed_judge_attempt_redacts_long_request_id_before_truncation() {
+    // A request id longer than the 256-char storage bound that echoes a
+    // command longer than the bound must be redacted before truncation:
+    // truncating first would cut the echoed value so its exact-value
+    // redaction never matches and a command prefix leaks into telemetry.
+    let mock_server = MockServer::start().await;
+    let body = chat_response(r#"{"verdict":"allow","message":"Safe"}"#);
+    let command = format!("echo {}", "secret-echo-token".repeat(20));
+    let long_id = format!("{}{}", "x".repeat(100), command);
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-request-id", &long_id)
+                .set_body_json(body),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let call = judge_client(&mock_server)
+        .judge_observed(request(&command, None), false)
+        .await;
+    assert!(call.result.is_ok());
+    let id = call
+        .attempt
+        .provider_request_id
+        .expect("request id recorded");
+    assert!(
+        id.len() <= 256,
+        "stored request id must respect the storage bound, got {} chars",
+        id.len()
+    );
+    assert!(
+        !id.contains("secret-echo-token"),
+        "long echoed command must be redacted before truncation, got: {id}"
+    );
 }
 
 #[tokio::test]

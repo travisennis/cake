@@ -223,6 +223,12 @@ impl ObservedJudgeCall {
     fn finish(mut self, result: Result<JudgeVerdict, JudgeError>) -> JudgeCall {
         self.attempt.total_ms = elapsed_ms(self.total_start);
         redact_attempt_provider_metadata(&mut self.attempt, &self.api_key, &self.redaction_secrets);
+        // Bound the stored request id only after redaction: truncating first
+        // could cut an echoed secret so its exact-value redaction never
+        // matches and the fragment gets persisted.
+        if let Some(id) = &mut self.attempt.provider_request_id {
+            *id = id.chars().take(256).collect();
+        }
         JudgeCall {
             result,
             attempt: self.attempt,
@@ -337,7 +343,7 @@ fn provider_request_id(headers: &reqwest::header::HeaderMap) -> Option<String> {
         .into_iter()
         .find_map(|name| headers.get(name))
         .and_then(|value| value.to_str().ok())
-        .map(|value| value.chars().take(256).collect())
+        .map(str::to_string)
 }
 
 fn redact_secret(text: &str, secret: &str) -> String {
@@ -379,10 +385,10 @@ fn redact_termination(mut termination: ProviderTermination, secret: &str) -> Pro
 }
 
 /// The API key and judge inputs that must never reach telemetry or the
-/// diagnostic attempt metadata: the resolved key plus the command, reason, and
-/// cwd sent to the judge, and their whitespace- or path-separated tokens. A
-/// provider could echo any of them, in whole or in part, in its request id or
-/// termination status/reason.
+/// diagnostic attempt metadata: the resolved key plus the command, reason,
+/// cwd, repository digest, and user rubric sent to the judge, and their
+/// whitespace- or path-separated tokens. A provider could echo any of them,
+/// in whole or in part, in its request id or termination status/reason.
 fn redaction_secrets(client: &JudgeClient, request: &JudgeRequest) -> Vec<String> {
     let mut secrets = Vec::new();
     push_redaction_secret(&mut secrets, &client.config.api_key);
@@ -391,6 +397,12 @@ fn redaction_secrets(client: &JudgeClient, request: &JudgeRequest) -> Vec<String
         push_redaction_secret(&mut secrets, reason);
     }
     push_redaction_secret(&mut secrets, &request.cwd.to_string_lossy());
+    if let Some(digest) = &request.repo_digest {
+        push_redaction_secret(&mut secrets, digest);
+    }
+    if let Some(rubric) = &client.user_rubric {
+        push_redaction_secret(&mut secrets, rubric);
+    }
     secrets
 }
 

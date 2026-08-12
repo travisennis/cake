@@ -1441,7 +1441,7 @@ async fn test_judge_allow_records_attempt_through_sink() {
 
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join("telemetry.ndjson");
-    let writer = std::sync::Arc::new(std::sync::Mutex::new(
+    let writer = std::sync::Arc::new(crate::session_telemetry::SharedSessionTelemetryWriter::new(
         crate::session_telemetry::SessionTelemetryWriter::open(&path).unwrap(),
     ));
     let sink = crate::session_telemetry::JudgeAttemptSink::new(

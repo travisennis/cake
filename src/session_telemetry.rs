@@ -2,6 +2,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{BufWriter, Write},
     path::Path,
+    sync::atomic::{AtomicBool, Ordering},
     sync::{Arc, Mutex},
 };
 
@@ -416,6 +417,46 @@ impl SessionTelemetryWriter {
     }
 }
 
+/// Shared session-telemetry writer with a fail-stop disabled flag.
+///
+/// The agent loop and the judge-attempt sink share one instance, so a write
+/// failure on either path disables telemetry for both: once any append fails,
+/// no further records are written and a partial NDJSON line is never followed
+/// by more records (see the recovery contract in the judge-attempt-diagnostics
+/// exec plan).
+pub struct SharedSessionTelemetryWriter {
+    writer: Mutex<SessionTelemetryWriter>,
+    disabled: Arc<AtomicBool>,
+}
+
+impl SharedSessionTelemetryWriter {
+    pub fn new(writer: SessionTelemetryWriter) -> Self {
+        Self {
+            writer: Mutex::new(writer),
+            disabled: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Append one record, fail-stop: after the first failure no further
+    /// records are written.
+    pub fn append(&self, record: &SessionTelemetryRecord) -> anyhow::Result<()> {
+        if self.disabled.load(Ordering::Relaxed) {
+            anyhow::bail!("session telemetry disabled after write failure");
+        }
+        let result = self
+            .writer
+            .lock()
+            .map(|mut writer| writer.append(record))
+            .map_err(|poisoned| {
+                anyhow::anyhow!("session telemetry writer poisoned: {poisoned:?}")
+            })?;
+        if result.is_err() {
+            self.disabled.store(true, Ordering::Relaxed);
+        }
+        result
+    }
+}
+
 /// Shared handle that appends judge-attempt records to the session sidecar as
 /// soon as judging completes.
 ///
@@ -427,13 +468,13 @@ impl SessionTelemetryWriter {
 /// cut short.
 #[derive(Clone)]
 pub struct JudgeAttemptSink {
-    writer: Arc<Mutex<SessionTelemetryWriter>>,
+    writer: Arc<SharedSessionTelemetryWriter>,
     context: SessionTelemetryContext,
 }
 
 impl JudgeAttemptSink {
     pub const fn new(
-        writer: Arc<Mutex<SessionTelemetryWriter>>,
+        writer: Arc<SharedSessionTelemetryWriter>,
         context: SessionTelemetryContext,
     ) -> Self {
         Self { writer, context }
@@ -447,18 +488,8 @@ impl JudgeAttemptSink {
             timestamp: Utc::now(),
             attempt,
         };
-        let result = self.writer.lock().map(|mut writer| writer.append(&record));
-        match result {
-            Ok(Ok(())) => {},
-            Ok(Err(error)) => {
-                tracing::warn!(target: "cake", "Failed to record judge attempt: {error}");
-            },
-            Err(_) => {
-                tracing::warn!(
-                    target: "cake",
-                    "Session telemetry writer poisoned; dropping judge attempt"
-                );
-            },
+        if let Err(error) = self.writer.append(&record) {
+            tracing::warn!(target: "cake", "Failed to record judge attempt: {error}");
         }
     }
 }
@@ -582,7 +613,9 @@ mod tests {
     fn judge_attempt_sink_appends_first_class_attempt_record() {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("telemetry.ndjson");
-        let writer = Arc::new(Mutex::new(SessionTelemetryWriter::open(&path).unwrap()));
+        let writer = Arc::new(SharedSessionTelemetryWriter::new(
+            SessionTelemetryWriter::open(&path).unwrap(),
+        ));
         let sink = JudgeAttemptSink::new(
             Arc::clone(&writer),
             SessionTelemetryContext {

@@ -20,7 +20,7 @@ use crate::config::toolbox::ToolboxTool;
 use crate::hooks::HookRunner;
 use crate::session_telemetry::{
     JudgeAttemptSink, ProviderTermination, SessionTelemetryContext, SessionTelemetryRecord,
-    SessionTelemetrySettings, SessionTelemetryWriter,
+    SessionTelemetrySettings, SessionTelemetryWriter, SharedSessionTelemetryWriter,
 };
 use crate::types::{
     ConversationItem, Role, SessionRecord, StreamRecord, TaskCompleteData, TaskOutcome,
@@ -38,7 +38,7 @@ pub(super) struct TurnResult {
 
 struct AgentTelemetry {
     context: SessionTelemetryContext,
-    writer: Arc<Mutex<SessionTelemetryWriter>>,
+    writer: Arc<SharedSessionTelemetryWriter>,
 }
 
 // =============================================================================
@@ -386,7 +386,7 @@ impl Agent {
             session_id: self.session_id.to_string(),
             invocation_id: invocation_id.to_string(),
         };
-        let writer = Arc::new(Mutex::new(writer));
+        let writer = Arc::new(SharedSessionTelemetryWriter::new(writer));
         self.telemetry = Some(AgentTelemetry {
             context: context.clone(),
             writer: Arc::clone(&writer),

@@ -49,11 +49,7 @@ impl Agent {
         let Some(telemetry) = &self.telemetry else {
             return;
         };
-        let result = telemetry.writer.lock().map_or_else(
-            |_| Err(anyhow::anyhow!("session telemetry writer poisoned")),
-            |mut writer| writer.append(record),
-        );
-        if let Err(error) = result {
+        if let Err(error) = telemetry.writer.append(record) {
             tracing::warn!(
                 target: "cake",
                 "Disabling session telemetry after write failure: {error}"
