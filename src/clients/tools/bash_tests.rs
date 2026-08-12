@@ -3,6 +3,7 @@ use super::*;
 use crate::clients::tools::ToolContext;
 #[cfg(target_os = "macos")]
 use crate::clients::tools::sandbox::SandboxPolicy;
+use sha2::{Digest, Sha256};
 #[cfg(target_os = "macos")]
 use std::sync::Arc;
 use wiremock::matchers::method;
@@ -1470,9 +1471,12 @@ async fn test_judge_allow_records_attempt_through_sink() {
     let record: serde_json::Value = serde_json::from_str(contents.trim()).unwrap();
     assert_eq!(record["type"], "judge_attempt");
     assert_eq!(record["attempt"], 1);
+    let mut hasher = Sha256::new();
+    hasher.update(b"call-42");
+    let digest = hex::encode(hasher.finalize());
     assert_eq!(
-        record["call_id"], "call-42",
-        "attempt must carry the originating tool call identifier"
+        record["call_id"], digest,
+        "attempt must carry the digest of the originating tool call identifier"
     );
 }
 

@@ -2,8 +2,11 @@
 
 use std::time::{Duration, Instant};
 
+use sha2::{Digest, Sha256};
+
 use crate::clients::backend::Backend;
 use crate::clients::retry::RequestOverrides;
+use crate::config::model::ApiType;
 use crate::session_telemetry::{
     JudgeAttemptTelemetry, JudgeAttemptTerminalClass, ProviderTermination,
 };
@@ -48,11 +51,6 @@ struct ObservedJudgeCall {
     diagnostic: Option<JudgeDiagnostic>,
     /// The resolved API key, applied to the config-controlled model identifier.
     api_key: String,
-    /// The API key plus the judge inputs (command, reason, cwd) and their
-    /// whitespace- or path-separated tokens, applied to provider-returned
-    /// fields (request id, termination status/reason) in case a provider
-    /// echoes them back.
-    redaction_secrets: Vec<String>,
 }
 
 impl ObservedJudgeCall {
@@ -87,7 +85,6 @@ impl ObservedJudgeCall {
             attempt,
             diagnostic,
             api_key: client.config.api_key.clone(),
-            redaction_secrets: redaction_secrets(client, request),
         })
     }
 
@@ -222,11 +219,17 @@ impl ObservedJudgeCall {
 
     fn finish(mut self, result: Result<JudgeVerdict, JudgeError>) -> JudgeCall {
         self.attempt.total_ms = elapsed_ms(self.total_start);
-        redact_attempt_provider_metadata(&mut self.attempt, &self.api_key, &self.redaction_secrets);
-        // Strictly validate the provider-controlled fields: substring redaction
-        // alone cannot exclude a normalized fragment (for example a command
-        // token echoed without its surrounding quotes), so anything that does
-        // not match the safe boundary is omitted rather than persisted.
+        // The model identifier is config-controlled, never provider-returned, so
+        // it is scrubbed only against the API key: scrubbing it against command
+        // tokens would corrupt ordinary identifiers (for example the command
+        // `go test` mangling the model `google/gemini`).
+        self.attempt.model = redact_secret(&self.attempt.model, &self.api_key);
+        // Strictly bound the provider-controlled fields: identifiers are
+        // persisted only as one-way digests and termination must be a known
+        // vocabulary value. Substring redaction alone cannot exclude a
+        // normalized fragment (for example a command token echoed without its
+        // surrounding quotes), so raw provider-controlled text is never
+        // persisted at all.
         sanitize_attempt_provider_fields(&mut self.attempt);
         JudgeCall {
             result,
@@ -277,7 +280,13 @@ fn initial_attempt(
         temperature: client.config.model_config.temperature,
         top_p: client.config.model_config.top_p,
         max_output_tokens: client.config.model_config.max_output_tokens,
-        reasoning_max_tokens: client.config.model_config.reasoning_max_tokens,
+        // Chat Completions requests never carry `reasoning.max_tokens`, so
+        // reporting the configured value would describe a control the request
+        // did not send; only the Responses backend sends it.
+        reasoning_max_tokens: match client.config.model_config.api_type {
+            ApiType::Responses => client.config.model_config.reasoning_max_tokens,
+            ApiType::ChatCompletions => None,
+        },
         configured_timeout_ms: duration_ms(client.timeout),
         tool_count: 0,
         tool_choice: None,
@@ -388,108 +397,15 @@ fn redact_termination(mut termination: ProviderTermination, secret: &str) -> Pro
     termination
 }
 
-/// The API key and judge inputs that must never reach telemetry or the
-/// diagnostic attempt metadata: the resolved key plus the command, reason,
-/// cwd, repository digest, and user rubric sent to the judge, and their
-/// whitespace- or path-separated tokens. A provider could echo any of them,
-/// in whole or in part, in its request id or termination status/reason.
-fn redaction_secrets(client: &JudgeClient, request: &JudgeRequest) -> Vec<String> {
-    let mut secrets = Vec::new();
-    push_redaction_secret(&mut secrets, &client.config.api_key);
-    push_redaction_secret(&mut secrets, &request.command);
-    if let Some(reason) = &request.reason {
-        push_redaction_secret(&mut secrets, reason);
-    }
-    push_redaction_secret(&mut secrets, &request.cwd.to_string_lossy());
-    if let Some(digest) = &request.repo_digest {
-        push_redaction_secret(&mut secrets, digest);
-    }
-    if let Some(rubric) = &client.user_rubric {
-        push_redaction_secret(&mut secrets, rubric);
-    }
-    sort_redaction_secrets(&mut secrets);
-    secrets
-}
-
-/// Order secrets longest-first and deduplicate, so a value that contains
-/// another secret (for example a command or provider header containing the API
-/// key) is redacted before its inner secret is replaced: otherwise the outer
-/// value no longer matches and its fragments survive into telemetry.
-fn sort_redaction_secrets(secrets: &mut Vec<String>) {
-    secrets.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
-    secrets.dedup();
-}
-
-/// Add a value plus its whitespace- or path-separated tokens (length >= 2) so
-/// a provider echoing only part of the command, reason, or cwd still gets the
-/// fragment redacted. Tokens are also added with surrounding quotes stripped,
-/// so a normalized echo (for example `secret` from `printf 'secret'`) still
-/// matches.
-fn push_redaction_secret(secrets: &mut Vec<String>, value: &str) {
-    secrets.push(value.to_string());
-    for token in value
-        .split_whitespace()
-        .flat_map(|part| part.split(['/', '\\']))
-    {
-        if token.len() >= 2 {
-            secrets.push(token.to_string());
-        }
-        let normalized = token.trim_matches(|c| matches!(c, '\'' | '"' | '`' | '(' | ')'));
-        if normalized.len() >= 2 && normalized != token {
-            secrets.push(normalized.to_string());
-        }
-    }
-}
-
-/// Redact the API key and judge inputs from the attempt fields before the
-/// attempt is recorded, so telemetry and the diagnostic attempt metadata
-/// cannot carry credentials or command/reason/cwd values echoed back by a
-/// provider.
-fn redact_attempt_provider_metadata(
-    attempt: &mut JudgeAttemptTelemetry,
-    api_key: &str,
-    secrets: &[String],
-) {
-    // The model identifier is config-controlled, never provider-returned, so
-    // it is scrubbed only against the API key: scrubbing it against command
-    // tokens would corrupt ordinary identifiers (for example the command
-    // `go test` mangling the model `google/gemini`).
-    attempt.model = redact_secret(&attempt.model, api_key);
-    if let Some(id) = &mut attempt.provider_request_id {
-        *id = redact_secrets(id, secrets);
-    }
-    if let Some(termination) = &mut attempt.termination {
-        if let Some(status) = &mut termination.provider_status {
-            *status = redact_secrets(status, secrets);
-        }
-        if let Some(reason) = &mut termination.provider_reason {
-            *reason = redact_secrets(reason, secrets);
-        }
-    }
-}
-
-fn redact_secrets(text: &str, secrets: &[String]) -> String {
-    let mut redacted = text.to_string();
-    for secret in secrets {
-        redacted = redact_secret(&redacted, secret);
-    }
-    redacted
-}
-
-/// Strictly validate the provider-controlled attempt fields against a safe
-/// boundary that does not depend on substring matching: termination
-/// status/reason must be a known provider vocabulary value, and the request id
-/// must be a clean opaque identifier after redaction. Anything else is
-/// omitted, so a provider echoing normalized command, reason, cwd, digest, or
-/// rubric fragments cannot get them into telemetry.
+/// Strictly bound the provider-controlled attempt fields against a boundary
+/// that does not depend on substring matching: provider identifiers are
+/// persisted only as one-way digests, and termination status/reason must be a
+/// known provider vocabulary value. Anything else is omitted, so a provider
+/// echoing command, reason, cwd, digest, or rubric fragments cannot get them
+/// into telemetry.
 fn sanitize_attempt_provider_fields(attempt: &mut JudgeAttemptTelemetry) {
-    if let Some(id) = &mut attempt.provider_request_id {
-        if is_safe_request_id(id) {
-            *id = id.chars().take(256).collect();
-        } else {
-            attempt.provider_request_id = None;
-        }
-    }
+    digest_provider_identifier(&mut attempt.provider_request_id);
+    digest_provider_identifier(&mut attempt.call_id);
     if let Some(termination) = &mut attempt.termination {
         if !termination
             .provider_status
@@ -532,15 +448,24 @@ fn is_safe_termination_value(value: &str) -> bool {
     )
 }
 
-/// A strict opaque-identifier shape for provider request ids. A redacted id
-/// contains the `<redacted>` marker and fails this shape, so an id that
-/// echoed any known secret or token is omitted entirely.
-fn is_safe_request_id(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 256
-        && value
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+/// Persist a provider-controlled identifier only as a one-way digest, so the
+/// sidecar never carries raw provider text. Consumers correlate an attempt
+/// with the provider or session by hashing the known raw value with the same
+/// function; an empty identifier is omitted.
+fn digest_provider_identifier(id: &mut Option<String>) {
+    if let Some(value) = id {
+        if value.is_empty() {
+            *id = None;
+        } else {
+            *value = digest_identifier(value);
+        }
+    }
+}
+
+fn digest_identifier(value: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(value.as_bytes());
+    hex::encode(hasher.finalize())
 }
 
 fn elapsed_ms(started: Instant) -> u64 {

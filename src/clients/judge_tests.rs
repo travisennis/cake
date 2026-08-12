@@ -1,4 +1,5 @@
 use super::*;
+use sha2::{Digest, Sha256};
 use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -42,6 +43,14 @@ fn request(command: &str, reason: Option<&str>) -> JudgeRequest {
         std::path::PathBuf::from("/work/project"),
         reason.map(str::to_string),
     )
+}
+
+/// The one-way digest the sidecar stores for a provider-controlled identifier;
+/// consumers reproduce it by hashing the raw value with the same function.
+fn digest(value: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(value.as_bytes());
+    hex::encode(hasher.finalize())
 }
 
 fn judge_client(mock_server: &MockServer) -> JudgeClient {
@@ -297,7 +306,7 @@ async fn judge_works_through_responses_backend() {
     assert_eq!(verdict.code.as_deref(), Some("rg-replace-footgun"));
     assert_eq!(
         call.attempt.provider_request_id.as_deref(),
-        Some("resp-judge")
+        Some(digest("resp-judge").as_str())
     );
     assert_eq!(call.attempt.tool_count, 0);
     assert_eq!(call.attempt.tool_choice, None);
@@ -340,7 +349,7 @@ async fn observed_judge_attempt_records_metadata_and_exact_diagnostic_request() 
     assert_eq!(call.attempt.status_code, Some(200));
     assert_eq!(
         call.attempt.provider_request_id.as_deref(),
-        Some("req-judge-123")
+        Some(digest("req-judge-123").as_str())
     );
     assert_eq!(
         call.attempt.terminal_class,
@@ -371,11 +380,13 @@ async fn observed_judge_attempt_records_metadata_and_exact_diagnostic_request() 
 }
 
 #[tokio::test]
-async fn observed_judge_attempt_redacts_provider_echoed_metadata() {
+async fn observed_judge_attempt_digests_provider_echoed_metadata() {
     // A provider that echoes the API key or judge inputs back in its request
-    // id or termination reason must not get those values into the attempt
-    // metadata, which is persisted to the telemetry sidecar and re-rendered as
-    // diagnostic "Attempt metadata".
+    // id, tool call id, or termination reason must not get those values into
+    // the attempt metadata, which is persisted to the telemetry sidecar and
+    // re-rendered as diagnostic "Attempt metadata". Identifiers are stored
+    // only as one-way digests and termination outside the known vocabulary is
+    // omitted, so the raw text never appears.
     let mock_server = MockServer::start().await;
     let mut body = chat_response(r#"{"verdict":"allow","message":"Safe"}"#);
     body["choices"][0]["finish_reason"] =
@@ -406,12 +417,13 @@ async fn observed_judge_attempt_redacts_provider_echoed_metadata() {
     assert!(call.result.is_ok());
     assert_eq!(
         call.attempt.call_id.as_deref(),
-        Some("call-9"),
-        "attempt must carry the originating tool call identifier"
+        Some(digest("call-9").as_str()),
+        "attempt must carry the digest of the originating tool call identifier"
     );
-    assert!(
-        call.attempt.provider_request_id.is_none(),
-        "request id echoing provider secrets must be omitted, not persisted"
+    assert_eq!(
+        call.attempt.provider_request_id.as_deref(),
+        Some(digest("hdr-test-key-status-rubric-guidance-echo").as_str()),
+        "request id echoing provider secrets must be persisted only as a digest"
     );
     assert!(
         call.attempt
@@ -455,7 +467,7 @@ async fn observed_judge_attempt_keeps_safe_provider_metadata() {
     assert!(call.result.is_ok());
     assert_eq!(
         call.attempt.provider_request_id.as_deref(),
-        Some("req-opaque-123")
+        Some(digest("req-opaque-123").as_str())
     );
     assert_eq!(
         call.attempt
@@ -467,10 +479,147 @@ async fn observed_judge_attempt_keeps_safe_provider_metadata() {
 }
 
 #[tokio::test]
-async fn observed_judge_attempt_omits_normalized_provider_fragments() {
+async fn observed_judge_attempt_digests_dirty_call_id() {
+    // The tool call id is provider-controlled free-form text. Whatever a
+    // provider echoes into it, the sidecar stores only a one-way digest, so
+    // raw command, path, or secret text never appears even when the rest of
+    // the attempt is clean.
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(chat_response(r#"{"verdict":"allow","message":"Safe"}"#)),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let client = judge_client(&mock_server);
+    for dirty in [
+        "git status --short in /work/project",
+        // Clean shape, but it embeds the API key.
+        "call-test-key-9",
+    ] {
+        let call = client
+            .judge_observed(
+                request("git status --short", None).with_call_id(Some(dirty.to_string())),
+                false,
+            )
+            .await;
+        assert!(call.result.is_ok());
+        assert_eq!(
+            call.attempt.call_id.as_deref(),
+            Some(digest(dirty).as_str()),
+            "call id {dirty:?} must be stored only as its digest"
+        );
+        let serialized = serde_json::to_string(&call.attempt).unwrap();
+        assert!(!serialized.contains("test-key"));
+        assert!(!serialized.contains("git status --short"));
+        assert!(!serialized.contains("/work/project"));
+    }
+}
+
+#[tokio::test]
+async fn observed_judge_attempt_preserves_whitelisted_termination_with_common_reason_token() {
+    // A model reason containing a short common word (for example `to`) must
+    // not corrupt a valid whitelisted termination value: the boundary is the
+    // vocabulary, not substring redaction.
+    let mock_server = MockServer::start().await;
+    let mut body = chat_response(r#"{"verdict":"allow","message":"Safe"}"#);
+    body["choices"][0]["finish_reason"] = serde_json::json!("stop");
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(&mock_server)
+        .await;
+
+    let call = judge_client(&mock_server)
+        .judge_observed(request("ls", Some("to inspect the directory")), false)
+        .await;
+    assert!(call.result.is_ok());
+    assert_eq!(
+        call.attempt
+            .termination
+            .as_ref()
+            .and_then(|termination| termination.provider_reason.as_deref()),
+        Some("stop"),
+        "whitelisted termination must survive a reason containing the token `to`"
+    );
+}
+
+#[tokio::test]
+async fn observed_judge_attempt_omits_unsent_reasoning_max_tokens_for_chat_completions() {
+    // Chat Completions requests never carry `reasoning.max_tokens`, so the
+    // attempt metadata must not report it as a sent request control.
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(chat_response(r#"{"verdict":"allow","message":"Safe"}"#)),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let mut config = test_config(mock_server.uri());
+    config.model_config.reasoning_max_tokens = Some(4096);
+    let client = JudgeClient::new(config, Duration::from_secs(5));
+    let call = client
+        .judge_observed(request("git status --short", None), false)
+        .await;
+    assert!(call.result.is_ok());
+    assert_eq!(
+        call.attempt.reasoning_max_tokens, None,
+        "Chat Completions never sends reasoning.max_tokens"
+    );
+    let requests = mock_server.received_requests().await.unwrap();
+    let wire_json: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(
+        wire_json.get("reasoning"),
+        None,
+        "the wire request must not carry a reasoning control"
+    );
+}
+
+#[tokio::test]
+async fn observed_judge_attempt_reports_reasoning_max_tokens_for_responses() {
+    // The Responses backend sends `reasoning.max_tokens` when configured, so
+    // the attempt metadata may report it and must match the wire request.
+    let mock_server = MockServer::start().await;
+    let body = serde_json::json!({
+        "id": "resp-judge",
+        "output": [{
+            "type": "message",
+            "id": "msg-1",
+            "status": "completed",
+            "content": [
+                {"type": "output_text", "text": r#"{"verdict":"allow","message":"Safe"}"#}
+            ]
+        }],
+        "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
+    });
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(&mock_server)
+        .await;
+
+    let mut config = test_config(mock_server.uri());
+    config.model_config.api_type = crate::config::model::ApiType::Responses;
+    config.model_config.reasoning_max_tokens = Some(4096);
+    let client = JudgeClient::new(config, Duration::from_secs(5));
+    let call = client
+        .judge_observed(request("rg -rn foo", None), false)
+        .await;
+    assert!(call.result.is_ok());
+    assert_eq!(call.attempt.reasoning_max_tokens, Some(4096));
+    let requests = mock_server.received_requests().await.unwrap();
+    let wire_json: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(wire_json["reasoning"]["max_tokens"], 4096);
+}
+
+#[tokio::test]
+async fn observed_judge_attempt_bounds_normalized_provider_fragments() {
     // A provider echoing a normalized command fragment (quotes stripped, so
     // exact substring redaction cannot match) must not get it into telemetry:
-    // the request id and termination reason are omitted.
+    // the request id is stored only as a digest and the termination reason is
+    // omitted.
     let mock_server = MockServer::start().await;
     let mut body = chat_response(r#"{"verdict":"allow","message":"Safe"}"#);
     body["choices"][0]["finish_reason"] = serde_json::json!("secret");
@@ -492,9 +641,10 @@ async fn observed_judge_attempt_omits_normalized_provider_fragments() {
         .judge_observed(request("printf 'secret'", None), false)
         .await;
     assert!(call.result.is_ok());
-    assert!(
-        call.attempt.provider_request_id.is_none(),
-        "request id echoing a normalized command token must be omitted"
+    assert_eq!(
+        call.attempt.provider_request_id.as_deref(),
+        Some(digest("secret").as_str()),
+        "request id echoing a normalized command token must be stored only as a digest"
     );
     assert!(
         call.attempt
@@ -509,10 +659,9 @@ async fn observed_judge_attempt_omits_normalized_provider_fragments() {
 }
 
 #[tokio::test]
-async fn observed_judge_attempt_omits_long_echoed_request_id() {
-    // A request id that echoes a command is omitted entirely rather than
-    // stored with a fragment, whether the echo is longer than the storage
-    // bound or normalized.
+async fn observed_judge_attempt_digests_long_echoed_request_id() {
+    // A request id that echoes a command is stored only as its digest, never
+    // as raw text with a fragment.
     let mock_server = MockServer::start().await;
     let body = chat_response(r#"{"verdict":"allow","message":"Safe"}"#);
     let command = format!("echo {}", "secret-echo-token".repeat(20));
@@ -530,9 +679,10 @@ async fn observed_judge_attempt_omits_long_echoed_request_id() {
         .judge_observed(request(&command, None), false)
         .await;
     assert!(call.result.is_ok());
-    assert!(
-        call.attempt.provider_request_id.is_none(),
-        "request id echoing a command must be omitted"
+    assert_eq!(
+        call.attempt.provider_request_id.as_deref(),
+        Some(digest(&long_id).as_str()),
+        "request id echoing a command must be stored only as a digest"
     );
     let serialized = serde_json::to_string(&call.attempt).unwrap();
     assert!(!serialized.contains("secret-echo-token"));
