@@ -638,15 +638,9 @@ impl std::fmt::Display for ToolError {
     }
 }
 
-impl From<String> for ToolError {
-    fn from(message: String) -> Self {
+impl<T: Into<String>> From<T> for ToolError {
+    fn from(message: T) -> Self {
         Self::new(message)
-    }
-}
-
-impl From<&str> for ToolError {
-    fn from(message: &str) -> Self {
-        Self::new(message.to_string())
     }
 }
 
