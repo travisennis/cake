@@ -1,7 +1,7 @@
 use crate::clients::agent::Agent;
 use crate::session_telemetry::{
     AgentRunnerTelemetryEvent, CompensationEventTelemetry, SessionTelemetryContext,
-    SessionTelemetryRecord, ToolCallTelemetry,
+    SessionTelemetryRecord, TelemetryAppend, ToolCallTelemetry,
 };
 
 impl Agent {
@@ -49,7 +49,7 @@ impl Agent {
         let Some(telemetry) = &self.telemetry else {
             return;
         };
-        if let Err(error) = telemetry.writer.append(record) {
+        if let TelemetryAppend::Failed(error) = telemetry.writer.append(record) {
             tracing::warn!(
                 target: "cake",
                 "Disabling session telemetry after write failure: {error}"

@@ -464,6 +464,41 @@ async fn observed_judge_attempt_redacts_long_request_id_before_truncation() {
 }
 
 #[tokio::test]
+async fn observed_judge_attempt_redacts_overlapping_secrets_longest_first() {
+    // A command containing the API key must be redacted as a whole before the
+    // key: otherwise the containing value no longer matches after the inner
+    // replacement and its fragments survive into telemetry.
+    let mock_server = MockServer::start().await;
+    let mut body = chat_response(r#"{"verdict":"allow","message":"Safe"}"#);
+    body["choices"][0]["finish_reason"] = serde_json::json!("stop xytest-keyzz");
+    body["usage"] = serde_json::json!({
+        "prompt_tokens": 5,
+        "completion_tokens": 3,
+        "total_tokens": 8
+    });
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(&mock_server)
+        .await;
+
+    let call = judge_client(&mock_server)
+        .judge_observed(request("xytest-keyzz", None), false)
+        .await;
+    assert!(call.result.is_ok());
+    assert_eq!(
+        call.attempt
+            .termination
+            .as_ref()
+            .and_then(|termination| termination.provider_reason.as_deref()),
+        Some("stop <redacted>"),
+        "command containing the API key must be redacted as a whole"
+    );
+    let serialized = serde_json::to_string(&call.attempt).unwrap();
+    assert!(!serialized.contains("xytest-keyzz"));
+    assert!(!serialized.contains("test-key"));
+}
+
+#[tokio::test]
 async fn observed_timeout_records_elapsed_active_phase() {
     let mock_server = MockServer::start().await;
     Mock::given(method("POST"))

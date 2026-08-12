@@ -417,13 +417,27 @@ impl SessionTelemetryWriter {
     }
 }
 
+/// Outcome of one shared-writer append.
+#[derive(Debug)]
+pub enum TelemetryAppend {
+    /// The record was written.
+    Written,
+    /// The record was skipped because a prior append already failed and
+    /// telemetry is disabled; callers stay silent.
+    Disabled,
+    /// The append failed and telemetry is now disabled; exactly one caller
+    /// should report this transition.
+    Failed(anyhow::Error),
+}
+
 /// Shared session-telemetry writer with a fail-stop disabled flag.
 ///
 /// The agent loop and the judge-attempt sink share one instance, so a write
 /// failure on either path disables telemetry for both: once any append fails,
 /// no further records are written and a partial NDJSON line is never followed
 /// by more records (see the recovery contract in the judge-attempt-diagnostics
-/// exec plan).
+/// exec plan). The disabled check and the failure transition happen while the
+/// writer lock is held, so concurrent appends cannot race past the flag.
 pub struct SharedSessionTelemetryWriter {
     writer: Mutex<SessionTelemetryWriter>,
     disabled: Arc<AtomicBool>,
@@ -439,21 +453,25 @@ impl SharedSessionTelemetryWriter {
 
     /// Append one record, fail-stop: after the first failure no further
     /// records are written.
-    pub fn append(&self, record: &SessionTelemetryRecord) -> anyhow::Result<()> {
+    pub fn append(&self, record: &SessionTelemetryRecord) -> TelemetryAppend {
+        let mut writer = match self.writer.lock() {
+            Ok(writer) => writer,
+            Err(poisoned) => {
+                return TelemetryAppend::Failed(anyhow::anyhow!(
+                    "session telemetry writer poisoned: {poisoned:?}"
+                ));
+            },
+        };
         if self.disabled.load(Ordering::Relaxed) {
-            anyhow::bail!("session telemetry disabled after write failure");
+            return TelemetryAppend::Disabled;
         }
-        let result = self
-            .writer
-            .lock()
-            .map(|mut writer| writer.append(record))
-            .map_err(|poisoned| {
-                anyhow::anyhow!("session telemetry writer poisoned: {poisoned:?}")
-            })?;
-        if result.is_err() {
-            self.disabled.store(true, Ordering::Relaxed);
+        match writer.append(record) {
+            Ok(()) => TelemetryAppend::Written,
+            Err(error) => {
+                self.disabled.store(true, Ordering::Relaxed);
+                TelemetryAppend::Failed(error)
+            },
         }
-        result
     }
 }
 
@@ -480,7 +498,8 @@ impl JudgeAttemptSink {
         Self { writer, context }
     }
 
-    /// Append one finalized judge attempt to the sidecar, best-effort.
+    /// Append one finalized judge attempt to the sidecar, best-effort and
+    /// silent once telemetry has already been disabled by an earlier failure.
     pub fn record(&self, attempt: JudgeAttemptTelemetry) {
         let record = SessionTelemetryRecord::JudgeAttempt {
             session_id: self.context.session_id.clone(),
@@ -488,7 +507,7 @@ impl JudgeAttemptSink {
             timestamp: Utc::now(),
             attempt,
         };
-        if let Err(error) = self.writer.append(&record) {
+        if let TelemetryAppend::Failed(error) = self.writer.append(&record) {
             tracing::warn!(target: "cake", "Failed to record judge attempt: {error}");
         }
     }

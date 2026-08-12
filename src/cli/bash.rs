@@ -201,10 +201,14 @@ async fn evaluate_with_client_diagnostic(
 /// The values the `--diagnostic` output must omit: the resolved API key plus
 /// any configured provider header values (for example `OpenRouter`'s
 /// `HTTP-Referer` and `X-Title`), which an endpoint could echo back in a
-/// response body or error.
+/// response body or error. Ordered longest-first so a value containing
+/// another secret (for example a header value containing the API key) is
+/// redacted before its inner secret is replaced.
 fn diagnostic_redaction_secrets(client: &JudgeClient) -> Vec<String> {
     let mut secrets = vec![client.api_key().to_string()];
     secrets.extend(client.provider_header_values());
+    secrets.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+    secrets.dedup();
     secrets
 }
 

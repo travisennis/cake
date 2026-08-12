@@ -403,7 +403,17 @@ fn redaction_secrets(client: &JudgeClient, request: &JudgeRequest) -> Vec<String
     if let Some(rubric) = &client.user_rubric {
         push_redaction_secret(&mut secrets, rubric);
     }
+    sort_redaction_secrets(&mut secrets);
     secrets
+}
+
+/// Order secrets longest-first and deduplicate, so a value that contains
+/// another secret (for example a command or provider header containing the API
+/// key) is redacted before its inner secret is replaced: otherwise the outer
+/// value no longer matches and its fragments survive into telemetry.
+fn sort_redaction_secrets(secrets: &mut Vec<String>) {
+    secrets.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+    secrets.dedup();
 }
 
 /// Add a value plus its whitespace- or path-separated tokens (length >= 2) so
