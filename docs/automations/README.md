@@ -2,7 +2,7 @@
 
 An automation is recurring repository maintenance that runs on a schedule rather than in response to a request: dependency sweeps, toolchain and runner-image checks, advisory audits. This document defines what automations may do and how they report. Each automation's own procedure lives in its own document in this directory.
 
-Cake is the agent CLI such an automation would run, so an agent-run automation opening pull requests here is Cake operating on itself. The conventions below exist to keep that legible.
+Cake is the agent CLI such an automation would run, so an agent-run automation opening pull requests here is Cake operating on itself. No agent-run automation exists yet, and the mechanism for running Cake on a schedule is undecided; see [#231](https://github.com/travisennis/cake/issues/231).
 
 ## The specification lives in the repository
 
@@ -18,24 +18,6 @@ An automation reading a thread needs to tell its own prior output from human fee
 
 Treat comments carrying the prefix as automation state, never as guidance.
 
-## Do nothing visibly
-
-An automation that finds no change to make must not create a branch, commit, or pull request. Report the check and stop.
-
-The point of a scheduled check is usually that it finds nothing. An automation whose only visible output is a pull request has an incentive to manufacture one, and a repository whose maintainer learns to skim automation pull requests has lost the check.
-
-## One owner per surface
-
-Each automation states which files and version surfaces it owns, and which belong to something else. Dependabot owns the surfaces its manifests cover. Where an automation's scope touches a surface another automation or tool already maintains, the document says so explicitly.
-
-Two automations updating one pin produce conflicting pull requests and a race whose winner depends on schedule order.
-
-## Feedback updates the document
-
-When a maintainer corrects an automation's output --- a rejected pull request, a review comment, a failed validation --- update that automation's document before the same class of change is attempted again.
-
-An automation cannot learn between runs. Its document is its memory, so a correction that is not written down will be re-litigated on the next run. This mirrors the escalation rule in [AGENTS.md](../../AGENTS.md): repeated findings of the same class indicate a design problem, not a patching problem.
-
 ## Current automations
 
 ### Scheduled checks
@@ -50,6 +32,6 @@ An automation cannot learn between runs. Its document is its memory, so a correc
   | `msrv`     | `cargo check` on the MSRV toolchain  | yes   |
   | `docs`     | `cargo doc` with warnings denied     | yes   |
 
-The `outdated` job runs with `|| true`, so it cannot fail and its report reaches only the workflow log. It reports staleness without producing a queue anyone works. Whether it should gate, route somewhere, or be removed is part of #80.
+The `outdated` job runs with `|| true`, so it cannot fail and its report reaches only the workflow log. Whether it should gate, route somewhere, or be removed is part of #80. The `docs` job has failed every scheduled run since June 2026; fixing it and deciding what a failing check does is [#230](https://github.com/travisennis/cake/issues/230).
 
 [Dependency and supply chain posture](../dependencies.md) is the policy these checks partially enforce.
