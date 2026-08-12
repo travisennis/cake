@@ -64,7 +64,11 @@ INSTRUCTION_FILES = [
 # next 50. Headroom is not permission to grow: crossing it should still cost
 # something elsewhere in the document.
 BUDGETS = {
-    "AGENTS.md": 950,
+    # Raised 950 -> 1200 on 2026-08-12: the Final Handoff Instructions moved
+    # here from the built-in system prompt (src/prompts/system.md), a
+    # relocation rather than net growth; the count-plus-headroom convention
+    # puts the document at 1200.
+    "AGENTS.md": 1200,
     "CONTRIBUTING.md": 1150,
     # Compatibility-contract authority that grew a mandated section (Bash
     # `reason`, `cake bash check` exit codes, compensation-record shapes,
