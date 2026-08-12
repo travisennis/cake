@@ -4,7 +4,7 @@
 //! ignored because it calls a configured model provider and incurs cost; run
 //! it explicitly with `just judge-corpus`.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::str::FromStr as _;
 use std::time::Duration;
 
@@ -16,8 +16,11 @@ use crate::clients::judge::{
 };
 use crate::clients::judge_rubric::VerdictCode;
 use crate::config::SettingsLoader;
-use crate::config::model::ResolvedModelConfig;
-use crate::config::settings::{JudgeSettings, LoadedSettings};
+use crate::config::model::{ApiType, ResolvedModelConfig};
+use crate::config::settings::{
+    JUDGE_BYPASS_ENV, JudgeSettings, LoadedSettings, ModelDefinition, SandboxSettings,
+    SkillSettings,
+};
 
 const CORPUS: &str = include_str!("tools/corpus/commands.jsonl");
 const MODEL_ENV: &str = "CAKE_JUDGE_CORPUS_MODEL";
@@ -325,6 +328,8 @@ fn validate_judge_specific_cases(entries: &[CorpusEntry]) -> Vec<String> {
     let has_pair = paired.iter().enumerate().any(|(index, left)| {
         paired[index + 1..].iter().any(|right| {
             left.command == right.command
+                && left.expect == right.expect
+                && left.code == right.code
                 && left.reason.is_some()
                 && right.reason.is_some()
                 && left.reason != right.reason
@@ -332,7 +337,9 @@ fn validate_judge_specific_cases(entries: &[CorpusEntry]) -> Vec<String> {
     });
     if !has_pair {
         failures.push(
-            "same-command-pair cases must repeat a command with distinct reasons".to_string(),
+            "same-command-pair cases must repeat a command with the same expected verdict \
+             and distinct reasons"
+                .to_string(),
         );
     }
     failures
@@ -359,6 +366,7 @@ async fn judge_corpus_live_meets_tolerance() {
     let loaded = SettingsLoader::load_with_profile(Some(&cwd), profile.as_deref())
         .expect("judge corpus settings should load");
     let (client, model) = live_judge_client(&loaded).unwrap_or_else(|error| panic!("{error}"));
+    let bypass_env = std::env::var(JUDGE_BYPASS_ENV).ok();
     let repetitions = repetitions().unwrap_or_else(|error| panic!("{error}"));
     let digest = repo_state_digest(&cwd);
     let mut report = LiveReport::default();
@@ -368,7 +376,7 @@ async fn judge_corpus_live_meets_tolerance() {
             let request =
                 JudgeRequest::new(entry.command.clone(), cwd.clone(), entry.reason.clone())
                     .with_repo_digest(digest.clone());
-            let observation = observe(&client, &loaded.judge, request).await;
+            let observation = observe(&client, &loaded.judge, bypass_env.as_deref(), request).await;
             report.record(entry, repetition, observation);
         }
         let completed = case_index + 1;
@@ -386,15 +394,21 @@ async fn judge_corpus_live_meets_tolerance() {
 }
 
 fn live_judge_client(loaded: &LoadedSettings) -> Result<(JudgeClient, String), String> {
-    if !judge_is_enabled(&loaded.judge, None) {
-        return Err("judge corpus requires [tools.bash.judge] enabled = true".to_string());
+    let bypass_env = std::env::var(JUDGE_BYPASS_ENV).ok();
+    if !judge_is_enabled(&loaded.judge, bypass_env.as_deref()) {
+        return Err(
+            "judge corpus requires the command-safety judge enabled; CAKE_JUDGE=off or \
+             [tools.bash.judge] enabled = false disables it"
+                .to_string(),
+        );
     }
     let requested_model = std::env::var(MODEL_ENV).ok();
-    let model_name = loaded
-        .judge
-        .model
+    // The corpus override (`MODEL_ENV`) wins over `[tools.bash.judge] model`.
+    // When it is set, skip the shared settings resolution below, which would
+    // re-apply the judge model override on top of the requested model.
+    let model_name = requested_model
         .as_deref()
-        .or(requested_model.as_deref())
+        .or(loaded.judge.model.as_deref())
         .or(loaded.default_model.as_deref())
         .ok_or_else(|| {
             format!(
@@ -408,7 +422,11 @@ fn live_judge_client(loaded: &LoadedSettings) -> Result<(JudgeClient, String), S
         .ok_or_else(|| format!("unknown judge corpus model {model_name:?}"))?;
     let default = ResolvedModelConfig::resolve(definition.to_model_config())
         .map_err(|error| format!("failed to resolve judge corpus model {model_name:?}: {error}"))?;
-    let config = resolve_judge_client_config(&loaded.judge, &default, &loaded.models)?;
+    let config = if requested_model.is_some() {
+        default
+    } else {
+        resolve_judge_client_config(&loaded.judge, &default, &loaded.models)?
+    };
     let resolved_model = config.model_config.model.clone();
     let user_rubric = read_user_rubric(&loaded.judge)?;
     let client = JudgeClient::new(config, Duration::from_secs(loaded.judge.timeout_secs))
@@ -430,9 +448,10 @@ fn repetitions() -> Result<usize, String> {
 async fn observe(
     client: &JudgeClient,
     settings: &JudgeSettings,
+    bypass_env: Option<&str>,
     request: JudgeRequest,
 ) -> Result<Observation, String> {
-    let outcome = evaluate_command(client, settings, request, None)
+    let outcome = evaluate_command(client, settings, request, bypass_env)
         .await
         .map_err(|error| error.to_string())?;
     match outcome {
@@ -521,4 +540,126 @@ fn judge_corpus_gate_enforces_tolerance_codes_and_errors() {
     report.code_failures.clear();
     report.errors.push("provider timeout".to_string());
     assert!(!report.passes(), "provider errors must not be tolerated");
+}
+
+#[test]
+fn judge_corpus_model_override_wins_over_judge_model_setting() {
+    let loaded = corpus_loaded_settings();
+    let env = [
+        (MODEL_ENV, Some("corpus-model")),
+        (JUDGE_BYPASS_ENV, None),
+        ("CORPUS_MODEL_KEY", Some("corpus-key")),
+        ("JUDGE_MODEL_KEY", Some("judge-key")),
+    ];
+
+    // CAKE_JUDGE_CORPUS_MODEL beats [tools.bash.judge] model: the corpus runs
+    // on the requested model, not the configured judge model.
+    let (_, model) = temp_env::with_vars(env, || live_judge_client(&loaded).unwrap());
+    assert_eq!(model, "corpus-model");
+
+    // Without the override, the configured judge model wins.
+    let (_, model) = temp_env::with_vars(
+        [
+            (MODEL_ENV, None),
+            (JUDGE_BYPASS_ENV, None),
+            ("CORPUS_MODEL_KEY", Some("corpus-key")),
+            ("JUDGE_MODEL_KEY", Some("judge-key")),
+        ],
+        || live_judge_client(&loaded).unwrap(),
+    );
+    assert_eq!(model, "judge-model");
+}
+
+#[test]
+fn judge_corpus_bypass_off_refuses_live_run() {
+    let loaded = corpus_loaded_settings();
+    let error = temp_env::with_var(JUDGE_BYPASS_ENV, Some("off"), || {
+        live_judge_client(&loaded).unwrap_err()
+    });
+    assert!(
+        error.contains("judge enabled"),
+        "expected an enabled-judge failure, got: {error}"
+    );
+}
+
+#[test]
+fn judge_corpus_pair_requires_matching_verdicts() {
+    fn entry(command: &str, expect: ExpectedDecision, reason: &str) -> CorpusEntry {
+        CorpusEntry {
+            line_number: 1,
+            command: command.to_string(),
+            expect,
+            code: None,
+            reason: Some(reason.to_string()),
+            tags: vec![CaseTag::SameCommandPair],
+            note: None,
+        }
+    }
+    fn has_pair_failure(failures: &[String]) -> bool {
+        failures
+            .iter()
+            .any(|failure| failure.contains("same-command-pair"))
+    }
+
+    // Distinct reasons with the same expected verdict form a valid pair.
+    let matching = [
+        entry("git status", ExpectedDecision::Allowed, "benign reason"),
+        entry("git status", ExpectedDecision::Allowed, "hostile reason"),
+    ];
+    assert!(
+        !has_pair_failure(&validate_judge_specific_cases(&matching)),
+        "matching-verdict pair should satisfy the check"
+    );
+
+    // Distinct reasons with different verdicts must not satisfy the pair check.
+    let mismatched = [
+        entry("git status", ExpectedDecision::Allowed, "benign reason"),
+        entry("git status", ExpectedDecision::Blocked, "hostile reason"),
+    ];
+    assert!(
+        has_pair_failure(&validate_judge_specific_cases(&mismatched)),
+        "different-verdict pair must not satisfy the check"
+    );
+}
+
+fn corpus_loaded_settings() -> LoadedSettings {
+    fn definition(name: &str, api_key_env: &str) -> ModelDefinition {
+        ModelDefinition {
+            name: name.to_string(),
+            model: name.to_string(),
+            api_type: ApiType::ChatCompletions,
+            base_url: "https://api.example.com".to_string(),
+            api_key_env: api_key_env.to_string(),
+            provider: None,
+            provider_headers: None,
+            temperature: None,
+            top_p: None,
+            max_output_tokens: None,
+            reasoning_effort: None,
+            reasoning_summary: None,
+            reasoning_max_tokens: None,
+            providers: vec![],
+        }
+    }
+    LoadedSettings {
+        models: HashMap::from([
+            (
+                "judge-model".to_string(),
+                definition("judge-model", "JUDGE_MODEL_KEY"),
+            ),
+            (
+                "corpus-model".to_string(),
+                definition("corpus-model", "CORPUS_MODEL_KEY"),
+            ),
+        ]),
+        default_model: None,
+        directories: Vec::new(),
+        sandbox: SandboxSettings::default(),
+        skills: SkillSettings::default(),
+        system_prompt: None,
+        judge: JudgeSettings {
+            model: Some("judge-model".to_string()),
+            ..JudgeSettings::default()
+        },
+    }
 }

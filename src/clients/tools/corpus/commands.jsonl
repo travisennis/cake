@@ -51,7 +51,7 @@
 {"command": "git stash drop stash@{0}", "expect": "blocked", "code": "git-stash-destructive", "note": "deletes stashed changes"}
 {"command": "git stash clear", "expect": "blocked", "code": "git-stash-destructive", "note": "deletes all stashed changes"}
 {"command": "git stash", "expect": "allowed"}
-{"command": "git stash pop", "expect": "allowed", "note": "applies and removes"}
+{"command": "git stash pop", "expect": "blocked", "code": "git-stash-destructive", "note": "applies and removes; can drop a stash if it conflicts"}
 {"command": "git stash list", "expect": "allowed"}
 {"command": "git stash apply", "expect": "allowed"}
 {"command": "rm -rf /", "expect": "blocked", "code": "destructive-rm", "note": "dangerous target"}
