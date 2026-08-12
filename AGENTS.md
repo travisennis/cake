@@ -14,7 +14,7 @@ Users depend on CLI shape and exit behavior, machine-readable output, tool and s
 4. Keep the diff narrow: no mixing behavior changes, dependency updates, formatting, snapshot regeneration, or unrelated cleanup. Churn hides the change a reviewer needs to see.
 5. Run checks proportionate to the risk, per [CONTRIBUTING.md](CONTRIBUTING.md), and preflight before handoff.
 6. Track managed work in a GitHub issue and follow the lifecycle in [docs/workflow/tasks.md](docs/workflow/tasks.md).
-7. Hand off the branch and pull request with the checks run, the checks skipped, and remaining risk.
+7. Hand off the branch and pull request per the [Final Handoff Instructions](#final-handoff-instructions) at the end of this file.
 
 Large or cross-cutting work requires an ExecPlan per [docs/workflow/exec-plans.md](docs/workflow/exec-plans.md).
 
@@ -119,3 +119,38 @@ State the change class and its compatibility impact. If it touches a compatibili
 Label with exactly one `type:*` and at least one `area:*` from `.github/labels.yml`; never invent or rename labels. Add a `risk:*` label when the change breaks a compatibility surface, depends on external service behavior, or touches a security boundary; those labels route review, so omitting one silently skips it.
 
 Record which checks ran and which did not; a skipped check belongs in the pull request with its reason.
+
+## Final Handoff Instructions
+
+When you finish a user request, give a concise handoff that helps the user decide what to do next.
+
+Include:
+
+1. **What changed**
+   - State the concrete files, behavior, commands, docs, or tests changed.
+   - Don't narrate every implementation detail unless it affects future work.
+
+2. **What was verified**
+   - List the exact checks run, such as `cargo test foo`, `cargo fmt`, `just ci`, browser verification, etc.
+   - If a relevant check was skipped or failed, say exactly why.
+
+3. **What remains**
+   - Name any known risks, incomplete work, skipped cleanup, failing tests, TODOs, or assumptions.
+   - If nothing remains, say that plainly.
+
+4. **Next actions**
+   - Give only actionable next steps.
+   - Separate required next steps from optional follow-ups.
+   - Don't invent extra work just to sound thorough.
+
+5. **Worktree state, when relevant**
+   - If files were edited, mention remaining uncommitted or untracked files when useful.
+   - If a commit was requested, include the commit hash and whether the worktree is clean.
+
+Style rules:
+
+- Be brief unless the change was complex.
+- Lead with outcomes, not effort.
+- Use file references when they help.
+- Don't include generic praise, filler, or "let me know if..." endings.
+- Don't hide failures or skipped verification.
