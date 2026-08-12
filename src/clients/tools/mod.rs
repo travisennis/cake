@@ -181,7 +181,9 @@ mod secure_temp_dir;
 mod toolbox;
 mod write;
 
-pub(super) use json_repair::repair_json_args;
+/// Crate-visible so `clients` can re-export it for hook payload parsing; the
+/// hook view of `tool_input` must use the same repair pass as executors (#185).
+pub use json_repair::repair_json_args;
 pub use read::extract_path as read_extract_path;
 pub(super) use scheduling::{ScheduledToolCall, schedule_tool_calls};
 pub(super) use toolbox::toolbox_tool_entry;
@@ -203,7 +205,7 @@ pub(super) fn argument_compensation_events(
     registered: bool,
 ) -> Vec<CompensationEventTelemetry> {
     let mut events = Vec::new();
-    if registered && uses_repair_pass(name) {
+    if registered && tool_uses_repair_pass(name) {
         let repaired = repair_json_args(arguments);
         if repaired != arguments && serde_json::from_str::<serde_json::Value>(&repaired).is_ok() {
             events.push(CompensationEventTelemetry::new(
@@ -221,7 +223,11 @@ pub(super) fn argument_compensation_events(
     events
 }
 
-fn uses_repair_pass(name: &str) -> bool {
+/// Whether a registered tool's executor applies the conservative JSON repair
+/// pass before parsing its arguments. The hook layer must present exactly this
+/// set of tools with the repaired `tool_input` view, so hook policy and
+/// execution agree on what will run (#185).
+pub fn tool_uses_repair_pass(name: &str) -> bool {
     name == "Edit" || name == "Write" || name.starts_with(crate::config::toolbox::TOOLBOX_PREFIX)
 }
 

@@ -202,7 +202,7 @@ impl ToolHookMetadata {
         Self {
             call_id: call_id.to_owned(),
             tool_name: tool_name.to_owned(),
-            input_summary: tool_input_summary(arguments),
+            input_summary: tool_input_summary(tool_name, arguments),
         }
     }
 }
@@ -255,7 +255,7 @@ impl HookRunner {
         arguments: &str,
     ) -> anyhow::Result<ToolHookPlan> {
         let source = HookSource::Tool(tool_name.to_owned());
-        let tool_input = parse_tool_input(arguments);
+        let tool_input = parse_tool_input(tool_name, arguments);
         let metadata = ToolHookMetadata::new(tool_use_id, tool_name, arguments);
         let payload = self.payload(
             HookEvent::PreToolUse,
@@ -333,7 +333,7 @@ impl HookRunner {
             json!({
                 "tool_name": tool_name,
                 "tool_use_id": tool_use_id,
-                "tool_input": parse_tool_input(arguments),
+                "tool_input": parse_tool_input(tool_name, arguments),
                 "tool_input_json": arguments,
                 "tool_result": {
                     "result_type": result_type,
@@ -895,12 +895,33 @@ const fn resolved_decision_label(
     }
 }
 
-fn parse_tool_input(arguments: &str) -> Value {
-    serde_json::from_str(arguments).unwrap_or_else(|_| json!({}))
+/// Parse tool-call arguments into the structured `tool_input` a hook sees.
+///
+/// Applies the same conservative JSON repair pass a tool executor applies
+/// before parsing — but only for tools whose executors repair (Edit, Write,
+/// `tb__*`), so hook policy and execution agree on what will run. For other
+/// tools the strict parse is the executor's own view. When parsing still
+/// fails, `tool_input` falls back to `{}`; such a payload cannot parse in the
+/// executor either, so the call fails rather than executes. See `#185`.
+fn parse_tool_input(tool_name: &str, arguments: &str) -> Value {
+    serde_json::from_str(&tool_input_payload(tool_name, arguments)).unwrap_or_else(|_| json!({}))
 }
 
-fn tool_input_summary(arguments: &str) -> String {
-    let value = parse_tool_input(arguments);
+/// The argument text a hook should parse for `tool_name`.
+///
+/// Tools whose executors repair (Edit, Write, `tb__*`) get the repaired
+/// payload, so hook policy sees what will actually run; tools whose executors
+/// parse strictly (Bash, Read) get the raw payload, matching their view.
+fn tool_input_payload(tool_name: &str, arguments: &str) -> String {
+    if crate::clients::tool_uses_repair_pass(tool_name) {
+        crate::clients::repair_json_args(arguments)
+    } else {
+        arguments.to_string()
+    }
+}
+
+fn tool_input_summary(tool_name: &str, arguments: &str) -> String {
+    let value = parse_tool_input(tool_name, arguments);
     let summary = value
         .as_object()
         .and_then(|object| {

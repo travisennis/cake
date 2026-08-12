@@ -29,3 +29,9 @@ pub use agent::Agent;
 pub use tools::ToolContext;
 pub use tools::format_tool_list_section;
 pub use tools::{SandboxPolicy, resolve_linked_worktree_dirs, resolve_sandbox_policy};
+
+/// Re-exported so hook payloads parse tool arguments through the same repair
+/// pass the corresponding tool executors apply, keeping the hook view of
+/// `tool_input` aligned with what the tool will act on (#185). The crate has
+/// no library target, so this is internal.
+pub use tools::{repair_json_args, tool_uses_repair_pass};
