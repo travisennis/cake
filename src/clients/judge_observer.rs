@@ -46,6 +46,10 @@ struct ObservedJudgeCall {
     request_json: Vec<u8>,
     attempt: JudgeAttemptTelemetry,
     diagnostic: Option<JudgeDiagnostic>,
+    /// The API key plus the judge inputs (command, reason, cwd) that must
+    /// never appear in telemetry, in case a provider echoes them back in a
+    /// request id or termination status/reason.
+    redaction_secrets: Vec<String>,
 }
 
 impl ObservedJudgeCall {
@@ -79,6 +83,7 @@ impl ObservedJudgeCall {
             request_json,
             attempt,
             diagnostic,
+            redaction_secrets: redaction_secrets(client, request),
         })
     }
 
@@ -210,6 +215,7 @@ impl ObservedJudgeCall {
 
     fn finish(mut self, result: Result<JudgeVerdict, JudgeError>) -> JudgeCall {
         self.attempt.total_ms = elapsed_ms(self.total_start);
+        redact_attempt_provider_metadata(&mut self.attempt, &self.redaction_secrets);
         JudgeCall {
             result,
             attempt: self.attempt,
@@ -363,6 +369,46 @@ fn redact_termination(mut termination: ProviderTermination, secret: &str) -> Pro
         .as_deref()
         .map(|value| redact_secret(value, secret));
     termination
+}
+
+/// The API key and judge inputs that must never reach telemetry or the
+/// diagnostic attempt metadata: the resolved key plus the command, reason, and
+/// cwd sent to the judge. A provider could echo any of them in its request id
+/// or termination status/reason.
+fn redaction_secrets(client: &JudgeClient, request: &JudgeRequest) -> Vec<String> {
+    let mut secrets = vec![client.config.api_key.clone()];
+    secrets.push(request.command.clone());
+    if let Some(reason) = &request.reason {
+        secrets.push(reason.clone());
+    }
+    secrets.push(request.cwd.to_string_lossy().into_owned());
+    secrets
+}
+
+/// Redact the API key and judge inputs from the provider-controlled attempt
+/// fields (request id, termination status/reason) before the attempt is
+/// recorded, so telemetry and the diagnostic attempt metadata cannot carry
+/// credentials or command/reason/cwd values echoed back by a provider.
+fn redact_attempt_provider_metadata(attempt: &mut JudgeAttemptTelemetry, secrets: &[String]) {
+    if let Some(id) = &mut attempt.provider_request_id {
+        *id = redact_secrets(id, secrets);
+    }
+    if let Some(termination) = &mut attempt.termination {
+        if let Some(status) = &mut termination.provider_status {
+            *status = redact_secrets(status, secrets);
+        }
+        if let Some(reason) = &mut termination.provider_reason {
+            *reason = redact_secrets(reason, secrets);
+        }
+    }
+}
+
+fn redact_secrets(text: &str, secrets: &[String]) -> String {
+    let mut redacted = text.to_string();
+    for secret in secrets {
+        redacted = redact_secret(&redacted, secret);
+    }
+    redacted
 }
 
 fn elapsed_ms(started: Instant) -> u64 {

@@ -371,6 +371,54 @@ async fn observed_judge_attempt_records_metadata_and_exact_diagnostic_request() 
 }
 
 #[tokio::test]
+async fn observed_judge_attempt_redacts_provider_echoed_metadata() {
+    // A provider that echoes the API key or judge inputs back in its request
+    // id or termination reason must not get those values into the attempt
+    // metadata, which is persisted to the telemetry sidecar and re-rendered as
+    // diagnostic "Attempt metadata".
+    let mock_server = MockServer::start().await;
+    let mut body = chat_response(r#"{"verdict":"allow","message":"Safe"}"#);
+    body["choices"][0]["finish_reason"] =
+        serde_json::json!("stop git status --short in /work/project");
+    body["usage"] = serde_json::json!({
+        "prompt_tokens": 5,
+        "completion_tokens": 3,
+        "total_tokens": 8
+    });
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-request-id", "hdr-test-key-echo")
+                .set_body_json(body),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let call = judge_client(&mock_server)
+        .judge_observed(request("git status --short", Some("inspect state")), false)
+        .await;
+    assert!(call.result.is_ok());
+    assert_eq!(
+        call.attempt.provider_request_id.as_deref(),
+        Some("hdr-<redacted>-echo"),
+        "provider-echoed API key must be redacted from the request id"
+    );
+    assert_eq!(
+        call.attempt
+            .termination
+            .as_ref()
+            .and_then(|termination| termination.provider_reason.as_deref()),
+        Some("stop <redacted> in <redacted>"),
+        "provider-echoed command and cwd must be redacted from the termination reason"
+    );
+    let serialized = serde_json::to_string(&call.attempt).unwrap();
+    assert!(!serialized.contains("test-key"));
+    assert!(!serialized.contains("git status --short"));
+    assert!(!serialized.contains("inspect state"));
+    assert!(!serialized.contains("/work/project"));
+}
+
+#[tokio::test]
 async fn observed_timeout_records_elapsed_active_phase() {
     let mock_server = MockServer::start().await;
     Mock::given(method("POST"))
