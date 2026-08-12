@@ -17,6 +17,8 @@ mod backend;
 mod chat_completions;
 mod chat_types;
 pub mod judge;
+#[cfg(test)]
+mod judge_corpus_tests;
 pub mod judge_rubric;
 mod provider_strategy;
 mod responses;

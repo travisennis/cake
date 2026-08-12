@@ -41,7 +41,7 @@ The crate has no library target. Do not use `cargo test --lib`.
 
 ## Command-safety corpus cases
 
-Append one line to `src/clients/tools/corpus/commands.jsonl` to add a command-safety regression case; nothing else changes. `expect` is `blocked`, `warned`, or `allowed`; `note` is optional. The judge-driven runner (issue #174) checks these cases.
+Append cases to `src/clients/tools/corpus/commands.jsonl` as documented in its README. Run `just judge-corpus-check` locally; the live `just judge-corpus` requires provider credentials and authorized external spend.
 
 ## Verification
 
