@@ -66,6 +66,9 @@ async fn run_bash_check_command(
     let current_dir = std::env::current_dir()
         .map_err(|e| anyhow::anyhow!("Failed to get current directory: {e}"))?;
     let loaded = SettingsLoader::load_with_profile(Some(&current_dir), options.profile)?;
+    // Surface unrecognized settings keys on stderr, same as the run path, so a
+    // typo in `[tools.bash.judge]` is reported here too.
+    loaded.print_warnings();
     if check.diagnostic {
         // The raw diagnostic report always goes to stdout, even when the judge
         // fails; the fail-closed error is returned separately so it reaches
