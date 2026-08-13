@@ -49,7 +49,7 @@ pub struct ApiError {
 ///
 /// This is the primary classification function. Returns the raw `u8` code
 /// which can be embedded in structured output (e.g. streaming JSON) or
-/// converted to `std::process::ExitCode` via [`classify_to_exit_code`].
+/// converted to `std::process::ExitCode` via [`classify`].
 pub fn classify_to_u8(err: &anyhow::Error) -> u8 {
     if let Some(code) = classify_typed_error(err) {
         return code;

@@ -593,7 +593,7 @@ impl HookRunner {
 /// RAII guard that kills the entire hook process tree on drop, unless
 /// [`defuse`](#method.defuse) has been called.
 ///
-/// On Unix the guard sends [`SIGKILL`] to the hook's process group (if a PID
+/// On Unix the guard sends [`libc::SIGKILL`] to the hook's process group (if a PID
 /// was recorded).  On other platforms it is a no-op — the underlying
 /// `kill_on_drop(true)` on the `Command` still terminates the immediate child
 /// on drop.
