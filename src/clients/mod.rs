@@ -18,6 +18,8 @@ mod chat_completions;
 mod chat_types;
 pub mod judge;
 #[cfg(test)]
+mod judge_benchmark_tests;
+#[cfg(test)]
 mod judge_corpus_tests;
 pub mod judge_rubric;
 mod provider_strategy;
