@@ -31,7 +31,7 @@ Read, Edit, and Write validate target paths in-process. Bash runs every command 
 - macOS uses Seatbelt through `sandbox-exec`;
 - Linux uses Landlock and requires a kernel capable of fully enforcing the configured ruleset.
 
-The LLM judge (ADR-018) is the command-safety gate above the OS sandbox. It replaced the compiled `bash_safety` guard: there is no deterministic rule floor. The judge is default-on and fail-closed --- a `block` verdict or any judge failure (missing context, unresolvable model, rubric read failure, timeout, transport error, or malformed verdict) prevents the command from running; a `warn` verdict runs it with guidance prepended. Because the gate is stochastic, its verdicts are model-dependent and must be measured, not trusted: every judge decision (verdict + code + latency, fail-closed class, or bypass) is recorded in the session telemetry sidecar, and the regression corpus at `src/clients/tools/corpus/commands.jsonl` is evaluated by the judge-driven runner (#174).
+The LLM judge (ADR-018) is the command-safety gate above the OS sandbox. It replaced the compiled `bash_safety` guard: there is no deterministic rule floor. The judge is default-on and fail-closed --- a `block` verdict or any judge failure (missing context, unresolvable model, rubric read failure, timeout, transport error, or malformed verdict) prevents the command from running; a `warn` verdict runs it with guidance prepended. Judge failures remain fail-closed after at most one recovery within `timeout_secs + retry_budget_secs`. Because the gate is stochastic, its verdicts are model-dependent and must be measured, not trusted: every judge decision (verdict + code + latency, fail-closed class, or bypass) is recorded in the session telemetry sidecar, and the regression corpus at `src/clients/tools/corpus/commands.jsonl` is evaluated by the judge-driven runner (#174).
 
 The judge's only override surface is an explicit allowlist of exact raw-command strings: an allowlisted command is still judged, and a `block` verdict is overridden but recorded with an `overridden` flag. An emergency bypass (`CAKE_JUDGE=off` or `tools.bash.judge.enabled = false`) disables the judge for every command, emits a bypass telemetry event per call, and is off by default. The accepted risks are non-determinism (the same command may be judged differently across calls, models, or days), latency and cost on the hottest tool, and correlated prompt-injection failure --- the judge is weakest exactly where it is needed most. The OS sandbox remains the filesystem boundary; effects the sandbox cannot bound (in-project destruction, remote Git effects) are the residual risk surface.
 
@@ -61,7 +61,7 @@ Only enable hook files and toolbox directories you trust. A cloned repository do
 
 Session transcripts can contain prompts, model responses, tool calls, tool outputs, hook records, paths, and other sensitive project information. Protect `~/.local/share/cake/sessions/` or the configured data directory accordingly.
 
-Telemetry sidecars intentionally omit prompt text, assistant text, raw tool output bodies, judge command/reason/cwd values, provider response bodies, credentials, and authorization headers, but still contain operational metadata. Judge-attempt records include model controls, prompt byte counts, phase timing, status, request identity digests (never raw provider-controlled identifiers), termination, and token usage when available.
+Telemetry sidecars intentionally omit prompt text, assistant text, raw tool output bodies, judge command/reason/cwd values, provider response bodies, credentials, and authorization headers, but still contain operational metadata. Judge-attempt records include model controls, prompt byte counts, phase timing, attempt/retry ordinal, retry reason, backoff wait, effective deadline, status, request identity digests (never raw provider-controlled identifiers), termination, and token usage when available.
 
 `cake bash check --diagnostic` is a separate, explicit raw inspection surface. Its stdout contains the effective judge prompts and transformed request JSON, so it exposes the inspected command, working directory, compact repository state, optional model-supplied reason, and any secrets already embedded in those values. It also renders parsed response metadata. Treat that output like a session transcript and avoid redirecting or sharing it unless the destination is trusted. Cake omits its resolved API key, authorization headers, configured provider headers, and unrelated environment variables; enabling the flag does not make normal Bash preflight telemetry raw.
 
@@ -79,9 +79,9 @@ Convenience is not sufficient justification for widening authority.
 
 ### Enumerate bypass classes first
 
-Before editing a security boundary, enumerate the bypass classes the change must defend against. Record them with the change so review has something to check against.
+Before editing a security boundary, enumerate the bypass classes the change must defend against and record them for review.
 
-A review-reported bypass class that was not enumerated is a signal that the design is wrong, not that another check is missing. Patching each reported bypass in turn converges slowly or not at all: a boundary that can only be held by enumerating evasions is not a boundary. Stop and revisit the approach instead.
+A review-reported bypass class that was not enumerated signals a wrong design, not a missing check. Patching each reported bypass converges slowly or not at all: a boundary held only by enumerating evasions is not a boundary. Stop and revisit the approach instead.
 
 Validating an untrusted command string by parsing it is the recurring instance of this. Shell quoting, expansion, chaining, symlinked targets, and a child process's own configuration flags each reopen the boundary independently, so a parser that rejects today's evasions does not constrain tomorrow's.
 

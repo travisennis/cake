@@ -31,7 +31,11 @@ fn test_config(base_url: String) -> ResolvedModelConfig {
 }
 
 fn judge_client(mock_server: &MockServer) -> JudgeClient {
-    JudgeClient::new(test_config(mock_server.uri()), Duration::from_secs(5))
+    JudgeClient::new(
+        test_config(mock_server.uri()),
+        Duration::from_secs(5),
+        Duration::ZERO,
+    )
 }
 
 fn chat_response(content: &str) -> serde_json::Value {
@@ -297,7 +301,7 @@ async fn bash_check_diagnostic_redacts_api_key_embedded_in_model_name() {
 
     let mut config = test_config(mock_server.uri());
     config.model_config.model = "local/sk-test-key-123-model".to_string();
-    let client = JudgeClient::new(config, Duration::from_secs(5));
+    let client = JudgeClient::new(config, Duration::from_secs(5), Duration::ZERO);
 
     let report = evaluate_with_client_diagnostic(
         client,
@@ -333,7 +337,7 @@ async fn bash_check_diagnostic_redacts_configured_provider_headers() {
         http_referer: Some("https://cake.example".to_string()),
         x_title: Some("cake-app".to_string()),
     });
-    let client = JudgeClient::new(config, Duration::from_secs(5));
+    let client = JudgeClient::new(config, Duration::from_secs(5), Duration::ZERO);
 
     let report = evaluate_with_client_diagnostic(
         client,
@@ -397,6 +401,54 @@ async fn bash_check_renders_allow_verdict() {
         "output must include latency:\n{output}"
     );
     assert!(!output.contains("Code:"), "allow needs no code:\n{output}");
+}
+
+#[tokio::test]
+async fn bash_check_shares_judge_retry_semantics() {
+    // `cake bash check` runs the same observed driver as the Bash preflight:
+    // a timeout-then-allow script must recover within the operation deadline
+    // and render the allow with cumulative latency.
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(chat_response(r#"{"verdict":"allow","message":"Safe"}"#))
+                .set_delay(Duration::from_millis(500)),
+        )
+        .up_to_n_times(1)
+        .mount(&mock_server)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(chat_response(r#"{"verdict":"allow","message":"Safe"}"#)),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let client = JudgeClient::new(
+        test_config(mock_server.uri()),
+        Duration::from_millis(100),
+        Duration::from_secs(1),
+    );
+    let output = evaluate_with_client(
+        client,
+        &JudgeSettings::default(),
+        None,
+        std::path::Path::new("/work"),
+        "git status",
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        output.contains("Verdict: allow"),
+        "recovered check must render the allow verdict:\n{output}"
+    );
+    assert!(
+        output.contains("Latency:"),
+        "check must report cumulative latency after recovery:\n{output}"
+    );
 }
 
 #[tokio::test]

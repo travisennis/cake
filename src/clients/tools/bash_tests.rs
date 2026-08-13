@@ -1700,6 +1700,62 @@ async fn test_judge_unreachable_fails_closed() {
 }
 
 #[tokio::test]
+async fn test_judge_exhausted_recovery_blocks_before_spawn() {
+    // A judge that times out on both its first call and its recovery attempt
+    // must block the command before spawn and record the final fail-closed
+    // class, exactly as an un-retried failure would.
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(judge_chat_response(
+                    r#"{"verdict":"allow","message":"Safe"}"#,
+                ))
+                .set_delay(Duration::from_millis(1500)),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let mut context = judge_context(&mock_server);
+    {
+        let settings = std::sync::Arc::get_mut(&mut context).unwrap();
+        settings.settings.timeout_secs = 1;
+        settings.settings.retry_budget_secs = 1;
+    }
+
+    let args = r#"{"command": "echo judge-exhausted-test"}"#;
+    let err = Box::pin(execute_bash_with_judge(args, Some(context)))
+        .await
+        .unwrap_err();
+    assert!(
+        err.message.contains("BLOCKED"),
+        "exhausted recovery must fail closed, got: {err}"
+    );
+    assert!(
+        err.message.contains("timed out"),
+        "fail-closed message must name the timeout, got: {err}"
+    );
+    assert!(
+        !err.message.contains("judge-exhausted-test"),
+        "the command must never run after exhausted recovery, got: {err}"
+    );
+    assert_eq!(
+        err.compensation_events.len(),
+        1,
+        "exhausted recovery must record one fail-closed event, got: {:?}",
+        err.compensation_events
+    );
+    assert_eq!(
+        err.compensation_events[0].kind,
+        CompensationKind::JudgeFailClosed
+    );
+    assert_eq!(
+        err.compensation_events[0].detail.as_deref(),
+        Some("timeout")
+    );
+}
+
+#[tokio::test]
 async fn test_judge_bypass_records_bypass_event() {
     // A bypassed judge records one judge_bypass event per call, so the
     // escape hatch cannot be used silently (ADR-018 decision log).

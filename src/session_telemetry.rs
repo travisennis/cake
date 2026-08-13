@@ -110,6 +110,16 @@ pub enum JudgeAttemptTerminalClass {
 pub struct JudgeAttemptTelemetry {
     pub attempt: u32,
     pub retry_ordinal: u32,
+    /// The classification that triggered this attempt's retry, present only on
+    /// a recovery attempt (`retry_ordinal > 0`). Never carries command or
+    /// prompt text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_reason: Option<RetryReasonSnapshot>,
+    /// The backoff wait before this attempt, 0 for the first attempt.
+    pub retry_delay_ms: u64,
+    /// The complete judge operation deadline for this evaluation
+    /// (`timeout_secs + retry_budget_secs`), the same on every attempt.
+    pub effective_deadline_ms: u64,
     pub request_build_ms: u64,
     pub request_ms: u64,
     pub response_parse_ms: u64,
@@ -296,7 +306,7 @@ impl CompensationEventTelemetry {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RetryReasonSnapshot {
     RateLimit,
@@ -561,6 +571,9 @@ mod tests {
         JudgeAttemptTelemetry {
             attempt: 1,
             retry_ordinal: 0,
+            retry_reason: None,
+            retry_delay_ms: 0,
+            effective_deadline_ms: 30_000,
             request_build_ms: 1,
             request_ms: 10,
             response_parse_ms: 2,

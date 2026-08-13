@@ -143,8 +143,12 @@ fn resolve_run_judge_client(
         return Ok((None, bypass_env));
     }
     let model = resolve_judge_model(loaded, cli_model)?;
-    let client = JudgeClient::new(model, Duration::from_secs(loaded.judge.timeout_secs))
-        .with_user_rubric(read_user_rubric(&loaded.judge).map_err(anyhow::Error::msg)?);
+    let client = JudgeClient::new(
+        model,
+        Duration::from_secs(loaded.judge.timeout_secs),
+        Duration::from_secs(loaded.judge.retry_budget_secs),
+    )
+    .with_user_rubric(read_user_rubric(&loaded.judge).map_err(anyhow::Error::msg)?);
     Ok((Some(client), bypass_env))
 }
 

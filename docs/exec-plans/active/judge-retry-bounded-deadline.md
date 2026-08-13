@@ -15,11 +15,12 @@ The compatibility effect: `timeout_secs` keeps its documented meaning as the bou
 - [x] (2026-08-13 21:15Z) Read issue #204, verified dependency #202 and the measurement harness #205 are closed, confirmed the board's Blocked status has no formal blocker, claimed #204 (Blocked -> In Progress), and created `feat/judge-retry-bounded-deadline` from `origin/master`.
 - [x] (2026-08-13 21:30Z) Read the task and ExecPlan workflows, `docs/security.md` (fail-closed trust boundary), `src/clients/judge.rs`, `src/clients/judge_observer.rs`, `src/clients/retry.rs`, `src/clients/agent_runner.rs`, `src/clients/tools/bash.rs`, `src/cli/bash.rs`, `src/session_telemetry.rs`, `src/config/settings.rs`, `docs/configuration.md`, `docs/integrations.md`, and the completed `judge-attempt-diagnostics` and `judge-benchmark-slos` plans.
 - [x] (2026-08-13 21:45Z) Chose the design recorded below: a documented `retry_budget_secs` setting, a two-attempt observed judge loop under one operation deadline, reuse of the agent runner's retry classification, fresh-client recovery on stale/timeout classes, and additive telemetry fields.
-- [ ] Implement Milestone 1: settings and plumbing.
-- [ ] Implement Milestone 2: retry-aware judge observer.
-- [ ] Implement Milestone 3: retry telemetry and cumulative latency.
-- [ ] Implement Milestone 4: acceptance-matrix tests.
-- [ ] Implement Milestone 5: configuration, integration, and security documentation, then `just ci`.
+- [x] (2026-08-13 22:30Z) Milestone 1: added `retry_budget_secs` to the judge settings surface (partial + resolved + loader + defaults), carried it onto `JudgeClient::new`, updated both call sites and all test constructors, and documented the key in `docs/configuration.md`.
+- [x] (2026-08-13 23:15Z) Milestone 2: rewrote `src/clients/judge_observer.rs` as a two-attempt driver under `timeout + retry_budget`, reusing `retry::classify_http_failure` / `classify_transport_error` with a judge `RetryPolicy`, swapping in a fresh client (reuse disabled) on stale/timeout classes, and keeping verdicts/refusals/malformed/response-parse terminal. Extracted `retry_classification` to hold the CC target.
+- [x] (2026-08-13 23:30Z) Milestone 3: added `retry_reason`, `retry_delay_ms`, and `effective_deadline_ms` to `JudgeAttemptTelemetry`, made the Bash preflight report cumulative wall time, and added a retry-era metrics-parser test.
+- [x] (2026-08-13 23:45Z) Milestone 4: added the acceptance-matrix tests (timeout/transport/HTTP retry, budget zero and exhaustion, verdict/refusal/malformed never retried, cancellation, telemetry shape, Bash-tool no-spawn on exhausted recovery, `cake bash check` parity) plus a settings resolution test.
+- [x] (2026-08-14 00:10Z) Milestone 5: updated `docs/configuration.md`, `docs/integrations.md`, and `docs/security.md` (instruction-size budgets held by consolidating wording), then passed `just clippy-strict`, `just cc-check`, `just docs-check`, `just judge-bench-check`, the metrics suite, and `just ci`.
+- [ ] Run the large-change preflight, apply its findings, and update this plan's Outcomes before opening the pull request.
 
 ## Surprises & Discoveries
 
@@ -29,6 +30,9 @@ The compatibility effect: `timeout_secs` keeps its documented meaning as the bou
 - Observation: `retry::classify_http_failure` and `retry::classify_transport_error` take a `session_id` for deterministic jitter and compare `attempt >= policy.max_retries`. To allow exactly one recovery, the judge policy must set `max_retries: 2` (attempt 1 may retry; attempt 2 may not). The judge has no session id; `Uuid::nil()` makes the small jitter deterministic and test-friendly. Evidence: `src/clients/retry.rs::classify_http_failure` (attempt guard), `fallback_delay`.
 - Observation: `JudgeAttemptTelemetry` already carries `attempt`, `retry_ordinal` (always 0 today), and `configured_timeout_ms`, and `RetryReasonSnapshot` already exists for `retry_scheduled` records, so retry telemetry reuses the established vocabulary. Evidence: `src/session_telemetry.rs` lines 110-148, 301-320.
 - Observation: the metrics loader (`scripts/session-metrics/cakelib.py`) appends whole `judge_attempt` records as dicts and reads known fields, so additive fields are tolerated without code change, but a parser test with a retry-era record should prove it. Evidence: `scripts/session-metrics/cakelib.py` lines 271-274.
+- Observation: wiremock's `expect(n)` only sets the verification expectation range; the mock keeps matching until `up_to_n_times(n)` is set. Scripted one-shot stubs (delayed then allow) need `up_to_n_times(1)`, and matching order is mount order. Evidence: the first timeout-then-allow test served the allow stub to request 1; wiremock `mock.rs::expect` vs `up_to_n_times`.
+- Observation: strict clippy (`clippy-strict`) denies `expect()` on `Result` in production, so the judge client's `Mutex<reqwest::Client>` uses `unwrap_or_else(PoisonError::into_inner)` to recover a poisoned lock rather than panicking. Evidence: `-D clippy::expect-used` in the strict gate.
+- Observation: the instruction-size lint is enforced and `docs/security.md` sat exactly at its budget before this change, so the retry statement had to displace existing wording rather than add to it. Evidence: `scripts/lint-instruction-size.py` reported 1500/1500 before edits.
 
 ## Decision Log
 

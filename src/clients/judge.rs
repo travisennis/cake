@@ -33,6 +33,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::clients::agent_runner::build_http_client;
 use crate::clients::judge_rubric::{VerdictCode, build_judge_system_prompt};
+use crate::clients::retry::RetryPolicy;
 use crate::clients::tools::repair_json_args;
 use crate::config::model::ResolvedModelConfig;
 use crate::config::settings::{JudgeSettings, ModelDefinition};
@@ -279,7 +280,7 @@ pub async fn evaluate_command_observed(
     });
     JudgeEvaluation {
         outcome,
-        attempts: vec![call.attempt],
+        attempts: call.attempts,
         diagnostic: call.diagnostic,
     }
 }
@@ -351,8 +352,12 @@ impl JudgeContext {
                         message,
                     })?;
                 Ok(Arc::new(
-                    JudgeClient::new(config, Duration::from_secs(self.settings.timeout_secs))
-                        .with_user_rubric(user_rubric),
+                    JudgeClient::new(
+                        config,
+                        Duration::from_secs(self.settings.timeout_secs),
+                        Duration::from_secs(self.settings.retry_budget_secs),
+                    )
+                    .with_user_rubric(user_rubric),
                 ))
             })
             .as_deref()
@@ -398,16 +403,33 @@ pub fn read_user_rubric(settings: &JudgeSettings) -> Result<Option<String>, Stri
     Ok(Some(text))
 }
 
-/// Client issuing single bounded judge calls on a configured backend.
+/// Client issuing bounded judge calls on a configured backend, with at most
+/// one bounded recovery attempt after a timeout or retryable transport/HTTP
+/// failure.
 ///
 /// Reuses the same backend machinery as the agent loop (`Backend` over the
 /// configured `ApiType`) so the judge speaks the same wire protocol as the
 /// agent, with the agent's resolved model config: "same family by default".
+/// The complete judge operation is bounded by `timeout + retry_budget`; a
+/// valid verdict, refusal, malformed verdict, or response-parse failure is
+/// never retried.
 #[derive(Debug)]
 pub struct JudgeClient {
-    client: reqwest::Client,
+    /// The HTTP client, behind a lock so a recovery attempt can swap in a
+    /// fresh client (connection reuse disabled) after a stale-connection or
+    /// timeout failure. Cloning is cheap, so callers lock only to clone or
+    /// replace.
+    client: std::sync::Mutex<reqwest::Client>,
     config: ResolvedModelConfig,
+    /// Bounded allowance for one provider call (default 30s from
+    /// `[tools.bash.judge] timeout_secs`).
     timeout: Duration,
+    /// Extra allowance one recovery attempt may consume beyond `timeout`
+    /// (default 15s from `[tools.bash.judge] retry_budget_secs`; zero disables
+    /// recovery).
+    retry_budget: Duration,
+    /// Retry policy for the at-most-one recovery attempt.
+    retry_policy: RetryPolicy,
     user_rubric: Option<String>,
 }
 
@@ -417,11 +439,13 @@ impl JudgeClient {
     /// Callers resolve the config first: [`resolve_judge_client_config`]
     /// applies the `[tools.bash.judge] model` override (a `[[models]]` name)
     /// and falls back to the agent's configured model.
-    pub fn new(config: ResolvedModelConfig, timeout: Duration) -> Self {
+    pub fn new(config: ResolvedModelConfig, timeout: Duration, retry_budget: Duration) -> Self {
         Self {
-            client: build_http_client(false),
+            client: std::sync::Mutex::new(build_http_client(false)),
             config,
             timeout,
+            retry_budget,
+            retry_policy: judge_retry_policy(retry_budget),
             user_rubric: None,
         }
     }
@@ -454,30 +478,48 @@ impl JudgeClient {
             .collect()
     }
 
-    /// Evaluate one command with a single bounded call.
+    /// Evaluate one command with one bounded call, retrying once within the
+    /// operation deadline when the first call times out or fails with a
+    /// retryable transport/HTTP error.
     ///
     /// The whole lifecycle — request, body read, response parse, and verdict
-    /// extraction — runs inside `self.timeout`, so a provider that stalls the
-    /// body cannot exceed the bound.
+    /// extraction — runs inside the attempt's allowance, so a provider that
+    /// stalls the body cannot exceed the bound. The complete operation is
+    /// bounded by `self.timeout + self.retry_budget`.
     ///
     /// # Errors
     ///
-    /// Returns [`JudgeError::Timeout`] when the call exceeds `self.timeout`,
+    /// Returns [`JudgeError::Timeout`] when a call exceeds its allowance,
     /// [`JudgeError::Transport`] on transport or HTTP failures,
     /// [`JudgeError::Malformed`] when the response is not a valid verdict, and
     /// [`JudgeError::Refusal`] when the model refuses to judge. Callers fail
-    /// closed on every variant.
+    /// closed on every variant; an exhausted recovery returns the final
+    /// attempt's error.
     pub async fn judge(&self, request: JudgeRequest) -> Result<JudgeVerdict, JudgeError> {
         self.judge_observed(request, false).await.result
     }
 
-    /// Evaluate one command and retain metadata for the bounded provider call.
+    /// Evaluate one command and retain metadata for every provider call.
     async fn judge_observed(
         &self,
         request: JudgeRequest,
         include_raw_diagnostic: bool,
     ) -> observer::JudgeCall {
         observer::judge_observed(self, &request, include_raw_diagnostic).await
+    }
+}
+
+/// The retry policy for the judge's at-most-one recovery attempt.
+///
+/// `max_retries: 2` lets attempt 1 retry exactly once (classify functions
+/// return `DoNotRetry` once `attempt >= max_retries`). The backoff is capped at
+/// 5 seconds so a provider `Retry-After` cannot consume the recovery budget.
+fn judge_retry_policy(retry_budget: Duration) -> RetryPolicy {
+    RetryPolicy {
+        max_retries: 2,
+        base_delay: Duration::from_millis(500),
+        max_backoff: retry_budget.min(Duration::from_secs(5)),
+        jitter_divisor: 5,
     }
 }
 
