@@ -71,4 +71,5 @@ Default-on requires the evaluation prerequisites first: #84 (a controlled model-
 - Execution plan: `docs/exec-plans/completed/llm-judge-command-safety.md`.
 - Preserves ADR-014, `Sandbox Policy CLI Flag`: the judge is independent of the OS sandbox policy and remains active under `danger-full-access` and `CAKE_SANDBOX=off`.
 - Builds on ADR-007, `Per-Session Telemetry Sidecar`, for metadata-only judge decision events.
+- Partially superseded by [ADR-020](./020-bounded-llm-judge-recovery.md), `Bounded LLM-Judge Recovery`: the "no retries in version 1" clause above is replaced by one bounded recovery attempt within a documented deadline; this decision remains accepted for the judge gate itself.
 - Current durable authorities are `docs/security.md`, `docs/configuration.md`, `docs/integrations.md`, and `ARCHITECTURE.md`.
