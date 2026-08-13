@@ -905,10 +905,12 @@ fn live_judge_client(loaded: &LoadedSettings, model_name: &str) -> Result<JudgeC
         format!("failed to resolve judge benchmark model {model_name:?}: {error}")
     })?;
     let user_rubric = read_user_rubric(&loaded.judge)?;
-    Ok(
-        JudgeClient::new(config, Duration::from_secs(loaded.judge.timeout_secs))
-            .with_user_rubric(user_rubric),
+    Ok(JudgeClient::new(
+        config,
+        Duration::from_secs(loaded.judge.timeout_secs),
+        Duration::from_secs(loaded.judge.retry_budget_secs),
     )
+    .with_user_rubric(user_rubric))
 }
 
 fn parse_comma_list(raw: &str) -> Vec<String> {
@@ -1089,6 +1091,9 @@ mod deterministic {
                 api_key: "bench-test-key".to_string(),
             },
             timeout,
+            // Deterministic bench trials stay single-attempt; the retry era is
+            // covered by the harness's synthesized multi-attempt aggregation.
+            Duration::ZERO,
         )
     }
 
@@ -1585,6 +1590,9 @@ mod deterministic {
         let attempt = JudgeAttemptTelemetry {
             attempt: 1,
             retry_ordinal: 0,
+            retry_reason: None,
+            retry_delay_ms: 0,
+            effective_deadline_ms: 30_000,
             request_build_ms: 1,
             request_ms: 2_500,
             response_parse_ms: 3,

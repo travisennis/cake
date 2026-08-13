@@ -468,8 +468,12 @@ fn live_judge_client(loaded: &LoadedSettings) -> Result<(JudgeClient, String), S
     };
     let resolved_model = config.model_config.model.clone();
     let user_rubric = read_user_rubric(&loaded.judge)?;
-    let client = JudgeClient::new(config, Duration::from_secs(loaded.judge.timeout_secs))
-        .with_user_rubric(user_rubric);
+    let client = JudgeClient::new(
+        config,
+        Duration::from_secs(loaded.judge.timeout_secs),
+        Duration::from_secs(loaded.judge.retry_budget_secs),
+    )
+    .with_user_rubric(user_rubric);
     Ok((client, resolved_model))
 }
 

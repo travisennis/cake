@@ -762,10 +762,13 @@ fn record_judge_attempts(
 fn observed_evaluation_to_preflight(
     evaluation: crate::clients::judge::JudgeEvaluation,
 ) -> Result<JudgePreflight, super::ToolError> {
-    let latency_ms = evaluation
-        .attempts
-        .last()
-        .map_or(0, |attempt| attempt.total_ms);
+    // Cumulative wall time across every attempt, including the backoff waits
+    // between them, so the verdict/fail-closed latency reflects the whole
+    // judge operation after a bounded recovery.
+    let latency_ms = evaluation.attempts.iter().fold(0_u64, |acc, attempt| {
+        acc.saturating_add(attempt.total_ms)
+            .saturating_add(attempt.retry_delay_ms)
+    });
     match evaluation.outcome {
         Ok(outcome) => judge_preflight_outcome(outcome, latency_ms),
         Err(error) => {

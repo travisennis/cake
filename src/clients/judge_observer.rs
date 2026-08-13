@@ -1,14 +1,16 @@
-//! Per-attempt observability for the command-safety judge.
+//! Per-attempt observability and bounded recovery for the command-safety judge.
 
 use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
+use tokio::time::sleep;
 
+use crate::clients::agent_runner::build_http_client;
 use crate::clients::backend::Backend;
-use crate::clients::retry::RequestOverrides;
+use crate::clients::retry::{self, HttpFailure, RequestOverrides, RetryReason};
 use crate::config::model::ApiType;
 use crate::session_telemetry::{
-    JudgeAttemptTelemetry, JudgeAttemptTerminalClass, ProviderTermination,
+    JudgeAttemptTelemetry, JudgeAttemptTerminalClass, ProviderTermination, RetryReasonSnapshot,
 };
 use crate::types::{ConversationItem, Role};
 
@@ -17,18 +19,163 @@ use crate::clients::judge::{
     build_judge_history, parse_verdict, refusal_error,
 };
 
+/// Session id used only for the judge retry's deterministic jitter. The judge
+/// does not carry session identity; a nil id keeps the small backoff jitter
+/// stable across calls and tests.
+const JITTER_SESSION_ID: uuid::Uuid = uuid::Uuid::nil();
+
+/// The full observed judge evaluation: the final result plus every provider
+/// attempt (one, or two after a bounded recovery).
 pub(super) struct JudgeCall {
     pub(super) result: Result<JudgeVerdict, JudgeError>,
-    pub(super) attempt: JudgeAttemptTelemetry,
+    /// Every provider attempt in order.
+    pub(super) attempts: Vec<JudgeAttemptTelemetry>,
     pub(super) diagnostic: Option<JudgeDiagnostic>,
 }
 
+impl JudgeCall {
+    const fn new(
+        result: Result<JudgeVerdict, JudgeError>,
+        attempts: Vec<JudgeAttemptTelemetry>,
+        diagnostic: Option<JudgeDiagnostic>,
+    ) -> Self {
+        Self {
+            result,
+            attempts,
+            diagnostic,
+        }
+    }
+}
+
+/// Outcome of one judge provider attempt.
+struct AttemptCall {
+    result: Result<JudgeVerdict, JudgeError>,
+    attempt: JudgeAttemptTelemetry,
+    diagnostic: Option<JudgeDiagnostic>,
+    /// Failure inputs the retry driver classifies. Absent on success and on
+    /// terminal failures (refusal, malformed verdict, response parse, request
+    /// build), which are never retried.
+    failure: Option<AttemptFailure>,
+}
+
+/// The raw failure inputs the retry driver classifies for a failed attempt.
+enum AttemptFailure {
+    /// The attempt exceeded its allowance.
+    Timeout,
+    /// The provider request failed at the transport layer.
+    Transport(anyhow::Error),
+    /// The provider returned a non-success HTTP response.
+    Http(HttpFailure),
+}
+
+/// Per-attempt parameters chosen by the retry driver.
+struct AttemptParams {
+    /// Request/parse allowance for this attempt.
+    budget: Duration,
+    /// One-based attempt ordinal.
+    attempt: u32,
+    /// Why this attempt is a recovery, when it is one.
+    retry_reason: Option<RetryReasonSnapshot>,
+    /// Backoff wait before this attempt.
+    retry_delay_ms: u64,
+}
+
+/// A bounded recovery decision for a failed judge attempt.
+struct JudgeRetryDecision {
+    reason: RetryReason,
+    wait: Duration,
+    budget: Duration,
+    fresh_client: bool,
+}
+
+/// Run the complete judge evaluation: one bounded provider call, then at most
+/// one recovery attempt within the operation deadline when the first call
+/// failed with a timeout or retryable transport/HTTP error.
+///
+/// The operation deadline is `client.timeout + client.retry_budget`. Attempt 1
+/// keeps the full configured per-call allowance; the recovery attempt consumes
+/// at most `min(client.timeout, remaining_after_wait)`. A recovery never
+/// happens for a valid verdict, refusal, malformed verdict, or response-parse
+/// failure, and an exhausted recovery fails closed with the final attempt's
+/// error.
 pub(super) async fn judge_observed(
     client: &JudgeClient,
     request: &JudgeRequest,
     include_raw_diagnostic: bool,
 ) -> JudgeCall {
-    let observed = match ObservedJudgeCall::start(client, request, include_raw_diagnostic) {
+    let operation_start = Instant::now();
+    let deadline = client.timeout + client.retry_budget;
+    let deadline_ms = duration_ms(deadline);
+
+    let first_params = AttemptParams {
+        budget: client.timeout,
+        attempt: 1,
+        retry_reason: None,
+        retry_delay_ms: 0,
+    };
+    let first = run_attempt(
+        client,
+        request,
+        include_raw_diagnostic,
+        &first_params,
+        deadline_ms,
+    )
+    .await;
+
+    let Some(decision) = classify_retry(client, first.failure.as_ref(), operation_start, deadline)
+    else {
+        return JudgeCall::new(first.result, vec![first.attempt], first.diagnostic);
+    };
+
+    // A stalled request may leave a bad pooled connection; recovery uses a
+    // fresh client so the second request cannot inherit it, and later commands
+    // stop paying for the stale pool (the swap replaces the stored client).
+    if decision.fresh_client {
+        *client
+            .client
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = build_http_client(true);
+    }
+    if !decision.wait.is_zero() {
+        sleep(decision.wait).await;
+    }
+    let second_params = AttemptParams {
+        budget: decision.budget,
+        attempt: 2,
+        retry_reason: Some(RetryReasonSnapshot::from(&decision.reason)),
+        retry_delay_ms: duration_ms(decision.wait),
+    };
+    let second = run_attempt(
+        client,
+        request,
+        include_raw_diagnostic,
+        &second_params,
+        deadline_ms,
+    )
+    .await;
+
+    JudgeCall::new(
+        second.result,
+        vec![first.attempt, second.attempt],
+        second.diagnostic,
+    )
+}
+
+/// Run one bounded provider attempt and return its outcome.
+async fn run_attempt(
+    client: &JudgeClient,
+    request: &JudgeRequest,
+    include_raw_diagnostic: bool,
+    params: &AttemptParams,
+    effective_deadline_ms: u64,
+) -> AttemptCall {
+    let observed = match ObservedJudgeCall::start(
+        client,
+        request,
+        include_raw_diagnostic,
+        params,
+        effective_deadline_ms,
+    ) {
         Ok(observed) => observed,
         Err(call) => return *call,
     };
@@ -39,13 +186,89 @@ pub(super) async fn judge_observed(
     if response.status().is_success() {
         observed.finish_success(client, response).await
     } else {
-        observed.finish_http_error(client, response).await
+        observed.finish_http_error(response).await
+    }
+}
+
+/// Decide whether a failed first attempt may recover, against the operation
+/// deadline. Returns `None` when recovery is disabled, the failure is not
+/// retryable, or the wait would exhaust the remaining budget.
+fn classify_retry(
+    client: &JudgeClient,
+    failure: Option<&AttemptFailure>,
+    operation_start: Instant,
+    deadline: Duration,
+) -> Option<JudgeRetryDecision> {
+    let failure = failure?;
+    if client.retry_budget.is_zero() {
+        return None;
+    }
+    let remaining = deadline.checked_sub(operation_start.elapsed())?;
+    if remaining.is_zero() {
+        return None;
+    }
+
+    let (reason, delay, fresh_client) = retry_classification(client, failure)?;
+
+    let wait = delay.min(remaining);
+    let remaining = remaining.checked_sub(wait)?;
+    if remaining.is_zero() {
+        return None;
+    }
+    Some(JudgeRetryDecision {
+        reason,
+        wait,
+        budget: remaining.min(client.timeout),
+        fresh_client,
+    })
+}
+
+/// Classify a failed attempt into the recovery inputs: the retry reason, the
+/// policy backoff delay, and whether recovery needs a fresh client (a stalled
+/// request may have poisoned the pooled connection). Returns `None` when the
+/// failure is not retryable.
+fn retry_classification(
+    client: &JudgeClient,
+    failure: &AttemptFailure,
+) -> Option<(RetryReason, Duration, bool)> {
+    match failure {
+        AttemptFailure::Timeout => Some((
+            RetryReason::RequestTimeout,
+            retry::policy_backoff_delay(&client.retry_policy, 1, JITTER_SESSION_ID),
+            true,
+        )),
+        AttemptFailure::Transport(error) => {
+            match retry::classify_transport_error(&client.retry_policy, error, 1, JITTER_SESSION_ID)
+            {
+                retry::RetryDecision::Retry { status } => Some((
+                    status.reason,
+                    status.delay,
+                    retry::should_disable_connection_reuse(error),
+                )),
+                _ => None,
+            }
+        },
+        AttemptFailure::Http(failure) => {
+            match retry::classify_http_failure(
+                &client.retry_policy,
+                failure,
+                1,
+                JITTER_SESSION_ID,
+                &RequestOverrides::default(),
+            ) {
+                retry::RetryDecision::Retry { status } => {
+                    Some((status.reason, status.delay, false))
+                },
+                _ => None,
+            }
+        },
     }
 }
 
 struct ObservedJudgeCall {
     backend: Backend,
     total_start: Instant,
+    budget: Duration,
     request_json: Vec<u8>,
     attempt: JudgeAttemptTelemetry,
     diagnostic: Option<JudgeDiagnostic>,
@@ -58,12 +281,14 @@ impl ObservedJudgeCall {
         client: &JudgeClient,
         request: &JudgeRequest,
         include_raw_diagnostic: bool,
-    ) -> Result<Self, Box<JudgeCall>> {
+        params: &AttemptParams,
+        effective_deadline_ms: u64,
+    ) -> Result<Self, Box<AttemptCall>> {
         let total_start = Instant::now();
         let build_start = Instant::now();
         let history = build_judge_history(request, client.user_rubric.as_deref());
         let backend = Backend::from_api_type(client.config.model_config.api_type);
-        let mut attempt = initial_attempt(client, request, &history);
+        let mut attempt = initial_attempt(client, request, &history, params, effective_deadline_ms);
         let request_json = backend.build_request_json(
             &client.config,
             &history,
@@ -74,13 +299,14 @@ impl ObservedJudgeCall {
         attempt.request_build_ms = elapsed_ms(build_start);
         let request_json = request_json.map_err(|error| {
             attempt.total_ms = elapsed_ms(total_start);
-            Box::new(JudgeCall::transport(attempt.clone(), None, None, error))
+            Box::new(AttemptCall::build_failed(attempt.clone(), None, error))
         })?;
         let diagnostic =
             include_raw_diagnostic.then(|| initial_diagnostic(client, &history, &request_json));
         Ok(Self {
             backend,
             total_start,
+            budget: params.budget,
             request_json,
             attempt,
             diagnostic,
@@ -91,12 +317,21 @@ impl ObservedJudgeCall {
     async fn send(
         mut self,
         client: &JudgeClient,
-    ) -> Result<(reqwest::Response, Self), Box<JudgeCall>> {
+    ) -> Result<(reqwest::Response, Self), Box<AttemptCall>> {
         let request_start = Instant::now();
+        // Cloning the client is a cheap Arc bump; the lock guard drops before
+        // the await so no lock is held across the request. A poisoned lock is
+        // recovered rather than panicking so a panicked judge task cannot take
+        // the gate down.
+        let http = client
+            .client
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         let result = tokio::time::timeout(
-            self.remaining(client.timeout),
+            self.remaining(self.budget),
             self.backend.send_request_json(
-                &client.client,
+                &http,
                 &client.config,
                 std::mem::take(&mut self.request_json),
             ),
@@ -104,8 +339,8 @@ impl ObservedJudgeCall {
         .await;
         self.attempt.request_ms = elapsed_ms(request_start);
         match result {
-            Err(_) => Err(Box::new(self.timeout(client.timeout))),
-            Ok(Err(error)) => Err(Box::new(self.transport(None, error))),
+            Err(_) => Err(Box::new(self.timeout())),
+            Ok(Err(error)) => Err(Box::new(self.transport(error))),
             Ok(Ok(response)) => {
                 self.attempt.status_code = Some(response.status().as_u16());
                 self.attempt.provider_request_id = provider_request_id(response.headers());
@@ -114,23 +349,28 @@ impl ObservedJudgeCall {
         }
     }
 
-    async fn finish_http_error(
-        mut self,
-        client: &JudgeClient,
-        response: reqwest::Response,
-    ) -> JudgeCall {
+    async fn finish_http_error(mut self, response: reqwest::Response) -> AttemptCall {
         let status = response.status();
+        let headers = response.headers().clone();
         let parse_start = Instant::now();
-        let body = tokio::time::timeout(self.remaining(client.timeout), response.text()).await;
+        let body = tokio::time::timeout(self.remaining(self.budget), response.text()).await;
         self.attempt.response_parse_ms = elapsed_ms(parse_start);
         match body {
-            Err(_) => self.timeout(client.timeout),
+            Err(_) => self.timeout(),
             Ok(body) => {
+                let body = body.unwrap_or_default();
                 self.attempt.terminal_class = JudgeAttemptTerminalClass::HttpError;
-                self.finish(Err(JudgeError::Transport {
-                    status: Some(status.as_u16()),
-                    detail: format!("HTTP {status}: {}", body.unwrap_or_default()),
-                }))
+                self.finish(
+                    Err(JudgeError::Transport {
+                        status: Some(status.as_u16()),
+                        detail: format!("HTTP {status}: {body}"),
+                    }),
+                    Some(AttemptFailure::Http(HttpFailure {
+                        status: status.as_u16(),
+                        headers,
+                        body,
+                    })),
+                )
             },
         }
     }
@@ -139,22 +379,25 @@ impl ObservedJudgeCall {
         mut self,
         client: &JudgeClient,
         response: reqwest::Response,
-    ) -> JudgeCall {
+    ) -> AttemptCall {
         let parse_start = Instant::now();
         let turn = tokio::time::timeout(
-            self.remaining(client.timeout),
+            self.remaining(self.budget),
             self.backend.parse_response(response),
         )
         .await;
         self.attempt.response_parse_ms = elapsed_ms(parse_start);
         match turn {
-            Err(_) => self.timeout(client.timeout),
+            Err(_) => self.timeout(),
             Ok(Err(error)) => {
                 self.attempt.terminal_class = JudgeAttemptTerminalClass::ResponseParse;
-                self.finish(Err(JudgeError::Transport {
-                    status: None,
-                    detail: error.to_string(),
-                }))
+                self.finish(
+                    Err(JudgeError::Transport {
+                        status: None,
+                        detail: error.to_string(),
+                    }),
+                    None,
+                )
             },
             Ok(Ok(turn)) => self.finish_turn(client, &turn),
         }
@@ -164,7 +407,7 @@ impl ObservedJudgeCall {
         mut self,
         client: &JudgeClient,
         turn: &crate::clients::agent::TurnResult,
-    ) -> JudgeCall {
+    ) -> AttemptCall {
         self.attempt.usage = turn.usage;
         self.attempt.termination.clone_from(&turn.termination);
         if self.attempt.provider_request_id.is_none() {
@@ -177,7 +420,7 @@ impl ObservedJudgeCall {
         let no_verdict_text = content.as_deref().is_none_or(str::is_empty);
         if let Some(error) = refusal_error(turn.termination.as_ref(), no_verdict_text) {
             self.attempt.terminal_class = JudgeAttemptTerminalClass::Refusal;
-            return self.finish(Err(error));
+            return self.finish(Err(error), None);
         }
 
         let verdict_start = Instant::now();
@@ -195,7 +438,7 @@ impl ObservedJudgeCall {
         } else {
             JudgeAttemptTerminalClass::MalformedVerdict
         };
-        self.finish(result)
+        self.finish(result, None)
     }
 
     fn remaining(&self, timeout: Duration) -> Duration {
@@ -204,20 +447,31 @@ impl ObservedJudgeCall {
             .unwrap_or(Duration::ZERO)
     }
 
-    fn timeout(mut self, timeout: Duration) -> JudgeCall {
+    fn timeout(mut self) -> AttemptCall {
+        let budget = self.budget;
         self.attempt.terminal_class = JudgeAttemptTerminalClass::Timeout;
-        self.finish(Err(JudgeError::Timeout(timeout)))
+        self.finish(
+            Err(JudgeError::Timeout(budget)),
+            Some(AttemptFailure::Timeout),
+        )
     }
 
-    fn transport(mut self, status: Option<u16>, error: impl std::fmt::Display) -> JudgeCall {
+    fn transport(mut self, error: anyhow::Error) -> AttemptCall {
         self.attempt.terminal_class = JudgeAttemptTerminalClass::Transport;
-        self.finish(Err(JudgeError::Transport {
-            status,
-            detail: error.to_string(),
-        }))
+        self.finish(
+            Err(JudgeError::Transport {
+                status: None,
+                detail: error.to_string(),
+            }),
+            Some(AttemptFailure::Transport(error)),
+        )
     }
 
-    fn finish(mut self, result: Result<JudgeVerdict, JudgeError>) -> JudgeCall {
+    fn finish(
+        mut self,
+        result: Result<JudgeVerdict, JudgeError>,
+        failure: Option<AttemptFailure>,
+    ) -> AttemptCall {
         self.attempt.total_ms = elapsed_ms(self.total_start);
         // The model identifier is config-controlled, never provider-returned, so
         // it is scrubbed only against the API key: scrubbing it against command
@@ -231,28 +485,30 @@ impl ObservedJudgeCall {
         // surrounding quotes), so raw provider-controlled text is never
         // persisted at all.
         sanitize_attempt_provider_fields(&mut self.attempt);
-        JudgeCall {
+        AttemptCall {
             result,
             attempt: self.attempt,
             diagnostic: self.diagnostic,
+            failure,
         }
     }
 }
 
-impl JudgeCall {
-    fn transport(
+impl AttemptCall {
+    /// A request-build failure: deterministic, so never retried.
+    fn build_failed(
         attempt: JudgeAttemptTelemetry,
         diagnostic: Option<JudgeDiagnostic>,
-        status: Option<u16>,
         error: impl std::fmt::Display,
     ) -> Self {
         Self {
             result: Err(JudgeError::Transport {
-                status,
+                status: None,
                 detail: error.to_string(),
             }),
             attempt,
             diagnostic,
+            failure: None,
         }
     }
 }
@@ -261,11 +517,16 @@ fn initial_attempt(
     client: &JudgeClient,
     request: &JudgeRequest,
     history: &[ConversationItem],
+    params: &AttemptParams,
+    effective_deadline_ms: u64,
 ) -> JudgeAttemptTelemetry {
     let (system_prompt, user_prompt) = prompt_text_refs(history);
     JudgeAttemptTelemetry {
-        attempt: 1,
-        retry_ordinal: 0,
+        attempt: params.attempt,
+        retry_ordinal: params.attempt.saturating_sub(1),
+        retry_reason: params.retry_reason,
+        retry_delay_ms: params.retry_delay_ms,
+        effective_deadline_ms,
         request_build_ms: 0,
         request_ms: 0,
         response_parse_ms: 0,

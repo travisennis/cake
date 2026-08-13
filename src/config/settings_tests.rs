@@ -1185,6 +1185,7 @@ api_key_env = "KEY"
     assert_eq!(loaded.judge, JudgeSettings::default());
     assert_eq!(loaded.judge.model, None);
     assert_eq!(loaded.judge.timeout_secs, 30);
+    assert_eq!(loaded.judge.retry_budget_secs, 15);
     assert!(loaded.judge.enabled, "the judge is enabled by default");
     assert!(loaded.judge.allowlist.is_empty());
 }
@@ -1279,6 +1280,47 @@ timeout_secs = 90
     // project's judge table did not set one.
     assert_eq!(loaded.judge.model.as_deref(), Some("global-judge"));
     assert_eq!(loaded.judge.timeout_secs, 90);
+}
+
+#[test]
+fn test_judge_settings_retry_budget_resolution() {
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r"
+[tools.bash.judge]
+retry_budget_secs = 30
+",
+    );
+    let project = create_project_settings(
+        r"
+[tools.bash.judge]
+retry_budget_secs = 0
+",
+    );
+
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load(Some(project.path()))
+    })
+    .unwrap();
+
+    // The project value wins; 0 is a legal explicit value that disables
+    // recovery, not a "absent" marker.
+    assert_eq!(loaded.judge.retry_budget_secs, 0);
+
+    let project = create_project_settings(
+        r#"
+[tools.bash.judge]
+allowlist = ["git status"]
+"#,
+    );
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load(Some(project.path()))
+    })
+    .unwrap();
+
+    // An absent project key keeps the lower-precedence global value.
+    assert_eq!(loaded.judge.retry_budget_secs, 30);
 }
 
 #[test]

@@ -115,6 +115,66 @@ class LoadTelemetryTest(unittest.TestCase):
             self.assertEqual(len(invocations[0].attempts), 1)
             self.assertEqual(invocations[0].judge_attempts, [])
 
+    def test_retry_era_judge_attempts_load_with_new_fields(self):
+        # A bounded-recovery evaluation emits two judge_attempt records; the
+        # recovery one carries retry_reason, retry_delay_ms, and
+        # effective_deadline_ms. The loader must tolerate the additive fields
+        # and preserve them on the invocation.
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "retry.ndjson")
+            with open(path, "w", encoding="utf-8") as fh:
+                records = [
+                    {
+                        "type": "telemetry_init",
+                        "session_id": "s1",
+                        "invocation_id": "i1",
+                        "model": "deepseek",
+                        "working_directory": "/proj",
+                    },
+                    {
+                        "type": "judge_attempt",
+                        "session_id": "s1",
+                        "invocation_id": "i1",
+                        "attempt": 1,
+                        "retry_ordinal": 0,
+                        "retry_delay_ms": 0,
+                        "effective_deadline_ms": 45000,
+                        "terminal_class": "timeout",
+                        "total_ms": 30000,
+                    },
+                    {
+                        "type": "judge_attempt",
+                        "session_id": "s1",
+                        "invocation_id": "i1",
+                        "attempt": 2,
+                        "retry_ordinal": 1,
+                        "retry_reason": "network",
+                        "retry_delay_ms": 512,
+                        "effective_deadline_ms": 45000,
+                        "terminal_class": "verdict",
+                        "total_ms": 1420,
+                    },
+                ]
+                for record in records:
+                    fh.write(json.dumps(record) + "\n")
+
+            invocations, errors = cakelib.load_telemetry(pathlib.Path(directory), None)
+            self.assertEqual(errors, 0)
+            self.assertEqual(len(invocations), 1)
+            attempts = invocations[0].judge_attempts
+            self.assertEqual(len(attempts), 2)
+            # The first attempt omits retry_reason (serde skips it when None),
+            # exactly as a real sidecar from a single-attempt evaluation does.
+            self.assertEqual(attempts[0].get("retry_reason"), None)
+            self.assertEqual(attempts[0]["retry_delay_ms"], 0)
+            self.assertEqual(attempts[0]["effective_deadline_ms"], 45000)
+            self.assertEqual(attempts[1]["attempt"], 2)
+            self.assertEqual(attempts[1]["retry_ordinal"], 1)
+            self.assertEqual(attempts[1]["retry_reason"], "network")
+            self.assertEqual(attempts[1]["retry_delay_ms"], 512)
+            self.assertEqual(attempts[1]["effective_deadline_ms"], 45000)
+            self.assertEqual(attempts[1]["terminal_class"], "verdict")
+
 
 class CountEventsTest(unittest.TestCase):
     def test_counts_by_model_and_detail(self):

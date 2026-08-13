@@ -86,6 +86,10 @@ pub struct BashJudgeSettings {
     /// Bounded judge call timeout in seconds. When unset, defaults to 30.
     #[serde(default)]
     pub timeout_secs: Option<u64>,
+    /// Extra seconds one recovery attempt may consume beyond `timeout_secs`.
+    /// When unset, defaults to 15; 0 disables recovery entirely.
+    #[serde(default)]
+    pub retry_budget_secs: Option<u64>,
     /// Optional path to a user rubric file whose text is appended to the
     /// embedded default rubric as additional judge guidance.
     #[serde(default)]
@@ -112,8 +116,13 @@ pub struct JudgeSettings {
     /// `default_model`/`--model` vocabulary), resolved to that model's full
     /// configuration. `None` means "use the agent's configured model".
     pub model: Option<String>,
-    /// Bounded judge call timeout in seconds (default 30; never below 1).
+    /// Bounded judge call timeout in seconds (default 30; never below 1). One
+    /// judge provider call may consume at most this long.
     pub timeout_secs: u64,
+    /// Extra seconds one recovery attempt may consume beyond `timeout_secs`
+    /// (default 15). 0 disables recovery. The complete judge operation is
+    /// bounded by `timeout_secs + retry_budget_secs`.
+    pub retry_budget_secs: u64,
     /// Optional path to a user rubric file appended to the embedded default
     /// rubric. Relative paths resolve from the invocation working directory.
     pub rubric_file: Option<PathBuf>,
@@ -132,6 +141,7 @@ impl Default for JudgeSettings {
         Self {
             model: None,
             timeout_secs: DEFAULT_JUDGE_TIMEOUT_SECS,
+            retry_budget_secs: DEFAULT_JUDGE_RETRY_BUDGET_SECS,
             rubric_file: None,
             enabled: true,
             allowlist: Vec::new(),
@@ -142,6 +152,10 @@ impl Default for JudgeSettings {
 /// Default bounded judge timeout in seconds when no `[tools.bash.judge]`
 /// setting is present.
 pub const DEFAULT_JUDGE_TIMEOUT_SECS: u64 = 30;
+
+/// Default extra seconds one recovery attempt may consume beyond
+/// `timeout_secs`. 0 disables recovery entirely.
+pub const DEFAULT_JUDGE_RETRY_BUDGET_SECS: u64 = 15;
 
 /// Emergency-bypass environment variable: `CAKE_JUDGE=off` disables the judge
 /// for every command, regardless of settings. It is the escape hatch when a
@@ -669,23 +683,54 @@ impl SettingsLoader {
         let Some(judge) = tools.and_then(|t| t.bash).and_then(|b| b.judge) else {
             return;
         };
-        if judge.model.is_some() {
-            acc.judge_model = judge.model;
-        }
-        if judge.timeout_secs.is_some() {
-            acc.judge_timeout_secs = judge.timeout_secs;
-        }
-        if judge.rubric_file.is_some() {
-            acc.judge_rubric_file = judge.rubric_file;
-        }
-        if judge.enabled.is_some() {
-            acc.judge_enabled = judge.enabled;
-        }
+        let BashJudgeSettings {
+            model,
+            timeout_secs,
+            retry_budget_secs,
+            rubric_file,
+            enabled,
+            allowlist,
+        } = judge;
+        Self::merge_judge_scalars(
+            model,
+            timeout_secs,
+            retry_budget_secs,
+            rubric_file,
+            enabled,
+            acc,
+        );
         // The allowlist is a union across precedence levels: every explicit
         // entry in any settings file is honored. An absent key contributes
         // nothing, matching the other list-valued settings.
-        acc.judge_allowlist
-            .extend(judge.allowlist.unwrap_or_default());
+        acc.judge_allowlist.extend(allowlist.unwrap_or_default());
+    }
+
+    /// Copy the absent-key-preserving scalar judge fields into the
+    /// accumulator, so [`Self::merge_judge_settings`] stays at baseline
+    /// complexity.
+    fn merge_judge_scalars(
+        model: Option<String>,
+        timeout_secs: Option<u64>,
+        retry_budget_secs: Option<u64>,
+        rubric_file: Option<PathBuf>,
+        enabled: Option<bool>,
+        acc: &mut SettingsAccumulator,
+    ) {
+        if let Some(model) = model {
+            acc.judge_model = Some(model);
+        }
+        if let Some(timeout_secs) = timeout_secs {
+            acc.judge_timeout_secs = Some(timeout_secs);
+        }
+        if let Some(retry_budget_secs) = retry_budget_secs {
+            acc.judge_retry_budget_secs = Some(retry_budget_secs);
+        }
+        if let Some(rubric_file) = rubric_file {
+            acc.judge_rubric_file = Some(rubric_file);
+        }
+        if let Some(enabled) = enabled {
+            acc.judge_enabled = Some(enabled);
+        }
     }
 
     fn validate_profiles(profiles: &HashMap<String, ProfileSettings>) -> Result<(), SettingsError> {
@@ -754,6 +799,7 @@ struct SettingsAccumulator {
     system_prompt: Option<String>,
     judge_model: Option<String>,
     judge_timeout_secs: Option<u64>,
+    judge_retry_budget_secs: Option<u64>,
     judge_rubric_file: Option<PathBuf>,
     judge_enabled: Option<bool>,
     judge_allowlist: Vec<String>,
@@ -796,6 +842,9 @@ impl SettingsAccumulator {
                     .judge_timeout_secs
                     .unwrap_or(DEFAULT_JUDGE_TIMEOUT_SECS)
                     .max(JUDGE_TIMEOUT_MIN_SECS),
+                retry_budget_secs: self
+                    .judge_retry_budget_secs
+                    .unwrap_or(DEFAULT_JUDGE_RETRY_BUDGET_SECS),
                 rubric_file: self.judge_rubric_file,
                 enabled: self.judge_enabled.unwrap_or(true),
                 allowlist: self.judge_allowlist,

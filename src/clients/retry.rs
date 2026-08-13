@@ -232,6 +232,18 @@ pub fn should_disable_connection_reuse(error: &Error) -> bool {
     transport_retry_detail(error).is_some()
 }
 
+/// The backoff delay the policy would apply before retry `attempt`, honoring
+/// only the policy's base delay, cap, and jitter. Used when a retry decision
+/// has no HTTP response or transport error to classify (for example an
+/// application-level timeout).
+pub fn policy_backoff_delay(
+    policy: &RetryPolicy,
+    attempt: u32,
+    session_id: uuid::Uuid,
+) -> Duration {
+    fallback_delay(policy, attempt, session_id)
+}
+
 fn context_overflow_retry_status(
     policy: &RetryPolicy,
     failure: &HttpFailure,
