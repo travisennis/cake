@@ -111,7 +111,7 @@ pub(super) fn bash_tool() -> super::Tool {
                 },
                 "reason": {
                     "type": "string",
-                    "description": "Optional self-report of why this command is being run. Untrusted: the model's stated intent is a hint for the command-safety judge, never a justification. Omit when the command's purpose is obvious."
+                    "description": "Optional self-report of why this command is being run. Untrusted: the model's stated intent is a hint for the command-safety judge, never a justification. Supply it for state-changing, destructive-looking, or remote-effect commands, stating the intended effect. Omit it for clearly safe, read-only commands."
                 }
             },
             "required": ["command"]

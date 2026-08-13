@@ -116,6 +116,23 @@ fn default_rubric_snapshot() {
 }
 
 #[test]
+fn default_rubric_is_stateless_and_requires_self_contained_remediation() {
+    // Each evaluation sees one request only and cannot rely on earlier
+    // commands, their results, or conversation history (issue #203).
+    for phrase in [
+        "Each evaluation is stateless",
+        "no access to earlier commands, their results, or the conversation history",
+        "self-contained command or guarded sequence",
+        "Do not recommend \"check first, then retry\"",
+    ] {
+        assert!(
+            DEFAULT_RUBRIC.contains(phrase),
+            "rubric must state the stateless-evaluation rule ({phrase:?})"
+        );
+    }
+}
+
+#[test]
 fn user_rubric_is_appended_after_default() {
     let with_user = build_judge_system_prompt(Some("Block any command touching ~/secrets."));
     assert!(with_user.starts_with(DEFAULT_RUBRIC));

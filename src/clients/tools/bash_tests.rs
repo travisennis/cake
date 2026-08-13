@@ -125,6 +125,43 @@ fn bash_reason_argument_round_trips() {
 }
 
 #[test]
+fn bash_reason_guidance_directs_supplying_context_for_state_changing_commands() {
+    let tool = bash_tool();
+    // Model-visible description: agents supply a reason for state-changing,
+    // destructive-looking, and remote-effect commands, stating the intended
+    // effect; a reason never authorizes a remote destructive command on its
+    // own, so the guard must be in the command (issue #203, PR #229).
+    for phrase in [
+        "state-changing, destructive-looking, or remote-effect commands",
+        "intended effect",
+        "The judge sees each command alone",
+        "never authorizes a remote destructive command",
+    ] {
+        assert!(
+            tool.description.contains(phrase),
+            "Bash description must direct reason supply ({phrase:?})"
+        );
+    }
+
+    // The schema description carries the same guidance.
+    let schema_reason = &tool.parameters["properties"]["reason"]["description"];
+    let schema_reason = schema_reason.as_str().unwrap();
+    for phrase in [
+        "state-changing, destructive-looking, or remote-effect commands",
+        "stating the intended effect",
+    ] {
+        assert!(
+            schema_reason.contains(phrase),
+            "Bash schema must direct reason supply ({phrase:?})"
+        );
+    }
+
+    // The reason stays optional at the wire level: only `command` is required.
+    let required = tool.parameters["required"].as_array().unwrap();
+    assert_eq!(required, &[serde_json::json!("command")]);
+}
+
+#[test]
 fn truncate_output_passes_through_at_limit() {
     let exact = "a".repeat(BASH_OUTPUT_MAX_BYTES);
     let result = truncate_output(&exact, 0, 50, false);

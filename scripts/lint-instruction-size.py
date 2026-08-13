@@ -75,7 +75,12 @@ BUDGETS = {
     # Milestone 7 of #72). It sat exactly at the flat 1500 default with no
     # headroom; the addition displaced ~90 words of redundancy and still
     # lands over the default, so it gets the standard count-plus-50 budget.
-    "docs/integrations.md": 1700,
+    # Raised 1700 -> 1800 on 2026-08-12: issue #203 mandates the judge's
+    # stateless-evaluation and self-contained-remediation contract; the
+    # addition displaced ~21 words of redundancy (session-continuation
+    # ordering, runbook routing) and still lands over the budget, so it
+    # follows the same count-plus-50 convention.
+    "docs/integrations.md": 1800,
 }
 DEFAULT_BUDGET = 1500
 

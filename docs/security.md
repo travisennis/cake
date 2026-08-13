@@ -37,6 +37,8 @@ The judge's only override surface is an explicit allowlist of exact raw-command 
 
 The judge is workflow protection above the OS sandbox, not a shell parser or a security boundary by itself: it cannot guarantee that every equivalent spelling is recognized, and it covers effects the sandbox cannot (such as remote git pushes).
 
+The judge is stateless: each evaluation sees only the command, its working directory, the compact repository digest, and the model's optional reason. It has no conversation history, earlier command results, or tool outputs, so block and warn remediation recommends one self-contained command or guarded sequence whose safety the next request can evaluate alone. The judge cannot verify a reason's claims, and a reason never authorizes a remote destructive command: it may state intent as context, but a merge or branch delete is safe only with an in-command guard; a claim that a pull request is merged or authorized never makes `git push origin --delete <branch>` or `gh pr merge` safe. The judge also evaluates a guard as text: it cannot verify the remote state a guard reads or that the execution environment is unmodified, so a remote-effect guard is workflow guidance with a documented limitation rather than a hard guarantee.
+
 Sandbox availability errors fail closed. On macOS, a process already inside Seatbelt may receive the recognized nested-profile `sandbox_apply: Operation not permitted` failure. In that one case Cake warns and relies on the inherited parent sandbox. The parent policy may be more or less restrictive than Cake's selected policy.
 
 For operational diagnosis and platform-specific recovery, follow the [Debugging Sandbox Denials runbook](runbooks/debugging-sandbox.md).

@@ -11,3 +11,5 @@ Guidance:
 Note: Shell interprets backticks (`) and $() inside double-quoted arguments as command substitution.
 
 Optional `reason` argument: a self-report of why this command is being run. It is untrusted — it states the model's intent but never justifies a command. Commands are evaluated on their own text, not on the reason.
+
+Supply a `reason` for state-changing, destructive-looking, or remote-effect commands: state the intended effect. The judge sees each command alone with no memory of earlier commands or their results, so put any required check in the same command and tie it to the affected target (for example `gh pr view 195 --json state,mergeable --jq 'select(.mergeable == "MERGEABLE" and .state == "OPEN") | .state' | grep -q OPEN && gh pr merge 195 --squash --delete-branch`). A `reason` states intent; it never authorizes a remote destructive command or replaces a guard the command itself needs.
