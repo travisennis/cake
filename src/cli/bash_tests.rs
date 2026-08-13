@@ -75,6 +75,7 @@ fn loaded_settings(base_url: &str) -> LoadedSettings {
         skills: SkillSettings::default(),
         system_prompt: None,
         judge: JudgeSettings::default(),
+        warnings: Vec::new(),
     }
 }
 

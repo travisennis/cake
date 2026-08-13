@@ -14,6 +14,8 @@ For model and behavior settings, project values overlay global values. When a pr
 4. project top-level settings
 5. global top-level settings
 
+Keys in a settings file that Cake does not recognize are ignored and reported as a warning on stderr, so a misspelled key (for example `temparature` instead of `temperature`) is surfaced instead of silently dropped. The warning names the file and the section, for example `unknown key 'temparature' in [[models]] entry 'zen'; ignored`.
+
 Model definitions with the same name are replaced as a unit by the project definition. Additional `directories` are merged. Profiles may select a model and overlay behavior but may not define model providers.
 
 ## Models

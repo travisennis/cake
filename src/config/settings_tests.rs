@@ -1375,3 +1375,216 @@ timeout_secs = 0
     // every command closed; it is raised to the floor instead.
     assert_eq!(loaded.judge.timeout_secs, 1);
 }
+
+// --- Unknown-key warnings ---
+
+#[test]
+fn test_unknown_model_key_warns() {
+    let dir = create_project_settings(
+        r#"
+[[models]]
+name = "zen"
+model = "glm-5.1"
+base_url = "https://example.com"
+api_key_env = "KEY"
+temparature = 0.7
+"#,
+    );
+
+    let home = create_home_dir();
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load(Some(dir.path()))
+    })
+    .unwrap();
+
+    // The misspelled key is reported with its file and location instead of
+    // being silently dropped.
+    assert_eq!(loaded.warnings.len(), 1);
+    let warning = &loaded.warnings[0];
+    assert!(warning.contains("temparature"), "{warning}");
+    assert!(warning.contains("[[models]] entry 'zen'"), "{warning}");
+    assert!(warning.contains("settings.toml"), "{warning}");
+
+    // Behavior is unchanged: the typo never reaches the model config.
+    assert_eq!(loaded.models.get("zen").unwrap().temperature, None);
+}
+
+#[test]
+fn test_unknown_keys_warn_across_sections() {
+    let dir = create_project_settings(
+        r#"
+temparature = 0.5
+
+[[models]]
+name = "zen"
+model = "glm-5.1"
+base_url = "https://example.com"
+api_key_env = "KEY"
+
+[skills]
+only = ["review"]
+disabledd = true
+
+[sandbox]
+read_only = ["/tmp"]
+writable_paths = ["/var"]
+
+[profiles.review]
+default_model = "zen"
+top_p = 0.9
+
+[profiles.review.skills]
+onnly = ["review"]
+
+[tools.bash.judge]
+model = "zen"
+timeout_sec = 25
+"#,
+    );
+
+    let home = create_home_dir();
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load(Some(dir.path()))
+    })
+    .unwrap();
+
+    let warnings = &loaded.warnings;
+    assert_eq!(warnings.len(), 6, "{warnings:?}");
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("temparature") && w.contains("top-level settings")),
+        "{warnings:?}"
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("disabledd") && w.contains("[skills]")),
+        "{warnings:?}"
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("writable_paths") && w.contains("[sandbox]")),
+        "{warnings:?}"
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("top_p") && w.contains("[profiles.review]")),
+        "{warnings:?}"
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("onnly") && w.contains("[profiles.review.skills]")),
+        "{warnings:?}"
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("timeout_sec") && w.contains("[tools.bash.judge]")),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn test_warnings_accumulate_from_global_and_project() {
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"
+temparature = 0.5
+
+[[models]]
+name = "zen"
+model = "glm-5.1"
+base_url = "https://example.com"
+api_key_env = "KEY"
+"#,
+    );
+    let project_dir = create_project_settings("temparature = 0.6\n");
+
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load(Some(project_dir.path()))
+    })
+    .unwrap();
+
+    assert_eq!(loaded.warnings.len(), 2, "{:?}", loaded.warnings);
+    // Global settings are loaded first, so its warning comes first.
+    assert!(
+        loaded.warnings[0].contains("cake/settings.toml"),
+        "{}",
+        loaded.warnings[0]
+    );
+    assert!(
+        loaded.warnings[1].contains(".cake/settings.toml"),
+        "{}",
+        loaded.warnings[1]
+    );
+}
+
+#[test]
+fn test_valid_settings_produce_no_warnings() {
+    // Every documented field, so a field serde round-trips differently than
+    // its settings key would surface here as a false-positive warning.
+    let dir = create_project_settings(
+        r#"
+default_model = "zen"
+system_prompt = "prompts/coding.md"
+directories = ["../shared"]
+
+[[models]]
+name = "zen"
+model = "openai/gpt-5"
+base_url = "https://openrouter.ai/api/v1/"
+api_key_env = "OPENROUTER_API_KEY"
+api_type = "responses"
+provider = "openrouter"
+provider_headers = { http_referer = "https://example.com", x_title = "cake" }
+temperature = 0.7
+top_p = 0.9
+max_output_tokens = 8000
+reasoning_effort = "high"
+reasoning_summary = "concise"
+reasoning_max_tokens = 2000
+providers = ["Provider1", "Provider2"]
+
+[skills]
+disabled = false
+only = ["review", "debug"]
+path = "~/my-skills:/shared/team-skills"
+
+[sandbox]
+read_only = ["~/.local/bin/claude"]
+writable = ["~/.claude"]
+
+[profiles.review]
+default_model = "zen"
+directories = ["../standards"]
+system_prompt = "prompts/review.md"
+skills = { disabled = true, only = ["review"], path = "~/review-skills" }
+sandbox = { read_only = ["~/.local/bin/other"], writable = ["~/.cache"] }
+
+[tools.bash.judge]
+model = "zen"
+timeout_secs = 30
+rubric_file = ".cake/judge-rubric.md"
+enabled = true
+allowlist = ["git status", "git diff"]
+"#,
+    );
+
+    let home = create_home_dir();
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load(Some(dir.path()))
+    })
+    .unwrap();
+
+    assert_eq!(
+        loaded.warnings,
+        Vec::<String>::new(),
+        "{:?}",
+        loaded.warnings
+    );
+}

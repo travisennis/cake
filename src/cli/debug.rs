@@ -31,6 +31,7 @@ impl CmdRunner for DebugCommand {
                 let current_dir = std::env::current_dir()
                     .map_err(|e| anyhow::anyhow!("Failed to get current directory: {e}"))?;
                 let loaded = SettingsLoader::load(Some(&current_dir))?;
+                loaded.print_warnings();
                 print!("{}", render_models(&loaded.models, *json)?);
                 Ok(())
             },
