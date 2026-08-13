@@ -364,14 +364,16 @@ async fn test_streaming_closed_streams_does_not_hang() {
 #[tokio::test]
 async fn test_streaming_timeout_kills_descendants() {
     // Command spawns a background process that would outlive a 1-second
-    // timeout.  The process-group cleanup must terminate the descendant
-    // before it can create a marker file.
+    // timeout.  The process-group cleanup must terminate the descendant, so
+    // its marker stops being updated after the timeout fires.
     let dir = tempfile::tempdir().unwrap();
     let marker = dir.path().join("descendant-survived");
     let script = format!(
-        // The background sleep creates the marker after the timeout fires.
-        // If descendant cleanup works, the file will never be created.
-        "#!/bin/sh\n(sleep 2; touch '{}') &\nsleep 999\n",
+        // The descendant writes the marker in a loop until the process group
+        // is killed.  A one-shot `sleep 2; touch` would instead race the
+        // kill: under load the marker can be written before the kill lands,
+        // failing the test even though the process-group teardown is prompt.
+        "#!/bin/sh\n(while true; do touch '{}'; sleep 0.2; done) &\nsleep 999\n",
         marker.display()
     );
     let script_path = dir.path().join("spawns_child.sh");
@@ -396,44 +398,74 @@ async fn test_streaming_timeout_kills_descendants() {
         "expected 'timed out' in error"
     );
 
-    // Give the OS time to reap killed descendants.
-    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-    assert!(
-        !marker.exists(),
-        "a descendant survived the bash timeout and was not terminated"
-    );
+    // The descendant must stop updating the marker once the timeout kill
+    // lands.  A slow kill only extends the poll; it cannot race a fixed
+    // deadline the way the one-shot marker could.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    assert_marker_updates_stop(&marker, deadline).await;
 }
 
 #[cfg(unix)]
 #[tokio::test]
 async fn dropping_bash_future_kills_descendants() {
     let dir = tempfile::tempdir().unwrap();
-    let started = dir.path().join("started");
-    let survived = dir.path().join("descendant-survived");
+    let marker = dir.path().join("descendant-survived");
+    // The descendant writes the marker in a loop until the process group is
+    // killed.  A one-shot `sleep 2; touch` would instead race the kill:
+    // under load the marker can be written before the kill lands, failing
+    // the test even though the process-group teardown is prompt.
     let command = format!(
-        "touch '{}'; (sleep 2; touch '{}') & sleep 999",
-        started.display(),
-        survived.display()
+        "(while true; do touch '{}'; sleep 0.2; done) & sleep 999",
+        marker.display()
     );
     let args = serde_json::json!({ "command": command }).to_string();
     let execution = tokio::spawn(async move { execute_bash_unsandboxed(&args).await });
 
+    // Wait until the descendant is provably alive and writing its marker:
+    // its first write lands within ~200 ms of the subshell spawning.
     timeout(std::time::Duration::from_secs(5), async {
-        while !started.exists() {
+        while !marker.exists() {
             tokio::task::yield_now().await;
         }
     })
     .await
-    .expect("bash command did not start");
+    .expect("descendant did not start writing its marker");
 
     execution.abort();
     assert!(execution.await.unwrap_err().is_cancelled());
 
-    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-    assert!(
-        !survived.exists(),
-        "a descendant survived after the bash execution future was dropped"
-    );
+    // The descendant must stop updating the marker once the process group is
+    // killed.  A slow kill only extends the poll; it cannot race a fixed
+    // deadline the way the one-shot marker could.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    assert_marker_updates_stop(&marker, deadline).await;
+}
+
+/// Wait until `marker`'s mtime stops changing, or panic after `deadline`.
+///
+/// The descendant writes the marker every ~200 ms while alive, so a 500 ms
+/// sampling interval always observes an update while it lives.  Two
+/// consecutive unchanged samples mean the writing process has been
+/// terminated.
+#[cfg(unix)]
+async fn assert_marker_updates_stop(marker: &std::path::Path, deadline: std::time::Instant) {
+    loop {
+        let before = marker_modified_time(marker);
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let after = marker_modified_time(marker);
+        if before == after {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "marker kept being updated; the descendant survived termination"
+        );
+    }
+}
+
+#[cfg(unix)]
+fn marker_modified_time(marker: &std::path::Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(marker).ok()?.modified().ok()
 }
 
 #[cfg(unix)]
