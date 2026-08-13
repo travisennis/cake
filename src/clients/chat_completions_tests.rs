@@ -12,28 +12,6 @@ use crate::types::{ReasoningContent, ReasoningContentKind};
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
-fn apply_test_strategy(model: &str, messages: &mut Vec<ChatMessage<'_>>) {
-    let config = ResolvedModelConfig {
-        model_config: ModelConfig {
-            model: model.to_string(),
-            api_type: ApiType::ChatCompletions,
-            base_url: "https://api.example.com/v1".to_string(),
-            api_key_env: "TEST_API_KEY".to_string(),
-            provider: None,
-            provider_headers: None,
-            temperature: None,
-            top_p: None,
-            max_output_tokens: None,
-            reasoning_effort: None,
-            reasoning_summary: None,
-            reasoning_max_tokens: None,
-            providers: vec![],
-        },
-        api_key: "test-key".to_string(),
-    };
-    ProviderStrategy::from_config(&config).transform_chat_messages(messages);
-}
-
 fn full_prompt_history() -> Vec<ConversationItem> {
     let config_dir = TempDir::new().unwrap();
     let agents_files = vec![AgentsFile {
@@ -523,7 +501,7 @@ fn build_messages_combines_tool_calls_with_assistant_text() {
 }
 
 #[test]
-fn kimi_strategy_adds_reasoning_placeholder_to_tool_call_messages() {
+fn strategy_adds_reasoning_placeholder_to_tool_call_messages() {
     let history = vec![
         ConversationItem::Message {
             role: Role::User,
@@ -542,7 +520,7 @@ fn kimi_strategy_adds_reasoning_placeholder_to_tool_call_messages() {
     ];
 
     let mut msgs = build_messages(&history);
-    apply_test_strategy("moonshot/kimi-k2.6", &mut msgs);
+    ProviderStrategy::transform_chat_messages(&mut msgs);
     assert_eq!(msgs.len(), 2);
     assert_eq!(msgs[1].role, "assistant");
     assert_eq!(msgs[1].reasoning_content.as_deref(), Some(" "));
@@ -550,7 +528,7 @@ fn kimi_strategy_adds_reasoning_placeholder_to_tool_call_messages() {
 }
 
 #[test]
-fn kimi_strategy_preserves_existing_reasoning_content() {
+fn strategy_preserves_existing_reasoning_content() {
     let history = vec![
         ConversationItem::Message {
             role: Role::User,
@@ -579,7 +557,7 @@ fn kimi_strategy_preserves_existing_reasoning_content() {
     ];
 
     let mut msgs = build_messages(&history);
-    apply_test_strategy("moonshot/kimi-k2.6", &mut msgs);
+    ProviderStrategy::transform_chat_messages(&mut msgs);
     assert_eq!(
         msgs[1].reasoning_content.as_deref(),
         Some("actual reasoning")
@@ -587,7 +565,7 @@ fn kimi_strategy_preserves_existing_reasoning_content() {
 }
 
 #[test]
-fn kimi_strategy_does_not_affect_messages_without_tool_calls() {
+fn strategy_does_not_affect_messages_without_tool_calls() {
     let history = vec![
         ConversationItem::Message {
             role: Role::User,
@@ -606,34 +584,32 @@ fn kimi_strategy_does_not_affect_messages_without_tool_calls() {
     ];
 
     let mut msgs = build_messages(&history);
-    apply_test_strategy("moonshot/kimi-k2.6", &mut msgs);
+    ProviderStrategy::transform_chat_messages(&mut msgs);
     assert_eq!(msgs.len(), 2);
     assert!(msgs[1].reasoning_content.is_none());
 }
 
 #[test]
-fn non_kimi_strategy_does_not_add_reasoning_placeholder() {
-    let history = vec![
-        ConversationItem::Message {
-            role: Role::User,
-            content: "do stuff".to_string(),
-            id: None,
-            status: None,
-            timestamp: None,
-        },
-        ConversationItem::FunctionCall {
-            id: "fc-1".to_string(),
-            call_id: "call-1".to_string(),
-            name: "bash".to_string(),
-            arguments: r#"{"cmd":"ls"}"#.to_string(),
-            timestamp: None,
-        },
-    ];
+fn parses_reasoning_alias_for_reasoning_content() {
+    let response: ChatResponse = serde_json::from_value(serde_json::json!({
+        "id": "chatcmpl-456",
+        "choices": [{
+            "message": {
+                "content": null,
+                "reasoning": "actual reasoning",
+                "tool_calls": null
+            },
+            "finish_reason": null
+        }],
+        "usage": null
+    }))
+    .unwrap();
 
-    let mut msgs = build_messages(&history);
-    apply_test_strategy("gpt-4.1", &mut msgs);
-    assert_eq!(msgs.len(), 2);
-    assert!(msgs[1].reasoning_content.is_none());
+    let items = parse_choices(&response).unwrap();
+    assert_eq!(items.len(), 1);
+    assert!(matches!(&items[0], ConversationItem::Reasoning {
+        content: Some(content), ..
+    } if content[0].text.as_deref() == Some("actual reasoning")));
 }
 
 #[test]
@@ -1103,7 +1079,7 @@ fn snapshot_reasoning_placeholder_injection() {
     ];
 
     let mut msgs = build_messages(&history);
-    apply_test_strategy("moonshot/kimi-k2.6", &mut msgs);
+    ProviderStrategy::transform_chat_messages(&mut msgs);
     insta::assert_json_snapshot!("build_messages_with_reasoning_placeholder", msgs);
 }
 
@@ -1126,7 +1102,7 @@ fn snapshot_chat_request_kimi_tool_calls() {
         },
     ];
     let mut messages = build_messages(&history);
-    apply_test_strategy("moonshot/kimi-k2.6", &mut messages);
+    ProviderStrategy::transform_chat_messages(&mut messages);
     let tools = vec![Tool {
         type_: "function".to_string(),
         name: "bash".to_string(),

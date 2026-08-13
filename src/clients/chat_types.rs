@@ -107,6 +107,9 @@ pub(super) struct ChatChoice {
 #[derive(Deserialize, Debug)]
 pub(super) struct ChatResponseMessage {
     pub(super) content: Option<String>,
+    /// Some OpenAI-compatible gateways emit reasoning text as `reasoning`
+    /// rather than `reasoning_content`.
+    #[serde(alias = "reasoning")]
     pub(super) reasoning_content: Option<String>,
     pub(super) refusal: Option<String>,
     pub(super) tool_calls: Option<Vec<ChatToolCall>>,

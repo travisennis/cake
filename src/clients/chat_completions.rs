@@ -56,9 +56,8 @@ pub(super) fn build_request_json<'a>(
     overrides: &RequestOverrides,
     constraint: Option<FinalOutputConstraint<'a>>,
 ) -> anyhow::Result<Vec<u8>> {
-    let strategy = ProviderStrategy::from_config(config);
     let mut messages = build_messages(history);
-    strategy.transform_chat_messages(&mut messages);
+    ProviderStrategy::transform_chat_messages(&mut messages);
     let chat_tools = convert_tools(tools);
 
     let request = ChatRequest {
