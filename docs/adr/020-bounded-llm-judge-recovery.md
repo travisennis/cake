@@ -45,5 +45,5 @@ Recovery triggers only on error outcomes: a judge timeout, a transport error cla
 - Partially supersedes [ADR-018](./018-llm-judge-command-gate.md), `LLM Judge Command Gate`: the "no retries in version 1" clause is replaced by this decision; ADR-018 remains accepted for the gate itself.
 - Implements issue #204, `Retry transient LLM-judge failures within a bounded deadline`.
 - Builds on #202 (per-attempt judge diagnostics) for the retry telemetry and on #205 (judge SLO benchmark) for measuring the recovery's effect.
-- Execution plan: `docs/exec-plans/active/judge-retry-bounded-deadline.md`.
+- Execution plan: `docs/exec-plans/completed/judge-retry-bounded-deadline.md`.
 - Current durable authorities remain `docs/security.md`, `docs/configuration.md`, `docs/integrations.md`, and `ARCHITECTURE.md`.
