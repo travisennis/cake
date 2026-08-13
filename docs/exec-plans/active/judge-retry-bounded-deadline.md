@@ -20,7 +20,7 @@ The compatibility effect: `timeout_secs` keeps its documented meaning as the bou
 - [x] (2026-08-13 23:30Z) Milestone 3: added `retry_reason`, `retry_delay_ms`, and `effective_deadline_ms` to `JudgeAttemptTelemetry`, made the Bash preflight report cumulative wall time, and added a retry-era metrics-parser test.
 - [x] (2026-08-13 23:45Z) Milestone 4: added the acceptance-matrix tests (timeout/transport/HTTP retry, budget zero and exhaustion, verdict/refusal/malformed never retried, cancellation, telemetry shape, Bash-tool no-spawn on exhausted recovery, `cake bash check` parity) plus a settings resolution test.
 - [x] (2026-08-14 00:10Z) Milestone 5: updated `docs/configuration.md`, `docs/integrations.md`, and `docs/security.md` (instruction-size budgets held by consolidating wording), then passed `just clippy-strict`, `just cc-check`, `just docs-check`, `just judge-bench-check`, the metrics suite, and `just ci`.
-- [ ] Run the large-change preflight, apply its findings, and update this plan's Outcomes before opening the pull request.
+- [x] (2026-08-14 00:40Z) Recorded the decision as ADR-020 (partial supersession of ADR-018's "no retries in version 1" clause) with a reciprocal note in ADR-018, then ran the large-change preflight (L/XL, three passes), applied its ADR finding, and re-ran `just ci` to green.
 
 ## Surprises & Discoveries
 
@@ -61,7 +61,11 @@ The compatibility effect: `timeout_secs` keeps its documented meaning as the bou
 
 ## Outcomes & Retrospective
 
-Not yet completed. This section will record what was achieved, verification results, and lessons learned before the plan moves to `docs/exec-plans/completed/`.
+The judge now makes at most two provider calls per evaluation, with one recovery attempt after a timeout or retryable transport/HTTP failure within a documented `timeout_secs + retry_budget_secs` deadline (defaults 30 + 15). Recovery reuses the agent loop's retry classification, swaps in a fresh client on stale/timeout classes, and never retries valid verdicts, refusals, or malformed verdicts; exhausted recovery blocks the Bash command before spawn exactly like an un-retried failure. `cake bash check` and the Bash preflight share the driver, so both callers get identical semantics. `judge_attempt` telemetry records attempt/retry ordinal, retry reason, backoff wait, and the effective deadline per attempt, with cumulative latency on the compensation event. The decision is recorded as ADR-020, partially superseding ADR-018's "no retries in version 1" clause.
+
+Verification: 1,170 unit tests plus all integration suites, the deterministic judge-bench harness (`just judge-bench-check`), the metrics-parser suite, strict clippy, the CC gate (no regressions, no baseline regeneration), and `just ci` all pass. The live measurement surface is `just judge-bench` (credentialed, authorized separately), which will show the retry era in per-trial attempt counts and timeout rates. Residual risk is limited to the documented 45-second worst-case gate latency and the small backoff cost when the first attempt fails; both are bounded and visible in telemetry.
+
+Lessons learned: wiremock `expect(n)` sets verification only while `up_to_n_times(n)` controls matching, and the instruction-size lint has zero headroom on the security doc, so the retry statement had to displace existing wording. The complexity gate forced the driver/classification split in `judge_observer.rs` and the scalar-merge extraction in settings, both of which also read better.
 
 ## Context and Orientation
 
