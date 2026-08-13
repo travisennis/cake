@@ -23,7 +23,7 @@ pub struct CommandRunOptions<'a> {
 /// # Examples
 ///
 /// Implementors define the `run` method which receives a reference to the
-/// [`DataDir`](crate::config::DataDir) and returns `anyhow::Result<()>`.
+/// [`DataDir`] and returns `anyhow::Result<()>`.
 pub trait CmdRunner {
     /// Executes the command's logic.
     ///

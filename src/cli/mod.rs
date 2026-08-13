@@ -4,7 +4,7 @@
 //! - The [`CmdRunner`] trait for CLI commands.
 //! - [`CliOutputSink`] for rendering responses.
 //! - [`RunMode`] / [`SessionStorage`] for session lifecycle.
-//! - [`RunSession`] and [`skill_locations`] for session construction.
+//! - [`RunSession`] and [`crate::cli::session_factory::skill_locations`] for session construction.
 
 mod bash;
 mod cmd_runner;
