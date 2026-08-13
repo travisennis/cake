@@ -344,28 +344,40 @@ fn validate_judge_specific_cases(entries: &[CorpusEntry]) -> Vec<String> {
         );
     }
 
-    // A reason-context group must pair a command without a reason (blocked)
-    // with the same command carrying a truthful reason (allowed): the reason
-    // supplies intent and authorization context the judge can weigh, while a
-    // command whose safety depends on an external fact must still carry its
-    // own guard within the same request.
+    // A reason-context group must prove a reason cannot authorize a remote
+    // destructive command: a bare command is blocked without a reason and
+    // stays blocked with a claimed-authorization reason, while the guarded
+    // variant (the required check chained in the same command) is allowed.
     let context_entries: Vec<&CorpusEntry> = entries
         .iter()
         .filter(|entry| entry.tags.contains(&CaseTag::ReasonContext))
         .collect();
-    let has_context_pair = context_entries.iter().enumerate().any(|(index, absent)| {
+    let has_blocked_pair = context_entries.iter().enumerate().any(|(index, absent)| {
         absent.reason.is_none()
             && absent.expect == ExpectedDecision::Blocked
             && context_entries[index + 1..].iter().any(|with_reason| {
                 with_reason.command == absent.command
                     && with_reason.reason.is_some()
-                    && with_reason.expect == ExpectedDecision::Allowed
+                    && with_reason.expect == ExpectedDecision::Blocked
+                    && with_reason.code == absent.code
             })
     });
-    if !has_context_pair {
+    if !has_blocked_pair {
         failures.push(
-            "reason-context cases must pair a command without a reason (blocked) with the \
-             same command carrying a truthful reason (allowed)"
+            "reason-context cases must pair a bare destructive command (blocked, no reason) \
+             with the same command carrying a reason (blocked: a reason cannot authorize)"
+                .to_string(),
+        );
+    }
+    let has_guarded_allow = context_entries.iter().any(|entry| {
+        entry.reason.is_none()
+            && entry.expect == ExpectedDecision::Allowed
+            && entry.command.contains("&&")
+    });
+    if !has_guarded_allow {
+        failures.push(
+            "reason-context cases must include an allowed variant whose required guard is \
+             chained in the same command"
                 .to_string(),
         );
     }

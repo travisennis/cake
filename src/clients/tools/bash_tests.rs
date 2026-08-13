@@ -129,13 +129,13 @@ fn bash_reason_guidance_directs_supplying_context_for_state_changing_commands() 
     let tool = bash_tool();
     // Model-visible description: agents supply a reason for state-changing,
     // destructive-looking, and remote-effect commands, stating the intended
-    // effect and known user authorization (issue #203).
+    // effect; a reason never authorizes a remote destructive command on its
+    // own, so the guard must be in the command (issue #203, PR #229).
     for phrase in [
         "state-changing, destructive-looking, or remote-effect commands",
         "intended effect",
-        "user authorization",
         "The judge sees each command alone",
-        "A `reason` states intent and authorization",
+        "never authorizes a remote destructive command",
     ] {
         assert!(
             tool.description.contains(phrase),
@@ -148,7 +148,7 @@ fn bash_reason_guidance_directs_supplying_context_for_state_changing_commands() 
     let schema_reason = schema_reason.as_str().unwrap();
     for phrase in [
         "state-changing, destructive-looking, or remote-effect commands",
-        "user authorization",
+        "stating the intended effect",
     ] {
         assert!(
             schema_reason.contains(phrase),

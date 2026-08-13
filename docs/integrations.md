@@ -88,7 +88,7 @@ Consumers must tolerate added enum values and optional fields; old sidecars rema
 
 ## Bash tool and command-safety checks
 
-The Bash tool's optional `reason` is the model's untrusted intent report; guidance directs agents to supply it for state-changing, destructive-looking, and remote-effect commands, stating the intended effect and known user authorization. The judge weighs it against the command; it appears in transcripts, never telemetry. Each judge evaluation is stateless --- command, cwd, repository digest, and reason only --- so remediation recommends a self-contained guarded command the next request can judge alone.
+The Bash tool's optional `reason` is the model's untrusted intent report; guidance directs agents to supply it for state-changing, destructive-looking, and remote-effect commands, stating the intended effect. A `reason` never authorizes a remote destructive command on its own, so a merge or branch delete requires an in-command guard. The judge weighs the reason against the command; it appears in transcripts, never telemetry. Each judge evaluation is stateless --- command, cwd, repository digest, and reason only --- so remediation recommends a self-contained guarded command the next request can judge alone.
 
 Every non-empty Bash command runs through the LLM judge (ADR-018) before spawn. [Security](security.md) defines the gate semantics and [Configuration](configuration.md) the `[tools.bash.judge]` settings.
 
