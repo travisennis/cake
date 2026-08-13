@@ -6,7 +6,7 @@ use crate::config::model::{ModelProvider, ProviderHeaders, ResolvedModelConfig};
 
 const OPENROUTER_REFERER: &str = "https://github.com/travisennis/cake";
 const OPENROUTER_TITLE: &str = "cake";
-const KIMI_REASONING_CONTENT_PLACEHOLDER: &str = " ";
+const REASONING_CONTENT_PLACEHOLDER: &str = " ";
 
 pub(super) struct ProviderStrategy<'a> {
     config: &'a ResolvedModelConfig,
@@ -44,21 +44,22 @@ impl<'a> ProviderStrategy<'a> {
         provider_routing_config(&self.config.model_config.providers)
     }
 
-    pub(super) fn transform_chat_messages(&self, messages: &mut Vec<ChatMessage<'_>>) {
+    pub(super) fn transform_chat_messages(messages: &mut Vec<ChatMessage<'_>>) {
         // Demote developer messages to user role for Chat Completions
         // providers that don't support the `developer` role.
         demote_developer_to_user(messages);
 
-        if !requires_reasoning_content_tool_call_fallback(&self.config.model_config.model) {
-            return;
-        }
-
+        // Backfill a placeholder into assistant tool-call messages that lack
+        // reasoning content. Reasoning models (Kimi, DeepSeek, and others) in
+        // thinking mode require the field to round-trip, and provider-side
+        // routing can open the gap mid-session without cake's knowledge. The
+        // placeholder is a no-op for providers that ignore the field.
         for msg in messages.iter_mut() {
             if msg.role == "assistant"
                 && msg.tool_calls.is_some()
                 && msg.reasoning_content.is_none()
             {
-                msg.reasoning_content = Some(Cow::Borrowed(KIMI_REASONING_CONTENT_PLACEHOLDER));
+                msg.reasoning_content = Some(Cow::Borrowed(REASONING_CONTENT_PLACEHOLDER));
             }
         }
     }
@@ -111,10 +112,6 @@ fn provider_routing_config(providers: &[String]) -> Option<ProviderConfig> {
             only: providers.to_vec(),
         })
     }
-}
-
-fn requires_reasoning_content_tool_call_fallback(model: &str) -> bool {
-    model.to_ascii_lowercase().contains("kimi")
 }
 
 /// Rewrite `developer` role messages to `user` role for providers that don't
@@ -307,29 +304,23 @@ mod tests {
     }
 
     #[test]
-    fn kimi_strategy_injects_reasoning_placeholder_for_tool_calls() {
-        let config = test_config("https://api.example.com/v1", "moonshot/kimi-k2.6", []);
+    fn transform_injects_reasoning_placeholder_for_tool_call_messages() {
         let mut messages = vec![assistant_tool_call_message()];
 
-        ProviderStrategy::from_config(&config).transform_chat_messages(&mut messages);
+        ProviderStrategy::transform_chat_messages(&mut messages);
 
         assert_eq!(messages[0].reasoning_content.as_deref(), Some(" "));
     }
 
     #[test]
-    fn chat_transform_skips_non_kimi_models_and_preserves_existing_reasoning() {
-        let generic_config = test_config("https://api.example.com/v1", "openai/gpt-4.1", []);
-        let mut generic_messages = vec![assistant_tool_call_message()];
-        ProviderStrategy::from_config(&generic_config)
-            .transform_chat_messages(&mut generic_messages);
-        assert!(generic_messages[0].reasoning_content.is_none());
+    fn transform_preserves_existing_reasoning_content() {
+        let mut messages = vec![assistant_tool_call_message()];
+        messages[0].reasoning_content = Some(Cow::Borrowed("actual reasoning"));
 
-        let kimi_config = test_config("https://api.example.com/v1", "moonshot/kimi-k2.6", []);
-        let mut kimi_messages = vec![assistant_tool_call_message()];
-        kimi_messages[0].reasoning_content = Some(Cow::Borrowed("actual reasoning"));
-        ProviderStrategy::from_config(&kimi_config).transform_chat_messages(&mut kimi_messages);
+        ProviderStrategy::transform_chat_messages(&mut messages);
+
         assert_eq!(
-            kimi_messages[0].reasoning_content.as_deref(),
+            messages[0].reasoning_content.as_deref(),
             Some("actual reasoning")
         );
     }
