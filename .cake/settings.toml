@@ -4,7 +4,3 @@ directories = [
   "/Users/travisennis/.local/share/cake",
   "/Users/travisennis/.config/cake",
 ]
-
-[sandbox]
-read_only = ["/Users/travisennis/.local/bin"]
-writable = ["/Users/travisennis/.config/notion"]
