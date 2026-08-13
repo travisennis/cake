@@ -661,5 +661,6 @@ fn corpus_loaded_settings() -> LoadedSettings {
             model: Some("judge-model".to_string()),
             ..JudgeSettings::default()
         },
+        warnings: Vec::new(),
     }
 }

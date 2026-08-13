@@ -261,6 +261,22 @@ pub struct LoadedSettings {
     pub system_prompt: Option<String>,
     /// Effective LLM judge settings (global + project merged, defaults applied).
     pub judge: JudgeSettings,
+    /// Warnings about unrecognized keys in settings files, one per issue and
+    /// already formatted with the source file path. Unrecognized keys are
+    /// ignored (existing behavior); these warnings surface them instead of
+    /// silently dropping them.
+    pub warnings: Vec<String>,
+}
+
+impl LoadedSettings {
+    /// Print the settings warnings to stderr, one per line, prefixed with
+    /// `warning:`. The tracing log is file-only, so settings typos surface
+    /// here or not at all in the terminal.
+    pub fn print_warnings(&self) {
+        for warning in &self.warnings {
+            eprintln!("warning: {warning}");
+        }
+    }
 }
 
 /// Definition of a named model in settings.toml.
@@ -416,6 +432,9 @@ pub enum SettingsError {
     #[error("Failed to parse settings file: {0}")]
     ParseError(#[from] toml::de::Error),
 
+    #[error("Failed to serialize settings for validation: {0}")]
+    SerializeError(#[from] toml::ser::Error),
+
     #[error("Failed to read settings file: {0}")]
     IoError(#[from] std::io::Error),
 }
@@ -436,17 +455,24 @@ pub enum SettingsError {
 pub struct SettingsLoader;
 
 impl SettingsLoader {
-    /// Load settings from a TOML file at the given path.
-    /// Returns Ok(None) if the file doesn't exist.
-    /// Returns an error if the file exists but is invalid.
-    fn load_file(path: &Path) -> Result<Option<Settings>, SettingsError> {
+    fn load_file(path: &Path) -> Result<Option<(Settings, Vec<String>)>, SettingsError> {
         if !path.exists() {
             return Ok(None);
         }
+        Self::parse_settings_file(path).map(Some)
+    }
 
+    /// Parse a settings file and report settings keys the deserializer dropped
+    /// because no [`Settings`] field matches them; they are ignored for
+    /// behavior but surfaced to the user.
+    fn parse_settings_file(path: &Path) -> Result<(Settings, Vec<String>), SettingsError> {
         let content = std::fs::read_to_string(path)?;
+        // Parse twice: once as a raw document to compare against, and once into
+        // the typed [`Settings`], which silently drops unrecognized keys.
+        let original: toml::Value = toml::from_str(&content)?;
         let settings: Settings = toml::from_str(&content)?;
-        Ok(Some(settings))
+        let round_trip = toml::Value::try_from(&settings)?;
+        Ok((settings, collect_unknown_keys(&original, &round_trip, path)))
     }
 
     /// Resolve skill configuration from CLI flags and settings.
@@ -527,15 +553,17 @@ impl SettingsLoader {
         let global_path = crate::config::config_dir()
             .join("cake")
             .join("settings.toml");
-        if let Some(settings) = Self::load_file(&global_path)? {
+        if let Some((settings, warnings)) = Self::load_file(&global_path)? {
             Self::validate_profiles(&settings.profiles)?;
             Self::merge_settings(settings, &mut acc)?;
+            acc.warnings.extend(warnings);
         }
         if let Some(project_dir) = project_dir {
             let project_path = project_dir.join(".cake").join("settings.toml");
-            if let Some(settings) = Self::load_file(&project_path)? {
+            if let Some((settings, warnings)) = Self::load_file(&project_path)? {
                 Self::validate_profiles(&settings.profiles)?;
                 Self::merge_settings(settings, &mut acc)?;
+                acc.warnings.extend(warnings);
             }
         }
 
@@ -729,6 +757,7 @@ struct SettingsAccumulator {
     judge_rubric_file: Option<PathBuf>,
     judge_enabled: Option<bool>,
     judge_allowlist: Vec<String>,
+    warnings: Vec<String>,
 }
 
 impl SettingsAccumulator {
@@ -771,8 +800,93 @@ impl SettingsAccumulator {
                 enabled: self.judge_enabled.unwrap_or(true),
                 allowlist: self.judge_allowlist,
             },
+            warnings: self.warnings,
         }
     }
+}
+
+/// Settings keys the deserializer silently dropped, one formatted warning per
+/// key. Each warning names the source file and the section, for example
+/// `[[models]] entry 'zen'`.
+fn collect_unknown_keys(
+    original: &toml::Value,
+    round_trip: &toml::Value,
+    file: &Path,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut path: Vec<String> = Vec::new();
+    find_unknown_keys(original, round_trip, &mut path, file, &mut out);
+    out
+}
+
+/// Walk `original` alongside its serde round-trip. A key present in the
+/// original document but absent from the round-trip is unrecognized: serde
+/// dropped it during deserialization, so no struct field consumes it.
+///
+/// `path` holds the table and array keys leading to the current position so
+/// reports name the exact location.
+fn find_unknown_keys(
+    original: &toml::Value,
+    round_trip: &toml::Value,
+    path: &mut Vec<String>,
+    file: &Path,
+    out: &mut Vec<String>,
+) {
+    match (original, round_trip) {
+        (toml::Value::Table(original), toml::Value::Table(round_trip)) => {
+            for (key, value) in original {
+                if let Some(round_trip_value) = round_trip.get(key) {
+                    path.push(key.clone());
+                    find_unknown_keys(value, round_trip_value, path, file, out);
+                    path.pop();
+                } else {
+                    out.push(format_unknown_key(file, key, path));
+                }
+            }
+        },
+        (toml::Value::Array(original), toml::Value::Array(round_trip)) => {
+            for (index, (value, round_trip_value)) in
+                original.iter().zip(round_trip.iter()).enumerate()
+            {
+                // Name `[[models]]` entries by their `name` field instead of
+                // their array index so warnings read like the settings file.
+                let label = value
+                    .as_table()
+                    .and_then(|table| table.get("name"))
+                    .and_then(toml::Value::as_str)
+                    .map_or_else(|| index.to_string(), str::to_string);
+                path.push(label);
+                find_unknown_keys(value, round_trip_value, path, file, out);
+                path.pop();
+            }
+        },
+        _ => {},
+    }
+}
+
+/// Format one unrecognized key as a user-facing warning.
+fn format_unknown_key(file: &Path, key: &str, path: &[String]) -> String {
+    format!(
+        "{}: unknown key '{key}' in {}; ignored",
+        file.display(),
+        section_label(path)
+    )
+}
+
+/// Human-readable location for a settings path, for example
+/// `[[models]] entry 'zen'` or `[tools.bash.judge]`.
+fn section_label(path: &[String]) -> String {
+    let Some((first, rest)) = path.split_first() else {
+        return "top-level settings".to_string();
+    };
+    if first == "models" {
+        let entry = rest.first().map_or("?", String::as_str);
+        return match rest.len() {
+            1 => format!("[[models]] entry '{entry}'"),
+            _ => format!("[[models]] entry '{entry}'.{}", rest[1..].join(".")),
+        };
+    }
+    format!("[{}]", path.join("."))
 }
 
 /// Expand `~` in a settings path string, returning the expanded string.

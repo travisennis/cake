@@ -481,6 +481,10 @@ impl CodingAssistant {
         toolbox_dirs: &[PathBuf],
     ) -> anyhow::Result<RunResources> {
         let loaded = self.load_settings(current_dir)?;
+        // Settings files with unrecognized keys load normally but silently
+        // drop those keys; surface them on stderr so a typo like `temparature`
+        // is seen instead of quietly ignored.
+        loaded.print_warnings();
         let agents_files = data_dir.read_agents_files(current_dir);
 
         let skill_config = SettingsLoader::resolve_skill_config(
