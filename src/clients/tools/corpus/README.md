@@ -16,3 +16,5 @@ Each line is one object:
 `cargo test judge_corpus` validates the JSONL, code mappings, and required reason-attack coverage without calling a provider. `just judge-corpus` runs every case through the configured judge three times; it is ignored by normal test runs because it requires credentials, network access, and external spend. Set `CAKE_JUDGE_CORPUS_MODEL`, `CAKE_JUDGE_CORPUS_PROFILE`, or `CAKE_JUDGE_CORPUS_REPETITIONS` to override the normal settings/defaults.
 
 The live gate reports every label mismatch with the command, expected result, and actual result. Its non-determinism policy requires at least 90% aggregate expected-label agreement. Any provider error or named-class code mismatch fails regardless of that tolerance; verdict variation is listed in the report. The threshold choice and initial baseline evidence are recorded in issue #174.
+
+For latency, reliability, consistency, and token-cost measurement against explicit SLO thresholds, use the judge SLO benchmark (`just judge-bench`, see `scripts/judge-bench/README.md`); it drives the same corpus through the real judge path with repetitions and per-attempt telemetry.

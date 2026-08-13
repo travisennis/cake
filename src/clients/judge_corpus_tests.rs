@@ -36,14 +36,14 @@ const MINIMUM_LABEL_AGREEMENT_PERCENT: usize = 90;
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-enum ExpectedDecision {
+pub(super) enum ExpectedDecision {
     Blocked,
     Warned,
     Allowed,
 }
 
 impl ExpectedDecision {
-    const fn as_str(self) -> &'static str {
+    pub(super) const fn as_str(self) -> &'static str {
         match self {
             Self::Blocked => "blocked",
             Self::Warned => "warned",
@@ -64,7 +64,7 @@ impl From<JudgeDecision> for ExpectedDecision {
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
-enum CaseTag {
+pub(super) enum CaseTag {
     SameCommandPair,
     ReasonLaundering,
     ReasonInjection,
@@ -73,19 +73,19 @@ enum CaseTag {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct CorpusEntry {
+pub(super) struct CorpusEntry {
     #[serde(skip)]
-    line_number: usize,
-    command: String,
-    expect: ExpectedDecision,
+    pub(super) line_number: usize,
+    pub(super) command: String,
+    pub(super) expect: ExpectedDecision,
     #[serde(default, deserialize_with = "deserialize_verdict_code")]
-    code: Option<VerdictCode>,
+    pub(super) code: Option<VerdictCode>,
     #[serde(default)]
-    reason: Option<String>,
+    pub(super) reason: Option<String>,
     #[serde(default)]
-    tags: Vec<CaseTag>,
+    pub(super) tags: Vec<CaseTag>,
     #[serde(default)]
-    note: Option<String>,
+    pub(super) note: Option<String>,
 }
 
 fn deserialize_verdict_code<'de, D>(deserializer: D) -> Result<Option<VerdictCode>, D::Error>
@@ -236,7 +236,7 @@ fn join_set(values: &BTreeSet<String>) -> String {
     values.iter().cloned().collect::<Vec<_>>().join(", ")
 }
 
-fn load_corpus() -> Result<Vec<CorpusEntry>, String> {
+pub(super) fn load_corpus() -> Result<Vec<CorpusEntry>, String> {
     let mut entries = Vec::new();
     let mut errors = Vec::new();
     for (index, raw_line) in CORPUS.lines().enumerate() {

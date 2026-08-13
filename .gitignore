@@ -12,3 +12,6 @@ target/llvm-cov/
 
 # Eval harness generated output (sessions, telemetry, run results)
 scripts/evals/results/
+
+# Judge SLO benchmark generated output (per-trial records, run reports)
+scripts/judge-bench/results/
