@@ -9,6 +9,7 @@
 mod bash;
 mod cmd_runner;
 mod debug;
+mod init;
 mod output;
 mod run_mode;
 mod session_factory;
@@ -18,6 +19,7 @@ mod sessions;
 pub use bash::BashCommand;
 pub use cmd_runner::{CmdRunner, CommandRunOptions};
 pub use debug::DebugCommand;
+pub use init::{InitCommand, InitError};
 pub use output::{CliOutputSink, TurnResult};
 pub use sessions::SessionsCommand;
 
@@ -33,6 +35,8 @@ pub enum Commands {
     Sessions(SessionsCommand),
     /// Inspect and explain Bash command-safety decisions
     Bash(BashCommand),
+    /// Create `.cake/` project scaffolding and a behavior-preserving settings file
+    Init(InitCommand),
 }
 
 impl CmdRunner for Commands {
@@ -59,6 +63,7 @@ impl Commands {
             Self::Debug(command) => command.run(data_dir, options).await,
             Self::Sessions(command) => command.run(data_dir, options).await,
             Self::Bash(command) => command.run(data_dir, options).await,
+            Self::Init(command) => command.run(data_dir, options).await,
         }
     }
 }

@@ -1413,10 +1413,10 @@
     {
       "file": "./src/cli/mod.rs",
       "function": "Commands::dispatch",
-      "line": 53,
-      "cyclomatic": 4.0,
-      "coverage": 80.0,
-      "crap": 4.128
+      "line": 57,
+      "cyclomatic": 5.0,
+      "coverage": 72.72727272727273,
+      "crap": 5.507137490608565
     },
     {
       "file": "./src/types/conversation.rs",
@@ -1854,9 +1854,9 @@
       "file": "./src/exit_code.rs",
       "function": "classify_typed_error",
       "line": 69,
-      "cyclomatic": 4.0,
+      "cyclomatic": 5.0,
       "coverage": 100.0,
-      "crap": 4.0
+      "crap": 5.0
     },
     {
       "file": "./src/session_telemetry.rs",
