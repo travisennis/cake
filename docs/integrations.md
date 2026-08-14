@@ -13,7 +13,7 @@ This document describes Cake's stable shell-facing and machine-facing contracts.
 
 Human diagnostics go to stderr. Machine-readable stdout must contain only its declared JSON format.
 
-`cake init` is an additive scaffolding command: it creates `.cake/settings.toml` (and, with `--hooks`, an inert `.cake/hooks.json.example`) and prints the created files to stdout. When a planned target already exists it reports the conflict on stderr and exits `3` without writing anything.
+`cake init` creates `.cake/settings.toml` (and, with `--hooks`, an inert `.cake/hooks.json.example`) and prints created files to stdout. An existing target is reported on stderr and exits `3` without writing anything.
 
 For `stream-json`, validation failures before a task stream starts still use the codes above. Once streaming begins, ordinary agent, provider, and tool failures are represented by the final `task_complete` record and the process exits `0`. An unsatisfied output schema remains nonzero, and interruption exits `130`.
 

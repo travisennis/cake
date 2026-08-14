@@ -20,7 +20,7 @@ Model definitions with the same name are replaced as a unit by the project defin
 
 ## Project scaffolding with `cake init`
 
-`cake init` creates explicit, reviewable project scaffolding: a `.cake/` directory and a commented, behavior-preserving `.cake/settings.toml` that references the keys in this document without changing any behavior. `cake init --hooks` also creates an inert `.cake/hooks.json.example` reference for the trusted-hook files below. The command never overwrites: if a planned target already exists it reports the conflict and exits nonzero without writing anything, so re-running after a successful initialization is a safe no-op refusal. Generated files are references only; the full contracts are in this document and `docs/security.md`.
+`cake init` creates explicit, reviewable project scaffolding: `.cake/` and a commented, behavior-preserving `.cake/settings.toml` referencing the keys in this document without changing any behavior. `cake init --hooks` also creates an inert `.cake/hooks.json.example`. If a planned target already exists, the command reports the conflict and exits nonzero without writing anything; re-running after success is a safe refusal. Generated files are references only; the full contracts are here and in `docs/security.md`.
 
 ## Models
 
