@@ -88,11 +88,12 @@ fn conflict_message(targets: &[String]) -> String {
 /// Create `.cake/` scaffolding in `project_dir`.
 ///
 /// With `with_hooks`, also create the inert hooks example. Every planned target
-/// is checked before anything is written: if any target already exists, the
-/// call returns [`InitError::Conflict`] and leaves every existing and planned
-/// target unchanged. Targets are created exclusively (never truncating a file
-/// that appeared after the check) and `.cake` itself must be a real directory,
-/// not a file or a symlink that would redirect writes outside the project.
+/// is checked before anything is written: if any target already exists, or is
+/// occupied by a symlink, the call returns [`InitError::Conflict`] and leaves
+/// every existing and planned target unchanged. Targets are created
+/// exclusively (never truncating a file that appeared after the check) and
+/// `.cake` itself must be a real directory, not a file or a symlink that would
+/// redirect writes outside the project.
 pub fn initialize(project_dir: &Path, with_hooks: bool) -> anyhow::Result<InitOutcome> {
     const SETTINGS_TARGET: &str = ".cake/settings.toml";
     const HOOKS_TARGET: &str = ".cake/hooks.json.example";
@@ -105,11 +106,11 @@ pub fn initialize(project_dir: &Path, with_hooks: bool) -> anyhow::Result<InitOu
     if !dot_cake_is_plain_directory(&dot_cake) {
         conflicts.push(".cake".to_string());
     }
-    if settings_path.exists() {
+    if path_occupied(&settings_path) {
         conflicts.push(SETTINGS_TARGET.to_string());
     }
     if let Some(path) = &hooks_path
-        && path.exists()
+        && path_occupied(path)
     {
         conflicts.push(HOOKS_TARGET.to_string());
     }
@@ -139,6 +140,19 @@ fn dot_cake_is_plain_directory(path: &Path) -> bool {
     match fs::symlink_metadata(path) {
         Ok(metadata) => metadata.is_dir() && !metadata.file_type().is_symlink(),
         Err(error) => error.kind() == io::ErrorKind::NotFound,
+    }
+}
+
+/// True when `path` is occupied by any filesystem entry, including a dangling
+/// symlink.
+///
+/// `Path::exists()` follows symlinks and returns `false` for a dangling one,
+/// but the path is still occupied: exclusive creation would refuse it. The
+/// preflight must see it so a conflict surfaces before anything is written.
+fn path_occupied(path: &Path) -> bool {
+    match fs::symlink_metadata(path) {
+        Ok(_) => true,
+        Err(error) => error.kind() != io::ErrorKind::NotFound,
     }
 }
 

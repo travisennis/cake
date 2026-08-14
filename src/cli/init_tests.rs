@@ -320,6 +320,35 @@ fn initialize_refuses_dangling_settings_symlink_without_following_it() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn initialize_refuses_dangling_hooks_symlink_without_partial_writes() {
+    use std::os::unix::fs::symlink;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir(tmp.path().join(".cake")).unwrap();
+    // A dangling symlink at the hooks target: `exists()` is false, but the
+    // path is occupied, so the preflight must refuse before the settings
+    // file is written (settings is the first write and would otherwise
+    // survive the conflict).
+    symlink(
+        "nowhere",
+        tmp.path().join(".cake").join("hooks.json.example"),
+    )
+    .unwrap();
+
+    let err = initialize(tmp.path(), true).unwrap_err();
+
+    assert!(
+        err.downcast_ref::<InitError>().is_some(),
+        "a dangling hooks symlink must be reported as a conflict"
+    );
+    assert!(
+        !tmp.path().join(".cake").join("settings.toml").exists(),
+        "no target may be written when the hooks target is a dangling symlink"
+    );
+}
+
 // =============================================================================
 // Created-target output
 // =============================================================================
