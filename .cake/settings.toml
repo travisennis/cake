@@ -1,6 +1,3 @@
-directories = [
-  "/Users/travisennis/.cake",
-  "/Users/travisennis/.cache/cake",
-  "/Users/travisennis/.local/share/cake",
-  "/Users/travisennis/.config/cake",
-]
+[sandbox]
+read_only = ["~/bin"]
+writable = ["~/.cake", "~/.cache/cake", "~/.local/share/cake", "~/.config/cake"]
