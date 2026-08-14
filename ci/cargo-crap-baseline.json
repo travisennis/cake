@@ -1854,9 +1854,9 @@
       "file": "./src/exit_code.rs",
       "function": "classify_typed_error",
       "line": 69,
-      "cyclomatic": 6.0,
+      "cyclomatic": 5.0,
       "coverage": 100.0,
-      "crap": 6.0
+      "crap": 5.0
     },
     {
       "file": "./src/session_telemetry.rs",

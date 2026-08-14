@@ -8,6 +8,7 @@
 //! no-op refusal.
 
 use std::fs;
+use std::io;
 use std::path::Path;
 
 use anyhow::Context;
@@ -62,18 +63,25 @@ impl std::fmt::Display for InitOutcome {
 #[derive(Debug, Error)]
 pub enum InitError {
     /// One or more planned targets already exist; nothing was written.
-    Conflict(Vec<String>),
+    #[error("refusing to initialize: {0}")]
+    Conflict(String),
+    /// Writing a planned target failed.
+    #[error("failed to write {path}: {source}")]
+    Io {
+        /// Display path of the target that could not be written.
+        path: String,
+        /// Underlying filesystem error.
+        source: std::io::Error,
+    },
 }
 
-impl std::fmt::Display for InitError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let Self::Conflict(targets) = self;
-        let listed = targets.join(", ");
-        if targets.len() == 1 {
-            write!(f, "refusing to initialize: {listed} already exists")
-        } else {
-            write!(f, "refusing to initialize: {listed} already exist")
-        }
+/// Render the conflict message with singular or plural verb agreement.
+fn conflict_message(targets: &[String]) -> String {
+    let listed = targets.join(", ");
+    if targets.len() == 1 {
+        format!("{listed} already exists")
+    } else {
+        format!("{listed} already exist")
     }
 }
 
@@ -82,15 +90,21 @@ impl std::fmt::Display for InitError {
 /// With `with_hooks`, also create the inert hooks example. Every planned target
 /// is checked before anything is written: if any target already exists, the
 /// call returns [`InitError::Conflict`] and leaves every existing and planned
-/// target unchanged.
+/// target unchanged. Targets are created exclusively (never truncating a file
+/// that appeared after the check) and `.cake` itself must be a real directory,
+/// not a file or a symlink that would redirect writes outside the project.
 pub fn initialize(project_dir: &Path, with_hooks: bool) -> anyhow::Result<InitOutcome> {
     const SETTINGS_TARGET: &str = ".cake/settings.toml";
     const HOOKS_TARGET: &str = ".cake/hooks.json.example";
 
+    let dot_cake = project_dir.join(".cake");
     let settings_path = project_dir.join(SETTINGS_TARGET);
     let hooks_path = with_hooks.then(|| project_dir.join(HOOKS_TARGET));
 
     let mut conflicts = Vec::new();
+    if !dot_cake_is_plain_directory(&dot_cake) {
+        conflicts.push(".cake".to_string());
+    }
     if settings_path.exists() {
         conflicts.push(SETTINGS_TARGET.to_string());
     }
@@ -100,22 +114,60 @@ pub fn initialize(project_dir: &Path, with_hooks: bool) -> anyhow::Result<InitOu
         conflicts.push(HOOKS_TARGET.to_string());
     }
     if !conflicts.is_empty() {
-        return Err(InitError::Conflict(conflicts).into());
+        return Err(InitError::Conflict(conflict_message(&conflicts)).into());
     }
 
-    fs::create_dir_all(project_dir.join(".cake"))
-        .with_context(|| format!("failed to create {}", project_dir.join(".cake").display()))?;
-    fs::write(&settings_path, DEFAULT_SETTINGS)
-        .with_context(|| format!("failed to write {}", settings_path.display()))?;
+    fs::create_dir_all(&dot_cake)
+        .with_context(|| format!("failed to create {}", dot_cake.display()))?;
+    write_new(&settings_path, SETTINGS_TARGET, DEFAULT_SETTINGS)?;
     if let Some(path) = &hooks_path {
-        fs::write(path, HOOKS_EXAMPLE)
-            .with_context(|| format!("failed to write {}", path.display()))?;
+        write_new(path, HOOKS_TARGET, HOOKS_EXAMPLE)?;
     }
 
     Ok(InitOutcome {
         settings: SETTINGS_TARGET.to_string(),
         hooks_example: with_hooks.then(|| HOOKS_TARGET.to_string()),
     })
+}
+
+/// True when `.cake` is absent (safe to create) or is a real directory.
+///
+/// A file or symlink at `.cake` is a conflict: `create_dir_all` would fail
+/// confusingly on a file, and following a symlink would write outside the
+/// project directory.
+fn dot_cake_is_plain_directory(path: &Path) -> bool {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata.is_dir() && !metadata.file_type().is_symlink(),
+        Err(error) => error.kind() == io::ErrorKind::NotFound,
+    }
+}
+
+/// Write a target file with exclusive creation.
+///
+/// `create_new` never truncates a file that appeared after the conflict check
+/// and never follows a symlink at the target path. An `AlreadyExists` result is
+/// the race window for that check and is reported as a conflict.
+fn write_new(path: &Path, display: &str, content: &str) -> Result<(), InitError> {
+    use std::io::Write;
+
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|source| match source.kind() {
+            io::ErrorKind::AlreadyExists => {
+                InitError::Conflict(format!("{display} already exists"))
+            },
+            _ => InitError::Io {
+                path: display.to_string(),
+                source,
+            },
+        })?;
+    file.write_all(content.as_bytes())
+        .map_err(|source| InitError::Io {
+            path: display.to_string(),
+            source,
+        })
 }
 
 /// Generated `.cake/settings.toml` content.

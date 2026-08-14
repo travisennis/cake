@@ -209,7 +209,8 @@ fn initialize_preserves_unrelated_cake_content_on_conflict() {
 
 #[test]
 fn init_conflict_classifies_as_input_error() {
-    let err: anyhow::Error = InitError::Conflict(vec![".cake/settings.toml".to_string()]).into();
+    let err: anyhow::Error =
+        InitError::Conflict(".cake/settings.toml already exists".to_string()).into();
     assert_eq!(
         crate::exit_code::classify_to_u8(&err),
         crate::exit_code::code::INPUT_ERROR
@@ -218,16 +219,16 @@ fn init_conflict_classifies_as_input_error() {
 
 #[test]
 fn init_conflict_message_identifies_each_target() {
-    let single = InitError::Conflict(vec![".cake/settings.toml".to_string()]);
+    let single = InitError::Conflict(conflict_message(&[".cake/settings.toml".to_string()]));
     assert_eq!(
         single.to_string(),
         "refusing to initialize: .cake/settings.toml already exists"
     );
 
-    let multiple = InitError::Conflict(vec![
+    let multiple = InitError::Conflict(conflict_message(&[
         ".cake/settings.toml".to_string(),
         ".cake/hooks.json.example".to_string(),
-    ]);
+    ]));
     assert_eq!(
         multiple.to_string(),
         "refusing to initialize: .cake/settings.toml, .cake/hooks.json.example already exist"
@@ -246,6 +247,77 @@ fn hooks_example_parses_through_the_hook_loader() {
     let loaded = crate::config::HooksLoader::load_from_paths([path.as_path()])
         .expect("the example must parse as a valid hooks file");
     assert_eq!(loaded.groups.len(), 1);
+}
+
+// =============================================================================
+// Path-safety hardening
+// =============================================================================
+
+#[test]
+fn initialize_refuses_when_dot_cake_is_a_file() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    std::fs::write(tmp.path().join(".cake"), "not a directory").unwrap();
+
+    let err = initialize(tmp.path(), false).unwrap_err();
+
+    let conflict = err
+        .downcast_ref::<InitError>()
+        .expect("a file at .cake must be reported as a conflict");
+    assert!(
+        conflict.to_string().contains(".cake"),
+        "conflict must name the .cake path: {conflict}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join(".cake")).unwrap(),
+        "not a directory",
+        "the file must be preserved"
+    );
+    assert_eq!(
+        crate::exit_code::classify_to_u8(&err),
+        crate::exit_code::code::INPUT_ERROR,
+        "a file at .cake must classify as an input error"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn initialize_refuses_when_dot_cake_is_a_symlink() {
+    use std::os::unix::fs::symlink;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let outside = tmp.path().join("outside");
+    std::fs::create_dir(&outside).unwrap();
+    symlink(&outside, tmp.path().join(".cake")).unwrap();
+
+    let err = initialize(tmp.path(), false).unwrap_err();
+
+    assert!(
+        err.downcast_ref::<InitError>().is_some(),
+        "a symlink at .cake must be reported as a conflict"
+    );
+    assert!(
+        !outside.join("settings.toml").exists(),
+        "writes must not follow a .cake symlink outside the project"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn initialize_refuses_dangling_settings_symlink_without_following_it() {
+    use std::os::unix::fs::symlink;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir(tmp.path().join(".cake")).unwrap();
+    // A dangling symlink at the settings target: `exists()` is false, but the
+    // exclusive create must refuse instead of writing through the link.
+    symlink("nowhere", tmp.path().join(".cake").join("settings.toml")).unwrap();
+
+    let err = initialize(tmp.path(), false).unwrap_err();
+
+    assert!(
+        err.downcast_ref::<InitError>().is_some(),
+        "a dangling settings symlink must be reported as a conflict"
+    );
 }
 
 // =============================================================================
