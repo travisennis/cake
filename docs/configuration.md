@@ -18,6 +18,10 @@ Keys in a settings file that Cake does not recognize are ignored and reported as
 
 Model definitions with the same name are replaced as a unit by the project definition. Additional `directories` are merged. Profiles may select a model and overlay behavior but may not define model providers.
 
+## Project scaffolding with `cake init`
+
+`cake init` creates explicit, reviewable project scaffolding: a `.cake/` directory and a commented, behavior-preserving `.cake/settings.toml` that references the keys in this document without changing any behavior. `cake init --hooks` also creates an inert `.cake/hooks.json.example` reference for the trusted-hook files below. The command never overwrites: if a planned target already exists it reports the conflict and exits nonzero without writing anything, so re-running after a successful initialization is a safe no-op refusal. Generated files are references only; the full contracts are in this document and `docs/security.md`.
+
 ## Models
 
 Settings files are `<config>/cake/settings.toml` and `.cake/settings.toml`:

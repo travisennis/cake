@@ -86,6 +86,15 @@ fn classify_typed_error(err: &anyhow::Error) -> Option<u8> {
         return Some(classify_judge_error(judge_err));
     }
 
+    // `cake init` refusal on an existing target is a configuration-state
+    // conflict: the caller must resolve the target before initialization can
+    // proceed, so it is an input error rather than an agent error.
+    if let Some(init_err) = err.downcast_ref::<crate::cli::InitError>() {
+        return match init_err {
+            crate::cli::InitError::Conflict(_) => Some(code::INPUT_ERROR),
+        };
+    }
+
     None
 }
 

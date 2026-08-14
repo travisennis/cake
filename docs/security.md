@@ -24,6 +24,8 @@ The `[sandbox]` and `directories` path lists feed both the in-process Read/Edit/
 
 Project-level `.cake/settings.toml` is fully trusted by design, the same trust model as the rest of project `.cake/` configuration. There is no deny-list and no trust prompt: any path a project declares in `[sandbox]` becomes accessible to model-generated commands. Treat a cloned repository's `.cake/settings.toml` the way you treat its hooks.
 
+`cake init` generates scaffolding that stays inside this trust model: a commented, behavior-preserving `.cake/settings.toml` containing no sandbox grants, judge allowlist entries, or model selection, and (with `--hooks`) an inert `.cake/hooks.json.example` that Cake never loads because it does not read `.example` files. The command never overwrites existing targets.
+
 ## Enforcement layers
 
 Read, Edit, and Write validate target paths in-process. Bash runs every command through the LLM judge before spawn, then runs under an OS filesystem sandbox:
