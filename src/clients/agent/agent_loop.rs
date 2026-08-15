@@ -112,6 +112,23 @@ fn immediate_tool_error_result(
 }
 
 impl Agent {
+    /// Log the remaining context-window budget after a completed turn, when a
+    /// window is configured. Factored into its own method so the grandfathered
+    /// `send` loop (reduction task #101) does not grow its cyclomatic
+    /// complexity with an extra decision point.
+    pub(super) fn log_context_budget(&self) {
+        if let Some(remaining) = self.context_remaining_tokens() {
+            tracing::info!(
+                target: "cake",
+                turn = self.turn_count,
+                window = self.context_window(),
+                context_tokens = self.last_usage().map(|usage| usage.input_tokens),
+                remaining_context_tokens = remaining,
+                "Context window budget remaining after turn"
+            );
+        }
+    }
+
     /// Sends a message and runs the agent loop until completion.
     ///
     /// The agent will process the message, execute any tool calls, and continue
@@ -156,6 +173,8 @@ impl Agent {
             // Count every completed API turn unconditionally; accumulate usage separately.
             self.turn_count += 1;
             self.accumulate_usage(usage.as_ref());
+            self.record_turn_usage(usage.as_ref());
+            self.log_context_budget();
 
             // Extract owned function call data before moving items into history
             let function_calls = Self::function_calls_from_items(&items);

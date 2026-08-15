@@ -82,6 +82,7 @@ impl crate::CodingAssistant {
             // error, and the underlying diagnostic is the useful part.
             .with_history(messages)
             .map_err(|error| anyhow::anyhow!("Cannot restore session {}: {error:#}", restored.id))?
+            .with_last_usage(restored.last_turn_usage())
             .with_skill_locations(skill_locations.clone());
         let mut session = Session::new(restored.id, restored.working_dir);
         session.model = Some(resolved.model_config.model);
@@ -142,6 +143,7 @@ impl crate::CodingAssistant {
             .with_toolbox_tools(toolbox_tools)
             .with_history(restored.messages())
             .map_err(|error| anyhow::anyhow!("Cannot fork session {}: {error:#}", restored.id))?
+            .with_last_usage(restored.last_turn_usage())
             .with_skill_locations(skill_locations);
         let new_id = agent.session_id();
         let seed_records: Vec<_> = restored
@@ -375,6 +377,7 @@ mod tests {
                     temperature: None,
                     top_p: None,
                     max_output_tokens: None,
+                    context_window: None,
                     reasoning_effort: None,
                     reasoning_summary: None,
                     reasoning_max_tokens: None,
@@ -415,5 +418,74 @@ mod tests {
                 "the run's tool context must carry the command-safety judge"
             );
         });
+    }
+
+    #[test]
+    fn restored_session_seeds_agent_last_usage() {
+        let mut restored = Session::new(uuid::Uuid::new_v4(), PathBuf::from("/work"));
+        restored.model = Some("test".to_string());
+        let last_usage = crate::types::Usage {
+            input_tokens: 1234,
+            output_tokens: 100,
+            total_tokens: 1334,
+            ..crate::types::Usage::default()
+        };
+        restored
+            .records
+            .push(crate::types::SessionRecord::TurnUsage(
+                crate::types::TurnUsageData {
+                    session_id: restored.id.to_string(),
+                    task_id: "task-1".to_string(),
+                    turn: 3,
+                    usage: last_usage,
+                    timestamp: chrono::Utc::now(),
+                },
+            ));
+
+        let resolved = ResolvedModelConfig {
+            model_config: crate::config::model::ModelConfig {
+                model: "test".to_string(),
+                api_type: crate::config::model::ApiType::ChatCompletions,
+                base_url: "https://example.invalid/v1".to_string(),
+                api_key_env: "SESSION_FACTORY_TEST_KEY".to_string(),
+                provider: None,
+                provider_headers: None,
+                temperature: None,
+                top_p: None,
+                max_output_tokens: None,
+                context_window: Some(200_000),
+                reasoning_effort: None,
+                reasoning_summary: None,
+                reasoning_max_tokens: None,
+                providers: vec![],
+            },
+            api_key: "test-key".to_string(),
+        };
+        let tool_context = Arc::new(ToolContext::new(
+            PathBuf::from("/work"),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            crate::SandboxPolicy::WorkspaceWrite,
+        ));
+
+        let run = crate::CodingAssistant::restored_client_and_session(
+            restored,
+            resolved,
+            &[(crate::types::Role::System, "test".to_string())],
+            &HashMap::new(),
+            tool_context,
+            Vec::new(),
+            uuid::Uuid::new_v4(),
+        )
+        .expect("restore should succeed");
+
+        // The restored agent knows its current context size before the first
+        // new provider call, seeded from the session's last per-turn usage.
+        let restored_last = run.agent.last_usage().unwrap();
+        assert_eq!(restored_last.input_tokens, 1234);
+        assert_eq!(restored_last.output_tokens, 100);
+        assert_eq!(restored_last.total_tokens, 1334);
+        assert_eq!(run.agent.context_remaining_tokens(), Some(200_000 - 1234));
     }
 }

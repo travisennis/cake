@@ -112,7 +112,13 @@ impl CmdRunner for ReplayCommand {
         // permission failures via `File::open`'s error kind.
         let path = data_dir.session_path(uuid);
         let records = load_records(&path, uuid).map_err(fail)?;
-        for record in records {
+        // `turn_usage` is a session-only audit record with no stream-json
+        // counterpart; replay mirrors the live stream vocabulary, so it is
+        // filtered out here rather than converted.
+        for record in records
+            .into_iter()
+            .filter(|record| !matches!(record, SessionRecord::TurnUsage(_)))
+        {
             emit(&StreamRecord::from(record));
         }
         Ok(())

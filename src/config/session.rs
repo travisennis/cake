@@ -11,7 +11,7 @@ use std::{
 use anyhow::Context;
 use fs4::{FileExt, TryLockError};
 
-use crate::types::{ConversationItem, GitState, SessionRecord};
+use crate::types::{ConversationItem, GitState, SessionRecord, TurnUsageData, Usage};
 
 /// Shared writer that holds the locked append handle for a session JSONL file.
 ///
@@ -105,6 +105,19 @@ impl Session {
             .iter()
             .filter_map(SessionRecord::to_conversation_item)
             .collect()
+    }
+
+    /// Returns the token usage of the most recent completed turn, if any.
+    ///
+    /// Scans from the end of the record history so later task-boundary
+    /// records (for example `TaskComplete`) do not hide the last per-turn
+    /// usage. Lets a resumed session know its current context size before the
+    /// first new provider request.
+    pub fn last_turn_usage(&self) -> Option<Usage> {
+        self.records.iter().rev().find_map(|record| match record {
+            SessionRecord::TurnUsage(TurnUsageData { usage, .. }) => Some(*usage),
+            _ => None,
+        })
     }
 
     /// Returns the names of skills activated during this session.
@@ -395,6 +408,43 @@ mod tests {
             usage: Usage::default(),
             permission_denials: None,
         })
+    }
+
+    fn turn_usage(session: &Session, task_id: &str, turn: u32) -> SessionRecord {
+        SessionRecord::TurnUsage(TurnUsageData {
+            session_id: session.id.to_string(),
+            task_id: task_id.to_string(),
+            turn,
+            usage: Usage {
+                input_tokens: u64::from(turn) * 1000,
+                ..Usage::default()
+            },
+            timestamp: chrono::Utc::now(),
+        })
+    }
+
+    #[test]
+    fn last_turn_usage_returns_most_recent_turn_past_task_boundaries() {
+        let mut session = make_test_session();
+        session.records.push(meta_record(&session));
+        session.records.push(task_start(&session, "task-1"));
+        session.records.push(turn_usage(&session, "task-1", 1));
+        session.records.push(turn_usage(&session, "task-1", 2));
+        // A later task-boundary record must not hide the last per-turn usage.
+        session.records.push(task_complete(&session, "task-1"));
+
+        let last = session.last_turn_usage().unwrap();
+        assert_eq!(last.input_tokens, 2000);
+    }
+
+    #[test]
+    fn last_turn_usage_is_none_without_turn_usage_records() {
+        let mut session = make_test_session();
+        session.records.push(meta_record(&session));
+        session.records.push(task_start(&session, "task-1"));
+        session.records.push(task_complete(&session, "task-1"));
+
+        assert!(session.last_turn_usage().is_none());
     }
 
     #[test]

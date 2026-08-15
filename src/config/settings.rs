@@ -446,6 +446,11 @@ pub struct ModelDefinition {
     /// Maximum number of output tokens
     #[serde(default)]
     pub max_output_tokens: Option<u32>,
+    /// Model context window in input tokens. When set, the agent can compare
+    /// accumulated usage against the window and report the remaining budget.
+    /// Absent means the window is unknown and cake keeps current behavior.
+    #[serde(default)]
+    pub context_window: Option<u32>,
     /// Reasoning effort level
     #[serde(default)]
     pub reasoning_effort: Option<ReasoningEffort>,
@@ -517,6 +522,7 @@ impl ModelDefinition {
             temperature: self.temperature,
             top_p: self.top_p,
             max_output_tokens: self.max_output_tokens,
+            context_window: self.context_window,
             reasoning_effort: self.reasoning_effort,
             reasoning_summary: self.reasoning_summary.clone(),
             reasoning_max_tokens: self.reasoning_max_tokens,

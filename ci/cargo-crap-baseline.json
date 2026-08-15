@@ -309,10 +309,10 @@
     {
       "file": "./src/types/session.rs",
       "function": "StreamRecord::from",
-      "line": 616,
-      "cyclomatic": 11.0,
-      "coverage": 100.0,
-      "crap": 11.0
+      "line": 635,
+      "cyclomatic": 12.0,
+      "coverage": 98.18181818181819,
+      "crap": 12.000865514650638
     },
     {
       "file": "./src/clients/retry.rs",

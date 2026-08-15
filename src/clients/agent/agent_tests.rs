@@ -15,6 +15,7 @@ fn test_resolved_model_config(api_type: ApiType, base_url: &str) -> ResolvedMode
             temperature: None,
             top_p: None,
             max_output_tokens: None,
+            context_window: None,
             reasoning_effort: None,
             reasoning_summary: None,
             reasoning_max_tokens: None,
@@ -163,6 +164,93 @@ fn accumulate_usage_accumulates_across_calls() {
     assert_eq!(agent.total_usage.total_tokens, 300);
     // accumulate_usage no longer increments turn_count; the agent loop does.
     assert_eq!(agent.turn_count, 0);
+}
+
+#[test]
+fn context_remaining_is_none_without_window() {
+    let agent = test_agent();
+    assert_eq!(agent.context_window(), None);
+    assert!(agent.last_usage().is_none());
+    assert_eq!(agent.context_remaining_tokens(), None);
+}
+
+#[test]
+fn context_remaining_reports_budget() {
+    let agent = test_agent()
+        .with_context_window(Some(1000))
+        .with_last_usage(Some(Usage {
+            input_tokens: 350,
+            ..Usage::default()
+        }));
+    assert_eq!(agent.context_window(), Some(1000));
+    assert_eq!(agent.last_usage().unwrap().input_tokens, 350);
+    assert_eq!(agent.context_remaining_tokens(), Some(650));
+}
+
+#[test]
+fn context_remaining_saturates_at_zero() {
+    let agent = test_agent()
+        .with_context_window(Some(1000))
+        .with_last_usage(Some(Usage {
+            input_tokens: 2000,
+            ..Usage::default()
+        }));
+    assert_eq!(agent.context_remaining_tokens(), Some(0));
+}
+
+/// Captures formatted tracing output produced by `f` and returns it as text.
+fn with_captured_tracing(f: impl FnOnce()) -> String {
+    #[derive(Clone)]
+    struct TracingWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for TracingWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let logs = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let writer = TracingWriter(std::sync::Arc::clone(&logs));
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_writer(move || writer.clone())
+        .finish();
+    tracing::subscriber::with_default(subscriber, f);
+    String::from_utf8(logs.lock().unwrap().clone()).unwrap()
+}
+
+#[test]
+fn log_context_budget_emits_remaining_when_window_configured() {
+    let agent = test_agent()
+        .with_context_window(Some(1000))
+        .with_last_usage(Some(Usage {
+            input_tokens: 350,
+            ..Usage::default()
+        }))
+        .with_turn_count(3);
+
+    let output = with_captured_tracing(|| agent.log_context_budget());
+    assert!(output.contains("remaining_context_tokens=650"), "{output}");
+    assert!(output.contains("turn=3"), "{output}");
+    assert!(output.contains("window=1000"), "{output}");
+    assert!(output.contains("context_tokens=350"), "{output}");
+    assert!(
+        output.contains("Context window budget remaining after turn"),
+        "{output}"
+    );
+}
+
+#[test]
+fn log_context_budget_is_silent_without_window() {
+    let agent = test_agent().with_turn_count(1);
+    let output = with_captured_tracing(|| agent.log_context_budget());
+    assert!(output.is_empty(), "{output}");
 }
 
 #[test]
@@ -800,6 +888,55 @@ mod error_tests {
         })
     }
 
+    /// Tool-call response whose reported usage models the growth recurrence:
+    /// the next turn's input equals this turn's input plus this turn's output.
+    fn turn_usage_tool_call_response(read_arguments: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": "resp-tool-usage",
+            "output": [
+                {
+                    "type": "function_call",
+                    "id": "fc-1",
+                    "call_id": "call-1",
+                    "name": "Read",
+                    "arguments": read_arguments
+                }
+            ],
+            "usage": {
+                "input_tokens": 1000,
+                "output_tokens": 200,
+                "total_tokens": 1200
+            }
+        })
+    }
+
+    /// Final response reporting the grown context: input 1000 + output 200 from
+    /// the previous turn (plus the client-added tool output) fits the next
+    /// request, which the provider counts as 1200 input tokens.
+    fn turn_usage_final_response() -> serde_json::Value {
+        serde_json::json!({
+            "id": "resp-final-usage",
+            "output": [
+                {
+                    "type": "message",
+                    "id": "msg-final-usage",
+                    "status": "completed",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": "done"
+                        }
+                    ]
+                }
+            ],
+            "usage": {
+                "input_tokens": 1200,
+                "output_tokens": 100,
+                "total_tokens": 1300
+            }
+        })
+    }
+
     #[derive(Debug)]
     struct FunctionCallOutputMatcher {
         call_id: String,
@@ -1022,6 +1159,90 @@ mod error_tests {
             &fixture.expected_tool_output,
         );
         assert_agent_loop_stream_records(&stream_records(&streamed));
+    }
+
+    #[tokio::test]
+    async fn turn_usage_tracks_last_request_and_persists_per_turn() {
+        let mock_server = MockServer::start().await;
+        let fixture = loop_fixture();
+        let bodies = Arc::new(Mutex::new(Vec::<String>::new()));
+        let bodies_clone = Arc::clone(&bodies);
+        let responses = [
+            ResponseTemplate::new(200)
+                .set_body_json(turn_usage_tool_call_response(&fixture.read_arguments)),
+            ResponseTemplate::new(200).set_body_json(turn_usage_final_response()),
+        ];
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(move |request: &Request| {
+                bodies_clone
+                    .lock()
+                    .unwrap()
+                    .push(String::from_utf8_lossy(&request.body).to_string());
+                let index = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                responses[index].clone()
+            })
+            .mount(&mock_server)
+            .await;
+
+        let persisted = Arc::new(Mutex::new(Vec::new()));
+        let persisted_clone = Arc::clone(&persisted);
+        let mut agent = test_agent_with_url(&mock_server.uri())
+            .with_context_window(Some(2000))
+            .with_persist_callback(move |record| {
+                persisted_clone.lock().unwrap().push(record.clone());
+                Ok(())
+            })
+            .with_tools(crate::clients::tools::read_tool_registry());
+
+        let result = agent.send("run a command".to_string()).await.unwrap();
+        assert_eq!(result, "done");
+
+        // The metric basis is the last turn's provider-reported input tokens,
+        // which already count the full grown request (1000 + 200 + tool output).
+        assert_eq!(agent.last_usage().unwrap().input_tokens, 1200);
+        assert_eq!(agent.context_remaining_tokens(), Some(800));
+
+        // The old cumulative metric diverges from the last request's size: it
+        // re-counts every prior input and so over-states context usage.
+        assert_eq!(agent.total_usage.total_tokens, 2500);
+        assert_ne!(
+            agent.total_usage.total_tokens,
+            agent.last_usage().unwrap().input_tokens
+        );
+
+        // Wire-level check of the recurrence: the second request is strictly
+        // larger and carries the first turn's tool result (JSON-escaped in the
+        // request body, so unescape newlines before comparing).
+        let captured = bodies.lock().unwrap();
+        assert_eq!(captured.len(), 2);
+        assert!(captured[1].len() > captured[0].len());
+        assert!(captured[1].contains("function_call_output"));
+        let carries_tool_output = captured[1]
+            .replace("\\n", "\n")
+            .contains(&fixture.expected_tool_output);
+        drop(captured);
+        assert!(
+            carries_tool_output,
+            "second request must carry the first turn's tool output"
+        );
+
+        // One session-only TurnUsage audit record per completed turn, in order.
+        let persisted = persisted.lock().unwrap();
+        let turn_usage: Vec<_> = persisted
+            .iter()
+            .filter_map(|record| match record {
+                SessionRecord::TurnUsage(data) => Some(data.clone()),
+                _ => None,
+            })
+            .collect();
+        drop(persisted);
+        assert_eq!(turn_usage.len(), 2);
+        assert_eq!(turn_usage[0].turn, 1);
+        assert_eq!(turn_usage[0].usage.input_tokens, 1000);
+        assert_eq!(turn_usage[1].turn, 2);
+        assert_eq!(turn_usage[1].usage.input_tokens, 1200);
     }
 
     #[tokio::test]
@@ -1416,6 +1637,7 @@ mod error_tests {
             temperature: Some(0.0),
             top_p: None,
             max_output_tokens: Some(128),
+            context_window: None,
             reasoning_effort: None,
             reasoning_summary: None,
             reasoning_max_tokens: None,
@@ -1749,16 +1971,27 @@ mod error_tests {
         }));
 
         let persisted = persisted.lock().unwrap();
-        assert_eq!(persisted.len(), 4);
+        // Each completed turn also persists a session-only `TurnUsage` audit
+        // record, so the persisted list is longer than the streamed records.
+        assert_eq!(persisted.len(), 6);
         assert!(
             persisted
                 .iter()
                 .all(|record| !matches!(record, SessionRecord::TaskComplete { .. }))
         );
-        assert!(matches!(persisted[0], SessionRecord::Message(_)));
-        assert!(matches!(persisted[1], SessionRecord::Reasoning(_)));
-        assert!(matches!(persisted[2], SessionRecord::Message(_)));
-        assert!(matches!(persisted[3], SessionRecord::Message(_)));
+        let conversation: Vec<_> = persisted
+            .iter()
+            .filter(|record| !matches!(record, SessionRecord::TurnUsage(_)))
+            .collect();
+        assert!(matches!(conversation[0], SessionRecord::Message(_)));
+        assert!(matches!(conversation[1], SessionRecord::Reasoning(_)));
+        assert!(matches!(conversation[2], SessionRecord::Message(_)));
+        assert!(matches!(conversation[3], SessionRecord::Message(_)));
+        let turn_usage_count = persisted
+            .iter()
+            .filter(|record| matches!(record, SessionRecord::TurnUsage(_)))
+            .count();
+        assert_eq!(turn_usage_count, 2);
         drop(persisted);
         let streamed = streamed.lock().unwrap();
         assert_eq!(streamed.len(), 4);
