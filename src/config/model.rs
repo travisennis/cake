@@ -89,6 +89,11 @@ pub struct ModelConfig {
     /// Maximum number of output tokens
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<u32>,
+    /// Model context window in input tokens. When set, the agent can compare
+    /// accumulated usage against the window and report the remaining budget.
+    /// Absent means the window is unknown and cake keeps current behavior.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u32>,
     /// Reasoning effort level (none, low, medium, high, xhigh)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<ReasoningEffort>,
@@ -184,6 +189,7 @@ mod tests {
             temperature: Some(0.8),
             top_p: None,
             max_output_tokens: Some(8000),
+            context_window: None,
             reasoning_effort: None,
             reasoning_summary: None,
             reasoning_max_tokens: None,
@@ -234,6 +240,16 @@ mod tests {
         assert_eq!(deserialized.model, config.model);
         assert_eq!(deserialized.api_type, config.api_type);
         assert_eq!(deserialized.base_url, config.base_url);
+        assert_eq!(deserialized.context_window, None);
+    }
+
+    #[test]
+    fn test_model_config_context_window_roundtrip() {
+        let config = test_config(|c| c.context_window = Some(200_000));
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains("\"context_window\":200000"));
+        let deserialized: ModelConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.context_window, Some(200_000));
     }
 
     #[test]

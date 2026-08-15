@@ -201,6 +201,13 @@ impl Agent {
         self
     }
 
+    /// Sets the context window config value (for test fixtures).
+    #[cfg(test)]
+    pub const fn with_context_window(mut self, val: Option<u32>) -> Self {
+        self.config.model_config.context_window = val;
+        self
+    }
+
     /// Sets the reasoning max tokens config value (for test fixtures).
     #[cfg(test)]
     pub const fn with_reasoning_max_tokens(mut self, val: Option<u32>) -> Self {
@@ -246,6 +253,21 @@ impl Agent {
     /// Returns accumulated usage across all API calls.
     pub const fn total_usage(&self) -> &Usage {
         &self.total_usage
+    }
+
+    /// Returns the configured model context window in tokens, if set.
+    pub const fn context_window(&self) -> Option<u32> {
+        self.config.model_config.context_window
+    }
+
+    /// Returns the token budget remaining in the configured context window.
+    ///
+    /// Computed from the accumulated usage across all API calls. `None` when
+    /// no window is configured; never negative when configured (saturates at
+    /// zero once usage meets or exceeds the window).
+    pub fn context_remaining_tokens(&self) -> Option<u64> {
+        self.context_window()
+            .map(|window| u64::from(window).saturating_sub(self.total_usage.total_tokens))
     }
 
     /// Returns the number of API calls made.

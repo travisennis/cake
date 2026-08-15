@@ -1725,6 +1725,7 @@ fn build_request_json_preserves_f32_sampling_fields_on_the_wire() {
             temperature: Some(0.9),
             top_p: Some(0.9),
             max_output_tokens: Some(128),
+            context_window: None,
             reasoning_effort: None,
             reasoning_summary: None,
             reasoning_max_tokens: None,

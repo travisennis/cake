@@ -227,6 +227,7 @@ base_url = "https://example.com"
 api_key_env = "MY_KEY"
 provider = "openrouter"
 provider_headers = { http_referer = "https://example.com/cake", x_title = "cake-test" }
+context_window = 200000
 "#,
     );
 
@@ -248,6 +249,7 @@ provider_headers = { http_referer = "https://example.com/cake", x_title = "cake-
             x_title: Some("cake-test".to_string()),
         })
     );
+    assert_eq!(def.context_window, Some(200_000));
     assert_eq!(def.api_type, ApiType::ChatCompletions);
     assert!(def.providers.is_empty());
     assert_eq!(def.reasoning_effort, None);
@@ -289,6 +291,7 @@ fn test_to_model_config() {
         temperature: Some(0.5),
         top_p: Some(0.9),
         max_output_tokens: Some(4000),
+        context_window: Some(200_000),
         reasoning_effort: Some(ReasoningEffort::High),
         reasoning_summary: Some("concise".to_string()),
         reasoning_max_tokens: Some(8000),
@@ -312,6 +315,7 @@ fn test_to_model_config() {
     assert_eq!(config.temperature, Some(0.5));
     assert_eq!(config.top_p, Some(0.9));
     assert_eq!(config.max_output_tokens, Some(4000));
+    assert_eq!(config.context_window, Some(200_000));
     assert_eq!(config.reasoning_effort, Some(ReasoningEffort::High));
     assert_eq!(config.reasoning_summary, Some("concise".to_string()));
     assert_eq!(config.reasoning_max_tokens, Some(8000));

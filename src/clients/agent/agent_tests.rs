@@ -14,6 +14,7 @@ fn test_resolved_model_config(api_type: ApiType, base_url: &str) -> ResolvedMode
             temperature: None,
             top_p: None,
             max_output_tokens: None,
+            context_window: None,
             reasoning_effort: None,
             reasoning_summary: None,
             reasoning_max_tokens: None,
@@ -162,6 +163,36 @@ fn accumulate_usage_accumulates_across_calls() {
     assert_eq!(agent.total_usage.total_tokens, 300);
     // accumulate_usage no longer increments turn_count; the agent loop does.
     assert_eq!(agent.turn_count, 0);
+}
+
+#[test]
+fn context_remaining_is_none_without_window() {
+    let agent = test_agent();
+    assert_eq!(agent.context_window(), None);
+    assert_eq!(agent.context_remaining_tokens(), None);
+}
+
+#[test]
+fn context_remaining_reports_budget() {
+    let agent = test_agent()
+        .with_context_window(Some(1000))
+        .with_total_usage(Usage {
+            total_tokens: 350,
+            ..Usage::default()
+        });
+    assert_eq!(agent.context_window(), Some(1000));
+    assert_eq!(agent.context_remaining_tokens(), Some(650));
+}
+
+#[test]
+fn context_remaining_saturates_at_zero() {
+    let agent = test_agent()
+        .with_context_window(Some(1000))
+        .with_total_usage(Usage {
+            total_tokens: 2000,
+            ..Usage::default()
+        });
+    assert_eq!(agent.context_remaining_tokens(), Some(0));
 }
 
 #[test]
@@ -1136,6 +1167,7 @@ mod error_tests {
             temperature: Some(0.0),
             top_p: None,
             max_output_tokens: Some(128),
+            context_window: None,
             reasoning_effort: None,
             reasoning_summary: None,
             reasoning_max_tokens: None,

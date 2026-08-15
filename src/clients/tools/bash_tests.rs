@@ -1417,6 +1417,7 @@ fn judge_context(mock_server: &MockServer) -> std::sync::Arc<JudgeContext> {
         temperature: Some(0.0),
         top_p: None,
         max_output_tokens: Some(128),
+        context_window: None,
         reasoning_effort: None,
         reasoning_summary: None,
         reasoning_max_tokens: None,

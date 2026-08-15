@@ -38,6 +38,7 @@ base_url = "https://openrouter.ai/api/v1/"
 api_key_env = "OPENROUTER_API_KEY"
 api_type = "chat_completions"
 max_output_tokens = 8000
+context_window = 200000
 reasoning_effort = "high"
 
 [profiles.review]
@@ -55,7 +56,9 @@ Every model requires:
 - `base_url`: OpenAI-compatible endpoint;
 - `api_key_env`: environment variable containing the credential.
 
-Optional model fields are `api_type` (`chat_completions` or `responses`), `provider`, `provider_headers`, `temperature`, `top_p`, `max_output_tokens`, `reasoning_effort`, `reasoning_summary`, `reasoning_max_tokens`, and `providers`.
+Optional model fields are `api_type` (`chat_completions` or `responses`), `provider`, `provider_headers`, `temperature`, `top_p`, `max_output_tokens`, `context_window`, `reasoning_effort`, `reasoning_summary`, `reasoning_max_tokens`, and `providers`.
+
+`context_window` is the model's input-token budget in tokens. When set, Cake compares the session's accumulated usage against the window after each turn and logs the remaining budget; it also enables future context-window management that must act before a request fails. Absent means the window is unknown and Cake keeps current behavior (recovering from provider context-limit errors by parsing their message text).
 
 Set the selected model explicitly with `--model`, through a selected `--profile`, or with `default_model`. Reasoning and output-token CLI flags override the resolved model for one invocation.
 
