@@ -17,7 +17,7 @@ def run(data: cakelib.Dataset) -> None:
     print_header("TOOL CALLS")
     print(cakelib.describe_window(data))
 
-    all_calls = [(s, c) for s in data.sessions for c in s.tool_calls]
+    all_calls = [(s, c) for s in data.sessions for c in s.tool_calls_in_window(data.cutoff)]
     if not all_calls:
         print("\nNo tool calls in window.")
         return
@@ -49,7 +49,7 @@ def run(data: cakelib.Dataset) -> None:
     for tool in FILE_TOOLS:
         retried = recovered = abandoned = 0
         for s in data.sessions:
-            calls = s.tool_calls
+            calls = s.tool_calls_in_window(data.cutoff)
             for i, c in enumerate(calls):
                 if c.name != tool or c.ok:
                     continue

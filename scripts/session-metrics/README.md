@@ -39,7 +39,8 @@ Run the metrics tests with `just session-metrics-check`.
 
 ## Caveats
 
-- Windowing is by file mtime, so a long-running session counts in the window of its last activity.
+- Windowing attributes records by their own timestamps: tasks by their `task_start` timestamp (joined to `task_complete` by `task_id`, since `task_complete` carries none), tool calls by their `function_call` timestamp. The file mtime is only the fallback for untimestamped/legacy records. A long-running session's old tasks stay in their own window instead of counting in the window of the session's last activity.
+- Sessions whose final task started but never completed (live, crashed, or abandoned) are reported separately in `outcomes.py`; the incomplete task is excluded from the completed-task counts.
 - Transcript tool failures are detected by the `Error` output prefix, matching how the agent loop records failed tool calls; telemetry `was_error` is authoritative for telemetry-covered sessions.
 - Telemetry sidecars only exist for sessions run since sidecar support landed; `overview.py` prints the coverage ratio. Transcript-based sections cover all sessions.
 - Tool failure taxonomy categories are keyed to current tool error message wording (`src/clients/tools/*.rs`); if those messages change, update `classify_tool_error` in `cakelib.py`.

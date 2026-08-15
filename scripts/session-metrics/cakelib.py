@@ -110,6 +110,7 @@ class Session:
     parse_errors: int = 0
 
     _tool_calls: list[ToolCall] | None = field(default=None, repr=False)
+    _task_ts_cache: dict[str, datetime] | None = field(default=None, repr=False)
 
     def by_type(self, *types: str) -> list[dict]:
         return [r for r in self.records if r.get("type") in types]
@@ -119,6 +120,90 @@ class Session:
         if self._tool_calls is None:
             self._tool_calls = pair_tool_calls(self.records)
         return self._tool_calls
+
+    # -- window attribution -------------------------------------------------
+    # Records are attributed to a time window by their own timestamps; the
+    # file mtime is only the fallback for untimestamped/legacy records. A
+    # long-running session's old tasks therefore stay in their own window
+    # instead of counting in the window of the session's last activity.
+
+    def _rec_ts(self, rec: dict) -> datetime:
+        """Record activity time: its own timestamp, else the file mtime."""
+        ts = parse_ts(rec.get("timestamp"))
+        return ts if ts is not None else self.mtime
+
+    @property
+    def last_activity(self) -> datetime:
+        """Latest record timestamp in the session, falling back to file mtime."""
+        latest: datetime | None = None
+        for rec in self.records:
+            ts = parse_ts(rec.get("timestamp"))
+            if ts is not None and (latest is None or ts > latest):
+                latest = ts
+        return latest if latest is not None else self.mtime
+
+    @property
+    def inflight(self) -> bool:
+        """The final task_start has no matching task_complete: the session is
+        live, crashed, or was abandoned mid-task. The incomplete task is not
+        counted as completed and is reported separately by outcomes.py."""
+        completed = {
+            rec.get("task_id") for rec in self.records
+            if rec.get("type") == "task_complete"
+        }
+        last_start = None
+        for rec in self.records:
+            if rec.get("type") == "task_start":
+                last_start = rec.get("task_id")
+        return last_start is not None and last_start not in completed
+
+    def _task_start_times(self) -> dict[str, datetime]:
+        """Map task_id -> task_start timestamp, computed once per session."""
+        if self._task_ts_cache is None:
+            self._task_ts_cache = {
+                rec.get("task_id"): self._rec_ts(rec)
+                for rec in self.records if rec.get("type") == "task_start"
+            }
+        return self._task_ts_cache
+
+    def tasks_in_window(self, cutoff: datetime | None) -> list[dict]:
+        """Task outcome records (task_complete/result) attributed to the window.
+
+        task_complete records carry no timestamp, so attribution uses the
+        matching task_start timestamp (by task_id); legacy result records use
+        their own timestamp. Falls back to the file mtime when neither exists.
+        """
+        start_times = self._task_start_times()
+        out = []
+        for rec in self.by_type("task_complete", "result"):
+            if rec.get("type") == "task_complete":
+                ts = start_times.get(rec.get("task_id")) or parse_ts(rec.get("timestamp"))
+            else:
+                ts = parse_ts(rec.get("timestamp"))
+            ts = ts if ts is not None else self.mtime
+            if cutoff is None or ts >= cutoff:
+                out.append(rec)
+        return out
+
+    def records_in_window(self, cutoff: datetime | None, *types: str) -> list[dict]:
+        """Records of the given types whose timestamp is in the window."""
+        out = []
+        for rec in self.by_type(*types):
+            ts = parse_ts(rec.get("timestamp"))
+            ts = ts if ts is not None else self.mtime
+            if cutoff is None or ts >= cutoff:
+                out.append(rec)
+        return out
+
+    def tool_calls_in_window(self, cutoff: datetime | None) -> list[ToolCall]:
+        """Paired tool calls whose function_call timestamp is in the window."""
+        out = []
+        for call in self.tool_calls:
+            ts = parse_ts(call.timestamp)
+            ts = ts if ts is not None else self.mtime
+            if cutoff is None or ts >= cutoff:
+                out.append(call)
+        return out
 
 
 @dataclass
@@ -235,6 +320,13 @@ def load_sessions(
                 if t == "session_meta":
                     session.cake_version = rec.get("cake_version", session.cake_version)
                 break
+
+        # Window membership is by record timestamps, not file mtime: a file
+        # whose mtime was touched (or restored) without recent records is not
+        # in the window. Sessions without record timestamps fall back to the
+        # old mtime behavior via last_activity.
+        if cutoff is not None and session.last_activity < cutoff:
+            continue
 
         if model_filter and model_filter not in session.model:
             continue
