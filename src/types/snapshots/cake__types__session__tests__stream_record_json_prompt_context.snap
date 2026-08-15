@@ -1,0 +1,12 @@
+---
+source: src/types/session_tests.rs
+expression: "serde_json::to_value(record).unwrap()"
+---
+{
+  "content": "Use the project instructions.",
+  "role": "developer",
+  "session_id": "550e8400-e29b-41d4-a716-446655440000",
+  "task_id": "550e8400-e29b-41d4-a716-446655440001",
+  "timestamp": "2026-05-10T12:34:56Z",
+  "type": "prompt_context"
+}

@@ -211,6 +211,14 @@
       "crap": 12.28125
     },
     {
+      "file": "./src/types/session.rs",
+      "function": "SessionRecord::from",
+      "line": 461,
+      "cyclomatic": 12.0,
+      "coverage": 96.36363636363636,
+      "crap": 12.00692411720511
+    },
+    {
       "file": "./src/clients/agent_state.rs",
       "function": "ConversationState::append_developer_context",
       "line": 33,
@@ -294,6 +302,14 @@
       "file": "./src/clients/tools/sandbox/macos.rs",
       "function": "MacOsSandbox::generate_profile",
       "line": 240,
+      "cyclomatic": 11.0,
+      "coverage": 100.0,
+      "crap": 11.0
+    },
+    {
+      "file": "./src/types/session.rs",
+      "function": "StreamRecord::from",
+      "line": 527,
       "cyclomatic": 11.0,
       "coverage": 100.0,
       "crap": 11.0
@@ -521,14 +537,6 @@
       "cyclomatic": 8.0,
       "coverage": 88.88888888888889,
       "crap": 8.087791495198903
-    },
-    {
-      "file": "./src/types/session.rs",
-      "function": "SessionRecord::from",
-      "line": 392,
-      "cyclomatic": 8.0,
-      "coverage": 90.0,
-      "crap": 8.064
     },
     {
       "file": "./src/config/worktree.rs",
@@ -777,6 +785,14 @@
       "cyclomatic": 5.0,
       "coverage": 60.0,
       "crap": 6.6000000000000005
+    },
+    {
+      "file": "./src/cli/mod.rs",
+      "function": "Commands::dispatch",
+      "line": 61,
+      "cyclomatic": 6.0,
+      "coverage": 75.0,
+      "crap": 6.5625
     },
     {
       "file": "./src/hooks.rs",
@@ -1030,6 +1046,14 @@
       "file": "./src/main.rs",
       "function": "CodingAssistant::attach_persistence",
       "line": 666,
+      "cyclomatic": 6.0,
+      "coverage": 100.0,
+      "crap": 6.0
+    },
+    {
+      "file": "./src/exit_code.rs",
+      "function": "classify_typed_error",
+      "line": 69,
       "cyclomatic": 6.0,
       "coverage": 100.0,
       "crap": 6.0
@@ -1409,14 +1433,6 @@
       "cyclomatic": 4.0,
       "coverage": 76.0,
       "crap": 4.221184
-    },
-    {
-      "file": "./src/cli/mod.rs",
-      "function": "Commands::dispatch",
-      "line": 57,
-      "cyclomatic": 5.0,
-      "coverage": 72.72727272727273,
-      "crap": 5.507137490608565
     },
     {
       "file": "./src/types/conversation.rs",
@@ -1849,14 +1865,6 @@
       "cyclomatic": 4.0,
       "coverage": 100.0,
       "crap": 4.0
-    },
-    {
-      "file": "./src/exit_code.rs",
-      "function": "classify_typed_error",
-      "line": 69,
-      "cyclomatic": 5.0,
-      "coverage": 100.0,
-      "crap": 5.0
     },
     {
       "file": "./src/session_telemetry.rs",

@@ -1261,6 +1261,7 @@ async fn main() -> std::process::ExitCode {
     let options = CommandRunOptions {
         model: args.model.as_deref(),
         profile: args.profile.as_deref(),
+        output_format: args.output_format,
     };
     match args.run(&data_dir, &options).await {
         Ok(()) => std::process::ExitCode::from(exit_code::code::SUCCESS),

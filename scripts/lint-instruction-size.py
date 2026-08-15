@@ -84,7 +84,12 @@ BUDGETS = {
     # additive CLI surface whose stdout and exit-3 refusal contract belongs
     # in the integration authority; the document sat exactly at 1800 with no
     # headroom, so it follows the same count-plus-50 convention.
-    "docs/integrations.md": 1900,
+    # Raised 1900 -> 2000 on 2026-08-14: issue #59 adds `cake replay`, an
+    # additive CLI surface whose stream-json contract and error/exit protocol
+    # belong in the integration authority. The section displaced ~110 words
+    # of redundancy (bullet list collapsed to inline protocol) and still
+    # lands over the budget, so it follows the same count-plus-50 convention.
+    "docs/integrations.md": 2000,
     # Raised 1500 -> 1650 on 2026-08-14: issue #67 documents `cake init`
     # project scaffolding, which the document must describe as an explicit
     # configuration entry point; it sat exactly at the 1500 default with no
