@@ -1,5 +1,6 @@
 use super::*;
 use crate::config::model::{ApiType, ResolvedModelConfig};
+use crate::config::settings::{Limit, LimitsSettings};
 use crate::types::{InputTokensDetails, OutputTokensDetails};
 
 fn test_resolved_model_config(api_type: ApiType, base_url: &str) -> ResolvedModelConfig {
@@ -713,6 +714,68 @@ mod error_tests {
         })
     }
 
+    /// A tool-call turn carrying assistant text, so a limit can surface a
+    /// partial result.
+    fn limit_tool_call_with_text_response() -> serde_json::Value {
+        serde_json::json!({
+            "id": "resp-tool",
+            "output": [
+                {
+                    "type": "message",
+                    "id": "msg-1",
+                    "status": "completed",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": "I'll inspect the workspace."
+                        }
+                    ]
+                },
+                {
+                    "type": "function_call",
+                    "id": "fc-1",
+                    "call_id": "call-1",
+                    "name": "Bash",
+                    "arguments": "{\"command\":\"printf unsafe\"}"
+                }
+            ],
+            "usage": {
+                "input_tokens": 1,
+                "output_tokens": 1,
+                "total_tokens": 2
+            }
+        })
+    }
+
+    /// A turn requesting a tool-call batch larger than one, so a tool-call
+    /// limit can stop the loop before any call in the batch executes.
+    fn limit_two_tool_call_response() -> serde_json::Value {
+        serde_json::json!({
+            "id": "resp-tool",
+            "output": [
+                {
+                    "type": "function_call",
+                    "id": "fc-1",
+                    "call_id": "call-1",
+                    "name": "Bash",
+                    "arguments": "{\"command\":\"printf unsafe\"}"
+                },
+                {
+                    "type": "function_call",
+                    "id": "fc-2",
+                    "call_id": "call-2",
+                    "name": "Bash",
+                    "arguments": "{\"command\":\"printf unsafe\"}"
+                }
+            ],
+            "usage": {
+                "input_tokens": 1,
+                "output_tokens": 1,
+                "total_tokens": 2
+            }
+        })
+    }
+
     fn loop_final_response() -> serde_json::Value {
         serde_json::json!({
             "id": "resp-final",
@@ -959,6 +1022,223 @@ mod error_tests {
             &fixture.expected_tool_output,
         );
         assert_agent_loop_stream_records(&stream_records(&streamed));
+    }
+
+    #[tokio::test]
+    async fn max_turns_limit_stops_tool_calling_loop_and_surfaces_partial_result() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(limit_tool_call_with_text_response()),
+            )
+            .expect(1)
+            .up_to_n_times(1)
+            .mount(&mock_server)
+            .await;
+
+        let mut agent = test_agent_with_url(&mock_server.uri()).with_limits(&LimitsSettings {
+            max_turns: Some(Limit::max(1)),
+            max_tool_calls: None,
+        });
+
+        let error = agent.send("run a command".to_string()).await.unwrap_err();
+        let limit_error = error
+            .downcast_ref::<crate::types::LimitExceededError>()
+            .expect("the loop must stop with a limit-exceeded error");
+
+        assert_eq!(limit_error.limit, "max_turns");
+        assert!(limit_error.detail.contains("max_turns limit exceeded"));
+        assert_eq!(agent.turn_count, 1);
+        assert_eq!(agent.tool_call_count, 0);
+        // The turn requested tools and carried text; the text is surfaced as
+        // the partial result instead of being discarded.
+        assert_eq!(
+            limit_error.result.as_deref(),
+            Some("I'll inspect the workspace.")
+        );
+    }
+
+    #[tokio::test]
+    async fn max_turns_limit_does_not_leak_prior_task_text_as_partial_result() {
+        // A resumed session restores the prior task's conversation. When the
+        // limit fires before this invocation produces assistant text, the
+        // partial result must be None, never the previous task's answer.
+        let restored = vec![
+            ConversationItem::Message {
+                role: Role::User,
+                content: "earlier prompt".to_string(),
+                id: None,
+                status: None,
+                timestamp: None,
+            },
+            ConversationItem::Message {
+                role: Role::Assistant,
+                content: "previous task's answer".to_string(),
+                id: None,
+                status: None,
+                timestamp: None,
+            },
+        ];
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(success_response()))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+
+        let mut agent = test_agent_with_url(&mock_server.uri())
+            .with_history(restored)
+            .unwrap()
+            .with_limits(&LimitsSettings {
+                max_turns: Some(Limit::max(0)),
+                max_tool_calls: None,
+            });
+
+        let error = agent.send("new prompt".to_string()).await.unwrap_err();
+        let limit_error = error
+            .downcast_ref::<crate::types::LimitExceededError>()
+            .expect("the loop must stop with a limit-exceeded error");
+
+        assert_eq!(limit_error.limit, "max_turns");
+        assert_eq!(limit_error.result, None);
+    }
+
+    #[tokio::test]
+    async fn max_turns_limit_allows_final_answer_on_last_turn() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(success_response()))
+            .expect(1)
+            .up_to_n_times(1)
+            .mount(&mock_server)
+            .await;
+
+        let mut agent = test_agent_with_url(&mock_server.uri()).with_limits(&LimitsSettings {
+            max_turns: Some(Limit::max(1)),
+            max_tool_calls: None,
+        });
+
+        let result = agent.send("hello".to_string()).await.unwrap();
+        assert_eq!(result, "Hello!");
+        assert_eq!(agent.turn_count, 1);
+        assert_eq!(agent.tool_call_count, 0);
+    }
+
+    #[tokio::test]
+    async fn max_tool_calls_limit_stops_before_oversized_batch() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(limit_two_tool_call_response()))
+            .expect(1)
+            .up_to_n_times(1)
+            .mount(&mock_server)
+            .await;
+
+        let mut agent = test_agent_with_url(&mock_server.uri()).with_limits(&LimitsSettings {
+            max_turns: None,
+            max_tool_calls: Some(Limit::max(1)),
+        });
+
+        let error = agent.send("run a command".to_string()).await.unwrap_err();
+        let limit_error = error
+            .downcast_ref::<crate::types::LimitExceededError>()
+            .expect("the loop must stop with a limit-exceeded error");
+
+        assert_eq!(limit_error.limit, "max_tool_calls");
+        assert!(limit_error.detail.contains("max_tool_calls limit exceeded"));
+        // The two-call batch exceeds the one-call cap, so no call runs.
+        assert_eq!(agent.turn_count, 1);
+        assert_eq!(agent.tool_call_count, 0);
+    }
+
+    #[tokio::test]
+    async fn max_tool_calls_limit_stops_after_cap_reached_across_turns() {
+        let mock_server = MockServer::start().await;
+        let fixture = loop_fixture();
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .and(body_partial_json(serde_json::json!({
+                "input": [
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_text",
+                                "text": "run a command"
+                            }
+                        ]
+                    }
+                ]
+            })))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(loop_tool_call_response(&fixture.read_arguments)),
+            )
+            .expect(1)
+            .up_to_n_times(1)
+            .mount(&mock_server)
+            .await;
+
+        // The second turn also requests a tool, which would push past the
+        // one-call cap, so the loop stops without executing it.
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .and(FunctionCallOutputMatcher {
+                call_id: "call-1".to_string(),
+                output: fixture.expected_tool_output.clone(),
+            })
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(loop_tool_call_response(&fixture.read_arguments)),
+            )
+            .expect(1)
+            .up_to_n_times(1)
+            .mount(&mock_server)
+            .await;
+
+        let mut agent = test_agent_with_url(&mock_server.uri())
+            .with_tools(crate::clients::tools::read_tool_registry())
+            .with_limits(&LimitsSettings {
+                max_turns: None,
+                max_tool_calls: Some(Limit::max(1)),
+            });
+
+        let error = agent.send("run a command".to_string()).await.unwrap_err();
+        let limit_error = error
+            .downcast_ref::<crate::types::LimitExceededError>()
+            .expect("the loop must stop with a limit-exceeded error");
+
+        assert_eq!(limit_error.limit, "max_tool_calls");
+        // Exactly one Read ran (the first turn); the second turn's call was
+        // never executed.
+        assert_eq!(agent.turn_count, 2);
+        assert_eq!(agent.tool_call_count, 1);
+    }
+
+    #[tokio::test]
+    async fn limits_default_to_unlimited_loop() {
+        let mock_server = MockServer::start().await;
+        let fixture = loop_fixture();
+        mount_agent_loop_mocks(
+            &mock_server,
+            &fixture.read_arguments,
+            &fixture.expected_tool_output,
+        )
+        .await;
+
+        let mut agent = test_agent_with_url(&mock_server.uri())
+            .with_tools(crate::clients::tools::read_tool_registry())
+            .with_limits(&LimitsSettings::default());
+
+        let result = agent.send("run a command".to_string()).await.unwrap();
+        assert_eq!(result, "done");
+        assert_eq!(agent.turn_count, 2);
+        assert_eq!(agent.tool_call_count, 1);
     }
 
     #[tokio::test]

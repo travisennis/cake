@@ -355,12 +355,12 @@ impl HookRunner {
         Ok(join_context(&result.additional_context))
     }
 
-    pub async fn error_occurred(&self, error: &anyhow::Error) -> anyhow::Result<()> {
+    pub async fn error_occurred(&self, message: &str) -> anyhow::Result<()> {
         let payload = self.payload(
             HookEvent::ErrorOccurred,
             json!({
                 "error": {
-                    "message": error.to_string(),
+                    "message": message,
                     "name": "Error",
                 }
             }),

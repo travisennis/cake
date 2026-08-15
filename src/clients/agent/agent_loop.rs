@@ -15,11 +15,17 @@ use crate::session_telemetry::{
     AgentRunnerTelemetryEvent, CompensationEventTelemetry, CompensationKind,
     RetryScheduledTelemetry, TerminationClassification, ToolCallTelemetry,
 };
-use crate::types::{ConversationItem, CutOffError, SessionRecord};
+use crate::types::{ConversationItem, CutOffError, LimitExceededError, SessionRecord};
 
 /// Maximum number of corrective turns after a final message fails
 /// output-schema validation.
 const MAX_SCHEMA_CORRECTION_TURNS: u32 = 2;
+
+/// The `max_turns` settings key.
+const LIMIT_MAX_TURNS: &str = "max_turns";
+
+/// The `max_tool_calls` settings key.
+const LIMIT_MAX_TOOL_CALLS: &str = "max_tool_calls";
 
 pub(super) const SEMANTIC_RECOVERY_PROMPT: &str = "Your previous response ended before providing a final \
 answer. Continue from the existing conversation and provide the final answer now. Do not repeat \
@@ -116,6 +122,10 @@ impl Agent {
     /// Returns an error if the API request fails, the response cannot be parsed,
     /// or a tool execution fails critically.
     pub async fn send(&mut self, content: String) -> anyhow::Result<String> {
+        // Items at or after this index belong to the current invocation; a
+        // resumed session's prior tasks must never contribute to this task's
+        // partial result.
+        let invocation_start = self.conversation.history().len();
         let user_item = self.conversation.push_user_message(content);
         self.stream_item(&user_item)?;
 
@@ -128,6 +138,11 @@ impl Agent {
 
         // Agent loop: continue until model stops making tool calls
         loop {
+            // Stop before starting another turn when a user-configured
+            // limit has already been consumed (for example after a
+            // schema-correction continue).
+            self.enforce_limits(0, invocation_start)?;
+
             let provider_turn_start = self.conversation.history().len();
             let TurnResult {
                 items,
@@ -225,11 +240,99 @@ impl Agent {
                 );
             }
 
+            // Stop before executing a turn's tool calls when the turn
+            // already consumed the turn budget or the batch would exceed the
+            // tool-call budget: executing them could never lead to a final
+            // answer within the configured limits.
+            self.enforce_limits(function_calls.len(), invocation_start)?;
+
             let results = self.execute_function_calls(function_calls).await?;
             self.record_tool_results(results)?;
 
             // Loop continues - send next request with tool results included
         }
+    }
+
+    /// Stop the loop with a [`LimitExceededError`] when a user-configured
+    /// limit has been reached.
+    fn enforce_limits(
+        &self,
+        pending_tool_calls: usize,
+        invocation_start: usize,
+    ) -> anyhow::Result<()> {
+        if let Some(error) = self.limit_exceeded_if_reached(pending_tool_calls, invocation_start) {
+            return Err(error.into());
+        }
+        Ok(())
+    }
+
+    /// Whether a user-configured limit has been reached, and the error that
+    /// stops the loop when it has.
+    ///
+    /// `pending_tool_calls` is the size of the tool batch the current turn
+    /// is about to execute; `0` at the top of the loop, where no batch is
+    /// pending. `invocation_start` bounds the partial-result lookup to the
+    /// current invocation. The turn limit fires once `turn_count` reaches
+    /// it; the tool-call limit fires when executing the pending batch would
+    /// push `tool_call_count` past it, so a batch that cannot complete
+    /// within the budget is never started.
+    fn limit_exceeded_if_reached(
+        &self,
+        pending_tool_calls: usize,
+        invocation_start: usize,
+    ) -> Option<LimitExceededError> {
+        if let Some(limit) = self.max_turns
+            && self.turn_count >= limit
+        {
+            return Some(self.limit_exceeded_error(
+                LIMIT_MAX_TURNS,
+                limit,
+                self.turn_count,
+                invocation_start,
+            ));
+        }
+        if let Some(limit) = self.max_tool_calls {
+            let projected = self
+                .tool_call_count
+                .saturating_add(u32::try_from(pending_tool_calls).unwrap_or(u32::MAX));
+            if projected > limit {
+                return Some(self.limit_exceeded_error(
+                    LIMIT_MAX_TOOL_CALLS,
+                    limit,
+                    self.tool_call_count,
+                    invocation_start,
+                ));
+            }
+        }
+        None
+    }
+
+    /// Build a [`LimitExceededError`] naming the limit that fired, carrying
+    /// the last assistant message of the current invocation (if any) as the
+    /// partial result.
+    fn limit_exceeded_error(
+        &self,
+        limit: &str,
+        limit_value: u32,
+        count: u32,
+        invocation_start: usize,
+    ) -> LimitExceededError {
+        let detail = match limit {
+            LIMIT_MAX_TURNS => {
+                format!("max_turns limit exceeded after {count} turns (max_turns = {limit_value})")
+            },
+            LIMIT_MAX_TOOL_CALLS => format!(
+                "max_tool_calls limit exceeded after {count} tool calls \
+                 (max_tool_calls = {limit_value})"
+            ),
+            _ => unreachable!("unknown limit kind: {limit}"),
+        };
+        LimitExceededError::new(
+            limit.to_string(),
+            detail,
+            self.conversation
+                .resolve_assistant_message_from(invocation_start),
+        )
     }
 
     async fn execute_function_calls(

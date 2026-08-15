@@ -273,6 +273,99 @@ fn task_outcome_cut_off_requires_error() {
 }
 
 #[test]
+fn task_outcome_serializes_limit_exceeded() {
+    let record = StreamRecord::TaskComplete(TaskCompleteData {
+        outcome: TaskOutcome::LimitExceeded {
+            limit: "max_turns".to_string(),
+            detail: "max_turns limit exceeded after 5 turns (max_turns = 5)".to_string(),
+            result: Some("partial work".to_string()),
+        },
+        duration_ms: 500,
+        turn_count: 5,
+        tool_call_count: 3,
+        session_id: "session-1".to_string(),
+        task_id: "task-1".to_string(),
+        usage: Usage::default(),
+        permission_denials: None,
+    });
+
+    let json = serde_json::to_value(&record).unwrap();
+    assert_eq!(json["type"], "task_complete");
+    assert_eq!(json["subtype"], "limit_exceeded");
+    assert_eq!(json["is_error"], true);
+    assert_eq!(json["limit"], "max_turns");
+    assert_eq!(
+        json["error"],
+        "max_turns limit exceeded after 5 turns (max_turns = 5)"
+    );
+    assert_eq!(json["result"], "partial work");
+    assert!(json.get("success").is_none());
+}
+
+#[test]
+fn task_outcome_deserializes_limit_exceeded() {
+    let json = serde_json::json!({
+        "type": "task_complete",
+        "subtype": "limit_exceeded",
+        "is_error": true,
+        "limit": "max_tool_calls",
+        "error": "max_tool_calls limit exceeded after 2 tool calls (max_tool_calls = 3)",
+        "result": "partial work",
+        "duration_ms": 500,
+        "turn_count": 2,
+        "tool_call_count": 2,
+        "session_id": "session-1",
+        "task_id": "task-1",
+        "usage": Usage::default()
+    });
+
+    let record = serde_json::from_value::<StreamRecord>(json).unwrap();
+    assert!(matches!(
+        record,
+        StreamRecord::TaskComplete(TaskCompleteData {
+            outcome: TaskOutcome::LimitExceeded { limit, detail, result },
+            ..
+        }) if limit == "max_tool_calls"
+            && detail == "max_tool_calls limit exceeded after 2 tool calls (max_tool_calls = 3)"
+            && result.as_deref() == Some("partial work")
+    ));
+}
+
+#[test]
+fn task_outcome_limit_exceeded_requires_limit_and_error() {
+    let json = serde_json::json!({
+        "type": "task_complete",
+        "subtype": "limit_exceeded",
+        "is_error": true,
+        "duration_ms": 500,
+        "turn_count": 1,
+        "tool_call_count": 0,
+        "session_id": "session-1",
+        "task_id": "task-1",
+        "usage": Usage::default()
+    });
+
+    let err = serde_json::from_value::<StreamRecord>(json).unwrap_err();
+    assert!(err.to_string().contains("requires limit"));
+
+    let json = serde_json::json!({
+        "type": "task_complete",
+        "subtype": "limit_exceeded",
+        "is_error": true,
+        "limit": "max_turns",
+        "duration_ms": 500,
+        "turn_count": 1,
+        "tool_call_count": 0,
+        "session_id": "session-1",
+        "task_id": "task-1",
+        "usage": Usage::default()
+    });
+
+    let err = serde_json::from_value::<StreamRecord>(json).unwrap_err();
+    assert!(err.to_string().contains("requires error"));
+}
+
+#[test]
 fn task_outcome_deserializes_legacy_success_field() {
     let json = serde_json::json!({
         "type": "task_complete",
@@ -769,6 +862,34 @@ fn snapshot_session_json_task_complete() {
     });
 
     insta::assert_json_snapshot!("session_json_task_complete", session_record_json(record));
+}
+
+#[test]
+fn snapshot_session_json_limit_exceeded() {
+    let record = SessionRecord::TaskComplete(TaskCompleteData {
+        outcome: TaskOutcome::LimitExceeded {
+            limit: "max_turns".to_string(),
+            detail: "max_turns limit exceeded after 5 turns (max_turns = 5)".to_string(),
+            result: Some("I'll inspect the workspace.".to_string()),
+        },
+        duration_ms: 1_250,
+        turn_count: 5,
+        tool_call_count: 3,
+        session_id: fixed_session_id(),
+        task_id: fixed_task_id(),
+        usage: Usage {
+            input_tokens: 100,
+            input_tokens_details: InputTokensDetails { cached_tokens: 25 },
+            output_tokens: 50,
+            output_tokens_details: OutputTokensDetails {
+                reasoning_tokens: 10,
+            },
+            total_tokens: 150,
+        },
+        permission_denials: None,
+    });
+
+    insta::assert_json_snapshot!("session_json_limit_exceeded", session_record_json(record));
 }
 
 #[test]

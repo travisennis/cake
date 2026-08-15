@@ -80,6 +80,14 @@ fn initialize_creates_behavior_preserving_settings() {
         content.contains("allowlist"),
         "generated settings must document the judge allowlist key"
     );
+    assert!(
+        content.contains("[limits]"),
+        "generated settings must reference the limits vocabulary"
+    );
+    assert!(
+        content.contains("\"unlimited\""),
+        "generated settings must document the unlimited opt-out"
+    );
 }
 
 #[test]

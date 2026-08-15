@@ -142,6 +142,17 @@ impl CliOutputSink {
                 // subtype.
                 if e.downcast_ref::<crate::types::CutOffError>().is_some() {
                     json["subtype"] = serde_json::json!("cut_off");
+                } else if let Some(limit_exceeded) =
+                    e.downcast_ref::<crate::types::LimitExceededError>()
+                {
+                    json["subtype"] = serde_json::json!("limit_exceeded");
+                    // Match the task_complete record: the error carries the
+                    // concise detail and the partial result is surfaced in the
+                    // result position, not embedded in the error text. An
+                    // absent partial result serializes as null, like other
+                    // errors.
+                    json["error"] = serde_json::json!(limit_exceeded.detail);
+                    json["result"] = serde_json::json!(limit_exceeded.result);
                 }
             },
         }
