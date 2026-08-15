@@ -30,6 +30,9 @@ pub enum TaskCompleteSubtype {
     ErrorOutputSchema,
     Interrupted,
     CutOff,
+    /// The agent loop stopped because a user-configured `max_turns` or
+    /// `max_tool_calls` limit was reached.
+    LimitExceeded,
 }
 
 /// Outcome of a completed task.
@@ -53,6 +56,18 @@ pub enum TaskOutcome {
     CutOff {
         detail: String,
     },
+    /// The agent loop stopped because a user-configured `max_turns` or
+    /// `max_tool_calls` limit was reached. `result` carries the partial
+    /// result (the last assistant message, if any) so completed work is not
+    /// discarded.
+    LimitExceeded {
+        /// The settings key that fired: `max_turns` or `max_tool_calls`.
+        limit: String,
+        /// Human-readable detail naming the limit.
+        detail: String,
+        /// The last assistant message produced before the limit fired, if any.
+        result: Option<String>,
+    },
 }
 
 impl TaskOutcome {
@@ -68,6 +83,7 @@ const fn task_outcome_subtype(outcome: &TaskOutcome) -> TaskCompleteSubtype {
         TaskOutcome::ErrorOutputSchema { .. } => TaskCompleteSubtype::ErrorOutputSchema,
         TaskOutcome::Interrupted => TaskCompleteSubtype::Interrupted,
         TaskOutcome::CutOff { .. } => TaskCompleteSubtype::CutOff,
+        TaskOutcome::LimitExceeded { .. } => TaskCompleteSubtype::LimitExceeded,
     }
 }
 
@@ -79,6 +95,8 @@ struct TaskOutcomeFields<'a> {
     result: Option<&'a str>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     error: Option<&'a str>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    limit: Option<&'a str>,
 }
 
 #[derive(Deserialize)]
@@ -92,6 +110,8 @@ struct OwnedTaskOutcomeFields {
     result: Option<String>,
     #[serde(default)]
     error: Option<String>,
+    #[serde(default)]
+    limit: Option<String>,
 }
 
 impl Serialize for TaskOutcome {
@@ -105,6 +125,7 @@ impl Serialize for TaskOutcome {
                 is_error: self.is_error(),
                 result: result.as_deref(),
                 error: None,
+                limit: None,
             },
             Self::ErrorDuringExecution { error }
             | Self::ErrorOutputSchema { error }
@@ -113,12 +134,25 @@ impl Serialize for TaskOutcome {
                 is_error: self.is_error(),
                 result: None,
                 error: Some(error),
+                limit: None,
             },
             Self::Interrupted => TaskOutcomeFields {
                 subtype: task_outcome_subtype(self),
                 is_error: self.is_error(),
                 result: None,
                 error: None,
+                limit: None,
+            },
+            Self::LimitExceeded {
+                limit,
+                detail,
+                result,
+            } => TaskOutcomeFields {
+                subtype: task_outcome_subtype(self),
+                is_error: self.is_error(),
+                result: result.as_deref(),
+                error: Some(detail),
+                limit: Some(limit),
             },
         };
 
@@ -148,11 +182,16 @@ impl OwnedTaskOutcomeFields {
     }
 }
 
-fn required_task_error<E: serde::de::Error>(
-    error: Option<String>,
+fn required_task_field<E: serde::de::Error>(
+    value: Option<String>,
     subtype: &str,
+    field: &str,
 ) -> Result<String, E> {
-    error.ok_or_else(|| E::custom(format!("task completion {subtype} outcome requires error")))
+    value.ok_or_else(|| {
+        E::custom(format!(
+            "task completion {subtype} outcome requires {field}"
+        ))
+    })
 }
 
 impl<'de> Deserialize<'de> for TaskOutcome {
@@ -168,14 +207,27 @@ impl<'de> Deserialize<'de> for TaskOutcome {
                 result: fields.result,
             }),
             TaskCompleteSubtype::ErrorDuringExecution => Ok(Self::ErrorDuringExecution {
-                error: required_task_error::<D::Error>(fields.error, "error_during_execution")?,
+                error: required_task_field::<D::Error>(
+                    fields.error,
+                    "error_during_execution",
+                    "error",
+                )?,
             }),
             TaskCompleteSubtype::ErrorOutputSchema => Ok(Self::ErrorOutputSchema {
-                error: required_task_error::<D::Error>(fields.error, "error_output_schema")?,
+                error: required_task_field::<D::Error>(
+                    fields.error,
+                    "error_output_schema",
+                    "error",
+                )?,
             }),
             TaskCompleteSubtype::Interrupted => Ok(Self::Interrupted),
             TaskCompleteSubtype::CutOff => Ok(Self::CutOff {
-                detail: required_task_error::<D::Error>(fields.error, "cut_off")?,
+                detail: required_task_field::<D::Error>(fields.error, "cut_off", "error")?,
+            }),
+            TaskCompleteSubtype::LimitExceeded => Ok(Self::LimitExceeded {
+                limit: required_task_field::<D::Error>(fields.limit, "limit_exceeded", "limit")?,
+                detail: required_task_field::<D::Error>(fields.error, "limit_exceeded", "error")?,
+                result: fields.result,
             }),
         }
     }
@@ -202,6 +254,43 @@ impl fmt::Display for CutOffError {
 }
 
 impl std::error::Error for CutOffError {}
+
+/// Error returned when the agent loop stops because a user-configured
+/// `max_turns` or `max_tool_calls` limit was reached.
+///
+/// `result` carries the partial result (the last assistant message, if any)
+/// so completed work is surfaced rather than discarded.
+#[derive(Debug, Clone)]
+pub struct LimitExceededError {
+    /// The settings key that fired: `max_turns` or `max_tool_calls`.
+    pub limit: String,
+    /// Human-readable detail naming the limit.
+    pub detail: String,
+    /// The last assistant message produced before the limit fired, if any.
+    pub result: Option<String>,
+}
+
+impl LimitExceededError {
+    pub const fn new(limit: String, detail: String, result: Option<String>) -> Self {
+        Self {
+            limit,
+            detail,
+            result,
+        }
+    }
+}
+
+impl fmt::Display for LimitExceededError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.detail)?;
+        if let Some(result) = &self.result {
+            write!(f, "\n\nPartial result:\n{result}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for LimitExceededError {}
 
 /// Shared data for `TaskStart` records in both `StreamRecord` and `SessionRecord`.
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -385,14 +474,60 @@ pub enum SessionRecord {
     TurnUsage(TurnUsageData),
 }
 
-/// A single line in `--output-format stream-json` output for the current task.
+/// Machine-readable category for a `replay_error` stream record.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplayErrorKind {
+    /// The `--output-format` is not `stream-json`.
+    OutputFormat,
+    /// The session UUID argument is not a valid UUID.
+    InvalidUuid,
+    /// No session file exists for the UUID.
+    SessionNotFound,
+    /// The session file is unreadable or its records are corrupt.
+    Corrupt,
+    /// The session file's format version is unsupported.
+    UnsupportedFormat,
+    /// The session file could not be opened (permission denied).
+    Permission,
+}
+
+/// A single line in `--output-format stream-json` output.
 ///
-/// This intentionally excludes `session_meta`, so live stream output cannot be
-/// mistaken for a complete resumable session file.
+/// Live streams emit only task-scoped records and intentionally exclude
+/// `session_meta` and `prompt_context`, so live output cannot be mistaken for a
+/// complete resumable session file. `cake replay` reuses the same vocabulary
+/// and additionally emits `session_meta`, `prompt_context`, `skill_activated`,
+/// and, on failure, `replay_error`. New variants and fields are additive.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StreamRecord {
+    SessionMeta {
+        format_version: u32,
+        session_id: String,
+        /// Timestamp when the session was created.
+        timestamp: DateTime<Utc>,
+        working_directory: PathBuf,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        tools: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cake_version: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        system_prompt: Option<String>,
+        #[serde(default)]
+        git: GitState,
+    },
+
     TaskStart(TaskStartData),
+
+    PromptContext {
+        session_id: String,
+        task_id: String,
+        role: Role,
+        content: String,
+        timestamp: DateTime<Utc>,
+    },
 
     Message(MessageData),
 
@@ -400,23 +535,164 @@ pub enum StreamRecord {
 
     FunctionCallOutput(FunctionCallOutputData),
 
-    Reasoning(ReasoningData),
+    SkillActivated {
+        session_id: String,
+        task_id: String,
+        timestamp: DateTime<Utc>,
+        name: String,
+        path: PathBuf,
+    },
 
     HookEvent(HookEventData),
 
+    Reasoning(ReasoningData),
+
     TaskComplete(TaskCompleteData),
+
+    /// Structured failure emitted by `cake replay` before the process exits
+    /// non-zero, so stream-json parsers can learn why replay failed without
+    /// waiting for the exit code. Never emitted by live streams.
+    ReplayError {
+        /// Session UUID being replayed; absent when the UUID was invalid.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+        /// Machine-readable failure category.
+        kind: ReplayErrorKind,
+        /// Human-readable failure detail.
+        error: String,
+        /// Process exit code that accompanies this failure.
+        exit_code: u8,
+    },
 }
 
 impl From<StreamRecord> for SessionRecord {
     fn from(record: StreamRecord) -> Self {
         match record {
+            StreamRecord::SessionMeta {
+                format_version,
+                session_id,
+                timestamp,
+                working_directory,
+                model,
+                tools,
+                cake_version,
+                system_prompt,
+                git,
+            } => Self::SessionMeta {
+                format_version,
+                session_id,
+                timestamp,
+                working_directory,
+                model,
+                tools,
+                cake_version,
+                system_prompt,
+                git,
+            },
             StreamRecord::TaskStart(d) => Self::TaskStart(d),
+            StreamRecord::PromptContext {
+                session_id,
+                task_id,
+                role,
+                content,
+                timestamp,
+            } => Self::PromptContext {
+                session_id,
+                task_id,
+                role,
+                content,
+                timestamp,
+            },
             StreamRecord::Message(d) => Self::Message(d),
             StreamRecord::FunctionCall(d) => Self::FunctionCall(d),
             StreamRecord::FunctionCallOutput(d) => Self::FunctionCallOutput(d),
-            StreamRecord::Reasoning(d) => Self::Reasoning(d),
+            StreamRecord::SkillActivated {
+                session_id,
+                task_id,
+                timestamp,
+                name,
+                path,
+            } => Self::SkillActivated {
+                session_id,
+                task_id,
+                timestamp,
+                name,
+                path,
+            },
             StreamRecord::HookEvent(d) => Self::HookEvent(d),
+            StreamRecord::Reasoning(d) => Self::Reasoning(d),
             StreamRecord::TaskComplete(d) => Self::TaskComplete(d),
+            // `replay_error` is emitted only by `cake replay`, which never
+            // writes to a session file; there is no persisted counterpart.
+            StreamRecord::ReplayError { .. } => {
+                unreachable!("replay_error stream records are never persisted to a session file")
+            },
+        }
+    }
+}
+
+impl From<SessionRecord> for StreamRecord {
+    fn from(record: SessionRecord) -> Self {
+        match record {
+            SessionRecord::SessionMeta {
+                format_version,
+                session_id,
+                timestamp,
+                working_directory,
+                model,
+                tools,
+                cake_version,
+                system_prompt,
+                git,
+            } => Self::SessionMeta {
+                format_version,
+                session_id,
+                timestamp,
+                working_directory,
+                model,
+                tools,
+                cake_version,
+                system_prompt,
+                git,
+            },
+            SessionRecord::TaskStart(d) => Self::TaskStart(d),
+            SessionRecord::PromptContext {
+                session_id,
+                task_id,
+                role,
+                content,
+                timestamp,
+            } => Self::PromptContext {
+                session_id,
+                task_id,
+                role,
+                content,
+                timestamp,
+            },
+            SessionRecord::Message(d) => Self::Message(d),
+            SessionRecord::FunctionCall(d) => Self::FunctionCall(d),
+            SessionRecord::FunctionCallOutput(d) => Self::FunctionCallOutput(d),
+            SessionRecord::SkillActivated {
+                session_id,
+                task_id,
+                timestamp,
+                name,
+                path,
+            } => Self::SkillActivated {
+                session_id,
+                task_id,
+                timestamp,
+                name,
+                path,
+            },
+            SessionRecord::HookEvent(d) => Self::HookEvent(d),
+            SessionRecord::Reasoning(d) => Self::Reasoning(d),
+            SessionRecord::TaskComplete(d) => Self::TaskComplete(d),
+            // `turn_usage` is a session-only audit record with no stream-json
+            // counterpart; `cake replay` filters it before conversion.
+            SessionRecord::TurnUsage(_) => {
+                unreachable!("turn_usage records are session-only and have no stream counterpart")
+            },
         }
     }
 }

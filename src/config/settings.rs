@@ -1,7 +1,9 @@
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
+use serde::de::{self, Visitor};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::config::expand_home;
 use crate::config::model::{ApiType, ModelConfig, ModelProvider, ProviderHeaders, ReasoningEffort};
@@ -249,6 +251,117 @@ pub struct Settings {
     /// Tool-scoped settings.
     #[serde(default)]
     pub tools: Option<ToolsSettings>,
+    /// Agent-loop resource limits.
+    #[serde(default)]
+    pub limits: Option<LimitsSettings>,
+}
+
+/// A single user-configured agent-loop resource limit.
+///
+/// A limit is either a positive-integer cap or the explicit `"unlimited"`
+/// sentinel (no cap). The sentinel is a real value, not an absent key, so a
+/// project can override a global cap back to uncapped.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct Limit(Option<u32>);
+
+impl Limit {
+    /// The explicit `"unlimited"` sentinel: no cap.
+    pub const UNLIMITED: Self = Self(None);
+
+    /// A positive-integer cap.
+    pub const fn max(value: u32) -> Self {
+        Self(Some(value))
+    }
+
+    /// The configured cap, or `None` when unlimited.
+    pub const fn value(self) -> Option<u32> {
+        self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for Limit {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct LimitVisitor;
+
+        impl Visitor<'_> for LimitVisitor {
+            type Value = Limit;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a positive integer or the string \"unlimited\"")
+            }
+
+            fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                if value == 0 {
+                    return Err(E::custom(
+                        "limit must be a positive integer or \"unlimited\"; 0 is not a valid limit",
+                    ));
+                }
+                u32::try_from(value)
+                    .ok()
+                    .map(Limit::max)
+                    .ok_or_else(|| E::custom("limit exceeds the maximum supported value (u32)"))
+            }
+
+            fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                if value <= 0 {
+                    return Err(E::custom(
+                        "limit must be a positive integer or \"unlimited\"; 0 and negative values are not valid limits",
+                    ));
+                }
+                u64::try_from(value)
+                    .ok()
+                    .and_then(|v| u32::try_from(v).ok())
+                    .map(Limit::max)
+                    .ok_or_else(|| E::custom("limit exceeds the maximum supported value (u32)"))
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                if value.eq_ignore_ascii_case("unlimited") {
+                    Ok(Limit::UNLIMITED)
+                } else {
+                    Err(E::custom(
+                        "limit must be a positive integer or the string \"unlimited\"",
+                    ))
+                }
+            }
+        }
+
+        deserializer.deserialize_any(LimitVisitor)
+    }
+}
+
+/// User-configured agent-loop resource limits.
+///
+/// Every limit is off by default: an uncapped agent loop is a deliberate
+/// design property, and no limit fires unless the user configures one. The
+/// keys are independent — turns and tool calls are different resource
+/// boundaries, so they are never derived from one another. An absent key
+/// (`None`) inherits lower-precedence settings; an explicit `"unlimited"`
+/// overrides them back to uncapped.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LimitsSettings {
+    /// Maximum number of agent-loop turns before the run terminates with a
+    /// limit-exceeded outcome. `None` means the key is absent (inherit); an
+    /// explicit `"unlimited"` removes the cap.
+    #[serde(default)]
+    pub max_turns: Option<Limit>,
+    /// Maximum number of tool calls executed before the run terminates with
+    /// a limit-exceeded outcome. `None` means the key is absent (inherit); an
+    /// explicit `"unlimited"` removes the cap.
+    #[serde(default)]
+    pub max_tool_calls: Option<Limit>,
 }
 
 /// Result of loading and merging settings from all sources.
@@ -275,6 +388,8 @@ pub struct LoadedSettings {
     pub system_prompt: Option<String>,
     /// Effective LLM judge settings (global + project merged, defaults applied).
     pub judge: JudgeSettings,
+    /// Effective agent-loop resource limits (global + project merged).
+    pub limits: LimitsSettings,
     /// Warnings about unrecognized keys in settings files, one per issue and
     /// already formatted with the source file path. Unrecognized keys are
     /// ignored (existing behavior); these warnings surface them instead of
@@ -674,10 +789,29 @@ impl SettingsLoader {
             acc.system_prompt = settings.system_prompt;
         }
         Self::merge_judge_settings(settings.tools, acc);
+        Self::merge_limits(settings.limits, acc);
         for (name, profile) in settings.profiles {
             acc.profiles.entry(name).or_default().push(profile);
         }
         Ok(())
+    }
+
+    /// Merge `[limits]` fields into the accumulator.
+    ///
+    /// Absent keys keep lower-precedence values, so a project `[limits]`
+    /// section overrides only the keys it sets. An explicit `"unlimited"`
+    /// (a present [`Limit`] with no cap) overrides a lower-precedence cap
+    /// back to uncapped.
+    const fn merge_limits(limits: Option<LimitsSettings>, acc: &mut SettingsAccumulator) {
+        let Some(limits) = limits else {
+            return;
+        };
+        if let Some(limit) = limits.max_turns {
+            acc.max_turns = limit.value();
+        }
+        if let Some(limit) = limits.max_tool_calls {
+            acc.max_tool_calls = limit.value();
+        }
     }
 
     /// Merge `[tools.bash.judge]` fields into the accumulator.
@@ -809,6 +943,8 @@ struct SettingsAccumulator {
     judge_rubric_file: Option<PathBuf>,
     judge_enabled: Option<bool>,
     judge_allowlist: Vec<String>,
+    max_turns: Option<u32>,
+    max_tool_calls: Option<u32>,
     warnings: Vec<String>,
 }
 
@@ -854,6 +990,10 @@ impl SettingsAccumulator {
                 rubric_file: self.judge_rubric_file,
                 enabled: self.judge_enabled.unwrap_or(true),
                 allowlist: self.judge_allowlist,
+            },
+            limits: LimitsSettings {
+                max_turns: self.max_turns.map(Limit::max),
+                max_tool_calls: self.max_tool_calls.map(Limit::max),
             },
             warnings: self.warnings,
         }

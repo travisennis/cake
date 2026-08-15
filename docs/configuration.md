@@ -58,13 +58,37 @@ Every model requires:
 
 Optional model fields are `api_type` (`chat_completions` or `responses`), `provider`, `provider_headers`, `temperature`, `top_p`, `max_output_tokens`, `context_window`, `reasoning_effort`, `reasoning_summary`, `reasoning_max_tokens`, and `providers`.
 
-`context_window` is the model's input-token budget in tokens. When set, Cake logs the remaining budget each turn, comparing the window against the last request's input tokens (the full request: system prompt, tools, history). The next request grows the context by its output and client-added tool outputs, which Cake does not tokenize; reserve a buffer. Absent means the window is unknown and Cake keeps current behavior (recovering from provider context-limit errors by parsing their message text).
+`context_window` is the model's input-token budget in tokens. When set, Cake logs the remaining budget each turn: window minus the last request's input tokens (the full request: system prompt, tools, history). The next request adds output and client-added tool outputs, which Cake does not tokenize; reserve a buffer. Absent means the window is unknown and Cake keeps current behavior (recovering from provider context-limit errors by parsing their message text).
 
 Set the selected model explicitly with `--model`, through a selected `--profile`, or with `default_model`. Reasoning and output-token CLI flags override the resolved model for one invocation.
 
 All model references --- `default_model`, `--model`, profiles, and `[tools.bash.judge] model` --- use a `[[models]]` entry's `name` as the index into that entry's full configuration (provider, base URL, API key, temperature, reasoning, and other fields). The `model` field inside a `[[models]]` entry is the raw provider model identifier and is not used to reference a model elsewhere.
 
 Relative `system_prompt`, `skills.path`, `directories`, and `[sandbox]` values resolve from the invocation working directory, including the created worktree when `--worktree` is active. Use absolute paths for global settings that must work from every project. Invalid files and unknown selected models fail before the provider request.
+
+## Agent loop limits
+
+The optional `[limits]` section bounds the agent loop. Every key is off by default: an uncapped loop is deliberate, and no limit fires unless you configure one. Turns and tool calls are independent resource boundaries.
+
+```toml
+[limits]
+max_turns = 10        # stop after 10 agent-loop turns
+max_tool_calls = 50   # stop after 50 executed tool calls
+```
+
+A limit is a positive integer, or the string `"unlimited"` to mean no cap:
+
+```toml
+[limits]
+max_turns = "unlimited"  # explicit opt-out; overrides a global cap
+```
+
+`0`, negative values, and any other string are rejected at load time.
+
+- `max_turns`: maximum agent-loop turns. When the loop reaches the cap and would otherwise continue, Cake stops with a `limit_exceeded` outcome and surfaces the last assistant message, if any, as the partial result.
+- `max_tool_calls`: maximum tool calls executed. A turn whose batch would exceed the cap is stopped before any call in the batch runs.
+
+The limits combine; whichever fires first stops the loop. Project `[limits]` values override global values per key, including back to `"unlimited"`. The stop is reported as `limit_exceeded` in the `task_complete` record and completion JSON, and as a distinct error in text mode.
 
 ## Bash tool settings
 

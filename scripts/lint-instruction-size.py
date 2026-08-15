@@ -84,12 +84,28 @@ BUDGETS = {
     # additive CLI surface whose stdout and exit-3 refusal contract belongs
     # in the integration authority; the document sat exactly at 1800 with no
     # headroom, so it follows the same count-plus-50 convention.
-    "docs/integrations.md": 1900,
+    # Raised 1900 -> 2100 on 2026-08-15: both #59 (`cake replay`, an additive
+    # CLI surface whose stream-json contract and error/exit protocol belong in
+    # the integration authority) and #55 (configurable `max_turns`/
+    # `max_tool_calls` agent-loop limits, whose limit-exceeded outcome, exit
+    # behavior, and record shape belong in the integration authority) added
+    # mandated sections; the merged document displaced overlapping prose and
+    # still counts 2033, so it follows the same count-plus-50 convention.
+    "docs/integrations.md": 2100,
     # Raised 1500 -> 1650 on 2026-08-14: issue #67 documents `cake init`
     # project scaffolding, which the document must describe as an explicit
     # configuration entry point; it sat exactly at the 1500 default with no
     # headroom, so it gets the standard count-plus-50 budget.
-    "docs/configuration.md": 1650,
+    # Raised 1650 -> 1750 on 2026-08-14: issue #55 adds the `[limits]`
+    # settings section for configurable agent-loop limits; the section
+    # documents a new top-level settings surface, following the same
+    # count-plus-50 convention.
+    # Raised 1750 -> 1900 on 2026-08-15: the `context_window` model field
+    # adds a new top-level model-configuration surface whose remaining-budget
+    # semantics (last request's input tokens vs. the window, buffer rather
+    # than tokenizer estimation) belong in the configuration authority; the
+    # document counts 1806, so it follows the same count-plus-50 convention.
+    "docs/configuration.md": 1900,
     # Raised 1500 -> 1600 on 2026-08-14: issue #67 adds the trust model for
     # `cake init`'s generated files (behavior-preserving settings, inert
     # hooks example); the document sat exactly at the 1500 default with no

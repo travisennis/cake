@@ -273,6 +273,99 @@ fn task_outcome_cut_off_requires_error() {
 }
 
 #[test]
+fn task_outcome_serializes_limit_exceeded() {
+    let record = StreamRecord::TaskComplete(TaskCompleteData {
+        outcome: TaskOutcome::LimitExceeded {
+            limit: "max_turns".to_string(),
+            detail: "max_turns limit exceeded after 5 turns (max_turns = 5)".to_string(),
+            result: Some("partial work".to_string()),
+        },
+        duration_ms: 500,
+        turn_count: 5,
+        tool_call_count: 3,
+        session_id: "session-1".to_string(),
+        task_id: "task-1".to_string(),
+        usage: Usage::default(),
+        permission_denials: None,
+    });
+
+    let json = serde_json::to_value(&record).unwrap();
+    assert_eq!(json["type"], "task_complete");
+    assert_eq!(json["subtype"], "limit_exceeded");
+    assert_eq!(json["is_error"], true);
+    assert_eq!(json["limit"], "max_turns");
+    assert_eq!(
+        json["error"],
+        "max_turns limit exceeded after 5 turns (max_turns = 5)"
+    );
+    assert_eq!(json["result"], "partial work");
+    assert!(json.get("success").is_none());
+}
+
+#[test]
+fn task_outcome_deserializes_limit_exceeded() {
+    let json = serde_json::json!({
+        "type": "task_complete",
+        "subtype": "limit_exceeded",
+        "is_error": true,
+        "limit": "max_tool_calls",
+        "error": "max_tool_calls limit exceeded after 2 tool calls (max_tool_calls = 3)",
+        "result": "partial work",
+        "duration_ms": 500,
+        "turn_count": 2,
+        "tool_call_count": 2,
+        "session_id": "session-1",
+        "task_id": "task-1",
+        "usage": Usage::default()
+    });
+
+    let record = serde_json::from_value::<StreamRecord>(json).unwrap();
+    assert!(matches!(
+        record,
+        StreamRecord::TaskComplete(TaskCompleteData {
+            outcome: TaskOutcome::LimitExceeded { limit, detail, result },
+            ..
+        }) if limit == "max_tool_calls"
+            && detail == "max_tool_calls limit exceeded after 2 tool calls (max_tool_calls = 3)"
+            && result.as_deref() == Some("partial work")
+    ));
+}
+
+#[test]
+fn task_outcome_limit_exceeded_requires_limit_and_error() {
+    let json = serde_json::json!({
+        "type": "task_complete",
+        "subtype": "limit_exceeded",
+        "is_error": true,
+        "duration_ms": 500,
+        "turn_count": 1,
+        "tool_call_count": 0,
+        "session_id": "session-1",
+        "task_id": "task-1",
+        "usage": Usage::default()
+    });
+
+    let err = serde_json::from_value::<StreamRecord>(json).unwrap_err();
+    assert!(err.to_string().contains("requires limit"));
+
+    let json = serde_json::json!({
+        "type": "task_complete",
+        "subtype": "limit_exceeded",
+        "is_error": true,
+        "limit": "max_turns",
+        "duration_ms": 500,
+        "turn_count": 1,
+        "tool_call_count": 0,
+        "session_id": "session-1",
+        "task_id": "task-1",
+        "usage": Usage::default()
+    });
+
+    let err = serde_json::from_value::<StreamRecord>(json).unwrap_err();
+    assert!(err.to_string().contains("requires error"));
+}
+
+#[test]
 fn task_outcome_deserializes_legacy_success_field() {
     let json = serde_json::json!({
         "type": "task_complete",
@@ -793,6 +886,34 @@ fn snapshot_session_json_turn_usage() {
 }
 
 #[test]
+fn snapshot_session_json_limit_exceeded() {
+    let record = SessionRecord::TaskComplete(TaskCompleteData {
+        outcome: TaskOutcome::LimitExceeded {
+            limit: "max_turns".to_string(),
+            detail: "max_turns limit exceeded after 5 turns (max_turns = 5)".to_string(),
+            result: Some("I'll inspect the workspace.".to_string()),
+        },
+        duration_ms: 1_250,
+        turn_count: 5,
+        tool_call_count: 3,
+        session_id: fixed_session_id(),
+        task_id: fixed_task_id(),
+        usage: Usage {
+            input_tokens: 100,
+            input_tokens_details: InputTokensDetails { cached_tokens: 25 },
+            output_tokens: 50,
+            output_tokens_details: OutputTokensDetails {
+                reasoning_tokens: 10,
+            },
+            total_tokens: 150,
+        },
+        permission_denials: None,
+    });
+
+    insta::assert_json_snapshot!("session_json_limit_exceeded", session_record_json(record));
+}
+
+#[test]
 fn snapshot_session_json_prompt_context() {
     let record = SessionRecord::PromptContext {
         session_id: fixed_session_id(),
@@ -898,5 +1019,138 @@ fn deserialize_legacy_hook_event_without_correlation_fields() {
             assert!(resolved_decision.is_none());
         },
         other => panic!("expected hook_event, got {other:?}"),
+    }
+}
+
+#[test]
+fn snapshot_stream_record_json_session_meta() {
+    let record = StreamRecord::SessionMeta {
+        format_version: CURRENT_FORMAT_VERSION,
+        session_id: fixed_session_id(),
+        timestamp: fixed_timestamp(),
+        working_directory: PathBuf::from("/workspace/cake"),
+        model: Some("gpt-5.4".to_string()),
+        tools: vec!["bash".to_string(), "read".to_string(), "edit".to_string()],
+        cake_version: Some("1.2.3-test".to_string()),
+        system_prompt: Some("You are cake.".to_string()),
+        git: GitState {
+            repository_url: Some("https://example.com/cake.git".to_string()),
+            branch: Some("main".to_string()),
+            commit_hash: Some("abcdef1234567890".to_string()),
+        },
+    };
+
+    insta::assert_json_snapshot!(
+        "stream_record_json_session_meta",
+        serde_json::to_value(record).unwrap()
+    );
+}
+
+#[test]
+fn snapshot_stream_record_json_prompt_context() {
+    let record = StreamRecord::PromptContext {
+        session_id: fixed_session_id(),
+        task_id: fixed_task_id(),
+        role: Role::Developer,
+        content: "Use the project instructions.".to_string(),
+        timestamp: fixed_timestamp(),
+    };
+
+    insta::assert_json_snapshot!(
+        "stream_record_json_prompt_context",
+        serde_json::to_value(record).unwrap()
+    );
+}
+
+#[test]
+fn snapshot_stream_record_json_skill_activated() {
+    let record = StreamRecord::SkillActivated {
+        session_id: fixed_session_id(),
+        task_id: fixed_task_id(),
+        timestamp: fixed_timestamp(),
+        name: "debugging-cake".to_string(),
+        path: PathBuf::from("/workspace/cake/.agents/skills/debugging-cake/SKILL.md"),
+    };
+
+    insta::assert_json_snapshot!(
+        "stream_record_json_skill_activated",
+        serde_json::to_value(record).unwrap()
+    );
+}
+
+#[test]
+fn snapshot_stream_record_json_replay_error() {
+    let record = StreamRecord::ReplayError {
+        session_id: Some(fixed_session_id()),
+        kind: ReplayErrorKind::SessionNotFound,
+        error: "session not found: 550e8400-e29b-41d4-a716-446655440000".to_string(),
+        exit_code: 3,
+    };
+
+    insta::assert_json_snapshot!(
+        "stream_record_json_replay_error",
+        serde_json::to_value(record).unwrap()
+    );
+}
+
+#[test]
+fn stream_record_replay_error_omits_unknown_session_id() {
+    let record = StreamRecord::ReplayError {
+        session_id: None,
+        kind: ReplayErrorKind::InvalidUuid,
+        error: "invalid session UUID 'nope'".to_string(),
+        exit_code: 3,
+    };
+
+    let json = serde_json::to_value(record).unwrap();
+    assert_eq!(json["type"], "replay_error");
+    assert_eq!(json["kind"], "invalid_uuid");
+    assert!(json.get("session_id").is_none());
+}
+
+#[test]
+fn session_record_to_stream_record_preserves_json() {
+    let session_records = [
+        SessionRecord::SessionMeta {
+            format_version: CURRENT_FORMAT_VERSION,
+            session_id: fixed_session_id(),
+            timestamp: fixed_timestamp(),
+            working_directory: PathBuf::from("/workspace/cake"),
+            model: Some("gpt-5.4".to_string()),
+            tools: vec!["bash".to_string()],
+            cake_version: Some("1.2.3-test".to_string()),
+            system_prompt: Some("You are cake.".to_string()),
+            git: GitState::default(),
+        },
+        SessionRecord::TaskStart(TaskStartData {
+            session_id: fixed_session_id(),
+            task_id: fixed_task_id(),
+            timestamp: fixed_timestamp(),
+        }),
+        SessionRecord::PromptContext {
+            session_id: fixed_session_id(),
+            task_id: fixed_task_id(),
+            role: Role::Developer,
+            content: "mutable context".to_string(),
+            timestamp: fixed_timestamp(),
+        },
+        SessionRecord::SkillActivated {
+            session_id: fixed_session_id(),
+            task_id: fixed_task_id(),
+            timestamp: fixed_timestamp(),
+            name: "debugging-cake".to_string(),
+            path: PathBuf::from("/workspace/cake/.agents/skills/debugging-cake/SKILL.md"),
+        },
+    ];
+
+    for record in session_records {
+        let session_json = serde_json::to_value(&record).unwrap();
+        let stream_json = serde_json::to_value(StreamRecord::from(record)).unwrap();
+        assert_eq!(session_json, stream_json);
+        let restored = serde_json::from_value::<StreamRecord>(stream_json).unwrap();
+        assert_eq!(
+            serde_json::to_value(SessionRecord::from(restored)).unwrap(),
+            session_json
+        );
     }
 }

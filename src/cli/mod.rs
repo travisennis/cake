@@ -11,6 +11,7 @@ mod cmd_runner;
 mod debug;
 mod init;
 mod output;
+mod replay;
 mod run_mode;
 mod session_factory;
 mod sessions;
@@ -21,6 +22,7 @@ pub use cmd_runner::{CmdRunner, CommandRunOptions};
 pub use debug::DebugCommand;
 pub use init::{InitCommand, InitError};
 pub use output::{CliOutputSink, TurnResult};
+pub use replay::{ReplayCommand, ReplayError};
 pub use sessions::SessionsCommand;
 
 pub use run_mode::{RunMode, SessionStorage};
@@ -37,6 +39,8 @@ pub enum Commands {
     Bash(BashCommand),
     /// Create `.cake/` project scaffolding and a behavior-preserving settings file
     Init(InitCommand),
+    /// Replay an existing session transcript as stream-json events
+    Replay(ReplayCommand),
 }
 
 impl CmdRunner for Commands {
@@ -64,6 +68,7 @@ impl Commands {
             Self::Sessions(command) => command.run(data_dir, options).await,
             Self::Bash(command) => command.run(data_dir, options).await,
             Self::Init(command) => command.run(data_dir, options).await,
+            Self::Replay(command) => command.run(data_dir, options).await,
         }
     }
 }

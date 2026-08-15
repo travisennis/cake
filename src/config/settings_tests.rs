@@ -1422,6 +1422,194 @@ timeout_secs = 0
     assert_eq!(loaded.judge.timeout_secs, 1);
 }
 
+// --- [limits] ---
+
+#[test]
+fn test_limits_load_from_settings() {
+    let dir = create_project_settings(
+        r#"
+[[models]]
+name = "test-model"
+model = "test/model"
+base_url = "https://example.com"
+api_key_env = "MY_KEY"
+
+[limits]
+max_turns = 10
+max_tool_calls = 50
+"#,
+    );
+
+    let home = create_home_dir();
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load(Some(dir.path()))
+    })
+    .unwrap();
+
+    assert_eq!(loaded.limits.max_turns, Some(Limit::max(10)));
+    assert_eq!(loaded.limits.max_tool_calls, Some(Limit::max(50)));
+    assert!(loaded.warnings.is_empty(), "{:#?}", loaded.warnings);
+}
+
+#[test]
+fn test_limits_default_to_unlimited() {
+    let dir = create_project_settings(
+        r#"
+[[models]]
+name = "test-model"
+model = "test/model"
+base_url = "https://example.com"
+api_key_env = "MY_KEY"
+"#,
+    );
+
+    let home = create_home_dir();
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load(Some(dir.path()))
+    })
+    .unwrap();
+
+    assert_eq!(loaded.limits.max_turns, None);
+    assert_eq!(loaded.limits.max_tool_calls, None);
+}
+
+#[test]
+fn test_limits_project_overrides_global_per_key() {
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"
+[[models]]
+name = "test-model"
+model = "test/model"
+base_url = "https://example.com"
+api_key_env = "MY_KEY"
+
+[limits]
+max_turns = 5
+max_tool_calls = 50
+"#,
+    );
+    // The project section overrides only the keys it sets.
+    let project = create_project_settings(
+        r#"
+[[models]]
+name = "test-model"
+model = "test/model"
+base_url = "https://project.example.com"
+api_key_env = "MY_KEY"
+
+[limits]
+max_turns = 10
+"#,
+    );
+
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load(Some(project.path()))
+    })
+    .unwrap();
+
+    assert_eq!(loaded.limits.max_turns, Some(Limit::max(10)));
+    assert_eq!(loaded.limits.max_tool_calls, Some(Limit::max(50)));
+}
+
+#[test]
+fn test_limits_accept_unlimited_string() {
+    let dir = create_project_settings(
+        r#"
+[[models]]
+name = "test-model"
+model = "test/model"
+base_url = "https://example.com"
+api_key_env = "MY_KEY"
+
+[limits]
+max_turns = "unlimited"
+max_tool_calls = "UNLIMITED"
+"#,
+    );
+
+    let home = create_home_dir();
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load(Some(dir.path()))
+    })
+    .unwrap();
+
+    // An explicit "unlimited" is accepted and resolves to no cap in the
+    // effective settings. The key-stays-present distinction is what lets a
+    // project override a global cap, covered by the merge test below.
+    assert_eq!(loaded.limits.max_turns, None);
+    assert_eq!(loaded.limits.max_tool_calls, None);
+}
+
+#[test]
+fn test_limits_reject_zero() {
+    let dir = create_project_settings(
+        r#"
+[[models]]
+name = "test-model"
+model = "test/model"
+base_url = "https://example.com"
+api_key_env = "MY_KEY"
+
+[limits]
+max_turns = 0
+"#,
+    );
+
+    let home = create_home_dir();
+    let err = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load(Some(dir.path()))
+    })
+    .unwrap_err();
+
+    assert!(
+        err.to_string().contains("not valid limits"),
+        "expected a clear rejection of 0, got: {err}"
+    );
+}
+
+#[test]
+fn test_limits_project_can_clear_global_limit() {
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"
+[[models]]
+name = "test-model"
+model = "test/model"
+base_url = "https://example.com"
+api_key_env = "MY_KEY"
+
+[limits]
+max_turns = 10
+"#,
+    );
+    // The project explicitly opts back to unlimited, overriding the global cap.
+    let project = create_project_settings(
+        r#"
+[[models]]
+name = "test-model"
+model = "test/model"
+base_url = "https://project.example.com"
+api_key_env = "MY_KEY"
+
+[limits]
+max_turns = "unlimited"
+"#,
+    );
+
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load(Some(project.path()))
+    })
+    .unwrap();
+
+    // The project's explicit "unlimited" overrides the global cap of 10 back
+    // to uncapped; the untouched key stays absent.
+    assert_eq!(loaded.limits.max_turns, None);
+    assert_eq!(loaded.limits.max_tool_calls, None);
+}
+
 // --- Unknown-key warnings ---
 
 #[test]

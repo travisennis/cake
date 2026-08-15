@@ -15,7 +15,7 @@ Human diagnostics go to stderr. Machine-readable stdout must contain only its de
 
 `cake init` creates `.cake/settings.toml` (and, with `--hooks`, an inert `.cake/hooks.json.example`) and prints created files to stdout. An existing target is reported on stderr and exits `3` without writing anything.
 
-For `stream-json`, validation failures before a task stream starts still use the codes above. Once streaming begins, ordinary agent, provider, and tool failures are represented by the final `task_complete` record and the process exits `0`. An unsatisfied output schema remains nonzero, and interruption exits `130`.
+For `stream-json`, validation failures before a task stream starts still use the codes above. Once streaming begins, ordinary agent, provider, and tool failures are represented by the final `task_complete` record and the process exits `0`. An unsatisfied output schema remains nonzero, and interruption exits `130`. A hit `max_turns` or `max_tool_calls` limit is an in-stream outcome: stream-json exits `0`, text and JSON modes exit `1`.
 
 ## Provider retries
 
@@ -24,6 +24,8 @@ Retries are bounded. Cake retries transport failures and HTTP `408`, `409`, `429
 A parseable `Retry-After` value takes precedence over exponential backoff, but is capped by the active maximum backoff. Transport recovery temporarily disables idle connection reuse. A parseable context-window overflow may be retried once with reduced output and reasoning-token budgets when enough output space remains.
 
 Cake also makes one zero-delay semantic continuation turn when a successful provider response has partial output but no final assistant message, unless the provider identifies non-retryable termination such as content filtering, failure, or refusal. The continuation stays in the same session and task, preserves usage and counters, asks only for the missing final answer, and offers no tools so completed tool work is not repeated. Text mode reports the `semantic_incomplete` retry on stderr; JSON and stream-JSON suppress it. If that turn is also incomplete, Cake emits the cut-off outcome once and includes an explicit `cake --resume <UUID> "try again"` command.
+
+The agent loop is uncapped by default; a user-configured `[limits]` section (see [Configuration](configuration.md)) may bound it. `max_turns` stops the loop before starting a turn that would exceed the cap; `max_tool_calls` stops it before executing a tool batch that would exceed the cap. Streamed conversation records and completed tool work are never discarded.
 
 ## Completion JSON
 
@@ -40,6 +42,14 @@ A redirected stream is an event feed, not a resumable session file. Consumers sh
 Malformed model tool arguments remain visible on the `function_call` record and produce a corresponding error output instead of making the stream invalid.
 
 An automatic semantic continuation is visible as the provider's partial conversation records followed by one Cake-authored user continuation message. The invocation still emits exactly one final `task_complete`; recovery does not create another task boundary.
+
+## Session replay
+
+`cake --output-format stream-json replay <uuid>` re-emits an existing session transcript as stream-json without running a prompt, reading the file read-only (no lock, no append, no network) and preserving record order. Replay is the only stream-json mode that emits `session_meta`, `prompt_context`, and `skill_activated`; live invocations never do.
+
+Replay skips a trailing partial record from an interrupted writer, matching the session loader's tolerance, and treats a `session_meta` whose `session_id` does not match the requested UUID as `corrupt`.
+
+Replay requires `--output-format stream-json`. On failure it emits one `replay_error` record (machine-readable `kind`, `error`, `session_id` when known, and the accompanying `exit_code`) before exiting non-zero: `output_format`, `invalid_uuid`, and `session_not_found` exit 3; `corrupt`, `unsupported_format`, and `permission` exit 1.
 
 ## Persisted sessions
 
@@ -70,7 +80,7 @@ An interrupted task can leave a `function_call` whose `function_call_output` was
 - `reasoning`: provider reasoning data retained for round trips.
 - `skill_activated`: first observed read of a known skill in a session.
 - `hook_event`: hook execution, decision, timing, and bounded diagnostics.
-- `task_complete`: outcome, duration, turns, tool-call count, result or error, usage, and optional permission denials.
+- `task_complete`: outcome, duration, turns, tool-call count, result or error, usage, and optional permission denials. A `limit_exceeded` outcome also carries the fired `limit` key and a partial `result`.
 
 Serialization snapshots under `src/types/snapshots/` provide canonical record examples.
 
@@ -161,3 +171,4 @@ Changes to session versioning, record names or required fields, stream ordering,
 - [ADR 005](adr/005-command-hooks.md), command hooks.
 - [ADR 007](adr/007-per-session-telemetry-sidecar.md), the telemetry sidecar.
 - [ADR 017](adr/017-trusted-executable-toolbox-tools.md), trusted toolbox executables.
+- [ADR 021](adr/021-session-transcript-replay.md), session transcript replay.

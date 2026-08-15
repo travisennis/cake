@@ -94,6 +94,13 @@ fn classify_typed_error(err: &anyhow::Error) -> Option<u8> {
         return Some(code::INPUT_ERROR);
     }
 
+    // `cake replay` maps each failure category to its documented exit code
+    // (see `ReplayError::exit_code`); the same mapping drives the
+    // `replay_error` stream record's `exit_code` field.
+    if let Some(replay_err) = err.downcast_ref::<crate::cli::ReplayError>() {
+        return Some(replay_err.exit_code());
+    }
+
     None
 }
 
@@ -616,6 +623,41 @@ mod tests {
     fn bare_401_in_message_is_not_api_error() {
         let err = anyhow::anyhow!("File at /path/401/index.html not found");
         assert_eq!(classify_to_u8(&err), code::AGENT_ERROR);
+    }
+
+    // --- Replay error classification ---
+
+    #[test]
+    fn classify_replay_input_errors() {
+        for err in [
+            anyhow::Error::new(crate::cli::ReplayError::OutputFormat),
+            anyhow::Error::new(crate::cli::ReplayError::InvalidUuid("nope".to_string())),
+            anyhow::Error::new(crate::cli::ReplayError::MissingSession(
+                "550e8400-e29b-41d4-a716-446655440000".to_string(),
+            )),
+        ] {
+            assert_eq!(classify_to_u8(&err), code::INPUT_ERROR);
+        }
+    }
+
+    #[test]
+    fn classify_replay_agent_errors() {
+        for err in [
+            anyhow::Error::new(crate::cli::ReplayError::Corrupt(
+                "550e8400-e29b-41d4-a716-446655440000".to_string(),
+                "invalid record".to_string(),
+            )),
+            anyhow::Error::new(crate::cli::ReplayError::UnsupportedFormat {
+                session_id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+                found: 99,
+                expected: 4,
+            }),
+            anyhow::Error::new(crate::cli::ReplayError::Permission(
+                "550e8400-e29b-41d4-a716-446655440000".to_string(),
+            )),
+        ] {
+            assert_eq!(classify_to_u8(&err), code::AGENT_ERROR);
+        }
     }
 
     // --- classify() returns correct ExitCode ---
