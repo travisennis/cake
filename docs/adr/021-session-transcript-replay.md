@@ -28,7 +28,7 @@ Terminal clients such as `cake-repl` want to reopen a session with visible histo
 
 ## Decision Outcome
 
-Chosen option: a top-level `cake replay <uuid>` subcommand that emits the session transcript as stream-json and exits `0`. The command requires `--output-format stream-json`; any other format is an input error. Replay opens the session file read-only (no advisory lock, no append), parses it with the same record vocabulary as the persisted format, and re-emits every record as the matching `StreamRecord`.
+Chosen option: a top-level `cake replay <uuid>` subcommand that emits the session transcript as stream-json and exits `0`. The command requires `--output-format stream-json`; any other format is an input error. Replay opens the session file read-only (no advisory lock, no append), parses it with the same record vocabulary as the persisted format, and re-emits every record as the matching `StreamRecord`. A trailing partial record from an interrupted writer is skipped with a warning, matching the session loader's tolerance; the header's `session_id` must match the requested UUID, and a mismatch is a corrupt session.
 
 `StreamRecord` gains additive variants for the persisted metadata kinds replay must surface: `session_meta`, `prompt_context`, and `skill_activated`. Live streams never emit them; replay emits them interleaved with the conversation records in their original order. `StreamRecord` also gains a `replay_error` variant that replay emits before exiting non-zero, carrying a machine-readable `kind`, a human-readable `error`, the affected `session_id` when known, and the accompanying `exit_code`.
 

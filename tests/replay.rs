@@ -403,3 +403,93 @@ fn replay_permission_denied_fails_with_structured_error() {
     assert_eq!(records[0]["type"], "replay_error");
     assert_eq!(records[0]["kind"], "permission");
 }
+
+#[test]
+fn replay_tolerates_interrupted_final_record() {
+    let env = cake_env();
+    let mut lines: Vec<String> = session_fixture().iter().map(ToString::to_string).collect();
+    // A writer interrupted mid-record leaves a partial final line with no
+    // trailing newline; replay should emit the complete records and exit 0.
+    lines.push("{\"type\":\"mess".to_string());
+    fs::write(session_path(&env, SESSION_ID), lines.join("\n"))
+        .expect("failed to write interrupted fixture");
+
+    let output = env
+        .command()
+        .args(["--output-format", "stream-json", "replay", SESSION_ID])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute command");
+
+    assert!(
+        output.status.success(),
+        "replay should exit 0 despite the interrupted tail, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let records = parse_stream(&output.stdout);
+    assert_eq!(records.len(), 10, "all complete records should be emitted");
+    assert_eq!(records[9]["type"], "task_complete");
+}
+
+#[test]
+#[cfg(unix)]
+fn replay_session_dir_permission_denied_reports_permission() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let env = cake_env();
+    write_fixture(&env);
+    // Without search permission on the sessions directory, `Path::exists`
+    // would report `false`; replay must still classify this as a permission
+    // failure, not a missing session.
+    let dir = env.data_dir.join("sessions");
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o000))
+        .expect("failed to make sessions dir unsearchable");
+
+    let output = env
+        .command()
+        .args(["--output-format", "stream-json", "replay", SESSION_ID])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute command");
+
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))
+        .expect("failed to restore sessions dir permissions");
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "directory permission error is an agent error"
+    );
+    let records = parse_stream(&output.stdout);
+    assert_eq!(records[0]["type"], "replay_error");
+    assert_eq!(records[0]["kind"], "permission");
+}
+
+#[test]
+fn replay_mismatched_header_session_id_fails_as_corrupt() {
+    let env = cake_env();
+    let mut records = session_meta_records();
+    records[0]["session_id"] = serde_json::json!("550e8400-e29b-41d4-a716-4466554400ff");
+    let lines: Vec<String> = records.iter().map(ToString::to_string).collect();
+    fs::write(session_path(&env, SESSION_ID), lines.join("\n") + "\n")
+        .expect("failed to write mismatched fixture");
+
+    let output = env
+        .command()
+        .args(["--output-format", "stream-json", "replay", SESSION_ID])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute command");
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "identity mismatch is a corrupt-session error"
+    );
+    let records = parse_stream(&output.stdout);
+    assert_eq!(records[0]["type"], "replay_error");
+    assert_eq!(records[0]["kind"], "corrupt");
+}

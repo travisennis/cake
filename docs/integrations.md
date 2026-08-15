@@ -45,6 +45,8 @@ An automatic semantic continuation is visible as the provider's partial conversa
 
 `cake --output-format stream-json replay <uuid>` re-emits an existing session transcript as stream-json without running a prompt, reading the file read-only (no lock, no append, no network) and preserving record order. Replay is the only stream-json mode that emits `session_meta`, `prompt_context`, and `skill_activated`; live invocations never do.
 
+Replay skips a trailing partial record from an interrupted writer, matching the session loader's tolerance, and treats a `session_meta` whose `session_id` does not match the requested UUID as `corrupt`.
+
 Replay requires `--output-format stream-json`. On failure it emits one `replay_error` record (machine-readable `kind`, `error`, `session_id` when known, and the accompanying `exit_code`) before exiting non-zero: `output_format`, `invalid_uuid`, and `session_not_found` exit 3; `corrupt`, `unsupported_format`, and `permission` exit 1.
 
 ## Persisted sessions

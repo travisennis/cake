@@ -3,7 +3,9 @@
 //! Replay is a first-class client operation: it reads a session file
 //! read-only (no lock, no append, no network) and emits the transcript using
 //! the same `StreamRecord` vocabulary as live `--output-format stream-json`
-//! output, plus the persisted metadata records live streams omit.
+//! output, plus the persisted metadata records live streams omit. A trailing
+//! partial record from an interrupted writer is skipped with a warning, same
+//! as the session loader.
 
 use std::fs;
 use std::io::Read;
@@ -104,11 +106,11 @@ impl CmdRunner for ReplayCommand {
             return Err(fail(ReplayError::InvalidUuid(self.uuid.clone())));
         };
 
+        // No `exists()` pre-check: `Path::exists` reports `false` for
+        // permission-denied paths, which would misclassify them as
+        // `session_not_found`. `load_records` distinguishes missing files from
+        // permission failures via `File::open`'s error kind.
         let path = data_dir.session_path(uuid);
-        if !path.exists() {
-            return Err(fail(ReplayError::MissingSession(uuid.to_string())));
-        }
-
         let records = load_records(&path, uuid).map_err(fail)?;
         for record in records {
             emit(&StreamRecord::from(record));
@@ -141,6 +143,11 @@ fn emit(record: &StreamRecord) {
 /// Read a session file read-only and return its records, mapping every
 /// failure to a precise [`ReplayError`]. No lock is taken and nothing is
 /// appended or mutated.
+///
+/// A malformed final line without a trailing newline is treated as an
+/// interrupted write and skipped with a warning, mirroring
+/// [`crate::config::session::Session::load`]; any other malformed line is a
+/// [`ReplayError::Corrupt`] failure.
 fn load_records(path: &Path, session_id: Uuid) -> Result<Vec<SessionRecord>, ReplayError> {
     let mut content = String::new();
     fs::File::open(path)
@@ -157,15 +164,43 @@ fn load_records(path: &Path, session_id: Uuid) -> Result<Vec<SessionRecord>, Rep
     let mut lines = content
         .lines()
         .map(str::trim)
-        .filter(|line| !line.is_empty());
+        .filter(|line| !line.is_empty())
+        .peekable();
 
     let first = lines.next().ok_or_else(|| {
         ReplayError::Corrupt(session_id.to_string(), "session file is empty".to_string())
     })?;
     let meta = parse_record(first, &session_id)?;
+    validate_meta(&meta, session_id)?;
 
-    let meta = match &meta {
-        SessionRecord::SessionMeta { format_version, .. } => {
+    let mut records = vec![meta];
+    while let Some(line) = lines.next() {
+        match parse_record(line, &session_id) {
+            Ok(record) => records.push(record),
+            // A writer interrupted mid-record leaves a partial final line
+            // without a trailing newline; tolerate it like `Session::load`.
+            Err(error) if lines.peek().is_none() && !content.ends_with('\n') => {
+                tracing::warn!(
+                    "Ignoring partial final session record in {}: {error}",
+                    path.display()
+                );
+                break;
+            },
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(records)
+}
+
+/// Validate the header record's format version and identity against the
+/// requested session UUID.
+fn validate_meta(meta: &SessionRecord, session_id: Uuid) -> Result<(), ReplayError> {
+    match meta {
+        SessionRecord::SessionMeta {
+            format_version,
+            session_id: meta_session_id,
+            ..
+        } => {
             if *format_version != CURRENT_FORMAT_VERSION {
                 return Err(ReplayError::UnsupportedFormat {
                     session_id: session_id.to_string(),
@@ -173,21 +208,21 @@ fn load_records(path: &Path, session_id: Uuid) -> Result<Vec<SessionRecord>, Rep
                     expected: CURRENT_FORMAT_VERSION,
                 });
             }
-            meta
+            if meta_session_id != &session_id.to_string() {
+                return Err(ReplayError::Corrupt(
+                    session_id.to_string(),
+                    format!(
+                        "session_meta session_id '{meta_session_id}' does not match requested session {session_id}"
+                    ),
+                ));
+            }
+            Ok(())
         },
-        _ => {
-            return Err(ReplayError::Corrupt(
-                session_id.to_string(),
-                "first record is not session_meta".to_string(),
-            ));
-        },
-    };
-
-    let mut records = vec![meta];
-    for line in lines {
-        records.push(parse_record(line, &session_id)?);
+        _ => Err(ReplayError::Corrupt(
+            session_id.to_string(),
+            "first record is not session_meta".to_string(),
+        )),
     }
-    Ok(records)
 }
 
 /// Parse one JSONL session record, mapping parse failures to [`ReplayError::Corrupt`].
@@ -298,6 +333,41 @@ mod tests {
     fn load_records_rejects_empty_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = write_session(dir.path(), &[]);
+        let error = load_records(&path, Uuid::parse_str(SESSION_ID).unwrap()).unwrap_err();
+        assert!(matches!(error, ReplayError::Corrupt(_, _)));
+    }
+
+    #[test]
+    fn load_records_tolerates_partial_final_line_without_newline() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = session_path(dir.path());
+        // No trailing newline: the final line is a partial JSON fragment left
+        // by an interrupted writer, which `Session::load` also tolerates.
+        std::fs::write(&path, format!("{}\n{}\n{{", meta_line(), task_start_line())).unwrap();
+
+        let records = load_records(&path, Uuid::parse_str(SESSION_ID).unwrap()).unwrap();
+        assert_eq!(records.len(), 2);
+    }
+
+    #[test]
+    fn load_records_rejects_partial_line_in_middle_of_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_session(
+            dir.path(),
+            &[&meta_line(), "{ not json", &task_start_line()],
+        );
+        let error = load_records(&path, Uuid::parse_str(SESSION_ID).unwrap()).unwrap_err();
+        assert!(matches!(error, ReplayError::Corrupt(_, _)));
+    }
+
+    #[test]
+    fn load_records_rejects_mismatched_header_session_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_session(dir.path(), &[&meta_line()]);
+        let content = std::fs::read_to_string(&path).unwrap();
+        let mismatched = content.replace(SESSION_ID, "550e8400-e29b-41d4-a716-4466554400ff");
+        std::fs::write(&path, mismatched).unwrap();
+
         let error = load_records(&path, Uuid::parse_str(SESSION_ID).unwrap()).unwrap_err();
         assert!(matches!(error, ReplayError::Corrupt(_, _)));
     }
