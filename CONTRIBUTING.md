@@ -64,7 +64,7 @@ Additional checks:
 - Label changes: `just labels-check-file` (file validation, also CI), `just labels-check` (repo drift vs `.github/labels.yml`), `just labels` (apply), `just labels-prune` (delete unlisted labels).
 - Full release-oriented validation: `just check-full`.
 - Documentation-only changes: targeted `panache format --check` and `panache lint` for changed living documents, link validation, and `git diff --check`. Use `just docs-check` when intentionally validating the complete Markdown corpus; it also runs `just lint-instruction-size`.
-- Instruction changes (AGENTS.md, `.agents/skills/`, guardrails, runbooks): `just lint-instruction-size` enforces per-document word budgets and also runs in `just ci`. [Agent-facing instructions](docs/guardrails/agent-instructions.md) is the authority for what an added instruction must justify.
+- Instruction changes (AGENTS.md, `.agents/skills/`, guardrails, runbooks): `just lint-instruction-size` caps AGENTS.md, the one document loaded every session, reports the corpus, and also runs in `just ci`. [Agent-facing instructions](docs/guardrails/agent-instructions.md) is the authority for what an added instruction must justify.
 
 ### Pre-push routing
 

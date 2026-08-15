@@ -12,7 +12,7 @@ Every instruction costs context on every session that loads it, and the corpus o
 
 - Name the observed failure the instruction prevents, citing a session, commit, or GitHub issue, in the pull request or the commit message.
 - State the behavior an agent will exhibit that it does not exhibit today.
-- Say what the instruction displaces. `just lint-instruction-size` enforces a word budget per document; an addition that breaks the budget must cut something or raise the budget deliberately.
+- Say what the instruction displaces. `just lint-instruction-size` caps AGENTS.md, the one document loaded every session; an addition that breaks the cap must cut something. The rest of the corpus is reported, not gated.
 
 An instruction that restates what a linked document already says is not an addition worth making. Route to the authority instead.
 
@@ -26,4 +26,6 @@ Deleting a prohibition does not grant permission --- an agent falls back to its 
 
 This guardrail originally required a fresh-session probe before an instruction could be removed, and required nothing of additions. That was a ratchet. AGENTS.md was 454 words when the rule was restored in `72b69ed` on 2026-07-26 and 1,796 words on 2026-08-05 --- 295% growth with the rule in force for every commit of it, because each addition arrived inside a feature pull request whose motivating failure was free to name while removal cost a probe. The direction of the requirement was inverted on 2026-08-06 and the probe requirement was replaced by the word budget, which is the mechanical check this document's own retirement clause called for.
 
-Retire this guardrail if the budget alone holds the corpus flat, which would show the prose is redundant. Record the evidence.
+The word budget was replaced on 2026-08-15 (issue #254). Per-document budgets were arbitrary: each was the document's current count plus headroom, so every feature that documented its contract raised a budget with a comment instead of displacing prose. The mechanical check is now a fixed cap on AGENTS.md, the one document loaded every session, plus a corpus report; on-demand documents are unconstrained.
+
+Retire this guardrail if the corpus report shows a flat corpus without the cap forcing it, which would show the prose is redundant. Record the evidence.

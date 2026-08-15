@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Enforce word budgets on the agent instruction corpus.
+"""Cap the always-loaded instruction document and report the corpus.
 
 The instruction corpus is the prose an agent loads to decide how to work:
 AGENTS.md, CONTRIBUTING.md, ARCHITECTURE.md, the topic and workflow documents
@@ -11,18 +11,34 @@ their purpose.
 Counting is prose-only: fenced code blocks are stripped before counting, so a
 document is not penalised for carrying the commands a reader needs.
 
-A document over its budget is a signal that adding guidance should displace
-guidance, not accumulate on top of it. ALLOWANCES grandfathers documents that
-were already over budget when this check landed; those may shrink but never
-grow, and the entry is deleted once the document reaches its budget.
+The check has one hard rule and one report:
 
-Exit code is 1 when any document exceeds its budget or allowance.
+- AGENTS.md is the only document loaded into every session; the system prompt,
+  the skill catalog, and the tool descriptions make up the rest of the loaded
+  set. AGENTS.md carries a fixed prose-word cap. Growth there must displace
+  growth. On-demand documents (runbooks, skills, topic documents) are
+  unconstrained: they cost nothing until a session loads them, and using them
+  is justified by the task.
+- Everything else is a report: corpus total, per-document counts, and the
+  largest documents, so review can see where the weight accumulates. No
+  per-document budgets: an arbitrary number per document just gets renegotiated
+  on contact.
+
+Exit code is 1 when AGENTS.md exceeds its cap.
 """
 
 from __future__ import annotations
 
 import os
 import sys
+
+# Policy cap on AGENTS.md in prose words. AGENTS.md is the one document loaded
+# into every session, so its size is a per-session cost: 1200 words is roughly
+# 1.6k tokens, about 1.2% of a 128k-token context. The number is policy, not
+# derived from the document's current size; there is no raise-by-comment path.
+# Contract documentation belongs in the on-demand documents, which are not
+# capped.
+AGENTS_CAP = 1200
 
 # Directories walked recursively for Markdown instructions, relative to the
 # repo root. Excluded by omission: docs/adr and docs/exec-plans hold records
@@ -37,7 +53,7 @@ INSTRUCTION_DIRS = [
 
 # Directories whose top-level Markdown files are instructions, not walked into.
 # docs/ is scanned this way so that a new topic document is covered by the
-# budget the day it lands, without pulling in the record subdirectories.
+# report the day it lands, without pulling in the record subdirectories.
 INSTRUCTION_DIRS_SHALLOW = [
     "docs",
 ]
@@ -48,80 +64,6 @@ INSTRUCTION_FILES = [
     "CONTRIBUTING.md",
     "ARCHITECTURE.md",
 ]
-
-# Per-document budgets in prose words. AGENTS.md is the routing document every
-# session pays for, so it carries the tightest budget.
-#
-# Like the allowances below, these carry headroom above the document's current
-# size rather than pinning it. A budget set to the exact current count rejects
-# the next honest addition no matter how small, which turns every unrelated
-# change into a negotiation with this file and makes switching the gate off the
-# path of least resistance. That is not hypothetical: CONTRIBUTING.md was first
-# budgeted at its exact size, and the next merge to touch it --- documenting a
-# new gate, in good faith --- broke this check.
-#
-# Each budget is the document's count plus at least 50 words, rounded up to the
-# next 50. Headroom is not permission to grow: crossing it should still cost
-# something elsewhere in the document.
-BUDGETS = {
-    # Raised 950 -> 1200 on 2026-08-12: the Final Handoff Instructions moved
-    # here from the built-in system prompt (src/prompts/system.md), a
-    # relocation rather than net growth; the count-plus-headroom convention
-    # puts the document at 1200.
-    "AGENTS.md": 1200,
-    "CONTRIBUTING.md": 1150,
-    # Compatibility-contract authority that grew a mandated section (Bash
-    # `reason`, `cake bash check` exit codes, compensation-record shapes,
-    # Milestone 7 of #72). It sat exactly at the flat 1500 default with no
-    # headroom; the addition displaced ~90 words of redundancy and still
-    # lands over the default, so it gets the standard count-plus-50 budget.
-    # Raised 1700 -> 1800 on 2026-08-12: issue #203 mandates the judge's
-    # stateless-evaluation and self-contained-remediation contract; the
-    # addition displaced ~21 words of redundancy (session-continuation
-    # ordering, runbook routing) and still lands over the budget, so it
-    # follows the same count-plus-50 convention.
-    # Raised 1800 -> 1900 on 2026-08-14: issue #67 adds `cake init`, an
-    # additive CLI surface whose stdout and exit-3 refusal contract belongs
-    # in the integration authority; the document sat exactly at 1800 with no
-    # headroom, so it follows the same count-plus-50 convention.
-    # Raised 1900 -> 2100 on 2026-08-15: both #59 (`cake replay`, an additive
-    # CLI surface whose stream-json contract and error/exit protocol belong in
-    # the integration authority) and #55 (configurable `max_turns`/
-    # `max_tool_calls` agent-loop limits, whose limit-exceeded outcome, exit
-    # behavior, and record shape belong in the integration authority) added
-    # mandated sections; the merged document displaced overlapping prose and
-    # still counts 2033, so it follows the same count-plus-50 convention.
-    "docs/integrations.md": 2100,
-    # Raised 1500 -> 1650 on 2026-08-14: issue #67 documents `cake init`
-    # project scaffolding, which the document must describe as an explicit
-    # configuration entry point; it sat exactly at the 1500 default with no
-    # headroom, so it gets the standard count-plus-50 budget.
-    # Raised 1650 -> 1750 on 2026-08-14: issue #55 adds the `[limits]`
-    # settings section for configurable agent-loop limits; the section
-    # documents a new top-level settings surface, following the same
-    # count-plus-50 convention.
-    "docs/configuration.md": 1750,
-    # Raised 1500 -> 1600 on 2026-08-14: issue #67 adds the trust model for
-    # `cake init`'s generated files (behavior-preserving settings, inert
-    # hooks example); the document sat exactly at the 1500 default with no
-    # headroom, so it gets the standard count-plus-50 budget.
-    "docs/security.md": 1600,
-}
-DEFAULT_BUDGET = 1500
-
-# Documents already over budget when this check landed. These may shrink but
-# never grow. Delete the entry once the document is under its budget.
-#
-# Each allowance is the document's word count at the time it was granted,
-# rounded up to the next 50 words. The slack is deliberate: an allowance pinned
-# to an exact count fails on any edit at all, including one that clarifies
-# wording at equal length, and a gate that blocks ordinary editing gets
-# switched off. Rounding absorbs that without permitting real growth --- 50
-# words on a document this size is under 3%.
-ALLOWANCES: dict[str, int] = {
-    "docs/runbooks/analyzing-cake-sessions/index.md": 1750,
-    ".agents/skills/finding-improvements/SKILL.md": 2800,
-}
 
 
 def find_instruction_files(root: str) -> list[str]:
@@ -174,22 +116,8 @@ def count_prose_words(filepath: str) -> int:
     return words
 
 
-def budget_for(relpath: str) -> int:
-    """Return the word budget that applies to a document."""
-    return BUDGETS.get(relpath, DEFAULT_BUDGET)
-
-
-def limit_for(relpath: str) -> tuple[int, bool]:
-    """Return the enforced limit and whether it comes from an allowance."""
-    budget = budget_for(relpath)
-    allowance = ALLOWANCES.get(relpath)
-    if allowance is not None and allowance > budget:
-        return allowance, True
-    return budget, False
-
-
 def main() -> int:
-    """Check every instruction document against its budget."""
+    """Check AGENTS.md against its cap and report the corpus."""
     script_dir = os.path.dirname(os.path.abspath(__file__))
     root = os.path.dirname(script_dir)
 
@@ -198,39 +126,33 @@ def main() -> int:
         print("ERROR: no instruction documents found", file=sys.stderr)
         return 1
 
+    counts = {
+        relpath: count_prose_words(os.path.join(root, relpath)) for relpath in files
+    }
+    total = sum(counts.values())
+
+    agents_count = counts.get("AGENTS.md")
     violations: list[str] = []
-    stale: list[str] = []
-    total = 0
+    if agents_count is not None and agents_count > AGENTS_CAP:
+        violations.append(f"AGENTS.md: {agents_count} prose words, cap {AGENTS_CAP}")
 
-    for relpath in files:
-        count = count_prose_words(os.path.join(root, relpath))
-        total += count
-        limit, grandfathered = limit_for(relpath)
-
-        if count > limit:
-            suffix = " (allowance)" if grandfathered else ""
-            violations.append(f"{relpath}: {count} words, limit {limit}{suffix}")
-        elif grandfathered and count <= budget_for(relpath):
-            stale.append(
-                f"{relpath}: {count} words is within its {budget_for(relpath)}-word "
-                f"budget; remove its ALLOWANCES entry"
-            )
-
-    for line in stale:
-        print(f"stale allowance: {line}")
+    print(f"Instruction corpus: {total} prose words across {len(files)} documents.")
+    for relpath, count in sorted(counts.items(), key=lambda item: (-item[1], item[0])):
+        suffix = f" (cap {AGENTS_CAP})" if relpath == "AGENTS.md" else ""
+        print(f"  {count:6d}  {relpath}{suffix}")
 
     if violations:
-        print("Instruction budget exceeded:", file=sys.stderr)
+        print("Instruction cap exceeded:", file=sys.stderr)
         for line in violations:
             print(f"  {line}", file=sys.stderr)
         print(
-            "\nAdding guidance should displace guidance. Cut something, or raise\n"
-            "the budget in scripts/lint-instruction-size.py and say why in the PR.",
+            "\nAGENTS.md loads into every session; growth there must displace "
+            "growth. Cut something, or move the guidance to an on-demand "
+            "document, which is not capped.",
             file=sys.stderr,
         )
         return 1
 
-    print(f"Instruction corpus: {total} prose words across {len(files)} documents.")
     return 0
 
 

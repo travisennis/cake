@@ -142,7 +142,7 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Check instruction word budgets
+      - name: Cap always-loaded instructions and report the corpus
         run: python3 scripts/lint-instruction-size.py
       - name: Check domain glossary anchors
         run: python3 scripts/lint-domain-glossary.py
