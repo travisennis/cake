@@ -107,9 +107,10 @@ fn immediate_tool_error_result(
 
 impl Agent {
     /// Log the remaining context-window budget after a completed turn, when a
-    /// window is configured. Kept out of `send` so the grandfathered loop
-    /// (reduction task #101) does not grow its cyclomatic complexity.
-    fn log_context_budget(&self) {
+    /// window is configured. Factored into its own method so the grandfathered
+    /// `send` loop (reduction task #101) does not grow its cyclomatic
+    /// complexity with an extra decision point.
+    pub(super) fn log_context_budget(&self) {
         if let Some(remaining) = self.context_remaining_tokens() {
             tracing::info!(
                 target: "cake",

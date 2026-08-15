@@ -195,6 +195,59 @@ fn context_remaining_saturates_at_zero() {
     assert_eq!(agent.context_remaining_tokens(), Some(0));
 }
 
+/// Captures formatted tracing output produced by `f` and returns it as text.
+fn with_captured_tracing(f: impl FnOnce()) -> String {
+    #[derive(Clone)]
+    struct TracingWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for TracingWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let logs = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let writer = TracingWriter(std::sync::Arc::clone(&logs));
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_writer(move || writer.clone())
+        .finish();
+    tracing::subscriber::with_default(subscriber, f);
+    String::from_utf8(logs.lock().unwrap().clone()).unwrap()
+}
+
+#[test]
+fn log_context_budget_emits_remaining_when_window_configured() {
+    let agent = test_agent()
+        .with_context_window(Some(1000))
+        .with_total_usage(Usage {
+            total_tokens: 350,
+            ..Usage::default()
+        })
+        .with_turn_count(3);
+
+    let output = with_captured_tracing(|| agent.log_context_budget());
+    assert!(output.contains("remaining_context_tokens=650"), "{output}");
+    assert!(output.contains("turn=3"), "{output}");
+    assert!(
+        output.contains("Context window budget remaining after turn"),
+        "{output}"
+    );
+}
+
+#[test]
+fn log_context_budget_is_silent_without_window() {
+    let agent = test_agent().with_turn_count(1);
+    let output = with_captured_tracing(|| agent.log_context_budget());
+    assert!(output.is_empty(), "{output}");
+}
+
 #[test]
 fn emit_task_complete_record_success() {
     let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
