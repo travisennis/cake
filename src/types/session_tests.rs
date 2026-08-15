@@ -772,6 +772,27 @@ fn snapshot_session_json_task_complete() {
 }
 
 #[test]
+fn snapshot_session_json_turn_usage() {
+    let record = SessionRecord::TurnUsage(TurnUsageData {
+        session_id: fixed_session_id(),
+        task_id: fixed_task_id(),
+        turn: 2,
+        usage: Usage {
+            input_tokens: 1200,
+            input_tokens_details: InputTokensDetails { cached_tokens: 300 },
+            output_tokens: 100,
+            output_tokens_details: OutputTokensDetails {
+                reasoning_tokens: 40,
+            },
+            total_tokens: 1300,
+        },
+        timestamp: fixed_timestamp(),
+    });
+
+    insta::assert_json_snapshot!("session_json_turn_usage", session_record_json(record));
+}
+
+#[test]
 fn snapshot_session_json_prompt_context() {
     let record = SessionRecord::PromptContext {
         session_id: fixed_session_id(),

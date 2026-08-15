@@ -24,7 +24,7 @@ use crate::session_telemetry::{
 };
 use crate::types::{
     ConversationItem, Role, SessionRecord, StreamRecord, TaskCompleteData, TaskOutcome,
-    TaskStartData, Usage,
+    TaskStartData, TurnUsageData, Usage,
 };
 
 /// Result of a single API turn (one request/response cycle).
@@ -64,6 +64,10 @@ pub struct Agent {
     task_id: uuid::Uuid,
     /// Accumulated usage across all API calls
     total_usage: Usage,
+    /// Usage reported by the most recent completed API turn. The basis for
+    /// estimating remaining context-window budget. `None` before the first
+    /// turn or when no turn has reported usage.
+    last_usage: Option<Usage>,
     /// Number of API calls made
     turn_count: u32,
     /// Number of tool calls executed
@@ -109,6 +113,7 @@ impl Agent {
             session_id: uuid::Uuid::new_v4(),
             task_id: uuid::Uuid::new_v4(),
             total_usage: Usage::default(),
+            last_usage: None,
             turn_count: 0,
             tool_call_count: 0,
             skill_locations: Arc::new(HashMap::new()),
@@ -255,6 +260,15 @@ impl Agent {
         &self.total_usage
     }
 
+    /// Returns the usage reported by the most recent completed API turn, if any.
+    ///
+    /// The provider's `input_tokens` for that turn is the full request size
+    /// (system prompt, tool schemas, and history), which is the current
+    /// context occupancy after the turn.
+    pub const fn last_usage(&self) -> Option<Usage> {
+        self.last_usage
+    }
+
     /// Returns the configured model context window in tokens, if set.
     pub const fn context_window(&self) -> Option<u32> {
         self.config.model_config.context_window
@@ -262,12 +276,21 @@ impl Agent {
 
     /// Returns the token budget remaining in the configured context window.
     ///
-    /// Computed from the accumulated usage across all API calls. `None` when
-    /// no window is configured; never negative when configured (saturates at
-    /// zero once usage meets or exceeds the window).
+    /// Computed from the input tokens of the most recent completed turn: the
+    /// provider's count of the full request just sent. The next request grows
+    /// the context by its own output and any client-added tool outputs, which
+    /// cake does not tokenize, so callers should reserve a buffer (for example
+    /// compact when remaining falls below a threshold) rather than estimate
+    /// that delta. `None` when no window is configured or before the first
+    /// turn; never negative when configured (saturates at zero once usage
+    /// meets or exceeds the window).
     pub fn context_remaining_tokens(&self) -> Option<u64> {
-        self.context_window()
-            .map(|window| u64::from(window).saturating_sub(self.total_usage.total_tokens))
+        match (self.context_window(), self.last_usage) {
+            (Some(window), Some(usage)) => {
+                Some(u64::from(window).saturating_sub(usage.input_tokens))
+            },
+            _ => None,
+        }
     }
 
     /// Returns the number of API calls made.
@@ -296,6 +319,13 @@ impl Agent {
     #[cfg(test)]
     pub const fn with_total_usage(mut self, usage: Usage) -> Self {
         self.total_usage = usage;
+        self
+    }
+
+    /// Sets the usage of the most recent completed turn (for restored sessions
+    /// and test fixtures).
+    pub const fn with_last_usage(mut self, usage: Option<Usage>) -> Self {
+        self.last_usage = usage;
         self
     }
 
@@ -441,6 +471,33 @@ impl Agent {
     /// Persist a session-only audit record without emitting it to stream-json.
     fn persist_record(&mut self, record: &SessionRecord) -> anyhow::Result<()> {
         self.observer.persist_record(record)
+    }
+
+    /// Record per-turn usage after a completed API turn.
+    ///
+    /// Updates the last-usage basis used by [`Self::context_remaining_tokens`]
+    /// and persists a session-only `TurnUsage` audit record so resumed
+    /// sessions can reconstruct the current context size. No-op when the turn
+    /// reported no usage.
+    ///
+    /// A persist failure warns and is otherwise ignored: the audit record must
+    /// not abort the model conversation, and this method is called from the
+    /// grandfathered `Agent::send` loop without adding a `?` decision point
+    /// (reduction task #101).
+    fn record_turn_usage(&mut self, usage: Option<&Usage>) {
+        if let Some(usage) = usage {
+            self.last_usage = Some(*usage);
+            let record = SessionRecord::TurnUsage(TurnUsageData {
+                session_id: self.session_id.to_string(),
+                task_id: self.task_id.to_string(),
+                turn: self.turn_count,
+                usage: *usage,
+                timestamp: chrono::Utc::now(),
+            });
+            if let Err(error) = self.persist_record(&record) {
+                tracing::warn!(target: "cake", %error, "Failed to persist per-turn usage");
+            }
+        }
     }
 
     /// Stream a conversation item as JSON via the streaming callback, if set.

@@ -52,7 +52,7 @@ The current format version is 4:
 3. Conversation and metadata records are appended live.
 4. The invocation ends with one `task_complete` when Cake can record an outcome.
 
-Conversation records restored into model history are `message`, `function_call`, `function_call_output`, and `reasoning`. `session_meta`, `task_start`, `prompt_context`, `skill_activated`, `hook_event`, and `task_complete` are audit or lifecycle metadata and are not replayed as conversation.
+Conversation records restored into model history are `message`, `function_call`, `function_call_output`, and `reasoning`. `session_meta`, `task_start`, `prompt_context`, `skill_activated`, `hook_event`, `turn_usage`, and `task_complete` are audit or lifecycle metadata and are not replayed as conversation. `turn_usage` records one normalized `usage` per completed API turn; Cake uses the most recent one to seed the agent's last-usage basis on continue, resume, and fork, so a resumed run knows its current context size before the first new provider request.
 
 `--continue` selects the newest session whose header working directory matches the current directory. `--resume <UUID>` opens a specific session. `--fork [UUID]` creates a new session identity seeded with conversation records and prior `skill_activated` metadata from the selected parent. It does not copy parent session, task, prompt-context, hook, or completion metadata.
 

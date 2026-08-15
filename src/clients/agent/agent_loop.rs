@@ -115,6 +115,8 @@ impl Agent {
             tracing::info!(
                 target: "cake",
                 turn = self.turn_count,
+                window = self.context_window(),
+                context_tokens = self.last_usage().map(|usage| usage.input_tokens),
                 remaining_context_tokens = remaining,
                 "Context window budget remaining after turn"
             );
@@ -156,6 +158,7 @@ impl Agent {
             // Count every completed API turn unconditionally; accumulate usage separately.
             self.turn_count += 1;
             self.accumulate_usage(usage.as_ref());
+            self.record_turn_usage(usage.as_ref());
             self.log_context_budget();
 
             // Extract owned function call data before moving items into history

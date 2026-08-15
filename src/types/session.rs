@@ -277,6 +277,22 @@ pub struct TaskCompleteData {
     pub permission_denials: Option<Vec<String>>,
 }
 
+/// Token usage for one completed API turn.
+///
+/// Session-only audit record: persisted to the session file but never emitted
+/// to stream-json output. Per-turn usage lets a resumed session know the
+/// current context size before the next provider request and makes token
+/// growth across turns reconstructible.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct TurnUsageData {
+    pub session_id: String,
+    pub task_id: String,
+    /// 1-based index of the completed turn.
+    pub turn: u32,
+    pub usage: Usage,
+    pub timestamp: DateTime<Utc>,
+}
+
 /// Shared data for `HookEvent` records in both `StreamRecord` and `SessionRecord`.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct HookEventData {
@@ -364,6 +380,9 @@ pub enum SessionRecord {
     Reasoning(ReasoningData),
 
     TaskComplete(TaskCompleteData),
+
+    /// Per-turn token usage (session-only; not emitted to stream-json).
+    TurnUsage(TurnUsageData),
 }
 
 /// A single line in `--output-format stream-json` output for the current task.
@@ -476,7 +495,8 @@ impl SessionRecord {
             | Self::PromptContext { .. }
             | Self::SkillActivated { .. }
             | Self::HookEvent(_)
-            | Self::TaskComplete(_) => {},
+            | Self::TaskComplete(_)
+            | Self::TurnUsage(_) => {},
         }
     }
 
@@ -539,7 +559,8 @@ impl SessionRecord {
             | Self::PromptContext { .. }
             | Self::SkillActivated { .. }
             | Self::HookEvent(_)
-            | Self::TaskComplete(_) => None,
+            | Self::TaskComplete(_)
+            | Self::TurnUsage(_) => None,
         }
     }
 }

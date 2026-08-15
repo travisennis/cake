@@ -14,7 +14,7 @@ pub use conversation::{ConversationItem, ReasoningContent, ReasoningContentKind,
 #[doc(inline)]
 pub use session::{
     CutOffError, GitState, HookEventData, SessionRecord, StreamRecord, TaskCompleteData,
-    TaskOutcome, TaskStartData,
+    TaskOutcome, TaskStartData, TurnUsageData,
 };
 #[doc(inline)]
 pub use usage::{InputTokensDetails, OutputTokensDetails, Usage};
