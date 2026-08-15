@@ -73,10 +73,19 @@ max_turns = 10        # stop after 10 agent-loop turns
 max_tool_calls = 50   # stop after 50 executed tool calls
 ```
 
+A limit is a positive integer, or the string `"unlimited"` to mean no cap:
+
+```toml
+[limits]
+max_turns = "unlimited"  # explicit opt-out; overrides a global cap
+```
+
+`0`, negative values, and any other string are rejected at load time.
+
 - `max_turns`: maximum agent-loop turns. When the loop reaches the cap and would otherwise continue, Cake stops with a `limit_exceeded` outcome and surfaces the last assistant message, if any, as the partial result.
 - `max_tool_calls`: maximum tool calls executed. A turn whose batch would exceed the cap is stopped before any call in the batch runs.
 
-The limits combine; whichever fires first stops the loop. Project `[limits]` values override global values per key. The stop is reported as `limit_exceeded` in the `task_complete` record and completion JSON, and as a distinct error in text mode.
+The limits combine; whichever fires first stops the loop. Project `[limits]` values override global values per key, including back to `"unlimited"`. The stop is reported as `limit_exceeded` in the `task_complete` record and completion JSON, and as a distinct error in text mode.
 
 ## Bash tool settings
 

@@ -741,6 +741,28 @@ fn output_sink_builds_limit_exceeded_json() {
 }
 
 #[test]
+fn sink_safe_error_text_strips_limit_exceeded_partial_result() {
+    // A limit-exceeded error's Display embeds the partial assistant message so
+    // text mode can surface it, but out-of-band sinks (telemetry summary, error
+    // hooks) must not carry assistant text; they get the concise detail only.
+    let limit_error: anyhow::Error = crate::types::LimitExceededError::new(
+        "max_turns".to_string(),
+        "max_turns limit exceeded after 5 turns (max_turns = 5)".to_string(),
+        Some("assistant partial text".to_string()),
+    )
+    .into();
+    assert_eq!(
+        sink_safe_error_text(&limit_error),
+        "max_turns limit exceeded after 5 turns (max_turns = 5)"
+    );
+    assert!(!sink_safe_error_text(&limit_error).contains("assistant partial text"));
+
+    // All other errors pass through unchanged (parity with prior behavior).
+    let other: anyhow::Error = anyhow::anyhow!("plain tool error");
+    assert_eq!(sink_safe_error_text(&other), "plain tool error");
+}
+
+#[test]
 fn output_sink_no_session_suppresses_session_file() {
     temp_env::with_var("CAKE_TEST_VALID_KEY", Some("sk-test-123"), || {
         let agent = Agent::new(

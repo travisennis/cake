@@ -1,6 +1,6 @@
 use super::*;
 use crate::config::model::{ApiType, ResolvedModelConfig};
-use crate::config::settings::LimitsSettings;
+use crate::config::settings::{Limit, LimitsSettings};
 use crate::types::{InputTokensDetails, OutputTokensDetails};
 
 fn test_resolved_model_config(api_type: ApiType, base_url: &str) -> ResolvedModelConfig {
@@ -1038,7 +1038,7 @@ mod error_tests {
             .await;
 
         let mut agent = test_agent_with_url(&mock_server.uri()).with_limits(&LimitsSettings {
-            max_turns: Some(1),
+            max_turns: Some(Limit::max(1)),
             max_tool_calls: None,
         });
 
@@ -1092,7 +1092,7 @@ mod error_tests {
             .with_history(restored)
             .unwrap()
             .with_limits(&LimitsSettings {
-                max_turns: Some(0),
+                max_turns: Some(Limit::max(0)),
                 max_tool_calls: None,
             });
 
@@ -1117,7 +1117,7 @@ mod error_tests {
             .await;
 
         let mut agent = test_agent_with_url(&mock_server.uri()).with_limits(&LimitsSettings {
-            max_turns: Some(1),
+            max_turns: Some(Limit::max(1)),
             max_tool_calls: None,
         });
 
@@ -1140,7 +1140,7 @@ mod error_tests {
 
         let mut agent = test_agent_with_url(&mock_server.uri()).with_limits(&LimitsSettings {
             max_turns: None,
-            max_tool_calls: Some(1),
+            max_tool_calls: Some(Limit::max(1)),
         });
 
         let error = agent.send("run a command".to_string()).await.unwrap_err();
@@ -1205,7 +1205,7 @@ mod error_tests {
             .with_tools(crate::clients::tools::read_tool_registry())
             .with_limits(&LimitsSettings {
                 max_turns: None,
-                max_tool_calls: Some(1),
+                max_tool_calls: Some(Limit::max(1)),
             });
 
         let error = agent.send("run a command".to_string()).await.unwrap_err();

@@ -947,7 +947,7 @@ impl CodingAssistant {
         let Some(runner) = hook_runner else {
             return;
         };
-        if let Err(hook_error) = runner.error_occurred(error).await {
+        if let Err(hook_error) = runner.error_occurred(&sink_safe_error_text(error)).await {
             tracing::warn!(target: "cake::hooks", error = %hook_error, "error_occurred hook failed (best-effort)");
         }
     }
@@ -984,12 +984,13 @@ fn is_output_schema_exhaustion(error: &anyhow::Error) -> bool {
     )
 }
 
-/// Telemetry-safe error text for the session summary.
+/// Error text safe for out-of-band sinks (telemetry summary, error hooks).
 ///
 /// A [`LimitExceededError`]'s `Display` embeds the partial assistant message
-/// so text mode can surface it, but telemetry omits assistant text; the
-/// summary carries the concise detail instead.
-fn summary_error_text(error: &anyhow::Error) -> String {
+/// so text mode can surface it, but these sinks must not carry assistant
+/// text; they get the concise detail instead. All other errors pass through
+/// unchanged.
+fn sink_safe_error_text(error: &anyhow::Error) -> String {
     error.downcast_ref::<LimitExceededError>().map_or_else(
         || error.to_string(),
         |limit_exceeded| limit_exceeded.detail.clone(),
@@ -1111,7 +1112,7 @@ impl CmdRunner for CodingAssistant {
         client.emit_session_summary_telemetry(
             turn.result.is_ok(),
             turn.duration_ms,
-            turn.result.as_ref().err().map(summary_error_text),
+            turn.result.as_ref().err().map(sink_safe_error_text),
         );
         output.render_turn(
             turn,
