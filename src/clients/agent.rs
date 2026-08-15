@@ -15,6 +15,7 @@ use crate::clients::tools::{
 };
 use crate::config::model::ResolvedModelConfig;
 use crate::config::output_schema::OutputSchema;
+use crate::config::settings::LimitsSettings;
 use crate::config::skills::Skill;
 use crate::config::toolbox::ToolboxTool;
 use crate::hooks::HookRunner;
@@ -68,6 +69,12 @@ pub struct Agent {
     turn_count: u32,
     /// Number of tool calls executed
     tool_call_count: u32,
+    /// User-configured maximum number of agent-loop turns. `None` (the
+    /// default) leaves the loop uncapped.
+    max_turns: Option<u32>,
+    /// User-configured maximum number of tool calls executed. `None` (the
+    /// default) leaves the loop uncapped.
+    max_tool_calls: Option<u32>,
     /// Maps SKILL.md paths to skills for path-watching `SkillActivated` records.
     /// When the Read tool targets one of these paths, a `SkillActivated`
     /// record is emitted once per skill per session.
@@ -111,6 +118,8 @@ impl Agent {
             total_usage: Usage::default(),
             turn_count: 0,
             tool_call_count: 0,
+            max_turns: None,
+            max_tool_calls: None,
             skill_locations: Arc::new(HashMap::new()),
             activated_skills: Arc::new(Mutex::new(HashSet::new())),
             permission_denials: Vec::new(),
@@ -281,6 +290,16 @@ impl Agent {
     #[cfg(test)]
     pub const fn with_turn_count(mut self, count: u32) -> Self {
         self.turn_count = count;
+        self
+    }
+
+    /// Applies user-configured agent-loop resource limits.
+    ///
+    /// Both limits are off when the settings are absent; a `None` field
+    /// leaves that limit unlimited.
+    pub const fn with_limits(mut self, limits: &LimitsSettings) -> Self {
+        self.max_turns = limits.max_turns;
+        self.max_tool_calls = limits.max_tool_calls;
         self
     }
 

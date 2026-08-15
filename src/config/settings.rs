@@ -249,6 +249,27 @@ pub struct Settings {
     /// Tool-scoped settings.
     #[serde(default)]
     pub tools: Option<ToolsSettings>,
+    /// Agent-loop resource limits.
+    #[serde(default)]
+    pub limits: Option<LimitsSettings>,
+}
+
+/// User-configured agent-loop resource limits.
+///
+/// Every limit is off by default: an uncapped agent loop is a deliberate
+/// design property, and no limit fires unless the user configures one. The
+/// keys are independent — turns and tool calls are different resource
+/// boundaries, so they are never derived from one another.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LimitsSettings {
+    /// Maximum number of agent-loop turns before the run terminates with a
+    /// limit-exceeded outcome. `None` (the default) means unlimited.
+    #[serde(default)]
+    pub max_turns: Option<u32>,
+    /// Maximum number of tool calls executed before the run terminates with
+    /// a limit-exceeded outcome. `None` (the default) means unlimited.
+    #[serde(default)]
+    pub max_tool_calls: Option<u32>,
 }
 
 /// Result of loading and merging settings from all sources.
@@ -275,6 +296,8 @@ pub struct LoadedSettings {
     pub system_prompt: Option<String>,
     /// Effective LLM judge settings (global + project merged, defaults applied).
     pub judge: JudgeSettings,
+    /// Effective agent-loop resource limits (global + project merged).
+    pub limits: LimitsSettings,
     /// Warnings about unrecognized keys in settings files, one per issue and
     /// already formatted with the source file path. Unrecognized keys are
     /// ignored (existing behavior); these warnings surface them instead of
@@ -668,10 +691,27 @@ impl SettingsLoader {
             acc.system_prompt = settings.system_prompt;
         }
         Self::merge_judge_settings(settings.tools, acc);
+        Self::merge_limits(settings.limits, acc);
         for (name, profile) in settings.profiles {
             acc.profiles.entry(name).or_default().push(profile);
         }
         Ok(())
+    }
+
+    /// Merge `[limits]` fields into the accumulator.
+    ///
+    /// Absent keys keep lower-precedence values, so a project `[limits]`
+    /// section overrides only the keys it sets.
+    const fn merge_limits(limits: Option<LimitsSettings>, acc: &mut SettingsAccumulator) {
+        let Some(limits) = limits else {
+            return;
+        };
+        if limits.max_turns.is_some() {
+            acc.max_turns = limits.max_turns;
+        }
+        if limits.max_tool_calls.is_some() {
+            acc.max_tool_calls = limits.max_tool_calls;
+        }
     }
 
     /// Merge `[tools.bash.judge]` fields into the accumulator.
@@ -803,6 +843,8 @@ struct SettingsAccumulator {
     judge_rubric_file: Option<PathBuf>,
     judge_enabled: Option<bool>,
     judge_allowlist: Vec<String>,
+    max_turns: Option<u32>,
+    max_tool_calls: Option<u32>,
     warnings: Vec<String>,
 }
 
@@ -848,6 +890,10 @@ impl SettingsAccumulator {
                 rubric_file: self.judge_rubric_file,
                 enabled: self.judge_enabled.unwrap_or(true),
                 allowlist: self.judge_allowlist,
+            },
+            limits: LimitsSettings {
+                max_turns: self.max_turns,
+                max_tool_calls: self.max_tool_calls,
             },
             warnings: self.warnings,
         }

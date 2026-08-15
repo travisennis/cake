@@ -69,10 +69,10 @@
     {
       "file": "./src/clients/agent/agent_loop.rs",
       "function": "Agent::send",
-      "line": 92,
-      "cyclomatic": 20.0,
-      "coverage": 87.34177215189874,
-      "crap": 20.811294846857958
+      "line": 124,
+      "cyclomatic": 22.0,
+      "coverage": 87.65432098765432,
+      "crap": 22.91073138880892
     },
     {
       "file": "./src/prompts/mod.rs",
@@ -285,10 +285,10 @@
     {
       "file": "./src/types/session.rs",
       "function": "TaskOutcome::deserialize",
-      "line": 159,
-      "cyclomatic": 11.0,
-      "coverage": 92.85714285714286,
-      "crap": 11.044096209912537
+      "line": 198,
+      "cyclomatic": 14.0,
+      "coverage": 80.0,
+      "crap": 15.568
     },
     {
       "file": "./src/clients/tools/sandbox/macos.rs",
@@ -933,10 +933,10 @@
     {
       "file": "./src/types/session.rs",
       "function": "task_outcome_subtype",
-      "line": 64,
-      "cyclomatic": 6.0,
+      "line": 79,
+      "cyclomatic": 7.0,
       "coverage": 100.0,
-      "crap": 6.0
+      "crap": 7.0
     },
     {
       "file": "./src/types/session.rs",
@@ -1342,9 +1342,9 @@
       "file": "./src/cli/output.rs",
       "function": "CliOutputSink::turn_result_json",
       "line": 105,
-      "cyclomatic": 5.0,
+      "cyclomatic": 6.0,
       "coverage": 100.0,
-      "crap": 5.0
+      "crap": 6.0
     },
     {
       "file": "./src/main.rs",
@@ -1733,10 +1733,10 @@
     {
       "file": "./src/types/session.rs",
       "function": "TaskOutcome::serialize",
-      "line": 98,
-      "cyclomatic": 4.0,
+      "line": 118,
+      "cyclomatic": 5.0,
       "coverage": 100.0,
-      "crap": 4.0
+      "crap": 5.0
     },
     {
       "file": "./src/types/conversation.rs",
@@ -1933,10 +1933,10 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::task_outcome_for_error",
-      "line": 948,
-      "cyclomatic": 3.0,
-      "coverage": 78.57142857142857,
-      "crap": 3.0885568513119535
+      "line": 955,
+      "cyclomatic": 4.0,
+      "coverage": 85.71428571428571,
+      "crap": 4.0466472303206995
     },
     {
       "file": "./src/clients/tools/sandbox/macos.rs",

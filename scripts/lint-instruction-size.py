@@ -84,12 +84,20 @@ BUDGETS = {
     # additive CLI surface whose stdout and exit-3 refusal contract belongs
     # in the integration authority; the document sat exactly at 1800 with no
     # headroom, so it follows the same count-plus-50 convention.
-    "docs/integrations.md": 1900,
+    # Raised 1900 -> 1950 on 2026-08-14: issue #55 adds configurable
+    # `max_turns`/`max_tool_calls` agent-loop limits; the limit-exceeded
+    # outcome, its exit behavior, and the record shape belong in the
+    # integration authority, and the addition displaced overlapping prose.
+    "docs/integrations.md": 1950,
     # Raised 1500 -> 1650 on 2026-08-14: issue #67 documents `cake init`
     # project scaffolding, which the document must describe as an explicit
     # configuration entry point; it sat exactly at the 1500 default with no
     # headroom, so it gets the standard count-plus-50 budget.
-    "docs/configuration.md": 1650,
+    # Raised 1650 -> 1750 on 2026-08-14: issue #55 adds the `[limits]`
+    # settings section for configurable agent-loop limits; the section
+    # documents a new top-level settings surface, following the same
+    # count-plus-50 convention.
+    "docs/configuration.md": 1750,
     # Raised 1500 -> 1600 on 2026-08-14: issue #67 adds the trust model for
     # `cake init`'s generated files (behavior-preserving settings, inert
     # hooks example); the document sat exactly at the 1500 default with no

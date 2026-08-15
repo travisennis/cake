@@ -32,7 +32,7 @@ use crate::hooks::{HookContext, HookRunner};
 
 use crate::session_telemetry::{SessionTelemetryRecord, SessionTelemetryWriter};
 
-use crate::types::{CutOffError, SessionRecord, StreamRecord, TaskOutcome};
+use crate::types::{CutOffError, LimitExceededError, SessionRecord, StreamRecord, TaskOutcome};
 
 use clap::{ArgGroup, Parser, ValueEnum};
 
@@ -878,6 +878,9 @@ impl CodingAssistant {
                 if let Some(cutoff) = error.downcast_ref::<CutOffError>() {
                     Self::emit_cut_off_agent_turn(client, hook_runner, cutoff, duration_ms).await?;
                 } else {
+                    // Limit-exceeded errors are classified by
+                    // `task_outcome_for_error`, which emits the distinct
+                    // `limit_exceeded` outcome and runs the error hook.
                     Self::emit_failed_agent_turn(client, hook_runner, error, duration_ms).await?;
                 }
             },
@@ -955,6 +958,13 @@ impl CodingAssistant {
                 detail: cutoff.detail.clone(),
             };
         }
+        if let Some(limit_exceeded) = error.downcast_ref::<LimitExceededError>() {
+            return TaskOutcome::LimitExceeded {
+                limit: limit_exceeded.limit.clone(),
+                detail: limit_exceeded.detail.clone(),
+                result: limit_exceeded.result.clone(),
+            };
+        }
         if is_output_schema_exhaustion(error) {
             TaskOutcome::ErrorOutputSchema {
                 error: error.to_string(),
@@ -971,6 +981,18 @@ fn is_output_schema_exhaustion(error: &anyhow::Error) -> bool {
     matches!(
         error.downcast_ref::<crate::config::OutputSchemaError>(),
         Some(crate::config::OutputSchemaError::Unsatisfied { .. })
+    )
+}
+
+/// Telemetry-safe error text for the session summary.
+///
+/// A [`LimitExceededError`]'s `Display` embeds the partial assistant message
+/// so text mode can surface it, but telemetry omits assistant text; the
+/// summary carries the concise detail instead.
+fn summary_error_text(error: &anyhow::Error) -> String {
+    error.downcast_ref::<LimitExceededError>().map_or_else(
+        || error.to_string(),
+        |limit_exceeded| limit_exceeded.detail.clone(),
     )
 }
 
@@ -1012,6 +1034,7 @@ impl CmdRunner for CodingAssistant {
             &resources.loaded.judge,
         )?;
 
+        run_session.agent = run_session.agent.with_limits(&resources.loaded.limits);
         run_session.attach_output_schema(prepared.output_schema.as_ref());
 
         Self::prepare_seeded_session(data_dir, &mut run_session)?;
@@ -1088,7 +1111,7 @@ impl CmdRunner for CodingAssistant {
         client.emit_session_summary_telemetry(
             turn.result.is_ok(),
             turn.duration_ms,
-            turn.result.as_ref().err().map(ToString::to_string),
+            turn.result.as_ref().err().map(summary_error_text),
         );
         output.render_turn(
             turn,

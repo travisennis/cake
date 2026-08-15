@@ -1418,6 +1418,97 @@ timeout_secs = 0
     assert_eq!(loaded.judge.timeout_secs, 1);
 }
 
+// --- [limits] ---
+
+#[test]
+fn test_limits_load_from_settings() {
+    let dir = create_project_settings(
+        r#"
+[[models]]
+name = "test-model"
+model = "test/model"
+base_url = "https://example.com"
+api_key_env = "MY_KEY"
+
+[limits]
+max_turns = 10
+max_tool_calls = 50
+"#,
+    );
+
+    let home = create_home_dir();
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load(Some(dir.path()))
+    })
+    .unwrap();
+
+    assert_eq!(loaded.limits.max_turns, Some(10));
+    assert_eq!(loaded.limits.max_tool_calls, Some(50));
+    assert!(loaded.warnings.is_empty(), "{:#?}", loaded.warnings);
+}
+
+#[test]
+fn test_limits_default_to_unlimited() {
+    let dir = create_project_settings(
+        r#"
+[[models]]
+name = "test-model"
+model = "test/model"
+base_url = "https://example.com"
+api_key_env = "MY_KEY"
+"#,
+    );
+
+    let home = create_home_dir();
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load(Some(dir.path()))
+    })
+    .unwrap();
+
+    assert_eq!(loaded.limits.max_turns, None);
+    assert_eq!(loaded.limits.max_tool_calls, None);
+}
+
+#[test]
+fn test_limits_project_overrides_global_per_key() {
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"
+[[models]]
+name = "test-model"
+model = "test/model"
+base_url = "https://example.com"
+api_key_env = "MY_KEY"
+
+[limits]
+max_turns = 5
+max_tool_calls = 50
+"#,
+    );
+    // The project section overrides only the keys it sets.
+    let project = create_project_settings(
+        r#"
+[[models]]
+name = "test-model"
+model = "test/model"
+base_url = "https://project.example.com"
+api_key_env = "MY_KEY"
+
+[limits]
+max_turns = 10
+"#,
+    );
+
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load(Some(project.path()))
+    })
+    .unwrap();
+
+    assert_eq!(loaded.limits.max_turns, Some(10));
+    assert_eq!(loaded.limits.max_tool_calls, Some(50));
+}
+
 // --- Unknown-key warnings ---
 
 #[test]

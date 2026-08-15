@@ -700,6 +700,47 @@ fn output_sink_builds_cut_off_json() {
 }
 
 #[test]
+fn output_sink_builds_limit_exceeded_json() {
+    temp_env::with_var("CAKE_TEST_VALID_KEY", Some("sk-test-123"), || {
+        let agent = Agent::new(
+            test_resolved_model_config(),
+            &[(Role::System, "test system prompt".to_string())],
+        )
+        .with_session_id(uuid::uuid!("550e8400-e29b-41d4-a716-446655440000"));
+        let session = Session::new(agent.session_id(), PathBuf::from("/work"));
+        let dir = match tempfile::tempdir() {
+            Ok(dir) => dir,
+            Err(err) => panic!("temp dir should be created: {err}"),
+        };
+        let data_dir = match temp_env::with_var("CAKE_DATA_DIR", Some(dir.path()), DataDir::new) {
+            Ok(data_dir) => data_dir,
+            Err(err) => panic!("data dir should be created: {err}"),
+        };
+        let detail = "max_turns limit exceeded after 5 turns (max_turns = 5)";
+        let result = Err(crate::types::LimitExceededError::new(
+            "max_turns".to_string(),
+            detail.to_string(),
+            Some("partial work".to_string()),
+        )
+        .into());
+
+        let json = CliOutputSink::turn_result_json(
+            &result,
+            250,
+            &agent,
+            Path::new("/work"),
+            &data_dir,
+            &session,
+            true,
+        );
+
+        assert_eq!(json["error"], detail);
+        assert_eq!(json["subtype"], "limit_exceeded");
+        assert_eq!(json["result"], "partial work");
+    });
+}
+
+#[test]
 fn output_sink_no_session_suppresses_session_file() {
     temp_env::with_var("CAKE_TEST_VALID_KEY", Some("sk-test-123"), || {
         let agent = Agent::new(
@@ -942,6 +983,44 @@ async fn handle_agent_turn_cut_off_emits_cut_off_subtype() {
     assert!(json.get("result").is_none() || json["result"].is_null());
 
     // A cut-off classifies to exit code 1 (agent error) in json/text modes.
+    assert_eq!(
+        crate::exit_code::classify_to_u8(result.as_ref().unwrap_err()),
+        crate::exit_code::code::AGENT_ERROR
+    );
+}
+
+#[tokio::test]
+async fn handle_agent_turn_limit_exceeded_emits_limit_exceeded_subtype() {
+    let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let captured_clone = captured.clone();
+    let mut agent = test_agent_for_turn().with_streaming_json(move |json| {
+        *captured_clone.lock().unwrap() = json.to_string();
+    });
+
+    let error = crate::types::LimitExceededError::new(
+        "max_turns".to_string(),
+        "max_turns limit exceeded after 5 turns (max_turns = 5)".to_string(),
+        Some("partial work".to_string()),
+    );
+    let result: Result<String, anyhow::Error> = Err(error.into());
+
+    CodingAssistant::handle_agent_turn_result(&mut agent, None, &result, 50)
+        .await
+        .unwrap();
+
+    let json: serde_json::Value = serde_json::from_str(&captured.lock().unwrap()).unwrap();
+    assert_eq!(json["type"], "task_complete");
+    assert_eq!(json["subtype"], "limit_exceeded");
+    assert_eq!(json["is_error"], true);
+    assert_eq!(json["limit"], "max_turns");
+    assert_eq!(
+        json["error"],
+        "max_turns limit exceeded after 5 turns (max_turns = 5)"
+    );
+    assert_eq!(json["result"], "partial work");
+
+    // A limit-exceeded classifies to exit code 1 (agent error) in json/text
+    // modes, mirroring a cut-off.
     assert_eq!(
         crate::exit_code::classify_to_u8(result.as_ref().unwrap_err()),
         crate::exit_code::code::AGENT_ERROR

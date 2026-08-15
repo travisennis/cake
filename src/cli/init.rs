@@ -229,6 +229,14 @@ const DEFAULT_SETTINGS: &str = r#"# Cake project settings, created by `cake init
 # rubric_file = ".cake/judge-rubric.md"  # optional extra judge guidance
 # enabled = true                 # default true; false is the emergency bypass
 # allowlist = []                 # exact raw commands whose block is overridden
+
+# Optional agent-loop limits bound how long a run may continue. Every key is
+# off by default: an uncapped loop is deliberate, and no limit fires unless
+# you configure one. Turns and tool calls are independent resource boundaries.
+# See docs/configuration.md for the full contract.
+# [limits]
+# max_turns = 10        # stop after 10 agent-loop turns
+# max_tool_calls = 50   # stop after 50 executed tool calls
 "#;
 
 /// Generated inert `.cake/hooks.json.example` content.

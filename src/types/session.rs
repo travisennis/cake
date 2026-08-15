@@ -30,6 +30,9 @@ pub enum TaskCompleteSubtype {
     ErrorOutputSchema,
     Interrupted,
     CutOff,
+    /// The agent loop stopped because a user-configured `max_turns` or
+    /// `max_tool_calls` limit was reached.
+    LimitExceeded,
 }
 
 /// Outcome of a completed task.
@@ -53,6 +56,18 @@ pub enum TaskOutcome {
     CutOff {
         detail: String,
     },
+    /// The agent loop stopped because a user-configured `max_turns` or
+    /// `max_tool_calls` limit was reached. `result` carries the partial
+    /// result (the last assistant message, if any) so completed work is not
+    /// discarded.
+    LimitExceeded {
+        /// The settings key that fired: `max_turns` or `max_tool_calls`.
+        limit: String,
+        /// Human-readable detail naming the limit.
+        detail: String,
+        /// The last assistant message produced before the limit fired, if any.
+        result: Option<String>,
+    },
 }
 
 impl TaskOutcome {
@@ -68,6 +83,7 @@ const fn task_outcome_subtype(outcome: &TaskOutcome) -> TaskCompleteSubtype {
         TaskOutcome::ErrorOutputSchema { .. } => TaskCompleteSubtype::ErrorOutputSchema,
         TaskOutcome::Interrupted => TaskCompleteSubtype::Interrupted,
         TaskOutcome::CutOff { .. } => TaskCompleteSubtype::CutOff,
+        TaskOutcome::LimitExceeded { .. } => TaskCompleteSubtype::LimitExceeded,
     }
 }
 
@@ -79,6 +95,8 @@ struct TaskOutcomeFields<'a> {
     result: Option<&'a str>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     error: Option<&'a str>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    limit: Option<&'a str>,
 }
 
 #[derive(Deserialize)]
@@ -92,6 +110,8 @@ struct OwnedTaskOutcomeFields {
     result: Option<String>,
     #[serde(default)]
     error: Option<String>,
+    #[serde(default)]
+    limit: Option<String>,
 }
 
 impl Serialize for TaskOutcome {
@@ -105,6 +125,7 @@ impl Serialize for TaskOutcome {
                 is_error: self.is_error(),
                 result: result.as_deref(),
                 error: None,
+                limit: None,
             },
             Self::ErrorDuringExecution { error }
             | Self::ErrorOutputSchema { error }
@@ -113,12 +134,25 @@ impl Serialize for TaskOutcome {
                 is_error: self.is_error(),
                 result: None,
                 error: Some(error),
+                limit: None,
             },
             Self::Interrupted => TaskOutcomeFields {
                 subtype: task_outcome_subtype(self),
                 is_error: self.is_error(),
                 result: None,
                 error: None,
+                limit: None,
+            },
+            Self::LimitExceeded {
+                limit,
+                detail,
+                result,
+            } => TaskOutcomeFields {
+                subtype: task_outcome_subtype(self),
+                is_error: self.is_error(),
+                result: result.as_deref(),
+                error: Some(detail),
+                limit: Some(limit),
             },
         };
 
@@ -148,11 +182,16 @@ impl OwnedTaskOutcomeFields {
     }
 }
 
-fn required_task_error<E: serde::de::Error>(
-    error: Option<String>,
+fn required_task_field<E: serde::de::Error>(
+    value: Option<String>,
     subtype: &str,
+    field: &str,
 ) -> Result<String, E> {
-    error.ok_or_else(|| E::custom(format!("task completion {subtype} outcome requires error")))
+    value.ok_or_else(|| {
+        E::custom(format!(
+            "task completion {subtype} outcome requires {field}"
+        ))
+    })
 }
 
 impl<'de> Deserialize<'de> for TaskOutcome {
@@ -168,14 +207,27 @@ impl<'de> Deserialize<'de> for TaskOutcome {
                 result: fields.result,
             }),
             TaskCompleteSubtype::ErrorDuringExecution => Ok(Self::ErrorDuringExecution {
-                error: required_task_error::<D::Error>(fields.error, "error_during_execution")?,
+                error: required_task_field::<D::Error>(
+                    fields.error,
+                    "error_during_execution",
+                    "error",
+                )?,
             }),
             TaskCompleteSubtype::ErrorOutputSchema => Ok(Self::ErrorOutputSchema {
-                error: required_task_error::<D::Error>(fields.error, "error_output_schema")?,
+                error: required_task_field::<D::Error>(
+                    fields.error,
+                    "error_output_schema",
+                    "error",
+                )?,
             }),
             TaskCompleteSubtype::Interrupted => Ok(Self::Interrupted),
             TaskCompleteSubtype::CutOff => Ok(Self::CutOff {
-                detail: required_task_error::<D::Error>(fields.error, "cut_off")?,
+                detail: required_task_field::<D::Error>(fields.error, "cut_off", "error")?,
+            }),
+            TaskCompleteSubtype::LimitExceeded => Ok(Self::LimitExceeded {
+                limit: required_task_field::<D::Error>(fields.limit, "limit_exceeded", "limit")?,
+                detail: required_task_field::<D::Error>(fields.error, "limit_exceeded", "error")?,
+                result: fields.result,
             }),
         }
     }
@@ -202,6 +254,43 @@ impl fmt::Display for CutOffError {
 }
 
 impl std::error::Error for CutOffError {}
+
+/// Error returned when the agent loop stops because a user-configured
+/// `max_turns` or `max_tool_calls` limit was reached.
+///
+/// `result` carries the partial result (the last assistant message, if any)
+/// so completed work is surfaced rather than discarded.
+#[derive(Debug, Clone)]
+pub struct LimitExceededError {
+    /// The settings key that fired: `max_turns` or `max_tool_calls`.
+    pub limit: String,
+    /// Human-readable detail naming the limit.
+    pub detail: String,
+    /// The last assistant message produced before the limit fired, if any.
+    pub result: Option<String>,
+}
+
+impl LimitExceededError {
+    pub const fn new(limit: String, detail: String, result: Option<String>) -> Self {
+        Self {
+            limit,
+            detail,
+            result,
+        }
+    }
+}
+
+impl fmt::Display for LimitExceededError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.detail)?;
+        if let Some(result) = &self.result {
+            write!(f, "\n\nPartial result:\n{result}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for LimitExceededError {}
 
 /// Shared data for `TaskStart` records in both `StreamRecord` and `SessionRecord`.
 #[derive(Serialize, Deserialize, Debug, Clone)]
