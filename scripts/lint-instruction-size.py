@@ -84,11 +84,14 @@ BUDGETS = {
     # additive CLI surface whose stdout and exit-3 refusal contract belongs
     # in the integration authority; the document sat exactly at 1800 with no
     # headroom, so it follows the same count-plus-50 convention.
-    # Raised 1900 -> 1950 on 2026-08-14: issue #55 adds configurable
-    # `max_turns`/`max_tool_calls` agent-loop limits; the limit-exceeded
-    # outcome, its exit behavior, and the record shape belong in the
-    # integration authority, and the addition displaced overlapping prose.
-    "docs/integrations.md": 1950,
+    # Raised 1900 -> 2100 on 2026-08-15: both #59 (`cake replay`, an additive
+    # CLI surface whose stream-json contract and error/exit protocol belong in
+    # the integration authority) and #55 (configurable `max_turns`/
+    # `max_tool_calls` agent-loop limits, whose limit-exceeded outcome, exit
+    # behavior, and record shape belong in the integration authority) added
+    # mandated sections; the merged document displaced overlapping prose and
+    # still counts 2033, so it follows the same count-plus-50 convention.
+    "docs/integrations.md": 2100,
     # Raised 1500 -> 1650 on 2026-08-14: issue #67 documents `cake init`
     # project scaffolding, which the document must describe as an explicit
     # configuration entry point; it sat exactly at the 1500 default with no

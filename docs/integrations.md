@@ -43,6 +43,14 @@ Malformed model tool arguments remain visible on the `function_call` record and 
 
 An automatic semantic continuation is visible as the provider's partial conversation records followed by one Cake-authored user continuation message. The invocation still emits exactly one final `task_complete`; recovery does not create another task boundary.
 
+## Session replay
+
+`cake --output-format stream-json replay <uuid>` re-emits an existing session transcript as stream-json without running a prompt, reading the file read-only (no lock, no append, no network) and preserving record order. Replay is the only stream-json mode that emits `session_meta`, `prompt_context`, and `skill_activated`; live invocations never do.
+
+Replay skips a trailing partial record from an interrupted writer, matching the session loader's tolerance, and treats a `session_meta` whose `session_id` does not match the requested UUID as `corrupt`.
+
+Replay requires `--output-format stream-json`. On failure it emits one `replay_error` record (machine-readable `kind`, `error`, `session_id` when known, and the accompanying `exit_code`) before exiting non-zero: `output_format`, `invalid_uuid`, and `session_not_found` exit 3; `corrupt`, `unsupported_format`, and `permission` exit 1.
+
 ## Persisted sessions
 
 Resumable sessions are flat `{session_id}.jsonl` files under `~/.local/share/cake/sessions/`, or under `{CAKE_DATA_DIR}/sessions/` when the data root is overridden.
@@ -163,3 +171,4 @@ Changes to session versioning, record names or required fields, stream ordering,
 - [ADR 005](adr/005-command-hooks.md), command hooks.
 - [ADR 007](adr/007-per-session-telemetry-sidecar.md), the telemetry sidecar.
 - [ADR 017](adr/017-trusted-executable-toolbox-tools.md), trusted toolbox executables.
+- [ADR 021](adr/021-session-transcript-replay.md), session transcript replay.

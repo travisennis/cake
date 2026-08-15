@@ -455,14 +455,60 @@ pub enum SessionRecord {
     TaskComplete(TaskCompleteData),
 }
 
-/// A single line in `--output-format stream-json` output for the current task.
+/// Machine-readable category for a `replay_error` stream record.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplayErrorKind {
+    /// The `--output-format` is not `stream-json`.
+    OutputFormat,
+    /// The session UUID argument is not a valid UUID.
+    InvalidUuid,
+    /// No session file exists for the UUID.
+    SessionNotFound,
+    /// The session file is unreadable or its records are corrupt.
+    Corrupt,
+    /// The session file's format version is unsupported.
+    UnsupportedFormat,
+    /// The session file could not be opened (permission denied).
+    Permission,
+}
+
+/// A single line in `--output-format stream-json` output.
 ///
-/// This intentionally excludes `session_meta`, so live stream output cannot be
-/// mistaken for a complete resumable session file.
+/// Live streams emit only task-scoped records and intentionally exclude
+/// `session_meta` and `prompt_context`, so live output cannot be mistaken for a
+/// complete resumable session file. `cake replay` reuses the same vocabulary
+/// and additionally emits `session_meta`, `prompt_context`, `skill_activated`,
+/// and, on failure, `replay_error`. New variants and fields are additive.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StreamRecord {
+    SessionMeta {
+        format_version: u32,
+        session_id: String,
+        /// Timestamp when the session was created.
+        timestamp: DateTime<Utc>,
+        working_directory: PathBuf,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        tools: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cake_version: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        system_prompt: Option<String>,
+        #[serde(default)]
+        git: GitState,
+    },
+
     TaskStart(TaskStartData),
+
+    PromptContext {
+        session_id: String,
+        task_id: String,
+        role: Role,
+        content: String,
+        timestamp: DateTime<Utc>,
+    },
 
     Message(MessageData),
 
@@ -470,23 +516,159 @@ pub enum StreamRecord {
 
     FunctionCallOutput(FunctionCallOutputData),
 
-    Reasoning(ReasoningData),
+    SkillActivated {
+        session_id: String,
+        task_id: String,
+        timestamp: DateTime<Utc>,
+        name: String,
+        path: PathBuf,
+    },
 
     HookEvent(HookEventData),
 
+    Reasoning(ReasoningData),
+
     TaskComplete(TaskCompleteData),
+
+    /// Structured failure emitted by `cake replay` before the process exits
+    /// non-zero, so stream-json parsers can learn why replay failed without
+    /// waiting for the exit code. Never emitted by live streams.
+    ReplayError {
+        /// Session UUID being replayed; absent when the UUID was invalid.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+        /// Machine-readable failure category.
+        kind: ReplayErrorKind,
+        /// Human-readable failure detail.
+        error: String,
+        /// Process exit code that accompanies this failure.
+        exit_code: u8,
+    },
 }
 
 impl From<StreamRecord> for SessionRecord {
     fn from(record: StreamRecord) -> Self {
         match record {
+            StreamRecord::SessionMeta {
+                format_version,
+                session_id,
+                timestamp,
+                working_directory,
+                model,
+                tools,
+                cake_version,
+                system_prompt,
+                git,
+            } => Self::SessionMeta {
+                format_version,
+                session_id,
+                timestamp,
+                working_directory,
+                model,
+                tools,
+                cake_version,
+                system_prompt,
+                git,
+            },
             StreamRecord::TaskStart(d) => Self::TaskStart(d),
+            StreamRecord::PromptContext {
+                session_id,
+                task_id,
+                role,
+                content,
+                timestamp,
+            } => Self::PromptContext {
+                session_id,
+                task_id,
+                role,
+                content,
+                timestamp,
+            },
             StreamRecord::Message(d) => Self::Message(d),
             StreamRecord::FunctionCall(d) => Self::FunctionCall(d),
             StreamRecord::FunctionCallOutput(d) => Self::FunctionCallOutput(d),
-            StreamRecord::Reasoning(d) => Self::Reasoning(d),
+            StreamRecord::SkillActivated {
+                session_id,
+                task_id,
+                timestamp,
+                name,
+                path,
+            } => Self::SkillActivated {
+                session_id,
+                task_id,
+                timestamp,
+                name,
+                path,
+            },
             StreamRecord::HookEvent(d) => Self::HookEvent(d),
+            StreamRecord::Reasoning(d) => Self::Reasoning(d),
             StreamRecord::TaskComplete(d) => Self::TaskComplete(d),
+            // `replay_error` is emitted only by `cake replay`, which never
+            // writes to a session file; there is no persisted counterpart.
+            StreamRecord::ReplayError { .. } => {
+                unreachable!("replay_error stream records are never persisted to a session file")
+            },
+        }
+    }
+}
+
+impl From<SessionRecord> for StreamRecord {
+    fn from(record: SessionRecord) -> Self {
+        match record {
+            SessionRecord::SessionMeta {
+                format_version,
+                session_id,
+                timestamp,
+                working_directory,
+                model,
+                tools,
+                cake_version,
+                system_prompt,
+                git,
+            } => Self::SessionMeta {
+                format_version,
+                session_id,
+                timestamp,
+                working_directory,
+                model,
+                tools,
+                cake_version,
+                system_prompt,
+                git,
+            },
+            SessionRecord::TaskStart(d) => Self::TaskStart(d),
+            SessionRecord::PromptContext {
+                session_id,
+                task_id,
+                role,
+                content,
+                timestamp,
+            } => Self::PromptContext {
+                session_id,
+                task_id,
+                role,
+                content,
+                timestamp,
+            },
+            SessionRecord::Message(d) => Self::Message(d),
+            SessionRecord::FunctionCall(d) => Self::FunctionCall(d),
+            SessionRecord::FunctionCallOutput(d) => Self::FunctionCallOutput(d),
+            SessionRecord::SkillActivated {
+                session_id,
+                task_id,
+                timestamp,
+                name,
+                path,
+            } => Self::SkillActivated {
+                session_id,
+                task_id,
+                timestamp,
+                name,
+                path,
+            },
+            SessionRecord::HookEvent(d) => Self::HookEvent(d),
+            SessionRecord::Reasoning(d) => Self::Reasoning(d),
+            SessionRecord::TaskComplete(d) => Self::TaskComplete(d),
         }
     }
 }

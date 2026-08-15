@@ -219,6 +219,14 @@
       "crap": 12.28125
     },
     {
+      "file": "./src/types/session.rs",
+      "function": "SessionRecord::from",
+      "line": 550,
+      "cyclomatic": 12.0,
+      "coverage": 96.36363636363636,
+      "crap": 12.00692411720511
+    },
+    {
       "file": "./src/clients/agent_state.rs",
       "function": "ConversationState::append_developer_context",
       "line": 33,
@@ -249,14 +257,6 @@
       "cyclomatic": 3.0,
       "coverage": 0.0,
       "crap": 12.0
-    },
-    {
-      "file": "./src/config/skills.rs",
-      "function": "discover_skills_with_paths",
-      "line": 398,
-      "cyclomatic": 10.0,
-      "coverage": 73.86363636363636,
-      "crap": 11.785399840345605
     },
     {
       "file": "./src/clients/retry.rs",
@@ -307,6 +307,14 @@
       "crap": 11.0
     },
     {
+      "file": "./src/types/session.rs",
+      "function": "StreamRecord::from",
+      "line": 616,
+      "cyclomatic": 11.0,
+      "coverage": 100.0,
+      "crap": 11.0
+    },
+    {
       "file": "./src/clients/retry.rs",
       "function": "transport_retry_detail",
       "line": 489,
@@ -331,12 +339,28 @@
       "crap": 10.5
     },
     {
+      "file": "./src/cli/replay.rs",
+      "function": "load_records",
+      "line": 151,
+      "cyclomatic": 10.0,
+      "coverage": 87.87878787878788,
+      "crap": 10.17808943428778
+    },
+    {
       "file": "./src/config/data_dir.rs",
       "function": "DataDir::new",
       "line": 85,
       "cyclomatic": 7.0,
       "coverage": 60.0,
       "crap": 10.136000000000001
+    },
+    {
+      "file": "./src/config/skills.rs",
+      "function": "discover_skills_with_paths",
+      "line": 398,
+      "cyclomatic": 10.0,
+      "coverage": 73.86363636363636,
+      "crap": 11.785399840345605
     },
     {
       "file": "./src/config/data_dir.rs",
@@ -431,8 +455,8 @@
       "function": "main",
       "line": 1251,
       "cyclomatic": 9.0,
-      "coverage": 90.32258064516128,
-      "crap": 9.073411432983116
+      "coverage": 90.625,
+      "crap": 9.066741943359375
     },
     {
       "file": "./src/session_telemetry.rs",
@@ -537,14 +561,6 @@
       "cyclomatic": 8.0,
       "coverage": 88.88888888888889,
       "crap": 8.087791495198903
-    },
-    {
-      "file": "./src/types/session.rs",
-      "function": "SessionRecord::from",
-      "line": 481,
-      "cyclomatic": 8.0,
-      "coverage": 90.0,
-      "crap": 8.064
     },
     {
       "file": "./src/config/worktree.rs",
@@ -811,6 +827,14 @@
       "crap": 7.0
     },
     {
+      "file": "./src/cli/replay.rs",
+      "function": "ReplayError::kind",
+      "line": 76,
+      "cyclomatic": 7.0,
+      "coverage": 100.0,
+      "crap": 7.0
+    },
+    {
       "file": "./src/main.rs",
       "function": "CodingAssistant::handle_agent_turn_result",
       "line": 866,
@@ -825,6 +849,14 @@
       "cyclomatic": 6.0,
       "coverage": 71.05263157894737,
       "crap": 6.873232249599067
+    },
+    {
+      "file": "./src/cli/mod.rs",
+      "function": "Commands::dispatch",
+      "line": 61,
+      "cyclomatic": 6.0,
+      "coverage": 75.0,
+      "crap": 6.5625
     },
     {
       "file": "./src/hooks.rs",
@@ -877,7 +909,7 @@
     {
       "file": "./src/exit_code.rs",
       "function": "classify_judge_error",
-      "line": 121,
+      "line": 128,
       "cyclomatic": 6.0,
       "coverage": 90.9090909090909,
       "crap": 6.027047332832457
@@ -973,7 +1005,7 @@
     {
       "file": "./src/types/session.rs",
       "function": "SessionRecord::to_conversation_item",
-      "line": 575,
+      "line": 757,
       "cyclomatic": 6.0,
       "coverage": 100.0,
       "crap": 6.0
@@ -1076,8 +1108,16 @@
     },
     {
       "file": "./src/exit_code.rs",
+      "function": "classify_typed_error",
+      "line": 69,
+      "cyclomatic": 6.0,
+      "coverage": 100.0,
+      "crap": 6.0
+    },
+    {
+      "file": "./src/exit_code.rs",
       "function": "is_api_network_error",
-      "line": 230,
+      "line": 237,
       "cyclomatic": 6.0,
       "coverage": 100.0,
       "crap": 6.0
@@ -1109,7 +1149,7 @@
     {
       "file": "./src/exit_code.rs",
       "function": "is_reqwest_api_error",
-      "line": 172,
+      "line": 179,
       "cyclomatic": 5.0,
       "coverage": 69.23076923076923,
       "crap": 5.728265817023214
@@ -1137,14 +1177,6 @@
       "cyclomatic": 5.0,
       "coverage": 71.42857142857143,
       "crap": 5.5830903790087465
-    },
-    {
-      "file": "./src/cli/mod.rs",
-      "function": "Commands::dispatch",
-      "line": 57,
-      "cyclomatic": 5.0,
-      "coverage": 72.72727272727273,
-      "crap": 5.507137490608565
     },
     {
       "file": "./src/cli/bash.rs",
@@ -1203,6 +1235,14 @@
       "crap": 5.137390596376959
     },
     {
+      "file": "./src/cli/replay.rs",
+      "function": "validate_meta",
+      "line": 197,
+      "cyclomatic": 5.0,
+      "coverage": 84.0,
+      "crap": 5.1024
+    },
+    {
       "file": "./src/config/data_dir.rs",
       "function": "DataDir::load_latest_session",
       "line": 218,
@@ -1237,7 +1277,7 @@
     {
       "file": "./src/exit_code.rs",
       "function": "classify_error_cause",
-      "line": 143,
+      "line": 150,
       "cyclomatic": 5.0,
       "coverage": 92.85714285714286,
       "crap": 5.009110787172012
@@ -1405,7 +1445,7 @@
     {
       "file": "./src/types/session.rs",
       "function": "StreamRecord::from_conversation_item",
-      "line": 496,
+      "line": 678,
       "cyclomatic": 5.0,
       "coverage": 100.0,
       "crap": 5.0
@@ -1462,14 +1502,6 @@
       "file": "./src/cli/output.rs",
       "function": "CliOutputSink::render_turn",
       "line": 43,
-      "cyclomatic": 5.0,
-      "coverage": 100.0,
-      "crap": 5.0
-    },
-    {
-      "file": "./src/exit_code.rs",
-      "function": "classify_typed_error",
-      "line": 69,
       "cyclomatic": 5.0,
       "coverage": 100.0,
       "crap": 5.0
@@ -2035,6 +2067,14 @@
       "crap": 4.0
     },
     {
+      "file": "./src/cli/replay.rs",
+      "function": "ReplayCommand::run",
+      "line": 100,
+      "cyclomatic": 4.0,
+      "coverage": 100.0,
+      "crap": 4.0
+    },
+    {
       "file": "./src/exit_code.rs",
       "function": "classify_to_u8",
       "line": 53,
@@ -2113,6 +2153,14 @@
       "cyclomatic": 3.0,
       "coverage": 75.0,
       "crap": 3.140625
+    },
+    {
+      "file": "./src/cli/replay.rs",
+      "function": "emit",
+      "line": 136,
+      "cyclomatic": 3.0,
+      "coverage": 80.0,
+      "crap": 3.072
     },
     {
       "file": "./src/clients/judge_observer.rs",
@@ -2493,7 +2541,7 @@
     {
       "file": "./src/types/session.rs",
       "function": "SessionRecord::normalize_legacy_fields",
-      "line": 555,
+      "line": 737,
       "cyclomatic": 3.0,
       "coverage": 100.0,
       "crap": 3.0
@@ -2699,9 +2747,25 @@
       "crap": 3.0
     },
     {
+      "file": "./src/cli/replay.rs",
+      "function": "ReplayError::exit_code",
+      "line": 63,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
+      "file": "./src/cli/replay.rs",
+      "function": "ReplayError::session_id",
+      "line": 88,
+      "cyclomatic": 3.0,
+      "coverage": 100.0,
+      "crap": 3.0
+    },
+    {
       "file": "./src/exit_code.rs",
       "function": "classify_api_error_status",
-      "line": 101,
+      "line": 108,
       "cyclomatic": 3.0,
       "coverage": 100.0,
       "crap": 3.0
@@ -2709,7 +2773,7 @@
     {
       "file": "./src/exit_code.rs",
       "function": "classify_schema_error",
-      "line": 109,
+      "line": 116,
       "cyclomatic": 3.0,
       "coverage": 100.0,
       "crap": 3.0
@@ -3589,7 +3653,7 @@
     {
       "file": "./src/exit_code.rs",
       "function": "is_input_error",
-      "line": 217,
+      "line": 224,
       "cyclomatic": 2.0,
       "coverage": 100.0,
       "crap": 2.0
@@ -5957,7 +6021,7 @@
     {
       "file": "./src/cli/mod.rs",
       "function": "Commands::run",
-      "line": 43,
+      "line": 47,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -6059,9 +6123,25 @@
       "crap": 1.0
     },
     {
+      "file": "./src/cli/replay.rs",
+      "function": "fail",
+      "line": 124,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/cli/replay.rs",
+      "function": "parse_record",
+      "line": 229,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
       "file": "./src/exit_code.rs",
       "function": "classify",
-      "line": 167,
+      "line": 174,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0

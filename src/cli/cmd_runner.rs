@@ -1,3 +1,4 @@
+use crate::OutputFormat;
 use crate::config::DataDir;
 
 /// Run-mode options a subcommand may need to mirror the agent run's model and
@@ -5,13 +6,16 @@ use crate::config::DataDir;
 ///
 /// Passed to [`CmdRunner::run`] so introspection commands like
 /// `cake bash check` resolve the judge model the same way an agent turn would
-/// (`--model`, then `default_model` under the selected profile).
+/// (`--model`, then `default_model` under the selected profile), and so
+/// `cake replay` honors the top-level `--output-format` flag.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CommandRunOptions<'a> {
     /// The top-level `--model` flag value, when provided.
     pub model: Option<&'a str>,
     /// The top-level `--profile` flag value, when provided.
     pub profile: Option<&'a str>,
+    /// The top-level `--output-format` flag value.
+    pub output_format: OutputFormat,
 }
 
 /// A trait representing a command runner.
