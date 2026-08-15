@@ -8,6 +8,16 @@ Checks each .rs file under src/ for:
 Test module detection uses brace-counting, not regex.
 Files matching *_tests.rs are treated as test-only (all lines counted as test).
 Exit code is always 0; this is an informational lint.
+
+Known limitations:
+  - Module names containing "test" (for example "contest" or "protest")
+    are classified as test modules.
+  - Braces inside string literals or comments affect brace-depth counting.
+  - Nested test modules may be counted imperfectly.
+  - The heuristic parser may misclassify modules declared with attributes
+    on the same line, such as `#[cfg(test)] mod tests {`.
+  - Consider a parser-backed implementation before promoting this lint to a
+    gate; contributors should not rely on the counts being exact.
 """
 
 from __future__ import annotations
