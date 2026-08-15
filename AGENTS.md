@@ -14,7 +14,7 @@ Users depend on CLI shape and exit behavior, machine-readable output, tool and s
 4. Keep the diff narrow: no mixing behavior changes, dependency updates, formatting, snapshot regeneration, or unrelated cleanup. Churn hides the change a reviewer needs to see.
 5. Run checks proportionate to the risk, per [CONTRIBUTING.md](CONTRIBUTING.md), and preflight before handoff.
 6. Track managed work in a GitHub issue and follow the lifecycle in [docs/workflow/tasks.md](docs/workflow/tasks.md).
-7. Hand off the branch and pull request per the [Final Handoff Instructions](#final-handoff-instructions) at the end of this file.
+7. Open the pull request when the work is ready for review, then hand off per the [Final Handoff Instructions](#final-handoff-instructions) at the end of this file.
 
 Large or cross-cutting work requires an ExecPlan per [docs/workflow/exec-plans.md](docs/workflow/exec-plans.md).
 
@@ -105,7 +105,7 @@ Complexity targets, CRAP scores, coverage, and the coverage-first refactoring wo
 
 ## Repository rules
 
-- Commit and push freely on a feature branch; commit often. Stage specific paths, never `git add -A`. Ask before force-pushing or opening a pull request.
+- Commit and push freely on a feature branch; commit often. Stage specific paths, never `git add -A`. Open a pull request when the task is complete and the work is ready for review. Ask before force-pushing.
 - One branch holds one task, cut from an up-to-date `master`.
 - Preserve unrelated user changes; never clean or revert them.
 - Never resolve a merge conflict in `ci/cargo-crap-baseline.json` by hand. Take `master`'s copy, then regenerate it with `just change-risk-baseline`.

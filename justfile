@@ -253,7 +253,7 @@ check-full: ci check-deps doc build
 lint-module-size:
     python3 scripts/lint-module-size.py
 
-# Check the agent instruction corpus against its word budgets (enforcing)
+# Cap the always-loaded AGENTS.md and report the instruction corpus (enforcing)
 lint-instruction-size:
     python3 scripts/lint-instruction-size.py
 
