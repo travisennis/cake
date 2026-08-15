@@ -251,6 +251,14 @@
       "crap": 12.0
     },
     {
+      "file": "./src/config/skills.rs",
+      "function": "discover_skills_with_paths",
+      "line": 398,
+      "cyclomatic": 10.0,
+      "coverage": 73.86363636363636,
+      "crap": 11.785399840345605
+    },
+    {
       "file": "./src/clients/retry.rs",
       "function": "retry_classification",
       "line": 157,
@@ -329,14 +337,6 @@
       "cyclomatic": 7.0,
       "coverage": 60.0,
       "crap": 10.136000000000001
-    },
-    {
-      "file": "./src/config/skills.rs",
-      "function": "discover_skills_with_paths",
-      "line": 398,
-      "cyclomatic": 10.0,
-      "coverage": 89.77272727272727,
-      "crap": 10.106974314425244
     },
     {
       "file": "./src/config/data_dir.rs",
