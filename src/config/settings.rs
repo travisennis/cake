@@ -261,8 +261,24 @@ pub struct Settings {
 /// A limit is either a positive-integer cap or the explicit `"unlimited"`
 /// sentinel (no cap). The sentinel is a real value, not an absent key, so a
 /// project can override a global cap back to uncapped.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Limit(Option<u32>);
+
+impl Serialize for Limit {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self.0 {
+            Some(value) => serializer.serialize_u32(value),
+            // Serialize the sentinel back to its written form so the settings
+            // validation round trip keeps the key present; otherwise an
+            // explicit `"unlimited"` would surface as a false unknown-key
+            // warning.
+            None => serializer.serialize_str("unlimited"),
+        }
+    }
+}
 
 impl Limit {
     /// The explicit `"unlimited"` sentinel: no cap.

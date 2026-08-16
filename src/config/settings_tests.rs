@@ -1720,6 +1720,8 @@ read_max_output_bytes = "unlimited"
     assert_eq!(tool.read_max_output_bytes, None);
     // Untouched keys keep their compiled defaults.
     assert_eq!(tool.bash_read_cap, Some(DEFAULT_BASH_READ_CAP as usize));
+    // The "unlimited" sentinel is a recognized value, not an unknown key.
+    assert!(loaded.warnings.is_empty(), "{:#?}", loaded.warnings);
 }
 
 #[test]
