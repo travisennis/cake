@@ -835,14 +835,49 @@ fn capped_text_honors_configured_output_limit() {
     let bytes = vec![b'a'; 10_000];
 
     // A custom cap truncates at that cap, reporting the omitted tail.
-    let capped = capped_text(&bytes, Some(1000));
+    let captured = &bytes[..1000];
+    let capped = capped_text(captured, bytes.len(), Some(1000));
     assert!(capped.starts_with(&"a".repeat(1000)));
     assert!(capped.contains("... (truncated, 9000 more bytes)"));
 
     // The default cap keeps the compiled 64 KiB behavior.
-    let default_capped = capped_text(&bytes, Some(DEFAULT_HOOK_OUTPUT_LIMIT as usize));
+    let default_capped = capped_text(
+        &bytes,
+        bytes.len(),
+        Some(DEFAULT_HOOK_OUTPUT_LIMIT as usize),
+    );
     assert_eq!(default_capped, String::from_utf8_lossy(&bytes));
 
     // An unlimited budget passes everything through.
-    assert_eq!(capped_text(&bytes, None), String::from_utf8_lossy(&bytes));
+    assert_eq!(
+        capped_text(&bytes, bytes.len(), None),
+        String::from_utf8_lossy(&bytes)
+    );
+}
+
+#[tokio::test]
+async fn read_capped_bounds_capture_and_counts_overflow() {
+    let bytes = vec![b'a'; 10_000];
+
+    // A custom cap keeps only the first `cap` bytes but counts all of them,
+    // so the caller can report the exact omitted tail without buffering it.
+    let (captured, total) = read_capped(Some(std::io::Cursor::new(bytes.clone())), Some(1000))
+        .await
+        .unwrap();
+    assert_eq!(captured.len(), 1000);
+    assert_eq!(total, bytes.len());
+
+    // An unlimited budget passes everything through.
+    let (captured, total) = read_capped(Some(std::io::Cursor::new(bytes.clone())), None)
+        .await
+        .unwrap();
+    assert_eq!(captured, bytes);
+    assert_eq!(total, bytes.len());
+
+    // A missing stream is empty.
+    let (captured, total) = read_capped(None::<std::io::Cursor<Vec<u8>>>, Some(1000))
+        .await
+        .unwrap();
+    assert!(captured.is_empty());
+    assert_eq!(total, 0);
 }
