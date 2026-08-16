@@ -1100,7 +1100,10 @@ impl CmdRunner for CodingAssistant {
                 .await
             } => match result {
                 Ok(t) => t,
-                Err(e) => return Err(e),
+                Err(e) => {
+                    Self::restore_post_turn_signal_state();
+                    return Err(e);
+                },
             },
             () = Self::interrupt_signal() => {
                 interrupted.store(true, Ordering::SeqCst);
@@ -1116,6 +1119,10 @@ impl CmdRunner for CodingAssistant {
         if interrupted.load(Ordering::SeqCst) {
             return Self::handle_interrupt(&mut client, turn_start);
         }
+
+        // The turn is over; a SIGTERM during rendering or teardown should
+        // terminate the process as it did before SIGTERM was intercepted.
+        Self::restore_post_turn_signal_state();
 
         // The agent turn completed normally.
         client.emit_session_summary_telemetry(
@@ -1169,6 +1176,24 @@ impl CodingAssistant {
         }
     }
 
+    /// Restore SIGTERM's default termination now that the agent turn is
+    /// over and the graceful-interrupt listener is no longer needed.
+    ///
+    /// Tokio's SIGTERM handler stays registered for the process lifetime,
+    /// so without this a SIGTERM arriving during output rendering or
+    /// teardown would be swallowed instead of terminating the process. On
+    /// non-Unix there is no SIGTERM to restore.
+    fn restore_post_turn_signal_state() {
+        #[cfg(unix)]
+        {
+            // SAFETY: setting our own process's SIGTERM disposition is a
+            // single libc call with no shared-state or aliasing concerns.
+            unsafe {
+                libc::signal(libc::SIGTERM, libc::SIG_DFL);
+            }
+        }
+    }
+
     /// Handle a user interrupt (Ctrl-C or SIGTERM) during an agent turn.
     ///
     /// Emits a `TaskComplete` record with an `Interrupted` outcome, writes
@@ -1179,8 +1204,10 @@ impl CodingAssistant {
         // Listen for a second interrupt that force-exits immediately in
         // case the graceful shutdown hangs. Once a SIGTERM handler is
         // installed the default termination is gone, so a second SIGTERM
-        // must be handled explicitly alongside Ctrl-C.
-        let second_interrupt = tokio::spawn(async {
+        // must be handled explicitly alongside Ctrl-C. The handle is left
+        // to detach: the listener stays alive as the hard escape hatch
+        // while cleanup runs, and the runtime tears it down at exit.
+        let _second_interrupt = tokio::spawn(async {
             Self::interrupt_signal().await;
             std::process::exit(exit_code::code::INTERRUPTED.into());
         });
@@ -1207,10 +1234,8 @@ impl CodingAssistant {
             Some("Interrupted by user".to_string()),
         );
 
-        // Abort the second-interrupt listener. Worktree cleanup runs
-        // later via WorktreeGuard's Drop when `prepared` goes out of
-        // scope.
-        second_interrupt.abort();
+        // Keep the second-interrupt listener alive through cleanup, which
+        // runs via WorktreeGuard's Drop when `prepared` goes out of scope.
 
         Err(Interrupted.into())
     }
