@@ -335,6 +335,43 @@ async fn test_streaming_large_output_is_capped() {
 }
 
 #[tokio::test]
+async fn bash_read_cap_holds_capture_at_configured_bytes() {
+    // A read cap smaller than the 8192-byte read buffer must still hold the
+    // capture to the configured maximum: the read loop cuts each chunk at the
+    // remaining budget instead of appending whole 8 KiB chunks before checking.
+    let dir = tempfile::tempdir().expect("hermetic temp dir for bash test");
+    let mut context = crate::clients::tools::ToolContext::from_current_process();
+    context.cwd = dir.path().to_path_buf();
+    context.judge = Some(bypassed_judge_context());
+    let mut limits = crate::config::settings::ToolLimits::defaults();
+    limits.bash_read_cap = Some(100);
+    context.limits = limits;
+
+    let args = BashExecutionArgs::from_json(
+        r#"{"command": "yes x | head -c 20000"}"#,
+        crate::clients::tools::sandbox::SandboxPolicy::DangerFullAccess,
+    )
+    .unwrap();
+    let result = Box::pin(execute_bash_with_args(&context, args, None))
+        .await
+        .expect("bash run should succeed");
+
+    let marker = "[... output truncated at 100 bytes ...]";
+    let marker_start = result
+        .output
+        .find(marker)
+        .unwrap_or_else(|| panic!("expected truncation marker, got: {}", result.output));
+    // The marker directly follows the 100 captured bytes plus its leading
+    // newline; a larger offset means whole 8192-byte chunks were buffered
+    // before the cap check.
+    assert_eq!(
+        marker_start, 101,
+        "capture before the marker is {marker_start} bytes, expected exactly 100 (plus the newline): {}",
+        result.output
+    );
+}
+
+#[tokio::test]
 async fn bash_output_max_bytes_override_spills_at_custom_cap() {
     // A configured `bash_output_max_bytes` below the compiled default changes
     // the spill threshold: 5,000 bytes of output exceeds a 1,000-byte cap but

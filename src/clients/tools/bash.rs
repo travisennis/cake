@@ -503,7 +503,9 @@ async fn execute_bash_with_args(
         // Bound the initial allocation by the read cap: the read loop never
         // holds more than `read_cap` bytes, so a large configured inline cap
         // alone must not trigger a huge upfront allocation.
-        let initial_capacity = read_cap.zip(output_max).map_or(0, |(read, max)| read.min(max));
+        let initial_capacity = read_cap
+            .zip(output_max)
+            .map_or(0, |(read, max)| read.min(max));
         let mut buf = Vec::with_capacity(initial_capacity);
         let mut stderr_buf = Vec::new();
         let mut tmp_stdout = [0u8; 8192];
@@ -524,14 +526,16 @@ async fn execute_bash_with_args(
                             let n = stderr.read(&mut tmp_stderr).await
                                 .map_err(|e| format!("stderr read error: {e}"))?;
                             if n == 0 { break; }
-                            buf.extend_from_slice(&tmp_stderr[..n]);
-                            stderr_buf.extend_from_slice(&tmp_stderr[..n]);
-                            if read_cap.is_some_and(|cap| buf.len() >= cap) { hit_cap = true; break; }
+                            let take = take_within_cap(n, read_cap, buf.len());
+                            buf.extend_from_slice(&tmp_stderr[..take]);
+                            stderr_buf.extend_from_slice(&tmp_stderr[..take]);
+                            if take < n { hit_cap = true; break; }
                         }
                         break;
                     }
-                    buf.extend_from_slice(&tmp_stdout[..n]);
-                    if read_cap.is_some_and(|cap| buf.len() >= cap) { hit_cap = true; break; }
+                    let take = take_within_cap(n, read_cap, buf.len());
+                    buf.extend_from_slice(&tmp_stdout[..take]);
+                    if take < n { hit_cap = true; break; }
                 }
                 n = stderr.read(&mut tmp_stderr) => {
                     let n = n.map_err(|e| format!("stderr read error: {e}"))?;
@@ -541,14 +545,16 @@ async fn execute_bash_with_args(
                             let n = stdout.read(&mut tmp_stdout).await
                                 .map_err(|e| format!("stdout read error: {e}"))?;
                             if n == 0 { break; }
-                            buf.extend_from_slice(&tmp_stdout[..n]);
-                            if read_cap.is_some_and(|cap| buf.len() >= cap) { hit_cap = true; break; }
+                            let take = take_within_cap(n, read_cap, buf.len());
+                            buf.extend_from_slice(&tmp_stdout[..take]);
+                            if take < n { hit_cap = true; break; }
                         }
                         break;
                     }
-                    buf.extend_from_slice(&tmp_stderr[..n]);
-                    stderr_buf.extend_from_slice(&tmp_stderr[..n]);
-                    if read_cap.is_some_and(|cap| buf.len() >= cap) { hit_cap = true; break; }
+                    let take = take_within_cap(n, read_cap, buf.len());
+                    buf.extend_from_slice(&tmp_stderr[..take]);
+                    stderr_buf.extend_from_slice(&tmp_stderr[..take]);
+                    if take < n { hit_cap = true; break; }
                 }
             }
         }
@@ -669,6 +675,18 @@ async fn execute_bash_with_args(
         output,
         compensation_events,
     })
+}
+
+/// Bytes of an `n`-byte read chunk to append when `buffered` bytes are already
+/// held, so the capture never exceeds a configured `read_cap`. Without a cap
+/// the whole chunk is kept; with a cap the chunk is cut at the remaining
+/// budget so the buffer holds at most `read_cap` bytes.
+fn take_within_cap(n: usize, read_cap: Option<usize>, buffered: usize) -> usize {
+    match read_cap {
+        Some(cap) if buffered < cap => n.min(cap - buffered),
+        Some(_) => 0,
+        None => n,
+    }
 }
 
 /// Push an `output_truncation` compensation event when a Bash run hit the
