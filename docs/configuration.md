@@ -66,9 +66,20 @@ All model references --- `default_model`, `--model`, profiles, and `[tools.bash.
 
 Relative `system_prompt`, `skills.path`, `directories`, and `[sandbox]` values resolve from the invocation working directory, including the created worktree when `--worktree` is active. Use absolute paths for global settings that must work from every project. Invalid files and unknown selected models fail before the provider request.
 
-## Agent loop limits
+## Limits
 
-The optional `[limits]` section bounds the agent loop. Every key is off by default: an uncapped loop is deliberate, and no limit fires unless you configure one. Turns and tool calls are independent resource boundaries.
+The optional `[limits]` section bounds the agent loop and the tool output budgets. A limit is a positive integer, or the string `"unlimited"` to mean no cap:
+
+```toml
+[limits]
+max_turns = "unlimited"  # explicit opt-out; overrides a global cap
+```
+
+`0`, negative values, and any other string are rejected at load time. Project `[limits]` values override global values per key, including back to `"unlimited"`.
+
+### Agent loop limits
+
+The agent-loop keys are off by default: an uncapped loop is deliberate, and no limit fires unless you configure one. Turns and tool calls are independent resource boundaries.
 
 ```toml
 [limits]
@@ -76,19 +87,31 @@ max_turns = 10        # stop after 10 agent-loop turns
 max_tool_calls = 50   # stop after 50 executed tool calls
 ```
 
-A limit is a positive integer, or the string `"unlimited"` to mean no cap:
-
-```toml
-[limits]
-max_turns = "unlimited"  # explicit opt-out; overrides a global cap
-```
-
-`0`, negative values, and any other string are rejected at load time.
-
 - `max_turns`: maximum agent-loop turns. When the loop reaches the cap and would otherwise continue, Cake stops with a `limit_exceeded` outcome and surfaces the last assistant message, if any, as the partial result.
 - `max_tool_calls`: maximum tool calls executed. A turn whose batch would exceed the cap is stopped before any call in the batch runs.
 
-The limits combine; whichever fires first stops the loop. Project `[limits]` values override global values per key, including back to `"unlimited"`. The stop is reported as `limit_exceeded` in the `task_complete` record and completion JSON, and as a distinct error in text mode.
+The limits combine; whichever fires first stops the loop. The stop is reported as `limit_exceeded` in the `task_complete` record and completion JSON, and as a distinct error in text mode.
+
+### Tool output budgets
+
+The output-budget keys have built-in compiled defaults that match the hard-coded constants they replaced, so out-of-the-box behavior is unchanged. Overriding a key changes tool behavior without a release; `"unlimited"` disables the cap.
+
+```toml
+[limits]
+bash_output_max_bytes = 50000   # Bash inline output cap (bytes; default 50000)
+bash_read_cap = 100000          # Bash read cap before kill (bytes; default 100000)
+read_default_end_line = 200     # Read default window (lines; default 200)
+read_max_output_bytes = 100000  # Read output cap (bytes; default 100000)
+hook_output_limit = 65536       # Hook stdout/stderr cap per hook (bytes; default 65536)
+```
+
+- `bash_output_max_bytes`: maximum bytes of Bash tool output returned inline. Output exceeding the cap is written to a secure temp file and the agent receives a summary with the path plus a head+tail preview. `"unlimited"` disables the spill.
+- `bash_read_cap`: maximum bytes of Bash output read before the process is killed and the capture ends. The default is 2× the inline cap, so a spill has enough data for a useful preview. `"unlimited"` reads until the process exits.
+- `read_default_end_line`: default Read window in lines when the model omits `end_line`. `"unlimited"` reads to the end of the file.
+- `read_max_output_bytes`: maximum bytes of Read output before truncation at a UTF-8 boundary. `"unlimited"` disables truncation.
+- `hook_output_limit`: maximum bytes of hook stdout and stderr captured per hook invocation. `"unlimited"` disables truncation.
+
+When a project overrides a global budget back to no cap, `"unlimited"` is the explicit value that does so.
 
 ## Bash tool settings
 

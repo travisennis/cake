@@ -18,6 +18,9 @@ use crate::config::toolbox::ToolboxProcessGuard;
 use crate::session_telemetry::{CompensationEventTelemetry, CompensationKind};
 use crate::time_format::format_seconds_tenths;
 
+#[cfg(test)]
+use crate::config::settings::DEFAULT_BASH_OUTPUT_MAX_BYTES;
+
 /// Maximum number of null bytes or control characters (excluding common whitespace)
 /// allowed before considering output as binary.
 const BINARY_NULL_BYTE_THRESHOLD: usize = 8;
@@ -31,14 +34,15 @@ const TENTHS_PER_KIB: u128 = 10;
 const EXIT_ZERO_STDERR_WARNING: &str = "[stderr output present despite exit 0]";
 const EMPTY_SEARCH_NO_MATCH_ANNOTATION: &str = "(no matches)";
 
-/// Maximum number of bytes the Bash tool will return inline.
+/// Maximum number of bytes the Bash tool will return inline (the compiled
+/// default for `[limits] bash_output_max_bytes`).
 /// Output exceeding this limit is written to a temporary file and the agent
 /// receives a truncated message with a path to the full output.
-pub(super) const BASH_OUTPUT_MAX_BYTES: usize = 50_000;
-
-/// A generous cap: read up to 2× the inline limit so `truncate_output()`
-/// has enough data for a useful head+tail preview and temp-file dump.
-pub(super) const BASH_READ_CAP: usize = BASH_OUTPUT_MAX_BYTES * 2;
+///
+/// Test-only: production reads the configured budget from
+/// `context.limits.bash_output_max_bytes`.
+#[cfg(test)]
+pub(super) const BASH_OUTPUT_MAX_BYTES: usize = DEFAULT_BASH_OUTPUT_MAX_BYTES as usize;
 
 /// Floor for the model-supplied Bash timeout in seconds. A `0` timeout would
 /// fail instantly, so requests below the floor are raised to it.
@@ -413,6 +417,10 @@ async fn execute_bash_with_args(
     let judge_warnings = preflight.warnings;
     let judge_events = preflight.compensation_events;
 
+    // Output budgets resolved from `[limits]`; `None` means unlimited.
+    let output_max = context.limits.bash_output_max_bytes;
+    let read_cap = context.limits.bash_read_cap;
+
     let use_sandbox = args.policy != super::sandbox::SandboxPolicy::DangerFullAccess;
 
     let start_time = Instant::now();
@@ -492,7 +500,13 @@ async fn execute_bash_with_args(
         reason = "Bash lifecycle covers read, kill, and wait"
     )]
     let lifecycle_result = timeout(Duration::from_secs(args.timeout), async {
-        let mut buf = Vec::with_capacity(BASH_OUTPUT_MAX_BYTES);
+        // Bound the initial allocation by the read cap: the read loop never
+        // holds more than `read_cap` bytes, so a large configured inline cap
+        // alone must not trigger a huge upfront allocation.
+        let initial_capacity = read_cap
+            .zip(output_max)
+            .map_or(0, |(read, max)| read.min(max));
+        let mut buf = Vec::with_capacity(initial_capacity);
         let mut stderr_buf = Vec::new();
         let mut tmp_stdout = [0u8; 8192];
         let mut tmp_stderr = [0u8; 8192];
@@ -512,14 +526,16 @@ async fn execute_bash_with_args(
                             let n = stderr.read(&mut tmp_stderr).await
                                 .map_err(|e| format!("stderr read error: {e}"))?;
                             if n == 0 { break; }
-                            buf.extend_from_slice(&tmp_stderr[..n]);
-                            stderr_buf.extend_from_slice(&tmp_stderr[..n]);
-                            if buf.len() >= BASH_READ_CAP { hit_cap = true; break; }
+                            let take = take_within_cap(n, read_cap, buf.len());
+                            buf.extend_from_slice(&tmp_stderr[..take]);
+                            stderr_buf.extend_from_slice(&tmp_stderr[..take]);
+                            if take < n { hit_cap = true; break; }
                         }
                         break;
                     }
-                    buf.extend_from_slice(&tmp_stdout[..n]);
-                    if buf.len() >= BASH_READ_CAP { hit_cap = true; break; }
+                    let take = take_within_cap(n, read_cap, buf.len());
+                    buf.extend_from_slice(&tmp_stdout[..take]);
+                    if take < n { hit_cap = true; break; }
                 }
                 n = stderr.read(&mut tmp_stderr) => {
                     let n = n.map_err(|e| format!("stderr read error: {e}"))?;
@@ -529,14 +545,16 @@ async fn execute_bash_with_args(
                             let n = stdout.read(&mut tmp_stdout).await
                                 .map_err(|e| format!("stdout read error: {e}"))?;
                             if n == 0 { break; }
-                            buf.extend_from_slice(&tmp_stdout[..n]);
-                            if buf.len() >= BASH_READ_CAP { hit_cap = true; break; }
+                            let take = take_within_cap(n, read_cap, buf.len());
+                            buf.extend_from_slice(&tmp_stdout[..take]);
+                            if take < n { hit_cap = true; break; }
                         }
                         break;
                     }
-                    buf.extend_from_slice(&tmp_stderr[..n]);
-                    stderr_buf.extend_from_slice(&tmp_stderr[..n]);
-                    if buf.len() >= BASH_READ_CAP { hit_cap = true; break; }
+                    let take = take_within_cap(n, read_cap, buf.len());
+                    buf.extend_from_slice(&tmp_stderr[..take]);
+                    stderr_buf.extend_from_slice(&tmp_stderr[..take]);
+                    if take < n { hit_cap = true; break; }
                 }
             }
         }
@@ -592,7 +610,7 @@ async fn execute_bash_with_args(
     // reach the model even when the output is binary.
     if is_binary_data(&buf) {
         let mut compensation_events = judge_events;
-        let spilled = buf.len() > BASH_OUTPUT_MAX_BYTES;
+        let spilled = output_max.is_some_and(|max| buf.len() > max);
         push_truncation_event_if(&mut compensation_events, "Bash", hit_cap, spilled);
         let output = handle_binary_output(&buf, exit_code, elapsed_ms, warn_exit_zero_stderr);
         return Ok(super::ToolResult {
@@ -621,7 +639,9 @@ async fn execute_bash_with_args(
     let result = if output_str.is_empty() {
         String::new()
     } else if hit_cap {
-        format!("{output_str}\n[... output truncated at {BASH_READ_CAP} bytes ...]")
+        // `hit_cap` is only set when a read cap exists.
+        let cap = read_cap.unwrap_or_default();
+        format!("{output_str}\n[... output truncated at {cap} bytes ...]")
     } else if success {
         output_str.into_owned()
     } else if is_sandbox_violation(sandbox_applied, success, &output_str) {
@@ -638,8 +658,14 @@ async fn execute_bash_with_args(
     };
 
     let result = annotate_empty_search_result(&args.command, result, exit_code, &stderr_str);
-    let spilled = result.len() > BASH_OUTPUT_MAX_BYTES;
-    let result = truncate_output(&result, exit_code, elapsed_ms, warn_exit_zero_stderr);
+    let spilled = output_max.is_some_and(|max| result.len() > max);
+    let result = truncate_output(
+        &result,
+        output_max,
+        exit_code,
+        elapsed_ms,
+        warn_exit_zero_stderr,
+    );
     let mut compensation_events = judge_events;
     push_truncation_event_if(&mut compensation_events, "Bash", hit_cap, spilled);
 
@@ -649,6 +675,18 @@ async fn execute_bash_with_args(
         output,
         compensation_events,
     })
+}
+
+/// Bytes of an `n`-byte read chunk to append when `buffered` bytes are already
+/// held, so the capture never exceeds a configured `read_cap`. Without a cap
+/// the whole chunk is kept; with a cap the chunk is cut at the remaining
+/// budget so the buffer holds at most `read_cap` bytes.
+fn take_within_cap(n: usize, read_cap: Option<usize>, buffered: usize) -> usize {
+    match read_cap {
+        Some(cap) if buffered < cap => n.min(cap - buffered),
+        Some(_) => 0,
+        None => n,
+    }
 }
 
 /// Push an `output_truncation` compensation event when a Bash run hit the
@@ -960,18 +998,24 @@ fn bypassed_judge_context() -> std::sync::Arc<JudgeContext> {
     })
 }
 
-/// If `output` exceeds [`BASH_OUTPUT_MAX_BYTES`], write the full text to a
-/// temporary file and return a summary pointing to that file. Otherwise return
-/// the output with the metadata footer appended. The temp file receives only
-/// the raw command output (no footer); the footer is included in the inline
-/// summary so it is always visible in the tool response.
+/// If `output` exceeds `max_bytes`, write the full text to a temporary file
+/// and return a summary pointing to that file. Otherwise return the output
+/// with the metadata footer appended. `max_bytes` is the `[limits]
+/// bash_output_max_bytes` budget; `None` (unlimited) passes everything
+/// through. The temp file receives only the raw command output (no footer);
+/// the footer is included in the inline summary so it is always visible in
+/// the tool response.
 pub(super) fn truncate_output(
     output: &str,
+    max_bytes: Option<usize>,
     exit_code: i32,
     elapsed_ms: u128,
     warn_exit_zero_stderr: bool,
 ) -> String {
-    if output.len() <= BASH_OUTPUT_MAX_BYTES {
+    let Some(max_bytes) = max_bytes else {
+        return append_metadata(output, exit_code, elapsed_ms, warn_exit_zero_stderr);
+    };
+    if output.len() <= max_bytes {
         return append_metadata(output, exit_code, elapsed_ms, warn_exit_zero_stderr);
     }
 
@@ -996,7 +1040,7 @@ pub(super) fn truncate_output(
 
     match write_result {
         Ok(tmp_path) => {
-            let preview = BASH_OUTPUT_MAX_BYTES / 4;
+            let preview = max_bytes / 4;
             let head_end = output.floor_char_boundary(preview);
             let tail_start = output.ceil_char_boundary(total_bytes - preview);
             let (head, _) = output.split_at(head_end);
@@ -1015,7 +1059,7 @@ pub(super) fn truncate_output(
             // Could not write — fall back to a truncated inline result.
             debug!("Failed to write overflow output to temp file: {e}");
 
-            let half = BASH_OUTPUT_MAX_BYTES / 2;
+            let half = max_bytes / 2;
             let head_end = output.floor_char_boundary(half);
             let tail_start = output.ceil_char_boundary(total_bytes - half);
             let (head, _) = output.split_at(head_end);

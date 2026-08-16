@@ -5,20 +5,22 @@ use std::time::{Duration, Instant};
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio::time::timeout;
 
 use crate::config::SessionWriter;
 use crate::config::hooks::{HookCommand, HookEvent, HookSource, LoadedHooks};
+use crate::config::settings::DEFAULT_HOOK_OUTPUT_LIMIT;
 use crate::types::{HookEventData, SessionRecord, StreamRecord};
-
-const HOOK_OUTPUT_LIMIT: usize = 64 * 1024;
 
 #[derive(Clone)]
 pub struct HookRunner {
     loaded: LoadedHooks,
     context: HookContext,
+    /// Per-hook stdout/stderr byte cap from `[limits] hook_output_limit`;
+    /// `None` means unlimited.
+    output_limit: Option<usize>,
 }
 
 #[derive(Clone)]
@@ -209,7 +211,18 @@ impl ToolHookMetadata {
 
 impl HookRunner {
     pub const fn new(loaded: LoadedHooks, context: HookContext) -> Self {
-        Self { loaded, context }
+        Self {
+            loaded,
+            context,
+            output_limit: Some(DEFAULT_HOOK_OUTPUT_LIMIT as usize),
+        }
+    }
+
+    /// Override the per-hook stdout/stderr byte cap from `[limits]
+    /// hook_output_limit`. `None` disables truncation.
+    pub const fn with_output_limit(mut self, output_limit: Option<usize>) -> Self {
+        self.output_limit = output_limit;
+        self
     }
 
     pub async fn session_start(
@@ -392,7 +405,8 @@ impl HookRunner {
         let futures = commands.into_iter().map(|command| {
             let payload = payload.clone();
             let cwd = self.context.cwd.clone();
-            async move { run_command_hook(command, payload, cwd).await }
+            let output_limit = self.output_limit;
+            async move { run_command_hook(command, payload, cwd, output_limit).await }
         });
         let outcomes = futures::future::join_all(futures).await;
 
@@ -658,7 +672,12 @@ impl HookProcessGuard {
     clippy::too_many_lines,
     reason = "hook command execution has many branches for error handling"
 )]
-async fn run_command_hook(command: HookCommand, payload: Value, cwd: PathBuf) -> InvocationOutcome {
+async fn run_command_hook(
+    command: HookCommand,
+    payload: Value,
+    cwd: PathBuf,
+    output_limit: Option<usize>,
+) -> InvocationOutcome {
     let start = Instant::now();
     if let Some(status) = &command.status_message {
         tracing::info!(
@@ -714,51 +733,61 @@ async fn run_command_hook(command: HookCommand, payload: Value, cwd: PathBuf) ->
         });
     }
 
-    let timeout_result = timeout(command.timeout, child.wait_with_output()).await;
-    let output = match timeout_result {
-        Ok(Ok(output)) => {
-            // Hook completed normally — defuse the guard so it does not
-            // kill background descendants on drop.
-            _guard.defuse();
-            output
-        },
-        Ok(Err(error)) => {
-            // The child has already exited (wait succeeded), so there is
-            // nothing left in the process group; defuse to avoid a harmless
-            // ESRCH.
-            _guard.defuse();
-            return InvocationOutcome {
-                command,
-                exit_code: None,
-                duration: start.elapsed(),
-                stdout: String::new(),
-                stderr: String::new(),
-                parsed: None,
-                error: Some(format!("failed to wait for hook command: {error}")),
-            };
-        },
-        Err(_) => {
-            let timeout_secs = command.timeout.as_secs();
-            // Guard fires on return, killing the hook process tree:
-            // kill_on_drop(true) will already have sent SIGKILL to the
-            // immediate child (the shell) when the wait_with_output future
-            // was dropped; the guard sends SIGKILL to the process group to
-            // reach any descendants.
-            return InvocationOutcome {
-                command,
-                exit_code: None,
-                duration: start.elapsed(),
-                stdout: String::new(),
-                stderr: String::new(),
-                parsed: None,
-                error: Some(format!("hook command timed out after {timeout_secs}s")),
-            };
-        },
-    };
+    // The timeout bounds the whole read and wait, like the previous
+    // `wait_with_output` call. `wait_for_hook_output` reads both streams with
+    // bounded buffers, so a hook that emits more than `output_limit` cannot
+    // exhaust memory: each stream buffers at most `output_limit` bytes and
+    // only counts the overflow.
+    let timeout_result = timeout(
+        command.timeout,
+        wait_for_hook_output(&mut child, output_limit),
+    )
+    .await;
+    let (stdout_captured, stdout_total, stderr_captured, stderr_total, status) =
+        match timeout_result {
+            Ok(Ok(output)) => {
+                // Hook completed normally — defuse the guard so it does not
+                // kill background descendants on drop.
+                _guard.defuse();
+                output
+            },
+            Ok(Err(error)) => {
+                // The child has already exited (wait succeeded), so there is
+                // nothing left in the process group; defuse to avoid a harmless
+                // ESRCH.
+                _guard.defuse();
+                return InvocationOutcome {
+                    command,
+                    exit_code: None,
+                    duration: start.elapsed(),
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    parsed: None,
+                    error: Some(format!("failed to wait for hook command: {error}")),
+                };
+            },
+            Err(_) => {
+                let timeout_secs = command.timeout.as_secs();
+                // Guard fires on return, killing the hook process tree:
+                // kill_on_drop(true) will already have sent SIGKILL to the
+                // immediate child (the shell) when the read future was dropped;
+                // the guard sends SIGKILL to the process group to reach any
+                // descendants.
+                return InvocationOutcome {
+                    command,
+                    exit_code: None,
+                    duration: start.elapsed(),
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    parsed: None,
+                    error: Some(format!("hook command timed out after {timeout_secs}s")),
+                };
+            },
+        };
 
-    let stdout = capped_text(&output.stdout);
-    let stderr = capped_text(&output.stderr);
-    let exit_code = output.status.code();
+    let stdout = capped_text(&stdout_captured, stdout_total, output_limit);
+    let stderr = capped_text(&stderr_captured, stderr_total, output_limit);
+    let exit_code = status.code();
 
     if exit_code == Some(2) {
         let reason = if stderr.trim().is_empty() {
@@ -960,14 +989,79 @@ fn duration_ms(duration: Duration) -> u64 {
     duration.as_millis().try_into().unwrap_or(u64::MAX)
 }
 
-fn capped_text(bytes: &[u8]) -> String {
-    if bytes.len() <= HOOK_OUTPUT_LIMIT {
-        return String::from_utf8_lossy(bytes).to_string();
+/// Read both hook streams with bounded buffers while the hook runs, then wait
+/// for it to exit. Each stream buffers at most `output_limit` bytes and only
+/// counts the overflow, so a noisy hook cannot exhaust memory while the
+/// reported `(truncated, N more bytes)` total stays accurate. Returns the
+/// captured prefix and total bytes for each stream, plus the exit status.
+async fn wait_for_hook_output(
+    child: &mut tokio::process::Child,
+    output_limit: Option<usize>,
+) -> std::io::Result<(Vec<u8>, usize, Vec<u8>, usize, std::process::ExitStatus)> {
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let (stdout_result, stderr_result) = tokio::join!(
+        read_capped(stdout, output_limit),
+        read_capped(stderr, output_limit),
+    );
+    let (stdout_captured, stdout_total) = stdout_result?;
+    let (stderr_captured, stderr_total) = stderr_result?;
+    let status = child.wait().await?;
+    Ok((
+        stdout_captured,
+        stdout_total,
+        stderr_captured,
+        stderr_total,
+        status,
+    ))
+}
+
+/// Read `stream` to EOF, buffering at most `output_limit` bytes and counting
+/// the overflow, so a noisy hook cannot exhaust memory while the reported
+/// `(truncated, N more bytes)` total stays accurate. Returns the captured
+/// prefix and the total bytes read.
+async fn read_capped<R>(
+    stream: Option<R>,
+    output_limit: Option<usize>,
+) -> std::io::Result<(Vec<u8>, usize)>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let Some(mut stream) = stream else {
+        return Ok((Vec::new(), 0));
+    };
+    let mut captured = Vec::new();
+    let mut total = 0usize;
+    // Heap-allocated so the future stays small (clippy::large_futures).
+    let mut tmp = vec![0u8; 8192];
+    loop {
+        let n = stream.read(&mut tmp).await?;
+        if n == 0 {
+            break;
+        }
+        total += n;
+        let keep = match output_limit {
+            Some(cap) if captured.len() < cap => n.min(cap - captured.len()),
+            Some(_) => 0,
+            None => n,
+        };
+        captured.extend_from_slice(&tmp[..keep]);
     }
-    let omitted = bytes.len() - HOOK_OUTPUT_LIMIT;
+    Ok((captured, total))
+}
+
+fn capped_text(captured: &[u8], total: usize, output_limit: Option<usize>) -> String {
+    let Some(output_limit) = output_limit else {
+        return String::from_utf8_lossy(captured).to_string();
+    };
+    if total <= output_limit {
+        return String::from_utf8_lossy(captured).to_string();
+    }
+    let omitted = total - output_limit;
+    let keep = output_limit.min(captured.len());
     format!(
         "{}... (truncated, {omitted} more bytes)",
-        String::from_utf8_lossy(&bytes[..HOOK_OUTPUT_LIMIT])
+        String::from_utf8_lossy(&captured[..keep])
     )
 }
 

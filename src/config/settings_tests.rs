@@ -1610,6 +1610,161 @@ max_turns = "unlimited"
     assert_eq!(loaded.limits.max_tool_calls, None);
 }
 
+// --- [limits] tool output budgets ---
+
+#[test]
+fn test_limits_output_budgets_load_from_settings() {
+    let dir = create_project_settings(
+        r#"
+[[models]]
+name = "test-model"
+model = "test/model"
+base_url = "https://example.com"
+api_key_env = "MY_KEY"
+
+[limits]
+bash_output_max_bytes = 5000
+bash_read_cap = 10000
+read_default_end_line = 50
+read_max_output_bytes = 20000
+hook_output_limit = 1024
+"#,
+    );
+
+    let home = create_home_dir();
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load(Some(dir.path()))
+    })
+    .unwrap();
+
+    assert_eq!(loaded.limits.bash_output_max_bytes, Some(Limit::max(5000)));
+    assert_eq!(loaded.limits.bash_read_cap, Some(Limit::max(10000)));
+    assert_eq!(loaded.limits.read_default_end_line, Some(Limit::max(50)));
+    assert_eq!(loaded.limits.read_max_output_bytes, Some(Limit::max(20000)));
+    assert_eq!(loaded.limits.hook_output_limit, Some(Limit::max(1024)));
+    assert!(loaded.warnings.is_empty(), "{:#?}", loaded.warnings);
+
+    let tool = loaded.limits.tool_limits();
+    assert_eq!(tool.bash_output_max_bytes, Some(5000));
+    assert_eq!(tool.bash_read_cap, Some(10000));
+    assert_eq!(tool.read_default_end_line, Some(50));
+    assert_eq!(tool.read_max_output_bytes, Some(20000));
+    assert_eq!(tool.hook_output_limit, Some(1024));
+}
+
+#[test]
+fn test_limits_output_budgets_default_to_compiled_values() {
+    let dir = create_project_settings(
+        r#"
+[[models]]
+name = "test-model"
+model = "test/model"
+base_url = "https://example.com"
+api_key_env = "MY_KEY"
+"#,
+    );
+
+    let home = create_home_dir();
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load(Some(dir.path()))
+    })
+    .unwrap();
+
+    // Absent keys resolve to the compiled defaults, so out-of-the-box tool
+    // behavior is unchanged.
+    let tool = loaded.limits.tool_limits();
+    assert_eq!(tool, ToolLimits::defaults());
+    assert_eq!(
+        tool.bash_output_max_bytes,
+        Some(DEFAULT_BASH_OUTPUT_MAX_BYTES as usize)
+    );
+    assert_eq!(tool.bash_read_cap, Some(DEFAULT_BASH_READ_CAP as usize));
+    assert_eq!(
+        tool.read_default_end_line,
+        Some(DEFAULT_READ_DEFAULT_END_LINE as usize)
+    );
+    assert_eq!(
+        tool.read_max_output_bytes,
+        Some(DEFAULT_READ_MAX_OUTPUT_BYTES as usize)
+    );
+    assert_eq!(
+        tool.hook_output_limit,
+        Some(DEFAULT_HOOK_OUTPUT_LIMIT as usize)
+    );
+}
+
+#[test]
+fn test_limits_output_budget_unlimited_disables_cap() {
+    let dir = create_project_settings(
+        r#"
+[[models]]
+name = "test-model"
+model = "test/model"
+base_url = "https://example.com"
+api_key_env = "MY_KEY"
+
+[limits]
+bash_output_max_bytes = "unlimited"
+read_max_output_bytes = "unlimited"
+"#,
+    );
+
+    let home = create_home_dir();
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load(Some(dir.path()))
+    })
+    .unwrap();
+
+    let tool = loaded.limits.tool_limits();
+    assert_eq!(tool.bash_output_max_bytes, None);
+    assert_eq!(tool.read_max_output_bytes, None);
+    // Untouched keys keep their compiled defaults.
+    assert_eq!(tool.bash_read_cap, Some(DEFAULT_BASH_READ_CAP as usize));
+    // The "unlimited" sentinel is a recognized value, not an unknown key.
+    assert!(loaded.warnings.is_empty(), "{:#?}", loaded.warnings);
+}
+
+#[test]
+fn test_limits_output_budget_project_overrides_global_per_key() {
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"
+[[models]]
+name = "test-model"
+model = "test/model"
+base_url = "https://example.com"
+api_key_env = "MY_KEY"
+
+[limits]
+bash_output_max_bytes = 5000
+read_default_end_line = 10
+"#,
+    );
+    // The project section overrides only the keys it sets.
+    let project = create_project_settings(
+        r#"
+[[models]]
+name = "test-model"
+model = "test/model"
+base_url = "https://project.example.com"
+api_key_env = "MY_KEY"
+
+[limits]
+bash_output_max_bytes = 9000
+"#,
+    );
+
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load(Some(project.path()))
+    })
+    .unwrap();
+
+    let tool = loaded.limits.tool_limits();
+    assert_eq!(tool.bash_output_max_bytes, Some(9000));
+    assert_eq!(tool.read_default_end_line, Some(10));
+}
+
 // --- Unknown-key warnings ---
 
 #[test]

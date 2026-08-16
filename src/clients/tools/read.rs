@@ -3,10 +3,11 @@ use std::io::{BufRead, BufReader, Read as _};
 use std::path::Path;
 
 use crate::clients::tools::{ToolContext, validate_path_in_cwd};
+use crate::config::settings::ToolLimits;
 use crate::session_telemetry::{CompensationEventTelemetry, CompensationKind};
 
-const DEFAULT_END_LINE: usize = 200;
-const MAX_OUTPUT_BYTES: usize = 100_000;
+#[cfg(test)]
+use crate::config::settings::DEFAULT_READ_MAX_OUTPUT_BYTES;
 
 // =============================================================================
 // Read Tool Definition
@@ -31,7 +32,7 @@ pub(super) fn read_tool() -> super::Tool {
                 },
                 "end_line": {
                     "type": "integer",
-                    "description": "Last line to read (1-indexed, inclusive). Default: 200 (or start_line+199 when start_line given)"
+                    "description": "Last line to read (1-indexed, inclusive). Default: the configured read_default_end_line window (200 out of the box; start_line+window-1 when start_line given)"
                 }
             },
             "required": ["path"]
@@ -85,7 +86,7 @@ pub(super) fn execute_read(
     }
 
     // Handle file
-    read_file(&path, args.start_line, args.end_line)
+    read_file(&path, args.start_line, args.end_line, &context.limits)
 }
 
 /// Check the first 8KB of a file for null bytes (binary detection)
@@ -106,11 +107,36 @@ fn probe_binary(reader: impl std::io::Read) -> Result<bool, std::io::Error> {
     Ok(buf[..n].contains(&0))
 }
 
+/// Resolve the 0-indexed end line from the model's `start_line`/`end_line`
+/// arguments and the configured default window.
+///
+/// When `start_line` is provided without `end_line`, the window expands from
+/// `start_line` instead of keeping the absolute default. An unlimited window
+/// (`read_default_end_line = "unlimited"`) reads to the end of the file; the
+/// later clamp to total lines bounds it.
+const fn end_requested_line(
+    start: usize,
+    start_line: Option<usize>,
+    end_line: Option<usize>,
+    window: Option<usize>,
+) -> usize {
+    match (end_line, window) {
+        (Some(end), _) => end.saturating_sub(1),
+        (None, Some(window)) if start_line.is_some() => {
+            // Window of `window` lines starting from start_line
+            start.saturating_add(window - 1)
+        },
+        (None, Some(window)) => window.saturating_sub(1),
+        (None, None) => usize::MAX,
+    }
+}
+
 /// Read and format a file with line numbers
 fn read_file(
     path: &Path,
     start_line: Option<usize>,
     end_line: Option<usize>,
+    limits: &ToolLimits,
 ) -> Result<super::ToolResult, String> {
     // Check for binary files (null bytes in first 8KB)
     if is_binary(path)? {
@@ -120,18 +146,10 @@ fn read_file(
         ));
     }
 
-    // Default line range (1-indexed from caller, convert to 0-indexed)
-    // When start_line is provided without end_line, expand the window from start_line
-    // instead of keeping the absolute default of 200.
+    // Default line range (1-indexed from caller, convert to 0-indexed).
     let start = start_line.unwrap_or(1).saturating_sub(1);
-    let end_requested = match end_line {
-        Some(end) => end.saturating_sub(1),
-        None if start_line.is_some() => {
-            // Window of DEFAULT_END_LINE lines starting from start_line
-            start.saturating_add(DEFAULT_END_LINE - 1)
-        },
-        None => DEFAULT_END_LINE.saturating_sub(1),
-    };
+    let end_requested =
+        end_requested_line(start, start_line, end_line, limits.read_default_end_line);
 
     // Read the requested window using a buffered reader.
     // Lines outside the window reuse a single buffer to avoid allocating a
@@ -192,11 +210,14 @@ fn read_file(
     );
 
     let mut compensation_events = Vec::new();
-    // Truncate if too large, respecting the byte cap at valid UTF-8 boundaries
-    if output.len() > MAX_OUTPUT_BYTES {
+    // Truncate if too large, respecting the byte cap at valid UTF-8 boundaries.
+    // An unlimited budget (read_max_output_bytes = "unlimited") never truncates.
+    if let Some(max_bytes) = limits.read_max_output_bytes
+        && output.len() > max_bytes
+    {
         use std::fmt::Write;
         let reserve = 100; // bytes for the truncation marker
-        let byte_end = output.floor_char_boundary(MAX_OUTPUT_BYTES.saturating_sub(reserve));
+        let byte_end = output.floor_char_boundary(max_bytes.saturating_sub(reserve));
         let mut truncated = {
             #[expect(
                 clippy::string_slice,
@@ -206,7 +227,7 @@ fn read_file(
         };
         _ = write!(
             truncated,
-            "\n[... output truncated at {MAX_OUTPUT_BYTES} bytes ...]"
+            "\n[... output truncated at {max_bytes} bytes ...]"
         );
         output = truncated;
         compensation_events.push(CompensationEventTelemetry::new(
@@ -456,9 +477,9 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let file_path = temp_dir.path().join("emoji.txt");
 
-        // Build content that when formatted exceeds MAX_OUTPUT_BYTES (100_000).
-        // Using '€' (3 bytes, U+20AC) repeated on one long line.
-        // Header: ~60 bytes. Line prefix "     1: ": 8 bytes.
+        // Build content that when formatted exceeds the default read cap
+        // (100_000 bytes). Using '€' (3 bytes, U+20AC) repeated on one long
+        // line. Header: ~60 bytes. Line prefix "     1: ": 8 bytes.
         // Each € = 3 bytes.  35_000 € → 105_000 bytes, comfortably over the cap.
         let emoji_count = 35_000;
         let mut line = String::with_capacity(emoji_count * 3);
@@ -478,9 +499,10 @@ mod tests {
 
         // Output must not exceed the byte cap
         assert!(
-            output.len() <= MAX_OUTPUT_BYTES,
-            "Output is {} bytes but cap is {MAX_OUTPUT_BYTES}",
-            output.len()
+            output.len() <= DEFAULT_READ_MAX_OUTPUT_BYTES as usize,
+            "Output is {} bytes but cap is {}",
+            output.len(),
+            DEFAULT_READ_MAX_OUTPUT_BYTES
         );
 
         // Truncation marker must be present
@@ -605,5 +627,97 @@ mod tests {
         let err = result.unwrap_err();
         assert!(err.contains("Cannot read binary file"), "{err}");
         assert!(err.contains("detected null bytes"), "{err}");
+    }
+
+    // --- [limits] overrides ---
+
+    #[test]
+    fn read_default_end_line_override_changes_window() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+        let lines: Vec<String> = (1..=50).map(|i| format!("Line {i}")).collect();
+        fs::write(&file_path, lines.join("\n")).unwrap();
+
+        let mut context = ToolContext::from_current_process();
+        let mut limits = crate::config::settings::ToolLimits::defaults();
+        limits.read_default_end_line = Some(10);
+        context.limits = limits;
+
+        let args = serde_json::json!({ "path": file_path.to_str().unwrap() }).to_string();
+        let result = execute_read(&context, &args).unwrap();
+        assert!(result.output.contains("Lines 1-10/50"));
+        assert!(result.output.contains("    10: Line 10"));
+        assert!(!result.output.contains("Line 11"));
+    }
+
+    #[test]
+    fn read_default_end_line_unlimited_reads_to_eof() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+        let lines: Vec<String> = (1..=600).map(|i| format!("Line {i}")).collect();
+        fs::write(&file_path, lines.join("\n")).unwrap();
+
+        let mut context = ToolContext::from_current_process();
+        let mut limits = crate::config::settings::ToolLimits::defaults();
+        limits.read_default_end_line = None;
+        context.limits = limits;
+
+        let args = serde_json::json!({ "path": file_path.to_str().unwrap() }).to_string();
+        let result = execute_read(&context, &args).unwrap();
+        assert!(result.output.contains("Lines 1-600/600"));
+        assert!(result.output.contains("   600: Line 600"));
+    }
+
+    #[test]
+    fn read_max_output_bytes_override_truncates_at_custom_cap() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("big.txt");
+        fs::write(&file_path, "x".repeat(5000)).unwrap();
+
+        let mut context = ToolContext::from_current_process();
+        let mut limits = crate::config::settings::ToolLimits::defaults();
+        limits.read_max_output_bytes = Some(1000);
+        context.limits = limits;
+
+        let args = serde_json::json!({ "path": file_path.to_str().unwrap() }).to_string();
+        let result = execute_read(&context, &args).unwrap();
+        assert!(
+            result
+                .output
+                .contains("[... output truncated at 1000 bytes ...]")
+        );
+        assert!(result.output.len() < 5000);
+        assert!(
+            result
+                .compensation_events
+                .iter()
+                .any(|e| e.kind == crate::session_telemetry::CompensationKind::OutputTruncation),
+            "truncation must record an output_truncation event"
+        );
+    }
+
+    #[test]
+    fn read_max_output_bytes_unlimited_never_truncates() {
+        // 120,000 bytes exceeds the compiled 100,000-byte cap, but an
+        // unlimited budget passes it through untouched.
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("big.txt");
+        fs::write(&file_path, "x".repeat(120_000)).unwrap();
+
+        let mut context = ToolContext::from_current_process();
+        let mut limits = crate::config::settings::ToolLimits::defaults();
+        limits.read_max_output_bytes = None;
+        context.limits = limits;
+
+        let args = serde_json::json!({ "path": file_path.to_str().unwrap() }).to_string();
+        let result = execute_read(&context, &args).unwrap();
+        assert!(!result.output.contains("output truncated"));
+        assert!(
+            !result
+                .compensation_events
+                .iter()
+                .any(|e| e.kind == crate::session_telemetry::CompensationKind::OutputTruncation),
+            "unlimited budget must not record a truncation event"
+        );
     }
 }

@@ -524,7 +524,8 @@ impl CodingAssistant {
             skill_base_dirs,
             settings_dirs,
             sandbox_policy,
-        );
+        )
+        .with_limits(loaded.limits.tool_limits());
 
         // Early detection of linked worktree issues: warn at session start if
         // the gitdir cannot be resolved. This fires before any Bash tool call,
@@ -759,6 +760,7 @@ impl CodingAssistant {
         mut client: Agent,
         current_dir: &Path,
         hook_context: HookContext,
+        hook_output_limit: Option<usize>,
     ) -> anyhow::Result<(Agent, Option<Arc<HookRunner>>)> {
         let hooks = HooksLoader::load(current_dir)?;
 
@@ -766,7 +768,8 @@ impl CodingAssistant {
             return Ok((client, None));
         }
 
-        let runner = Arc::new(HookRunner::new(hooks, hook_context));
+        let runner =
+            Arc::new(HookRunner::new(hooks, hook_context).with_output_limit(hook_output_limit));
         client = client.with_hook_runner(Arc::clone(&runner));
         Ok((client, Some(runner)))
     }
@@ -1069,8 +1072,13 @@ impl CmdRunner for CodingAssistant {
             cwd: prepared.current_dir.clone(),
             model: client.model_name().to_string(),
         };
-        let (client, hook_runner) =
-            Self::attach_hooks(client, &prepared.current_dir, hook_context)?;
+        let hook_output_limit = resources.loaded.limits.tool_limits().hook_output_limit;
+        let (client, hook_runner) = Self::attach_hooks(
+            client,
+            &prepared.current_dir,
+            hook_context,
+            hook_output_limit,
+        )?;
         let output = self.output_sink();
         let mut client = output.attach_callbacks(client);
 
