@@ -266,7 +266,7 @@ fn discover_skills_finds_project_skills() {
     create_skill_file(&agents_dir, "skill-a", "First skill");
     create_skill_file(&agents_dir, "skill-b", "Second skill");
 
-    let catalog = discover_skills(tmp.path());
+    let catalog = discover_skills_inner(tmp.path(), &[], None);
     let project_skills: Vec<_> = catalog
         .skills
         .iter()
@@ -280,44 +280,117 @@ fn discover_skills_finds_project_skills() {
 
 #[test]
 fn discover_skills_finds_configured_skills() {
-    let home = TempDir::new().unwrap();
-    temp_env::with_var("HOME", Some(home.path()), || {
-        let tmp = TempDir::new().unwrap();
-        let configured_dir = TempDir::new().unwrap();
-        create_skill_file(configured_dir.path(), "team-skill", "Team skill");
+    let tmp = TempDir::new().unwrap();
+    let configured_dir = TempDir::new().unwrap();
+    create_skill_file(configured_dir.path(), "team-skill", "Team skill");
 
-        let catalog =
-            discover_skills_with_paths(tmp.path(), &[configured_dir.path().to_path_buf()]);
+    let catalog = discover_skills_inner(tmp.path(), &[configured_dir.path().to_path_buf()], None);
 
-        assert_eq!(catalog.skills.len(), 1);
-        assert_eq!(catalog.skills[0].name, "team-skill");
-        assert_eq!(catalog.skills[0].scope, SkillScope::Configured);
-    });
+    assert_eq!(catalog.skills.len(), 1);
+    assert_eq!(catalog.skills[0].name, "team-skill");
+    assert_eq!(catalog.skills[0].scope, SkillScope::Configured);
 }
 
 #[test]
 fn discover_skills_project_shadows_configured_skills() {
+    let tmp = TempDir::new().unwrap();
+    let agents_dir = tmp.path().join(".agents").join("skills");
+    std::fs::create_dir_all(&agents_dir).unwrap();
+    create_skill_file(&agents_dir, "shared-skill", "Project skill");
+
+    let configured_dir = TempDir::new().unwrap();
+    create_skill_file(configured_dir.path(), "shared-skill", "Configured skill");
+
+    let catalog = discover_skills_inner(tmp.path(), &[configured_dir.path().to_path_buf()], None);
+
+    assert_eq!(catalog.skills.len(), 1);
+    assert_eq!(catalog.skills[0].scope, SkillScope::Project);
+    assert!(
+        catalog
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("shadowed by project skill"))
+    );
+}
+
+#[test]
+fn discover_skills_finds_user_skills() {
+    let tmp = TempDir::new().unwrap();
+    let user_dir = TempDir::new().unwrap();
+    let user_skills_dir = user_dir.path().join(".agents").join("skills");
+    create_skill_file(&user_skills_dir, "user-skill", "User skill");
+
+    let catalog = discover_skills_inner(tmp.path(), &[], Some(&user_skills_dir));
+
+    assert_eq!(catalog.skills.len(), 1);
+    assert_eq!(catalog.skills[0].name, "user-skill");
+    assert_eq!(catalog.skills[0].scope, SkillScope::User);
+}
+
+#[test]
+fn discover_skills_project_shadows_user_skills() {
+    let tmp = TempDir::new().unwrap();
+    let agents_dir = tmp.path().join(".agents").join("skills");
+    std::fs::create_dir_all(&agents_dir).unwrap();
+    create_skill_file(&agents_dir, "shared-skill", "Project skill");
+
+    let user_dir = TempDir::new().unwrap();
+    let user_skills_dir = user_dir.path().join(".agents").join("skills");
+    create_skill_file(&user_skills_dir, "shared-skill", "User skill");
+
+    let catalog = discover_skills_inner(tmp.path(), &[], Some(&user_skills_dir));
+
+    assert_eq!(catalog.skills.len(), 1);
+    assert_eq!(catalog.skills[0].scope, SkillScope::Project);
+    assert!(
+        catalog
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("shadowed by higher-precedence skill"))
+    );
+}
+
+#[test]
+fn discover_skills_configured_shadows_user_skills() {
+    let tmp = TempDir::new().unwrap();
+    let configured_dir = TempDir::new().unwrap();
+    create_skill_file(configured_dir.path(), "shared-skill", "Configured skill");
+
+    let user_dir = TempDir::new().unwrap();
+    let user_skills_dir = user_dir.path().join(".agents").join("skills");
+    create_skill_file(&user_skills_dir, "shared-skill", "User skill");
+
+    let catalog = discover_skills_inner(
+        tmp.path(),
+        &[configured_dir.path().to_path_buf()],
+        Some(&user_skills_dir),
+    );
+
+    assert_eq!(catalog.skills.len(), 1);
+    assert_eq!(catalog.skills[0].scope, SkillScope::Configured);
+    assert!(
+        catalog
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("shadowed by higher-precedence skill"))
+    );
+}
+
+#[test]
+fn discover_skills_resolves_user_skills_from_home() {
     let home = TempDir::new().unwrap();
+    let user_skills_dir = home.path().join(".agents").join("skills");
+    create_skill_file(&user_skills_dir, "home-skill", "User skill from home");
     temp_env::with_var("HOME", Some(home.path()), || {
         let tmp = TempDir::new().unwrap();
-        let agents_dir = tmp.path().join(".agents").join("skills");
-        std::fs::create_dir_all(&agents_dir).unwrap();
-        create_skill_file(&agents_dir, "shared-skill", "Project skill");
-
-        let configured_dir = TempDir::new().unwrap();
-        create_skill_file(configured_dir.path(), "shared-skill", "Configured skill");
-
-        let catalog =
-            discover_skills_with_paths(tmp.path(), &[configured_dir.path().to_path_buf()]);
-
-        assert_eq!(catalog.skills.len(), 1);
-        assert_eq!(catalog.skills[0].scope, SkillScope::Project);
-        assert!(
-            catalog
-                .diagnostics
-                .iter()
-                .any(|d| d.message.contains("shadowed by project skill"))
-        );
+        let catalog = discover_skills(tmp.path());
+        let user_skills: Vec<_> = catalog
+            .skills
+            .iter()
+            .filter(|s| s.scope == SkillScope::User)
+            .collect();
+        assert_eq!(user_skills.len(), 1);
+        assert_eq!(user_skills[0].name, "home-skill");
     });
 }
 
@@ -348,7 +421,7 @@ fn discover_skills_skips_excluded_dirs() {
     // Create a normal skill
     create_skill_file(&agents_dir, "normal-skill", "Should appear");
 
-    let catalog = discover_skills(tmp.path());
+    let catalog = discover_skills_inner(tmp.path(), &[], None);
     let project_skills: Vec<_> = catalog
         .skills
         .iter()
@@ -413,7 +486,7 @@ fn discover_skills_respects_max_depth() {
     // Create a shallow skill
     create_skill_file(&agents_dir, "shallow-skill", "Should appear");
 
-    let catalog = discover_skills(tmp.path());
+    let catalog = discover_skills_inner(tmp.path(), &[], None);
     let project_skills: Vec<_> = catalog
         .skills
         .iter()
@@ -428,7 +501,7 @@ fn discover_skills_with_paths_missing_dir_emits_warning() {
     let tmp = TempDir::new().unwrap();
     let missing = tmp.path().join("does-not-exist");
 
-    let catalog = discover_skills_with_paths(tmp.path(), std::slice::from_ref(&missing));
+    let catalog = discover_skills_inner(tmp.path(), std::slice::from_ref(&missing), None);
 
     assert!(catalog.diagnostics.iter().any(|d| {
         d.level == DiagnosticLevel::Warning
@@ -442,7 +515,7 @@ fn discover_skills_with_paths_empty_dir_emits_warning() {
     let tmp = TempDir::new().unwrap();
     let empty_dir = TempDir::new().unwrap();
 
-    let catalog = discover_skills_with_paths(tmp.path(), &[empty_dir.path().to_path_buf()]);
+    let catalog = discover_skills_inner(tmp.path(), &[empty_dir.path().to_path_buf()], None);
 
     assert!(catalog.diagnostics.iter().any(|d| {
         d.level == DiagnosticLevel::Warning
@@ -457,7 +530,7 @@ fn discover_skills_with_paths_non_empty_dir_does_not_emit_empty_warning() {
     let configured_dir = TempDir::new().unwrap();
     create_skill_file(configured_dir.path(), "my-skill", "A skill");
 
-    let catalog = discover_skills_with_paths(tmp.path(), &[configured_dir.path().to_path_buf()]);
+    let catalog = discover_skills_inner(tmp.path(), &[configured_dir.path().to_path_buf()], None);
 
     assert!(
         !catalog

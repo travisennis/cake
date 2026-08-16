@@ -399,12 +399,29 @@ pub fn discover_skills_with_paths(
     working_dir: &Path,
     configured_skill_dirs: &[PathBuf],
 ) -> SkillCatalog {
+    let user_skills_dir = dirs::home_dir().map(|h| h.join(".agents").join("skills"));
+    discover_skills_inner(
+        working_dir,
+        configured_skill_dirs,
+        user_skills_dir.as_deref(),
+    )
+}
+
+/// Discover skills from explicit directories.
+///
+/// `user_skills_dir` is the user-level skills directory, or `None` when the
+/// caller has none. Tests pass an explicit directory so discovery results and
+/// coverage never depend on the executing machine's real home directory.
+fn discover_skills_inner(
+    working_dir: &Path,
+    configured_skill_dirs: &[PathBuf],
+    user_skills_dir: Option<&Path>,
+) -> SkillCatalog {
     let mut catalog = SkillCatalog::empty();
     let mut scanned_dirs = 0;
 
     // Scan paths: project first, configured paths next, then user.
     let project_skills_dir = working_dir.join(".agents").join("skills");
-    let user_skills_dir = dirs::home_dir().map(|h| h.join(".agents").join("skills"));
 
     // Collect project skills first
     let mut project_skill_names = HashSet::new();
@@ -469,7 +486,7 @@ pub fn discover_skills_with_paths(
     });
 
     // Then collect user skills (skip if name collision with project)
-    if let Some(ref user_dir) = user_skills_dir
+    if let Some(user_dir) = user_skills_dir
         && user_dir.exists()
         && user_dir.is_dir()
     {
