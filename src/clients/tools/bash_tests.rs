@@ -341,7 +341,7 @@ async fn bash_output_max_bytes_override_spills_at_custom_cap() {
     // stays under the default 100,000-byte read cap, so the run completes and
     // the output spills to a temp file at the custom cap.
     let dir = tempfile::tempdir().expect("hermetic temp dir for bash test");
-    let mut context = ToolContext::from_current_process();
+    let mut context = crate::clients::tools::ToolContext::from_current_process();
     context.cwd = dir.path().to_path_buf();
     context.judge = Some(bypassed_judge_context());
     let mut limits = crate::config::settings::ToolLimits::defaults();
@@ -350,7 +350,7 @@ async fn bash_output_max_bytes_override_spills_at_custom_cap() {
 
     let args = BashExecutionArgs::from_json(
         r#"{"command": "yes x | head -c 5000"}"#,
-        SandboxPolicy::DangerFullAccess,
+        crate::clients::tools::sandbox::SandboxPolicy::DangerFullAccess,
     )
     .unwrap();
     let result = Box::pin(execute_bash_with_args(&context, args, None))
@@ -371,7 +371,7 @@ async fn bash_output_max_bytes_unlimited_passes_large_output_through() {
     // cap, so 60,000 bytes of output (over the compiled 50,000-byte inline
     // cap) pass through in full.
     let dir = tempfile::tempdir().expect("hermetic temp dir for bash test");
-    let mut context = ToolContext::from_current_process();
+    let mut context = crate::clients::tools::ToolContext::from_current_process();
     context.cwd = dir.path().to_path_buf();
     context.judge = Some(bypassed_judge_context());
     let mut limits = crate::config::settings::ToolLimits::defaults();
@@ -381,7 +381,7 @@ async fn bash_output_max_bytes_unlimited_passes_large_output_through() {
 
     let args = BashExecutionArgs::from_json(
         r#"{"command": "yes x | head -c 60000"}"#,
-        SandboxPolicy::DangerFullAccess,
+        crate::clients::tools::sandbox::SandboxPolicy::DangerFullAccess,
     )
     .unwrap();
     let result = Box::pin(execute_bash_with_args(&context, args, None))
