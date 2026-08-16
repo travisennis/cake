@@ -1261,6 +1261,7 @@ mod error_tests {
         let mut agent = test_agent_with_url(&mock_server.uri()).with_limits(&LimitsSettings {
             max_turns: Some(Limit::max(1)),
             max_tool_calls: None,
+            ..LimitsSettings::default()
         });
 
         let error = agent.send("run a command".to_string()).await.unwrap_err();
@@ -1315,6 +1316,7 @@ mod error_tests {
             .with_limits(&LimitsSettings {
                 max_turns: Some(Limit::max(0)),
                 max_tool_calls: None,
+                ..LimitsSettings::default()
             });
 
         let error = agent.send("new prompt".to_string()).await.unwrap_err();
@@ -1340,6 +1342,7 @@ mod error_tests {
         let mut agent = test_agent_with_url(&mock_server.uri()).with_limits(&LimitsSettings {
             max_turns: Some(Limit::max(1)),
             max_tool_calls: None,
+            ..LimitsSettings::default()
         });
 
         let result = agent.send("hello".to_string()).await.unwrap();
@@ -1362,6 +1365,7 @@ mod error_tests {
         let mut agent = test_agent_with_url(&mock_server.uri()).with_limits(&LimitsSettings {
             max_turns: None,
             max_tool_calls: Some(Limit::max(1)),
+            ..LimitsSettings::default()
         });
 
         let error = agent.send("run a command".to_string()).await.unwrap_err();
@@ -1427,6 +1431,7 @@ mod error_tests {
             .with_limits(&LimitsSettings {
                 max_turns: None,
                 max_tool_calls: Some(Limit::max(1)),
+                ..LimitsSettings::default()
             });
 
         let error = agent.send("run a command".to_string()).await.unwrap_err();

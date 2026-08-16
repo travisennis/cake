@@ -230,15 +230,21 @@ const DEFAULT_SETTINGS: &str = r#"# Cake project settings, created by `cake init
 # enabled = true                 # default true; false is the emergency bypass
 # allowlist = []                 # exact raw commands whose block is overridden
 
-# Optional agent-loop limits bound how long a run may continue. Every key is
-# off by default: an uncapped loop is deliberate, and no limit fires unless
-# you configure one. Turns and tool calls are independent resource boundaries.
-# A limit is a positive integer or "unlimited" (no cap). See
+# Optional limits bound the agent loop and the tool output budgets. The
+# agent-loop keys are off by default: an uncapped loop is deliberate, and no
+# limit fires unless you configure one. The output-budget keys default to the
+# compiled constants; overriding them changes tool behavior without a
+# release. A limit is a positive integer or "unlimited" (no cap). See
 # docs/configuration.md for the full contract.
 # [limits]
-# max_turns = 10        # stop after 10 agent-loop turns
-# max_tool_calls = 50   # stop after 50 executed tool calls
-# max_turns = "unlimited"  # explicit opt-out; overrides a global cap
+# max_turns = 10               # stop after 10 agent-loop turns
+# max_tool_calls = 50          # stop after 50 executed tool calls
+# max_turns = "unlimited"      # explicit opt-out; overrides a global cap
+# bash_output_max_bytes = 50000    # Bash inline output cap (bytes)
+# bash_read_cap = 100000           # Bash read cap before kill (bytes)
+# read_default_end_line = 200      # Read default window (lines)
+# read_max_output_bytes = 100000   # Read output cap (bytes)
+# hook_output_limit = 65536        # Hook stdout/stderr cap per hook (bytes)
 "#;
 
 /// Generated inert `.cake/hooks.json.example` content.

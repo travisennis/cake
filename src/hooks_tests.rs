@@ -699,6 +699,7 @@ async fn timed_out_hook_process_is_killed() {
         hook_command,
         serde_json::json!({}),
         dir.path().to_path_buf(),
+        Some(DEFAULT_HOOK_OUTPUT_LIMIT as usize),
     )
     .await;
 
@@ -814,11 +815,34 @@ async fn non_reading_hook_does_not_hang() {
         source_path: dir.path().join("hooks.json"),
     };
 
-    let outcome = run_command_hook(hook_command, big_payload_value, dir.path().to_path_buf()).await;
+    let outcome = run_command_hook(
+        hook_command,
+        big_payload_value,
+        dir.path().to_path_buf(),
+        Some(DEFAULT_HOOK_OUTPUT_LIMIT as usize),
+    )
+    .await;
 
     assert!(
         outcome.error.as_deref().unwrap_or("").contains("timed out"),
         "expected timeout error for non-reading hook, got: {:?}",
         outcome.error
     );
+}
+
+#[test]
+fn capped_text_honors_configured_output_limit() {
+    let bytes = vec![b'a'; 10_000];
+
+    // A custom cap truncates at that cap, reporting the omitted tail.
+    let capped = capped_text(&bytes, Some(1000));
+    assert!(capped.starts_with(&"a".repeat(1000)));
+    assert!(capped.contains("... (truncated, 9000 more bytes)"));
+
+    // The default cap keeps the compiled 64 KiB behavior.
+    let default_capped = capped_text(&bytes, Some(DEFAULT_HOOK_OUTPUT_LIMIT as usize));
+    assert_eq!(default_capped, String::from_utf8_lossy(&bytes));
+
+    // An unlimited budget passes everything through.
+    assert_eq!(capped_text(&bytes, None), String::from_utf8_lossy(&bytes));
 }

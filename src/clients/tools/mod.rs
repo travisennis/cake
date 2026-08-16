@@ -31,6 +31,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use crate::clients::judge::JudgeContext;
+use crate::config::settings::ToolLimits;
 use crate::session_telemetry::{CompensationEventTelemetry, CompensationKind};
 
 mod sandbox;
@@ -85,6 +86,9 @@ pub struct ToolContext {
     /// the run has no judge configured; the Bash tool fails closed on an
     /// absent context rather than running a command ungated.
     pub judge: Option<Arc<JudgeContext>>,
+    /// Resolved tool output budgets from `[limits]` settings. Defaults to the
+    /// compiled constants; `with_limits` applies configured overrides.
+    pub limits: ToolLimits,
 }
 
 impl ToolContext {
@@ -114,6 +118,14 @@ impl ToolContext {
         self
     }
 
+    /// Attach resolved tool output budgets from the `[limits]` settings
+    /// section. Absent keys already resolved to the compiled defaults inside
+    /// `ToolLimits`, so this is a plain override.
+    pub const fn with_limits(mut self, limits: ToolLimits) -> Self {
+        self.limits = limits;
+        self
+    }
+
     /// Build a tool context with explicitly supplied temp directories.
     ///
     /// This keeps construction testable without depending on process-global
@@ -134,6 +146,7 @@ impl ToolContext {
             settings_dirs,
             sandbox_policy: SandboxPolicy::WorkspaceWrite,
             judge: None,
+            limits: ToolLimits::defaults(),
         }
     }
 
@@ -149,6 +162,7 @@ impl ToolContext {
             settings_dirs: Vec::new(),
             sandbox_policy: SandboxPolicy::WorkspaceWrite,
             judge: None,
+            limits: ToolLimits::defaults(),
         }
     }
 }

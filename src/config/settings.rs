@@ -342,14 +342,19 @@ impl<'de> Deserialize<'de> for Limit {
     }
 }
 
-/// User-configured agent-loop resource limits.
+/// User-configured resource limits.
 ///
-/// Every limit is off by default: an uncapped agent loop is a deliberate
-/// design property, and no limit fires unless the user configures one. The
-/// keys are independent — turns and tool calls are different resource
-/// boundaries, so they are never derived from one another. An absent key
-/// (`None`) inherits lower-precedence settings; an explicit `"unlimited"`
-/// overrides them back to uncapped.
+/// Two kinds of limits live here. The agent-loop limits (`max_turns`,
+/// `max_tool_calls`) are off by default: an uncapped agent loop is a
+/// deliberate design property, and no limit fires unless the user configures
+/// one. The tool output budgets (`bash_output_max_bytes` through
+/// `hook_output_limit`) instead have built-in compiled defaults that match
+/// the hard-coded constants they replaced; see [`LimitsSettings::tool_limits`]
+/// for the resolution. The keys are independent — turns, tool calls, and
+/// output budgets are different resource boundaries, so they are never
+/// derived from one another. An absent key (`None`) inherits
+/// lower-precedence settings; an explicit `"unlimited"` overrides them back
+/// to uncapped.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LimitsSettings {
     /// Maximum number of agent-loop turns before the run terminates with a
@@ -362,6 +367,119 @@ pub struct LimitsSettings {
     /// explicit `"unlimited"` removes the cap.
     #[serde(default)]
     pub max_tool_calls: Option<Limit>,
+    /// Maximum bytes of Bash tool output returned inline before the rest
+    /// spills to a temp file. Absent uses the compiled default of 50,000;
+    /// `"unlimited"` disables the spill entirely.
+    #[serde(default)]
+    pub bash_output_max_bytes: Option<Limit>,
+    /// Maximum bytes of Bash output read before the process is killed and the
+    /// capture ends. Absent uses the compiled default of 100,000 (2× the
+    /// inline cap, so a spill has enough data for a head+tail preview);
+    /// `"unlimited"` reads until the process exits.
+    #[serde(default)]
+    pub bash_read_cap: Option<Limit>,
+    /// Default Read window in lines when the model omits `end_line`. Absent
+    /// uses the compiled default of 200; `"unlimited"` reads to the end of
+    /// the file.
+    #[serde(default)]
+    pub read_default_end_line: Option<Limit>,
+    /// Maximum bytes of Read output before it is truncated at a UTF-8
+    /// boundary. Absent uses the compiled default of 100,000; `"unlimited"`
+    /// disables truncation.
+    #[serde(default)]
+    pub read_max_output_bytes: Option<Limit>,
+    /// Maximum bytes of hook stdout and stderr captured per hook invocation.
+    /// Absent uses the compiled default of 64 KiB; `"unlimited"` disables
+    /// truncation.
+    #[serde(default)]
+    pub hook_output_limit: Option<Limit>,
+}
+
+/// Compiled-default output budgets for the Bash, Read, and hook tools.
+///
+/// These replaced the hard-coded constants in `src/clients/tools/bash.rs`,
+/// `src/clients/tools/read.rs`, and `src/hooks.rs`; the defaults match the
+/// old values exactly, so out-of-the-box behavior is unchanged. Each field is
+/// the byte/line cap, or `None` when the user configured `"unlimited"` for
+/// that budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ToolLimits {
+    /// Maximum bytes of Bash output returned inline (default 50,000).
+    pub bash_output_max_bytes: Option<usize>,
+    /// Maximum bytes of Bash output read before the process is killed
+    /// (default 100,000).
+    pub bash_read_cap: Option<usize>,
+    /// Default Read window in lines (default 200).
+    pub read_default_end_line: Option<usize>,
+    /// Maximum bytes of Read output before truncation (default 100,000).
+    pub read_max_output_bytes: Option<usize>,
+    /// Maximum bytes of hook stdout/stderr captured per hook (default 64 KiB).
+    pub hook_output_limit: Option<usize>,
+}
+
+/// Compiled defaults for the tool output budgets, used when the matching
+/// `[limits]` key is absent.
+pub const DEFAULT_BASH_OUTPUT_MAX_BYTES: u32 = 50_000;
+/// Compiled default for [`ToolLimits::bash_read_cap`]: 2× the inline cap so
+/// `truncate_output()` has enough data for a useful head+tail preview.
+pub const DEFAULT_BASH_READ_CAP: u32 = 100_000;
+/// Compiled default for [`ToolLimits::read_default_end_line`].
+pub const DEFAULT_READ_DEFAULT_END_LINE: u32 = 200;
+/// Compiled default for [`ToolLimits::read_max_output_bytes`].
+pub const DEFAULT_READ_MAX_OUTPUT_BYTES: u32 = 100_000;
+/// Compiled default for [`ToolLimits::hook_output_limit`].
+pub const DEFAULT_HOOK_OUTPUT_LIMIT: u32 = 64 * 1024;
+
+impl ToolLimits {
+    /// The compiled defaults, matching the constants the `[limits]` keys
+    /// replaced. `ToolContext` starts here; configured settings override it.
+    pub const fn defaults() -> Self {
+        Self {
+            bash_output_max_bytes: Some(DEFAULT_BASH_OUTPUT_MAX_BYTES as usize),
+            bash_read_cap: Some(DEFAULT_BASH_READ_CAP as usize),
+            read_default_end_line: Some(DEFAULT_READ_DEFAULT_END_LINE as usize),
+            read_max_output_bytes: Some(DEFAULT_READ_MAX_OUTPUT_BYTES as usize),
+            hook_output_limit: Some(DEFAULT_HOOK_OUTPUT_LIMIT as usize),
+        }
+    }
+}
+
+impl Default for ToolLimits {
+    fn default() -> Self {
+        Self::defaults()
+    }
+}
+
+impl LimitsSettings {
+    /// Resolve the merged `[limits]` settings into tool execution budgets,
+    /// applying the compiled defaults for absent keys.
+    ///
+    /// `None` in the result means the budget is unlimited (an explicit
+    /// `"unlimited"` override); absent keys resolve to the compiled default.
+    pub fn tool_limits(&self) -> ToolLimits {
+        let resolve = |limit: Option<Limit>, default: u32| {
+            limit
+                .unwrap_or_else(|| Limit::max(default))
+                .value()
+                .map(|v| v as usize)
+        };
+        ToolLimits {
+            bash_output_max_bytes: resolve(
+                self.bash_output_max_bytes,
+                DEFAULT_BASH_OUTPUT_MAX_BYTES,
+            ),
+            bash_read_cap: resolve(self.bash_read_cap, DEFAULT_BASH_READ_CAP),
+            read_default_end_line: resolve(
+                self.read_default_end_line,
+                DEFAULT_READ_DEFAULT_END_LINE,
+            ),
+            read_max_output_bytes: resolve(
+                self.read_max_output_bytes,
+                DEFAULT_READ_MAX_OUTPUT_BYTES,
+            ),
+            hook_output_limit: resolve(self.hook_output_limit, DEFAULT_HOOK_OUTPUT_LIMIT),
+        }
+    }
 }
 
 /// Result of loading and merging settings from all sources.
@@ -812,6 +930,29 @@ impl SettingsLoader {
         if let Some(limit) = limits.max_tool_calls {
             acc.max_tool_calls = limit.value();
         }
+        Self::merge_output_budgets(&limits, acc);
+    }
+
+    /// Merge the output-budget `[limits]` fields into the accumulator,
+    /// keeping [`Self::merge_limits`] at baseline complexity. Absent keys
+    /// keep lower-precedence values; an explicit `"unlimited"` overrides
+    /// back to no cap.
+    const fn merge_output_budgets(limits: &LimitsSettings, acc: &mut SettingsAccumulator) {
+        if limits.bash_output_max_bytes.is_some() {
+            acc.bash_output_max_bytes = limits.bash_output_max_bytes;
+        }
+        if limits.bash_read_cap.is_some() {
+            acc.bash_read_cap = limits.bash_read_cap;
+        }
+        if limits.read_default_end_line.is_some() {
+            acc.read_default_end_line = limits.read_default_end_line;
+        }
+        if limits.read_max_output_bytes.is_some() {
+            acc.read_max_output_bytes = limits.read_max_output_bytes;
+        }
+        if limits.hook_output_limit.is_some() {
+            acc.hook_output_limit = limits.hook_output_limit;
+        }
     }
 
     /// Merge `[tools.bash.judge]` fields into the accumulator.
@@ -945,6 +1086,11 @@ struct SettingsAccumulator {
     judge_allowlist: Vec<String>,
     max_turns: Option<u32>,
     max_tool_calls: Option<u32>,
+    bash_output_max_bytes: Option<Limit>,
+    bash_read_cap: Option<Limit>,
+    read_default_end_line: Option<Limit>,
+    read_max_output_bytes: Option<Limit>,
+    hook_output_limit: Option<Limit>,
     warnings: Vec<String>,
 }
 
@@ -994,6 +1140,11 @@ impl SettingsAccumulator {
             limits: LimitsSettings {
                 max_turns: self.max_turns.map(Limit::max),
                 max_tool_calls: self.max_tool_calls.map(Limit::max),
+                bash_output_max_bytes: self.bash_output_max_bytes,
+                bash_read_cap: self.bash_read_cap,
+                read_default_end_line: self.read_default_end_line,
+                read_max_output_bytes: self.read_max_output_bytes,
+                hook_output_limit: self.hook_output_limit,
             },
             warnings: self.warnings,
         }

@@ -74,7 +74,7 @@ fn path_outside_cwd_for_sandbox_test() -> Option<std::path::PathBuf> {
 #[test]
 fn truncate_output_passes_through_small_output() {
     let small = "hello world";
-    let result = truncate_output(small, 0, 100, false);
+    let result = truncate_output(small, Some(BASH_OUTPUT_MAX_BYTES), 0, 100, false);
     assert!(result.contains(small));
     assert!(result.contains("[exit:0 | 100ms]"));
 }
@@ -164,7 +164,7 @@ fn bash_reason_guidance_directs_supplying_context_for_state_changing_commands() 
 #[test]
 fn truncate_output_passes_through_at_limit() {
     let exact = "a".repeat(BASH_OUTPUT_MAX_BYTES);
-    let result = truncate_output(&exact, 0, 50, false);
+    let result = truncate_output(&exact, Some(BASH_OUTPUT_MAX_BYTES), 0, 50, false);
     assert!(result.contains(&exact));
     assert!(result.contains("[exit:0 | 50ms]"));
 }
@@ -172,7 +172,7 @@ fn truncate_output_passes_through_at_limit() {
 #[test]
 fn truncate_output_truncates_large_output() {
     let large = "x".repeat(BASH_OUTPUT_MAX_BYTES + 1000);
-    let result = truncate_output(&large, 0, 500, false);
+    let result = truncate_output(&large, Some(BASH_OUTPUT_MAX_BYTES), 0, 500, false);
     assert!(result.len() < large.len());
     assert!(result.contains("[Output too long"));
     assert!(result.contains("Full output saved to:"));
@@ -183,7 +183,7 @@ fn truncate_output_truncates_large_output() {
 fn truncate_output_handles_multibyte_chars() {
     // Create output with multi-byte UTF-8 characters that exceeds the limit
     let large = "é".repeat(BASH_OUTPUT_MAX_BYTES); // each 'é' is 2 bytes
-    let result = truncate_output(&large, 1, 2000, false);
+    let result = truncate_output(&large, Some(BASH_OUTPUT_MAX_BYTES), 1, 2000, false);
     assert!(result.contains("[Output too long"));
     assert!(result.contains("[exit:1 | 2.0s]"));
 }
@@ -191,7 +191,7 @@ fn truncate_output_handles_multibyte_chars() {
 #[test]
 fn truncate_output_temp_file_has_no_footer() {
     let large = "x".repeat(BASH_OUTPUT_MAX_BYTES + 1000);
-    let result = truncate_output(&large, 0, 100, false);
+    let result = truncate_output(&large, Some(BASH_OUTPUT_MAX_BYTES), 0, 100, false);
     // Extract the temp file path from the result
     let path_line = result
         .lines()
@@ -302,7 +302,7 @@ async fn test_streaming_small_output() {
 
 #[tokio::test]
 async fn test_streaming_large_output_is_capped() {
-    // Command that produces output beyond BASH_READ_CAP is truncated
+    // Command that produces output beyond the default read cap is truncated
     // Produce ~200KB of output (well over the 100KB cap)
     let args = r#"{"command": "yes | head -c 200000"}"#;
     let result = Box::pin(execute_bash_unsandboxed(args)).await.unwrap();
@@ -331,6 +331,77 @@ async fn test_streaming_large_output_is_capped() {
             .iter()
             .any(|e| e.kind == crate::session_telemetry::CompensationKind::JudgeBypass),
         "bypassed judge must record a judge_bypass event"
+    );
+}
+
+#[tokio::test]
+async fn bash_output_max_bytes_override_spills_at_custom_cap() {
+    // A configured `bash_output_max_bytes` below the compiled default changes
+    // the spill threshold: 5,000 bytes of output exceeds a 1,000-byte cap but
+    // stays under the default 100,000-byte read cap, so the run completes and
+    // the output spills to a temp file at the custom cap.
+    let dir = tempfile::tempdir().expect("hermetic temp dir for bash test");
+    let mut context = ToolContext::from_current_process();
+    context.cwd = dir.path().to_path_buf();
+    context.judge = Some(bypassed_judge_context());
+    let mut limits = crate::config::settings::ToolLimits::defaults();
+    limits.bash_output_max_bytes = Some(1000);
+    context.limits = limits;
+
+    let args = BashExecutionArgs::from_json(
+        r#"{"command": "yes x | head -c 5000"}"#,
+        SandboxPolicy::DangerFullAccess,
+    )
+    .unwrap();
+    let result = Box::pin(execute_bash_with_args(&context, args, None))
+        .await
+        .expect("bash run should succeed");
+
+    assert!(
+        result.output.contains("[Output too long"),
+        "output must spill at the custom cap, got: {}",
+        result.output
+    );
+    assert!(result.output.contains("Full output saved to:"));
+}
+
+#[tokio::test]
+async fn bash_output_max_bytes_unlimited_passes_large_output_through() {
+    // `bash_output_max_bytes = "unlimited"` disables the spill and the read
+    // cap, so 60,000 bytes of output (over the compiled 50,000-byte inline
+    // cap) pass through in full.
+    let dir = tempfile::tempdir().expect("hermetic temp dir for bash test");
+    let mut context = ToolContext::from_current_process();
+    context.cwd = dir.path().to_path_buf();
+    context.judge = Some(bypassed_judge_context());
+    let mut limits = crate::config::settings::ToolLimits::defaults();
+    limits.bash_output_max_bytes = None;
+    limits.bash_read_cap = None;
+    context.limits = limits;
+
+    let args = BashExecutionArgs::from_json(
+        r#"{"command": "yes x | head -c 60000"}"#,
+        SandboxPolicy::DangerFullAccess,
+    )
+    .unwrap();
+    let result = Box::pin(execute_bash_with_args(&context, args, None))
+        .await
+        .expect("bash run should succeed");
+
+    // `yes x | head -c 60000` emits 60,000 bytes of "x\n" lines; without a
+    // read cap or inline cap the full stream survives (plus the footer).
+    assert!(
+        result.output.len() > 60_000,
+        "unlimited output must pass through in full, got {} bytes",
+        result.output.len()
+    );
+    assert!(
+        !result.output.contains("[Output too long"),
+        "unlimited budget must not spill"
+    );
+    assert!(
+        !result.output.contains("output truncated"),
+        "unlimited budget must not truncate"
     );
 }
 
@@ -1892,8 +1963,8 @@ async fn test_judge_message_is_sanitized_before_entering_agent_loop() {
     );
 }
 
-/// Produce large stderr output after stdout closes, hitting `BASH_READ_CAP`
-/// during the `stdout closed — read remaining stderr` drain loop.
+/// Produce large stderr output after stdout closes, hitting the default read
+/// cap during the `stdout closed — read remaining stderr` drain loop.
 #[tokio::test]
 async fn test_streaming_stderr_drain_after_stdout_close_hits_cap() {
     // python3: write small stdout, close it, then flood stderr past cap
@@ -1923,8 +1994,8 @@ async fn test_streaming_stderr_drain_after_stdout_close_hits_cap() {
     }
 }
 
-/// Produce large stdout output after stderr closes, hitting `BASH_READ_CAP`
-/// during the `stderr closed — read remaining stdout` drain loop.
+/// Produce large stdout output after stderr closes, hitting the default read
+/// cap during the `stderr closed — read remaining stdout` drain loop.
 #[tokio::test]
 async fn test_streaming_stdout_drain_after_stderr_close_hits_cap() {
     // python3: write small stderr, close it, then flood stdout past cap
@@ -2009,7 +2080,7 @@ fn secure_temp_dir_is_owned_by_current_user() {
 fn secure_temp_dir_usable_for_truncation() {
     // Verify that truncate_output writes to the secure temp dir
     let large = "x".repeat(BASH_OUTPUT_MAX_BYTES + 1000);
-    let result = truncate_output(&large, 0, 100, false);
+    let result = truncate_output(&large, Some(BASH_OUTPUT_MAX_BYTES), 0, 100, false);
     let path_line = result
         .lines()
         .find(|l| l.starts_with("Full output saved to:"))

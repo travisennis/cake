@@ -11,14 +11,16 @@ use tokio::time::timeout;
 
 use crate::config::SessionWriter;
 use crate::config::hooks::{HookCommand, HookEvent, HookSource, LoadedHooks};
+use crate::config::settings::DEFAULT_HOOK_OUTPUT_LIMIT;
 use crate::types::{HookEventData, SessionRecord, StreamRecord};
-
-const HOOK_OUTPUT_LIMIT: usize = 64 * 1024;
 
 #[derive(Clone)]
 pub struct HookRunner {
     loaded: LoadedHooks,
     context: HookContext,
+    /// Per-hook stdout/stderr byte cap from `[limits] hook_output_limit`;
+    /// `None` means unlimited.
+    output_limit: Option<usize>,
 }
 
 #[derive(Clone)]
@@ -209,7 +211,18 @@ impl ToolHookMetadata {
 
 impl HookRunner {
     pub const fn new(loaded: LoadedHooks, context: HookContext) -> Self {
-        Self { loaded, context }
+        Self {
+            loaded,
+            context,
+            output_limit: Some(DEFAULT_HOOK_OUTPUT_LIMIT as usize),
+        }
+    }
+
+    /// Override the per-hook stdout/stderr byte cap from `[limits]
+    /// hook_output_limit`. `None` disables truncation.
+    pub const fn with_output_limit(mut self, output_limit: Option<usize>) -> Self {
+        self.output_limit = output_limit;
+        self
     }
 
     pub async fn session_start(
@@ -392,7 +405,8 @@ impl HookRunner {
         let futures = commands.into_iter().map(|command| {
             let payload = payload.clone();
             let cwd = self.context.cwd.clone();
-            async move { run_command_hook(command, payload, cwd).await }
+            let output_limit = self.output_limit;
+            async move { run_command_hook(command, payload, cwd, output_limit).await }
         });
         let outcomes = futures::future::join_all(futures).await;
 
@@ -658,7 +672,12 @@ impl HookProcessGuard {
     clippy::too_many_lines,
     reason = "hook command execution has many branches for error handling"
 )]
-async fn run_command_hook(command: HookCommand, payload: Value, cwd: PathBuf) -> InvocationOutcome {
+async fn run_command_hook(
+    command: HookCommand,
+    payload: Value,
+    cwd: PathBuf,
+    output_limit: Option<usize>,
+) -> InvocationOutcome {
     let start = Instant::now();
     if let Some(status) = &command.status_message {
         tracing::info!(
@@ -756,8 +775,8 @@ async fn run_command_hook(command: HookCommand, payload: Value, cwd: PathBuf) ->
         },
     };
 
-    let stdout = capped_text(&output.stdout);
-    let stderr = capped_text(&output.stderr);
+    let stdout = capped_text(&output.stdout, output_limit);
+    let stderr = capped_text(&output.stderr, output_limit);
     let exit_code = output.status.code();
 
     if exit_code == Some(2) {
@@ -960,14 +979,17 @@ fn duration_ms(duration: Duration) -> u64 {
     duration.as_millis().try_into().unwrap_or(u64::MAX)
 }
 
-fn capped_text(bytes: &[u8]) -> String {
-    if bytes.len() <= HOOK_OUTPUT_LIMIT {
+fn capped_text(bytes: &[u8], output_limit: Option<usize>) -> String {
+    let Some(output_limit) = output_limit else {
+        return String::from_utf8_lossy(bytes).to_string();
+    };
+    if bytes.len() <= output_limit {
         return String::from_utf8_lossy(bytes).to_string();
     }
-    let omitted = bytes.len() - HOOK_OUTPUT_LIMIT;
+    let omitted = bytes.len() - output_limit;
     format!(
         "{}... (truncated, {omitted} more bytes)",
-        String::from_utf8_lossy(&bytes[..HOOK_OUTPUT_LIMIT])
+        String::from_utf8_lossy(&bytes[..output_limit])
     )
 }
 
