@@ -16,7 +16,7 @@ def run(data: cakelib.Dataset) -> None:
     print(cakelib.describe_window(data))
 
     tasks = [rec for s in data.sessions for rec in s.tasks_in_window(data.cutoff)]
-    inflight = [s for s in data.sessions if s.inflight]
+    inflight = [s for s in data.sessions if s.inflight_in_window(data.cutoff)]
     if inflight:
         print(f"\nSessions with an incomplete final task (live/crashed/abandoned, "
               f"excluded from the completed-task counts below): {fmt_int(len(inflight))}")

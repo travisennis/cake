@@ -15,7 +15,9 @@ def run(data: cakelib.Dataset) -> None:
     print_header("HOOKS AND SKILLS")
     print(cakelib.describe_window(data))
 
-    events = [rec for s in data.sessions for rec in s.by_type("hook_event")]
+    events = [
+        rec for s in data.sessions for rec in s.records_in_window(data.cutoff, "hook_event")
+    ]
     if events:
         print(f"\nHook events: {fmt_int(len(events))}")
         by_event = Counter(e.get("event", "?") for e in events)
@@ -64,13 +66,17 @@ def run(data: cakelib.Dataset) -> None:
     # activates at most once per session; resumed invocations reuse the
     # activation without a new record.
     with_catalog = sum(1 for s in data.sessions if _has_skill_catalog(s))
-    skills = [rec for s in data.sessions for rec in s.by_type("skill_activated")]
+    skills = [
+        rec for s in data.sessions for rec in s.records_in_window(data.cutoff, "skill_activated")
+    ]
     print(f"\nSessions with skills available: {fmt_int(with_catalog)} "
           f"({fmt_pct(with_catalog, len(data.sessions))} of sessions)")
     if skills:
         print(f"Skill activations: {fmt_int(len(skills))}")
         by_name = Counter(sk.get("name", "?") for sk in skills)
-        sessions_using = sum(1 for s in data.sessions if s.by_type("skill_activated"))
+        sessions_using = sum(
+            1 for s in data.sessions if s.records_in_window(data.cutoff, "skill_activated")
+        )
         print_table(["skill", "activations"], [[n, c] for n, c in by_name.most_common()])
         print(f"Sessions activating >=1 skill: {fmt_int(sessions_using)} "
               f"({fmt_pct(sessions_using, with_catalog)} of sessions with skills available)")

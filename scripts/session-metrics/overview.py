@@ -31,10 +31,10 @@ def run(data: cakelib.Dataset) -> None:
     for s in sessions:
         day_sessions[s.last_activity.date().isoformat()].add(s.id)
         for rec in s.records_in_window(data.cutoff, "task_start", "result"):
-            ts = cakelib.parse_ts(rec.get("timestamp")) or s.last_activity
+            ts = cakelib.parse_ts(rec.get("timestamp")) or s.mtime
             day_tasks[ts.date().isoformat()] += 1
         for call in s.tool_calls_in_window(data.cutoff):
-            ts = cakelib.parse_ts(call.timestamp) or s.last_activity
+            ts = cakelib.parse_ts(call.timestamp) or s.mtime
             day_calls[ts.date().isoformat()] += 1
     rows = [
         [day, len(day_sessions[day]), fmt_int(day_tasks[day]), fmt_int(day_calls[day])]

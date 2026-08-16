@@ -66,7 +66,8 @@ def run(data: cakelib.Dataset) -> None:
     print_table(["model", "attempts", "time", "share of API time"], rows)
 
     hook_time = sum(
-        e.get("duration_ms") or 0 for s in data.sessions for e in s.by_type("hook_event")
+        e.get("duration_ms") or 0
+        for s in data.sessions for e in s.records_in_window(data.cutoff, "hook_event")
     )
     if hook_time:
         print(f"\nHook execution (transcripts, overlaps tool path): {fmt_ms(hook_time)}")
@@ -87,7 +88,8 @@ def run(data: cakelib.Dataset) -> None:
                      for r in s.by_type("task_complete")}
         starts = [(cakelib.parse_ts(r.get("timestamp")), r.get("task_id"))
                   for r in s.by_type("task_start")]
-        starts = [(ts, tid) for ts, tid in starts if ts is not None]
+        starts = [(ts, tid) for ts, tid in starts
+                  if ts is not None and (data.cutoff is None or ts >= data.cutoff)]
         for (start, task_id), (next_start, _) in zip(starts, starts[1:]):
             duration = durations.get(task_id)
             if duration is None:
