@@ -441,3 +441,119 @@ async fn session_telemetry_records_compensation_events() {
         "compensation records carry session identity"
     );
 }
+
+fn session_records(env: &TestEnv) -> Vec<serde_json::Value> {
+    let session_file = only_file_in(&env.data_dir.join("sessions"));
+    let contents = fs::read_to_string(&session_file).expect("session file should be readable");
+    contents
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("session line should be valid JSON"))
+        .collect()
+}
+
+#[cfg(unix)]
+fn stderr_tail(child: &mut std::process::Child) -> String {
+    use std::io::Read;
+    child
+        .stderr
+        .take()
+        .map(|mut pipe| {
+            let mut text = String::new();
+            let _ = pipe.read_to_string(&mut text).ok();
+            text
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(unix)]
+async fn wait_for_provider_request(mock_server: &MockServer) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        let received = mock_server
+            .received_requests()
+            .await
+            .is_some_and(|requests| !requests.is_empty());
+        if received {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for the provider request"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+/// Cancelling cake with SIGTERM (the signal the cake-repl runner sends)
+/// takes the same graceful interruption path as Ctrl-C: the session closes
+/// with an interrupted `task_complete` record, the telemetry summary is
+/// flushed, and the process exits 130.
+#[cfg(unix)]
+#[tokio::test]
+async fn sigterm_interrupts_session_cleanly() {
+    let env = TestEnv::new("cake-sigterm-interrupt-test");
+    let mock_server = MockServer::start().await;
+    write_responses_settings(&env, &mock_server.uri());
+
+    // Delay the provider response so the agent turn is still in flight when
+    // the SIGTERM arrives.
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(success_response())
+                .set_delay(std::time::Duration::from_secs(30)),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let mut child = env
+        .command()
+        .arg("--output-format")
+        .arg("json")
+        .arg("test prompt")
+        .env("SESSION_TELEMETRY_TEST_KEY", "test-token")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn cake");
+
+    // Wait until the provider request arrives. By then the agent turn is in
+    // flight and the SIGTERM handler is installed: the interrupt futures are
+    // polled in the same first `select!` iteration that starts the turn, so
+    // registration always precedes the network round trip.
+    wait_for_provider_request(&mock_server).await;
+
+    // SAFETY: `child.id()` is the PID of the cake process this test just
+    // spawned and is still ours to signal; SIGTERM is exactly the signal the
+    // cake-repl runner sends when cancelling a run.
+    unsafe {
+        libc::kill(
+            i32::try_from(child.id()).expect("pid must fit in an i32"),
+            libc::SIGTERM,
+        );
+    }
+
+    let status = child.wait().expect("failed to wait for cake");
+    assert_eq!(
+        status.code(),
+        Some(130),
+        "cake should exit with the interrupted status. stderr: {}",
+        stderr_tail(&mut child)
+    );
+
+    let session = session_records(&env);
+    let complete = session
+        .iter()
+        .find(|record| record["type"] == "task_complete")
+        .expect("session should end with a task_complete record");
+    assert_eq!(complete["subtype"], "interrupted");
+    assert_eq!(complete["is_error"], true);
+
+    let telemetry = telemetry_records(&env);
+    let summary = telemetry
+        .iter()
+        .find(|record| record["type"] == "session_summary")
+        .expect("telemetry should contain a session_summary");
+    assert_eq!(summary["success"], false);
+}

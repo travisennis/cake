@@ -17,6 +17,8 @@ Human diagnostics go to stderr. Machine-readable stdout must contain only its de
 
 For `stream-json`, validation failures before a task stream starts still use the codes above. Once streaming begins, ordinary agent, provider, and tool failures are represented by the final `task_complete` record and the process exits `0`. An unsatisfied output schema remains nonzero, and interruption exits `130`. A hit `max_turns` or `max_tool_calls` limit is an in-stream outcome: stream-json exits `0`, text and JSON modes exit `1`.
 
+Interruption follows one graceful path for both Ctrl-C (SIGINT) and, on Unix, SIGTERM --- the signal process supervisors use to cancel a run. The active task closes with an interrupted `task_complete` record and the telemetry summary is flushed before the process exits `130`.
+
 ## Provider retries
 
 Retries are bounded. Cake retries transport failures and HTTP `408`, `409`, `429`, `500`, `502`, `503`, `504`, and provider-overload signals such as `529` or a structured `overloaded_error`. An `x-should-retry: false` response header prevents a retry; `x-should-retry: true` additionally permits otherwise borderline `5xx` responses. Ordinary `400`, `401`, `403`, and `404` responses are not retried.

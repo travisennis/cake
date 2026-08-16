@@ -1082,8 +1082,9 @@ impl CmdRunner for CodingAssistant {
         let output = self.output_sink();
         let mut client = output.attach_callbacks(client);
 
-        // Race Ctrl-C against the agent turn so we can emit a clean
-        // TaskComplete record even when interrupted.
+        // Race interrupt signals (Ctrl-C, and SIGTERM on Unix) against the
+        // agent turn so we can emit a clean TaskComplete record even when
+        // interrupted.
         let interrupted = AtomicBool::new(false);
         let turn_start = Instant::now();
 
@@ -1101,7 +1102,7 @@ impl CmdRunner for CodingAssistant {
                 Ok(t) => t,
                 Err(e) => return Err(e),
             },
-            _ = tokio::signal::ctrl_c() => {
+            () = Self::interrupt_signal() => {
                 interrupted.store(true, Ordering::SeqCst);
                 // Dummy value — the flag check below short-circuits
                 // before `turn` is used when interrupted is true.
@@ -1138,19 +1139,50 @@ impl CmdRunner for CodingAssistant {
 }
 
 impl CodingAssistant {
-    /// Handle a user interrupt (Ctrl-C) during an agent turn.
+    /// Wait for an interruption signal.
+    ///
+    /// Resolves on Ctrl-C (SIGINT) and, on Unix, also on SIGTERM, so
+    /// supervisors that cancel cake with SIGTERM (such as the cake-repl
+    /// runner) take the same graceful interruption path as Ctrl-C.
+    async fn interrupt_signal() {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{SignalKind, signal};
+            match signal(SignalKind::terminate()) {
+                Ok(mut sigterm) => {
+                    tokio::select! {
+                        biased;
+                        _ = tokio::signal::ctrl_c() => {}
+                        _ = sigterm.recv() => {}
+                    }
+                },
+                // SIGTERM handling is unavailable; Ctrl-C alone still
+                // enters the graceful interruption path.
+                Err(_) => {
+                    let _ = tokio::signal::ctrl_c().await.ok();
+                },
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = tokio::signal::ctrl_c().await.ok();
+        }
+    }
+
+    /// Handle a user interrupt (Ctrl-C or SIGTERM) during an agent turn.
     ///
     /// Emits a `TaskComplete` record with an `Interrupted` outcome, writes
     /// the telemetry summary, and returns an `Interrupted` error that
     /// `main()` maps to exit code 130. Worktree cleanup is handled by
     /// [`WorktreeGuard`]'s `Drop`.
     fn handle_interrupt(client: &mut Agent, turn_start: Instant) -> anyhow::Result<()> {
-        // Set up a second Ctrl-C handler that force-exits immediately
-        // in case the graceful shutdown hangs.
-        let second_ctrlc = tokio::spawn(async {
-            if tokio::signal::ctrl_c().await.is_ok() {
-                std::process::exit(exit_code::code::INTERRUPTED.into());
-            }
+        // Listen for a second interrupt that force-exits immediately in
+        // case the graceful shutdown hangs. Once a SIGTERM handler is
+        // installed the default termination is gone, so a second SIGTERM
+        // must be handled explicitly alongside Ctrl-C.
+        let second_interrupt = tokio::spawn(async {
+            Self::interrupt_signal().await;
+            std::process::exit(exit_code::code::INTERRUPTED.into());
         });
 
         let elapsed: u64 = turn_start
@@ -1175,10 +1207,10 @@ impl CodingAssistant {
             Some("Interrupted by user".to_string()),
         );
 
-        // Abort the second-Ctrl-C listener. Worktree cleanup runs
+        // Abort the second-interrupt listener. Worktree cleanup runs
         // later via WorktreeGuard's Drop when `prepared` goes out of
         // scope.
-        second_ctrlc.abort();
+        second_interrupt.abort();
 
         Err(Interrupted.into())
     }
