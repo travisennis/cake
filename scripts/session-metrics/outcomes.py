@@ -15,7 +15,11 @@ def run(data: cakelib.Dataset) -> None:
     print_header("OUTCOMES")
     print(cakelib.describe_window(data))
 
-    tasks = [rec for s in data.sessions for rec in s.by_type("task_complete", "result")]
+    tasks = [rec for s in data.sessions for rec in s.tasks_in_window(data.cutoff)]
+    inflight = [s for s in data.sessions if s.inflight_in_window(data.cutoff)]
+    if inflight:
+        print(f"\nSessions with an incomplete final task (live/crashed/abandoned, "
+              f"excluded from the completed-task counts below): {fmt_int(len(inflight))}")
     if tasks:
         ok = [t for t in tasks if t.get("subtype") == "success"]
         print(f"\nTasks completed (transcripts): {fmt_int(len(tasks))} | "
@@ -44,8 +48,8 @@ def run(data: cakelib.Dataset) -> None:
         print(f"\nPermission denials recorded: {fmt_int(len(flat))} across "
               f"{fmt_int(len(denials))} tasks")
 
-        print("\nTasks per session:")
-        per_session = Counter(len(s.by_type("task_complete", "result")) for s in data.sessions)
+        print("\nTasks per session (completed, in window):")
+        per_session = Counter(len(s.tasks_in_window(data.cutoff)) for s in data.sessions)
         print_table(
             ["tasks", "sessions"],
             [[k, n] for k, n in sorted(per_session.items())],

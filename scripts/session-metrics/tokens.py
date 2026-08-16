@@ -88,7 +88,7 @@ def run(data: cakelib.Dataset) -> None:
     # Cross-check from transcripts (covers sessions without sidecars).
     task_usages = []
     for s in data.sessions:
-        for rec in s.by_type("task_complete", "result"):
+        for rec in s.tasks_in_window(data.cutoff):
             if rec.get("usage"):
                 task_usages.append(rec["usage"])
     if task_usages:

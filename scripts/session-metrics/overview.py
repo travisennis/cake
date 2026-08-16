@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Session inventory: activity over time, models, versions, projects, run modes."""
 
-from collections import Counter
+from collections import Counter, defaultdict
 from statistics import median
 
 import cakelib
@@ -22,13 +22,24 @@ def run(data: cakelib.Dataset) -> None:
         print(f"Unparseable lines skipped: sessions={data.session_parse_errors} telemetry={data.telemetry_parse_errors}")
 
     print("\nActivity by day:")
-    by_day = cakelib.group_by(sessions, lambda s: s.mtime.date().isoformat())
-    rows = []
-    for day in sorted(by_day):
-        day_sessions = by_day[day]
-        tool_calls = sum(len(s.tool_calls) for s in day_sessions)
-        tasks = sum(len(s.by_type("task_start", "result")) for s in day_sessions)
-        rows.append([day, len(day_sessions), fmt_int(tasks), fmt_int(tool_calls)])
+    # Sessions count on their last-activity day; tasks and tool calls are
+    # attributed to the day of their own record timestamp, so a long-running
+    # session spreads across the days it was actually active.
+    day_sessions: dict[str, set[str]] = defaultdict(set)
+    day_tasks: Counter = Counter()
+    day_calls: Counter = Counter()
+    for s in sessions:
+        day_sessions[s.last_activity.date().isoformat()].add(s.id)
+        for rec in s.records_in_window(data.cutoff, "task_start", "result"):
+            ts = cakelib.parse_ts(rec.get("timestamp")) or s.mtime
+            day_tasks[ts.date().isoformat()] += 1
+        for call in s.tool_calls_in_window(data.cutoff):
+            ts = cakelib.parse_ts(call.timestamp) or s.mtime
+            day_calls[ts.date().isoformat()] += 1
+    rows = [
+        [day, len(day_sessions[day]), fmt_int(day_tasks[day]), fmt_int(day_calls[day])]
+        for day in sorted(set(day_sessions) | set(day_tasks) | set(day_calls))
+    ]
     print_table(["date", "sessions", "tasks", "tool calls"], rows)
 
     print("\nModels:")
