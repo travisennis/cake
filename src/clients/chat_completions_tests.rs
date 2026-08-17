@@ -8,7 +8,7 @@ use crate::config::model::{ApiType, ModelConfig};
 use crate::config::skills::{Skill, SkillScope};
 use crate::config::{AgentsFile, SkillCatalog};
 use crate::prompts::build_initial_prompt_messages;
-use crate::types::{ReasoningContent, ReasoningContentKind};
+use crate::types::{ReasoningContent, ReasoningContentKind, ReasoningSummary};
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
@@ -334,7 +334,7 @@ fn build_messages_preserves_reasoning_content_for_assistant_messages() {
         },
         ConversationItem::Reasoning {
             id: "r-1".to_string(),
-            summary: Some(vec!["thinking...".to_string()]),
+            summary: Some(vec![ReasoningSummary::summary_text("thinking...")]),
             encrypted_content: None,
             content: Some(vec![ReasoningContent {
                 content_type: ReasoningContentKind::ReasoningText,
@@ -372,7 +372,7 @@ fn build_messages_drops_unpaired_reasoning_before_semantic_recovery_prompt() {
         },
         ConversationItem::Reasoning {
             id: "r-incomplete".to_string(),
-            summary: Some(vec!["partial".to_string()]),
+            summary: Some(vec![ReasoningSummary::summary_text("partial")]),
             encrypted_content: None,
             content: Some(vec![ReasoningContent {
                 content_type: ReasoningContentKind::ReasoningText,
@@ -434,7 +434,7 @@ fn build_messages_preserves_reasoning_content_for_assistant_tool_calls() {
         },
         ConversationItem::Reasoning {
             id: "r-1".to_string(),
-            summary: Some(vec!["thinking...".to_string()]),
+            summary: Some(vec![ReasoningSummary::summary_text("thinking...")]),
             encrypted_content: None,
             content: Some(vec![ReasoningContent {
                 content_type: ReasoningContentKind::ReasoningText,
@@ -539,7 +539,7 @@ fn strategy_preserves_existing_reasoning_content() {
         },
         ConversationItem::Reasoning {
             id: "r-1".to_string(),
-            summary: Some(vec!["thinking...".to_string()]),
+            summary: Some(vec![ReasoningSummary::summary_text("thinking...")]),
             encrypted_content: None,
             content: Some(vec![ReasoningContent {
                 content_type: ReasoningContentKind::ReasoningText,
@@ -878,7 +878,7 @@ fn snapshot_reasoning_with_assistant_text() {
         },
         ConversationItem::Reasoning {
             id: "r-1".to_string(),
-            summary: Some(vec!["thinking...".to_string()]),
+            summary: Some(vec![ReasoningSummary::summary_text("thinking...")]),
             encrypted_content: None,
             content: Some(vec![ReasoningContent {
                 content_type: ReasoningContentKind::ReasoningText,
@@ -910,7 +910,7 @@ fn snapshot_reasoning_with_tool_calls() {
         },
         ConversationItem::Reasoning {
             id: "r-1".to_string(),
-            summary: Some(vec!["thinking...".to_string()]),
+            summary: Some(vec![ReasoningSummary::summary_text("thinking...")]),
             encrypted_content: None,
             content: Some(vec![ReasoningContent {
                 content_type: ReasoningContentKind::ReasoningText,

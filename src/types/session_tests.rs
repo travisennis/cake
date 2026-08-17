@@ -1,6 +1,6 @@
 use super::*;
 use crate::config::session::CURRENT_FORMAT_VERSION;
-use crate::types::conversation::ReasoningContentKind;
+use crate::types::conversation::{ReasoningContentKind, ReasoningSummary};
 use crate::types::usage::{InputTokensDetails, OutputTokensDetails};
 
 fn stream_json_for(item: &ConversationItem) -> serde_json::Value {
@@ -465,17 +465,38 @@ fn stream_record_json_message_with_id_and_status() {
 }
 
 #[test]
-fn stream_record_json_reasoning_uses_plain_summary() {
+fn stream_record_json_reasoning_uses_typed_summary() {
     let item = ConversationItem::Reasoning {
         id: "r-1".to_string(),
-        summary: Some(vec!["step 1".to_string()]),
+        summary: Some(vec![ReasoningSummary::summary_text("step 1")]),
         encrypted_content: None,
         content: None,
         timestamp: None,
     };
     let json = stream_json_for(&item);
     assert_eq!(json["type"], "reasoning");
-    assert_eq!(json["summary"][0], "step 1");
+    assert_eq!(json["summary"][0]["type"], "summary_text");
+    assert_eq!(json["summary"][0]["text"], "step 1");
+}
+
+#[test]
+fn stream_record_json_reasoning_loads_legacy_string_summary() {
+    let record: StreamRecord = serde_json::from_value(serde_json::json!({
+        "type": "reasoning",
+        "id": "r-legacy",
+        "summary": ["old provider summary"],
+        "timestamp": "2026-05-10T12:34:56Z"
+    }))
+    .unwrap();
+
+    let item = SessionRecord::from(record).to_conversation_item().unwrap();
+    let ConversationItem::Reasoning { summary, .. } = item else {
+        panic!("expected reasoning conversation item");
+    };
+    assert_eq!(
+        summary.unwrap()[0],
+        ReasoningSummary::summary_text("old provider summary")
+    );
 }
 
 #[test]
@@ -637,14 +658,17 @@ fn conversation_items_roundtrip_through_stream_and_session_records() {
         },
         ConversationItem::Reasoning {
             id: "reasoning-encrypted".to_string(),
-            summary: Some(vec!["step 1".to_string()]),
+            summary: Some(vec![ReasoningSummary::summary_text("step 1")]),
             encrypted_content: Some("gAAAAABencrypted...".to_string()),
             content: None,
             timestamp: Some(timestamp_at("2026-05-10T00:00:04Z")),
         },
         ConversationItem::Reasoning {
             id: "reasoning-content".to_string(),
-            summary: Some(vec!["step 1".to_string(), "step 2".to_string()]),
+            summary: Some(vec![
+                ReasoningSummary::summary_text("step 1"),
+                ReasoningSummary::summary_text("step 2"),
+            ]),
             encrypted_content: None,
             content: Some(vec![ReasoningContent {
                 content_type: ReasoningContentKind::ReasoningText,
@@ -654,7 +678,7 @@ fn conversation_items_roundtrip_through_stream_and_session_records() {
         },
         ConversationItem::Reasoning {
             id: "reasoning-both".to_string(),
-            summary: Some(vec!["step 1".to_string()]),
+            summary: Some(vec![ReasoningSummary::summary_text("step 1")]),
             encrypted_content: Some("gAAAAABencrypted...".to_string()),
             content: Some(vec![
                 ReasoningContent {
@@ -715,7 +739,10 @@ fn snapshot_stream_record_json_message_with_id_and_status() {
 fn snapshot_stream_record_json_reasoning_plain_summary() {
     let item = ConversationItem::Reasoning {
         id: "r-1".to_string(),
-        summary: Some(vec!["step 1".to_string(), "step 2".to_string()]),
+        summary: Some(vec![
+            ReasoningSummary::summary_text("step 1"),
+            ReasoningSummary::summary_text("step 2"),
+        ]),
         encrypted_content: None,
         content: None,
         timestamp: None,
@@ -770,7 +797,7 @@ fn snapshot_session_json_message_with_id_and_status() {
 fn snapshot_session_json_reasoning_with_content() {
     let item = ConversationItem::Reasoning {
         id: "r-1".to_string(),
-        summary: Some(vec!["step 1".to_string()]),
+        summary: Some(vec![ReasoningSummary::summary_text("step 1")]),
         encrypted_content: Some("gAAAAABencrypted...".to_string()),
         content: Some(vec![ReasoningContent {
             content_type: ReasoningContentKind::ReasoningText,

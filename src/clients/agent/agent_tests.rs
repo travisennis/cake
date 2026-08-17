@@ -1,7 +1,7 @@
 use super::*;
 use crate::config::model::{ApiType, ResolvedModelConfig};
 use crate::config::settings::{Limit, LimitsSettings};
-use crate::types::{InputTokensDetails, OutputTokensDetails};
+use crate::types::{InputTokensDetails, OutputTokensDetails, ReasoningSummary};
 
 fn test_resolved_model_config(api_type: ApiType, base_url: &str) -> ResolvedModelConfig {
     ResolvedModelConfig {
@@ -2546,7 +2546,7 @@ mod error_tests {
             1,
             ConversationItem::Reasoning {
                 id: "r-prior".to_string(),
-                summary: Some(vec!["earlier thinking".to_string()]),
+                summary: Some(vec![ReasoningSummary::summary_text("earlier thinking")]),
                 encrypted_content: None,
                 content: None,
                 timestamp: None,

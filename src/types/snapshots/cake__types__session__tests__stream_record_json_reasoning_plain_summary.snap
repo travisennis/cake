@@ -1,12 +1,18 @@
 ---
-source: src/types/session.rs
+source: src/types/session_tests.rs
 expression: stream_json_for(&item)
 ---
 {
   "id": "r-1",
   "summary": [
-    "step 1",
-    "step 2"
+    {
+      "text": "step 1",
+      "type": "summary_text"
+    },
+    {
+      "text": "step 2",
+      "type": "summary_text"
+    }
   ],
   "type": "reasoning"
 }

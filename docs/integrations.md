@@ -79,7 +79,7 @@ An interrupted task can leave a `function_call` whose `function_call_output` was
 - `prompt_context`: mutable developer context used by that invocation.
 - `message`: typed user, assistant, or tool text.
 - `function_call` and `function_call_output`: provider tool request and result, joined by `call_id`.
-- `reasoning`: provider reasoning data retained for round trips.
+- `reasoning`: provider reasoning data retained for round trips. Its `summary` array uses typed objects with `type` and `text`; loaders accept historical string entries and normalize them to `summary_text` objects.
 - `skill_activated`: first observed read of a known skill in a session.
 - `hook_event`: hook execution, decision, timing, and bounded diagnostics.
 - `task_complete`: outcome, duration, turns, tool-call count, result or error, usage, and optional permission denials. A `limit_exceeded` outcome also carries the fired `limit` key and a partial `result`.
@@ -104,7 +104,7 @@ Consumers must tolerate added enum values and optional fields; old sidecars rema
 
 The Bash tool's optional `reason` is the model's untrusted intent report; guidance directs agents to supply it for state-changing, destructive-looking, and remote-effect commands, stating the intended effect. A `reason` never authorizes a remote destructive command on its own, so a merge or branch delete requires an in-command guard. The judge weighs the reason against the command; it appears in transcripts, never telemetry. Each judge evaluation is stateless --- command, cwd, repository digest, and reason only --- so remediation recommends a self-contained guarded command the next request can judge alone.
 
-Every non-empty Bash command runs through the LLM judge (ADR-018) before spawn. [Security](security.md) defines the gate semantics and [Configuration](configuration.md) the `[tools.bash.judge]` settings. A timeout or retryable transport/HTTP failure triggers at most one recovery within `timeout_secs + retry_budget_secs`; verdicts, refusals, and malformed verdicts are never retried, and exhausted recovery fails closed.
+Every non-empty Bash command runs through the LLM judge (ADR-018) before spawn. [Security](security.md) defines the gate semantics and [Configuration](configuration.md) the `[tools.bash.judge]` settings. A timeout, a retryable transport/HTTP failure, or an undecodable 2xx response body triggers at most one recovery within `timeout_secs + retry_budget_secs`; verdicts, refusals, malformed verdicts, and semantic backend parse failures are never retried, and exhausted recovery fails closed.
 
 `cake bash check -- <command>` uses the preflight path and prompt without executing. Verdicts, allowlist overrides, and bypass exit `0`; timeout, network, auth, and rate-limit errors exit `2`; other transport errors, malformed verdicts, and refusals exit `1`; unknown judge models exit `3`.
 

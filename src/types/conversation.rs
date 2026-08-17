@@ -53,6 +53,51 @@ pub struct ReasoningContent {
     pub text: Option<String>,
 }
 
+/// A typed summary item from a reasoning output.
+///
+/// `OpenAI`'s Responses API represents reasoning summaries as objects, while
+/// some compatible providers return an array of plain strings. Deserialization
+/// accepts both forms and normalizes legacy strings to `summary_text` so the
+/// internal conversation representation remains typed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ReasoningSummary {
+    #[serde(rename = "type")]
+    pub summary_type: String,
+    pub text: String,
+}
+
+impl ReasoningSummary {
+    pub fn summary_text(text: impl Into<String>) -> Self {
+        Self {
+            summary_type: "summary_text".to_string(),
+            text: text.into(),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ReasoningSummaryInput {
+    Object {
+        #[serde(rename = "type")]
+        summary_type: String,
+        text: String,
+    },
+    LegacyText(String),
+}
+
+impl<'de> Deserialize<'de> for ReasoningSummary {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        match ReasoningSummaryInput::deserialize(deserializer)? {
+            ReasoningSummaryInput::Object { summary_type, text } => Ok(Self { summary_type, text }),
+            ReasoningSummaryInput::LegacyText(text) => Ok(Self::summary_text(text)),
+        }
+    }
+}
+
 /// Protocol-defined kind for reasoning content items.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReasoningContentKind {
@@ -148,7 +193,7 @@ pub enum ConversationItem {
     Reasoning {
         id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
-        summary: Option<Vec<String>>,
+        summary: Option<Vec<ReasoningSummary>>,
         /// Opaque encrypted reasoning content that must be echoed back to the
         /// API for multi-turn conversations with reasoning models.
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -251,6 +296,30 @@ mod tests {
     }
 
     #[test]
+    fn reasoning_summary_preserves_typed_object() {
+        let summary: ReasoningSummary = serde_json::from_value(serde_json::json!({
+            "type": "summary_text",
+            "text": "thinking"
+        }))
+        .unwrap();
+
+        assert_eq!(summary.summary_type, "summary_text");
+        assert_eq!(summary.text, "thinking");
+        assert_eq!(
+            serde_json::to_value(summary).unwrap(),
+            serde_json::json!({"type": "summary_text", "text": "thinking"})
+        );
+    }
+
+    #[test]
+    fn reasoning_summary_normalizes_legacy_string() {
+        let summary: ReasoningSummary =
+            serde_json::from_value(serde_json::json!("thinking")).unwrap();
+
+        assert_eq!(summary, ReasoningSummary::summary_text("thinking"));
+    }
+
+    #[test]
     fn conversation_item_serialization_roundtrip() {
         let items = vec![
             ConversationItem::Message {
@@ -274,7 +343,7 @@ mod tests {
             },
             ConversationItem::Reasoning {
                 id: "r".to_string(),
-                summary: Some(vec!["s".to_string()]),
+                summary: Some(vec![ReasoningSummary::summary_text("s")]),
                 encrypted_content: None,
                 content: None,
                 timestamp: None,

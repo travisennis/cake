@@ -10,7 +10,9 @@ pub mod session;
 mod usage;
 
 #[doc(inline)]
-pub use conversation::{ConversationItem, ReasoningContent, ReasoningContentKind, Role};
+pub use conversation::{
+    ConversationItem, ReasoningContent, ReasoningContentKind, ReasoningSummary, Role,
+};
 #[doc(inline)]
 pub use session::{
     CutOffError, GitState, HookEventData, LimitExceededError, ReplayErrorKind, SessionRecord,

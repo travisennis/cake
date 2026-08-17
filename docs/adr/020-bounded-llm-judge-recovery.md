@@ -43,6 +43,7 @@ Recovery triggers only on error outcomes: a judge timeout, a transport error cla
 ## More Information
 
 - Partially supersedes [ADR-018](./018-llm-judge-command-gate.md), `LLM Judge Command Gate`: the "no retries in version 1" clause is replaced by this decision; ADR-018 remains accepted for the gate itself.
+- Partially superseded by [ADR-022](./022-retry-undecodable-judge-responses.md), `Retry Undecodable Judge Responses`: body-decode failures are removed from the terminal response-parse class and get one bounded recovery attempt on a fresh client; semantic backend parse failures remain terminal, and this decision remains accepted for the timeout/transport/HTTP recovery.
 - Implements issue #204, `Retry transient LLM-judge failures within a bounded deadline`.
 - Builds on #202 (per-attempt judge diagnostics) for the retry telemetry and on #205 (judge SLO benchmark) for measuring the recovery's effect.
 - Execution plan: `docs/exec-plans/completed/judge-retry-bounded-deadline.md`.

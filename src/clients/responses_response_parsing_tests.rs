@@ -1,6 +1,7 @@
 //! Tests for parsing raw HTTP responses.
 
 use super::*;
+use crate::types::ReasoningSummary;
 use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -328,7 +329,7 @@ fn to_api_input_function_call_output() {
 fn to_api_input_reasoning() {
     let item = ConversationItem::Reasoning {
         id: "r-1".to_string(),
-        summary: Some(vec!["thinking...".to_string()]),
+        summary: Some(vec![ReasoningSummary::summary_text("thinking...")]),
         encrypted_content: None,
         content: None,
         timestamp: None,
@@ -344,7 +345,10 @@ fn to_api_input_reasoning() {
 fn to_api_input_reasoning_multiple_summaries() {
     let item = ConversationItem::Reasoning {
         id: "r-2".to_string(),
-        summary: Some(vec!["step 1".to_string(), "step 2".to_string()]),
+        summary: Some(vec![
+            ReasoningSummary::summary_text("step 1"),
+            ReasoningSummary::summary_text("step 2"),
+        ]),
         encrypted_content: None,
         content: None,
         timestamp: None,
@@ -357,7 +361,7 @@ fn to_api_input_reasoning_multiple_summaries() {
 fn to_api_input_reasoning_with_encrypted_content() {
     let item = ConversationItem::Reasoning {
         id: "r-1".to_string(),
-        summary: Some(vec!["thinking...".to_string()]),
+        summary: Some(vec![ReasoningSummary::summary_text("thinking...")]),
         encrypted_content: Some("gAAAAABencrypted...".to_string()),
         content: None,
         timestamp: None,
@@ -371,7 +375,7 @@ fn to_api_input_reasoning_with_encrypted_content() {
 fn to_api_input_reasoning_without_encrypted_content_omits_field() {
     let item = ConversationItem::Reasoning {
         id: "r-1".to_string(),
-        summary: Some(vec!["thinking...".to_string()]),
+        summary: Some(vec![ReasoningSummary::summary_text("thinking...")]),
         encrypted_content: None,
         content: None,
         timestamp: None,
@@ -384,7 +388,7 @@ fn to_api_input_reasoning_without_encrypted_content_omits_field() {
 fn to_api_input_reasoning_with_content() {
     let item = ConversationItem::Reasoning {
         id: "r-1".to_string(),
-        summary: Some(vec!["thinking...".to_string()]),
+        summary: Some(vec![ReasoningSummary::summary_text("thinking...")]),
         encrypted_content: None,
         timestamp: None,
         content: Some(vec![crate::types::ReasoningContent {
@@ -488,7 +492,7 @@ fn snapshot_function_call_output() {
 fn snapshot_reasoning_with_summary() {
     let item = ConversationItem::Reasoning {
         id: "r-1".to_string(),
-        summary: Some(vec!["thinking...".to_string()]),
+        summary: Some(vec![ReasoningSummary::summary_text("thinking...")]),
         encrypted_content: None,
         content: None,
         timestamp: None,
@@ -503,7 +507,7 @@ fn snapshot_reasoning_with_summary() {
 fn snapshot_reasoning_with_encrypted_content() {
     let item = ConversationItem::Reasoning {
         id: "r-1".to_string(),
-        summary: Some(vec!["thinking...".to_string()]),
+        summary: Some(vec![ReasoningSummary::summary_text("thinking...")]),
         encrypted_content: Some("gAAAAABencrypted...".to_string()),
         content: None,
         timestamp: None,
@@ -518,7 +522,7 @@ fn snapshot_reasoning_with_encrypted_content() {
 fn snapshot_reasoning_with_content_array() {
     let item = ConversationItem::Reasoning {
         id: "r-1".to_string(),
-        summary: Some(vec!["thinking...".to_string()]),
+        summary: Some(vec![ReasoningSummary::summary_text("thinking...")]),
         encrypted_content: None,
         content: Some(vec![crate::types::ReasoningContent {
             content_type: ReasoningContentKind::ReasoningText,

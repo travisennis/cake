@@ -1,5 +1,5 @@
 ---
-source: src/types/session.rs
+source: src/types/session_tests.rs
 expression: session_json_for(&item)
 ---
 {
@@ -12,7 +12,10 @@ expression: session_json_for(&item)
   "encrypted_content": "gAAAAABencrypted...",
   "id": "r-1",
   "summary": [
-    "step 1"
+    {
+      "text": "step 1",
+      "type": "summary_text"
+    }
   ],
   "timestamp": "2026-05-10T00:00:00Z",
   "type": "reasoning"

@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::types::conversation::{ConversationItem, ReasoningContent, Role};
+use crate::types::conversation::{ConversationItem, ReasoningContent, ReasoningSummary, Role};
 use crate::types::usage::Usage;
 
 /// Snapshot of git repository state captured when a session file is created.
@@ -342,7 +342,7 @@ pub struct FunctionCallOutputData {
 pub struct ReasoningData {
     pub id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub summary: Option<Vec<String>>,
+    pub summary: Option<Vec<ReasoningSummary>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub encrypted_content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
