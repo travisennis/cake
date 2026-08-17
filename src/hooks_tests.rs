@@ -881,3 +881,129 @@ async fn read_capped_bounds_capture_and_counts_overflow() {
     assert!(captured.is_empty());
     assert_eq!(total, 0);
 }
+
+#[tokio::test]
+#[cfg(unix)]
+async fn wait_for_hook_output_retains_only_capped_bytes_through_real_pipes() {
+    // The hook author's concern is a hook that emits far more than the cap
+    // without cake materializing all of it. Drive `wait_for_hook_output` over
+    // real pipes with a 4 MiB producer and a 1000-byte cap: the reader must
+    // keep only the first 1000 bytes while still counting (and draining) the
+    // full stream so the reported `(truncated, N more bytes)` stays accurate
+    // and the hook completes normally.
+    let mut child = shell_command("yes | head -c 4194304")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("failed to spawn hook child");
+
+    let (stdout_captured, stdout_total, stderr_captured, stderr_total, status) =
+        wait_for_hook_output(&mut child, Some(1000))
+            .await
+            .expect("wait_for_hook_output failed");
+
+    assert_eq!(status.code(), Some(0));
+    // The pipe carried the full 4 MiB, but only the first 1000 bytes were kept.
+    assert_eq!(stdout_total, 4 * 1024 * 1024);
+    assert_eq!(stdout_captured.len(), 1000);
+    assert!(stderr_captured.is_empty());
+    assert_eq!(stderr_total, 0);
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn noisy_hook_output_is_bounded_and_truncated() {
+    // A hook that emits far more than HOOK_OUTPUT_LIMIT on both streams must
+    // still complete normally (exit 0, no timeout) with only the capped prefix
+    // retained and the truncation marker appended — not the full payload.
+    let dir = tempfile::TempDir::new().unwrap();
+    // 4 MiB to stdout, then 4 MiB to stderr, then exit 0.
+    let command = "yes | head -c 4194304; yes n | head -c 4194304 >&2".to_string();
+    let hook_command = HookCommand {
+        command,
+        timeout: Duration::from_secs(30),
+        fail_closed: false,
+        status_message: None,
+        source_path: dir.path().join("hooks.json"),
+    };
+
+    let output_limit = DEFAULT_HOOK_OUTPUT_LIMIT as usize;
+    let outcome = run_command_hook(
+        hook_command,
+        serde_json::json!({}),
+        dir.path().to_path_buf(),
+        Some(output_limit),
+    )
+    .await;
+
+    assert_eq!(outcome.exit_code, Some(0), "{:?}", outcome.error);
+    // Truncated output is no longer valid hook JSON, so the parse error is
+    // expected (identical to the pre-fix behavior); what must not happen is
+    // a timeout or an unbounded buffer.
+    assert!(
+        !outcome.error.as_deref().unwrap_or("").contains("timed out"),
+        "noisy hook timed out instead of completing: {:?}",
+        outcome.error
+    );
+    // Both streams carry the marker and stay near the cap, not 4 MiB each.
+    for stream in [&outcome.stdout, &outcome.stderr] {
+        assert!(
+            stream.contains("... (truncated, "),
+            "expected truncation marker in bounded hook output, got: {stream:?}",
+        );
+        assert!(
+            stream.len() < output_limit + 100,
+            "hook output exceeded the cap: {} bytes",
+            stream.len()
+        );
+    }
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn stderr_heavy_non_reading_hook_completes() {
+    // A hook that never reads stdin (payload > pipe buffer) while writing far
+    // more than HOOK_OUTPUT_LIMIT to stderr must not deadlock: the bounded
+    // reader keeps draining stderr past the cap, so the child never blocks on
+    // a full stderr pipe and the hook completes with exit 0 instead of timing
+    // out.
+    let dir = tempfile::TempDir::new().unwrap();
+    let big_payload_value = serde_json::json!({
+        "data": "x".repeat(100 * 1024),  // 100 KiB, never read by the hook
+    });
+    let hook_command = HookCommand {
+        command: "yes | head -c 4194304 >&2; sleep 1".to_string(),
+        timeout: Duration::from_secs(30),
+        fail_closed: false,
+        status_message: None,
+        source_path: dir.path().join("hooks.json"),
+    };
+
+    let output_limit = DEFAULT_HOOK_OUTPUT_LIMIT as usize;
+    let outcome = run_command_hook(
+        hook_command,
+        big_payload_value,
+        dir.path().to_path_buf(),
+        Some(output_limit),
+    )
+    .await;
+
+    assert_eq!(
+        outcome.exit_code,
+        Some(0),
+        "stderr-heavy non-reading hook did not complete: {:?}",
+        outcome.error
+    );
+    assert!(outcome.error.is_none());
+    assert!(
+        outcome.stderr.contains("... (truncated, "),
+        "expected truncation marker in bounded stderr, got: {:?}",
+        outcome.stderr
+    );
+    assert!(
+        outcome.stderr.len() < output_limit + 100,
+        "stderr exceeded the cap: {} bytes",
+        outcome.stderr.len()
+    );
+}
