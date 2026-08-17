@@ -128,14 +128,13 @@ pub(super) async fn send_request_json(
         trace!(target: "cake", "{prompt_json}");
     }
 
-    let response = strategy
-        .apply_headers(
-            client
-                .post(&url)
-                .header(reqwest::header::CONTENT_TYPE, "application/json")
-                .body(request),
-        )
-        .bearer_auth(&config.api_key)
+    let request = strategy.apply_headers(
+        client
+            .post(&url)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(request),
+    );
+    let response = crate::auth::apply_request_auth(request, config)?
         .send()
         .await?;
 

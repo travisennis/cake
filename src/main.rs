@@ -1,5 +1,6 @@
 //! cake - AI coding assistant CLI
 
+mod auth;
 mod cli;
 mod clients;
 mod config;
