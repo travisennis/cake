@@ -81,6 +81,8 @@ pub(super) fn build_request_json<'a>(
 
     let prompt = Request {
         model: &config.model_config.model,
+        store: crate::auth::is_chatgpt_codex_backend(&config.model_config.base_url)
+            .then_some(false),
         input: build_input(non_system_history),
         instructions,
         temperature: config.model_config.temperature,

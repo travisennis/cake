@@ -1,6 +1,7 @@
 use super::*;
 use crate::clients::responses_types::{OutputContent, OutputMessage, ProviderConfig};
 use crate::clients::tools::{SandboxPolicy, default_tool_registry};
+use crate::config::model::{ApiType, ModelConfig, ResolvedModelConfig};
 use crate::config::skills::{Skill, SkillScope};
 use crate::config::{AgentsFile, SkillCatalog};
 use crate::prompts::build_initial_prompt_messages;
@@ -736,6 +737,7 @@ fn snapshot_responses_request_minimal() {
     }];
     let request = Request {
         model: "openai/gpt-4.1",
+        store: None,
         input: build_input(&history),
         instructions: None,
         temperature: None,
@@ -799,6 +801,7 @@ fn snapshot_responses_request_with_tools_provider_and_reasoning() {
     let (instructions, non_system_history) = extract_instructions(&history).unwrap();
     let request = Request {
         model: "openai/gpt-5",
+        store: None,
         input: build_input(non_system_history),
         instructions,
         temperature: Some(0.3),
@@ -843,6 +846,7 @@ fn snapshot_responses_request_with_output_schema_constraint() {
     // Correction-turn shape: no tools offered, native constraint attached.
     let request = Request {
         model: "openai/gpt-5",
+        store: None,
         input: build_input(&history),
         instructions: None,
         temperature: None,
@@ -875,6 +879,7 @@ fn snapshot_responses_request_full_with_agents_and_skills() {
     let (instructions, non_system_history) = extract_instructions(&history).unwrap();
     let request = Request {
         model: "test-responses-model",
+        store: None,
         input: build_input(non_system_history),
         instructions,
         temperature: Some(0.2),
@@ -891,6 +896,48 @@ fn snapshot_responses_request_full_with_agents_and_skills() {
         "responses_request_full_with_agents_and_skills",
         &serde_json::to_value(&request).unwrap(),
     );
+}
+
+#[test]
+fn build_request_disables_storage_for_codex_backend() {
+    let config = ResolvedModelConfig {
+        model_config: ModelConfig {
+            model: "gpt-5.6-luna".to_string(),
+            api_type: ApiType::Responses,
+            base_url: "https://chatgpt.com/backend-api/codex".to_string(),
+            api_key_env: "UNUSED_FOR_CHATGPT_AUTH".to_string(),
+            provider: None,
+            provider_headers: None,
+            temperature: None,
+            top_p: None,
+            max_output_tokens: None,
+            context_window: None,
+            reasoning_effort: None,
+            reasoning_summary: None,
+            reasoning_max_tokens: None,
+            providers: vec![],
+        },
+        api_key: "test-token".to_string(),
+    };
+    let history = vec![ConversationItem::Message {
+        role: Role::User,
+        content: "Tell me a joke".to_string(),
+        id: None,
+        status: None,
+        timestamp: None,
+    }];
+
+    let bytes = super::build_request_json(
+        &config,
+        &history,
+        &[],
+        &crate::clients::retry::RequestOverrides::default(),
+        None,
+    )
+    .expect("build request");
+    let wire: serde_json::Value = serde_json::from_slice(&bytes).expect("parse request");
+
+    assert_eq!(wire["store"], false);
 }
 
 // =========================================================================
