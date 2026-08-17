@@ -5,7 +5,7 @@ denials, and abnormal terminations.
 Sources: transcript task_complete/result records and telemetry session_summary.
 """
 
-from collections import Counter
+from collections import Counter, defaultdict
 
 import cakelib
 from cakelib import fmt_int, fmt_ms, fmt_pct, percentile, print_header, print_table
@@ -80,6 +80,30 @@ def run(data: cakelib.Dataset) -> None:
                 ["turns", fmt_int(percentile(turns, 50)), fmt_int(percentile(turns, 90)),
                  fmt_int(max(turns))],
             ],
+        )
+
+        # Turn totals per session: continue/resume/fork invocations each write
+        # their own session_summary to the same sidecar, and turn_count is
+        # cumulative within one invocation, so the session total is the sum
+        # across its invocations. Transcripts cannot be split that way, so
+        # this is telemetry-only, like the other per-invocation reports.
+        per_session: dict[str, list[int]] = defaultdict(list)
+        for inv in summaries:
+            per_session[inv.session_id].append(inv.summary["turn_count"])
+        per_session_turns = sorted(
+            ((sid, len(invs), sum(invs)) for sid, invs in per_session.items()),
+            key=lambda row: (-row[2], row[0]),
+        )
+        turn_totals = [row[2] for row in per_session_turns]
+        print("\nTurns per session (telemetry, summed across invocations):")
+        print_table(
+            ["metric", "p50", "p90", "max"],
+            [["turns/session", fmt_int(percentile(turn_totals, 50)),
+              fmt_int(percentile(turn_totals, 90)), fmt_int(max(turn_totals))]],
+        )
+        print_table(
+            ["session", "invocations", "turns"],
+            [[row[0], fmt_int(row[1]), fmt_int(row[2])] for row in per_session_turns],
         )
 
     # Invocations that started but never wrote a summary: crash/kill candidates.

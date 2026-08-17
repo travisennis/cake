@@ -26,7 +26,7 @@ Every script accepts `--days`, `--sessions-dir`, `--telemetry-dir`, `--model`, a
   | `tools.py`          | Per-tool call volume and failure rates, failure taxonomy, Edit/Write retry recovery, durations/output sizes, per-turn parallelism                                              |
   | `api.py`            | API attempt failures, status codes, latency percentiles by model, retry reasons/delays, context-overflow overrides                                                             |
   | `time_breakdown.py` | Where wall-clock time goes (model API vs tools vs retries vs overhead), tool/model time shares, turn pacing, think time between tasks, slowest operations                      |
-  | `outcomes.py`       | Task and invocation success rates, error subtypes, duration/turn distributions, permission denials, abnormal terminations                                                      |
+  | `outcomes.py`       | Task and invocation success rates, error subtypes, duration/turn distributions, per-session turn totals, permission denials, abnormal terminations                             |
   | `hooks.py`          | Hook events, allow/deny decisions, denied commands, hook errors and durations, skill activations                                                                               |
   | `compensations.py`  | Model-compensation counters per model: json repair, judge verdicts/fail-closed/bypass, same-path serialization, output truncation, Edit invalid args, context-overflow retries |
   | `cakelib.py`        | Shared loading, call pairing, error classification, formatting (not a CLI)                                                                                                     |
