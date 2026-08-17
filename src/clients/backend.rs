@@ -5,6 +5,36 @@ use crate::clients::{chat_completions, responses};
 use crate::config::model::{ApiType, ResolvedModelConfig};
 use crate::types::ConversationItem;
 
+/// A successful provider response whose body does not match the backend's
+/// JSON envelope.
+///
+/// Keeping this as a typed boundary error lets callers distinguish a body
+/// decode failure, which may be transient, from later semantic parsing errors
+/// that should remain terminal.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "failed to decode {backend} response body: {source}; first {preview_len} bytes: {preview:?}"
+)]
+pub(super) struct ResponseDecodeError {
+    backend: &'static str,
+    preview_len: usize,
+    preview: String,
+    #[source]
+    source: serde_json::Error,
+}
+
+impl ResponseDecodeError {
+    pub(super) fn new(backend: &'static str, body: &[u8], source: serde_json::Error) -> Self {
+        let preview_len = body.len().min(400);
+        Self {
+            backend,
+            preview_len,
+            preview: String::from_utf8_lossy(&body[..preview_len]).into_owned(),
+            source,
+        }
+    }
+}
+
 /// Native structured-output constraint attached to correction-turn requests
 /// when `--output-schema` enforcement needs a corrected final message.
 ///

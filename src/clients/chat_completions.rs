@@ -5,7 +5,7 @@ use tracing::{debug, trace, warn};
 use crate::config::model::ResolvedModelConfig;
 
 use crate::clients::agent::TurnResult;
-use crate::clients::backend::FinalOutputConstraint;
+use crate::clients::backend::{FinalOutputConstraint, ResponseDecodeError};
 use crate::clients::chat_types::{
     ChatFunction, ChatFunctionCallRef, ChatMessage, ChatRequest, ChatResponse, ChatTool,
     ChatToolCallRef, ResponseFormat, ResponseFormatJsonSchema,
@@ -127,13 +127,26 @@ pub(super) async fn send_request_json(
     Ok(response)
 }
 
+/// Read the response body and decode the Chat Completions response, attaching
+/// a bounded preview of the raw body to the error when the 2xx body is not the
+/// expected JSON shape, so an opaque provider or proxy body is diagnosable
+/// from the error text.
+async fn read_chat_response(response: reqwest::Response) -> anyhow::Result<ChatResponse> {
+    let bytes = response.bytes().await?;
+    serde_json::from_slice::<ChatResponse>(&bytes)
+        .map_err(|error| ResponseDecodeError::new("Chat Completions", &bytes, error).into())
+}
+
 /// Parse an HTTP response from the Chat Completions API into a `TurnResult`.
 ///
 /// # Errors
 ///
-/// Returns an error if the response body cannot be deserialized.
+/// Returns an error if the response body cannot be read or deserialized. A
+/// deserialization failure carries a bounded preview of the raw body so an
+/// opaque provider or proxy 2xx is diagnosable from the error text instead of
+/// reqwest's generic "error decoding response body".
 pub(super) async fn parse_response(response: reqwest::Response) -> anyhow::Result<TurnResult> {
-    let chat_response = response.json::<ChatResponse>().await?;
+    let chat_response = read_chat_response(response).await?;
     trace!(target: "cake", "{chat_response:?}");
 
     let response_id = chat_response.id.as_deref().unwrap_or("<missing id>");

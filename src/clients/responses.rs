@@ -3,7 +3,7 @@ use tracing::{debug, trace, warn};
 use crate::config::model::ResolvedModelConfig;
 
 use crate::clients::agent::TurnResult;
-use crate::clients::backend::FinalOutputConstraint;
+use crate::clients::backend::{FinalOutputConstraint, ResponseDecodeError};
 use crate::clients::provider_strategy::ProviderStrategy;
 use crate::clients::responses_types::{
     ApiResponse, ApiResponseEnvelope, ApiUsage, OutputMessage, ReasoningConfig, Request,
@@ -141,13 +141,29 @@ pub(super) async fn send_request_json(
     Ok(response)
 }
 
+/// Read the response body and decode the Responses API envelope, attaching a
+/// bounded preview of the raw body to the error when the 2xx body is not the
+/// expected JSON shape, so an opaque provider or proxy body is diagnosable
+/// from the error text.
+async fn read_response_envelope(
+    response: reqwest::Response,
+) -> anyhow::Result<ApiResponseEnvelope> {
+    let bytes = response.bytes().await?;
+    serde_json::from_slice::<ApiResponseEnvelope>(&bytes)
+        .map_err(|error| ResponseDecodeError::new("Responses API", &bytes, error).into())
+}
+
 /// Parse an HTTP response from the Responses API into a `TurnResult`.
 ///
 /// # Errors
 ///
-/// Returns an error if the response body cannot be deserialized.
+/// Returns an error if the response body cannot be read or deserialized. A
+/// deserialization failure carries a bounded preview of the raw body so an
+/// opaque provider or proxy 2xx (empty body, HTML error page, wrong envelope)
+/// is diagnosable from the error text instead of reqwest's generic
+/// "error decoding response body".
 pub(super) async fn parse_response(response: reqwest::Response) -> anyhow::Result<TurnResult> {
-    let envelope = response.json::<ApiResponseEnvelope>().await?;
+    let envelope = read_response_envelope(response).await?;
     let api_response = envelope.response;
     let termination = responses_termination(
         envelope.status.as_deref(),

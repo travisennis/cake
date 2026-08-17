@@ -27,6 +27,13 @@ fn test_config(base_url: String) -> ResolvedModelConfig {
     }
 }
 
+/// Minimal Responses API model config pointed at a wiremock server.
+fn responses_test_config(base_url: String) -> ResolvedModelConfig {
+    let mut config = test_config(base_url);
+    config.model_config.api_type = crate::config::model::ApiType::Responses;
+    config
+}
+
 fn chat_response(content: &str) -> serde_json::Value {
     serde_json::json!({
         "id": "chatcmpl-judge",
@@ -34,6 +41,19 @@ fn chat_response(content: &str) -> serde_json::Value {
             "index": 0,
             "message": { "role": "assistant", "content": content },
             "finish_reason": "stop"
+        }]
+    })
+}
+
+fn responses_response(content: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": "resp-judge",
+        "status": "completed",
+        "output": [{
+            "type": "message",
+            "id": "msg-judge",
+            "status": "completed",
+            "content": [{ "type": "output_text", "text": content }]
         }]
     })
 }
@@ -844,6 +864,18 @@ fn retry_client(
     JudgeClient::new(test_config(mock_server.uri()), timeout, retry_budget)
 }
 
+fn responses_retry_client(
+    mock_server: &MockServer,
+    timeout: Duration,
+    retry_budget: Duration,
+) -> JudgeClient {
+    JudgeClient::new(
+        responses_test_config(mock_server.uri()),
+        timeout,
+        retry_budget,
+    )
+}
+
 /// Mount a scripted judge: a delayed stub matching the first request only,
 /// then an immediate `allow` stub serving any later request. The delayed stub
 /// is mounted first because wiremock matches in mount order.
@@ -1132,6 +1164,147 @@ async fn judge_retry_budget_exhausted_by_wait_skips_recovery() {
         .await;
     assert!(matches!(call.result, Err(JudgeError::Timeout(_))));
     assert_eq!(call.attempts.len(), 1);
+}
+
+#[tokio::test]
+async fn judge_response_parse_failure_then_allow_recovers_once() {
+    // A 2xx whose body is not valid JSON (empty body, proxy error page, or
+    // wrong envelope): the judge currently fails closed with an opaque decode
+    // error. Recovery retries once on a fresh client, mirroring the
+    // timeout/transport classes.
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("<html>proxy error</html>"))
+        .up_to_n_times(1)
+        .mount(&mock_server)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(responses_response(
+            r#"{"verdict":"allow","message":"Safe"}"#,
+        )))
+        .mount(&mock_server)
+        .await;
+
+    let client =
+        responses_retry_client(&mock_server, Duration::from_secs(5), Duration::from_secs(2));
+    let call = client
+        .judge_observed(request("git status", None), false)
+        .await;
+
+    let verdict = call.result.unwrap();
+    assert_eq!(verdict.decision, JudgeDecision::Allow);
+    assert_eq!(call.attempts.len(), 2);
+    assert_eq!(
+        call.attempts[0].terminal_class,
+        crate::session_telemetry::JudgeAttemptTerminalClass::ResponseParse
+    );
+    assert_eq!(call.attempts[1].attempt, 2);
+    assert_eq!(call.attempts[1].retry_ordinal, 1);
+    assert_eq!(
+        call.attempts[1].retry_reason,
+        Some(crate::session_telemetry::RetryReasonSnapshot::Network)
+    );
+    assert!(
+        call.attempts[1].retry_delay_ms >= 500,
+        "response-parse recovery must wait before retrying, got {:#?}",
+        call.attempts[1]
+    );
+    // The complete operation stays inside the documented deadline.
+    let wall =
+        call.attempts[0].total_ms + call.attempts[1].retry_delay_ms + call.attempts[1].total_ms;
+    assert!(wall <= 7000, "operation exceeded its deadline: {wall}ms");
+}
+
+#[tokio::test]
+async fn judge_response_parse_failure_budget_zero_does_not_recover() {
+    // `retry_budget_secs = 0` keeps response-parse failures single-attempt:
+    // the operation fails closed on the first undecodable body.
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("not json at all"))
+        .mount(&mock_server)
+        .await;
+
+    let client = responses_retry_client(&mock_server, Duration::from_secs(5), Duration::ZERO);
+    let call = client
+        .judge_observed(request("git status", None), false)
+        .await;
+
+    assert!(matches!(
+        call.result,
+        Err(JudgeError::Transport { status: None, .. })
+    ));
+    assert_eq!(call.attempts.len(), 1);
+}
+
+#[tokio::test]
+async fn judge_response_parse_failure_detail_names_the_decode_cause() {
+    // The fail-closed detail must say why the body could not be decoded: the
+    // serde cause and a bounded preview of the raw body, not reqwest's opaque
+    // "error decoding response body for url (...)".
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("<html>gateway error</html>"))
+        .mount(&mock_server)
+        .await;
+
+    let client = responses_retry_client(&mock_server, Duration::from_secs(5), Duration::ZERO);
+    let call = client
+        .judge_observed(request("git status", None), false)
+        .await;
+
+    let Err(JudgeError::Transport {
+        status: None,
+        detail,
+    }) = call.result
+    else {
+        panic!(
+            "expected a fail-closed transport error, got {:#?}",
+            call.result
+        );
+    };
+    assert!(
+        detail.contains("expected value"),
+        "detail must carry the serde cause, got: {detail}"
+    );
+    assert!(
+        detail.contains("gateway error"),
+        "detail must carry a body preview, got: {detail}"
+    );
+}
+
+#[tokio::test]
+async fn judge_semantic_response_parse_failure_does_not_retry() {
+    // The JSON envelope decodes successfully, but the function call is
+    // structurally unusable. This is not the transient body-decode failure
+    // approved for recovery and must remain terminal.
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": "resp-malformed",
+            "status": "completed",
+            "output": [{
+                "type": "function_call",
+                "id": "fc-1",
+                "call_id": "call-1"
+            }]
+        })))
+        .mount(&mock_server)
+        .await;
+
+    let client =
+        responses_retry_client(&mock_server, Duration::from_secs(5), Duration::from_secs(2));
+    let call = client
+        .judge_observed(request("git status", None), false)
+        .await;
+
+    assert!(matches!(call.result, Err(JudgeError::Transport { .. })));
+    assert_eq!(call.attempts.len(), 1);
+    assert_eq!(
+        call.attempts[0].terminal_class,
+        crate::session_telemetry::JudgeAttemptTerminalClass::ResponseParse
+    );
+    assert_eq!(mock_server.received_requests().await.unwrap().len(), 1);
 }
 
 #[tokio::test]

@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use tokio::time::sleep;
 
 use crate::clients::agent_runner::build_http_client;
-use crate::clients::backend::Backend;
+use crate::clients::backend::{Backend, ResponseDecodeError};
 use crate::clients::retry::{self, HttpFailure, RequestOverrides, RetryReason};
 use crate::config::model::ApiType;
 use crate::session_telemetry::{
@@ -53,8 +53,8 @@ struct AttemptCall {
     attempt: JudgeAttemptTelemetry,
     diagnostic: Option<JudgeDiagnostic>,
     /// Failure inputs the retry driver classifies. Absent on success and on
-    /// terminal failures (refusal, malformed verdict, response parse, request
-    /// build), which are never retried.
+    /// terminal failures (refusal, malformed verdict, semantic response parse,
+    /// request build), which are never retried.
     failure: Option<AttemptFailure>,
 }
 
@@ -66,6 +66,10 @@ enum AttemptFailure {
     Transport(anyhow::Error),
     /// The provider returned a non-success HTTP response.
     Http(HttpFailure),
+    /// The provider returned a 2xx whose body failed to decode into the
+    /// expected JSON envelope. The cause may be upstream or transport-related;
+    /// this class gets one bounded recovery on a fresh client.
+    UndecodableResponse,
 }
 
 /// Per-attempt parameters chosen by the retry driver.
@@ -90,14 +94,15 @@ struct JudgeRetryDecision {
 
 /// Run the complete judge evaluation: one bounded provider call, then at most
 /// one recovery attempt within the operation deadline when the first call
-/// failed with a timeout or retryable transport/HTTP error.
+/// failed with a timeout, retryable transport/HTTP error, or undecodable
+/// successful response body.
 ///
 /// The operation deadline is `client.timeout + client.retry_budget`. Attempt 1
 /// keeps the full configured per-call allowance; the recovery attempt consumes
 /// at most `min(client.timeout, remaining_after_wait)`. A recovery never
-/// happens for a valid verdict, refusal, malformed verdict, or response-parse
-/// failure, and an exhausted recovery fails closed with the final attempt's
-/// error.
+/// happens for a valid verdict, refusal, malformed verdict, or semantic
+/// backend parse failure. An exhausted recovery fails closed with the final
+/// attempt's error.
 pub(super) async fn judge_observed(
     client: &JudgeClient,
     request: &JudgeRequest,
@@ -232,36 +237,66 @@ fn retry_classification(
     failure: &AttemptFailure,
 ) -> Option<(RetryReason, Duration, bool)> {
     match failure {
-        AttemptFailure::Timeout => Some((
-            RetryReason::RequestTimeout,
-            retry::policy_backoff_delay(&client.retry_policy, 1, JITTER_SESSION_ID),
-            true,
+        AttemptFailure::Timeout => {
+            Some(transient_retry_inputs(client, RetryReason::RequestTimeout))
+        },
+        AttemptFailure::Transport(error) => transport_retry_inputs(client, error),
+        AttemptFailure::Http(failure) => http_retry_inputs(client, failure),
+        // The available evidence does not distinguish an upstream invalid
+        // body from a connection-level cause. Recovery uses a fresh client so
+        // connection reuse is excluded from the second attempt.
+        AttemptFailure::UndecodableResponse => {
+            Some(transient_retry_inputs(client, RetryReason::Network))
+        },
+    }
+}
+
+/// Recovery inputs for the transient failure classes (timeout, undecodable
+/// response): the policy backoff wait and a fresh client with connection reuse
+/// disabled, so the recovery cannot inherit a stalled request or a poisoned
+/// pooled connection.
+fn transient_retry_inputs(
+    client: &JudgeClient,
+    reason: RetryReason,
+) -> (RetryReason, Duration, bool) {
+    (
+        reason,
+        retry::policy_backoff_delay(&client.retry_policy, 1, JITTER_SESSION_ID),
+        true,
+    )
+}
+
+/// Recovery inputs for a transport failure classified retryable by the agent
+/// runner's transport classifier (stale connection, reset, broken pipe).
+fn transport_retry_inputs(
+    client: &JudgeClient,
+    error: &anyhow::Error,
+) -> Option<(RetryReason, Duration, bool)> {
+    match retry::classify_transport_error(&client.retry_policy, error, 1, JITTER_SESSION_ID) {
+        retry::RetryDecision::Retry { status } => Some((
+            status.reason,
+            status.delay,
+            retry::should_disable_connection_reuse(error),
         )),
-        AttemptFailure::Transport(error) => {
-            match retry::classify_transport_error(&client.retry_policy, error, 1, JITTER_SESSION_ID)
-            {
-                retry::RetryDecision::Retry { status } => Some((
-                    status.reason,
-                    status.delay,
-                    retry::should_disable_connection_reuse(error),
-                )),
-                _ => None,
-            }
-        },
-        AttemptFailure::Http(failure) => {
-            match retry::classify_http_failure(
-                &client.retry_policy,
-                failure,
-                1,
-                JITTER_SESSION_ID,
-                &RequestOverrides::default(),
-            ) {
-                retry::RetryDecision::Retry { status } => {
-                    Some((status.reason, status.delay, false))
-                },
-                _ => None,
-            }
-        },
+        _ => None,
+    }
+}
+
+/// Recovery inputs for an HTTP failure classified retryable by the agent
+/// runner's HTTP classifier (rate limit, overload, server error).
+fn http_retry_inputs(
+    client: &JudgeClient,
+    failure: &HttpFailure,
+) -> Option<(RetryReason, Duration, bool)> {
+    match retry::classify_http_failure(
+        &client.retry_policy,
+        failure,
+        1,
+        JITTER_SESSION_ID,
+        &RequestOverrides::default(),
+    ) {
+        retry::RetryDecision::Retry { status } => Some((status.reason, status.delay, false)),
+        _ => None,
     }
 }
 
@@ -391,12 +426,19 @@ impl ObservedJudgeCall {
             Err(_) => self.timeout(),
             Ok(Err(error)) => {
                 self.attempt.terminal_class = JudgeAttemptTerminalClass::ResponseParse;
+                // `{:#}` renders the anyhow cause chain, so a typed body-decode
+                // failure retains its serde cause in the fail-closed detail.
+                let detail = format!("{error:#}");
+                let failure = error
+                    .downcast_ref::<ResponseDecodeError>()
+                    .is_some()
+                    .then_some(AttemptFailure::UndecodableResponse);
                 self.finish(
                     Err(JudgeError::Transport {
                         status: None,
-                        detail: error.to_string(),
+                        detail,
                     }),
-                    None,
+                    failure,
                 )
             },
             Ok(Ok(turn)) => self.finish_turn(client, &turn),
