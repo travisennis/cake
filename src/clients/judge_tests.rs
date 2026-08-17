@@ -1216,6 +1216,51 @@ async fn judge_response_parse_failure_then_allow_recovers_once() {
 }
 
 #[tokio::test]
+async fn judge_typed_reasoning_summary_does_not_retry() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": "resp-judge",
+            "status": "completed",
+            "output": [
+                {
+                    "type": "reasoning",
+                    "id": "reasoning-judge",
+                    "summary": [{
+                        "type": "summary_text",
+                        "text": "Checking the command"
+                    }]
+                },
+                {
+                    "type": "message",
+                    "id": "msg-judge",
+                    "status": "completed",
+                    "content": [{
+                        "type": "output_text",
+                        "text": "{\"verdict\":\"allow\",\"message\":\"Safe\"}"
+                    }]
+                }
+            ]
+        })))
+        .mount(&mock_server)
+        .await;
+
+    let client =
+        responses_retry_client(&mock_server, Duration::from_secs(5), Duration::from_secs(2));
+    let call = client
+        .judge_observed(request("git status", None), false)
+        .await;
+
+    assert_eq!(call.result.unwrap().decision, JudgeDecision::Allow);
+    assert_eq!(call.attempts.len(), 1);
+    assert_eq!(
+        call.attempts[0].terminal_class,
+        crate::session_telemetry::JudgeAttemptTerminalClass::Verdict
+    );
+    assert_eq!(mock_server.received_requests().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn judge_response_parse_failure_budget_zero_does_not_recover() {
     // `retry_budget_secs = 0` keeps response-parse failures single-attempt:
     // the operation fails closed on the first undecodable body.

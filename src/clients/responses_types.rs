@@ -11,7 +11,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::config::ReasoningEffort;
-use crate::types::ReasoningContent;
+use crate::types::{ReasoningContent, ReasoningSummary};
 
 /// Typed Responses API input item serialized into the request `input` array.
 ///
@@ -77,7 +77,7 @@ pub(super) struct ResponsesMessageContent<'a> {
 #[derive(Debug, Serialize)]
 pub(super) struct ResponsesReasoningSummary<'a> {
     #[serde(rename = "type")]
-    pub(super) summary_type: &'static str,
+    pub(super) summary_type: &'a str,
     pub(super) text: &'a str,
 }
 
@@ -166,8 +166,9 @@ pub(super) struct OutputMessage {
     pub(super) content: Option<Vec<OutputContent>>,
     /// Opaque encrypted reasoning content returned by reasoning models.
     pub(super) encrypted_content: Option<String>,
-    /// Top-level summary strings on reasoning items (alternative to content-based summaries).
-    pub(super) summary: Option<Vec<String>>,
+    /// Typed summary items on reasoning outputs. The shared type also accepts
+    /// legacy provider responses where each item is a plain string.
+    pub(super) summary: Option<Vec<ReasoningSummary>>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -253,5 +254,29 @@ mod tests {
 
         assert!(envelope.status.is_none());
         assert!(envelope.incomplete_details.is_none());
+    }
+
+    #[test]
+    fn response_reasoning_summary_accepts_objects_and_legacy_strings() {
+        let envelope: ApiResponseEnvelope = serde_json::from_value(serde_json::json!({
+            "id": "resp-123",
+            "output": [{
+                "type": "reasoning",
+                "id": "reasoning-123",
+                "summary": [
+                    {"type": "summary_text", "text": "typed summary"},
+                    "legacy summary"
+                ]
+            }]
+        }))
+        .unwrap();
+
+        let summaries = envelope.response.output[0].summary.as_ref().unwrap();
+        assert_eq!(summaries[0].summary_type, "summary_text");
+        assert_eq!(summaries[0].text, "typed summary");
+        assert_eq!(
+            summaries[1],
+            ReasoningSummary::summary_text("legacy summary")
+        );
     }
 }

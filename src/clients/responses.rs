@@ -14,7 +14,8 @@ use crate::clients::retry::RequestOverrides;
 use crate::clients::tools::Tool;
 use crate::session_telemetry::{ProviderTermination, TerminationClassification};
 use crate::types::{
-    ConversationItem, InputTokensDetails, OutputTokensDetails, ReasoningContentKind, Role, Usage,
+    ConversationItem, InputTokensDetails, OutputTokensDetails, ReasoningContentKind,
+    ReasoningSummary, Role, Usage,
 };
 
 // =============================================================================
@@ -427,8 +428,8 @@ impl<'a> From<&'a ConversationItem> for ResponsesApiInputItem<'a> {
                         .unwrap_or_default()
                         .iter()
                         .map(|text| ResponsesReasoningSummary {
-                            summary_type: "summary_text",
-                            text,
+                            summary_type: &text.summary_type,
+                            text: &text.text,
                         })
                         .collect(),
                     encrypted_content: encrypted_content.as_deref(),
@@ -468,6 +469,7 @@ fn parse_output_items(api_response: &ApiResponse) -> anyhow::Result<Vec<Conversa
                                                 == ReasoningContentKind::ReasoningText.as_str()
                                         })
                                         .filter_map(|item| item.text.clone())
+                                        .map(ReasoningSummary::summary_text)
                                         .collect()
                                 })
                                 .unwrap_or_default()

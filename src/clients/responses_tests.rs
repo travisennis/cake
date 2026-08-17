@@ -4,6 +4,7 @@ use crate::clients::tools::{SandboxPolicy, default_tool_registry};
 use crate::config::skills::{Skill, SkillScope};
 use crate::config::{AgentsFile, SkillCatalog};
 use crate::prompts::build_initial_prompt_messages;
+use crate::types::ReasoningSummary;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
@@ -338,7 +339,7 @@ fn build_input_keeps_native_reasoning_before_semantic_recovery_prompt() {
         },
         ConversationItem::Reasoning {
             id: "r-incomplete".to_string(),
-            summary: Some(vec!["partial".to_string()]),
+            summary: Some(vec![ReasoningSummary::summary_text("partial")]),
             encrypted_content: Some("opaque".to_string()),
             content: None,
             timestamp: None,
@@ -503,7 +504,10 @@ fn parse_output_items_reasoning_with_encrypted_content() {
             status: None,
             content: None,
             encrypted_content: Some("gAAAAABencrypted...".to_string()),
-            summary: Some(vec!["step 1".to_string(), "step 2".to_string()]),
+            summary: Some(vec![
+                ReasoningSummary::summary_text("step 1"),
+                ReasoningSummary::summary_text("step 2"),
+            ]),
         }],
         usage: None,
     };
@@ -517,7 +521,7 @@ fn parse_output_items_reasoning_with_encrypted_content() {
     {
         let summary = summary.as_ref().unwrap();
         assert_eq!(summary.len(), 2);
-        assert_eq!(summary[0], "step 1");
+        assert_eq!(summary[0].text, "step 1");
         assert_eq!(encrypted_content.as_deref(), Some("gAAAAABencrypted..."));
     } else {
         panic!("Expected Reasoning item");
@@ -1059,7 +1063,10 @@ fn parse_output_items_reasoning_with_summary_fallback() {
             status: None,
             content: None,
             encrypted_content: None,
-            summary: Some(vec!["step 1".to_string(), "step 2".to_string()]),
+            summary: Some(vec![
+                ReasoningSummary::summary_text("step 1"),
+                ReasoningSummary::summary_text("step 2"),
+            ]),
         }],
         usage: None,
     };
@@ -1068,7 +1075,7 @@ fn parse_output_items_reasoning_with_summary_fallback() {
     if let ConversationItem::Reasoning { summary, .. } = &items[0] {
         let summary = summary.as_ref().unwrap();
         assert_eq!(summary.len(), 2);
-        assert_eq!(summary[0], "step 1");
+        assert_eq!(summary[0].text, "step 1");
     } else {
         panic!("Expected Reasoning item");
     }
@@ -1101,7 +1108,7 @@ fn parse_output_items_reasoning_content_fallback_to_summary() {
         let summary = summary.as_ref().unwrap();
         // Summary should be derived from content
         assert_eq!(summary.len(), 1);
-        assert_eq!(summary[0], "thinking...");
+        assert_eq!(summary[0].text, "thinking...");
     } else {
         panic!("Expected Reasoning item");
     }

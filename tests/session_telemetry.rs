@@ -43,7 +43,10 @@ fn reasoning_only_response() -> serde_json::Value {
             {
                 "type": "reasoning",
                 "id": "r-1",
-                "summary": ["partial reasoning"]
+                "summary": [{
+                    "type": "summary_text",
+                    "text": "partial reasoning"
+                }]
             }
         ],
         "usage": {
@@ -268,7 +271,9 @@ async fn semantic_incomplete_recovery_streams_once_and_records_retry_reason() {
         "{stream_records:#?}"
     );
     assert!(stream_records.iter().any(|record| {
-        record["type"] == "reasoning" && record["summary"][0] == "partial reasoning"
+        record["type"] == "reasoning"
+            && record["summary"][0]["type"] == "summary_text"
+            && record["summary"][0]["text"] == "partial reasoning"
     }));
     assert!(stream_records.iter().any(|record| {
         record["type"] == "message"

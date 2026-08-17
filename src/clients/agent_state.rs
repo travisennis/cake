@@ -223,6 +223,7 @@ fn resolve_assistant_message(items: &[ConversationItem]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::ReasoningSummary;
 
     #[test]
     fn resolve_assistant_message_with_assistant_message() {
@@ -241,7 +242,7 @@ mod tests {
     fn resolve_assistant_message_truncated_with_reasoning() {
         let items = vec![ConversationItem::Reasoning {
             id: "r-1".to_string(),
-            summary: Some(vec!["thinking...".to_string()]),
+            summary: Some(vec![ReasoningSummary::summary_text("thinking...")]),
             encrypted_content: None,
             content: None,
             timestamp: None,
@@ -432,7 +433,7 @@ mod tests {
             user_message("investigate"),
             ConversationItem::Reasoning {
                 id: "r-1".to_string(),
-                summary: Some(vec!["thinking".to_string()]),
+                summary: Some(vec![ReasoningSummary::summary_text("thinking")]),
                 encrypted_content: None,
                 content: None,
                 timestamp: None,

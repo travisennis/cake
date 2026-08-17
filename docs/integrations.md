@@ -79,7 +79,9 @@ An interrupted task can leave a `function_call` whose `function_call_output` was
 - `prompt_context`: mutable developer context used by that invocation.
 - `message`: typed user, assistant, or tool text.
 - `function_call` and `function_call_output`: provider tool request and result, joined by `call_id`.
-- `reasoning`: provider reasoning data retained for round trips.
+- `reasoning`: provider reasoning data retained for round trips. Its `summary`
+  array uses typed objects with `type` and `text`; loaders accept historical
+  string entries and normalize them to `summary_text` objects.
 - `skill_activated`: first observed read of a known skill in a session.
 - `hook_event`: hook execution, decision, timing, and bounded diagnostics.
 - `task_complete`: outcome, duration, turns, tool-call count, result or error, usage, and optional permission denials. A `limit_exceeded` outcome also carries the fired `limit` key and a partial `result`.

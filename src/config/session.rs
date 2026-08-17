@@ -352,6 +352,7 @@ fn try_lock_session_file(file: &File, path: &Path) -> anyhow::Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::ReasoningSummary;
     use crate::types::session::{
         FunctionCallData, FunctionCallOutputData, MessageData, ReasoningData,
     };
@@ -567,7 +568,7 @@ mod tests {
             }),
             SessionRecord::Reasoning(ReasoningData {
                 id: "r-1".to_string(),
-                summary: Some(vec!["thinking...".to_string()]),
+                summary: Some(vec![ReasoningSummary::summary_text("thinking...")]),
                 encrypted_content: None,
                 content: None,
                 timestamp: None,
@@ -735,7 +736,7 @@ mod tests {
             &mut file,
             &SessionRecord::Reasoning(ReasoningData {
                 id: "r-1".to_string(),
-                summary: Some(vec!["thinking...".to_string()]),
+                summary: Some(vec![ReasoningSummary::summary_text("thinking...")]),
                 encrypted_content: Some("gAAAAABencrypted...".to_string()),
                 content: Some(vec![ReasoningContent {
                     content_type: ReasoningContentKind::ReasoningText,
