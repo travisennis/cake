@@ -148,16 +148,11 @@ pub(super) async fn send_request_json(
     Ok(response)
 }
 
-/// Read the response body and decode the Responses API envelope, attaching a
-/// bounded preview of the raw body to the error when the 2xx body is not the
-/// expected JSON shape, so an opaque provider or proxy body is diagnosable
-/// from the error text.
-async fn read_response_envelope(
-    response: reqwest::Response,
-) -> anyhow::Result<ApiResponseEnvelope> {
-    let bytes = response.bytes().await?;
-    serde_json::from_slice::<ApiResponseEnvelope>(&bytes)
-        .map_err(|error| ResponseDecodeError::new("Responses API", &bytes, error).into())
+/// Decode the Responses API envelope, attaching a bounded preview of the raw
+/// body to the error when the 2xx body is not the expected JSON shape.
+fn parse_response_envelope(bytes: &[u8]) -> anyhow::Result<ApiResponseEnvelope> {
+    serde_json::from_slice::<ApiResponseEnvelope>(bytes)
+        .map_err(|error| ResponseDecodeError::new("Responses API", bytes, error).into())
 }
 
 /// Parse an HTTP response from the Responses API into a `TurnResult`.
@@ -176,10 +171,17 @@ pub(super) async fn parse_response(response: reqwest::Response) -> anyhow::Resul
         .and_then(|value| value.to_str().ok())
         .is_some_and(|value| value.starts_with("text/event-stream"));
     if is_event_stream {
-        return parse_streaming_response(response).await;
+        let body = response.text().await?;
+        return parse_streaming_response(&body);
     }
 
-    let envelope = read_response_envelope(response).await?;
+    let body = response.bytes().await?;
+    if looks_like_sse_body(&body) {
+        let body = String::from_utf8_lossy(&body);
+        return parse_streaming_response(&body);
+    }
+
+    let envelope = parse_response_envelope(&body)?;
     let api_response = envelope.response;
     let termination = responses_termination(
         envelope.status.as_deref(),
@@ -220,8 +222,7 @@ pub(super) async fn parse_response(response: reqwest::Response) -> anyhow::Resul
     clippy::too_many_lines,
     reason = "the prototype SSE parser keeps event assembly and finalization together"
 )]
-async fn parse_streaming_response(response: reqwest::Response) -> anyhow::Result<TurnResult> {
-    let body = response.text().await?;
+fn parse_streaming_response(body: &str) -> anyhow::Result<TurnResult> {
     let mut response_id = None;
     let mut status = None;
     let mut incomplete_reason = None;
@@ -230,7 +231,7 @@ async fn parse_streaming_response(response: reqwest::Response) -> anyhow::Result
     let mut output_text = String::new();
     let mut completed = false;
 
-    for data in sse_data_events(&body) {
+    for data in sse_data_events(body) {
         if data == "[DONE]" {
             continue;
         }
@@ -363,6 +364,12 @@ fn sse_data_events(body: &str) -> Vec<String> {
         events.push(data.join("\n"));
     }
     events
+}
+
+fn looks_like_sse_body(body: &[u8]) -> bool {
+    let body = String::from_utf8_lossy(body);
+    let body = body.trim_start();
+    body.starts_with("event:") || body.starts_with("data:")
 }
 
 fn responses_termination<'a>(

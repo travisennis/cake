@@ -970,6 +970,8 @@ fn parses_streamed_text_events() {
             "{\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"status\":\"completed\"}}",
         ]
     );
+    assert!(looks_like_sse_body(body.as_bytes()));
+    assert!(!looks_like_sse_body(br#"{"id":"resp-1"}"#));
 }
 
 // =========================================================================
