@@ -56,6 +56,25 @@ Every model requires:
 - `base_url`: OpenAI-compatible endpoint;
 - `api_key_env`: environment variable containing the credential.
 
+### Codex ChatGPT subscription prototype
+
+For a fast local prototype, Cake can reuse a file-backed login created by the Codex CLI:
+
+```toml
+default_model = "chatgpt"
+
+[[models]]
+name = "chatgpt"
+model = "gpt-5"
+base_url = "https://chatgpt.com/backend-api/codex"
+api_key_env = "UNUSED_FOR_CHATGPT_AUTH"
+api_type = "responses"
+```
+
+Run `codex login` first. For this exact `base_url`, Cake reads the access token and ChatGPT account ID from `CODEX_HOME/auth.json`, or `~/.codex/auth.json` when `CODEX_HOME` is unset. `api_key_env` is still required by the settings schema, but is ignored for this backend. The prototype does not implement its own browser login, token refresh, logout, or keyring-backed Codex auth; if the file-backed login expires, log in again with Codex.
+
+This uses an internal Codex backend and is intended for experimentation rather than a stable provider integration. The backend may require a currently supported Codex model and Responses API request shape.
+
 Optional model fields are `api_type` (`chat_completions` or `responses`), `provider`, `provider_headers`, `temperature`, `top_p`, `max_output_tokens`, `context_window`, `reasoning_effort`, `reasoning_summary`, `reasoning_max_tokens`, and `providers`.
 
 `context_window` is the model's input-token budget in tokens. When set, Cake logs the remaining budget each turn: window minus the last request's input tokens (the full request: system prompt, tools, history). The next request adds output and client-added tool outputs, which Cake does not tokenize; reserve a buffer. Absent means the window is unknown and Cake keeps current behavior (recovering from provider context-limit errors by parsing their message text).

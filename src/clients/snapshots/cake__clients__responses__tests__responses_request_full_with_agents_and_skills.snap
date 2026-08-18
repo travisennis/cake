@@ -46,7 +46,6 @@ expression: value
     }
   ],
   "instructions": "You are cake. You are running as a coding agent in a CLI on the user's computer.\n\n## Available tools\n\n- **Bash**: Execute a shell command in the host machine's terminal.\n- **Edit**: Edit text in files using literal search-and-replace.\n- **Read**: Read a file's contents.\n- **Write**: Create a new file or overwrite an existing one with the given content.\n\nOnly these tools are available. There is no Glob, Grep, or LS tool.",
-  "max_output_tokens": null,
   "model": "test-responses-model",
   "temperature": 0.20000000298023224,
   "tool_choice": "auto",

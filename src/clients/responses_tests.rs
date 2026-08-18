@@ -1,6 +1,7 @@
 use super::*;
 use crate::clients::responses_types::{OutputContent, OutputMessage, ProviderConfig};
 use crate::clients::tools::{SandboxPolicy, default_tool_registry};
+use crate::config::model::{ApiType, ModelConfig, ResolvedModelConfig};
 use crate::config::skills::{Skill, SkillScope};
 use crate::config::{AgentsFile, SkillCatalog};
 use crate::prompts::build_initial_prompt_messages;
@@ -736,6 +737,8 @@ fn snapshot_responses_request_minimal() {
     }];
     let request = Request {
         model: "openai/gpt-4.1",
+        store: None,
+        stream: None,
         input: build_input(&history),
         instructions: None,
         temperature: None,
@@ -799,6 +802,8 @@ fn snapshot_responses_request_with_tools_provider_and_reasoning() {
     let (instructions, non_system_history) = extract_instructions(&history).unwrap();
     let request = Request {
         model: "openai/gpt-5",
+        store: None,
+        stream: None,
         input: build_input(non_system_history),
         instructions,
         temperature: Some(0.3),
@@ -843,6 +848,8 @@ fn snapshot_responses_request_with_output_schema_constraint() {
     // Correction-turn shape: no tools offered, native constraint attached.
     let request = Request {
         model: "openai/gpt-5",
+        store: None,
+        stream: None,
         input: build_input(&history),
         instructions: None,
         temperature: None,
@@ -875,6 +882,8 @@ fn snapshot_responses_request_full_with_agents_and_skills() {
     let (instructions, non_system_history) = extract_instructions(&history).unwrap();
     let request = Request {
         model: "test-responses-model",
+        store: None,
+        stream: None,
         input: build_input(non_system_history),
         instructions,
         temperature: Some(0.2),
@@ -891,6 +900,207 @@ fn snapshot_responses_request_full_with_agents_and_skills() {
         "responses_request_full_with_agents_and_skills",
         &serde_json::to_value(&request).unwrap(),
     );
+}
+
+#[test]
+fn build_request_disables_storage_for_codex_backend() {
+    let config = ResolvedModelConfig {
+        model_config: ModelConfig {
+            model: "gpt-5.6-luna".to_string(),
+            api_type: ApiType::Responses,
+            base_url: "https://chatgpt.com/backend-api/codex".to_string(),
+            api_key_env: "UNUSED_FOR_CHATGPT_AUTH".to_string(),
+            provider: None,
+            provider_headers: None,
+            temperature: None,
+            top_p: None,
+            max_output_tokens: None,
+            context_window: None,
+            reasoning_effort: None,
+            reasoning_summary: None,
+            reasoning_max_tokens: None,
+            providers: vec![],
+        },
+        api_key: "test-token".to_string(),
+    };
+    let history = vec![ConversationItem::Message {
+        role: Role::User,
+        content: "Tell me a joke".to_string(),
+        id: None,
+        status: None,
+        timestamp: None,
+    }];
+
+    let bytes = super::build_request_json(
+        &config,
+        &history,
+        &[],
+        &crate::clients::retry::RequestOverrides::default(),
+        None,
+    )
+    .expect("build request");
+    let wire: serde_json::Value = serde_json::from_slice(&bytes).expect("parse request");
+
+    assert_eq!(wire["store"], false);
+    assert_eq!(wire["stream"], true);
+    assert!(wire.get("temperature").is_none());
+    assert!(wire.get("top_p").is_none());
+    assert!(wire.get("max_output_tokens").is_none());
+}
+
+#[test]
+fn parses_streamed_text_events() {
+    let body = concat!(
+        "event: response.created\n",
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-1\"}}\n\n",
+        "event: response.output_text.delta\n",
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}\n\n",
+        "event: response.output_text.delta\n",
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\" world\"}\n\n",
+        "event: response.completed\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"status\":\"completed\"}}\n\n",
+    );
+
+    assert_eq!(
+        sse_data_events(body),
+        vec![
+            "{\"type\":\"response.created\",\"response\":{\"id\":\"resp-1\"}}",
+            "{\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}",
+            "{\"type\":\"response.output_text.delta\",\"delta\":\" world\"}",
+            "{\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"status\":\"completed\"}}",
+        ]
+    );
+    assert!(looks_like_sse_body(body.as_bytes()));
+    assert!(!looks_like_sse_body(br#"{"id":"resp-1"}"#));
+}
+
+#[test]
+fn parse_streaming_response_merges_output_text_deltas() {
+    let body = concat!(
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}\n\n",
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\" world\"}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"status\":\"completed\",\"usage\":{\"input_tokens\":12,\"output_tokens\":7,\"total_tokens\":19}}}\n\n",
+    );
+
+    let result = parse_streaming_response(body).unwrap();
+    assert_eq!(result.items.len(), 1);
+    let ConversationItem::Message {
+        content,
+        id,
+        status,
+        ..
+    } = &result.items[0]
+    else {
+        panic!("expected a message item");
+    };
+    assert_eq!(content, "Hello world");
+    assert_eq!(id.as_deref(), Some("resp-1"));
+    assert_eq!(status.as_deref(), Some("completed"));
+    assert_eq!(result.provider_request_id.as_deref(), Some("resp-1"));
+    let usage = result.usage.expect("streamed usage should be parsed");
+    assert_eq!(usage.input_tokens, 12);
+    assert_eq!(usage.output_tokens, 7);
+    assert_eq!(usage.total_tokens, 19);
+    assert!(matches!(
+        result.termination,
+        Some(ProviderTermination {
+            classification: TerminationClassification::Completed,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn parse_streaming_response_builds_items_from_output_item_done_events() {
+    let body = concat!(
+        "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"id\":\"msg-1\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"item text\"}]}}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"status\":\"completed\"}}\n\n",
+    );
+
+    let result = parse_streaming_response(body).unwrap();
+    assert_eq!(result.items.len(), 1);
+    let ConversationItem::Message { content, id, .. } = &result.items[0] else {
+        panic!("expected a message item");
+    };
+    assert_eq!(content, "item text");
+    assert_eq!(id.as_deref(), Some("msg-1"));
+}
+
+#[test]
+fn parse_streaming_response_completed_output_overrides_item_events() {
+    let body = concat!(
+        "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"id\":\"msg-incremental\",\"content\":[{\"type\":\"output_text\",\"text\":\"incremental\"}]}}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"id\":\"msg-final\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"final\"}]}]}}\n\n",
+    );
+
+    let result = parse_streaming_response(body).unwrap();
+    assert_eq!(result.items.len(), 1);
+    let ConversationItem::Message { content, id, .. } = &result.items[0] else {
+        panic!("expected a message item");
+    };
+    assert_eq!(content, "final");
+    assert_eq!(id.as_deref(), Some("msg-final"));
+}
+
+#[test]
+fn parse_streaming_response_records_incomplete_reason() {
+    let body = concat!(
+        "data: {\"type\":\"response.incomplete\",\"response\":{\"incomplete_details\":{\"reason\":\"max_output_tokens\"}}}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\"}}\n\n",
+    );
+
+    let result = parse_streaming_response(body).unwrap();
+    assert_eq!(result.items.len(), 0);
+    assert!(matches!(
+        result.termination,
+        Some(ProviderTermination {
+            classification: TerminationClassification::TokenLimit,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn parse_streaming_response_failed_event_bails() {
+    let body =
+        "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"boom\"}}}\n\n";
+    let error = parse_streaming_response(body).unwrap_err().to_string();
+    assert!(error.contains("stream failed: boom"), "{error}");
+
+    let body = "data: {\"type\":\"response.failed\",\"response\":{}}\n\n";
+    let error = parse_streaming_response(body).unwrap_err().to_string();
+    assert!(error.contains("stream failed: unknown error"), "{error}");
+}
+
+#[test]
+fn parse_streaming_response_requires_completed_event() {
+    let body = concat!(
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}\n\n",
+        "data: [DONE]\n\n",
+    );
+
+    let error = parse_streaming_response(body).unwrap_err().to_string();
+    assert!(error.contains("ended before response.completed"), "{error}");
+}
+
+#[test]
+fn parse_streaming_response_empty_body_errors() {
+    let error = parse_streaming_response("").unwrap_err().to_string();
+    assert!(error.contains("ended before response.completed"), "{error}");
+}
+
+#[test]
+fn parse_streaming_response_ignores_unknown_event_types() {
+    let body = concat!(
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-1\"}}\n\n",
+        "data: [DONE]\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\"}}\n\n",
+    );
+
+    let result = parse_streaming_response(body).unwrap();
+    assert!(result.items.is_empty());
+    assert_eq!(result.provider_request_id.as_deref(), Some("resp-1"));
+    assert!(result.termination.is_none());
 }
 
 // =========================================================================

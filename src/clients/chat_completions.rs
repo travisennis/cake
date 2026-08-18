@@ -101,6 +101,16 @@ pub(super) async fn send_request_json(
     config: &ResolvedModelConfig,
     request: Vec<u8>,
 ) -> anyhow::Result<reqwest::Response> {
+    let request = build_chat_request(client, config, request)?;
+    Ok(request.send().await?)
+}
+
+/// Builds the authenticated Chat Completions POST request for one serialized body.
+fn build_chat_request(
+    client: &reqwest::Client,
+    config: &ResolvedModelConfig,
+    request: Vec<u8>,
+) -> anyhow::Result<reqwest::RequestBuilder> {
     let strategy = ProviderStrategy::from_config(config);
 
     let url = format!(
@@ -113,18 +123,13 @@ pub(super) async fn send_request_json(
         trace!(target: "cake", "{request_json}");
     }
 
-    let response = strategy
-        .apply_headers(
-            client
-                .post(&url)
-                .header(reqwest::header::CONTENT_TYPE, "application/json")
-                .body(request),
-        )
-        .bearer_auth(&config.api_key)
-        .send()
-        .await?;
-
-    Ok(response)
+    let request = strategy.apply_headers(
+        client
+            .post(&url)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(request),
+    );
+    crate::auth::apply_request_auth(request, config)
 }
 
 /// Read the response body and decode the Chat Completions response, attaching
