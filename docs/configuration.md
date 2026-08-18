@@ -58,8 +58,7 @@ Every model requires:
 
 ### Codex ChatGPT subscription prototype
 
-For a fast local prototype, Cake can reuse a file-backed login created by the
-Codex CLI:
+For a fast local prototype, Cake can reuse a file-backed login created by the Codex CLI:
 
 ```toml
 default_model = "chatgpt"
@@ -72,16 +71,9 @@ api_key_env = "UNUSED_FOR_CHATGPT_AUTH"
 api_type = "responses"
 ```
 
-Run `codex login` first. For this exact `base_url`, Cake reads the access token
-and ChatGPT account ID from `CODEX_HOME/auth.json`, or `~/.codex/auth.json`
-when `CODEX_HOME` is unset. `api_key_env` is still required by the settings
-schema, but is ignored for this backend. The prototype does not implement its
-own browser login, token refresh, logout, or keyring-backed Codex auth; if the
-file-backed login expires, log in again with Codex.
+Run `codex login` first. For this exact `base_url`, Cake reads the access token and ChatGPT account ID from `CODEX_HOME/auth.json`, or `~/.codex/auth.json` when `CODEX_HOME` is unset. `api_key_env` is still required by the settings schema, but is ignored for this backend. The prototype does not implement its own browser login, token refresh, logout, or keyring-backed Codex auth; if the file-backed login expires, log in again with Codex.
 
-This uses an internal Codex backend and is intended for experimentation rather
-than a stable provider integration. The backend may require a currently
-supported Codex model and Responses API request shape.
+This uses an internal Codex backend and is intended for experimentation rather than a stable provider integration. The backend may require a currently supported Codex model and Responses API request shape.
 
 Optional model fields are `api_type` (`chat_completions` or `responses`), `provider`, `provider_headers`, `temperature`, `top_p`, `max_output_tokens`, `context_window`, `reasoning_effort`, `reasoning_summary`, `reasoning_max_tokens`, and `providers`.
 
