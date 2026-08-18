@@ -123,6 +123,16 @@ pub(super) async fn send_request_json(
     config: &ResolvedModelConfig,
     request: Vec<u8>,
 ) -> anyhow::Result<reqwest::Response> {
+    let request = build_response_request(client, config, request)?;
+    Ok(request.send().await?)
+}
+
+/// Builds the authenticated Responses API POST request for one serialized body.
+fn build_response_request(
+    client: &reqwest::Client,
+    config: &ResolvedModelConfig,
+    request: Vec<u8>,
+) -> anyhow::Result<reqwest::RequestBuilder> {
     let strategy = ProviderStrategy::from_config(config);
 
     let url = format!(
@@ -141,11 +151,7 @@ pub(super) async fn send_request_json(
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(request),
     );
-    let response = crate::auth::apply_request_auth(request, config)?
-        .send()
-        .await?;
-
-    Ok(response)
+    crate::auth::apply_request_auth(request, config)
 }
 
 /// Decode the Responses API envelope, attaching a bounded preview of the raw
@@ -165,23 +171,36 @@ fn parse_response_envelope(bytes: &[u8]) -> anyhow::Result<ApiResponseEnvelope> 
 /// is diagnosable from the error text instead of reqwest's generic
 /// "error decoding response body".
 pub(super) async fn parse_response(response: reqwest::Response) -> anyhow::Result<TurnResult> {
-    let is_event_stream = response
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value.starts_with("text/event-stream"));
-    if is_event_stream {
+    if is_event_stream_response(&response) {
         let body = response.text().await?;
         return parse_streaming_response(&body);
     }
 
-    let body = response.bytes().await?;
-    if looks_like_sse_body(&body) {
-        let body = String::from_utf8_lossy(&body);
+    parse_json_or_sse_body(&response.bytes().await?)
+}
+
+/// Whether the response advertises an SSE content type.
+fn is_event_stream_response(response: &reqwest::Response) -> bool {
+    response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.starts_with("text/event-stream"))
+}
+
+/// Parses a response body that was not advertised as an SSE stream.
+fn parse_json_or_sse_body(body: &[u8]) -> anyhow::Result<TurnResult> {
+    if looks_like_sse_body(body) {
+        let body = String::from_utf8_lossy(body);
         return parse_streaming_response(&body);
     }
 
-    let envelope = parse_response_envelope(&body)?;
+    parse_json_response(body)
+}
+
+/// Parses a non-streaming Responses API JSON response body.
+fn parse_json_response(body: &[u8]) -> anyhow::Result<TurnResult> {
+    let envelope = parse_response_envelope(body)?;
     let api_response = envelope.response;
     let termination = responses_termination(
         envelope.status.as_deref(),
@@ -218,18 +237,20 @@ pub(super) async fn parse_response(response: reqwest::Response) -> anyhow::Resul
     })
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "the prototype SSE parser keeps event assembly and finalization together"
-)]
+/// Mutable state accumulated while decoding a streaming Responses API body.
+#[derive(Default)]
+struct StreamAccumulator {
+    response_id: Option<String>,
+    status: Option<String>,
+    incomplete_reason: Option<String>,
+    usage: Option<ApiUsage>,
+    output: Vec<OutputMessage>,
+    output_text: String,
+    completed: bool,
+}
+
 fn parse_streaming_response(body: &str) -> anyhow::Result<TurnResult> {
-    let mut response_id = None;
-    let mut status = None;
-    let mut incomplete_reason = None;
-    let mut usage = None;
-    let mut output = Vec::new();
-    let mut output_text = String::new();
-    let mut completed = false;
+    let mut accumulator = StreamAccumulator::default();
 
     for data in sse_data_events(body) {
         if data == "[DONE]" {
@@ -238,79 +259,123 @@ fn parse_streaming_response(body: &str) -> anyhow::Result<TurnResult> {
 
         let event: serde_json::Value = serde_json::from_str(&data)
             .map_err(|error| anyhow::anyhow!("failed to parse Responses API SSE event: {error}"))?;
-        let event_type = event.get("type").and_then(serde_json::Value::as_str);
-        match event_type {
-            Some("response.output_text.delta") => {
-                if let Some(delta) = event.get("delta").and_then(serde_json::Value::as_str) {
-                    output_text.push_str(delta);
-                }
-            },
-            Some("response.output_item.done") => {
-                if let Some(item) = event.get("item")
-                    && let Ok(item) = serde_json::from_value::<OutputMessage>(item.clone())
-                {
-                    output.push(item);
-                }
-            },
-            Some("response.completed") => {
-                let response = event.get("response").cloned().unwrap_or_default();
-                response_id = response
-                    .get("id")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_string);
-                status = response
-                    .get("status")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_string);
-                usage = response
-                    .get("usage")
-                    .cloned()
-                    .and_then(|usage| serde_json::from_value::<ApiUsage>(usage).ok());
-                if let Some(items) = response.get("output").cloned()
-                    && let Ok(items) = serde_json::from_value::<Vec<OutputMessage>>(items)
-                    && !items.is_empty()
-                {
-                    output = items;
-                }
-                completed = true;
-            },
-            Some("response.incomplete") => {
-                incomplete_reason = event
-                    .get("response")
-                    .and_then(|response| response.get("incomplete_details"))
-                    .and_then(|details| details.get("reason"))
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_string);
-            },
-            Some("response.failed") => {
-                let message = event
-                    .get("response")
-                    .and_then(|response| response.get("error"))
-                    .and_then(|error| error.get("message"))
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("unknown error");
-                anyhow::bail!("Responses API stream failed: {message}");
-            },
-            _ => {},
-        }
+        apply_stream_event(&mut accumulator, &event)?;
     }
 
+    finalize_stream(accumulator)
+}
+
+/// Applies one SSE event to the running stream state.
+fn apply_stream_event(
+    accumulator: &mut StreamAccumulator,
+    event: &serde_json::Value,
+) -> anyhow::Result<()> {
+    match event.get("type").and_then(serde_json::Value::as_str) {
+        Some("response.output_text.delta") => {
+            apply_output_text_delta(accumulator, event);
+            Ok(())
+        },
+        Some("response.output_item.done") => {
+            apply_output_item_done(accumulator, event);
+            Ok(())
+        },
+        Some("response.completed") => {
+            apply_response_completed(accumulator, event);
+            Ok(())
+        },
+        Some("response.incomplete") => {
+            apply_response_incomplete(accumulator, event);
+            Ok(())
+        },
+        Some("response.failed") => apply_response_failed(event),
+        _ => Ok(()),
+    }
+}
+
+fn apply_output_text_delta(accumulator: &mut StreamAccumulator, event: &serde_json::Value) {
+    if let Some(delta) = event.get("delta").and_then(serde_json::Value::as_str) {
+        accumulator.output_text.push_str(delta);
+    }
+}
+
+fn apply_output_item_done(accumulator: &mut StreamAccumulator, event: &serde_json::Value) {
+    if let Some(item) = event.get("item")
+        && let Ok(item) = serde_json::from_value::<OutputMessage>(item.clone())
+    {
+        accumulator.output.push(item);
+    }
+}
+
+fn apply_response_completed(accumulator: &mut StreamAccumulator, event: &serde_json::Value) {
+    let response = event.get("response").cloned().unwrap_or_default();
+    accumulator.response_id = response
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    accumulator.status = response
+        .get("status")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    accumulator.usage = response
+        .get("usage")
+        .cloned()
+        .and_then(|usage| serde_json::from_value::<ApiUsage>(usage).ok());
+    if let Some(items) = response.get("output").cloned()
+        && let Ok(items) = serde_json::from_value::<Vec<OutputMessage>>(items)
+        && !items.is_empty()
+    {
+        accumulator.output = items;
+    }
+    accumulator.completed = true;
+}
+
+fn apply_response_incomplete(accumulator: &mut StreamAccumulator, event: &serde_json::Value) {
+    accumulator.incomplete_reason = event
+        .get("response")
+        .and_then(|response| response.get("incomplete_details"))
+        .and_then(|details| details.get("reason"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+}
+
+fn apply_response_failed(event: &serde_json::Value) -> anyhow::Result<()> {
+    let message = event
+        .get("response")
+        .and_then(|response| response.get("error"))
+        .and_then(|error| error.get("message"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown error");
+    anyhow::bail!("Responses API stream failed: {message}");
+}
+
+/// Assembles the final `TurnResult` from the accumulated stream state.
+///
+/// # Errors
+///
+/// Returns an error when the stream ended before `response.completed`, or when
+/// the accumulated output items cannot be parsed into conversation items.
+fn finalize_stream(mut accumulator: StreamAccumulator) -> anyhow::Result<TurnResult> {
     anyhow::ensure!(
-        completed,
+        accumulator.completed,
         "Responses API stream ended before response.completed"
     );
 
-    if !output_text.is_empty() && !output.iter().any(|item| item.msg_type == "message") {
-        output.push(OutputMessage {
+    if !accumulator.output_text.is_empty()
+        && !accumulator
+            .output
+            .iter()
+            .any(|item| item.msg_type == "message")
+    {
+        accumulator.output.push(OutputMessage {
             msg_type: "message".to_string(),
-            id: response_id.clone(),
+            id: accumulator.response_id.clone(),
             call_id: None,
             name: None,
             arguments: None,
-            status: status.clone(),
+            status: accumulator.status.clone(),
             content: Some(vec![OutputContent {
                 content_type: "output_text".to_string(),
-                text: Some(output_text),
+                text: Some(accumulator.output_text),
             }]),
             encrypted_content: None,
             summary: None,
@@ -318,17 +383,17 @@ fn parse_streaming_response(body: &str) -> anyhow::Result<TurnResult> {
     }
 
     let api_response = ApiResponse {
-        id: response_id,
-        output,
-        usage,
+        id: accumulator.response_id,
+        output: accumulator.output,
+        usage: accumulator.usage,
     };
     let termination = responses_termination(
-        status.as_deref(),
+        accumulator.status.as_deref(),
         api_response
             .output
             .iter()
             .filter_map(|output| output.status.as_deref()),
-        incomplete_reason.as_deref(),
+        accumulator.incomplete_reason.as_deref(),
         response_contains_refusal(&api_response),
     );
     let usage = api_response

@@ -153,29 +153,38 @@ impl ResolvedModelConfig {
     ///
     /// Returns an error if the configured credential is unavailable or empty.
     pub fn resolve(config: ModelConfig) -> anyhow::Result<Self> {
-        let api_key = if crate::auth::is_chatgpt_codex_backend(&config.base_url) {
-            crate::auth::ChatGptAuth::load()?.access_token
-        } else {
-            let api_key = std::env::var(&config.api_key_env).map_err(|err| {
-                anyhow::anyhow!(
-                    "Environment variable '{}' is not set. Please set it to your API key: {err}",
-                    config.api_key_env
-                )
-            })?;
-
-            anyhow::ensure!(
-                !api_key.is_empty(),
-                "Environment variable '{}' is set but empty",
-                config.api_key_env
-            );
-            api_key
-        };
-
+        let api_key = resolve_api_key(&config)?;
         Ok(Self {
             model_config: config,
             api_key,
         })
     }
+}
+
+/// Resolves the provider credential for a model configuration.
+fn resolve_api_key(config: &ModelConfig) -> anyhow::Result<String> {
+    if crate::auth::is_chatgpt_codex_backend(&config.base_url) {
+        Ok(crate::auth::ChatGptAuth::load()?.access_token)
+    } else {
+        resolve_env_api_key(config)
+    }
+}
+
+/// Reads the credential from the configured environment variable.
+fn resolve_env_api_key(config: &ModelConfig) -> anyhow::Result<String> {
+    let api_key = std::env::var(&config.api_key_env).map_err(|err| {
+        anyhow::anyhow!(
+            "Environment variable '{}' is not set. Please set it to your API key: {err}",
+            config.api_key_env
+        )
+    })?;
+
+    anyhow::ensure!(
+        !api_key.is_empty(),
+        "Environment variable '{}' is set but empty",
+        config.api_key_env
+    );
+    Ok(api_key)
 }
 
 #[cfg(test)]

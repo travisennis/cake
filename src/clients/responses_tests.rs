@@ -974,6 +974,135 @@ fn parses_streamed_text_events() {
     assert!(!looks_like_sse_body(br#"{"id":"resp-1"}"#));
 }
 
+#[test]
+fn parse_streaming_response_merges_output_text_deltas() {
+    let body = concat!(
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}\n\n",
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\" world\"}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"status\":\"completed\",\"usage\":{\"input_tokens\":12,\"output_tokens\":7,\"total_tokens\":19}}}\n\n",
+    );
+
+    let result = parse_streaming_response(body).unwrap();
+    assert_eq!(result.items.len(), 1);
+    let ConversationItem::Message {
+        content,
+        id,
+        status,
+        ..
+    } = &result.items[0]
+    else {
+        panic!("expected a message item");
+    };
+    assert_eq!(content, "Hello world");
+    assert_eq!(id.as_deref(), Some("resp-1"));
+    assert_eq!(status.as_deref(), Some("completed"));
+    assert_eq!(result.provider_request_id.as_deref(), Some("resp-1"));
+    let usage = result.usage.expect("streamed usage should be parsed");
+    assert_eq!(usage.input_tokens, 12);
+    assert_eq!(usage.output_tokens, 7);
+    assert_eq!(usage.total_tokens, 19);
+    assert!(matches!(
+        result.termination,
+        Some(ProviderTermination {
+            classification: TerminationClassification::Completed,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn parse_streaming_response_builds_items_from_output_item_done_events() {
+    let body = concat!(
+        "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"id\":\"msg-1\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"item text\"}]}}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"status\":\"completed\"}}\n\n",
+    );
+
+    let result = parse_streaming_response(body).unwrap();
+    assert_eq!(result.items.len(), 1);
+    let ConversationItem::Message { content, id, .. } = &result.items[0] else {
+        panic!("expected a message item");
+    };
+    assert_eq!(content, "item text");
+    assert_eq!(id.as_deref(), Some("msg-1"));
+}
+
+#[test]
+fn parse_streaming_response_completed_output_overrides_item_events() {
+    let body = concat!(
+        "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"id\":\"msg-incremental\",\"content\":[{\"type\":\"output_text\",\"text\":\"incremental\"}]}}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"id\":\"msg-final\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"final\"}]}]}}\n\n",
+    );
+
+    let result = parse_streaming_response(body).unwrap();
+    assert_eq!(result.items.len(), 1);
+    let ConversationItem::Message { content, id, .. } = &result.items[0] else {
+        panic!("expected a message item");
+    };
+    assert_eq!(content, "final");
+    assert_eq!(id.as_deref(), Some("msg-final"));
+}
+
+#[test]
+fn parse_streaming_response_records_incomplete_reason() {
+    let body = concat!(
+        "data: {\"type\":\"response.incomplete\",\"response\":{\"incomplete_details\":{\"reason\":\"max_output_tokens\"}}}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\"}}\n\n",
+    );
+
+    let result = parse_streaming_response(body).unwrap();
+    assert_eq!(result.items.len(), 0);
+    assert!(matches!(
+        result.termination,
+        Some(ProviderTermination {
+            classification: TerminationClassification::TokenLimit,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn parse_streaming_response_failed_event_bails() {
+    let body =
+        "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"boom\"}}}\n\n";
+    let error = parse_streaming_response(body).unwrap_err().to_string();
+    assert!(error.contains("stream failed: boom"), "{error}");
+
+    let body = "data: {\"type\":\"response.failed\",\"response\":{}}\n\n";
+    let error = parse_streaming_response(body).unwrap_err().to_string();
+    assert!(error.contains("stream failed: unknown error"), "{error}");
+}
+
+#[test]
+fn parse_streaming_response_requires_completed_event() {
+    let body = concat!(
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}\n\n",
+        "data: [DONE]\n\n",
+    );
+
+    let error = parse_streaming_response(body).unwrap_err().to_string();
+    assert!(error.contains("ended before response.completed"), "{error}");
+}
+
+#[test]
+fn parse_streaming_response_empty_body_errors() {
+    let error = parse_streaming_response("").unwrap_err().to_string();
+    assert!(error.contains("ended before response.completed"), "{error}");
+}
+
+#[test]
+fn parse_streaming_response_ignores_unknown_event_types() {
+    let body = concat!(
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-1\"}}\n\n",
+        "data: [DONE]\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\"}}\n\n",
+    );
+
+    let result = parse_streaming_response(body).unwrap();
+    assert!(result.items.is_empty());
+    assert_eq!(result.provider_request_id.as_deref(), Some("resp-1"));
+    assert!(result.termination.is_none());
+}
+
 // =========================================================================
 // Malformed Response Tests
 // =========================================================================
