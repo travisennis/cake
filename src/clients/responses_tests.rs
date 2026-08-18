@@ -738,6 +738,7 @@ fn snapshot_responses_request_minimal() {
     let request = Request {
         model: "openai/gpt-4.1",
         store: None,
+        stream: None,
         input: build_input(&history),
         instructions: None,
         temperature: None,
@@ -802,6 +803,7 @@ fn snapshot_responses_request_with_tools_provider_and_reasoning() {
     let request = Request {
         model: "openai/gpt-5",
         store: None,
+        stream: None,
         input: build_input(non_system_history),
         instructions,
         temperature: Some(0.3),
@@ -847,6 +849,7 @@ fn snapshot_responses_request_with_output_schema_constraint() {
     let request = Request {
         model: "openai/gpt-5",
         store: None,
+        stream: None,
         input: build_input(&history),
         instructions: None,
         temperature: None,
@@ -880,6 +883,7 @@ fn snapshot_responses_request_full_with_agents_and_skills() {
     let request = Request {
         model: "test-responses-model",
         store: None,
+        stream: None,
         input: build_input(non_system_history),
         instructions,
         temperature: Some(0.2),
@@ -938,6 +942,31 @@ fn build_request_disables_storage_for_codex_backend() {
     let wire: serde_json::Value = serde_json::from_slice(&bytes).expect("parse request");
 
     assert_eq!(wire["store"], false);
+    assert_eq!(wire["stream"], true);
+}
+
+#[test]
+fn parses_streamed_text_events() {
+    let body = concat!(
+        "event: response.created\n",
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-1\"}}\n\n",
+        "event: response.output_text.delta\n",
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}\n\n",
+        "event: response.output_text.delta\n",
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\" world\"}\n\n",
+        "event: response.completed\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"status\":\"completed\"}}\n\n",
+    );
+
+    assert_eq!(
+        sse_data_events(body),
+        vec![
+            "{\"type\":\"response.created\",\"response\":{\"id\":\"resp-1\"}}",
+            "{\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}",
+            "{\"type\":\"response.output_text.delta\",\"delta\":\" world\"}",
+            "{\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"status\":\"completed\"}}",
+        ]
+    );
 }
 
 // =========================================================================

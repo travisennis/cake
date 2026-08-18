@@ -118,6 +118,8 @@ pub(super) struct Request<'a> {
     pub(super) model: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) store: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) stream: Option<bool>,
     pub(super) input: Vec<ResponsesApiInputItem<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) instructions: Option<&'a str>,
