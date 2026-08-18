@@ -943,6 +943,9 @@ fn build_request_disables_storage_for_codex_backend() {
 
     assert_eq!(wire["store"], false);
     assert_eq!(wire["stream"], true);
+    assert!(wire.get("temperature").is_none());
+    assert!(wire.get("top_p").is_none());
+    assert!(wire.get("max_output_tokens").is_none());
 }
 
 #[test]

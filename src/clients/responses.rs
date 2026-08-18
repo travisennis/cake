@@ -78,18 +78,21 @@ pub(super) fn build_request_json<'a>(
     });
 
     let (instructions, non_system_history) = extract_instructions(history)?;
+    let is_codex_backend = crate::auth::is_chatgpt_codex_backend(&config.model_config.base_url);
 
     let prompt = Request {
         model: &config.model_config.model,
-        store: crate::auth::is_chatgpt_codex_backend(&config.model_config.base_url)
-            .then_some(false),
-        stream: crate::auth::is_chatgpt_codex_backend(&config.model_config.base_url)
-            .then_some(true),
+        store: is_codex_backend.then_some(false),
+        stream: is_codex_backend.then_some(true),
         input: build_input(non_system_history),
         instructions,
-        temperature: config.model_config.temperature,
-        top_p: config.model_config.top_p,
-        max_output_tokens,
+        temperature: (!is_codex_backend)
+            .then_some(config.model_config.temperature)
+            .flatten(),
+        top_p: (!is_codex_backend)
+            .then_some(config.model_config.top_p)
+            .flatten(),
+        max_output_tokens: (!is_codex_backend).then_some(max_output_tokens).flatten(),
         tools: if tools.is_empty() { None } else { Some(tools) },
         tool_choice: if tools.is_empty() {
             None

@@ -15,8 +15,5 @@ expression: "serde_json::to_value(&request).unwrap()"
       "type": "message"
     }
   ],
-  "max_output_tokens": null,
-  "model": "openai/gpt-4.1",
-  "temperature": null,
-  "top_p": null
+  "model": "openai/gpt-4.1"
 }
