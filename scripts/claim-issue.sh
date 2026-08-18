@@ -5,8 +5,7 @@
 # Ready -> In Progress when work starts, In Progress -> Ready on handback. This
 # script makes that move one command, so an agent picking up the next Ready task
 # (see docs/workflow/tasks.md) can claim it without hand-rolling the
-# updateProjectV2ItemFieldValue mutation that
-# .github/workflows/move-closed-issues-to-done.yml hardcodes for Done.
+# updateProjectV2ItemFieldValue mutation for the Status field.
 #
 # Usage:
 #   scripts/claim-issue.sh <issue-number>            # claim: Ready -> In Progress
@@ -15,7 +14,7 @@
 #
 # Requirements: gh (authenticated) and jq. GITHUB_TOKEN cannot reach Projects
 # v2; use your own gh auth or export GH_TOKEN with a classic PAT carrying repo +
-# project scopes (the CAKE_BACKLOG_PAT pattern in move-closed-issues-to-done.yml).
+# project scopes (the CAKE_BACKLOG_PAT pattern).
 set -eu
 
 PROJECT_NUMBER="1"                                   # Cake Backlog board (project 1)
