@@ -891,7 +891,7 @@ async fn wait_for_hook_output_retains_only_capped_bytes_through_real_pipes() {
     // keep only the first 1000 bytes while still counting (and draining) the
     // full stream so the reported `(truncated, N more bytes)` stays accurate
     // and the hook completes normally.
-    let mut child = shell_command("yes | head -c 4194304")
+    let mut child = shell_command("printf A; yes | head -c 4194303")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -907,6 +907,9 @@ async fn wait_for_hook_output_retains_only_capped_bytes_through_real_pipes() {
     // The pipe carried the full 4 MiB, but only the first 1000 bytes were kept.
     assert_eq!(stdout_total, 4 * 1024 * 1024);
     assert_eq!(stdout_captured.len(), 1000);
+    // The sentinel distinguishes the stream prefix from a suffix or arbitrary
+    // window, which would also have the expected length.
+    assert!(stdout_captured.starts_with(b"Ay\n"));
     assert!(stderr_captured.is_empty());
     assert_eq!(stderr_total, 0);
 }
