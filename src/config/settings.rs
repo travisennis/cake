@@ -1116,7 +1116,10 @@ impl SettingsAccumulator {
         if let Some(ref profile_default) = overlay.default_model {
             self.default_model = Some(profile_default.clone());
         }
-        self.system_prompt.clone_from(&overlay.system_prompt);
+        self.system_prompt = overlay
+            .system_prompt
+            .clone()
+            .or_else(|| self.system_prompt.clone());
         self.directories
             .extend(overlay.directories.iter().map(|d| expand_home_str(d)));
         if let Some(ref overlay_sandbox) = overlay.sandbox {
