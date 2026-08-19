@@ -27,7 +27,7 @@ use crate::config::settings::LoadedSettings;
 use crate::config::{
     AgentsFile, DataDir, DiagnosticLevel, HookSource, HooksLoader, ModelConfig, ModelDefinition,
     ReasoningEffort, ResolvedModelConfig, Session, SettingsLoader, SkillCatalog, discover_skills,
-    discover_skills_with_paths, parse_skill_path_list, worktree,
+    discover_skills_with_paths, parse_skill_path_list, read_agents_files, worktree,
 };
 use crate::hooks::{HookContext, HookRunner};
 
@@ -476,7 +476,6 @@ impl CodingAssistant {
 
     async fn load_run_resources(
         &self,
-        data_dir: &DataDir,
         current_dir: &Path,
         additional_dirs: Vec<PathBuf>,
         toolbox_dirs: &[PathBuf],
@@ -486,7 +485,7 @@ impl CodingAssistant {
         // drop those keys; surface them on stderr so a typo like `temparature`
         // is seen instead of quietly ignored.
         loaded.print_warnings();
-        let agents_files = data_dir.read_agents_files(current_dir);
+        let agents_files = read_agents_files(current_dir);
 
         let skill_config = SettingsLoader::resolve_skill_config(
             self.no_skills,
@@ -1014,7 +1013,6 @@ impl CmdRunner for CodingAssistant {
         let prepared = self.prepare_run()?;
         let resources = self
             .load_run_resources(
-                data_dir,
                 &prepared.current_dir,
                 prepared.additional_dirs.clone(),
                 &prepared.toolbox_dirs,

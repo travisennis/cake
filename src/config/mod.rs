@@ -11,6 +11,7 @@
 //! - [`ModelConfig`] - Model provider configuration
 //! - [`SettingsLoader`] - Loads settings from TOML files
 
+mod agents;
 mod config_dir;
 mod data_dir;
 pub mod git;
@@ -26,9 +27,11 @@ pub mod worktree;
 use std::path::PathBuf;
 
 #[doc(inline)]
+pub use agents::{AgentsFile, read_agents_files};
+#[doc(inline)]
 pub use config_dir::config_dir;
 #[doc(inline)]
-pub use data_dir::{AgentsFile, DataDir};
+pub use data_dir::DataDir;
 #[doc(inline)]
 pub use hooks::{HookSource, HooksLoader};
 #[doc(inline)]
