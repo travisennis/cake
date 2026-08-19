@@ -833,6 +833,25 @@ system_prompt = "prompts/global-review.md"
 }
 
 #[test]
+fn test_project_profile_omitted_system_prompt_preserves_project_top_level() {
+    let home = create_home_dir();
+    let project_dir = create_project_settings(
+        r#"
+system_prompt = "prompts/project.md"
+
+[profiles.review]
+"#,
+    );
+
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load_with_profile(Some(project_dir.path()), Some("review"))
+    })
+    .unwrap();
+
+    assert_eq!(loaded.system_prompt, Some("prompts/project.md".to_string()));
+}
+
+#[test]
 fn test_project_profile_system_prompt_overrides_global_profile_and_top_level() {
     let home = create_home_dir();
     write_global_settings(
