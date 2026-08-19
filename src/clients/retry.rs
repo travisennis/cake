@@ -104,12 +104,10 @@ pub fn classify_http_failure(
         return RetryDecision::DoNotRetry;
     }
 
-    if let Some(status) = context_overflow_retry_status(policy, failure, attempt, current_overrides)
+    if let Some((status, overrides)) =
+        context_overflow_retry(policy, failure, attempt, current_overrides)
     {
-        return RetryDecision::RetryWithOverrides {
-            status,
-            overrides: apply_context_overflow_override(failure, current_overrides),
-        };
+        return RetryDecision::RetryWithOverrides { status, overrides };
     }
 
     let x_should_retry = parse_x_should_retry(&failure.headers);
@@ -244,12 +242,17 @@ pub fn policy_backoff_delay(
     fallback_delay(policy, attempt, session_id)
 }
 
-fn context_overflow_retry_status(
+/// Classify a context-overflow failure and derive the complete retry
+/// transition — status plus token-budget overrides — in a single pass over
+/// the failure body. Returns `None` when the failure is not an overflow, the
+/// overflow was already compensated once, or the remaining output budget is
+/// too small to retry.
+fn context_overflow_retry(
     policy: &RetryPolicy,
     failure: &HttpFailure,
     attempt: u32,
     current_overrides: &RequestOverrides,
-) -> Option<RetryStatus> {
+) -> Option<(RetryStatus, RequestOverrides)> {
     if failure.status != 400 || current_overrides.context_overflow_retry_used {
         return None;
     }
@@ -266,36 +269,22 @@ fn context_overflow_retry_status(
 
     let max_output_tokens = available_output.min(overflow.requested_tokens);
 
-    Some(RetryStatus {
+    let status = RetryStatus {
         attempt: attempt + 1,
         max_retries: policy.max_retries,
         delay: Duration::ZERO,
         reason: RetryReason::ContextOverflow,
         detail: format!("max_output_tokens={max_output_tokens}"),
-    })
-}
-
-fn apply_context_overflow_override(
-    failure: &HttpFailure,
-    current_overrides: &RequestOverrides,
-) -> RequestOverrides {
-    let Some(overflow) = parse_context_overflow(&failure.body) else {
-        return current_overrides.clone();
     };
-
-    let available_output = overflow
-        .context_limit
-        .saturating_sub(overflow.input_tokens)
-        .saturating_sub(CONTEXT_OVERFLOW_SAFETY_BUFFER_TOKENS);
-    let max_output_tokens = available_output.min(overflow.requested_tokens);
-
-    RequestOverrides {
+    let overrides = RequestOverrides {
         max_output_tokens: Some(max_output_tokens),
         reasoning_max_tokens: current_overrides
             .reasoning_max_tokens
             .map(|budget| budget.min(max_output_tokens.saturating_sub(1))),
         context_overflow_retry_used: true,
-    }
+    };
+
+    Some((status, overrides))
 }
 
 fn retry_status(
@@ -877,6 +866,109 @@ mod tests {
                 context_limit: 16384,
             })
         );
+    }
+
+    #[test]
+    fn context_overflow_malformed_body_is_not_retryable() {
+        let failure = HttpFailure {
+            status: 400,
+            headers: HeaderMap::new(),
+            body: r#"{"error":{"message":"input length and max_tokens exceed some other limit"}}"#
+                .to_string(),
+        };
+
+        assert_eq!(
+            classify_http_failure(
+                &retry_policy(),
+                &failure,
+                1,
+                session_id(),
+                &RequestOverrides::default()
+            ),
+            RetryDecision::DoNotRetry
+        );
+    }
+
+    #[test]
+    fn context_overflow_too_small_budget_is_not_retryable() {
+        // 16384 - 16380 - 1024 = 20 available output tokens, below the 256 minimum.
+        let failure = HttpFailure {
+            status: 400,
+            headers: HeaderMap::new(),
+            body: r#"{"error":{"message":"input length and max_tokens exceed context limit: 16380 + 5000 > 16384"}}"#
+                .to_string(),
+        };
+
+        assert_eq!(
+            classify_http_failure(
+                &retry_policy(),
+                &failure,
+                1,
+                session_id(),
+                &RequestOverrides {
+                    max_output_tokens: Some(5000),
+                    reasoning_max_tokens: Some(4000),
+                    context_overflow_retry_used: false,
+                },
+            ),
+            RetryDecision::DoNotRetry
+        );
+    }
+
+    #[test]
+    fn context_overflow_already_used_is_not_retryable() {
+        let failure = HttpFailure {
+            status: 400,
+            headers: HeaderMap::new(),
+            body: r#"{"error":{"message":"input length and max_tokens exceed context limit: 12000 + 5000 > 16384"}}"#
+                .to_string(),
+        };
+
+        assert_eq!(
+            classify_http_failure(
+                &retry_policy(),
+                &failure,
+                1,
+                session_id(),
+                &RequestOverrides {
+                    max_output_tokens: Some(3360),
+                    reasoning_max_tokens: Some(3359),
+                    context_overflow_retry_used: true,
+                },
+            ),
+            RetryDecision::DoNotRetry
+        );
+    }
+
+    #[test]
+    fn context_overflow_status_and_overrides_share_one_derivation() {
+        // The status detail and the overrides must come from the same budget
+        // computation over one parse of the failure body.
+        let failure = HttpFailure {
+            status: 400,
+            headers: HeaderMap::new(),
+            body: r#"{"error":{"message":"input length and max_tokens exceed context limit: 12000 + 5000 > 16384"}}"#
+                .to_string(),
+        };
+
+        match classify_http_failure(
+            &retry_policy(),
+            &failure,
+            1,
+            session_id(),
+            &RequestOverrides {
+                max_output_tokens: Some(5000),
+                reasoning_max_tokens: Some(4000),
+                context_overflow_retry_used: false,
+            },
+        ) {
+            RetryDecision::RetryWithOverrides { status, overrides } => {
+                assert_eq!(status.detail, "max_output_tokens=3360");
+                assert_eq!(overrides.max_output_tokens, Some(3360));
+                assert_eq!(overrides.reasoning_max_tokens, Some(3359));
+            },
+            other => panic!("expected overflow retry override, got {other:?}"),
+        }
     }
 
     #[test]
