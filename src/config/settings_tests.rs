@@ -778,6 +778,7 @@ fn test_profile_omitted_fields_preserve_top_level_settings() {
         home.path(),
         r#"
 default_model = "base"
+system_prompt = "prompts/base.md"
 directories = ["/base/dir"]
 
 [skills]
@@ -801,6 +802,64 @@ api_key_env = "KEY"
     assert_eq!(loaded.default_model, Some("base".to_string()));
     assert!(loaded.directories.contains(&"/base/dir".to_string()));
     assert_eq!(loaded.skills.only, vec!["base-skill"]);
+    assert_eq!(loaded.system_prompt, Some("prompts/base.md".to_string()));
+}
+
+#[test]
+fn test_project_profile_omitted_system_prompt_preserves_global_profile() {
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"
+[profiles.review]
+system_prompt = "prompts/global-review.md"
+"#,
+    );
+    let project_dir = create_project_settings(
+        "
+[profiles.review]
+",
+    );
+
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load_with_profile(Some(project_dir.path()), Some("review"))
+    })
+    .unwrap();
+
+    assert_eq!(
+        loaded.system_prompt,
+        Some("prompts/global-review.md".to_string())
+    );
+}
+
+#[test]
+fn test_project_profile_system_prompt_overrides_global_profile_and_top_level() {
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"
+system_prompt = "prompts/base.md"
+
+[profiles.review]
+system_prompt = "prompts/global-review.md"
+"#,
+    );
+    let project_dir = create_project_settings(
+        r#"
+[profiles.review]
+system_prompt = "prompts/project-review.md"
+"#,
+    );
+
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load_with_profile(Some(project_dir.path()), Some("review"))
+    })
+    .unwrap();
+
+    assert_eq!(
+        loaded.system_prompt,
+        Some("prompts/project-review.md".to_string())
+    );
 }
 
 #[test]
