@@ -1,5 +1,5 @@
 [tools]
-rust = { version = "1.96.0", components = ["clippy", "rustfmt", "rust-analyzer"] }
+rust = { version = "1.97.1", components = ["clippy", "rustfmt", "rust-analyzer"] }
 just = "latest"
 sccache = "latest"
 

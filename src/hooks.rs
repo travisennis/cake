@@ -636,10 +636,6 @@ impl Drop for HookProcessGuard {
                 unsafe_code,
                 reason = "libc::kill requires unsafe; see SAFETY comment below"
             )]
-            #[expect(
-                clippy::cast_possible_wrap,
-                reason = "PIDs fit in i32 on all supported Unix targets"
-            )]
             // SAFETY: pid was obtained from `Child::id()` at a point when the
             // child was still alive, and the child's process group ID equals
             // its PID because `shell_command` calls `process_group(0)` on
