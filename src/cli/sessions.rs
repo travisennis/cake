@@ -9,6 +9,7 @@ use serde::Serialize;
 use crate::cli::{CmdRunner, CommandRunOptions};
 use crate::config::DataDir;
 use crate::config::session::CURRENT_FORMAT_VERSION;
+use crate::config::session_jsonl::SessionFramer;
 
 /// Session browsing commands.
 #[derive(Clone, Debug, Parser)]
@@ -94,27 +95,18 @@ struct SessionFileHeader {
 
 /// Read a session file's metadata and first user prompt, returning `None`
 /// when the working directory does not match or the file is unreadable.
+///
+/// The header is read through the shared [`SessionFramer`], so blank leading
+/// lines before `session_meta` are skipped, matching full load, replay, and
+/// discovery.
 fn read_session_info(path: &Path, working_dir: &Path) -> Option<SessionInfo> {
     let file = std::fs::File::open(path).ok()?;
     let mut reader = std::io::BufReader::new(file);
-    let mut first_line = String::new();
-    reader.read_line(&mut first_line).ok()?;
 
-    let header: SessionFileHeader = serde_json::from_str(first_line.trim()).ok()?;
-    if header.format_version != CURRENT_FORMAT_VERSION {
-        return None;
-    }
+    let (header, session_id) = read_header(&mut reader)?;
     if header.working_directory != working_dir {
         return None;
     }
-
-    // Extract session_id from the first line (it's in the JSON but SessionFileHeader
-    // doesn't carry it — re-parse as serde_json::Value to get it without changing the header).
-    let first_value: serde_json::Value = serde_json::from_str(first_line.trim()).ok()?;
-    let session_id = first_value
-        .get("session_id")
-        .and_then(|v| v.as_str())
-        .map(ToString::to_string)?;
 
     // Scan subsequent lines for the first user message to get the first prompt.
     let first_prompt = find_first_user_prompt(&mut reader);
@@ -124,6 +116,32 @@ fn read_session_info(path: &Path, working_dir: &Path) -> Option<SessionInfo> {
         timestamp: header.timestamp,
         first_prompt: first_prompt.unwrap_or_default(),
     })
+}
+
+/// Parse the `session_meta` header line and its `session_id` from a stream,
+/// returning `None` when the format version is unsupported or a field is
+/// missing or unreadable.
+fn read_header(reader: &mut impl std::io::BufRead) -> Option<(SessionFileHeader, String)> {
+    let header_line = {
+        let mut framer = SessionFramer::new(&mut *reader);
+        framer.next_record().ok()??.text
+    };
+
+    let header: SessionFileHeader = serde_json::from_str(&header_line).ok()?;
+    if header.format_version != CURRENT_FORMAT_VERSION {
+        return None;
+    }
+
+    // Extract session_id from the header (it's in the JSON but
+    // SessionFileHeader doesn't carry it — re-parse as serde_json::Value to
+    // get it without changing the header struct).
+    let first_value: serde_json::Value = serde_json::from_str(&header_line).ok()?;
+    let session_id = first_value
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .map(ToString::to_string)?;
+
+    Some((header, session_id))
 }
 
 /// Read lines after the `session_meta` to find the first `message` with `role: "user"`.
@@ -265,6 +283,32 @@ mod tests {
             });
             writeln!(file, "{}", serde_json::to_string(&msg).unwrap()).unwrap();
         }
+    }
+
+    #[test]
+    fn list_sessions_skips_leading_blank_lines() {
+        // Regression for #275: a blank line before `session_meta` must not hide
+        // the header during listing, matching full load, replay, and discovery.
+        let (dd, tmp) = make_data_dir();
+        let sessions_dir = dd.sessions_dir();
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+
+        let session_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        write_session(
+            &sessions_dir,
+            session_id,
+            tmp.path(),
+            "2026-07-09T12:00:00Z",
+            Some("Leading blank header"),
+        );
+        let path = sessions_dir.join(format!("{session_id}.jsonl"));
+        let content = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, format!("\n\n{content}")).unwrap();
+
+        let sessions = list_sessions(&dd, tmp.path()).unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].session_id, session_id);
+        assert_eq!(sessions[0].first_prompt, "Leading blank header");
     }
 
     #[test]
