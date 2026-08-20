@@ -1,12 +1,14 @@
 use std::{
     collections::HashSet,
     fs::{self, File, OpenOptions},
-    io::{BufWriter, Write},
+    io::{BufReader, BufWriter, Write},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     thread,
     time::Duration,
 };
+
+use crate::config::session_jsonl::SessionFramer;
 
 use anyhow::Context;
 use fs4::{FileExt, TryLockError};
@@ -141,22 +143,16 @@ impl Session {
     ///
     /// Returns an error if the file cannot be opened, or if any line
     /// cannot be parsed as valid JSON.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "session deserialization requires many field mappings"
-    )]
     pub fn load(path: &Path) -> anyhow::Result<Self> {
-        let content = fs::read_to_string(path)
+        let file = fs::File::open(path)
             .with_context(|| format!("Failed to open session file: {}", path.display()))?;
-        let mut lines = content.lines().enumerate().peekable();
+        let mut framer = SessionFramer::new(BufReader::new(file));
 
-        let first_line = lines
-            .by_ref()
-            .find_map(|(_, line)| {
-                let trimmed = line.trim();
-                (!trimmed.is_empty()).then(|| trimmed.to_string())
-            })
-            .ok_or_else(|| anyhow::anyhow!("Session file is empty"))?;
+        let first_line = framer
+            .next_record()
+            .with_context(|| format!("Failed to read session file: {}", path.display()))?
+            .ok_or_else(|| anyhow::anyhow!("Session file is empty"))?
+            .text;
 
         let id;
         let working_dir;
@@ -166,7 +162,7 @@ impl Session {
         let session_timestamp;
         let mut records = Vec::new();
 
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(first_line.trim())
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&first_line)
             && value.get("type").and_then(|value| value.as_str()) != Some("session_meta")
         {
             anyhow::bail!(
@@ -175,7 +171,7 @@ impl Session {
             );
         }
 
-        let meta: SessionRecord = serde_json::from_str(first_line.trim()).with_context(|| {
+        let meta: SessionRecord = serde_json::from_str(&first_line).with_context(|| {
             format!(
                 "Failed to parse session_meta record of session file: {}",
                 path.display()
@@ -218,17 +214,16 @@ impl Session {
         }
         records.push(meta);
 
-        while let Some((line_num, line)) = lines.next() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            match serde_json::from_str::<SessionRecord>(trimmed) {
+        while let Some(line) = framer
+            .next_record()
+            .with_context(|| format!("Failed to read session file: {}", path.display()))?
+        {
+            match serde_json::from_str::<SessionRecord>(&line.text) {
                 Ok(mut record) => {
                     record.normalize_legacy_fields(session_timestamp);
                     records.push(record);
                 },
-                Err(error) if lines.peek().is_none() && !content.ends_with('\n') => {
+                Err(error) if line.partial_tail => {
                     tracing::warn!(
                         "Ignoring partial final session record in {}: {}",
                         path.display(),
@@ -240,7 +235,7 @@ impl Session {
                     return Err(error).with_context(|| {
                         format!(
                             "Failed to parse line {} of session file: {}",
-                            line_num + 1,
+                            line.line_number,
                             path.display()
                         )
                     });
@@ -456,6 +451,34 @@ mod tests {
         assert_eq!(session.working_dir, PathBuf::from("/tmp/test"));
         assert!(session.records.is_empty());
         assert!(session.model.is_none());
+    }
+
+    #[test]
+    fn test_session_load_skips_leading_empty_lines() {
+        // Regression for #275: a blank line before `session_meta` must not hide
+        // the header. Full load, replay, discovery, and listing share the same
+        // framing, so all four accept leading empty lines.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let session = make_test_session();
+        let mut file = Session::create_on_disk(&path, &meta_record(&session)).unwrap();
+        Session::append_record(&mut file, &task_start(&session, "task-1")).unwrap();
+        drop(file);
+
+        let content = fs::read_to_string(&path).unwrap();
+        fs::write(&path, format!("\n\n{content}")).unwrap();
+
+        let loaded = Session::load(&path).unwrap();
+        assert_eq!(loaded.id, session.id);
+        assert_eq!(loaded.records.len(), 2);
+        assert!(matches!(
+            loaded.records[0],
+            SessionRecord::SessionMeta { .. }
+        ));
+        assert!(matches!(
+            loaded.records[1],
+            SessionRecord::TaskStart(TaskStartData { .. })
+        ));
     }
 
     #[test]

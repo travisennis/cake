@@ -18,6 +18,7 @@ pub mod hooks;
 pub mod model;
 pub mod output_schema;
 pub mod session;
+pub mod session_jsonl;
 pub mod settings;
 pub mod skills;
 pub mod toolbox;

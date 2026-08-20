@@ -8,7 +8,7 @@
 //! as the session loader.
 
 use std::fs;
-use std::io::Read;
+use std::io::BufReader;
 use std::path::Path;
 
 use clap::Parser;
@@ -18,6 +18,7 @@ use crate::OutputFormat;
 use crate::cli::{CmdRunner, CommandRunOptions};
 use crate::config::DataDir;
 use crate::config::session::CURRENT_FORMAT_VERSION;
+use crate::config::session_jsonl::SessionFramer;
 use crate::types::{ReplayErrorKind, SessionRecord, StreamRecord};
 
 /// Replay an existing session transcript as stream-json events.
@@ -155,37 +156,44 @@ fn emit(record: &StreamRecord) {
 /// [`crate::config::session::Session::load`]; any other malformed line is a
 /// [`ReplayError::Corrupt`] failure.
 fn load_records(path: &Path, session_id: Uuid) -> Result<Vec<SessionRecord>, ReplayError> {
-    let mut content = String::new();
-    fs::File::open(path)
-        .and_then(|mut file| file.read_to_string(&mut content))
-        .map_err(|error| match error.kind() {
-            std::io::ErrorKind::PermissionDenied => ReplayError::Permission(session_id.to_string()),
-            std::io::ErrorKind::NotFound => ReplayError::MissingSession(session_id.to_string()),
-            _ => ReplayError::Corrupt(
+    // Replay reads the file through the shared framing codec. Open errors are
+    // mapped here; mid-read errors surface during framing and are mapped to
+    // `Corrupt` by `next_record`.
+    let file = fs::File::open(path).map_err(|error| match error.kind() {
+        std::io::ErrorKind::PermissionDenied => ReplayError::Permission(session_id.to_string()),
+        std::io::ErrorKind::NotFound => ReplayError::MissingSession(session_id.to_string()),
+        _ => ReplayError::Corrupt(
+            session_id.to_string(),
+            format!("failed to read session file: {error}"),
+        ),
+    })?;
+    let mut framer = SessionFramer::new(BufReader::new(file));
+
+    let mut next_record = || {
+        framer.next_record().map_err(|error| {
+            ReplayError::Corrupt(
                 session_id.to_string(),
                 format!("failed to read session file: {error}"),
-            ),
-        })?;
+            )
+        })
+    };
 
-    let mut lines = content
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .peekable();
-
-    let first = lines.next().ok_or_else(|| {
-        ReplayError::Corrupt(session_id.to_string(), "session file is empty".to_string())
-    })?;
-    let meta = parse_record(first, &session_id)?;
+    let Some(first) = next_record()? else {
+        return Err(ReplayError::Corrupt(
+            session_id.to_string(),
+            "session file is empty".to_string(),
+        ));
+    };
+    let meta = parse_record(&first.text, &session_id)?;
     validate_meta(&meta, session_id)?;
 
     let mut records = vec![meta];
-    while let Some(line) = lines.next() {
-        match parse_record(line, &session_id) {
+    while let Some(line) = next_record()? {
+        match parse_record(&line.text, &session_id) {
             Ok(record) => records.push(record),
             // A writer interrupted mid-record leaves a partial final line
             // without a trailing newline; tolerate it like `Session::load`.
-            Err(error) if lines.peek().is_none() && !content.ends_with('\n') => {
+            Err(error) if line.partial_tail => {
                 tracing::warn!(
                     "Ignoring partial final session record in {}: {error}",
                     path.display()
@@ -284,6 +292,21 @@ mod tests {
     }
 
     #[test]
+    fn load_records_skips_leading_empty_lines() {
+        // Regression for #275: a blank line before `session_meta` must not hide
+        // the header, matching `Session::load`, discovery, and listing.
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_session(dir.path(), &[&meta_line(), &task_start_line()]);
+        let content = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, format!("\n\n{content}")).unwrap();
+
+        let records = load_records(&path, Uuid::parse_str(SESSION_ID).unwrap()).unwrap();
+        assert_eq!(records.len(), 2);
+        assert!(matches!(records[0], SessionRecord::SessionMeta { .. }));
+        assert!(matches!(records[1], SessionRecord::TaskStart(_)));
+    }
+
+    #[test]
     fn load_records_returns_all_lines_in_order() {
         let dir = tempfile::tempdir().unwrap();
         let path = write_session(
@@ -333,6 +356,15 @@ mod tests {
         .unwrap_err();
         assert!(matches!(error, ReplayError::MissingSession(_)));
         assert_eq!(error.exit_code(), crate::exit_code::code::INPUT_ERROR);
+    }
+
+    #[test]
+    fn load_records_rejects_read_error_as_corrupt() {
+        // Opening a directory succeeds but reading it fails with an I/O error,
+        // exercising the mid-read `Corrupt` mapping in `load_records`.
+        let dir = tempfile::tempdir().unwrap();
+        let error = load_records(dir.path(), Uuid::parse_str(SESSION_ID).unwrap()).unwrap_err();
+        assert!(matches!(error, ReplayError::Corrupt(_, _)));
     }
 
     #[test]

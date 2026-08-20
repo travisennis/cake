@@ -1,6 +1,6 @@
 use std::{
     fs::{self, File},
-    io::{BufRead, BufReader},
+    io::BufReader,
     path::{Path, PathBuf},
 };
 
@@ -8,6 +8,7 @@ use anyhow::{Context, anyhow};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
+use crate::config::session_jsonl::SessionFramer;
 use crate::config::{Session, git, session::CURRENT_FORMAT_VERSION};
 use crate::types::{GitState, SessionRecord};
 
@@ -382,19 +383,24 @@ struct SessionFileHeader {
     timestamp: DateTime<Utc>,
 }
 
-/// Reads only the first line of a session file to extract its header.
+/// Reads only the first record line of a session file to extract its header.
+///
+/// Blank leading lines are skipped, so a header is found regardless of leading
+/// whitespace, matching full load, replay, and listing.
 fn read_session_header(path: &Path) -> anyhow::Result<SessionFileHeader> {
     let file = fs::File::open(path)
         .with_context(|| format!("Failed to open session file: {}", path.display()))?;
-    let mut reader = BufReader::new(file);
-    let mut first_line = String::new();
-    reader.read_line(&mut first_line).with_context(|| {
+    let mut framer = SessionFramer::new(BufReader::new(file));
+    let Some(line) = framer.next_record().with_context(|| {
         format!(
             "Failed to read header from session file: {}",
             path.display()
         )
-    })?;
-    let header: SessionFileHeader = serde_json::from_str(first_line.trim())
+    })?
+    else {
+        anyhow::bail!("Session file is empty: {}", path.display());
+    };
+    let header: SessionFileHeader = serde_json::from_str(&line.text)
         .with_context(|| format!("Failed to parse session header: {}", path.display()))?;
     if header.format_version != CURRENT_FORMAT_VERSION {
         anyhow::bail!(
@@ -552,6 +558,25 @@ mod tests {
             temp_env::with_var("GIT_DIR", Some(&poison), || git_state(repo.path())).unwrap();
 
         assert_eq!(state.branch.as_deref(), Some("feature/hermetic"));
+    }
+
+    #[test]
+    fn discovery_skips_leading_empty_lines() {
+        // Regression for #275: a blank line before `session_meta` must not hide
+        // the header during latest-session discovery, matching full load,
+        // replay, and listing.
+        let (dd, _tmp) = test_data_dir();
+        let session = Session::new(uuid::Uuid::new_v4(), PathBuf::from("/work"));
+        dd.save_session(&session).unwrap();
+        let path = dd.session_path(session.id);
+        let content = fs::read_to_string(&path).unwrap();
+        fs::write(&path, format!("\n\n{content}")).unwrap();
+
+        let latest = dd
+            .load_latest_session(&PathBuf::from("/work"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(latest.id, session.id);
     }
 
     #[test]
