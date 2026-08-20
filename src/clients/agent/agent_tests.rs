@@ -3112,8 +3112,256 @@ mod error_tests {
     }
 
     // =========================================================================
-    // Chat Completions API Error Tests
+    // Stale-connection recovery (issue #267)
+    //
+    // A transport error that looks like a stale connection must swap in a
+    // fresh no-reuse client for the recovery attempt only. Whether recovery
+    // succeeds or the turn fails, later turns must keep using the normal
+    // pooled client.
     // =========================================================================
+
+    use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+
+    const STALE_RESET_PHASE: u8 = 0;
+    const STALE_SERVE_PHASE: u8 = 1;
+
+    fn find_headers_end(buf: &[u8]) -> Option<usize> {
+        buf.windows(4).position(|window| window == b"\r\n\r\n")
+    }
+
+    /// Read one HTTP request (headers plus content-length body). `None` on EOF.
+    async fn read_http_request(stream: &mut TcpStream) -> Option<()> {
+        let mut buf = Vec::new();
+        let mut chunk = [0_u8; 4096];
+        loop {
+            let n = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut chunk))
+                .await
+                .ok()
+                .and_then(Result::ok)?;
+            if n == 0 {
+                return None;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+
+            let Some(header_end) = find_headers_end(&buf) else {
+                continue;
+            };
+            let content_length = String::from_utf8_lossy(&buf[..header_end])
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.trim()
+                        .eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                })
+                .unwrap_or(0);
+            let body_start = header_end + 4;
+            let total = body_start + content_length;
+            while buf.len() < total {
+                let n = stream.read(&mut chunk).await.ok()?;
+                if n == 0 {
+                    return None;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+            }
+            return Some(());
+        }
+    }
+
+    async fn serve_http(stream: &mut TcpStream, status: &str, body: &[u8]) -> Option<()> {
+        let head = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\n\
+             Content-Length: {}\r\nConnection: keep-alive\r\n\r\n",
+            body.len()
+        );
+        stream.write_all(head.as_bytes()).await.ok()?;
+        stream.write_all(body).await.ok()?;
+        stream.flush().await.ok()
+    }
+
+    /// Force an RST (linger 0) on the connection so the peer sees a
+    /// stale-connection reset rather than a clean close.
+    fn force_rst(stream: TcpStream) {
+        if let Ok(std_stream) = stream.into_std() {
+            // SAFETY: `std_stream` is a live, owned socket descriptor; setting
+            // SO_LINGER=0 makes the closing `drop` emit an RST, which is
+            // exactly the stale-connection condition this test drives.
+            unsafe {
+                let fd = std::os::fd::AsRawFd::as_raw_fd(&std_stream);
+                let linger = libc::linger {
+                    l_onoff: 1,
+                    l_linger: 0,
+                };
+                libc::setsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    libc::SO_LINGER,
+                    std::ptr::addr_of!(linger).cast::<libc::c_void>(),
+                    libc::socklen_t::try_from(std::mem::size_of::<libc::linger>()).unwrap(),
+                );
+            }
+        }
+    }
+
+    /// Serve keep-alive 200 responses on the connection, marking reuse when a
+    /// second request arrives on the same connection (only the real pooled
+    /// client does that). Returns on EOF or write failure.
+    async fn serve_keep_alive(stream: &mut TcpStream, reuse_observed: &AtomicBool) {
+        let mut requests_on_connection = 0_usize;
+        loop {
+            if read_http_request(stream).await.is_none() {
+                return;
+            }
+            if requests_on_connection > 0 {
+                reuse_observed.store(true, Ordering::SeqCst);
+            }
+            let body = serde_json::to_vec(&success_response()).unwrap();
+            if serve_http(stream, "200 OK", &body).await.is_none() {
+                return;
+            }
+            requests_on_connection += 1;
+        }
+    }
+
+    struct StaleConnectionServer {
+        phase: Arc<AtomicU8>,
+        reuse_observed: Arc<AtomicBool>,
+        join: tokio::task::JoinHandle<()>,
+    }
+
+    /// Serve stale connections: reset the first one to trigger no-reuse
+    /// recovery, then, while `fail_after_reset` and the phase is still reset,
+    /// return non-retryable 400 responses; otherwise serve keep-alive 200s.
+    /// `reuse_observed` is set when a keep-alive connection carries more than
+    /// one request, which only the real pooled client can do.
+    fn spawn_stale_connection_server(
+        listener: TcpListener,
+        fail_after_reset: bool,
+    ) -> StaleConnectionServer {
+        let phase = Arc::new(AtomicU8::new(STALE_RESET_PHASE));
+        let reuse_observed = Arc::new(AtomicBool::new(false));
+        let conn_counter = Arc::new(AtomicUsize::new(0));
+
+        let phase_handle = phase.clone();
+        let reuse_handle = reuse_observed.clone();
+        let join = tokio::spawn(async move {
+            loop {
+                let Ok((stream, _)) = listener.accept().await else {
+                    return;
+                };
+                let phase = phase_handle.clone();
+                let reuse_observed = reuse_handle.clone();
+                let conn_index = conn_counter.fetch_add(1, Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let mut stream = stream;
+                    if phase.load(Ordering::SeqCst) == STALE_RESET_PHASE {
+                        if conn_index == 0 {
+                            // First connection: reset it so the client sees a
+                            // stale-connection transport error and enters its
+                            // no-reuse recovery.
+                            force_rst(stream);
+                            return;
+                        }
+                        if fail_after_reset {
+                            // Non-retryable 400 so the turn ends without a
+                            // successful parsed response.
+                            loop {
+                                if read_http_request(&mut stream).await.is_none() {
+                                    return;
+                                }
+                                let body = br#"{"error":{"message":"unrecoverable despite retry","type":"invalid_request_error"}}"#;
+                                if serve_http(&mut stream, "400 Bad Request", body)
+                                    .await
+                                    .is_none()
+                                {
+                                    return;
+                                }
+                            }
+                        }
+                    }
+
+                    serve_keep_alive(&mut stream, &reuse_observed).await;
+                });
+            }
+        });
+
+        StaleConnectionServer {
+            phase,
+            reuse_observed,
+            join,
+        }
+    }
+
+    #[tokio::test]
+    async fn stale_connection_retry_failure_keeps_pooled_client_for_next_turn() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = spawn_stale_connection_server(listener, true);
+
+        let mut agent = test_agent_with_url(&format!("http://{addr}"));
+        agent.history_mut().push(ConversationItem::Message {
+            role: Role::User,
+            content: "test".to_string(),
+            id: None,
+            status: None,
+            timestamp: None,
+        });
+
+        // Turn 1: the first request is reset (stale-connection recovery), then
+        // a non-retryable 400 ends the turn without a successful response.
+        let result = agent.complete_turn(false).await;
+        assert!(
+            result.is_err(),
+            "turn after a stale connection must fail, got: {result:?}"
+        );
+
+        // Turn 2 and 3: the server is healthy again. The next turn must work
+        // and later turns must reuse the pooled connection from turn 2,
+        // proving the temporary no-reuse policy did not leak.
+        server.phase.store(STALE_SERVE_PHASE, Ordering::SeqCst);
+        let result = agent.complete_turn(false).await;
+        assert!(result.is_ok(), "client must recover after retry failure");
+        let result = agent.complete_turn(false).await;
+        assert!(result.is_ok(), "subsequent turn must still work");
+        assert!(
+            server.reuse_observed.load(Ordering::SeqCst),
+            "expected a later turn to reuse the pooled connection; the \
+             no-reuse client policy leaked across turns"
+        );
+
+        server.join.abort();
+    }
+
+    #[tokio::test]
+    async fn stale_connection_recovery_succeeds_and_next_turn_keeps_pooling() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        // Reset the first connection, then serve keep-alive 200s: recovery
+        // falls back to a fresh client and the turn succeeds.
+        let server = spawn_stale_connection_server(listener, false);
+
+        let mut agent = test_agent_with_url(&format!("http://{addr}"));
+        agent.history_mut().push(ConversationItem::Message {
+            role: Role::User,
+            content: "test".to_string(),
+            id: None,
+            status: None,
+            timestamp: None,
+        });
+
+        let result = agent.complete_turn(false).await;
+        assert!(
+            result.is_ok(),
+            "stale-connection recovery should fall back to a fresh client, got: {result:?}"
+        );
+        let result = agent.complete_turn(false).await;
+        assert!(result.is_ok(), "subsequent turn must keep working");
+
+        server.join.abort();
+    }
 
     #[tokio::test]
     async fn test_chat_completions_400_bad_request_returns_error() {

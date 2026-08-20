@@ -52,7 +52,7 @@ impl AgentRunner {
         reason = "a turn naturally threads config, identity, history, tools, and constraint"
     )]
     pub(super) async fn complete_turn<'a>(
-        &mut self,
+        &self,
         config: &ResolvedModelConfig,
         session_id: uuid::Uuid,
         turn_index: u32,
@@ -68,6 +68,11 @@ impl AgentRunner {
             context_overflow_retry_used: false,
         };
         let mut disable_connection_reuse = false;
+        // Start from the persistent pooled client. Stale-connection recovery
+        // swaps in a temporary no-reuse client local to this turn, so
+        // `self.client` keeps normal pooling whether this turn retries
+        // successfully or fails, and later turns observe the pooled client.
+        let mut client = self.client.clone();
 
         loop {
             let total_start = Instant::now();
@@ -75,7 +80,7 @@ impl AgentRunner {
             let request_result = self
                 .backend
                 .send_request(
-                    &self.client,
+                    &client,
                     config,
                     history,
                     tools,
@@ -116,10 +121,6 @@ impl AgentRunner {
                                 ),
                             },
                         ));
-
-                        if disable_connection_reuse {
-                            self.client = build_http_client(false);
-                        }
 
                         return parse_result;
                     }
@@ -214,7 +215,9 @@ impl AgentRunner {
                             if retry::should_disable_connection_reuse(&error)
                                 && !disable_connection_reuse
                             {
-                                self.client = build_http_client(true);
+                                // Only this turn's remaining attempts use the
+                                // no-reuse client; `self.client` is untouched.
+                                client = build_http_client(true);
                                 disable_connection_reuse = true;
                             }
 
