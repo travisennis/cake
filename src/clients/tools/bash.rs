@@ -360,10 +360,6 @@ fn command_starts_with_search(command: &str) -> bool {
 #[cfg(unix)]
 fn terminate_process_group(child: &Child) {
     if let Some(pid) = child.id() {
-        #[expect(
-            clippy::cast_possible_wrap,
-            reason = "PIDs fit in i32 on all supported Unix targets"
-        )]
         // SAFETY: the PID belongs to the live child, whose process group ID
         // equals its PID because `process_group(0)` is set before spawning.
         // A negative PID in `kill(2)` targets every process in that group.
