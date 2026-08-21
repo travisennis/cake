@@ -108,6 +108,23 @@ if [ -s /tmp/cake-rust-toolchain-missing.$$ ]; then
 fi
 rm -f /tmp/cake-rust-toolchain-missing.$$
 
+# .mise.toml restates the project toolchain for local bootstrap; it must not
+# drift from rust-toolchain.toml, which stays the source of truth.
+mise_file=".mise.toml"
+if [ ! -f "$mise_file" ]; then
+    echo "ERROR: $mise_file not found; expected next to $toolchain_file" >&2
+    fail=1
+else
+    mise_version=$(awk -F'"' '/^[[:space:]]*rust[[:space:]]*=/ { print $2; exit }' "$mise_file")
+    if [ -z "$mise_version" ]; then
+        echo "ERROR: could not read Rust version from $mise_file" >&2
+        fail=1
+    elif [ "$mise_version" != "$version" ]; then
+        echo "ERROR: $mise_file pins Rust $mise_version but $toolchain_file pins $version; update $mise_file to match $toolchain_file" >&2
+        fail=1
+    fi
+fi
+
 if [ "$fail" -ne 0 ]; then
     exit 1
 fi
