@@ -839,72 +839,73 @@ fn validate_path_with_dirs(
     additional_dirs: &[PathBuf],
     skill_dirs: &[PathBuf],
 ) -> Result<ValidatedPath, String> {
-    let path = Path::new(path_str);
-
     // Canonicalize the path (resolve symlinks, relative paths, etc.)
-    let canonical = path
+    let canonical = Path::new(path_str)
         .canonicalize()
-        .map_err(|e| format!("Path not found or not accessible '{}': {e}", path.display()))?;
+        .map_err(|e| format!("Path not found or not accessible '{path_str}': {e}"))?;
 
-    // Check if path is within working directory (read-write)
-    if path_starts_with(&canonical, &[cwd.to_path_buf()]) {
-        return Ok(ValidatedPath {
-            canonical,
-            access: PathAccess::ReadWrite,
-        });
-    }
+    let access = classify_resolved_path(
+        &canonical,
+        cwd,
+        temp_dirs,
+        settings_dirs,
+        additional_dirs,
+        skill_dirs,
+    )
+    .ok_or_else(|| {
+        format!(
+            "Path '{}' is outside the working directory",
+            canonical.display()
+        )
+    })?;
 
-    // Allow paths in standard temp directories (read-write)
-    if path_starts_with(&canonical, temp_dirs) {
-        return Ok(ValidatedPath {
-            canonical,
-            access: PathAccess::ReadWrite,
-        });
-    }
-
-    // Allow paths in settings directories from settings.toml (read-write)
-    if path_starts_with(&canonical, settings_dirs) {
-        return Ok(ValidatedPath {
-            canonical,
-            access: PathAccess::ReadWrite,
-        });
-    }
-
-    // Allow paths in directories added via --add-dir flag (read-only)
-    if path_starts_with(&canonical, additional_dirs) {
-        return Ok(ValidatedPath {
-            canonical,
-            access: PathAccess::ReadOnly,
-        });
-    }
-
-    // Allow paths in skill directories (read-only)
-    if path_starts_with(&canonical, skill_dirs) {
-        return Ok(ValidatedPath {
-            canonical,
-            access: PathAccess::ReadOnly,
-        });
-    }
-
-    Err(format!(
-        "Path '{}' is outside the working directory",
-        canonical.display()
-    ))
+    Ok(ValidatedPath { canonical, access })
 }
 
-/// Check if a canonical path starts with any of the given directories.
-/// Each directory is canonicalized before comparison to handle symlinks
-/// (e.g., /tmp → /private/tmp on macOS).
-fn path_starts_with(canonical: &Path, dirs: &[PathBuf]) -> bool {
-    dirs.iter().any(|dir| {
-        // Try canonical form first (fast path when no symlinks involved)
-        if canonical.starts_with(dir) {
-            return true;
-        }
-        // Also try the canonicalized form of the dir
-        dir.canonicalize()
-            .is_ok_and(|canon_dir| canonical.starts_with(&canon_dir))
-    })
+/// Classify an already-canonicalized path against the shared grant table.
+///
+/// The working directory, temp directories, and settings directories grant
+/// read-write access; additional (`--add-dir`) and skill directories grant
+/// read-only access; anything else lies outside every grant (`None`). The
+/// same precedence decides existing-path validation and prospective-write
+/// scheduling so overlapping grants resolve identically whether or not the
+/// target exists yet (#277).
+fn classify_resolved_path(
+    canonical: &Path,
+    cwd: &Path,
+    temp_dirs: &[PathBuf],
+    settings_dirs: &[PathBuf],
+    additional_dirs: &[PathBuf],
+    skill_dirs: &[PathBuf],
+) -> Option<PathAccess> {
+    let read_write = path_within(canonical, cwd)
+        || temp_dirs.iter().any(|dir| path_within(canonical, dir))
+        || settings_dirs.iter().any(|dir| path_within(canonical, dir));
+    if read_write {
+        return Some(PathAccess::ReadWrite);
+    }
+
+    if additional_dirs
+        .iter()
+        .any(|dir| path_within(canonical, dir))
+        || skill_dirs.iter().any(|dir| path_within(canonical, dir))
+    {
+        return Some(PathAccess::ReadOnly);
+    }
+
+    None
+}
+
+/// Check if a canonical path starts with the given directory, comparing
+/// against the directory's canonical form too so a symlinked grant
+/// directory (e.g., /tmp → /private/tmp on macOS) matches either spelling.
+fn path_within(canonical: &Path, dir: &Path) -> bool {
+    // Try canonical form first (fast path when no symlinks involved)
+    if canonical.starts_with(dir) {
+        return true;
+    }
+    dir.canonicalize()
+        .is_ok_and(|canon_dir| canonical.starts_with(&canon_dir))
 }
 
 /// Validate that a path exists and is within the current working directory, allowed temp directories,
@@ -1036,10 +1037,10 @@ pub(super) fn resolve_path_for_write_scheduling(
     // correctly (<cwd>/missing/../target → <cwd>/target).
     let (resolved_base, pending) = resolve_write_path(path);
 
-    // Validate the resolved base is within allowed directories. Compare via
-    // `path_starts_with` (which canonicalizes each dir) so a symlinked cwd,
-    // temp, or settings dir is accepted for new files exactly as the
-    // existing-file path accepts it in `validate_path_with_dirs`.
+    // Validate the resolved base against the same grant table and precedence
+    // as existing files, via `path_within` (which canonicalizes each dir) so
+    // a symlinked cwd, temp, or settings dir is accepted for new files
+    // exactly as the existing-file path accepts it (#277).
     let canonical_base = resolved_base.canonicalize().map_err(|e| {
         format!(
             "Parent directory not found '{}': {e}",
@@ -1047,23 +1048,27 @@ pub(super) fn resolve_path_for_write_scheduling(
         )
     })?;
 
-    let is_in_cwd = path_starts_with(&canonical_base, std::slice::from_ref(&context.cwd));
-    let is_in_temp = path_starts_with(&canonical_base, get_temp_directories(context));
-    let is_in_settings = path_starts_with(&canonical_base, get_settings_dirs(context));
-    let is_in_read_only = path_starts_with(&canonical_base, get_additional_dirs(context));
-
-    if is_in_read_only {
-        return Err(format!(
-            "Path '{}' is in a read-only directory (added via --add-dir). Write operations are not allowed.",
-            path.display()
-        ));
-    }
-
-    if !is_in_cwd && !is_in_temp && !is_in_settings {
-        return Err(format!(
-            "Path '{}' is outside the working directory",
-            path.display()
-        ));
+    match classify_resolved_path(
+        &canonical_base,
+        &context.cwd,
+        get_temp_directories(context),
+        get_settings_dirs(context),
+        get_additional_dirs(context),
+        &context.skill_dirs,
+    ) {
+        Some(PathAccess::ReadWrite) => {},
+        Some(PathAccess::ReadOnly) => {
+            return Err(format!(
+                "Path '{}' is in a read-only directory (added via --add-dir). Write operations are not allowed.",
+                path.display()
+            ));
+        },
+        None => {
+            return Err(format!(
+                "Path '{}' is outside the working directory",
+                path.display()
+            ));
+        },
     }
 
     // Reconstruct the full path: resolved base + pending components
@@ -1545,6 +1550,105 @@ mod tests {
             err.contains("Parent directory not found"),
             "expected a parent-directory error, got: {err}"
         );
+    }
+
+    /// Overlapping grants: an existing file inside cwd whose ancestor is also
+    /// a read-only additional directory classifies read-write because the
+    /// grant table checks read-write classes first (#277).
+    #[test]
+    fn overlapping_grants_existing_file_in_cwd_is_writable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        let cwd = workspace.join("project");
+        fs::create_dir_all(&cwd).unwrap();
+        let file = cwd.join("existing.txt");
+        fs::write(&file, "content").unwrap();
+
+        let context =
+            ToolContext::with_temp_dirs(cwd, Vec::new(), vec![workspace], Vec::new(), Vec::new());
+
+        let validated = validate_path(&context, file.to_str().unwrap()).unwrap();
+        assert_eq!(validated.access, PathAccess::ReadWrite);
+        assert!(validate_path_for_write(&context, file.to_str().unwrap()).is_ok());
+    }
+
+    /// Overlapping grants: a not-yet-existing file inside cwd with a
+    /// read-only additional-directory ancestor must classify writable,
+    /// matching the existing-file branch. Before the shared classifier this
+    /// rejected every new file under the working directory (#277).
+    #[test]
+    fn overlapping_grants_new_file_in_cwd_is_writable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        let cwd = workspace.join("project");
+        fs::create_dir_all(&cwd).unwrap();
+
+        let context = ToolContext::with_temp_dirs(
+            cwd.clone(),
+            Vec::new(),
+            vec![workspace],
+            Vec::new(),
+            Vec::new(),
+        );
+
+        let target = cwd.join("new-file.txt");
+        let resolved =
+            resolve_path_for_write_scheduling(&context, target.to_str().unwrap()).unwrap();
+        // resolve_write_path canonicalizes existing ancestors, so on macOS the
+        // /var/folders spelling resolves to /private/var/folders.
+        let expected = fs::canonicalize(&cwd).unwrap().join("new-file.txt");
+        assert_eq!(resolved, expected);
+    }
+
+    /// A new file reached through a symlink that points into a read-only
+    /// additional directory must be denied even though its literal spelling
+    /// sits inside another allowed path (#277).
+    #[cfg(unix)]
+    #[test]
+    fn new_file_through_symlink_into_read_only_dir_is_denied() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path().join("project");
+        let reference = tmp.path().join("reference");
+        fs::create_dir_all(&cwd).unwrap();
+        fs::create_dir_all(&reference).unwrap();
+        let link = cwd.join("to-reference");
+        std::os::unix::fs::symlink(&reference, &link).unwrap();
+
+        let context =
+            ToolContext::with_temp_dirs(cwd, Vec::new(), vec![reference], Vec::new(), Vec::new());
+
+        let target = link.join("new-file.txt");
+        let err =
+            resolve_path_for_write_scheduling(&context, target.to_str().unwrap()).unwrap_err();
+        assert!(
+            err.contains("read-only"),
+            "expected a read-only rejection through the symlink, got: {err}"
+        );
+    }
+
+    /// A new file under a skill directory outside every read-write grant must
+    /// be denied as read-only, agreeing with the existing-file branch's
+    /// classification of skill directories.
+    #[test]
+    fn new_file_in_skill_dir_denied_read_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path().join("project");
+        let skill_dir = tmp.path().join("skill");
+        fs::create_dir_all(&cwd).unwrap();
+        fs::create_dir_all(&skill_dir).unwrap();
+
+        let context = ToolContext::with_temp_dirs(
+            cwd,
+            Vec::new(),
+            Vec::new(),
+            vec![skill_dir.clone()],
+            Vec::new(),
+        );
+
+        let target = skill_dir.join("new-file.txt");
+        let err =
+            resolve_path_for_write_scheduling(&context, target.to_str().unwrap()).unwrap_err();
+        assert!(err.contains("read-only"), "got: {err}");
     }
 
     fn fixture_toolbox_tool() -> crate::config::toolbox::ToolboxTool {
