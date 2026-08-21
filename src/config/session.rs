@@ -123,10 +123,6 @@ impl Session {
     }
 
     /// Returns the names of skills activated during this session.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "public API kept for external consumers")
-    )]
     pub fn activated_skills(&self) -> HashSet<String> {
         self.records
             .iter()

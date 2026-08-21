@@ -995,3 +995,110 @@ fn termination_diagnostic(
         )
     })
 }
+
+#[cfg(test)]
+mod skill_activation_tests {
+    use super::*;
+    use std::collections::{HashMap, HashSet};
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+
+    use crate::config::skills::Skill;
+
+    /// Writes one SKILL.md per name under a temp directory and returns the
+    /// path-to-skill map keyed by canonicalized location, as production does.
+    fn skill_fixture(names: &[&str]) -> (tempfile::TempDir, HashMap<PathBuf, Skill>) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let locations = names
+            .iter()
+            .map(|name| {
+                let skill_dir = dir.path().join(name);
+                std::fs::create_dir_all(&skill_dir).expect("skill dir");
+                std::fs::write(skill_dir.join("SKILL.md"), format!("# {name}\n"))
+                    .expect("skill md");
+                let location = skill_dir
+                    .join("SKILL.md")
+                    .canonicalize()
+                    .expect("canonicalize");
+                (
+                    location.clone(),
+                    crate::config::skills::Skill {
+                        name: (*name).to_string(),
+                        description: "test".to_string(),
+                        location,
+                        base_directory: skill_dir,
+                        scope: crate::config::skills::SkillScope::Project,
+                    },
+                )
+            })
+            .collect();
+        (dir, locations)
+    }
+
+    fn read_args(path: &Path) -> String {
+        serde_json::json!({ "path": path.display().to_string() }).to_string()
+    }
+
+    fn location_of<'a>(locations: &'a HashMap<PathBuf, Skill>, name: &str) -> &'a PathBuf {
+        locations
+            .values()
+            .find(|skill| skill.name == name)
+            .map(|skill| &skill.location)
+            .expect("fixture skill")
+    }
+
+    #[test]
+    fn seeded_set_suppresses_reemission_on_resume() {
+        let (_dir, locations) = skill_fixture(&["debugging-cake"]);
+        let path = location_of(&locations, "debugging-cake");
+        // As on resume: the set was hydrated from the persisted session.
+        let activated = Mutex::from(HashSet::from(["debugging-cake".to_string()]));
+
+        assert!(
+            detect_skill_activation("Read", &read_args(path), &locations, &activated).is_none()
+        );
+    }
+
+    #[test]
+    fn fresh_run_emits_first_observation_exactly_once() {
+        let (_dir, locations) = skill_fixture(&["debugging-cake"]);
+        let path = location_of(&locations, "debugging-cake");
+        let activated = Mutex::new(HashSet::new());
+
+        // Non-Read tools never activate.
+        assert!(
+            detect_skill_activation("Bash", &read_args(path), &locations, &activated).is_none()
+        );
+
+        let first = detect_skill_activation("Read", &read_args(path), &locations, &activated)
+            .expect("first read emits once");
+        assert_eq!(first.name, "debugging-cake");
+        assert_eq!(&first.path, path);
+
+        // The same insert-once guard holds across repeated and concurrent calls.
+        assert!(
+            detect_skill_activation("Read", &read_args(path), &locations, &activated).is_none()
+        );
+    }
+
+    #[test]
+    fn resumed_run_still_emits_newly_activated_skill_once() {
+        let (_dir, locations) = skill_fixture(&["known-skill", "new-skill"]);
+        let activated = Mutex::from(HashSet::from(["known-skill".to_string()]));
+
+        let new_path = location_of(&locations, "new-skill");
+        let activation =
+            detect_skill_activation("Read", &read_args(new_path), &locations, &activated)
+                .expect("a skill not in the resumed set still activates");
+        assert_eq!(activation.name, "new-skill");
+
+        assert!(
+            detect_skill_activation("Read", &read_args(new_path), &locations, &activated).is_none()
+        );
+        let known_path = location_of(&locations, "known-skill");
+        assert!(
+            detect_skill_activation("Read", &read_args(known_path), &locations, &activated)
+                .is_none()
+        );
+    }
+}
