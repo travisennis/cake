@@ -1,7 +1,7 @@
 [tools]
 rust = { version = "1.97.1", components = ["clippy", "rustfmt", "rust-analyzer"] }
-just = "latest"
-sccache = "latest"
+just = "1.58.0"
+sccache = "0.17.0"
 
 # Share compiled dependencies across worktrees. Each worktree gets its own
 # `target/`, so a new worktree would otherwise rebuild the whole dependency
