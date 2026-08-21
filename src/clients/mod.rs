@@ -37,5 +37,6 @@ pub use tools::{SandboxPolicy, resolve_linked_worktree_dirs, resolve_sandbox_pol
 /// Re-exported so hook payloads parse tool arguments through the same repair
 /// pass the corresponding tool executors apply, keeping the hook view of
 /// `tool_input` aligned with what the tool will act on (#185). The crate has
-/// no library target, so this is internal.
-pub use tools::{repair_json_args, tool_uses_repair_pass};
+/// no library target, so this is internal. Which tools repair is declared by
+/// each registry entry and queried per call (#277).
+pub use tools::repair_json_args;

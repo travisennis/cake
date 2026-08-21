@@ -217,9 +217,10 @@ pub(super) fn argument_compensation_events(
     arguments: &str,
     was_error: bool,
     registered: bool,
+    repairs_arguments: bool,
 ) -> Vec<CompensationEventTelemetry> {
     let mut events = Vec::new();
-    if registered && tool_uses_repair_pass(name) {
+    if registered && repairs_arguments {
         let repaired = repair_json_args(arguments);
         if repaired != arguments && serde_json::from_str::<serde_json::Value>(&repaired).is_ok() {
             events.push(CompensationEventTelemetry::new(
@@ -235,14 +236,6 @@ pub(super) fn argument_compensation_events(
         ));
     }
     events
-}
-
-/// Whether a registered tool's executor applies the conservative JSON repair
-/// pass before parsing its arguments. The hook layer must present exactly this
-/// set of tools with the repaired `tool_input` view, so hook policy and
-/// execution agree on what will run (#185).
-pub fn tool_uses_repair_pass(name: &str) -> bool {
-    name == "Edit" || name == "Write" || name.starts_with(crate::config::toolbox::TOOLBOX_PREFIX)
 }
 
 /// Push an `output_truncation` compensation event when a tool's output hit an
@@ -661,6 +654,42 @@ impl<T: Into<String>> From<T> for ToolError {
 type ToolFuture = Pin<Box<dyn Future<Output = Result<ToolResult, ToolError>> + Send>>;
 type ToolExecutor = Arc<dyn Fn(Arc<ToolContext>, String, String) -> ToolFuture + Send + Sync>;
 
+/// Extracts the canonical path a mutating tool would write from its
+/// arguments.
+type MutationTargetFn = Arc<dyn Fn(&ToolContext, &str) -> Result<PathBuf, String> + Send + Sync>;
+
+/// Declared semantics of a registered tool, consumed by same-file scheduling,
+/// read-only sandbox filtering, and hook payload shaping.
+///
+/// Defaults fail closed (#277): an unmarked entry is treated as parsing its
+/// arguments strictly, as unsafe to offer under the read-only sandbox policy,
+/// and as non-mutating for scheduling purposes. Registration is the single
+/// place that states what a tool is.
+#[derive(Clone)]
+pub(super) struct ToolCapabilities {
+    /// The executor applies the conservative JSON repair pass before parsing
+    /// its arguments. The hook layer must present exactly this set of tools
+    /// with the repaired `tool_input` view, so hook policy and execution
+    /// agree on what will run (#185).
+    pub(super) repairs_arguments: bool,
+    /// The tool cannot mutate host state in-process, so it stays available
+    /// under the read-only sandbox policy.
+    pub(super) read_safe: bool,
+    /// Resolves the canonical path this call would mutate when the tool
+    /// mutates a resolvable path; drives same-file serialization (ADR-013).
+    pub(super) mutating_target: Option<MutationTargetFn>,
+}
+
+impl ToolCapabilities {
+    const fn conservative() -> Self {
+        Self {
+            repairs_arguments: false,
+            read_safe: false,
+            mutating_target: None,
+        }
+    }
+}
+
 /// Registered behavior for a callable tool.
 ///
 /// This keeps the model-facing definition and execution entry point together
@@ -671,6 +700,7 @@ type ToolExecutor = Arc<dyn Fn(Arc<ToolContext>, String, String) -> ToolFuture +
 pub(super) struct ToolEntry {
     definition: Tool,
     execute: ToolExecutor,
+    capabilities: ToolCapabilities,
 }
 
 impl ToolEntry {
@@ -681,7 +711,32 @@ impl ToolEntry {
         Self {
             definition,
             execute: Arc::new(execute),
+            capabilities: ToolCapabilities::conservative(),
         }
+    }
+
+    /// Mark the tool as unable to mutate host state in-process, keeping it
+    /// available under the read-only sandbox policy.
+    const fn read_safe(mut self) -> Self {
+        self.capabilities.read_safe = true;
+        self
+    }
+
+    /// Declare that the executor applies the conservative JSON repair pass
+    /// before parsing arguments, so hooks see the repaired payload (#185).
+    const fn repairs_arguments(mut self) -> Self {
+        self.capabilities.repairs_arguments = true;
+        self
+    }
+
+    /// Attach the resolver for the canonical path this tool's call would
+    /// mutate, enabling same-file serialization in scheduling.
+    fn mutates_path(
+        mut self,
+        target: impl Fn(&ToolContext, &str) -> Result<PathBuf, String> + Send + Sync + 'static,
+    ) -> Self {
+        self.capabilities.mutating_target = Some(Arc::new(target));
+        self
     }
 }
 
@@ -718,8 +773,7 @@ impl ToolRegistry {
         &self.definitions
     }
 
-    /// Remove the tools that mutate files in-process (Edit, Write) and all
-    /// user-defined toolbox tools (`tb__*`).
+    /// Remove every tool not declared read-safe.
     ///
     /// The read-only sandbox policy uses this so the model never sees tools
     /// it cannot use: Edit and Write bypass the OS sandbox (which only wraps
@@ -727,13 +781,7 @@ impl ToolRegistry {
     /// omitting them is what makes the policy's no-mutation guarantee hold
     /// for the whole agent, not just shell commands.
     pub(super) fn retain_read_safe_tools(&mut self) {
-        self.entries.retain(|entry| {
-            !matches!(entry.definition.name.as_str(), "Edit" | "Write")
-                && !entry
-                    .definition
-                    .name
-                    .starts_with(crate::config::toolbox::TOOLBOX_PREFIX)
-        });
+        self.entries.retain(|entry| entry.capabilities.read_safe);
         self.definitions = self.entries.iter().map(|e| e.definition.clone()).collect();
     }
 
@@ -771,18 +819,24 @@ impl ToolRegistry {
         self.find(name).is_some()
     }
 
-    /// Return the canonical path a mutating path-aware tool would write.
+    /// Return whether a registered tool's executor applies the conservative
+    /// JSON repair pass before parsing its arguments. Unregistered names are
+    /// never repaired: they never reach an argument parser.
+    pub(super) fn repairs_arguments(&self, name: &str) -> bool {
+        self.find(name)
+            .is_some_and(|entry| entry.capabilities.repairs_arguments)
+    }
+
+    /// Return the canonical path a registered tool would write, using the
+    /// mutation-target resolver declared at registration.
     pub(super) fn mutating_target(
         &self,
         context: &ToolContext,
         name: &str,
         arguments: &str,
     ) -> Option<Result<PathBuf, String>> {
-        match self.find(name)?.definition.name.as_str() {
-            "Edit" => Some(edit::mutating_target(context, arguments)),
-            "Write" => Some(write::mutating_target(context, arguments)),
-            _ => None,
-        }
+        let target = self.find(name)?.capabilities.mutating_target.as_ref()?;
+        Some(target(context, arguments))
     }
 
     fn find(&self, name: &str) -> Option<&ToolEntry> {
@@ -1171,12 +1225,20 @@ pub fn format_tool_list_section(
 }
 
 /// Returns the default tool registry.
+///
+/// Each entry declares its capabilities here; scheduling, sandbox filtering,
+/// and hook payload shaping consume those declarations instead of matching on
+/// tool names (#277).
 pub(super) fn default_tool_registry() -> ToolRegistry {
     let entries = vec![
-        ToolEntry::new(bash::bash_tool(), execute_bash_tool),
-        ToolEntry::new(edit::edit_tool(), execute_edit_tool),
-        ToolEntry::new(read::read_tool(), execute_read_tool),
-        ToolEntry::new(write::write_tool(), execute_write_tool),
+        ToolEntry::new(bash::bash_tool(), execute_bash_tool).read_safe(),
+        ToolEntry::new(edit::edit_tool(), execute_edit_tool)
+            .repairs_arguments()
+            .mutates_path(edit::mutating_target),
+        ToolEntry::new(read::read_tool(), execute_read_tool).read_safe(),
+        ToolEntry::new(write::write_tool(), execute_write_tool)
+            .repairs_arguments()
+            .mutates_path(write::mutating_target),
     ];
     let definitions = entries.iter().map(|e| e.definition.clone()).collect();
     ToolRegistry {
@@ -1717,13 +1779,154 @@ mod tests {
         assert_eq!(registry.definitions().len(), 2);
     }
 
+    // ── capability-driven classification (#277) ──
+
+    /// The read-only filter consumes the declared read-safe capability, not
+    /// the tool name: an entry named like a safe tool but unmarked is dropped.
+    #[test]
+    fn read_only_filtering_uses_declared_capability_not_name() {
+        let impostor = ToolEntry::new(
+            Tool {
+                type_: "function".to_string(),
+                name: "Bash".to_string(),
+                description: "unmarked entry that defaults to unsafe".to_string(),
+                parameters: serde_json::json!({}),
+            },
+            |_context: Arc<ToolContext>, _call_id: String, _arguments: String| -> ToolFuture {
+                Box::pin(async { Err(ToolError::new("unused")) })
+            },
+        );
+        let mut registry = ToolRegistry::new(vec![
+            impostor,
+            ToolEntry::new(read::read_tool(), execute_read_tool).read_safe(),
+        ]);
+
+        registry.retain_read_safe_tools();
+
+        assert_eq!(registry.names(), vec!["Read"]);
+    }
+
+    /// Same-file serialization consumes the declared mutation-target
+    /// resolver, not the tool name: calls to a custom-named mutating tool
+    /// share a group, and the same name without a resolver does not.
+    #[test]
+    fn scheduling_groups_by_declared_mutation_target_not_name() {
+        use crate::hooks::ToolHookPlan;
+
+        let dir = tempfile::tempdir().unwrap();
+        let context = ToolContext::with_temp_dirs(
+            dir.path().canonicalize().unwrap(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let shared_target = dir.path().join("shared.txt");
+        let unused_executor =
+            |_context: Arc<ToolContext>, _call_id: String, _arguments: String| -> ToolFuture {
+                Box::pin(async { Err(ToolError::new("scheduling never executes")) })
+            };
+        let definition = |name: &str| Tool {
+            type_: "function".to_string(),
+            name: name.to_string(),
+            description: "custom mutator".to_string(),
+            parameters: serde_json::json!({}),
+        };
+
+        let mutator = ToolEntry::new(definition("CustomMutator"), unused_executor).mutates_path(
+            move |_context: &ToolContext, _arguments: &str| Ok(shared_target.clone()),
+        );
+        let plain = ToolEntry::new(definition("PlainMutator"), unused_executor);
+        let registry = ToolRegistry::new(vec![mutator, plain]);
+
+        let plan_for = |name: &str| {
+            (
+                format!("call-{name}"),
+                name.to_string(),
+                ToolHookPlan::Execute {
+                    arguments: "{}".to_string(),
+                    prefix_notice: None,
+                    additional_context: Vec::new(),
+                },
+            )
+        };
+        let groups = super::schedule_tool_calls(
+            &registry,
+            &context,
+            vec![
+                plan_for("CustomMutator"),
+                plan_for("CustomMutator"),
+                plan_for("PlainMutator"),
+            ],
+        );
+        let indexes: Vec<Vec<usize>> = groups
+            .iter()
+            .map(|group| group.iter().map(|call| call.index).collect())
+            .collect();
+
+        assert_eq!(indexes, vec![vec![0, 1], vec![2]]);
+    }
+
+    /// The repair-pass flag reflects registration: built-in repairing tools
+    /// and toolbox entries report true, strict tools and unknown names false.
+    #[test]
+    fn repairs_arguments_reflects_registration() {
+        let mut registry = default_tool_registry();
+        assert!(!registry.repairs_arguments("Bash"));
+        assert!(!registry.repairs_arguments("Read"));
+        assert!(registry.repairs_arguments("Edit"));
+        assert!(registry.repairs_arguments("Write"));
+        assert!(!registry.repairs_arguments("tb__never_registered"));
+
+        registry.push_entry(toolbox_tool_entry(
+            fixture_toolbox_tool(),
+            uuid::Uuid::nil(),
+        ));
+        assert!(registry.repairs_arguments("tb__run_tests"));
+        assert!(
+            registry
+                .mutating_target(&ToolContext::from_current_process(), "tb__run_tests", "{}")
+                .is_none(),
+            "toolbox tools declare no mutation target"
+        );
+    }
+
+    /// A registered mutation-target resolver drives scheduling lookups for
+    /// the built-in tools through the capability, not a name match.
+    #[test]
+    fn mutating_target_dispatches_through_registered_resolver() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = ToolContext::with_temp_dirs(
+            dir.path().canonicalize().unwrap(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let target = dir.path().join("file.txt");
+        fs::write(&target, "first").unwrap();
+        let registry = default_tool_registry();
+
+        let arguments = serde_json::json!({ "path": target, "content": "x" }).to_string();
+        let resolved = registry
+            .mutating_target(&context, "Write", &arguments)
+            .expect("Write declares a resolver")
+            .unwrap();
+        assert_eq!(resolved, fs::canonicalize(&target).unwrap());
+
+        assert!(
+            registry.mutating_target(&context, "Bash", "{}").is_none(),
+            "non-mutating tools declare no resolver"
+        );
+    }
+
     // ── argument compensation classification ──
 
     #[test]
     fn repair_event_fires_when_repair_modified_arguments() {
         // A raw newline inside a JSON string: repaired and parseable.
         let arguments = "{\"path\":\"f\",\"edits\":[{\"old_text\":\"a\n\",\"new_text\":\"b\"}]}";
-        let events = argument_compensation_events("Edit", arguments, false, true);
+        let events = argument_compensation_events("Edit", arguments, false, true, true);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, CompensationKind::JsonRepair);
         assert_eq!(events[0].detail.as_deref(), Some("Edit"));
@@ -1733,7 +1936,7 @@ mod tests {
     fn repair_event_survives_a_failed_call() {
         // Repair applied but the call later failed: still counted.
         let arguments = "{\"path\":\"f\",\"edits\":[{\"old_text\":\"a\n\",\"new_text\":\"b\"}]}";
-        let events = argument_compensation_events("Edit", arguments, true, true);
+        let events = argument_compensation_events("Edit", arguments, true, true, true);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, CompensationKind::JsonRepair);
     }
@@ -1743,18 +1946,18 @@ mod tests {
         // A hallucinated toolbox name with repairable arguments never reached
         // an argument parser, so no repair event fires.
         let arguments = "{\"a\":\"line1\nline2\"}";
-        let events = argument_compensation_events("tb__nonexistent", arguments, true, false);
+        let events = argument_compensation_events("tb__nonexistent", arguments, true, false, true);
         assert!(events.is_empty());
     }
 
     #[test]
     fn invalid_edit_arguments_event_fires_only_on_failure() {
         let arguments = r#"{"path":"f","edits":[{"new_string":"x"}]}"#;
-        let events = argument_compensation_events("Edit", arguments, true, true);
+        let events = argument_compensation_events("Edit", arguments, true, true, true);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, CompensationKind::EditInvalidArguments);
 
-        let events = argument_compensation_events("Edit", arguments, false, true);
+        let events = argument_compensation_events("Edit", arguments, false, true, true);
         assert!(
             events.is_empty(),
             "successful call must not fire the counter"
@@ -1764,13 +1967,13 @@ mod tests {
     #[test]
     fn no_compensation_events_for_valid_arguments() {
         let arguments = r#"{"path":"f","edits":[{"old_text":"a","new_text":"b"}]}"#;
-        let events = argument_compensation_events("Edit", arguments, true, true);
+        let events = argument_compensation_events("Edit", arguments, true, true, true);
         assert!(
             events.is_empty(),
             "valid Edit args that failed later are not classified"
         );
 
-        let events = argument_compensation_events("Bash", "echo hi", false, true);
+        let events = argument_compensation_events("Bash", "echo hi", false, true, false);
         assert!(events.is_empty(), "Bash does not use the repair pass");
     }
 
@@ -1780,7 +1983,7 @@ mod tests {
         // the control character but the payload still is not valid JSON, so
         // the repair did not apply and no event fires.
         let arguments = "{\"a\":\"\t";
-        let events = argument_compensation_events("Write", arguments, true, true);
+        let events = argument_compensation_events("Write", arguments, true, true, true);
         assert!(events.is_empty());
     }
 }

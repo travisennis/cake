@@ -41,7 +41,7 @@ async fn command_hook_receives_stdin_json() {
     );
 
     let plan = runner
-        .pre_tool_use("Bash", "call-1", r#"{"command":"printf ok"}"#)
+        .pre_tool_use("Bash", "call-1", r#"{"command":"printf ok"}"#, false)
         .await
         .unwrap();
 
@@ -74,7 +74,7 @@ async fn write_hook_sees_repaired_tool_input() {
 
     let arguments = "{\"path\":\"/etc/passwd\",\"content\":\"a\nb\"}";
     let plan = runner
-        .pre_tool_use("Write", "call-1", arguments)
+        .pre_tool_use("Write", "call-1", arguments, true)
         .await
         .unwrap();
 
@@ -92,7 +92,7 @@ async fn edit_hook_sees_repaired_tool_input() {
     let arguments =
         "{\"path\":\"/etc/passwd\",\"edits\":[{\"old_text\":\"a\nb\",\"new_text\":\"c\"}]}";
     let plan = runner
-        .pre_tool_use("Edit", "call-1", arguments)
+        .pre_tool_use("Edit", "call-1", arguments, true)
         .await
         .unwrap();
 
@@ -109,7 +109,7 @@ async fn toolbox_hook_sees_repaired_tool_input() {
 
     let arguments = "{\"text\":\"a\nb\"}";
     let plan = runner
-        .pre_tool_use("tb__example", "call-1", arguments)
+        .pre_tool_use("tb__example", "call-1", arguments, true)
         .await
         .unwrap();
 
@@ -129,7 +129,7 @@ async fn bash_hook_keeps_strict_tool_input() {
 
     let arguments = "{\"command\":\"printf ok\na\"}";
     let plan = runner
-        .pre_tool_use("Bash", "call-1", arguments)
+        .pre_tool_use("Bash", "call-1", arguments, false)
         .await
         .unwrap();
 
@@ -142,7 +142,7 @@ async fn exit_two_blocks_pre_tool_use() {
     let runner = runner("echo blocked >&2; exit 2", false);
 
     let plan = runner
-        .pre_tool_use("Bash", "call-1", r#"{"command":"printf ok"}"#)
+        .pre_tool_use("Bash", "call-1", r#"{"command":"printf ok"}"#, false)
         .await
         .unwrap();
 
@@ -158,7 +158,7 @@ async fn invalid_json_fails_open_by_default() {
     let runner = runner("printf not-json", false);
 
     let plan = runner
-        .pre_tool_use("Bash", "call-1", r#"{"command":"printf ok"}"#)
+        .pre_tool_use("Bash", "call-1", r#"{"command":"printf ok"}"#, false)
         .await
         .unwrap();
 
@@ -228,6 +228,7 @@ async fn post_tool_use_persists_hook_record_while_session_locked() {
             "call-1",
             r#"{"command":"printf ok"}"#,
             &Ok("ok".to_string()),
+            false,
         )
         .await
         .unwrap();
@@ -290,6 +291,7 @@ async fn post_tool_use_emits_hook_record_to_sink_without_session_writer() {
             "call-1",
             r#"{"command":"printf ok"}"#,
             &Ok("ok".to_string()),
+            false,
         )
         .await
         .unwrap();
@@ -313,7 +315,7 @@ async fn fail_closed_invalid_json_blocks() {
     let runner = runner("printf not-json", true);
 
     let plan = runner
-        .pre_tool_use("Bash", "call-1", r#"{"command":"printf ok"}"#)
+        .pre_tool_use("Bash", "call-1", r#"{"command":"printf ok"}"#, false)
         .await
         .unwrap();
 
@@ -359,6 +361,7 @@ async fn post_tool_use_fail_closed_propagates_error() {
             "call-1",
             r#"{"command":"printf ok"}"#,
             &Ok("ok".to_string()),
+            false,
         )
         .await;
 
@@ -760,7 +763,7 @@ fn resolved_decision_label_explicit_allow_is_allow() {
 
 #[test]
 fn tool_input_summary_prefers_command() {
-    let summary = tool_input_summary("Bash", r#"{"command":"just ci","timeout":120}"#);
+    let summary = tool_input_summary(false, r#"{"command":"just ci","timeout":120}"#);
 
     assert_eq!(summary, "just ci");
 }

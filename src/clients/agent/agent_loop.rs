@@ -373,9 +373,14 @@ impl Agent {
             .into_iter()
             .map(|(call_id, name, arguments)| {
                 let hook_runner = hook_runner.clone();
+                // The registry entry declares whether the executor repairs
+                // arguments, so the hook sees exactly what will run (#277).
+                let repairs_arguments = self.tools.repairs_arguments(&name);
                 async move {
                     let plan = if let Some(runner) = hook_runner {
-                        runner.pre_tool_use(&name, &call_id, &arguments).await?
+                        runner
+                            .pre_tool_use(&name, &call_id, &arguments, repairs_arguments)
+                            .await?
                     } else {
                         ToolHookPlan::Execute {
                             arguments,
@@ -480,6 +485,7 @@ impl Agent {
 
                 let post_context = post_tool_context(
                     self.hook_runner.as_ref(),
+                    self.tools.repairs_arguments(&name),
                     &name,
                     &call_id,
                     &arguments,
@@ -509,7 +515,11 @@ impl Agent {
                 // carry argument compensations.
                 let registered = self.tools.has(&name);
                 compensation_events.extend(argument_compensation_events(
-                    &name, &arguments, was_error, registered,
+                    &name,
+                    &arguments,
+                    was_error,
+                    registered,
+                    self.tools.repairs_arguments(&name),
                 ));
 
                 let skill_activation = if was_error {
@@ -872,6 +882,7 @@ fn append_hook_context(mut output: String, contexts: &[String]) -> String {
 
 async fn post_tool_context(
     hook_runner: Option<&Arc<HookRunner>>,
+    repairs_arguments: bool,
     name: &str,
     call_id: &str,
     arguments: &str,
@@ -879,7 +890,7 @@ async fn post_tool_context(
 ) -> Option<String> {
     let runner = hook_runner?;
     match runner
-        .post_tool_use(name, call_id, arguments, hook_result)
+        .post_tool_use(name, call_id, arguments, hook_result, repairs_arguments)
         .await
     {
         Ok(Some(ctx)) => Some(ctx),
