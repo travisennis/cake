@@ -386,6 +386,10 @@ impl Agent {
     /// Restore and fork construction pass the names recorded in the source
     /// session, so a continued run does not re-emit a "first observed"
     /// `SkillActivated` record for skills activated before the interruption.
+    ///
+    /// Replaces the backing set instead of mutating it, so call this only
+    /// during construction, before the agent runs. Anything holding a clone
+    /// of the original set would not see a later replacement.
     pub fn with_activated_skills(mut self, names: HashSet<String>) -> Self {
         self.activated_skills = Arc::new(Mutex::new(names));
         self

@@ -1075,7 +1075,8 @@ mod skill_activation_tests {
         assert_eq!(first.name, "debugging-cake");
         assert_eq!(&first.path, path);
 
-        // The same insert-once guard holds across repeated and concurrent calls.
+        // A repeat sequential read stays suppressed; the mutex keeps the
+        // insert-once check atomic if calls ever run concurrently.
         assert!(
             detect_skill_activation("Read", &read_args(path), &locations, &activated).is_none()
         );
