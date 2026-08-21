@@ -1761,3 +1761,252 @@ fn repo_state_digest_follows_linked_worktree_git_file() {
         Some("git repo, branch feature/x")
     );
 }
+
+// =============================================================================
+// Facade parity (issue #276): one policy pipeline behind both facades
+// =============================================================================
+
+/// `cake bash check` and the corpus runner call [`evaluate_command`]; the Bash
+/// preflight and the benchmark harness call [`evaluate_command_observed`].
+/// Both facades must return the same outcome for the same inputs, so a verdict
+/// cannot depend on which facade a caller used.
+#[tokio::test]
+async fn facades_agree_on_a_plain_verdict() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(chat_response(
+            r#"{"verdict":"block","code":"git-force-push","message":"Prefer push --force-with-lease.","confidence":0.9}"#,
+        )))
+        .expect(2) // one judged call per facade
+        .mount(&mock_server)
+        .await;
+
+    let settings = JudgeSettings::default();
+    let unobserved = evaluate_command(
+        &judge_client(&mock_server),
+        &settings,
+        request("git push --force", None),
+        None,
+    )
+    .await
+    .unwrap();
+    let observed = evaluate_command_observed(
+        &judge_client(&mock_server),
+        &settings,
+        request("git push --force", None),
+        None,
+        false,
+    )
+    .await;
+
+    assert_eq!(observed.outcome, Ok(unobserved));
+    assert_eq!(observed.attempts.len(), 1);
+    // Diagnostics are opt-in: metadata-only observation carries none.
+    assert!(observed.diagnostic.is_none());
+    mock_server.verify().await;
+}
+
+#[tokio::test]
+async fn facades_agree_on_an_allowlist_override() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(chat_response(
+            r#"{"verdict":"block","code":"git-force-push","message":"Prefer push --force-with-lease.","confidence":0.9}"#,
+        )))
+        .expect(2) // an allowlisted command is still judged, once per facade
+        .mount(&mock_server)
+        .await;
+
+    let settings = JudgeSettings {
+        allowlist: vec!["git push --force".to_string()],
+        ..JudgeSettings::default()
+    };
+    let unobserved = evaluate_command(
+        &judge_client(&mock_server),
+        &settings,
+        request("git push --force", None),
+        None,
+    )
+    .await
+    .unwrap();
+    let observed = evaluate_command_observed(
+        &judge_client(&mock_server),
+        &settings,
+        request("git push --force", None),
+        None,
+        false,
+    )
+    .await;
+
+    assert_eq!(observed.outcome.clone(), Ok(unobserved.clone()));
+    for outcome in [Ok(unobserved), observed.outcome] {
+        let JudgeOutcome::Verdict {
+            verdict,
+            overridden,
+        } = outcome.unwrap()
+        else {
+            panic!("an allowlisted block must produce a verdict");
+        };
+        assert_eq!(verdict.decision, JudgeDecision::Block);
+        assert_eq!(verdict.code.as_deref(), Some("git-force-push"));
+        assert!(
+            overridden,
+            "the exact allowlist match must override the block"
+        );
+    }
+    mock_server.verify().await;
+}
+
+#[tokio::test]
+async fn facades_agree_that_bypass_skips_the_provider() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(chat_response(
+            r#"{"verdict":"allow","message":"Safe"}"#,
+        )))
+        .expect(0) // bypassed: no judge call may be made from either facade
+        .mount(&mock_server)
+        .await;
+
+    let disabled = JudgeSettings {
+        enabled: false,
+        ..JudgeSettings::default()
+    };
+    let env_off = JudgeSettings::default();
+
+    for (name, settings, bypass_env) in [
+        ("settings disabled", &disabled, None),
+        ("CAKE_JUDGE=off", &env_off, Some("off")),
+    ] {
+        let unobserved = evaluate_command(
+            &judge_client(&mock_server),
+            settings,
+            request("git push --force", None),
+            bypass_env,
+        )
+        .await
+        .unwrap();
+        let observed = evaluate_command_observed(
+            &judge_client(&mock_server),
+            settings,
+            request("git push --force", None),
+            bypass_env,
+            true,
+        )
+        .await;
+        assert_eq!(
+            observed.outcome,
+            Ok(unobserved.clone()),
+            "{name}: facades must agree on bypass"
+        );
+        assert_eq!(unobserved, JudgeOutcome::Bypassed, "{name}");
+        assert!(observed.diagnostic.is_none(), "{name}");
+    }
+    mock_server.verify().await;
+}
+
+#[tokio::test]
+async fn facades_fail_closed_with_the_same_error_class() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("provider exploded"))
+        .expect(2)
+        .mount(&mock_server)
+        .await;
+
+    let settings = JudgeSettings::default();
+    let unobserved = evaluate_command(
+        &judge_client(&mock_server),
+        &settings,
+        request("git status", None),
+        None,
+    )
+    .await;
+    let observed = evaluate_command_observed(
+        &judge_client(&mock_server),
+        &settings,
+        request("git status", None),
+        None,
+        false,
+    )
+    .await;
+
+    let Err(unobserved_error) = unobserved else {
+        panic!("a provider failure must fail closed");
+    };
+    let Err(observed_error) = observed.outcome else {
+        panic!("a provider failure must fail closed");
+    };
+    assert_eq!(unobserved_error.error_class(), observed_error.error_class());
+    assert_eq!(
+        unobserved_error.error_class(),
+        "transport",
+        "a 500 response surfaces as a transport-class failure"
+    );
+    mock_server.verify().await;
+}
+
+/// The unobserved facade keeps the pipeline's bounded recovery and returns
+/// only the outcome: no attempts and no diagnostic can escape an evaluation
+/// that did not ask to be observed.
+#[tokio::test]
+async fn unobserved_facade_recovers_once_and_leaks_no_diagnostics() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("<html>proxy error</html>"))
+        .up_to_n_times(1)
+        .mount(&mock_server)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(chat_response(
+            r#"{"verdict":"allow","message":"Safe","confidence":0.9}"#,
+        )))
+        .mount(&mock_server)
+        .await;
+
+    let client = retry_client(&mock_server, Duration::from_secs(5), Duration::from_secs(2));
+    let unobserved = evaluate_command(
+        &client,
+        &JudgeSettings::default(),
+        request("git status", None),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        unobserved,
+        JudgeOutcome::Verdict {
+            verdict: JudgeVerdict {
+                decision: JudgeDecision::Allow,
+                code: None,
+                message: "Safe".to_string(),
+                confidence: Some(0.9),
+            },
+            overridden: false,
+        }
+    );
+
+    // The same failure sequence through the observed path shows the recovery
+    // happened inside the shared pipeline (two attempts), and that only the
+    // explicit diagnostic flag produces raw material.
+    let observed = evaluate_command_observed(
+        &retry_client(&mock_server, Duration::from_secs(5), Duration::from_secs(2)),
+        &JudgeSettings::default(),
+        request("git status", None),
+        None,
+        false,
+    )
+    .await;
+    assert_eq!(observed.attempts.len(), 1);
+    assert!(observed.diagnostic.is_none());
+
+    let with_diagnostic = evaluate_command_observed(
+        &retry_client(&mock_server, Duration::from_secs(5), Duration::from_secs(2)),
+        &JudgeSettings::default(),
+        request("git status", None),
+        None,
+        true,
+    )
+    .await;
+    assert!(with_diagnostic.diagnostic.is_some());
+}
