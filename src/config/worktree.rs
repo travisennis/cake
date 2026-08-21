@@ -149,13 +149,136 @@ pub fn create(from: &Path, name: Option<&str>) -> anyhow::Result<Worktree> {
         return Err(anyhow!("Failed to create worktree: {stderr}"));
     }
 
-    // Copy files listed in .worktreeinclude from the source to the new worktree.
-    copy_worktree_includes(&repo_root, &wt_path)?;
+    // Copy files listed in .worktreeinclude from the source to the new
+    // worktree. Everything after a successful `git worktree add` is part of
+    // one transaction: if a later step fails, roll back the registration,
+    // branch, and directory this call just created so a reported setup failure
+    // does not leave a partial worktree behind.
+    copy_includes_or_rollback(&repo_root, &wt_name, &branch, &wt_path)?;
 
     Ok(Worktree {
         name: wt_name,
         path: wt_path,
     })
+}
+
+/// Copy `.worktreeinclude` files into a new worktree, rolling back the
+/// artifacts [`create`] just made if the copy fails.
+///
+/// The original setup error is preserved; a rollback failure is attached as
+/// context, never a replacement.
+fn copy_includes_or_rollback(
+    repo_root: &Path,
+    wt_name: &str,
+    branch: &str,
+    wt_path: &Path,
+) -> anyhow::Result<()> {
+    if let Err(e) = copy_worktree_includes(repo_root, wt_path) {
+        return match rollback_create(repo_root, wt_name, branch, wt_path) {
+            Ok(()) => Err(e),
+            Err(rb) => Err(e.context(format!(
+                "worktree setup failed and rollback also failed: {rb:#}"
+            ))),
+        };
+    }
+    Ok(())
+}
+
+/// Attempt to undo a partially created worktree after a post-add setup failure.
+///
+/// Only artifacts this call can prove its own are removed:
+///
+/// - The worktree path was checked absent at the start of [`create`], and
+///   `git worktree add` created it, so it belongs to this call.
+/// - The branch was created by `git worktree add -b`, which refuses to create
+///   a branch that already exists, so it belongs to this call.
+///
+/// Any step that fails is reported without replacing the original setup error
+/// and without deleting anything it cannot prove it owns.
+fn rollback_create(
+    repo_root: &Path,
+    wt_name: &str,
+    branch: &str,
+    wt_path: &Path,
+) -> anyhow::Result<()> {
+    let mut errors: Vec<String> = Vec::new();
+
+    // Deregister and remove the linked worktree; `git worktree remove` also
+    // deletes the on-disk directory, so a success removes the path too.
+    deregister_rollback_worktree(repo_root, wt_name, wt_path, &mut errors);
+    // Delete the branch this call created. Absence is treated as already gone.
+    delete_rollback_branch(repo_root, branch, &mut errors);
+    // If the directory still exists after git's removal, remove it directly:
+    // `create` verified the path was absent, so it is ours.
+    remove_rollback_dir(wt_path, &mut errors);
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "Failed to roll back partially created worktree: {}",
+            errors.join("; ")
+        ))
+    }
+}
+
+/// Run `git worktree remove --force` on `wt_path`, pushing a message to
+/// `errors` unless it succeeds.
+fn deregister_rollback_worktree(
+    repo_root: &Path,
+    wt_name: &str,
+    wt_path: &Path,
+    errors: &mut Vec<String>,
+) {
+    let result = git::command(repo_root)
+        .args(["worktree", "remove", "--force", &wt_path.to_string_lossy()])
+        .output()
+        .context("Failed to run git worktree remove during rollback");
+    match result {
+        Ok(o) if o.status.success() => {},
+        Ok(o) => errors.push(format!(
+            "failed to remove worktree '{wt_name}' at {}: {}",
+            wt_path.display(),
+            String::from_utf8_lossy(&o.stderr)
+        )),
+        Err(e) => errors.push(format!(
+            "failed to remove worktree '{wt_name}' at {}: {e}",
+            wt_path.display()
+        )),
+    }
+}
+
+/// Delete the rollback branch via `git branch -D`, treating absence as already
+/// cleaned up and pushing any other failure to `errors`.
+fn delete_rollback_branch(repo_root: &Path, branch: &str, errors: &mut Vec<String>) {
+    let result = git::command(repo_root)
+        .args(["branch", "-D", branch])
+        .output()
+        .context("Failed to delete branch during rollback");
+    match result {
+        Ok(o) if o.status.success() => {},
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            if !stderr.contains("not found") {
+                errors.push(format!("failed to delete branch '{branch}': {stderr}"));
+            }
+        },
+        Err(e) => errors.push(format!("failed to delete branch '{branch}': {e}")),
+    }
+}
+
+/// Remove a leftover worktree directory, pushing a message to `errors` unless
+/// it is already gone or removes cleanly.
+fn remove_rollback_dir(wt_path: &Path, errors: &mut Vec<String>) {
+    if !wt_path.exists() {
+        return;
+    }
+    if let Err(e) = std::fs::remove_dir_all(wt_path) {
+        errors.push(format!(
+            "failed to remove leftover worktree directory '{}': {e}",
+            wt_path.display()
+        ));
+    }
 }
 
 /// Check if a worktree has uncommitted changes or commits ahead of its start point.
@@ -618,6 +741,45 @@ mod tests {
         create(dir.path(), Some("dup")).unwrap();
         let result = create(dir.path(), Some("dup"));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn create_rolls_back_when_include_copy_fails() -> TestResult {
+        // Make .worktreeinclude unreadable as a file by making it a directory,
+        // so include processing fails deterministically after `git worktree
+        // add` has succeeded and registered the worktree.
+        let dir = init_test_repo();
+        fs::create_dir(dir.path().join(".worktreeinclude"))?;
+
+        let err = create(dir.path(), Some("rollback-wt")).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Failed to read .worktreeinclude"),
+            "original setup cause must be preserved, got: {msg}"
+        );
+
+        // No new registration in `git worktree list`.
+        let list = test_support::git(dir.path())
+            .args(["worktree", "list"])
+            .output()?;
+        let list = String::from_utf8(list.stdout)?;
+        assert!(
+            !list.contains("rollback-wt"),
+            "worktree must not remain registered, got: {list}"
+        );
+
+        // The generated branch is gone.
+        let branches = test_support::git(dir.path()).args(["branch"]).output()?;
+        let branches = String::from_utf8(branches.stdout)?;
+        assert!(
+            !branches.contains("worktree-rollback-wt"),
+            "generated branch must be removed, got: {branches}"
+        );
+
+        // The worktree path created by this call is gone.
+        let wt_path = dir.path().join(".cake/worktrees/rollback-wt");
+        assert!(!wt_path.exists(), "worktree path must be removed");
+        Ok(())
     }
 
     #[test]
