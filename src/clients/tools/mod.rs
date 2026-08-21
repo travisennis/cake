@@ -1250,7 +1250,9 @@ pub(super) fn default_tool_registry() -> ToolRegistry {
 /// Returns a registry containing only the Read tool.
 #[cfg(test)]
 pub(super) fn read_tool_registry() -> ToolRegistry {
-    ToolRegistry::new(vec![ToolEntry::new(read::read_tool(), execute_read_tool)])
+    ToolRegistry::new(vec![
+        ToolEntry::new(read::read_tool(), execute_read_tool).read_safe(),
+    ])
 }
 
 // =============================================================================
