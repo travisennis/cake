@@ -12,10 +12,11 @@
 //! the stable verdict-code vocabulary (see [`crate::clients::judge_rubric`]),
 //! validates block/warn verdict codes against that vocabulary, and adds the
 //! spawn-free repository-state digest for judge requests. `Milestone 4` adds
-//! the allowlist override and the emergency bypass: [`evaluate_command`] is
-//! the single judge-path decision point (`cake bash check` and the Bash
-//! preflight) applying the bypass check, the bounded call, and the exact-match
-//! allowlist override, returning a [`JudgeOutcome`]. `Milestone 5` adds
+//! the allowlist override and the emergency bypass. [`evaluate_command_observed`]
+//! is now the sole policy pipeline — the bypass check, the bounded call, and
+//! the exact-match allowlist override, returning a [`JudgeOutcome`] — shared
+//! by every caller; [`evaluate_command`] delegates to it with diagnostics
+//! disabled. `Milestone 5` adds
 //! [`JudgeContext`] — the per-run judge configuration carried on the
 //! [`crate::clients::tools::ToolContext`] so the Bash preflight and the agent
 //! loop share one resolution — and [`resolve_judge_client_config`], the shared
@@ -87,7 +88,7 @@ pub struct JudgeVerdict {
 
 /// Failure modes of a judge call. Every variant means the command is not
 /// judged, so the caller must fail closed (block) rather than run ungated.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum JudgeError {
     /// The bounded judge call exceeded its timeout.
     #[error("safety judge timed out after {0:?}")]
@@ -216,12 +217,39 @@ pub fn judge_is_enabled(settings: &JudgeSettings, bypass_env: Option<&str>) -> b
     settings.enabled && bypass_env != Some("off")
 }
 
-/// Evaluate a command through the full judge path: emergency bypass check,
-/// the bounded judge call, and the allowlist override.
+/// Evaluate a command without retaining per-attempt metadata.
+///
+/// This is a thin wrapper over [`evaluate_command_observed`], the sole policy
+/// pipeline, run there with diagnostics disabled: bypass, allowlist, retry,
+/// and fail-closed semantics are defined once and cannot diverge between the
+/// facades. Only the outcome is returned; attempts and diagnostics are dropped
+/// so an unobserved evaluation can never leak them.
 ///
 /// `bypass_env` is the value of the `CAKE_JUDGE` environment variable (`None`
 /// when unset), passed in so callers control the single env read and tests
 /// stay hermetic.
+///
+/// # Errors
+///
+/// Returns any [`JudgeError`] the pipeline produced; callers fail closed.
+pub async fn evaluate_command(
+    client: &JudgeClient,
+    settings: &JudgeSettings,
+    request: JudgeRequest,
+    bypass_env: Option<&str>,
+) -> Result<JudgeOutcome, JudgeError> {
+    evaluate_command_observed(client, settings, request, bypass_env, false)
+        .await
+        .outcome
+}
+
+/// The sole command-safety policy pipeline: emergency bypass check, the
+/// bounded judge call, and the exact-match allowlist override, in that order.
+///
+/// Every caller — `cake bash check`, the Bash preflight, the corpus runner,
+/// and the benchmark harness — evaluates through this function so bypass and
+/// allowlist policy cannot diverge between facades. [`evaluate_command`]
+/// wraps it for callers that need only the outcome.
 ///
 /// An allowlisted command is still judged. A `block` verdict on an exact
 /// allowlist match is overridden to allow (the original verdict and the
@@ -229,28 +257,6 @@ pub fn judge_is_enabled(settings: &JudgeSettings, bypass_env: Option<&str>) -> b
 /// returned unchanged. A disabled judge (bypass) returns
 /// [`JudgeOutcome::Bypassed`] without making a judge call. Any
 /// [`JudgeError`] fails closed.
-pub async fn evaluate_command(
-    client: &JudgeClient,
-    settings: &JudgeSettings,
-    request: JudgeRequest,
-    bypass_env: Option<&str>,
-) -> Result<JudgeOutcome, JudgeError> {
-    if !judge_is_enabled(settings, bypass_env) {
-        return Ok(JudgeOutcome::Bypassed);
-    }
-    let verdict = client.judge(request.clone()).await?;
-    let overridden = verdict.decision == JudgeDecision::Block
-        && settings
-            .allowlist
-            .iter()
-            .any(|entry| entry == &request.command);
-    Ok(JudgeOutcome::Verdict {
-        verdict,
-        overridden,
-    })
-}
-
-/// Evaluate a command while retaining metadata for every provider attempt.
 ///
 /// `include_raw_diagnostic` must only be true for an explicit user-facing
 /// diagnostic action. Normal Bash preflight telemetry remains metadata-only.
@@ -487,6 +493,11 @@ impl JudgeClient {
     /// stalls the body cannot exceed the bound. The complete operation is
     /// bounded by `self.timeout + self.retry_budget`.
     ///
+    /// This is the test-only convenience form of [`Self::judge_observed`]
+    /// (diagnostics disabled, attempts dropped). Production callers go through
+    /// the facades — [`evaluate_command_observed`] or [`evaluate_command`] — so
+    /// bypass, allowlist, and retry policy stay in one pipeline.
+    ///
     /// # Errors
     ///
     /// Returns [`JudgeError::Timeout`] when a call exceeds its allowance,
@@ -495,6 +506,7 @@ impl JudgeClient {
     /// [`JudgeError::Refusal`] when the model refuses to judge. Callers fail
     /// closed on every variant; an exhausted recovery returns the final
     /// attempt's error.
+    #[cfg(test)]
     pub async fn judge(&self, request: JudgeRequest) -> Result<JudgeVerdict, JudgeError> {
         self.judge_observed(request, false).await.result
     }
