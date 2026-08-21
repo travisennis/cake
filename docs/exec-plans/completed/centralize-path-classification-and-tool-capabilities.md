@@ -23,6 +23,7 @@ Observable outcomes:
 - [x] (2026-08-21) Milestone 1: shared resolved-path classification; matrix tests; commit.
 - [x] (2026-08-22) Milestone 2: ToolEntry capabilities consumed at scheduling, agent, hooks sites; commit.
 - [x] (2026-08-22) Full gate `just ci`; security impact analysis recorded on the issue.
+- [x] (2026-08-22) Codex review pass; test fixture marked read-safe; ExecPlan moved to completed.
 
 ## Surprises & Discoveries
 
@@ -37,6 +38,17 @@ Observable outcomes:
 - Decision: Capability defaults fail closed --- `read_safe: false`, `repairs_arguments: false`, no mutation target. Rationale: an unmarked new tool must be excluded by the read-only policy rather than exposed. Date/Author: 2026-08-21/ox-alpha.
 - Decision: Hook payload repair flag comes from the caller's registry via new parameters on `pre_tool_use`/`post_tool_use`, not from a name pattern. Rationale: HookRunner has no registry access; per-call threading keeps the wire payloads unchanged while making unregistered names strict-parse. Date/Author: 2026-08-22/ox-alpha.
 - Decision: The Edit invalid-arguments compensation check stays keyed to the edit module. It is compensation bookkeeping beside the parser it mirrors, not a security or scheduling decision named in the issue. Date/Author: 2026-08-21/ox-alpha.
+
+## Outcomes & Retrospective
+
+Delivered on `refactor/centralize-path-classification`:
+
+- One classifier (`classify_resolved_path`) now holds the grant table and precedence for both existing-path validation and prospective-write scheduling. The overlapping-grants divergence is fixed: new files under the working directory resolve writable even when an `--add-dir` ancestor also contains them, matching existing-file handling. Prospective writes now also consult skill directories, denying with the read-only message instead of the outside message.
+- `ToolCapabilities` (repairs_arguments, read_safe, optional mutation-target resolver) with fail-closed defaults replaced all three name-matching classifiers. Registration is the single place stating what a tool is; scheduling, read-only filtering, compensation gating, and hook payload shaping consume declarations. The free `tool_uses_repair_pass` helper and its re-export are deleted.
+- Hook payload JSON shapes unchanged; unregistered names now strict-parse in hook payloads, aligning with the compensation path's registration gate.
+- Verification: full suite green (9 test binaries), clippy clean in both feature modes, `just ci` green including Linux compile and module/complexity lints; independent Codex review found one test-fixture gap, fixed.
+
+Lesson: capability defaults must fail closed, and review caught that a test fixture silently violated the new contract --- fixtures need the same declarations as production entries.
 
 ## Context and Orientation
 
