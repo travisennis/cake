@@ -45,9 +45,7 @@ Append cases to `src/clients/tools/corpus/commands.jsonl` as documented in its R
 
 ## Verification
 
-**Definition of done:** run `just ci`.
-
-For Rust, configuration, CI, fixture, or dependency changes, run:
+**Definition of done:** run the final gate your change class routes to, matching [Pre-push routing](#pre-push-routing). For Rust, configuration, CI, fixture, or dependency changes, that gate is:
 
 ```bash
 just ci
