@@ -48,6 +48,9 @@ pub fn toolbox_tool_entry(tool: ToolboxTool, session_id: uuid::Uuid) -> ToolEntr
     };
     let tool = Arc::new(tool);
     let session_id = session_id.to_string();
+    // Toolbox executors repair arguments before parsing (#185) but are never
+    // read-safe: they run as unsandboxed external processes and may mutate
+    // host state, so they are dropped under the read-only sandbox policy.
     ToolEntry::new(definition, move |context, _call_id, arguments| {
         let tool = Arc::clone(&tool);
         let session_id = session_id.clone();
@@ -55,6 +58,7 @@ pub fn toolbox_tool_entry(tool: ToolboxTool, session_id: uuid::Uuid) -> ToolEntr
             async move { execute_toolbox_tool(&tool, &session_id, &context.cwd, &arguments).await },
         )
     })
+    .repairs_arguments()
 }
 
 /// Run a toolbox tool's `execute` action and capture its output.
