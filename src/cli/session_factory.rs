@@ -72,6 +72,9 @@ impl crate::CodingAssistant {
         task_id: uuid::Uuid,
     ) -> anyhow::Result<RunSession> {
         let messages = restored.messages();
+        // Seed once-per-session activation dedup from the persisted records so
+        // a resumed run does not re-emit "first observed" for known skills.
+        let activated_skills = restored.activated_skills();
 
         let agent = Agent::new(resolved.clone(), initial_messages)
             .with_session_id(restored.id)
@@ -83,7 +86,8 @@ impl crate::CodingAssistant {
             .with_history(messages)
             .map_err(|error| anyhow::anyhow!("Cannot restore session {}: {error:#}", restored.id))?
             .with_last_usage(restored.last_turn_usage())
-            .with_skill_locations(skill_locations.clone());
+            .with_skill_locations(skill_locations.clone())
+            .with_activated_skills(activated_skills);
         let mut session = Session::new(restored.id, restored.working_dir);
         session.model = Some(resolved.model_config.model);
         Ok(RunSession {
@@ -144,7 +148,11 @@ impl crate::CodingAssistant {
             .with_history(restored.messages())
             .map_err(|error| anyhow::anyhow!("Cannot fork session {}: {error:#}", restored.id))?
             .with_last_usage(restored.last_turn_usage())
-            .with_skill_locations(skill_locations);
+            .with_skill_locations(skill_locations)
+            // The fork's session file starts with copies of the source
+            // session's SkillActivated records; seed the same names so re-reads
+            // do not emit duplicates.
+            .with_activated_skills(restored.activated_skills());
         let new_id = agent.session_id();
         let seed_records: Vec<_> = restored
             .records
@@ -348,6 +356,51 @@ mod tests {
     use crate::config::settings::ModelDefinition;
     use crate::config::skills::SkillCatalog;
     use clap::Parser;
+    use std::collections::HashSet;
+
+    fn test_resolved_model_config() -> ResolvedModelConfig {
+        ResolvedModelConfig {
+            model_config: crate::config::model::ModelConfig {
+                model: "test".to_string(),
+                api_type: crate::config::model::ApiType::ChatCompletions,
+                base_url: "https://example.invalid/v1".to_string(),
+                api_key_env: "SESSION_FACTORY_TEST_KEY".to_string(),
+                provider: None,
+                provider_headers: None,
+                temperature: None,
+                top_p: None,
+                max_output_tokens: None,
+                context_window: None,
+                reasoning_effort: None,
+                reasoning_summary: None,
+                reasoning_max_tokens: None,
+                providers: vec![],
+            },
+            api_key: "test-key".to_string(),
+        }
+    }
+
+    fn test_tool_context() -> Arc<ToolContext> {
+        Arc::new(ToolContext::new(
+            PathBuf::from("/work"),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            SandboxPolicy::WorkspaceWrite,
+        ))
+    }
+
+    fn session_with_activated_skill(id: uuid::Uuid) -> Session {
+        let mut restored = Session::new(id, PathBuf::from("/work"));
+        restored.records.push(SessionRecord::SkillActivated {
+            session_id: id.to_string(),
+            task_id: "task-1".to_string(),
+            timestamp: chrono::Utc::now(),
+            name: "debugging-cake".to_string(),
+            path: PathBuf::from("/work/.agents/skills/debugging-cake/SKILL.md"),
+        });
+        restored
+    }
 
     /// A session built through `build_client_and_session` must carry the
     /// command-safety judge context on the agent's tool context.
@@ -487,5 +540,56 @@ mod tests {
         assert_eq!(restored_last.output_tokens, 100);
         assert_eq!(restored_last.total_tokens, 1334);
         assert_eq!(run.agent.context_remaining_tokens(), Some(200_000 - 1234));
+    }
+
+    #[test]
+    fn restored_session_seeds_agent_activated_skills() {
+        let restored = session_with_activated_skill(uuid::Uuid::new_v4());
+
+        let run = crate::CodingAssistant::restored_client_and_session(
+            restored,
+            test_resolved_model_config(),
+            &[(crate::types::Role::System, "test".to_string())],
+            &HashMap::new(),
+            test_tool_context(),
+            Vec::new(),
+            uuid::Uuid::new_v4(),
+        )
+        .expect("restore should succeed");
+
+        // The resumed agent knows which skills were already activated, so a
+        // re-read cannot emit a duplicate "first observed" record.
+        assert_eq!(
+            run.agent.activated_skill_names(),
+            HashSet::from(["debugging-cake".to_string()])
+        );
+    }
+
+    #[test]
+    fn forked_session_seeds_agent_activated_skills() {
+        let restored = session_with_activated_skill(uuid::Uuid::new_v4());
+
+        let run = crate::CodingAssistant::forked_client_and_session(
+            &restored,
+            test_resolved_model_config(),
+            PathBuf::from("/work"),
+            &[(crate::types::Role::System, "test".to_string())],
+            HashMap::new(),
+            test_tool_context(),
+            Vec::new(),
+            uuid::Uuid::new_v4(),
+        )
+        .expect("fork should succeed");
+
+        // The fork inherits the activated set and carries the historical
+        // activation records into its own session file.
+        assert_eq!(
+            run.agent.activated_skill_names(),
+            HashSet::from(["debugging-cake".to_string()])
+        );
+        assert!(matches!(
+            run.seed_records.as_deref().and_then(|records| records.first()),
+            Some(SessionRecord::SkillActivated { name, .. }) if name == "debugging-cake"
+        ));
     }
 }

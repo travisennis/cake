@@ -381,6 +381,29 @@ impl Agent {
         self
     }
 
+    /// Seeds the set of skill names already activated in this session.
+    ///
+    /// Restore and fork construction pass the names recorded in the source
+    /// session, so a continued run does not re-emit a "first observed"
+    /// `SkillActivated` record for skills activated before the interruption.
+    ///
+    /// Replaces the backing set instead of mutating it, so call this only
+    /// during construction, before the agent runs. Anything holding a clone
+    /// of the original set would not see a later replacement.
+    pub fn with_activated_skills(mut self, names: HashSet<String>) -> Self {
+        self.activated_skills = Arc::new(Mutex::new(names));
+        self
+    }
+
+    /// Returns a copy of the activated-skill names (for test fixtures).
+    #[cfg(test)]
+    pub(crate) fn activated_skill_names(&self) -> HashSet<String> {
+        self.activated_skills
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
     /// Enables command hooks for lifecycle and tool-call events.
     pub fn with_hook_runner(mut self, runner: Arc<HookRunner>) -> Self {
         self.hook_runner = Some(runner);
