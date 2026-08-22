@@ -51,7 +51,15 @@ failed=0
 
 # === Gate 1: Total Coverage ===
 echo "=== Total Coverage Gate ==="
-output="$(cargo llvm-cov --summary-only)"
+
+# Run the suite once under instrumentation and retain the profile data.
+# The summary below and the LCOV export for gates 2 and 3 both derive
+# from that single run. Stale profiles are removed first because
+# --no-report retains rather than replaces them.
+cargo llvm-cov clean --profraw-only
+cargo llvm-cov --no-report
+
+output="$(cargo llvm-cov report)"
 printf '%s\n' "$output"
 
 coverage="$(printf '%s\n' "$output" | grep "^TOTAL" | grep -oE '[0-9]+\.[0-9]+%' | tail -1 | tr -d '%' || true)"
@@ -78,7 +86,7 @@ echo "=== CRAP Regression Gate ==="
 # excluded from CRAP scoring via `--exclude '**/*_tests.rs'` in
 # scripts/cargo-crap.sh (task 226). Use --ignore-filename-regex to
 # suppress the warning for these expected cases.
-cargo llvm-cov --lcov --output-path lcov.info --ignore-filename-regex '_tests\.rs$'
+cargo llvm-cov report --lcov --output-path lcov.info --ignore-filename-regex '_tests\.rs$'
 
 echo "CRAP regression epsilon: ${crap_epsilon}"
 
