@@ -90,9 +90,9 @@ fn build_messages_simple_conversation() {
     ];
     let msgs = build_messages(&history);
     assert_eq!(msgs.len(), 2);
-    assert_eq!(msgs[0].role, "system");
+    assert_eq!(msgs[0].role, Role::System);
     assert_eq!(msgs[0].content.as_deref(), Some("You are helpful."));
-    assert_eq!(msgs[1].role, "user");
+    assert_eq!(msgs[1].role, Role::User);
     assert_eq!(msgs[1].content.as_deref(), Some("Hello"));
 }
 
@@ -131,13 +131,13 @@ fn build_messages_preserves_developer_messages_separately() {
 
     let msgs = build_messages(&history);
     assert_eq!(msgs.len(), 4);
-    assert_eq!(msgs[0].role, "system");
+    assert_eq!(msgs[0].role, Role::System);
     assert_eq!(msgs[0].content.as_deref(), Some("You are cake."));
-    assert_eq!(msgs[1].role, "developer");
+    assert_eq!(msgs[1].role, Role::Developer);
     assert_eq!(msgs[1].content.as_deref(), Some("AGENTS.md context"));
-    assert_eq!(msgs[2].role, "developer");
+    assert_eq!(msgs[2].role, Role::Developer);
     assert_eq!(msgs[2].content.as_deref(), Some("Environment context"));
-    assert_eq!(msgs[3].role, "user");
+    assert_eq!(msgs[3].role, Role::User);
     assert_eq!(msgs[3].content.as_deref(), Some("Hello"));
 }
 
@@ -169,11 +169,11 @@ fn build_messages_keeps_developer_messages_before_assistant() {
 
     let msgs = build_messages(&history);
     assert_eq!(msgs.len(), 3);
-    assert_eq!(msgs[0].role, "developer");
+    assert_eq!(msgs[0].role, Role::Developer);
     assert_eq!(msgs[0].content.as_deref(), Some("Project context"));
-    assert_eq!(msgs[1].role, "assistant");
+    assert_eq!(msgs[1].role, Role::Assistant);
     assert_eq!(msgs[1].content.as_deref(), Some("Ready."));
-    assert_eq!(msgs[2].role, "user");
+    assert_eq!(msgs[2].role, Role::User);
     assert_eq!(msgs[2].content.as_deref(), Some("Start now"));
 }
 
@@ -205,11 +205,11 @@ fn build_messages_flushes_pending_tool_calls_before_user_message() {
 
     let msgs = build_messages(&history);
     assert_eq!(msgs.len(), 3);
-    assert_eq!(msgs[0].role, "user");
-    assert_eq!(msgs[1].role, "assistant");
+    assert_eq!(msgs[0].role, Role::User);
+    assert_eq!(msgs[1].role, Role::Assistant);
     assert!(msgs[1].content.is_none());
     assert_eq!(msgs[1].tool_calls.as_ref().unwrap().len(), 1);
-    assert_eq!(msgs[2].role, "user");
+    assert_eq!(msgs[2].role, Role::User);
     assert_eq!(msgs[2].content.as_deref(), Some("Actually stop"));
 }
 
@@ -249,18 +249,18 @@ fn build_messages_pairs_repaired_tool_call_before_next_user_message() {
 
     let msgs = build_messages(&history);
     assert_eq!(msgs.len(), 4);
-    assert_eq!(msgs[0].role, "user");
-    assert_eq!(msgs[1].role, "assistant");
+    assert_eq!(msgs[0].role, Role::User);
+    assert_eq!(msgs[1].role, Role::Assistant);
     let tool_calls = msgs[1].tool_calls.as_ref().unwrap();
     assert_eq!(tool_calls.len(), 1);
     assert_eq!(tool_calls[0].id, "call-1");
-    assert_eq!(msgs[2].role, "tool");
+    assert_eq!(msgs[2].role, Role::Tool);
     assert_eq!(msgs[2].tool_call_id.as_deref(), Some("call-1"));
     assert_eq!(
         msgs[2].content.as_deref(),
         Some("not executed: the previous cake process ended")
     );
-    assert_eq!(msgs[3].role, "user");
+    assert_eq!(msgs[3].role, Role::User);
     assert_eq!(msgs[3].content.as_deref(), Some("carry on"));
 }
 
@@ -304,10 +304,10 @@ fn build_messages_groups_consecutive_function_calls() {
     assert_eq!(msgs.len(), 4);
 
     // First: user message
-    assert_eq!(msgs[0].role, "user");
+    assert_eq!(msgs[0].role, Role::User);
 
     // Second: assistant with grouped tool_calls
-    assert_eq!(msgs[1].role, "assistant");
+    assert_eq!(msgs[1].role, Role::Assistant);
     assert!(msgs[1].content.is_none());
     assert!(msgs[1].reasoning_content.is_none());
     let tcs = msgs[1].tool_calls.as_ref().unwrap();
@@ -316,9 +316,9 @@ fn build_messages_groups_consecutive_function_calls() {
     assert_eq!(tcs[1].function.name, "read");
 
     // Third and fourth: tool results
-    assert_eq!(msgs[2].role, "tool");
+    assert_eq!(msgs[2].role, Role::Tool);
     assert_eq!(msgs[2].tool_call_id.as_deref(), Some("call-1"));
-    assert_eq!(msgs[3].role, "tool");
+    assert_eq!(msgs[3].role, Role::Tool);
     assert_eq!(msgs[3].tool_call_id.as_deref(), Some("call-2"));
 }
 
@@ -352,8 +352,8 @@ fn build_messages_preserves_reasoning_content_for_assistant_messages() {
     ];
     let msgs = build_messages(&history);
     assert_eq!(msgs.len(), 2);
-    assert_eq!(msgs[0].role, "user");
-    assert_eq!(msgs[1].role, "assistant");
+    assert_eq!(msgs[0].role, Role::User);
+    assert_eq!(msgs[1].role, Role::Assistant);
     assert_eq!(
         msgs[1].reasoning_content.as_deref(),
         Some("internal reasoning")
@@ -406,8 +406,8 @@ fn build_messages_drops_unpaired_reasoning_before_semantic_recovery_prompt() {
     let msgs = build_messages(&history);
 
     assert_eq!(msgs.len(), 4);
-    assert_eq!(msgs[0].role, "user");
-    assert_eq!(msgs[1].role, "user");
+    assert_eq!(msgs[0].role, Role::User);
+    assert_eq!(msgs[1].role, Role::User);
     assert_eq!(
         msgs[1].content.as_deref(),
         Some("provide the final answer now")
@@ -416,9 +416,9 @@ fn build_messages_drops_unpaired_reasoning_before_semantic_recovery_prompt() {
         msgs.iter()
             .all(|message| message.reasoning_content.is_none())
     );
-    assert_eq!(msgs[2].role, "assistant");
+    assert_eq!(msgs[2].role, Role::Assistant);
     assert_eq!(msgs[2].content.as_deref(), Some("recovered answer"));
-    assert_eq!(msgs[3].role, "user");
+    assert_eq!(msgs[3].role, Role::User);
     assert_eq!(msgs[3].content.as_deref(), Some("next question"));
 }
 
@@ -453,7 +453,7 @@ fn build_messages_preserves_reasoning_content_for_assistant_tool_calls() {
 
     let msgs = build_messages(&history);
     assert_eq!(msgs.len(), 2);
-    assert_eq!(msgs[1].role, "assistant");
+    assert_eq!(msgs[1].role, Role::Assistant);
     assert_eq!(
         msgs[1].reasoning_content.as_deref(),
         Some("preserved reasoning")
@@ -494,10 +494,10 @@ fn build_messages_combines_tool_calls_with_assistant_text() {
 
     let msgs = build_messages(&history);
     assert_eq!(msgs.len(), 3);
-    assert_eq!(msgs[1].role, "assistant");
+    assert_eq!(msgs[1].role, Role::Assistant);
     assert_eq!(msgs[1].content.as_deref(), Some("Let me check that."));
     assert!(msgs[1].tool_calls.is_some());
-    assert_eq!(msgs[2].role, "tool");
+    assert_eq!(msgs[2].role, Role::Tool);
 }
 
 #[test]
@@ -522,7 +522,7 @@ fn strategy_adds_reasoning_placeholder_to_tool_call_messages() {
     let mut msgs = build_messages(&history);
     ProviderStrategy::transform_chat_messages(&mut msgs);
     assert_eq!(msgs.len(), 2);
-    assert_eq!(msgs[1].role, "assistant");
+    assert_eq!(msgs[1].role, Role::Assistant);
     assert_eq!(msgs[1].reasoning_content.as_deref(), Some(" "));
     assert!(msgs[1].tool_calls.is_some());
 }

@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 
 use crate::config::ReasoningEffort;
+use crate::types::Role;
 
 // =============================================================================
 // Chat Completions API Request DTOs (serialization only - can borrow)
@@ -18,7 +19,7 @@ pub(super) struct ChatRequest<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) max_completion_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) tools: Option<Vec<ChatTool>>,
+    pub(super) tools: Option<Vec<ChatTool<'a>>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) tool_choice: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -45,9 +46,12 @@ pub(super) struct ResponseFormatJsonSchema<'a> {
 }
 
 /// Request message type that borrows strings from history to avoid cloning.
+///
+/// The role is the shared typed [`Role`]; its lowercase serde names match the
+/// Chat Completions wire values exactly.
 #[derive(Serialize, Clone, Debug)]
 pub(super) struct ChatMessage<'a> {
-    pub(super) role: Cow<'a, str>,
+    pub(super) role: Role,
     pub(super) content: Option<Cow<'a, str>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) reasoning_content: Option<Cow<'a, str>>,
@@ -57,18 +61,21 @@ pub(super) struct ChatMessage<'a> {
     pub(super) tool_call_id: Option<Cow<'a, str>>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub(super) struct ChatTool {
+/// Borrowed tool wrapper for request serialization. Borrows the name,
+/// description, and schema from [`crate::clients::tools::Tool`] so a request
+/// build does not clone any tool schema.
+#[derive(Serialize, Debug)]
+pub(super) struct ChatTool<'a> {
     #[serde(rename = "type")]
-    pub(super) type_: String,
-    pub(super) function: ChatFunction,
+    pub(super) type_: &'static str,
+    pub(super) function: ChatFunction<'a>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub(super) struct ChatFunction {
-    pub(super) name: String,
-    pub(super) description: String,
-    pub(super) parameters: serde_json::Value,
+#[derive(Serialize, Debug)]
+pub(super) struct ChatFunction<'a> {
+    pub(super) name: &'a str,
+    pub(super) description: &'a str,
+    pub(super) parameters: &'a serde_json::Value,
 }
 
 /// Borrowed tool call type for request serialization.
