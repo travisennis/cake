@@ -436,59 +436,11 @@ impl HookRunner {
 
             match &outcome.status {
                 InvocationStatus::Failed(error) => {
-                    if outcome.command.fail_closed {
-                        if event == HookEvent::PreToolUse {
-                            aggregated.deny_reasons.push(format!(
-                                "{}: {error}",
-                                outcome.command.source_path.display()
-                            ));
-                            continue;
-                        }
-                        anyhow::bail!(
-                            "Hook failed closed for {event} in {}: {error}",
-                            outcome.command.source_path.display()
-                        );
-                    }
-                    tracing::warn!(
-                        target: "cake::hooks",
-                        event = event.as_str(),
-                        source = source.as_display_str(),
-                        command = %outcome.command.command,
-                        source_file = %outcome.command.source_path.display(),
-                        error = %error,
-                        "Hook failed open"
-                    );
+                    apply_failed_status(&mut aggregated, event, source, &outcome, error)?;
                 },
                 InvocationStatus::NoOutput => {},
                 InvocationStatus::Parsed(parsed) => {
-                    match &parsed.decision {
-                        HookDecision::Continue => {},
-                        HookDecision::Deny { reason } | HookDecision::Stop { reason } => {
-                            let label = parsed.decision.decision_label();
-                            if event == HookEvent::PreToolUse {
-                                aggregated.deny_reasons.push(format!(
-                                    "{}: {reason}",
-                                    outcome.command.source_path.display()
-                                ));
-                            } else {
-                                anyhow::bail!("Hook {label} {event}: {reason}");
-                            }
-                        },
-                    }
-
-                    if let Some(context) = parsed.additional_context.as_ref()
-                        && !context.is_empty()
-                    {
-                        aggregated.additional_context.push(context.clone());
-                    }
-
-                    if event == HookEvent::PreToolUse
-                        && let Some(updated_input) = parsed.updated_input.clone()
-                    {
-                        aggregated
-                            .updated_inputs
-                            .push((updated_input, outcome.command.source_path.clone()));
-                    }
+                    apply_parsed_status(&mut aggregated, event, &outcome, parsed)?;
                 },
             }
         }
@@ -608,6 +560,83 @@ impl HookRunner {
             sink(StreamRecord::HookEvent(record));
         }
     }
+}
+
+/// Disposition of a [`InvocationStatus::Failed`] outcome: block on fail-closed
+/// `PreToolUse`, propagate an error for other fail-closed events, or log and
+/// continue (fail open).
+fn apply_failed_status(
+    aggregated: &mut AggregatedHookResult,
+    event: HookEvent,
+    source: &HookSource,
+    outcome: &InvocationOutcome,
+    error: &str,
+) -> anyhow::Result<()> {
+    if !outcome.command.fail_closed {
+        tracing::warn!(
+            target: "cake::hooks",
+            event = event.as_str(),
+            source = source.as_display_str(),
+            command = %outcome.command.command,
+            source_file = %outcome.command.source_path.display(),
+            error = %error,
+            "Hook failed open"
+        );
+        return Ok(());
+    }
+
+    if event == HookEvent::PreToolUse {
+        aggregated.deny_reasons.push(format!(
+            "{}: {error}",
+            outcome.command.source_path.display()
+        ));
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "Hook failed closed for {event} in {}: {error}",
+        outcome.command.source_path.display()
+    );
+}
+
+/// Disposition of a [`InvocationStatus::Parsed`] outcome: collect deny/stop
+/// reasons, additional context, and `PreToolUse` input rewrites.
+fn apply_parsed_status(
+    aggregated: &mut AggregatedHookResult,
+    event: HookEvent,
+    outcome: &InvocationOutcome,
+    parsed: &ParsedHookOutput,
+) -> anyhow::Result<()> {
+    match &parsed.decision {
+        HookDecision::Continue => {},
+        HookDecision::Deny { reason } | HookDecision::Stop { reason } => {
+            let label = parsed.decision.decision_label();
+            if event == HookEvent::PreToolUse {
+                aggregated.deny_reasons.push(format!(
+                    "{}: {reason}",
+                    outcome.command.source_path.display()
+                ));
+            } else {
+                anyhow::bail!("Hook {label} {event}: {reason}");
+            }
+        },
+    }
+
+    if let Some(context) = parsed.additional_context.as_ref()
+        && !context.is_empty()
+    {
+        aggregated.additional_context.push(context.clone());
+    }
+
+    if event == HookEvent::PreToolUse
+        && let Some(updated_input) = parsed.updated_input.clone()
+    {
+        aggregated
+            .updated_inputs
+            .push((updated_input, outcome.command.source_path.clone()));
+    }
+
+    Ok(())
 }
 
 /// RAII guard that kills the entire hook process tree on drop, unless
