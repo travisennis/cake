@@ -24,7 +24,6 @@ fn runner(command: &str, fail_closed: bool) -> HookRunner {
             session_id: uuid::Uuid::new_v4(),
             task_id: uuid::Uuid::new_v4(),
             transcript_path: None,
-            session_writer: None,
             hook_event_sink: None,
             cwd,
             model: "test-model".to_string(),
@@ -215,8 +214,12 @@ async fn post_tool_use_persists_hook_record_while_session_locked() {
             session_id,
             task_id: uuid::Uuid::new_v4(),
             transcript_path: Some(session_path.clone()),
-            session_writer: Some(writer.clone()),
-            hook_event_sink: None,
+            // Persistence flows through the same CLI fan-out closure that
+            // production runs use; there is no separate writer path.
+            hook_event_sink: crate::CodingAssistant::hook_event_sink(
+                Some(writer.clone()),
+                crate::OutputFormat::Text,
+            ),
             cwd: dir.path().to_path_buf(),
             model: "test-model".to_string(),
         },
@@ -276,7 +279,6 @@ async fn post_tool_use_emits_hook_record_to_sink_without_session_writer() {
             session_id: uuid::Uuid::new_v4(),
             task_id: uuid::Uuid::new_v4(),
             transcript_path: None,
-            session_writer: None,
             hook_event_sink: Some(Arc::new(move |record| {
                 captured_clone.lock().unwrap().push(record);
             })),
@@ -347,7 +349,6 @@ async fn post_tool_use_fail_closed_propagates_error() {
             session_id: uuid::Uuid::new_v4(),
             task_id: uuid::Uuid::new_v4(),
             transcript_path: None,
-            session_writer: None,
             hook_event_sink: None,
             cwd: dir.path().to_path_buf(),
             model: "test-model".to_string(),
@@ -600,77 +601,32 @@ fn decision_label_stop_is_stop() {
 
 #[test]
 fn decision_label_no_op_hook_is_none() {
-    // Exit-0 hook with empty stdout: parsed is None, error is None
-    // → should record decision "none", not "error"
-    let outcome = InvocationOutcome {
-        command: HookCommand {
-            command: "true".to_string(),
-            timeout: Duration::from_secs(2),
-            fail_closed: false,
-            status_message: None,
-            source_path: PathBuf::from("/tmp/hooks.json"),
-        },
-        exit_code: Some(0),
-        duration: Duration::from_millis(10),
-        stdout: String::new(),
-        stderr: String::new(),
-        parsed: None,
-        error: None,
-    };
-
-    let decision = outcome_decision_label(outcome.parsed.as_ref(), outcome.error.as_deref());
+    // Exit-0 hook with empty stdout → NoOutput records "none", not "error".
+    let decision = outcome_decision_label(&InvocationStatus::NoOutput);
     assert_eq!(decision, "none");
 }
 
 #[test]
 fn decision_label_hook_error_is_error() {
-    // Hook that failed to start or had execution error:
-    // parsed is None, error is Some → should record "error"
-    let outcome = InvocationOutcome {
-        command: HookCommand {
-            command: "bad-command".to_string(),
-            timeout: Duration::from_secs(2),
-            fail_closed: false,
-            status_message: None,
-            source_path: PathBuf::from("/tmp/hooks.json"),
-        },
-        exit_code: Some(1),
-        duration: Duration::from_millis(5),
-        stdout: String::new(),
-        stderr: "command not found".to_string(),
-        parsed: None,
-        error: Some("hook exited with code 1: command not found".to_string()),
-    };
-
-    let decision = outcome_decision_label(outcome.parsed.as_ref(), outcome.error.as_deref());
+    // A failed invocation (spawn error, non-zero exit, invalid JSON) labels
+    // as "error".
+    let decision = outcome_decision_label(&InvocationStatus::Failed(
+        "hook exited with code 1: command not found".to_string(),
+    ));
     assert_eq!(decision, "error");
 }
 
 #[test]
 fn decision_label_parsed_continue_is_none() {
     // Parsed Continue decision should still label as "none"
-    let outcome = InvocationOutcome {
-        command: HookCommand {
-            command: "hook.sh".to_string(),
-            timeout: Duration::from_secs(2),
-            fail_closed: false,
-            status_message: None,
-            source_path: PathBuf::from("/tmp/hooks.json"),
-        },
-        exit_code: Some(0),
-        duration: Duration::from_millis(10),
-        stdout: "{\"permission\":\"allow\"}".to_string(),
-        stderr: String::new(),
-        parsed: Some(ParsedHookOutput {
-            decision: HookDecision::Continue,
-            explicit_allow: true,
-            updated_input: None,
-            additional_context: None,
-        }),
-        error: None,
-    };
+    let status = InvocationStatus::Parsed(ParsedHookOutput {
+        decision: HookDecision::Continue,
+        explicit_allow: true,
+        updated_input: None,
+        additional_context: None,
+    });
 
-    let decision = outcome_decision_label(outcome.parsed.as_ref(), outcome.error.as_deref());
+    let decision = outcome_decision_label(&status);
     assert_eq!(decision, "none");
 }
 
@@ -707,10 +663,12 @@ async fn timed_out_hook_process_is_killed() {
     .await;
 
     // Verify timeout outcome
+    let InvocationStatus::Failed(error) = &outcome.status else {
+        panic!("expected failed outcome, got: {:?}", outcome.status);
+    };
     assert!(
-        outcome.error.as_deref().unwrap_or("").contains("timed out"),
-        "expected timeout error, got: {:?}",
-        outcome.error
+        error.contains("timed out"),
+        "expected timeout error, got: {error}"
     );
 
     // Give the OS a moment to reap killed processes
@@ -756,7 +714,7 @@ fn resolved_decision_label_explicit_allow_is_allow() {
             .unwrap()
             .into();
 
-    let decision = resolved_decision_label(Some(&parsed), None);
+    let decision = resolved_decision_label(&InvocationStatus::Parsed(parsed));
 
     assert_eq!(decision, "allow");
 }
@@ -770,30 +728,14 @@ fn tool_input_summary_prefers_command() {
 
 #[test]
 fn decision_label_parsed_deny_is_deny() {
-    let outcome = InvocationOutcome {
-        command: HookCommand {
-            command: "hook.sh".to_string(),
-            timeout: Duration::from_secs(2),
-            fail_closed: false,
-            status_message: None,
-            source_path: PathBuf::from("/tmp/hooks.json"),
+    let decision = outcome_decision_label(&InvocationStatus::Parsed(ParsedHookOutput {
+        decision: HookDecision::Deny {
+            reason: "not allowed".to_string(),
         },
-        exit_code: Some(0),
-        duration: Duration::from_millis(10),
-        stdout: "{\"permission\":\"deny\"}".to_string(),
-        stderr: String::new(),
-        parsed: Some(ParsedHookOutput {
-            decision: HookDecision::Deny {
-                reason: "not allowed".to_string(),
-            },
-            explicit_allow: false,
-            updated_input: None,
-            additional_context: None,
-        }),
-        error: None,
-    };
-
-    let decision = outcome_decision_label(outcome.parsed.as_ref(), outcome.error.as_deref());
+        explicit_allow: false,
+        updated_input: None,
+        additional_context: None,
+    }));
     assert_eq!(decision, "deny");
 }
 
@@ -826,10 +768,12 @@ async fn non_reading_hook_does_not_hang() {
     )
     .await;
 
+    let InvocationStatus::Failed(error) = &outcome.status else {
+        panic!("expected failed outcome, got: {:?}", outcome.status);
+    };
     assert!(
-        outcome.error.as_deref().unwrap_or("").contains("timed out"),
-        "expected timeout error for non-reading hook, got: {:?}",
-        outcome.error
+        error.contains("timed out"),
+        "expected timeout error for non-reading hook, got: {error}"
     );
 }
 
@@ -943,14 +887,16 @@ async fn noisy_hook_output_is_bounded_and_truncated() {
     )
     .await;
 
-    assert_eq!(outcome.exit_code, Some(0), "{:?}", outcome.error);
+    assert_eq!(outcome.exit_code, Some(0));
     // Truncated output is no longer valid hook JSON, so the parse error is
     // expected (identical to the pre-fix behavior); what must not happen is
     // a timeout or an unbounded buffer.
+    let InvocationStatus::Failed(error) = &outcome.status else {
+        panic!("expected failed outcome, got: {:?}", outcome.status);
+    };
     assert!(
-        !outcome.error.as_deref().unwrap_or("").contains("timed out"),
-        "noisy hook timed out instead of completing: {:?}",
-        outcome.error
+        !error.contains("timed out"),
+        "noisy hook timed out instead of completing: {error}"
     );
     // Both streams carry the marker and stay near the cap, not 4 MiB each.
     for stream in [&outcome.stdout, &outcome.stderr] {
@@ -995,13 +941,8 @@ async fn stderr_heavy_non_reading_hook_completes() {
     )
     .await;
 
-    assert_eq!(
-        outcome.exit_code,
-        Some(0),
-        "stderr-heavy non-reading hook did not complete: {:?}",
-        outcome.error
-    );
-    assert!(outcome.error.is_none());
+    assert_eq!(outcome.exit_code, Some(0));
+    assert!(matches!(outcome.status, InvocationStatus::NoOutput));
     assert!(
         outcome.stderr.contains("... (truncated, "),
         "expected truncation marker in bounded stderr, got: {:?}",

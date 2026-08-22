@@ -9,10 +9,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio::time::timeout;
 
-use crate::config::SessionWriter;
 use crate::config::hooks::{HookCommand, HookEvent, HookSource, LoadedHooks};
 use crate::config::settings::DEFAULT_HOOK_OUTPUT_LIMIT;
-use crate::types::{HookEventData, SessionRecord, StreamRecord};
+use crate::types::{HookEventData, StreamRecord};
 
 #[derive(Clone)]
 pub struct HookRunner {
@@ -28,7 +27,9 @@ pub struct HookContext {
     pub session_id: uuid::Uuid,
     pub task_id: uuid::Uuid,
     pub transcript_path: Option<PathBuf>,
-    pub session_writer: Option<SessionWriter>,
+    /// Sole owner of hook-event emission. The CLI builds it so one closure
+    /// fans each record out to session persistence and, for stream-json runs,
+    /// to stdout. `None` disables recording.
     pub hook_event_sink: Option<Arc<dyn Fn(StreamRecord) + Send + Sync>>,
     pub cwd: PathBuf,
     pub model: String,
@@ -138,8 +139,25 @@ struct InvocationOutcome {
     duration: Duration,
     stdout: String,
     stderr: String,
-    parsed: Option<ParsedHookOutput>,
-    error: Option<String>,
+    status: InvocationStatus,
+}
+
+/// How a hook invocation completed.
+///
+/// A typed sum replaces the previous optional `parsed`/`error` pair, which
+/// permitted contradictory states (both set, or neither). Every invocation
+/// lands in exactly one variant:
+/// - [`InvocationStatus::NoOutput`]: the hook exited zero with empty stdout.
+/// - [`InvocationStatus::Parsed`]: stdout carried a decision, either as JSON
+///   or through the blocking `exit 2` protocol.
+/// - [`InvocationStatus::Failed`]: the invocation failed to spawn, timed out,
+///   waited unsuccessfully, exited non-zero, or emitted stdout that was not
+///   valid JSON.
+#[derive(Debug)]
+enum InvocationStatus {
+    NoOutput,
+    Parsed(ParsedHookOutput),
+    Failed(String),
 }
 
 /// Parsed hook stdout, carrying a decision plus optional auxiliary fields.
@@ -416,63 +434,14 @@ impl HookRunner {
         for outcome in outcomes {
             self.record_outcome(event, source, tool_metadata.as_ref(), &outcome);
 
-            if let Some(error) = &outcome.error {
-                if outcome.command.fail_closed {
-                    if event == HookEvent::PreToolUse {
-                        aggregated.deny_reasons.push(format!(
-                            "{}: {error}",
-                            outcome.command.source_path.display()
-                        ));
-                        continue;
-                    }
-                    anyhow::bail!(
-                        "Hook failed closed for {event} in {}: {error}",
-                        outcome.command.source_path.display()
-                    );
-                }
-                tracing::warn!(
-                    target: "cake::hooks",
-                    event = event.as_str(),
-                    source = source.as_display_str(),
-                    command = %outcome.command.command,
-                    source_file = %outcome.command.source_path.display(),
-                    error = %error,
-                    "Hook failed open"
-                );
-                continue;
-            }
-
-            let Some(parsed) = &outcome.parsed else {
-                continue;
-            };
-
-            match &parsed.decision {
-                HookDecision::Continue => {},
-                HookDecision::Deny { reason } | HookDecision::Stop { reason } => {
-                    let label = parsed.decision.decision_label();
-                    if event == HookEvent::PreToolUse {
-                        aggregated.deny_reasons.push(format!(
-                            "{}: {reason}",
-                            outcome.command.source_path.display()
-                        ));
-                    } else {
-                        anyhow::bail!("Hook {label} {event}: {reason}");
-                    }
+            match &outcome.status {
+                InvocationStatus::Failed(error) => {
+                    apply_failed_status(&mut aggregated, event, source, &outcome, error)?;
                 },
-            }
-
-            if let Some(context) = parsed.additional_context.as_ref()
-                && !context.is_empty()
-            {
-                aggregated.additional_context.push(context.clone());
-            }
-
-            if event == HookEvent::PreToolUse
-                && let Some(updated_input) = parsed.updated_input.clone()
-            {
-                aggregated
-                    .updated_inputs
-                    .push((updated_input, outcome.command.source_path.clone()));
+                InvocationStatus::NoOutput => {},
+                InvocationStatus::Parsed(parsed) => {
+                    apply_parsed_status(&mut aggregated, event, &outcome, parsed)?;
+                },
             }
         }
 
@@ -513,11 +482,11 @@ impl HookRunner {
     ) {
         let stderr_bytes = outcome.stderr.len();
         let stdout_bytes = outcome.stdout.len();
-        let level_error = outcome.command.fail_closed && outcome.error.is_some();
+        let failed = matches!(outcome.status, InvocationStatus::Failed(_));
+        let level_error = outcome.command.fail_closed && failed;
         let source_str = source.as_display_str();
-        let decision = outcome_decision_label(outcome.parsed.as_ref(), outcome.error.as_deref());
-        let resolved_decision =
-            resolved_decision_label(outcome.parsed.as_ref(), outcome.error.as_deref());
+        let decision = outcome_decision_label(&outcome.status);
+        let resolved_decision = resolved_decision_label(&outcome.status);
         if level_error {
             tracing::error!(
                 target: "cake::hooks",
@@ -534,7 +503,7 @@ impl HookRunner {
                 fail_closed = outcome.command.fail_closed,
                 "Hook invocation failed closed"
             );
-        } else if outcome.error.is_some() {
+        } else if failed {
             tracing::warn!(
                 target: "cake::hooks",
                 event = event.as_str(),
@@ -589,21 +558,85 @@ impl HookRunner {
 
         if let Some(sink) = &self.context.hook_event_sink {
             sink(StreamRecord::HookEvent(record));
-            return;
-        }
-
-        let Some(writer) = &self.context.session_writer else {
-            return;
-        };
-        let record = SessionRecord::HookEvent(record);
-        if let Err(error) = writer.append_record(&record) {
-            tracing::warn!(
-                target: "cake::hooks",
-                error = %error,
-                "Failed to append hook transcript record"
-            );
         }
     }
+}
+
+/// Disposition of a [`InvocationStatus::Failed`] outcome: block on fail-closed
+/// `PreToolUse`, propagate an error for other fail-closed events, or log and
+/// continue (fail open).
+fn apply_failed_status(
+    aggregated: &mut AggregatedHookResult,
+    event: HookEvent,
+    source: &HookSource,
+    outcome: &InvocationOutcome,
+    error: &str,
+) -> anyhow::Result<()> {
+    if !outcome.command.fail_closed {
+        tracing::warn!(
+            target: "cake::hooks",
+            event = event.as_str(),
+            source = source.as_display_str(),
+            command = %outcome.command.command,
+            source_file = %outcome.command.source_path.display(),
+            error = %error,
+            "Hook failed open"
+        );
+        return Ok(());
+    }
+
+    if event == HookEvent::PreToolUse {
+        aggregated.deny_reasons.push(format!(
+            "{}: {error}",
+            outcome.command.source_path.display()
+        ));
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "Hook failed closed for {event} in {}: {error}",
+        outcome.command.source_path.display()
+    );
+}
+
+/// Disposition of a [`InvocationStatus::Parsed`] outcome: collect deny/stop
+/// reasons, additional context, and `PreToolUse` input rewrites.
+fn apply_parsed_status(
+    aggregated: &mut AggregatedHookResult,
+    event: HookEvent,
+    outcome: &InvocationOutcome,
+    parsed: &ParsedHookOutput,
+) -> anyhow::Result<()> {
+    match &parsed.decision {
+        HookDecision::Continue => {},
+        HookDecision::Deny { reason } | HookDecision::Stop { reason } => {
+            let label = parsed.decision.decision_label();
+            if event == HookEvent::PreToolUse {
+                aggregated.deny_reasons.push(format!(
+                    "{}: {reason}",
+                    outcome.command.source_path.display()
+                ));
+            } else {
+                anyhow::bail!("Hook {label} {event}: {reason}");
+            }
+        },
+    }
+
+    if let Some(context) = parsed.additional_context.as_ref()
+        && !context.is_empty()
+    {
+        aggregated.additional_context.push(context.clone());
+    }
+
+    if event == HookEvent::PreToolUse
+        && let Some(updated_input) = parsed.updated_input.clone()
+    {
+        aggregated
+            .updated_inputs
+            .push((updated_input, outcome.command.source_path.clone()));
+    }
+
+    Ok(())
 }
 
 /// RAII guard that kills the entire hook process tree on drop, unless
@@ -703,8 +736,7 @@ async fn run_command_hook(
                 duration: start.elapsed(),
                 stdout: String::new(),
                 stderr: String::new(),
-                parsed: None,
-                error: Some(format!("failed to spawn hook command: {error}")),
+                status: InvocationStatus::Failed(format!("failed to spawn hook command: {error}")),
             };
         },
     };
@@ -760,8 +792,9 @@ async fn run_command_hook(
                     duration: start.elapsed(),
                     stdout: String::new(),
                     stderr: String::new(),
-                    parsed: None,
-                    error: Some(format!("failed to wait for hook command: {error}")),
+                    status: InvocationStatus::Failed(format!(
+                        "failed to wait for hook command: {error}"
+                    )),
                 };
             },
             Err(_) => {
@@ -777,8 +810,9 @@ async fn run_command_hook(
                     duration: start.elapsed(),
                     stdout: String::new(),
                     stderr: String::new(),
-                    parsed: None,
-                    error: Some(format!("hook command timed out after {timeout_secs}s")),
+                    status: InvocationStatus::Failed(format!(
+                        "hook command timed out after {timeout_secs}s"
+                    )),
                 };
             },
         };
@@ -803,13 +837,12 @@ async fn run_command_hook(
             duration: start.elapsed(),
             stdout,
             stderr,
-            parsed: Some(ParsedHookOutput {
+            status: InvocationStatus::Parsed(ParsedHookOutput {
                 decision: HookDecision::Stop { reason },
                 explicit_allow: false,
                 updated_input: None,
                 additional_context: None,
             }),
-            error: None,
         };
     }
 
@@ -820,8 +853,7 @@ async fn run_command_hook(
             duration: start.elapsed(),
             stdout,
             stderr: stderr.clone(),
-            parsed: None,
-            error: Some(format!(
+            status: InvocationStatus::Failed(format!(
                 "hook exited with code {}{}",
                 exit_code.map_or_else(|| "unknown".to_string(), |code| code.to_string()),
                 if stderr.trim().is_empty() {
@@ -842,8 +874,7 @@ async fn run_command_hook(
                 duration: start.elapsed(),
                 stdout,
                 stderr,
-                parsed: Some(parsed),
-                error: None,
+                status: InvocationStatus::Parsed(parsed),
             }
         },
         Ok(None) => InvocationOutcome {
@@ -852,8 +883,7 @@ async fn run_command_hook(
             duration: start.elapsed(),
             stdout,
             stderr,
-            parsed: None,
-            error: None,
+            status: InvocationStatus::NoOutput,
         },
         Err(error) => InvocationOutcome {
             command,
@@ -861,8 +891,7 @@ async fn run_command_hook(
             duration: start.elapsed(),
             stdout,
             stderr,
-            parsed: None,
-            error: Some(error),
+            status: InvocationStatus::Failed(error),
         },
     }
 }
@@ -899,26 +928,20 @@ fn parse_hook_output(stdout: &str) -> Result<Option<RawHookOutput>, String> {
         .map_err(|error| format!("hook stdout was not valid JSON: {error}"))
 }
 
-const fn outcome_decision_label(
-    parsed: Option<&ParsedHookOutput>,
-    error: Option<&str>,
-) -> &'static str {
-    match (parsed, error) {
-        (Some(parsed), _) => parsed.decision.decision_label(),
-        (None, Some(_)) => "error",
-        (None, None) => "none",
+const fn outcome_decision_label(status: &InvocationStatus) -> &'static str {
+    match status {
+        InvocationStatus::Parsed(parsed) => parsed.decision.decision_label(),
+        InvocationStatus::Failed(_) => "error",
+        InvocationStatus::NoOutput => "none",
     }
 }
 
-const fn resolved_decision_label(
-    parsed: Option<&ParsedHookOutput>,
-    error: Option<&str>,
-) -> &'static str {
-    match (parsed, error) {
-        (Some(parsed), _) if parsed.explicit_allow => "allow",
-        (Some(parsed), _) => parsed.decision.decision_label(),
-        (None, Some(_)) => "error",
-        (None, None) => "none",
+const fn resolved_decision_label(status: &InvocationStatus) -> &'static str {
+    match status {
+        InvocationStatus::Parsed(parsed) if parsed.explicit_allow => "allow",
+        InvocationStatus::Parsed(parsed) => parsed.decision.decision_label(),
+        InvocationStatus::Failed(_) => "error",
+        InvocationStatus::NoOutput => "none",
     }
 }
 
