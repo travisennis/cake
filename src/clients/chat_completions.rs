@@ -313,8 +313,6 @@ impl<'a> ChatMessageBuilder<'a> {
     }
 
     fn push_message(&mut self, role: Role, content: &'a str) {
-        let role_str = chat_role_name(role);
-
         if matches!(role, Role::Assistant) && !self.pending_tool_calls.is_empty() {
             let tool_calls = self.take_pending_tool_calls();
             self.push_assistant_message(Some(Cow::Borrowed(content)), Some(tool_calls));
@@ -330,7 +328,7 @@ impl<'a> ChatMessageBuilder<'a> {
             .then(|| self.pending_reasoning_content.take())
             .flatten();
         self.messages.push(ChatMessage {
-            role: Cow::Borrowed(role_str),
+            role,
             content: Some(Cow::Borrowed(content)),
             reasoning_content,
             tool_calls: None,
@@ -352,7 +350,7 @@ impl<'a> ChatMessageBuilder<'a> {
         // message, attach the tool call to that message. This handles the new
         // [Message(assistant), FunctionCall] conversation ordering.
         if let Some(last) = self.messages.last_mut()
-            && last.role == "assistant"
+            && last.role == Role::Assistant
         {
             if let Some(tool_calls) = last.tool_calls.as_mut() {
                 tool_calls.push(tool_call);
@@ -370,7 +368,7 @@ impl<'a> ChatMessageBuilder<'a> {
         self.pending_reasoning_content = None;
 
         self.messages.push(ChatMessage {
-            role: Cow::Borrowed("tool"),
+            role: Role::Tool,
             content: Some(Cow::Borrowed(output)),
             reasoning_content: None,
             tool_calls: None,
@@ -397,7 +395,7 @@ impl<'a> ChatMessageBuilder<'a> {
         tool_calls: Option<Vec<ChatToolCallRef<'a>>>,
     ) {
         self.messages.push(ChatMessage {
-            role: Cow::Borrowed("assistant"),
+            role: Role::Assistant,
             content,
             reasoning_content: self.pending_reasoning_content.take(),
             tool_calls,
@@ -415,30 +413,21 @@ impl<'a> ChatMessageBuilder<'a> {
     }
 }
 
-const fn chat_role_name(role: Role) -> &'static str {
-    match role {
-        Role::System => "system",
-        Role::Developer => "developer",
-        Role::Assistant => "assistant",
-        Role::User => "user",
-        Role::Tool => "tool",
-    }
-}
-
 fn extract_reasoning_content(content: Option<&[crate::types::ReasoningContent]>) -> Option<&str> {
     content.and_then(|items| items.iter().find_map(|item| item.text.as_deref()))
 }
 
-/// Convert internal tool definitions to Chat Completions format.
-fn convert_tools(tools: &[Tool]) -> Vec<ChatTool> {
+/// Convert internal tool definitions to Chat Completions format. The returned
+/// wrappers borrow from `tools`, so building a request never clones a schema.
+fn convert_tools(tools: &[Tool]) -> Vec<ChatTool<'_>> {
     tools
         .iter()
         .map(|tool| ChatTool {
-            type_: "function".to_string(),
+            type_: "function",
             function: ChatFunction {
-                name: tool.name.clone(),
-                description: tool.description.clone(),
-                parameters: tool.parameters.clone(),
+                name: &tool.name,
+                description: &tool.description,
+                parameters: &tool.parameters,
             },
         })
         .collect()
