@@ -16,7 +16,11 @@ from cakelib import classify_tool_error
 
 class ClassifyToolErrorTest(unittest.TestCase):
     def test_judge_block(self):
-        """Judge block: `BLOCKED` + `Reason:` (src/clients/tools/bash.rs)."""
+        """Judge block: `BLOCKED` + `Reason:` (src/clients/tools/bash.rs).
+
+        Raw form. Transcripts store this output with an `Error: ` prefix;
+        see test_judge_block_transcript_prefix.
+        """
         self.assertEqual(
             classify_tool_error("Bash", "BLOCKED\n\nReason: destructive rm -rf /"),
             "judge-blocked",
@@ -50,13 +54,19 @@ class ClassifyToolErrorTest(unittest.TestCase):
         )
 
     def test_hook_blocked(self):
-        """Real hook denials name the hook runner, not a bare BLOCKED."""
+        """Real hook denials name the hook runner, not a bare BLOCKED.
+
+        This unprefixed form is what session JSONL stores: agent_loop.rs
+        writes `Hook blocked tool execution: {reason}` verbatim, with no
+        `Error: ` prefix. The prefixed variant below is robustness only.
+        """
         self.assertEqual(
             classify_tool_error("Bash", "Hook blocked tool execution: policy denies curl"),
             "hook-blocked",
         )
 
     def test_hook_blocked_transcript_prefix(self):
+        """Prefixed hook denial matches too. No current code path emits it."""
         self.assertEqual(
             classify_tool_error("Edit", "Error: Hook blocked tool execution: policy denies git push"),
             "hook-blocked",
