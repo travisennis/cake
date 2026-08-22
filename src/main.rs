@@ -774,6 +774,12 @@ impl CodingAssistant {
         Ok((client, Some(runner)))
     }
 
+    /// Build the sole owner of hook-event emission.
+    ///
+    /// The returned closure fans each hook record out to session persistence
+    /// (when a writer exists) and, for stream-json runs, to stdout. Because it
+    /// is the only emission path, `HookContext` carries no separate writer and
+    /// there is no sink-versus-writer precedence to reason about.
     fn hook_event_sink(
         session_writer: Option<crate::config::SessionWriter>,
         output_format: OutputFormat,
@@ -1066,7 +1072,6 @@ impl CmdRunner for CodingAssistant {
             transcript_path: run_mode
                 .persists_session()
                 .then(|| data_dir.session_path(session.id)),
-            session_writer: session_writer.clone(),
             hook_event_sink: Self::hook_event_sink(session_writer, self.output_format),
             cwd: prepared.current_dir.clone(),
             model: client.model_name().to_string(),
