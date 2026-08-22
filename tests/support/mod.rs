@@ -69,10 +69,14 @@ impl TestEnv {
             .env("XDG_CONFIG_HOME", self.home_dir.join(".config"))
             .env("CAKE_DATA_DIR", &self.data_dir);
         // Never hand the binary under test a repository, configuration, or
-        // identity pinned by the environment the suite was launched from.
+        // identity pinned by the environment the suite was launched from, and
+        // never let an ambient `CAKE_TOOLBOX` point the binary at a host
+        // program the tests did not stage. Toolbox tests set `CAKE_TOOLBOX`
+        // (or `--toolbox`) explicitly for themselves.
         for var in GIT_AMBIENT_ENV_VARS {
             cmd.env_remove(var);
         }
+        cmd.env_remove("CAKE_TOOLBOX");
         cmd
     }
 
