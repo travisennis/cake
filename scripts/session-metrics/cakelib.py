@@ -499,8 +499,14 @@ def classify_tool_error(name: str, output: str) -> str:
     # Cross-tool categories
     if "Rejected this" in first and "already issued" in output:
         return "duplicate-mutation guard"
-    if "BLOCKED" in first:
+    if "Hook blocked tool execution" in first:
         return "hook-blocked"
+    if "BLOCKED" in first:
+        # Only the Bash command-safety judge emits a bare BLOCKED first line:
+        # an active block carries "Reason:", judge unavailability is fail-closed.
+        if "command-safety judge was unavailable" in output:
+            return "judge-fail-closed"
+        return "judge-blocked"
     if "read-only" in output:
         return "read-only path"
     if "Invalid" in first and "arguments" in first:
