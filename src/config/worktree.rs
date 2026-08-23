@@ -524,8 +524,8 @@ fn glob_match(pattern: &str, path: &str) -> bool {
 /// Each unique `(pattern_pos, path_pos)` pair is explored at most once,
 /// bounding the total search to `O(pattern_len` × `path_len`).
 fn glob_match_bytes(pattern: &[u8], path: &[u8]) -> bool {
-    let mut visited: HashSet<(usize, usize)> = HashSet::new();
-    let mut stack: Vec<(usize, usize)> = vec![(0, 0)];
+    let mut visited: HashSet<MatchPosition> = HashSet::new();
+    let mut stack: Vec<MatchPosition> = vec![(0, 0)];
     visited.insert((0, 0));
 
     while let Some((pi, si)) = stack.pop() {
@@ -537,61 +537,144 @@ fn glob_match_bytes(pattern: &[u8], path: &[u8]) -> bool {
             continue;
         }
 
-        // Handle `**` — matches any characters including `/`.
-        if pi + 1 < pattern.len() && pattern[pi] == b'*' && pattern[pi + 1] == b'*' {
-            // Skip past `**` and an optional following `/`.
-            let rest = if pi + 2 < pattern.len() && pattern[pi + 2] == b'/' {
-                pi + 3
-            } else {
-                pi + 2
-            };
-
-            // Option A: ** matches nothing, continue with rest.
-            if visited.insert((rest, si)) {
-                stack.push((rest, si));
-            }
-            // Option B: ** matches one char, stay on **.
-            if si < path.len() && visited.insert((pi, si + 1)) {
-                stack.push((pi, si + 1));
-            }
-            continue;
-        }
-
-        // Handle `*` — matches any characters except `/`.
-        // This must come before the path-exhaustion check because
-        // `*` can match zero characters even when the path is empty.
-        if pattern[pi] == b'*' {
-            // Option A: * matches nothing.
-            if visited.insert((pi + 1, si)) {
-                stack.push((pi + 1, si));
-            }
-            // Option B: * matches one char (non-/), stay on *.
-            if si < path.len() && path[si] != b'/' && visited.insert((pi, si + 1)) {
-                stack.push((pi, si + 1));
-            }
-            continue;
-        }
-
-        // Path exhausted but pattern has non-* / non-** chars → no match.
-        if si >= path.len() {
-            continue;
-        }
-
-        // Handle `?` — matches any single character except `/`.
-        if pattern[pi] == b'?' {
-            if path[si] != b'/' && visited.insert((pi + 1, si + 1)) {
-                stack.push((pi + 1, si + 1));
-            }
-            continue;
-        }
-
-        // Literal character match.
-        if pattern[pi] == path[si] && visited.insert((pi + 1, si + 1)) {
-            stack.push((pi + 1, si + 1));
-        }
+        enqueue_transitions(pattern, path, (pi, si), &mut visited, &mut stack);
     }
 
     false
+}
+
+/// A matcher search state: an index into the pattern paired with an index
+/// into the path.
+type MatchPosition = (usize, usize);
+
+/// One pattern token starting at a pattern index.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PatternToken {
+    /// `**` -- matches any characters, including `/`.
+    DoubleStar,
+    /// `*` -- matches characters except `/`.
+    Star,
+    /// `?` -- matches one character except `/`.
+    Question,
+    /// Any other byte, matched literally.
+    Literal(u8),
+}
+
+/// Classify the token starting at pattern index `pi`, which must be inside
+/// `pattern`.
+fn classify_token(pattern: &[u8], pi: usize) -> PatternToken {
+    match pattern[pi] {
+        b'*' if pi + 1 < pattern.len() && pattern[pi + 1] == b'*' => PatternToken::DoubleStar,
+        b'*' => PatternToken::Star,
+        b'?' => PatternToken::Question,
+        byte => PatternToken::Literal(byte),
+    }
+}
+
+/// Queue `pos` when it has not been explored yet.
+///
+/// The visited set deduplicates converging search paths so each unique
+/// `(pattern_pos, path_pos)` pair is expanded at most once.
+fn queue_position(
+    pos: MatchPosition,
+    visited: &mut HashSet<MatchPosition>,
+    stack: &mut Vec<MatchPosition>,
+) {
+    if visited.insert(pos) {
+        stack.push(pos);
+    }
+}
+
+/// Queue every unexplored state reachable from `pos`, one per way the token
+/// at `pattern[pos.0]` can consume input.
+fn enqueue_transitions(
+    pattern: &[u8],
+    path: &[u8],
+    pos: MatchPosition,
+    visited: &mut HashSet<MatchPosition>,
+    stack: &mut Vec<MatchPosition>,
+) {
+    match classify_token(pattern, pos.0) {
+        PatternToken::DoubleStar => enqueue_double_star(pattern, pos, path, visited, stack),
+        PatternToken::Star => enqueue_star(pos, path, visited, stack),
+        PatternToken::Question => enqueue_question(pos, path, visited, stack),
+        PatternToken::Literal(expected) => enqueue_literal(expected, pos, path, visited, stack),
+    }
+}
+
+/// Queue the successors of a `**` token at `pos.0`.
+///
+/// `**` matches any characters including `/`, so it can absorb one more path
+/// byte and stay in place.
+fn enqueue_double_star(
+    pattern: &[u8],
+    pos: MatchPosition,
+    path: &[u8],
+    visited: &mut HashSet<MatchPosition>,
+    stack: &mut Vec<MatchPosition>,
+) {
+    let (pi, si) = pos;
+    // Skip past `**` and an optional following `/`.
+    let rest = if pi + 2 < pattern.len() && pattern[pi + 2] == b'/' {
+        pi + 3
+    } else {
+        pi + 2
+    };
+
+    // Option A: ** matches nothing, continue with rest.
+    queue_position((rest, si), visited, stack);
+    // Option B: ** matches one char, stay on **.
+    if si < path.len() {
+        queue_position((pi, si + 1), visited, stack);
+    }
+}
+
+/// Queue the successors of a single `*` token at `pos.0`.
+///
+/// `*` matches zero or more characters except `/`. It can match zero
+/// characters even when the path is exhausted.
+fn enqueue_star(
+    pos: MatchPosition,
+    path: &[u8],
+    visited: &mut HashSet<MatchPosition>,
+    stack: &mut Vec<MatchPosition>,
+) {
+    let (pi, si) = pos;
+    // Option A: * matches nothing.
+    queue_position((pi + 1, si), visited, stack);
+    // Option B: * matches one char (non-/), stay on *.
+    if si < path.len() && path[si] != b'/' {
+        queue_position((pi, si + 1), visited, stack);
+    }
+}
+
+/// Queue the successor of a `?` token at `pos.0`, which advances across one
+/// non-`/` path byte.
+fn enqueue_question(
+    pos: MatchPosition,
+    path: &[u8],
+    visited: &mut HashSet<MatchPosition>,
+    stack: &mut Vec<MatchPosition>,
+) {
+    let (pi, si) = pos;
+    if si < path.len() && path[si] != b'/' {
+        queue_position((pi + 1, si + 1), visited, stack);
+    }
+}
+
+/// Queue the successor of a literal byte at `pos.0`, which advances across
+/// one equal path byte.
+fn enqueue_literal(
+    expected: u8,
+    pos: MatchPosition,
+    path: &[u8],
+    visited: &mut HashSet<MatchPosition>,
+    stack: &mut Vec<MatchPosition>,
+) {
+    let (pi, si) = pos;
+    if si < path.len() && expected == path[si] {
+        queue_position((pi + 1, si + 1), visited, stack);
+    }
 }
 
 /// Returns `true` if `pattern` could match a file under the relative directory
@@ -1000,6 +1083,31 @@ mod tests {
         assert!(glob_match("**/*.rs", "src/lib.rs"));
         assert!(glob_match("**/*.rs", "src/sub/lib.rs"));
         assert!(!glob_match("**/*.rs", "lib.txt"));
+    }
+
+    #[test]
+    fn test_glob_match_wildcard_at_path_exhaustion() {
+        // `?` cannot match an exhausted path.
+        assert!(!glob_match("a?", "a"));
+        // A literal cannot match an exhausted path.
+        assert!(!glob_match("ab", "a"));
+        // `*` still matches zero characters at an exhausted path.
+        assert!(glob_match("a*", "a"));
+        // `**` still matches zero characters at an exhausted path.
+        assert!(glob_match("a**", "a"));
+    }
+
+    #[test]
+    fn test_glob_match_doublestar_slash_skipping() {
+        // `**/` consumes its optional trailing slash in one step.
+        assert!(glob_match("**/secrets", "secrets"));
+        assert!(glob_match("**/secrets", "deep/nested/secrets"));
+        // Embedded `**` before a non-slash does not skip the next byte:
+        // it must still match the byte itself.
+        assert!(glob_match("**x", "x"));
+        assert!(glob_match("**x", "abcx"));
+        assert!(!glob_match("**x", "ab"));
+        assert!(!glob_match("**x", ""));
     }
 
     #[test]
