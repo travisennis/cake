@@ -592,4 +592,245 @@ mod tests {
             Some(SessionRecord::SkillActivated { name, .. }) if name == "debugging-cake"
         ));
     }
+
+    // ---- build_client_and_session run-mode coverage ----
+
+    fn test_models() -> HashMap<String, ModelDefinition> {
+        HashMap::from([(
+            "test".to_string(),
+            ModelDefinition {
+                name: "test".to_string(),
+                model: "glm-5.1".to_string(),
+                base_url: "https://example.invalid/v1".to_string(),
+                api_key_env: "SESSION_FACTORY_TEST_KEY".to_string(),
+                provider: None,
+                provider_headers: None,
+                api_type: crate::config::model::ApiType::ChatCompletions,
+                temperature: None,
+                top_p: None,
+                max_output_tokens: None,
+                context_window: None,
+                reasoning_effort: None,
+                reasoning_summary: None,
+                reasoning_max_tokens: None,
+                providers: vec![],
+            },
+        )])
+    }
+
+    /// Persist a minimal restorable session for `working_dir`.
+    fn saved_session(data_dir: &DataDir, working_dir: &Path) -> Session {
+        let mut session = Session::new(uuid::Uuid::new_v4(), working_dir.to_path_buf());
+        session.model = Some("test".to_string());
+        data_dir
+            .save_session(&session)
+            .expect("session fixture should save");
+        session
+    }
+
+    /// Call `build_client_and_session` with the shared test fixtures.
+    fn build_for_mode(
+        cli: &crate::CodingAssistant,
+        mode: &RunMode,
+        data_dir: &DataDir,
+        working_dir: &Path,
+    ) -> anyhow::Result<RunSession> {
+        let tool_context = Arc::new(ToolContext::new(
+            working_dir.to_path_buf(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            SandboxPolicy::WorkspaceWrite,
+        ));
+        cli.build_client_and_session(
+            mode,
+            data_dir,
+            working_dir.to_path_buf(),
+            working_dir,
+            &[],
+            &test_models(),
+            Some("test"),
+            &SkillCatalog {
+                skills: Vec::new(),
+                diagnostics: Vec::new(),
+            },
+            &tool_context,
+            &[],
+            uuid::Uuid::new_v4(),
+            None,
+            &JudgeSettings::default(),
+        )
+    }
+
+    #[test]
+    fn continue_restores_latest_directory_session() {
+        temp_env::with_var("SESSION_FACTORY_TEST_KEY", Some("test-key"), || {
+            let cli = crate::CodingAssistant::parse_from(["cake"]);
+            let data_dir_dir = tempfile::tempdir().expect("temp data dir");
+            let data_dir = DataDir::new_in_dir(data_dir_dir.path());
+            let working_dir = tempfile::tempdir().expect("temp working dir");
+            let saved = saved_session(&data_dir, working_dir.path());
+
+            let run = build_for_mode(
+                &cli,
+                &RunMode::ContinueLatest,
+                &data_dir,
+                working_dir.path(),
+            )
+            .expect("continue should succeed");
+
+            assert_eq!(run.agent.session_id(), saved.id);
+            assert!(matches!(run.storage, SessionStorage::Append));
+            assert!(run.seed_records.is_none());
+        });
+    }
+
+    #[test]
+    fn continue_without_any_sessions_reports_missing_session() {
+        let cli = crate::CodingAssistant::parse_from(["cake"]);
+        let data_dir_dir = tempfile::tempdir().expect("temp data dir");
+        let data_dir = DataDir::new_in_dir(data_dir_dir.path());
+        let working_dir = tempfile::tempdir().expect("temp working dir");
+
+        let error = build_for_mode(
+            &cli,
+            &RunMode::ContinueLatest,
+            &data_dir,
+            working_dir.path(),
+        )
+        .err().expect("continue without sessions should fail");
+
+        assert!(error.to_string().contains("No previous session found"));
+    }
+
+    #[test]
+    fn continue_in_other_directory_names_the_original_directory() {
+        let cli = crate::CodingAssistant::parse_from(["cake"]);
+        let data_dir_dir = tempfile::tempdir().expect("temp data dir");
+        let data_dir = DataDir::new_in_dir(data_dir_dir.path());
+        let working_dir = tempfile::tempdir().expect("temp working dir");
+        let other_dir = tempfile::tempdir().expect("temp other dir");
+        saved_session(&data_dir, other_dir.path());
+
+        let error = build_for_mode(
+            &cli,
+            &RunMode::ContinueLatest,
+            &data_dir,
+            working_dir.path(),
+        )
+        .err().expect("continue from another directory should fail");
+
+        let message = error.to_string();
+        assert!(message.contains("Cannot continue"));
+        assert!(message.contains(&other_dir.path().display().to_string()));
+    }
+
+    #[test]
+    fn resume_restores_the_named_session() {
+        temp_env::with_var("SESSION_FACTORY_TEST_KEY", Some("test-key"), || {
+            let cli = crate::CodingAssistant::parse_from(["cake"]);
+            let data_dir_dir = tempfile::tempdir().expect("temp data dir");
+            let data_dir = DataDir::new_in_dir(data_dir_dir.path());
+            let working_dir = tempfile::tempdir().expect("temp working dir");
+            let saved = saved_session(&data_dir, working_dir.path());
+
+            let run = build_for_mode(
+                &cli,
+                &RunMode::Resume {
+                    session_id: saved.id,
+                },
+                &data_dir,
+                working_dir.path(),
+            )
+            .expect("resume should succeed");
+
+            assert_eq!(run.agent.session_id(), saved.id);
+            assert!(matches!(run.storage, SessionStorage::Append));
+        });
+    }
+
+    #[test]
+    fn resume_unknown_session_reports_not_found() {
+        let cli = crate::CodingAssistant::parse_from(["cake"]);
+        let data_dir_dir = tempfile::tempdir().expect("temp data dir");
+        let data_dir = DataDir::new_in_dir(data_dir_dir.path());
+        let working_dir = tempfile::tempdir().expect("temp working dir");
+
+        let error = build_for_mode(
+            &cli,
+            &RunMode::Resume {
+                session_id: uuid::Uuid::new_v4(),
+            },
+            &data_dir,
+            working_dir.path(),
+        )
+        .err().expect("resume of unknown session should fail");
+
+        assert!(error.to_string().contains("not found"));
+    }
+
+    #[test]
+    fn fork_latest_starts_a_new_seeded_session() {
+        temp_env::with_var("SESSION_FACTORY_TEST_KEY", Some("test-key"), || {
+            let cli = crate::CodingAssistant::parse_from(["cake"]);
+            let data_dir_dir = tempfile::tempdir().expect("temp data dir");
+            let data_dir = DataDir::new_in_dir(data_dir_dir.path());
+            let working_dir = tempfile::tempdir().expect("temp working dir");
+            let mut saved = session_with_activated_skill(uuid::Uuid::new_v4());
+            saved.working_dir = working_dir.path().to_path_buf();
+            saved.model = Some("test".to_string());
+            data_dir
+                .save_session(&saved)
+                .expect("session fixture should save");
+
+            let run = build_for_mode(&cli, &RunMode::ForkLatest, &data_dir, working_dir.path())
+                .expect("fork should succeed");
+
+            assert_ne!(run.agent.session_id(), saved.id);
+            assert!(matches!(run.storage, SessionStorage::New));
+            assert!(
+                matches!(
+                    run.seed_records.as_deref().and_then(|records| records.first()),
+                    Some(SessionRecord::SkillActivated { name, .. }) if name == "debugging-cake"
+                ),
+                "fork should seed activation records"
+            );
+        });
+    }
+
+    #[test]
+    fn fork_unknown_session_reports_not_found() {
+        let cli = crate::CodingAssistant::parse_from(["cake"]);
+        let data_dir_dir = tempfile::tempdir().expect("temp data dir");
+        let data_dir = DataDir::new_in_dir(data_dir_dir.path());
+        let working_dir = tempfile::tempdir().expect("temp working dir");
+
+        let error = build_for_mode(
+            &cli,
+            &RunMode::Fork {
+                session_id: uuid::Uuid::new_v4(),
+            },
+            &data_dir,
+            working_dir.path(),
+        )
+        .err().expect("fork of unknown session should fail");
+
+        assert!(error.to_string().contains("not found"));
+    }
+
+    #[test]
+    fn ephemeral_runs_start_a_fresh_unseeded_session() {
+        temp_env::with_var("SESSION_FACTORY_TEST_KEY", Some("test-key"), || {
+            let cli = crate::CodingAssistant::parse_from(["cake"]);
+            let data_dir_dir = tempfile::tempdir().expect("temp data dir");
+            let data_dir = DataDir::new_in_dir(data_dir_dir.path());
+            let working_dir = tempfile::tempdir().expect("temp working dir");
+
+            let run = build_for_mode(&cli, &RunMode::Ephemeral, &data_dir, working_dir.path())
+                .expect("ephemeral run should assemble");
+
+            assert!(matches!(run.storage, SessionStorage::New));
+            assert!(run.seed_records.is_none());
+        });
+    }
 }
