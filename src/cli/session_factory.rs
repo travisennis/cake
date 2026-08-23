@@ -191,10 +191,6 @@ impl crate::CodingAssistant {
         clippy::too_many_arguments,
         reason = "session construction naturally requires many parameters"
     )]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "session construction naturally requires many parameters"
-    )]
     pub(crate) fn build_client_and_session(
         &self,
         run_mode: &RunMode,
@@ -211,120 +207,188 @@ impl crate::CodingAssistant {
         loaded_system_prompt: Option<&str>,
         judge: &JudgeSettings,
     ) -> anyhow::Result<RunSession> {
-        let cli_system_prompt = self.system_prompt.as_deref().map(std::path::Path::new);
-        let settings_system_prompt = loaded_system_prompt.map(std::path::Path::new);
         let initial_messages = build_initial_prompt_messages(
             &current_dir,
             config_dir,
-            cli_system_prompt,
-            settings_system_prompt,
+            self.system_prompt.as_deref().map(std::path::Path::new),
+            loaded_system_prompt.map(std::path::Path::new),
             agents_files,
             skill_catalog,
             tool_context.sandbox_policy,
             toolbox_tools,
         );
-        let locs = skill_locations(skill_catalog);
-
+        let inputs = RunInputs {
+            current_dir,
+            initial_messages,
+            skill_locations: skill_locations(skill_catalog),
+            models,
+            default_model,
+            tool_context,
+            toolbox_tools,
+            task_id,
+            judge,
+        };
         match run_mode {
-            RunMode::ContinueLatest => {
-                info!(target: "cake", "Continuing latest session for directory: {}", current_dir.display());
-                let Some(restored) = data_dir.load_latest_session(&current_dir)? else {
-                    if let Some(latest) = data_dir.load_latest_session_any_directory()? {
-                        anyhow::bail!(
-                            "Cannot continue: latest session was created in '{}' but current directory is '{}'. Run from the original directory or start a new session.",
-                            latest.working_dir.display(),
-                            current_dir.display()
-                        );
-                    }
-                    anyhow::bail!("No previous session found for this directory");
-                };
-                info!(target: "cake", "Continuing session: {}", restored.id);
-                let resolved = self.resolve_model_for_session(
-                    models,
-                    default_model,
-                    restored.model.as_deref(),
-                )?;
-                let tool_context = attach_judge(tool_context, &resolved, judge, models);
-                Self::restored_client_and_session(
-                    restored,
-                    resolved,
-                    &initial_messages,
-                    &locs,
-                    tool_context,
-                    toolbox_tools.to_vec(),
-                    task_id,
-                )
-            },
-            RunMode::Resume { session_id } => {
-                let restored = data_dir
-                    .load_session(*session_id)?
-                    .ok_or_else(|| anyhow::anyhow!("Session {session_id} not found"))?;
-                info!(target: "cake", "Resumed session: {}", restored.id);
-
-                let resolved = self.resolve_model_for_session(
-                    models,
-                    default_model,
-                    restored.model.as_deref(),
-                )?;
-                let tool_context = attach_judge(tool_context, &resolved, judge, models);
-                Self::restored_client_and_session(
-                    restored,
-                    resolved,
-                    &initial_messages,
-                    &locs,
-                    tool_context,
-                    toolbox_tools.to_vec(),
-                    task_id,
-                )
-            },
+            RunMode::ContinueLatest => self.continue_latest_run(data_dir, &inputs),
+            RunMode::Resume { session_id } => self.resume_run(*session_id, data_dir, &inputs),
             RunMode::ForkLatest | RunMode::Fork { .. } => {
-                info!(target: "cake", "Forking session");
-                let restored = match run_mode {
-                    RunMode::ForkLatest => {
-                        data_dir.load_latest_session(&current_dir)?.ok_or_else(|| {
-                            anyhow::anyhow!("No previous session found for this directory")
-                        })?
-                    },
-                    RunMode::Fork { session_id } => data_dir
-                        .load_session(*session_id)?
-                        .ok_or_else(|| anyhow::anyhow!("Session {session_id} not found"))?,
-                    _ => unreachable!("fork arm only handles fork modes"),
-                };
-
-                info!(target: "cake", "Forking from session: {}", restored.id);
-                let resolved = self.resolve_model_for_session(
-                    models,
-                    default_model,
-                    restored.model.as_deref(),
-                )?;
-                let tool_context = attach_judge(tool_context, &resolved, judge, models);
-                Self::forked_client_and_session(
-                    &restored,
-                    resolved,
-                    current_dir,
-                    &initial_messages,
-                    locs,
-                    tool_context,
-                    toolbox_tools.to_vec(),
-                    task_id,
-                )
+                self.forked_run(run_mode, data_dir, &inputs)
             },
-            RunMode::NewSession | RunMode::Ephemeral => {
-                let resolved = ResolvedModelConfig::resolve(
-                    self.resolve_model_config(models, default_model)?,
-                )?;
-                Ok(Self::new_client_and_session(
-                    resolved.clone(),
-                    current_dir,
-                    &initial_messages,
-                    locs,
-                    attach_judge(tool_context, &resolved, judge, models),
-                    toolbox_tools.to_vec(),
-                    task_id,
-                ))
-            },
+            RunMode::NewSession | RunMode::Ephemeral => self.new_run(&inputs),
         }
     }
+
+    /// `--continue`: restore the latest session recorded for this directory.
+    fn continue_latest_run(
+        &self,
+        data_dir: &DataDir,
+        inputs: &RunInputs<'_>,
+    ) -> anyhow::Result<RunSession> {
+        info!(
+            target: "cake",
+            "Continuing latest session for directory: {}",
+            inputs.current_dir.display()
+        );
+        let Some(restored) = data_dir.load_latest_session(&inputs.current_dir)? else {
+            return Err(missing_continue_target(data_dir, &inputs.current_dir)?);
+        };
+        info!(target: "cake", "Continuing session: {}", restored.id);
+        self.restored_run(restored, inputs)
+    }
+
+    /// Resolve a restored session's model, attach the judge, rebuild the pair.
+    fn restored_run(
+        &self,
+        restored: Session,
+        inputs: &RunInputs<'_>,
+    ) -> anyhow::Result<RunSession> {
+        let resolved = self.resolve_model_for_session(
+            inputs.models,
+            inputs.default_model,
+            restored.model.as_deref(),
+        )?;
+        let tool_context =
+            attach_judge(inputs.tool_context, &resolved, inputs.judge, inputs.models);
+        Self::restored_client_and_session(
+            restored,
+            resolved,
+            &inputs.initial_messages,
+            &inputs.skill_locations,
+            tool_context,
+            inputs.toolbox_tools.to_vec(),
+            inputs.task_id,
+        )
+    }
+
+    /// `--resume <UUID>`: restore the named session.
+    fn resume_run(
+        &self,
+        session_id: uuid::Uuid,
+        data_dir: &DataDir,
+        inputs: &RunInputs<'_>,
+    ) -> anyhow::Result<RunSession> {
+        let restored = data_dir
+            .load_session(session_id)?
+            .ok_or_else(|| anyhow::anyhow!("Session {session_id} not found"))?;
+        info!(target: "cake", "Resumed session: {}", restored.id);
+        self.restored_run(restored, inputs)
+    }
+
+    /// `--fork`: start a fresh session seeded from a prior one.
+    fn forked_run(
+        &self,
+        run_mode: &RunMode,
+        data_dir: &DataDir,
+        inputs: &RunInputs<'_>,
+    ) -> anyhow::Result<RunSession> {
+        info!(target: "cake", "Forking session");
+        let restored = fork_source(run_mode, data_dir, &inputs.current_dir)?;
+        info!(target: "cake", "Forking from session: {}", restored.id);
+        let resolved = self.resolve_model_for_session(
+            inputs.models,
+            inputs.default_model,
+            restored.model.as_deref(),
+        )?;
+        let tool_context =
+            attach_judge(inputs.tool_context, &resolved, inputs.judge, inputs.models);
+        Self::forked_client_and_session(
+            &restored,
+            resolved,
+            inputs.current_dir.clone(),
+            &inputs.initial_messages,
+            inputs.skill_locations.clone(),
+            tool_context,
+            inputs.toolbox_tools.to_vec(),
+            inputs.task_id,
+        )
+    }
+
+    /// New and ephemeral runs: start fresh from the CLI-selected model.
+    fn new_run(&self, inputs: &RunInputs<'_>) -> anyhow::Result<RunSession> {
+        let resolved = ResolvedModelConfig::resolve(
+            self.resolve_model_config(inputs.models, inputs.default_model)?,
+        )?;
+        Ok(Self::new_client_and_session(
+            resolved.clone(),
+            inputs.current_dir.clone(),
+            &inputs.initial_messages,
+            inputs.skill_locations.clone(),
+            attach_judge(inputs.tool_context, &resolved, inputs.judge, inputs.models),
+            inputs.toolbox_tools.to_vec(),
+            inputs.task_id,
+        ))
+    }
+}
+
+/// Construction inputs every run-mode step shares.
+struct RunInputs<'a> {
+    current_dir: PathBuf,
+    initial_messages: Vec<(crate::types::Role, String)>,
+    skill_locations: HashMap<PathBuf, Skill>,
+    models: &'a HashMap<String, ModelDefinition>,
+    default_model: Option<&'a str>,
+    tool_context: &'a Arc<ToolContext>,
+    toolbox_tools: &'a [ToolboxTool],
+    task_id: uuid::Uuid,
+    judge: &'a JudgeSettings,
+}
+
+/// Load the prior session a fork starts from.
+fn fork_source(
+    run_mode: &RunMode,
+    data_dir: &DataDir,
+    current_dir: &Path,
+) -> anyhow::Result<Session> {
+    match run_mode {
+        RunMode::ForkLatest => data_dir
+            .load_latest_session(current_dir)?
+            .ok_or_else(|| anyhow::anyhow!("No previous session found for this directory")),
+        RunMode::Fork { session_id } => data_dir
+            .load_session(*session_id)?
+            .ok_or_else(|| anyhow::anyhow!("Session {session_id} not found")),
+        _ => unreachable!("fork arm only handles fork modes"),
+    }
+}
+
+/// Explain why `--continue` has nothing to restore.
+///
+/// Names the directory that owns the most recent session when one exists;
+/// lookup failures propagate rather than being masked by this error.
+fn missing_continue_target(
+    data_dir: &DataDir,
+    current_dir: &Path,
+) -> anyhow::Result<anyhow::Error> {
+    let Some(latest) = data_dir.load_latest_session_any_directory()? else {
+        return Ok(anyhow::anyhow!(
+            "No previous session found for this directory"
+        ));
+    };
+    Ok(anyhow::anyhow!(
+        "Cannot continue: latest session was created in '{}' but current directory is '{}'. \
+         Run from the original directory or start a new session.",
+        latest.working_dir.display(),
+        current_dir.display()
+    ))
 }
 
 /// Attach the LLM-judge context to the tool context shared by the Bash
@@ -591,5 +655,264 @@ mod tests {
             run.seed_records.as_deref().and_then(|records| records.first()),
             Some(SessionRecord::SkillActivated { name, .. }) if name == "debugging-cake"
         ));
+    }
+
+    // ---- build_client_and_session run-mode coverage ----
+
+    fn test_models() -> HashMap<String, ModelDefinition> {
+        HashMap::from([(
+            "test".to_string(),
+            ModelDefinition {
+                name: "test".to_string(),
+                model: "glm-5.1".to_string(),
+                base_url: "https://example.invalid/v1".to_string(),
+                api_key_env: "SESSION_FACTORY_TEST_KEY".to_string(),
+                provider: None,
+                provider_headers: None,
+                api_type: crate::config::model::ApiType::ChatCompletions,
+                temperature: None,
+                top_p: None,
+                max_output_tokens: None,
+                context_window: None,
+                reasoning_effort: None,
+                reasoning_summary: None,
+                reasoning_max_tokens: None,
+                providers: vec![],
+            },
+        )])
+    }
+
+    /// Persist a minimal restorable session for `working_dir`.
+    fn saved_session(data_dir: &DataDir, working_dir: &Path) -> Session {
+        let mut session = Session::new(uuid::Uuid::new_v4(), working_dir.to_path_buf());
+        session.model = Some("test".to_string());
+        data_dir
+            .save_session(&session)
+            .expect("session fixture should save");
+        session
+    }
+
+    /// Call `build_client_and_session` with the shared test fixtures.
+    fn build_for_mode(
+        cli: &crate::CodingAssistant,
+        mode: &RunMode,
+        data_dir: &DataDir,
+        working_dir: &Path,
+    ) -> anyhow::Result<RunSession> {
+        let tool_context = Arc::new(ToolContext::new(
+            working_dir.to_path_buf(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            SandboxPolicy::WorkspaceWrite,
+        ));
+        cli.build_client_and_session(
+            mode,
+            data_dir,
+            working_dir.to_path_buf(),
+            working_dir,
+            &[],
+            &test_models(),
+            Some("test"),
+            &SkillCatalog {
+                skills: Vec::new(),
+                diagnostics: Vec::new(),
+            },
+            &tool_context,
+            &[],
+            uuid::Uuid::new_v4(),
+            None,
+            &JudgeSettings::default(),
+        )
+    }
+
+    #[test]
+    fn continue_restores_latest_directory_session() {
+        temp_env::with_var("SESSION_FACTORY_TEST_KEY", Some("test-key"), || {
+            let cli = crate::CodingAssistant::parse_from(["cake"]);
+            let data_dir_dir = tempfile::tempdir().expect("temp data dir");
+            let data_dir = DataDir::new_in_dir(data_dir_dir.path());
+            let working_dir = tempfile::tempdir().expect("temp working dir");
+            let saved = saved_session(&data_dir, working_dir.path());
+
+            let run = build_for_mode(
+                &cli,
+                &RunMode::ContinueLatest,
+                &data_dir,
+                working_dir.path(),
+            )
+            .expect("continue should succeed");
+
+            assert_eq!(run.agent.session_id(), saved.id);
+            assert!(matches!(run.storage, SessionStorage::Append));
+            assert!(run.seed_records.is_none());
+        });
+    }
+
+    #[test]
+    fn continue_without_any_sessions_reports_missing_session() {
+        let cli = crate::CodingAssistant::parse_from(["cake"]);
+        let data_dir_dir = tempfile::tempdir().expect("temp data dir");
+        let data_dir = DataDir::new_in_dir(data_dir_dir.path());
+        let working_dir = tempfile::tempdir().expect("temp working dir");
+
+        let error = build_for_mode(
+            &cli,
+            &RunMode::ContinueLatest,
+            &data_dir,
+            working_dir.path(),
+        )
+        .err()
+        .expect("continue without sessions should fail");
+
+        assert!(error.to_string().contains("No previous session found"));
+    }
+
+    #[test]
+    fn continue_in_other_directory_names_the_original_directory() {
+        let cli = crate::CodingAssistant::parse_from(["cake"]);
+        let data_dir_dir = tempfile::tempdir().expect("temp data dir");
+        let data_dir = DataDir::new_in_dir(data_dir_dir.path());
+        let working_dir = tempfile::tempdir().expect("temp working dir");
+        let other_dir = tempfile::tempdir().expect("temp other dir");
+        saved_session(&data_dir, other_dir.path());
+
+        let error = build_for_mode(
+            &cli,
+            &RunMode::ContinueLatest,
+            &data_dir,
+            working_dir.path(),
+        )
+        .err()
+        .expect("continue from another directory should fail");
+
+        let message = error.to_string();
+        assert!(message.contains("Cannot continue"));
+        assert!(message.contains(&other_dir.path().display().to_string()));
+    }
+
+    #[test]
+    fn resume_restores_the_named_session() {
+        temp_env::with_var("SESSION_FACTORY_TEST_KEY", Some("test-key"), || {
+            let cli = crate::CodingAssistant::parse_from(["cake"]);
+            let data_dir_dir = tempfile::tempdir().expect("temp data dir");
+            let data_dir = DataDir::new_in_dir(data_dir_dir.path());
+            let working_dir = tempfile::tempdir().expect("temp working dir");
+            let saved = saved_session(&data_dir, working_dir.path());
+
+            let run = build_for_mode(
+                &cli,
+                &RunMode::Resume {
+                    session_id: saved.id,
+                },
+                &data_dir,
+                working_dir.path(),
+            )
+            .expect("resume should succeed");
+
+            assert_eq!(run.agent.session_id(), saved.id);
+            assert!(matches!(run.storage, SessionStorage::Append));
+        });
+    }
+
+    #[test]
+    fn resume_unknown_session_reports_not_found() {
+        let cli = crate::CodingAssistant::parse_from(["cake"]);
+        let data_dir_dir = tempfile::tempdir().expect("temp data dir");
+        let data_dir = DataDir::new_in_dir(data_dir_dir.path());
+        let working_dir = tempfile::tempdir().expect("temp working dir");
+
+        let error = build_for_mode(
+            &cli,
+            &RunMode::Resume {
+                session_id: uuid::Uuid::new_v4(),
+            },
+            &data_dir,
+            working_dir.path(),
+        )
+        .err()
+        .expect("resume of unknown session should fail");
+
+        assert!(error.to_string().contains("not found"));
+    }
+
+    #[test]
+    fn fork_latest_starts_a_new_seeded_session() {
+        temp_env::with_var("SESSION_FACTORY_TEST_KEY", Some("test-key"), || {
+            let cli = crate::CodingAssistant::parse_from(["cake"]);
+            let data_dir_dir = tempfile::tempdir().expect("temp data dir");
+            let data_dir = DataDir::new_in_dir(data_dir_dir.path());
+            let working_dir = tempfile::tempdir().expect("temp working dir");
+            let mut saved = session_with_activated_skill(uuid::Uuid::new_v4());
+            saved.working_dir = working_dir.path().to_path_buf();
+            saved.model = Some("test".to_string());
+            data_dir
+                .save_session(&saved)
+                .expect("session fixture should save");
+
+            let run = build_for_mode(&cli, &RunMode::ForkLatest, &data_dir, working_dir.path())
+                .expect("fork should succeed");
+
+            assert_ne!(run.agent.session_id(), saved.id);
+            assert!(matches!(run.storage, SessionStorage::New));
+            assert!(
+                matches!(
+                    run.seed_records.as_deref().and_then(|records| records.first()),
+                    Some(SessionRecord::SkillActivated { name, .. }) if name == "debugging-cake"
+                ),
+                "fork should seed activation records"
+            );
+        });
+    }
+
+    #[test]
+    fn fork_unknown_session_reports_not_found() {
+        let cli = crate::CodingAssistant::parse_from(["cake"]);
+        let data_dir_dir = tempfile::tempdir().expect("temp data dir");
+        let data_dir = DataDir::new_in_dir(data_dir_dir.path());
+        let working_dir = tempfile::tempdir().expect("temp working dir");
+
+        let error = build_for_mode(
+            &cli,
+            &RunMode::Fork {
+                session_id: uuid::Uuid::new_v4(),
+            },
+            &data_dir,
+            working_dir.path(),
+        )
+        .err()
+        .expect("fork of unknown session should fail");
+
+        assert!(error.to_string().contains("not found"));
+    }
+
+    #[test]
+    fn fork_latest_without_sessions_reports_missing_session() {
+        let cli = crate::CodingAssistant::parse_from(["cake"]);
+        let data_dir_dir = tempfile::tempdir().expect("temp data dir");
+        let data_dir = DataDir::new_in_dir(data_dir_dir.path());
+        let working_dir = tempfile::tempdir().expect("temp working dir");
+
+        let error = build_for_mode(&cli, &RunMode::ForkLatest, &data_dir, working_dir.path())
+            .err()
+            .expect("fork without sessions should fail");
+
+        assert!(error.to_string().contains("No previous session found"));
+    }
+
+    #[test]
+    fn ephemeral_runs_start_a_fresh_unseeded_session() {
+        temp_env::with_var("SESSION_FACTORY_TEST_KEY", Some("test-key"), || {
+            let cli = crate::CodingAssistant::parse_from(["cake"]);
+            let data_dir_dir = tempfile::tempdir().expect("temp data dir");
+            let data_dir = DataDir::new_in_dir(data_dir_dir.path());
+            let working_dir = tempfile::tempdir().expect("temp working dir");
+
+            let run = build_for_mode(&cli, &RunMode::Ephemeral, &data_dir, working_dir.path())
+                .expect("ephemeral run should assemble");
+
+            assert!(matches!(run.storage, SessionStorage::New));
+            assert!(run.seed_records.is_none());
+        });
     }
 }
