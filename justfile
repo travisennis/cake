@@ -116,6 +116,7 @@ pr option1="" option2="" option3="" option4="":
     if [[ -n "$body_file" ]]; then
         [[ -f "$body_file" ]] || { echo "ERROR: pull request body file not found: $body_file" >&2; exit 1; }
         args+=(--body-file "$body_file")
+        # Non-interactive gh needs an explicit title; fall back to the HEAD subject.
         if [[ -z "$title" ]]; then
             # --body-file alone would prompt; default to the HEAD commit subject.
             title=$(git log -1 --pretty=%s)
@@ -254,6 +255,10 @@ pre-push-classify:
 # Run the classify-changes.sh fixture matrix in a scratch repo (also wired into CI's `changes` job)
 test-classify-changes:
     @scripts/test-classify-changes.sh
+
+# Run the `just pr` recipe fixture tests against a stubbed gh (also wired into CI's `changes` job)
+test-just-pr:
+    @scripts/test-just-pr.sh
 
 # Run the pre-push gate, routed by changed path class (see CONTRIBUTING.md).
 # Documentation-only changes run the targeted docs checks; code-class changes run the full Rust
