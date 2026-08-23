@@ -6,7 +6,10 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::str::FromStr as _;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
+
+use futures::StreamExt;
 
 use serde::Deserialize;
 
@@ -27,6 +30,12 @@ const MODEL_ENV: &str = "CAKE_JUDGE_CORPUS_MODEL";
 const PROFILE_ENV: &str = "CAKE_JUDGE_CORPUS_PROFILE";
 const REPETITIONS_ENV: &str = "CAKE_JUDGE_CORPUS_REPETITIONS";
 const DEFAULT_REPETITIONS: usize = 3;
+const CONCURRENCY_ENV: &str = "CAKE_JUDGE_CORPUS_CONCURRENCY";
+/// Peak in-flight judge requests. Kept small so a provider rate limit is
+/// unlikely to turn into retry storms across a full corpus run.
+const DEFAULT_CONCURRENCY: usize = 4;
+/// Print progress once per this many completed cases (in trials).
+const PROGRESS_CASES: usize = 5;
 
 /// Label mismatches are tolerated up to this aggregate boundary because judge
 /// verdicts are stochastic. Provider errors and stable-code mismatches are
@@ -407,20 +416,58 @@ async fn judge_corpus_live_meets_tolerance() {
     let (client, model) = live_judge_client(&loaded).unwrap_or_else(|error| panic!("{error}"));
     let bypass_env = std::env::var(JUDGE_BYPASS_ENV).ok();
     let repetitions = repetitions().unwrap_or_else(|error| panic!("{error}"));
+    let concurrency = concurrency().unwrap_or_else(|error| panic!("{error}"));
     let digest = repo_state_digest(&cwd);
     let mut report = LiveReport::default();
+    let total = entries.len() * repetitions;
+
+    // The judge is stateless per call: each request carries only command, cwd,
+    // repo digest, and reason, so verdicts cannot depend on issue order. Trials
+    // run with bounded concurrency and are recorded in corpus/repetition order
+    // afterward to keep the rendered report deterministic.
+    let mut results: Vec<Option<Result<Observation, String>>> = (0..total).map(|_| None).collect();
+    // A shared reference is Copy, so each trial's `move` closure captures the
+    // same counter instead of moving the atomic itself.
+    let completed = &AtomicUsize::new(0);
+    let progress_every = PROGRESS_CASES * repetitions;
+
+    {
+        // Shared state enters every trial's `move` closure as a Copy reference;
+        // owned values would have to be cloned once per trial.
+        let client = &client;
+        let judge = &loaded.judge;
+        let bypass = bypass_env.as_deref();
+        let cwd = &cwd;
+        let digest = &digest;
+        let mut trials =
+            futures::stream::iter(entries.iter().enumerate().flat_map(|(case_index, entry)| {
+                (0..repetitions).map(move |repetition| {
+                    let index = case_index * repetitions + repetition;
+                    let request =
+                        JudgeRequest::new(entry.command.clone(), cwd.clone(), entry.reason.clone())
+                            .with_repo_digest(digest.clone());
+                    async move {
+                        let result = observe(client, judge, bypass, request).await;
+                        let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
+                        if done.is_multiple_of(progress_every) || done == total {
+                            eprintln!("judge corpus progress: {done}/{total} trials");
+                        }
+                        (index, result)
+                    }
+                })
+            }))
+            .buffer_unordered(concurrency);
+        while let Some((index, result)) = trials.next().await {
+            results[index] = Some(result);
+        }
+    }
 
     for (case_index, entry) in entries.iter().enumerate() {
         for repetition in 0..repetitions {
-            let request =
-                JudgeRequest::new(entry.command.clone(), cwd.clone(), entry.reason.clone())
-                    .with_repo_digest(digest.clone());
-            let observation = observe(&client, &loaded.judge, bypass_env.as_deref(), request).await;
-            report.record(entry, repetition, observation);
-        }
-        let completed = case_index + 1;
-        if completed % 5 == 0 || completed == entries.len() {
-            eprintln!("judge corpus progress: {completed}/{} cases", entries.len());
+            let result = results[case_index * repetitions + repetition]
+                .take()
+                .expect("every trial should complete before recording");
+            report.record(entry, repetition, result);
         }
     }
 
@@ -486,6 +533,17 @@ fn repetitions() -> Result<usize, String> {
         .ok()
         .filter(|value| *value > 0)
         .ok_or_else(|| format!("{REPETITIONS_ENV} must be a positive integer, got {value:?}"))
+}
+
+fn concurrency() -> Result<usize, String> {
+    let Some(value) = std::env::var(CONCURRENCY_ENV).ok() else {
+        return Ok(DEFAULT_CONCURRENCY);
+    };
+    value
+        .parse::<usize>()
+        .ok()
+        .filter(|value| *value > 0)
+        .ok_or_else(|| format!("{CONCURRENCY_ENV} must be a positive integer, got {value:?}"))
 }
 
 async fn observe(
@@ -561,6 +619,19 @@ fn judge_corpus_repetitions_rejects_invalid_values() {
     });
     temp_env::with_var(REPETITIONS_ENV, Some("not-a-number"), || {
         assert!(repetitions().unwrap_err().contains("not-a-number"));
+    });
+}
+
+#[test]
+fn judge_corpus_concurrency_rejects_invalid_values() {
+    temp_env::with_var(CONCURRENCY_ENV, Some("0"), || {
+        assert!(concurrency().unwrap_err().contains("positive integer"));
+    });
+    temp_env::with_var(CONCURRENCY_ENV, Some("-2"), || {
+        assert!(concurrency().unwrap_err().contains("-2"));
+    });
+    temp_env::with_var(CONCURRENCY_ENV, Some("not-a-number"), || {
+        assert!(concurrency().unwrap_err().contains("not-a-number"));
     });
 }
 
