@@ -73,9 +73,54 @@ unclaim n:
 ready-queue:
     @scripts/list-ready-issues.sh
 
-# Open a pull request for the current branch (branch must be pushed)
-pr:
-    gh pr create --base master --fill
+# Open a pull request for the current branch (branch must be pushed).
+# Pass up to three key=value options, in any order:
+#   just pr labels="type:feature,area:cli" body=path/to/body.md issue=123
+#   labels  comma-separated labels, checked against .github/labels.yml
+#   body    pull request description file (default: fill title/body from commits)
+#   issue   comment the pull request URL back on this issue number
+pr option1="" option2="" option3="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    labels=""
+    body_file=""
+    issue=""
+    for option in {{ quote(option1) }} {{ quote(option2) }} {{ quote(option3) }}; do
+        [[ -z "$option" ]] && continue
+        case "$option" in
+            labels=*) labels="${option#labels=}" ;;
+            body=*)   body_file="${option#body=}" ;;
+            issue=*)  issue="${option#issue=}" ;;
+            *) echo "ERROR: unknown option '$option' (expected labels=..., body=<file>, issue=<number>)" >&2; exit 1 ;;
+        esac
+    done
+
+    args=(--base master)
+    if [[ -n "$labels" ]]; then
+        known_labels=$(sed -n 's/^[[:space:]]*- name:[[:space:]]*//p' .github/labels.yml)
+        while IFS= read -r label; do
+            [[ -z "$label" ]] && continue
+            if ! grep -Fxq "$label" <<< "$known_labels"; then
+                echo "ERROR: label '$label' is not in .github/labels.yml (see 'just labels-check-file')" >&2
+                exit 1
+            fi
+        done < <(printf '%s\n' "$labels" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+        args+=(--label "$labels")
+    fi
+    if [[ -n "$body_file" ]]; then
+        [[ -f "$body_file" ]] || { echo "ERROR: pull request body file not found: $body_file" >&2; exit 1; }
+        args+=(--body-file "$body_file")
+    else
+        args+=(--fill)
+    fi
+    if [[ -n "$issue" ]]; then
+        [[ "$issue" =~ ^[0-9]+$ ]] || { echo "ERROR: issue must be a number, got: $issue" >&2; exit 1; }
+    fi
+    url=$(gh pr create "${args[@]}")
+    printf '%s\n' "$url"
+    if [[ -n "$issue" ]]; then
+        gh issue comment "$issue" --body "PR: $url"
+    fi
 
 # Check code formatting (use in CI)
 fmt-check:
