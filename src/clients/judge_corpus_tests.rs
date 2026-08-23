@@ -6,7 +6,6 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::str::FromStr as _;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use futures::StreamExt;
@@ -426,9 +425,6 @@ async fn judge_corpus_live_meets_tolerance() {
     // run with bounded concurrency and are recorded in corpus/repetition order
     // afterward to keep the rendered report deterministic.
     let mut results: Vec<Option<Result<Observation, String>>> = (0..total).map(|_| None).collect();
-    // A shared reference is Copy, so each trial's `move` closure captures the
-    // same counter instead of moving the atomic itself.
-    let completed = &AtomicUsize::new(0);
     let progress_every = PROGRESS_CASES * repetitions;
 
     {
@@ -448,16 +444,17 @@ async fn judge_corpus_live_meets_tolerance() {
                             .with_repo_digest(digest.clone());
                     async move {
                         let result = observe(client, judge, bypass, request).await;
-                        let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
-                        if done.is_multiple_of(progress_every) || done == total {
-                            eprintln!("judge corpus progress: {done}/{total} trials");
-                        }
                         (index, result)
                     }
                 })
             }))
             .buffer_unordered(concurrency);
+        let mut done: usize = 0;
         while let Some((index, result)) = trials.next().await {
+            done += 1;
+            if done.is_multiple_of(progress_every) || done == total {
+                eprintln!("judge corpus progress: {done}/{total} trials");
+            }
             results[index] = Some(result);
         }
     }
