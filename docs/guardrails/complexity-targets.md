@@ -37,7 +37,6 @@ Functions whose current McCabe CC is at or above the ≤ 15 dispatch-heavy allow
   | 38         | `has_unsafe_message_flag`                   | `src/clients/tools/bash_safety/checks.rs` | #96            |
   | 27         | `check_rg_replace_flag`                     | `src/clients/tools/bash_safety/checks.rs` | #96            |
   | 26         | `split_segments`                            | `src/clients/tools/bash_safety/parse.rs`  | #97            |
-  | 23         | `glob_match_bytes`                          | `src/config/worktree.rs`                  | #98            |
   | 22         | `check_dangerous_rm`                        | `src/clients/tools/bash_safety/checks.rs` | #96            |
   | 22         | `CodingAssistant::build_client_and_session` | `src/cli/session_factory.rs`              | #95            |
   | 20         | `execute_bash_with_args`                    | `src/clients/tools/bash.rs`               | #99            |
