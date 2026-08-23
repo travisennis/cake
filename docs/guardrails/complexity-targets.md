@@ -32,25 +32,24 @@ The clippy cognitive-complexity ceiling is a separate, complementary signal: `co
 
 Functions whose current McCabe CC is at or above the ≤ 15 dispatch-heavy allowance are grandfathered in the baseline and tracked by the reduction tasks below. Until their task lands, they may not grow past their baseline CC.
 
-  | Current CC | Function                                    | File                                      | Reduction task |
-  | ---------- | ------------------------------------------- | ----------------------------------------- | -------------- |
-  | 38         | `has_unsafe_message_flag`                   | `src/clients/tools/bash_safety/checks.rs` | #96            |
-  | 27         | `check_rg_replace_flag`                     | `src/clients/tools/bash_safety/checks.rs` | #96            |
-  | 26         | `split_segments`                            | `src/clients/tools/bash_safety/parse.rs`  | #97            |
-  | 23         | `glob_match_bytes`                          | `src/config/worktree.rs`                  | #98            |
-  | 22         | `check_dangerous_rm`                        | `src/clients/tools/bash_safety/checks.rs` | #96            |
-  | 22         | `CodingAssistant::build_client_and_session` | `src/cli/session_factory.rs`              | #95            |
-  | 20         | `execute_bash_with_args`                    | `src/clients/tools/bash.rs`               | #99            |
-  | 20         | `Agent::send`                               | `src/clients/agent/agent_loop.rs`         | #101           |
-  | 18         | `SettingsLoader::load_with_profile`         | `src/config/settings.rs`                  | #100           |
-  | 16         | `Session::load`                             | `src/config/session.rs`                   | #102           |
-  | 16         | `read_file`                                 | `src/clients/tools/read.rs`               | #102           |
-  | 16         | `check_git_commit_backticks`                | `src/clients/tools/bash_safety/checks.rs` | #96            |
-  | 15         | `HookRunner::run_and_aggregate`             | `src/hooks.rs`                            | #102           |
-  | 15         | `collect_matching_files`                    | `src/config/worktree.rs`                  | #102           |
-  | 15         | `resolve_write_path`                        | `src/clients/tools/mod.rs`                | #102           |
-  | 15         | `execute_edit`                              | `src/clients/tools/edit.rs`               | #102           |
-  | 15         | `strip_shell_data`                          | `src/clients/tools/bash_safety/parse.rs`  | #97            |
+  | Current CC | Function                            | File                                      | Reduction task |
+  | ---------- | ----------------------------------- | ----------------------------------------- | -------------- |
+  | 38         | `has_unsafe_message_flag`           | `src/clients/tools/bash_safety/checks.rs` | #96            |
+  | 27         | `check_rg_replace_flag`             | `src/clients/tools/bash_safety/checks.rs` | #96            |
+  | 26         | `split_segments`                    | `src/clients/tools/bash_safety/parse.rs`  | #97            |
+  | 23         | `glob_match_bytes`                  | `src/config/worktree.rs`                  | #98            |
+  | 22         | `check_dangerous_rm`                | `src/clients/tools/bash_safety/checks.rs` | #96            |
+  | 20         | `execute_bash_with_args`            | `src/clients/tools/bash.rs`               | #99            |
+  | 20         | `Agent::send`                       | `src/clients/agent/agent_loop.rs`         | #101           |
+  | 18         | `SettingsLoader::load_with_profile` | `src/config/settings.rs`                  | #100           |
+  | 16         | `Session::load`                     | `src/config/session.rs`                   | #102           |
+  | 16         | `read_file`                         | `src/clients/tools/read.rs`               | #102           |
+  | 16         | `check_git_commit_backticks`        | `src/clients/tools/bash_safety/checks.rs` | #96            |
+  | 15         | `HookRunner::run_and_aggregate`     | `src/hooks.rs`                            | #102           |
+  | 15         | `collect_matching_files`            | `src/config/worktree.rs`                  | #102           |
+  | 15         | `resolve_write_path`                | `src/clients/tools/mod.rs`                | #102           |
+  | 15         | `execute_edit`                      | `src/clients/tools/edit.rs`               | #102           |
+  | 15         | `strip_shell_data`                  | `src/clients/tools/bash_safety/parse.rs`  | #97            |
 
 Functions at CC 11--14 are within the dispatch-heavy allowance and are likewise ratcheted by the baseline; they are candidates for future reduction tasks when touched.
 
