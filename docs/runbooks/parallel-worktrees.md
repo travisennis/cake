@@ -42,10 +42,13 @@ Open the pull request only after the change is ready to merge. Complete the acce
 
 ```bash
 git push -u origin HEAD
+# Labels and a body file; issue comments the PR URL back on #<number>:
+just pr labels="type:feature,area:cli" body=pr-body.md issue=215
+# Or plain, which fills title and body from the commits:
 just pr
 ```
 
-`just pr` runs `gh pr create --base master --fill`. Confirm that the generated PR body still contains the closing keyword. CI runs the same checks the ruleset requires. Merge once review and checks are complete; after merge, add the delivered/verified summary to the closed issue and update its completed-plan link if needed.
+`just pr` runs `gh pr create --base master`, with `--label`, `--body-file`, `--title`, or `--fill` added from its arguments. It checks labels against `.github/labels.yml` before creating. With no body file, gh fills from commits; confirm that the generated PR body still contains the closing keyword. CI runs the same checks the ruleset requires. Merge once review and checks are complete; after merge, add the delivered/verified summary to the closed issue and update its completed-plan link if needed.
 
 ### 4. Clean up
 
