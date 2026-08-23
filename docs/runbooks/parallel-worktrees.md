@@ -48,7 +48,7 @@ just pr labels="type:feature,area:cli" body=pr-body.md issue=215
 just pr
 ```
 
-`just pr` runs `gh pr create --base master`, with `--label`, `--body-file`, or `--fill` added from its arguments. It checks labels against `.github/labels.yml` before creating. With no body file, gh fills from commits; confirm that the generated PR body still contains the closing keyword. CI runs the same checks the ruleset requires. Merge once review and checks are complete; after merge, add the delivered/verified summary to the closed issue and update its completed-plan link if needed.
+`just pr` runs `gh pr create --base master`, with `--label`, `--body-file`, `--title`, or `--fill` added from its arguments. It checks labels against `.github/labels.yml` before creating. With no body file, gh fills from commits; confirm that the generated PR body still contains the closing keyword. CI runs the same checks the ruleset requires. Merge once review and checks are complete; after merge, add the delivered/verified summary to the closed issue and update its completed-plan link if needed.
 
 ### 4. Clean up
 

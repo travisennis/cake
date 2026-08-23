@@ -35,7 +35,7 @@ Follow the [Auditing Binary Size runbook](docs/runbooks/auditing-binary-size.md)
 5. Run a focused test or check while iterating.
 6. Format changed code and run the applicable final gate.
 7. Review the diff for compatibility, security, and unnecessary complexity.
-8. Push the branch and open a pull request with `just pr`. Pass `labels="type:...,area:..."`, `body=<file>`, and `issue=<number>` to apply labels, use a body file, and comment the PR URL back on the managed issue; without them the recipe fills from commits.
+8. Push the branch and open a pull request with `just pr`. Pass `labels="type:...,area:..."`, `body=<file>`, `title=<text>` (default: HEAD commit subject), and `issue=<number>` to apply labels, use a body file, set the title, and comment the PR URL back on the managed issue; without a body the recipe fills from commits.
 
 The crate has no library target. Do not use `cargo test --lib`.
 

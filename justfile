@@ -74,24 +74,27 @@ ready-queue:
     @scripts/list-ready-issues.sh
 
 # Open a pull request for the current branch (branch must be pushed).
-# Pass up to three key=value options, in any order:
+# Pass up to four key=value options, in any order:
 #   just pr labels="type:feature,area:cli" body=path/to/body.md issue=123
 #   labels  comma-separated labels, checked against .github/labels.yml
 #   body    pull request description file (default: fill title/body from commits)
+#   title   pull request title (default: HEAD commit subject; needed with body)
 #   issue   comment the pull request URL back on this issue number
-pr option1="" option2="" option3="":
+pr option1="" option2="" option3="" option4="":
     #!/usr/bin/env bash
     set -euo pipefail
     labels=""
     body_file=""
+    title=""
     issue=""
-    for option in {{ quote(option1) }} {{ quote(option2) }} {{ quote(option3) }}; do
+    for option in {{ quote(option1) }} {{ quote(option2) }} {{ quote(option3) }} {{ quote(option4) }}; do
         [[ -z "$option" ]] && continue
         case "$option" in
             labels=*) labels="${option#labels=}" ;;
             body=*)   body_file="${option#body=}" ;;
+            title=*)  title="${option#title=}" ;;
             issue=*)  issue="${option#issue=}" ;;
-            *) echo "ERROR: unknown option '$option' (expected labels=..., body=<file>, issue=<number>)" >&2; exit 1 ;;
+            *) echo "ERROR: unknown option '$option' (expected labels=..., body=<file>, title=..., issue=<number>)" >&2; exit 1 ;;
         esac
     done
 
@@ -110,6 +113,10 @@ pr option1="" option2="" option3="":
     if [[ -n "$body_file" ]]; then
         [[ -f "$body_file" ]] || { echo "ERROR: pull request body file not found: $body_file" >&2; exit 1; }
         args+=(--body-file "$body_file")
+        if [[ -z "$title" ]]; then
+            title=$(git log -1 --pretty=%s)
+        fi
+        args+=(--title "$title")
     else
         args+=(--fill)
     fi
