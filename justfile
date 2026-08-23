@@ -78,7 +78,7 @@ ready-queue:
 #   just pr labels="type:feature,area:cli" body=path/to/body.md issue=123
 #   labels  comma-separated labels, checked against .github/labels.yml
 #   body    pull request description file (default: fill title/body from commits)
-#   title   pull request title (default: HEAD commit subject; needed with body)
+#   title   pull request title (default: HEAD commit subject; wins over --fill)
 #   issue   comment the pull request URL back on this issue number
 pr option1="" option2="" option3="" option4="":
     #!/usr/bin/env bash
@@ -99,6 +99,9 @@ pr option1="" option2="" option3="" option4="":
     done
 
     args=(--base master)
+    # Trim each label and drop empties before validating, so the checks see
+    # exactly the argv element gh receives; its CSV split keeps inner spaces.
+    labels=$(printf '%s\n' "$labels" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | sed '/^$/d' | paste -sd, -)
     if [[ -n "$labels" ]]; then
         known_labels=$(sed -n 's/^[[:space:]]*- name:[[:space:]]*//p' .github/labels.yml)
         while IFS= read -r label; do
@@ -107,18 +110,23 @@ pr option1="" option2="" option3="" option4="":
                 echo "ERROR: label '$label' is not in .github/labels.yml (see 'just labels-check-file')" >&2
                 exit 1
             fi
-        done < <(printf '%s\n' "$labels" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+        done < <(printf '%s\n' "$labels" | tr ',' '\n')
         args+=(--label "$labels")
     fi
     if [[ -n "$body_file" ]]; then
         [[ -f "$body_file" ]] || { echo "ERROR: pull request body file not found: $body_file" >&2; exit 1; }
         args+=(--body-file "$body_file")
         if [[ -z "$title" ]]; then
+            # --body-file alone would prompt; default to the HEAD commit subject.
             title=$(git log -1 --pretty=%s)
         fi
-        args+=(--title "$title")
     else
         args+=(--fill)
+    fi
+    # An explicit title wins over --fill autofill (see gh pr create --help);
+    # --fill still supplies the body when no body file was given.
+    if [[ -n "$title" ]]; then
+        args+=(--title "$title")
     fi
     if [[ -n "$issue" ]]; then
         [[ "$issue" =~ ^[0-9]+$ ]] || { echo "ERROR: issue must be a number, got: $issue" >&2; exit 1; }
