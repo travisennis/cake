@@ -59,14 +59,6 @@
       "crap": 22.816596479861786
     },
     {
-      "file": "./src/clients/tools/bash.rs",
-      "function": "execute_bash_with_args",
-      "line": 402,
-      "cyclomatic": 20.0,
-      "coverage": 82.92682926829268,
-      "crap": 21.990684987159213
-    },
-    {
       "file": "./src/prompts/mod.rs",
       "function": "resolve_system_prompt",
       "line": 58,
@@ -460,8 +452,16 @@
     },
     {
       "file": "./src/clients/tools/bash.rs",
+      "function": "run_bash_child",
+      "line": 475,
+      "cyclomatic": 9.0,
+      "coverage": 97.91666666666666,
+      "crap": 9.000732421875
+    },
+    {
+      "file": "./src/clients/tools/bash.rs",
       "function": "is_binary_data",
-      "line": 166,
+      "line": 169,
       "cyclomatic": 9.0,
       "coverage": 100.0,
       "crap": 9.0
@@ -653,7 +653,7 @@
     {
       "file": "./src/clients/tools/bash.rs",
       "function": "is_sandbox_violation",
-      "line": 131,
+      "line": 134,
       "cyclomatic": 7.0,
       "coverage": 81.81818181818183,
       "crap": 7.294515401953419
@@ -837,7 +837,7 @@
     {
       "file": "./src/clients/tools/bash.rs",
       "function": "truncate_output",
-      "line": 1004,
+      "line": 1182,
       "cyclomatic": 6.0,
       "coverage": 73.17073170731707,
       "crap": 6.695230771462979
@@ -851,12 +851,28 @@
       "crap": 6.5625
     },
     {
+      "file": "./src/clients/tools/bash.rs",
+      "function": "drain_to_eof",
+      "line": 672,
+      "cyclomatic": 5.0,
+      "coverage": 62.5,
+      "crap": 6.318359375
+    },
+    {
       "file": "./src/clients/judge_observer.rs",
       "function": "prompt_text_refs",
       "line": 642,
       "cyclomatic": 6.0,
       "coverage": 83.33333333333334,
       "crap": 6.166666666666666
+    },
+    {
+      "file": "./src/clients/tools/bash.rs",
+      "function": "execute_bash_with_args",
+      "line": 738,
+      "cyclomatic": 6.0,
+      "coverage": 85.0,
+      "crap": 6.1215
     },
     {
       "file": "./src/config/data_dir.rs",
@@ -877,7 +893,7 @@
     {
       "file": "./src/clients/tools/bash.rs",
       "function": "judge_preflight_outcome",
-      "line": 823,
+      "line": 1001,
       "cyclomatic": 6.0,
       "coverage": 88.88888888888889,
       "crap": 6.049382716049383
@@ -1229,7 +1245,7 @@
     {
       "file": "./src/clients/tools/bash.rs",
       "function": "handle_binary_output",
-      "line": 233,
+      "line": 236,
       "cyclomatic": 5.0,
       "coverage": 73.91304347826086,
       "crap": 5.443823456891592
@@ -1315,6 +1331,14 @@
       "crap": 5.034293552812072
     },
     {
+      "file": "./src/clients/tools/bash.rs",
+      "function": "prepare_bash_command",
+      "line": 414,
+      "cyclomatic": 5.0,
+      "coverage": 90.0,
+      "crap": 5.025
+    },
+    {
       "file": "./src/config/skills.rs",
       "function": "Skill::parse_frontmatter_yaml",
       "line": 177,
@@ -1345,6 +1369,14 @@
       "cyclomatic": 5.0,
       "coverage": 93.33333333333333,
       "crap": 5.007407407407407
+    },
+    {
+      "file": "./src/clients/tools/bash.rs",
+      "function": "compose_text_output",
+      "line": 709,
+      "cyclomatic": 5.0,
+      "coverage": 94.44444444444444,
+      "crap": 5.004286694101509
     },
     {
       "file": "./src/clients/tools/read.rs",
@@ -1389,7 +1421,7 @@
     {
       "file": "./src/clients/tools/bash.rs",
       "function": "annotate_empty_search_result",
-      "line": 335,
+      "line": 338,
       "cyclomatic": 5.0,
       "coverage": 100.0,
       "crap": 5.0
@@ -1677,7 +1709,7 @@
     {
       "file": "./src/clients/tools/bash.rs",
       "function": "take_within_cap",
-      "line": 680,
+      "line": 858,
       "cyclomatic": 4.0,
       "coverage": 83.33333333333334,
       "crap": 4.0740740740740735
@@ -1755,6 +1787,14 @@
       "crap": 4.037925925925926
     },
     {
+      "file": "./src/clients/tools/bash.rs",
+      "function": "checked_chunk_len",
+      "line": 640,
+      "cyclomatic": 4.0,
+      "coverage": 88.88888888888889,
+      "crap": 4.021947873799726
+    },
+    {
       "file": "./src/clients/tools/sandbox/mod.rs",
       "function": "push_dirs_with_canonical",
       "line": 579,
@@ -1797,7 +1837,7 @@
     {
       "file": "./src/clients/tools/bash.rs",
       "function": "bash_judge_preflight",
-      "line": 724,
+      "line": 902,
       "cyclomatic": 4.0,
       "coverage": 90.69767441860465,
       "crap": 4.012879369112154
@@ -2469,7 +2509,7 @@
     {
       "file": "./src/clients/tools/bash.rs",
       "function": "push_truncation_event_if",
-      "line": 691,
+      "line": 869,
       "cyclomatic": 3.0,
       "coverage": 100.0,
       "crap": 3.0
@@ -2477,7 +2517,7 @@
     {
       "file": "./src/clients/tools/bash.rs",
       "function": "record_judge_attempts",
-      "line": 785,
+      "line": 963,
       "cyclomatic": 3.0,
       "coverage": 100.0,
       "crap": 3.0
@@ -2485,7 +2525,7 @@
     {
       "file": "./src/clients/tools/bash.rs",
       "function": "observed_evaluation_to_preflight",
-      "line": 796,
+      "line": 974,
       "cyclomatic": 3.0,
       "coverage": 100.0,
       "crap": 3.0
@@ -3205,7 +3245,7 @@
     {
       "file": "./src/clients/tools/bash.rs",
       "function": "terminate_process_group",
-      "line": 361,
+      "line": 364,
       "cyclomatic": 2.0,
       "coverage": 85.71428571428571,
       "crap": 2.011661807580175
@@ -3323,6 +3363,14 @@
       "crap": 2.002518950437318
     },
     {
+      "file": "./src/clients/tools/bash.rs",
+      "function": "capture_streams",
+      "line": 566,
+      "cyclomatic": 2.0,
+      "coverage": 92.85714285714286,
+      "crap": 2.001457725947522
+    },
+    {
       "file": "./src/clients/retry.rs",
       "function": "classify_transport_error",
       "line": 204,
@@ -3381,7 +3429,7 @@
     {
       "file": "./src/clients/tools/bash.rs",
       "function": "BashExecutionArgs::from_json",
-      "line": 71,
+      "line": 74,
       "cyclomatic": 2.0,
       "coverage": 100.0,
       "crap": 2.0
@@ -3389,7 +3437,7 @@
     {
       "file": "./src/clients/tools/bash.rs",
       "function": "is_sandbox_initialization_failure",
-      "line": 154,
+      "line": 157,
       "cyclomatic": 2.0,
       "coverage": 100.0,
       "crap": 2.0
@@ -3397,7 +3445,7 @@
     {
       "file": "./src/clients/tools/bash.rs",
       "function": "should_warn_exit_zero_stderr",
-      "line": 158,
+      "line": 161,
       "cyclomatic": 2.0,
       "coverage": 100.0,
       "crap": 2.0
@@ -3405,7 +3453,7 @@
     {
       "file": "./src/clients/tools/bash.rs",
       "function": "format_metadata_footer",
-      "line": 302,
+      "line": 305,
       "cyclomatic": 2.0,
       "coverage": 100.0,
       "crap": 2.0
@@ -3413,7 +3461,7 @@
     {
       "file": "./src/clients/tools/bash.rs",
       "function": "format_metadata_suffix",
-      "line": 311,
+      "line": 314,
       "cyclomatic": 2.0,
       "coverage": 100.0,
       "crap": 2.0
@@ -3421,7 +3469,7 @@
     {
       "file": "./src/clients/tools/bash.rs",
       "function": "append_metadata",
-      "line": 321,
+      "line": 324,
       "cyclomatic": 2.0,
       "coverage": 100.0,
       "crap": 2.0
@@ -3429,7 +3477,7 @@
     {
       "file": "./src/clients/tools/bash.rs",
       "function": "execute_bash",
-      "line": 380,
+      "line": 383,
       "cyclomatic": 1.0,
       "coverage": 0.0,
       "crap": 2.0
@@ -3437,7 +3485,15 @@
     {
       "file": "./src/clients/tools/bash.rs",
       "function": "execute_bash_for_call",
-      "line": 389,
+      "line": 392,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/clients/tools/bash.rs",
+      "function": "take_chunk_within_cap",
+      "line": 655,
       "cyclomatic": 2.0,
       "coverage": 100.0,
       "crap": 2.0
@@ -3445,7 +3501,7 @@
     {
       "file": "./src/clients/tools/bash.rs",
       "function": "execute_bash_with_judge_in",
-      "line": 945,
+      "line": 1123,
       "cyclomatic": 2.0,
       "coverage": 100.0,
       "crap": 2.0
@@ -3453,7 +3509,7 @@
     {
       "file": "./src/clients/tools/bash.rs",
       "function": "prepend_safety_warnings",
-      "line": 1078,
+      "line": 1256,
       "cyclomatic": 2.0,
       "coverage": 100.0,
       "crap": 2.0
@@ -4149,7 +4205,7 @@
     {
       "file": "./src/clients/tools/bash.rs",
       "function": "command_starts_with_search",
-      "line": 352,
+      "line": 355,
       "cyclomatic": 1.0,
       "coverage": 83.33333333333334,
       "crap": 1.0046296296296295
@@ -4277,7 +4333,7 @@
     {
       "file": "./src/clients/tools/bash.rs",
       "function": "bash_tool",
-      "line": 100,
+      "line": 103,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -4285,7 +4341,7 @@
     {
       "file": "./src/clients/tools/bash.rs",
       "function": "format_kib_tenths",
-      "line": 206,
+      "line": 209,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -4293,7 +4349,7 @@
     {
       "file": "./src/clients/tools/bash.rs",
       "function": "bash_temp_output_dir",
-      "line": 228,
+      "line": 231,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -4301,7 +4357,7 @@
     {
       "file": "./src/clients/tools/bash.rs",
       "function": "detect_mime_type",
-      "line": 296,
+      "line": 299,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -4309,7 +4365,7 @@
     {
       "file": "./src/clients/tools/bash.rs",
       "function": "terminate_process_group",
-      "line": 373,
+      "line": 376,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -4317,7 +4373,7 @@
     {
       "file": "./src/clients/tools/bash.rs",
       "function": "fail_closed_message",
-      "line": 868,
+      "line": 1046,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -4325,7 +4381,7 @@
     {
       "file": "./src/clients/tools/bash.rs",
       "function": "fail_closed_tool_error",
-      "line": 877,
+      "line": 1055,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -4333,7 +4389,7 @@
     {
       "file": "./src/clients/tools/bash.rs",
       "function": "judge_tool_error",
-      "line": 890,
+      "line": 1068,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -4341,7 +4397,7 @@
     {
       "file": "./src/clients/tools/bash.rs",
       "function": "sanitize_judge_message",
-      "line": 904,
+      "line": 1082,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -4349,7 +4405,7 @@
     {
       "file": "./src/clients/tools/bash.rs",
       "function": "execute_bash_unsandboxed",
-      "line": 916,
+      "line": 1094,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -4357,7 +4413,7 @@
     {
       "file": "./src/clients/tools/bash.rs",
       "function": "execute_bash_with_judge",
-      "line": 928,
+      "line": 1106,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -4365,7 +4421,7 @@
     {
       "file": "./src/clients/tools/bash.rs",
       "function": "bypassed_judge_context",
-      "line": 962,
+      "line": 1140,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0

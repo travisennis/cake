@@ -29,6 +29,9 @@ const BINARY_NULL_BYTE_THRESHOLD: usize = 8;
 /// When more than this percentage of bytes are non-printable (excluding
 /// common whitespace and high bytes), the data is considered binary.
 const BINARY_RATIO_THRESHOLD_PERCENT: usize = 30;
+
+/// Size of one read chunk captured from a Bash child pipe.
+const READ_CHUNK_BYTES: usize = 8192;
 const BYTES_PER_KIB: u128 = 1024;
 const TENTHS_PER_KIB: u128 = 10;
 const EXIT_ZERO_STDERR_WARNING: &str = "[stderr output present despite exit 0]";
@@ -395,10 +398,343 @@ pub(super) async fn execute_bash_for_call(
     Box::pin(execute_bash_with_args(context, args, call_id)).await
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "bash execution spans safety checks, sandbox setup, and output handling"
-)]
+/// One prepared Bash invocation: the configured child command plus the
+/// platform-sandbox guard that must stay alive until the child has finished,
+/// so sandbox resources (e.g., macOS temp profile files) are cleaned up
+/// deterministically.
+struct PreparedBashCommand {
+    command: Command,
+    sandbox_applied: bool,
+    _sandbox_guard: Option<super::sandbox::SandboxGuard>,
+}
+
+/// Build the bash child command and apply the sandbox strategy required by
+/// the policy. Sandbox-setup failures carry the preflight's telemetry events,
+/// so an allow/warn verdict stays observable even when the command never runs.
+fn prepare_bash_command(
+    context: &super::ToolContext,
+    args: &BashExecutionArgs,
+    judge_events: &[CompensationEventTelemetry],
+) -> Result<PreparedBashCommand, super::ToolError> {
+    let use_sandbox = args.policy != super::sandbox::SandboxPolicy::DangerFullAccess;
+
+    // Build sandbox configuration with additional directories
+    let sandbox_config = super::sandbox::SandboxConfig::build(context);
+
+    // Create command with proper stdio configuration
+    let mut command = Command::new("bash");
+    command
+        .arg("-c")
+        .arg(&args.command)
+        .current_dir(&context.cwd)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+
+    // Apply sandbox if enabled.
+    let sandbox_guard = if use_sandbox {
+        if let Some(strategy) = super::sandbox::detect_platform()
+            .map_err(|e| judge_tool_error(judge_events.to_vec(), e))?
+        {
+            Some(
+                strategy
+                    .apply(&mut command, &sandbox_config)
+                    .map_err(|e| judge_tool_error(judge_events.to_vec(), e))?,
+            )
+        } else {
+            None
+        }
+    } else {
+        tracing::debug!("Sandbox disabled; running without filesystem restrictions");
+        None
+    };
+
+    Ok(PreparedBashCommand {
+        command,
+        sandbox_applied: sandbox_guard.is_some(),
+        _sandbox_guard: sandbox_guard,
+    })
+}
+
+/// A completed Bash child run before output formatting: the combined stream
+/// capture, the stderr-only capture, whether the read cap cut the capture,
+/// and the reaped exit status (`None` when the child was killed and could not
+/// report a code).
+struct ChildRun {
+    buf: Vec<u8>,
+    stderr_buf: Vec<u8>,
+    hit_cap: bool,
+    status: Option<std::process::ExitStatus>,
+}
+
+/// Spawn the prepared command and drive its full lifecycle under the
+/// configured timeout: concurrent stream capture, killing the process group
+/// when the cap cuts the capture or the timeout fires, and reaping the child.
+/// The returned error carries only the model-visible message; the caller
+/// attaches the preflight's telemetry events.
+async fn run_bash_child(
+    mut command: Command,
+    timeout_secs: u64,
+    read_cap: Option<usize>,
+    initial_capacity: usize,
+) -> Result<ChildRun, String> {
+    // Spawn the command with piped stdout/stderr for streaming
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("Failed to spawn command: {e}"))?;
+
+    // RAII guard: kills the whole process group on drop unless defused.
+    // This ensures Ctrl-C or any other future cancellation terminates
+    // descendant processes, not just the direct child.
+    let mut guard = ToolboxProcessGuard::new(child.id());
+
+    let mut stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
+    let mut stderr = child.stderr.take().ok_or("Failed to capture stderr")?;
+
+    // The configured timeout covers the full lifecycle: reading both
+    // streams, optionally killing the process group on cap, and reaping
+    // the child.  This prevents hangs when a command closes both captured
+    // streams while continuing to run — the wait is bounded by the same
+    // timeout as the read loop.
+    let lifecycle_result = timeout(Duration::from_secs(timeout_secs), async {
+        let captured = Box::pin(capture_streams(
+            &mut stdout,
+            &mut stderr,
+            read_cap,
+            initial_capacity,
+        ))
+        .await;
+        let CapturedStreams {
+            buf,
+            stderr_buf,
+            hit_cap,
+        } = captured?;
+
+        // If we hit the cap, terminate the process group so descendants
+        // do not survive.
+        if hit_cap {
+            #[cfg(unix)]
+            terminate_process_group(&child);
+            #[cfg(not(unix))]
+            terminate_process_group(&mut child);
+        }
+
+        let status = child.wait().await.ok();
+        Ok::<_, String>((buf, stderr_buf, hit_cap, status))
+    })
+    .await;
+
+    let (buf, stderr_buf, hit_cap, status) = match lifecycle_result {
+        Ok(Ok(tuple)) => tuple,
+        Ok(Err(e)) => return Err(e),
+        Err(_) => {
+            // Timed out: terminate the process group and reap with a
+            // short grace period so the OS has time to deliver SIGKILL.
+            #[cfg(unix)]
+            terminate_process_group(&child);
+            #[cfg(not(unix))]
+            terminate_process_group(&mut child);
+            // Grace period: give the OS time to deliver SIGKILL.
+            let _grace = timeout(Duration::from_secs(5), child.wait()).await;
+            return Err(format!("Command timed out after {timeout_secs} seconds"));
+        },
+    };
+
+    // Normal completion (or hit_cap with group already killed by
+    // terminate_process_group above): defuse the guard so it does not
+    // send a harmless-but-unnecessary SIGKILL to the reaped group.
+    guard.defuse();
+
+    Ok(ChildRun {
+        buf,
+        stderr_buf,
+        hit_cap,
+        status,
+    })
+}
+
+/// The two captures of one Bash run: the interleaved combined view shown to
+/// the model and the stderr-only view used for sandbox diagnostics.
+struct CapturedStreams {
+    buf: Vec<u8>,
+    stderr_buf: Vec<u8>,
+    hit_cap: bool,
+}
+
+/// Read both pipes concurrently, interleaved, until both close or the read
+/// cap cuts the combined capture.
+async fn capture_streams(
+    stdout: &mut tokio::process::ChildStdout,
+    stderr: &mut tokio::process::ChildStderr,
+    read_cap: Option<usize>,
+    initial_capacity: usize,
+) -> Result<CapturedStreams, String> {
+    // Bound the initial allocation by the read cap: the read loop never
+    // holds more than `read_cap` bytes, so a large configured inline cap
+    // alone must not trigger a huge upfront allocation.
+    let mut buf = Vec::with_capacity(initial_capacity);
+    let mut stderr_buf = Vec::new();
+    let mut tmp_stdout = [0u8; READ_CHUNK_BYTES];
+    let mut tmp_stderr = [0u8; READ_CHUNK_BYTES];
+    let mut hit_cap = false;
+
+    loop {
+        tokio::select! {
+            n = stdout.read(&mut tmp_stdout) => {
+                let Some(n) = checked_chunk_len(n, "stdout")? else {
+                    // stdout closed — read remaining stderr
+                    if drain_to_eof(
+                        &mut *stderr,
+                        "stderr",
+                        &mut buf,
+                        Some(&mut stderr_buf),
+                        &mut tmp_stderr,
+                        read_cap,
+                    )
+                    .await?
+                    {
+                        hit_cap = true;
+                    }
+                    break;
+                };
+                let take = take_chunk_within_cap(&mut buf, None, &tmp_stdout[..n], read_cap);
+                if take < n { hit_cap = true; break; }
+            }
+            n = stderr.read(&mut tmp_stderr) => {
+                let Some(n) = checked_chunk_len(n, "stderr")? else {
+                    // stderr closed — read remaining stdout
+                    if drain_to_eof(
+                        &mut *stdout,
+                        "stdout",
+                        &mut buf,
+                        None,
+                        &mut tmp_stdout,
+                        read_cap,
+                    )
+                    .await?
+                    {
+                        hit_cap = true;
+                    }
+                    break;
+                };
+                let take = take_chunk_within_cap(
+                    &mut buf,
+                    Some(&mut stderr_buf),
+                    &tmp_stderr[..n],
+                    read_cap,
+                );
+                if take < n { hit_cap = true; break; }
+            }
+        }
+    }
+
+    Ok(CapturedStreams {
+        buf,
+        stderr_buf,
+        hit_cap,
+    })
+}
+
+/// Map one pipe read result to its byte count: a clean EOF (0 bytes) closes
+/// the pipe, an IO error fails the capture with the model-visible message.
+fn checked_chunk_len(
+    read: std::io::Result<usize>,
+    stream_name: &'static str,
+) -> Result<Option<usize>, String> {
+    match read {
+        Ok(0) => Ok(None),
+        Ok(n) => Ok(Some(n)),
+        Err(e) => Err(format!("{stream_name} read error: {e}")),
+    }
+}
+
+/// Append one chunk to the combined capture — and to the stderr-only capture
+/// when reading stderr — keeping the buffer within the configured `read_cap`
+/// (see [`take_within_cap`]). Returns the number of bytes kept; fewer than
+/// the chunk length means the cap was hit.
+fn take_chunk_within_cap(
+    buf: &mut Vec<u8>,
+    stderr_buf: Option<&mut Vec<u8>>,
+    chunk: &[u8],
+    read_cap: Option<usize>,
+) -> usize {
+    let take = take_within_cap(chunk.len(), read_cap, buf.len());
+    buf.extend_from_slice(&chunk[..take]);
+    if let Some(stderr_buf) = stderr_buf {
+        stderr_buf.extend_from_slice(&chunk[..take]);
+    }
+    take
+}
+
+/// After the other pipe closed, read this one to EOF, appending kept bytes to
+/// the combined capture (and to the stderr-only capture when draining stderr).
+/// Returns whether the cap cut a chunk, which stops the caller's read loop.
+async fn drain_to_eof<R: tokio::io::AsyncRead + Unpin>(
+    stream: &mut R,
+    stream_name: &'static str,
+    buf: &mut Vec<u8>,
+    mut stderr_buf: Option<&mut Vec<u8>>,
+    tmp: &mut [u8],
+    read_cap: Option<usize>,
+) -> Result<bool, String> {
+    loop {
+        let n = stream
+            .read(tmp)
+            .await
+            .map_err(|e| format!("{stream_name} read error: {e}"))?;
+        if n == 0 {
+            return Ok(false);
+        }
+        // Reborrow the optional stderr capture each iteration so the drain
+        // loop keeps appending without giving up ownership.
+        #[expect(
+            clippy::option_as_ref_deref,
+            reason = "explicit reborrow of Option<&mut Vec<u8>>"
+        )]
+        let take = take_chunk_within_cap(
+            buf,
+            stderr_buf.as_mut().map(|capture| &mut **capture),
+            &tmp[..n],
+            read_cap,
+        );
+        if take < n {
+            return Ok(true);
+        }
+    }
+}
+
+/// Select the model-visible text form of a completed run's combined output:
+/// empty stays empty, a read-cap cut gets a truncation marker, and a failed
+/// sandboxed run that looks like a denial gets the sandbox-restriction notice.
+fn compose_text_output(
+    output: &str,
+    hit_cap: bool,
+    read_cap: Option<usize>,
+    success: bool,
+    sandbox_applied: bool,
+) -> String {
+    if output.is_empty() {
+        String::new()
+    } else if hit_cap {
+        // `hit_cap` is only set when a read cap exists.
+        let cap = read_cap.unwrap_or_default();
+        format!("{output}\n[... output truncated at {cap} bytes ...]")
+    } else if success {
+        output.to_owned()
+    } else if is_sandbox_violation(sandbox_applied, success, output) {
+        format!(
+            "{output}\n\n\
+            [Sandbox restriction]: This command was blocked by the filesystem sandbox. \
+            The sandbox restricts file access to the project directory and standard system paths. \
+            Do NOT retry with different workarounds — the restriction is intentional. \
+            Instead, inform the user that this command requires access outside the sandbox \
+            and suggest they run it directly in their terminal."
+        )
+    } else {
+        output.to_owned()
+    }
+}
+
 async fn execute_bash_with_args(
     context: &super::ToolContext,
     args: BashExecutionArgs,
@@ -417,44 +753,13 @@ async fn execute_bash_with_args(
     let output_max = context.limits.bash_output_max_bytes;
     let read_cap = context.limits.bash_read_cap;
 
-    let use_sandbox = args.policy != super::sandbox::SandboxPolicy::DangerFullAccess;
-
     let start_time = Instant::now();
 
-    // Build sandbox configuration with additional directories
-    let sandbox_config = super::sandbox::SandboxConfig::build(context);
-
-    // Create command with proper stdio configuration
-    let mut command = Command::new("bash");
-    command
-        .arg("-c")
-        .arg(&args.command)
-        .current_dir(&context.cwd)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-
-    // Apply sandbox if enabled.
-    // Keep the guard alive until the child has finished so sandbox
-    // resources (e.g., macOS temp profile files) are cleaned up
-    // deterministically.
-    let sandbox_guard = if use_sandbox {
-        if let Some(strategy) = super::sandbox::detect_platform()
-            .map_err(|e| judge_tool_error(judge_events.clone(), e))?
-        {
-            Some(
-                strategy
-                    .apply(&mut command, &sandbox_config)
-                    .map_err(|e| judge_tool_error(judge_events.clone(), e))?,
-            )
-        } else {
-            None
-        }
-    } else {
-        tracing::debug!("Sandbox disabled; running without filesystem restrictions");
-        None
-    };
-    let sandbox_applied = sandbox_guard.is_some();
+    let PreparedBashCommand {
+        mut command,
+        sandbox_applied,
+        _sandbox_guard,
+    } = prepare_bash_command(context, &args, &judge_events)?;
 
     // Place the child in its own process group so that SIGKILL to the
     // negative PID kills all descendants, not just the direct child.
@@ -464,134 +769,26 @@ async fn execute_bash_with_args(
         command.as_std_mut().process_group(0);
     }
 
-    // Spawn the command with piped stdout/stderr for streaming
-    let mut child = command.spawn().map_err(|e| {
-        judge_tool_error(
-            judge_events.clone(),
-            format!("Failed to spawn command: {e}"),
-        )
-    })?;
+    // Bound the initial allocation by the read cap: the read loop never
+    // holds more than `read_cap` bytes, so a large configured inline cap
+    // alone must not trigger a huge upfront allocation.
+    let initial_capacity = read_cap
+        .zip(output_max)
+        .map_or(0, |(read, max)| read.min(max));
 
-    // RAII guard: kills the whole process group on drop unless defused.
-    // This ensures Ctrl-C or any other future cancellation terminates
-    // descendant processes, not just the direct child.
-    let mut guard = ToolboxProcessGuard::new(child.id());
-
-    let mut stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| judge_tool_error(judge_events.clone(), "Failed to capture stdout"))?;
-    let mut stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| judge_tool_error(judge_events.clone(), "Failed to capture stderr"))?;
-
-    // The configured timeout covers the full lifecycle: reading both
-    // streams, optionally killing the process group on cap, and reaping
-    // the child.  This prevents hangs when a command closes both captured
-    // streams while continuing to run — the wait is bounded by the same
-    // timeout as the read loop.
-    #[expect(
-        clippy::large_futures,
-        reason = "Bash lifecycle covers read, kill, and wait"
-    )]
-    let lifecycle_result = timeout(Duration::from_secs(args.timeout), async {
-        // Bound the initial allocation by the read cap: the read loop never
-        // holds more than `read_cap` bytes, so a large configured inline cap
-        // alone must not trigger a huge upfront allocation.
-        let initial_capacity = read_cap
-            .zip(output_max)
-            .map_or(0, |(read, max)| read.min(max));
-        let mut buf = Vec::with_capacity(initial_capacity);
-        let mut stderr_buf = Vec::new();
-        let mut tmp_stdout = [0u8; 8192];
-        let mut tmp_stderr = [0u8; 8192];
-        let mut hit_cap = false;
-
-        // Read both streams concurrently, interleaved, with a timeout.
-        // stderr is also captured separately so sandbox-init errors can be
-        // detected from stderr alone, avoiding false positives when a user
-        // command prints the literal string `sandbox-exec: sandbox_apply`.
-        loop {
-            tokio::select! {
-                n = stdout.read(&mut tmp_stdout) => {
-                    let n = n.map_err(|e| format!("stdout read error: {e}"))?;
-                    if n == 0 {
-                        // stdout closed — read remaining stderr
-                        loop {
-                            let n = stderr.read(&mut tmp_stderr).await
-                                .map_err(|e| format!("stderr read error: {e}"))?;
-                            if n == 0 { break; }
-                            let take = take_within_cap(n, read_cap, buf.len());
-                            buf.extend_from_slice(&tmp_stderr[..take]);
-                            stderr_buf.extend_from_slice(&tmp_stderr[..take]);
-                            if take < n { hit_cap = true; break; }
-                        }
-                        break;
-                    }
-                    let take = take_within_cap(n, read_cap, buf.len());
-                    buf.extend_from_slice(&tmp_stdout[..take]);
-                    if take < n { hit_cap = true; break; }
-                }
-                n = stderr.read(&mut tmp_stderr) => {
-                    let n = n.map_err(|e| format!("stderr read error: {e}"))?;
-                    if n == 0 {
-                        // stderr closed — read remaining stdout
-                        loop {
-                            let n = stdout.read(&mut tmp_stdout).await
-                                .map_err(|e| format!("stdout read error: {e}"))?;
-                            if n == 0 { break; }
-                            let take = take_within_cap(n, read_cap, buf.len());
-                            buf.extend_from_slice(&tmp_stdout[..take]);
-                            if take < n { hit_cap = true; break; }
-                        }
-                        break;
-                    }
-                    let take = take_within_cap(n, read_cap, buf.len());
-                    buf.extend_from_slice(&tmp_stderr[..take]);
-                    stderr_buf.extend_from_slice(&tmp_stderr[..take]);
-                    if take < n { hit_cap = true; break; }
-                }
-            }
-        }
-
-        // If we hit the cap, terminate the process group so descendants
-        // do not survive.
-        if hit_cap {
-            #[cfg(unix)]
-            terminate_process_group(&child);
-            #[cfg(not(unix))]
-            terminate_process_group(&mut child);
-        }
-
-        let status = child.wait().await.ok();
-        Ok::<_, String>((buf, stderr_buf, hit_cap, status))
-    })
-    .await;
-
-    let (buf, stderr_buf, hit_cap, status) = match lifecycle_result {
-        Ok(Ok(tuple)) => tuple,
-        Ok(Err(e)) => return Err(judge_tool_error(judge_events, e)),
-        Err(_) => {
-            // Timed out: terminate the process group and reap with a
-            // short grace period so the OS has time to deliver SIGKILL.
-            #[cfg(unix)]
-            terminate_process_group(&child);
-            #[cfg(not(unix))]
-            terminate_process_group(&mut child);
-            // Grace period: give the OS time to deliver SIGKILL.
-            let _grace = timeout(Duration::from_secs(5), child.wait()).await;
-            return Err(judge_tool_error(
-                judge_events,
-                format!("Command timed out after {} seconds", args.timeout),
-            ));
-        },
-    };
-
-    // Normal completion (or hit_cap with group already killed by
-    // terminate_process_group above): defuse the guard so it does not
-    // send a harmless-but-unnecessary SIGKILL to the reaped group.
-    guard.defuse();
+    let ChildRun {
+        buf,
+        stderr_buf,
+        hit_cap,
+        status,
+    } = Box::pin(run_bash_child(
+        command,
+        args.timeout,
+        read_cap,
+        initial_capacity,
+    ))
+    .await
+    .map_err(|e| judge_tool_error(judge_events.clone(), e))?;
 
     let elapsed_ms = start_time.elapsed().as_millis();
     let stderr_str = String::from_utf8_lossy(&stderr_buf);
@@ -632,26 +829,7 @@ async fn execute_bash_with_args(
         ));
     }
 
-    let result = if output_str.is_empty() {
-        String::new()
-    } else if hit_cap {
-        // `hit_cap` is only set when a read cap exists.
-        let cap = read_cap.unwrap_or_default();
-        format!("{output_str}\n[... output truncated at {cap} bytes ...]")
-    } else if success {
-        output_str.into_owned()
-    } else if is_sandbox_violation(sandbox_applied, success, &output_str) {
-        format!(
-            "{output_str}\n\n\
-            [Sandbox restriction]: This command was blocked by the filesystem sandbox. \
-            The sandbox restricts file access to the project directory and standard system paths. \
-            Do NOT retry with different workarounds — the restriction is intentional. \
-            Instead, inform the user that this command requires access outside the sandbox \
-            and suggest they run it directly in their terminal."
-        )
-    } else {
-        output_str.into_owned()
-    };
+    let result = compose_text_output(&output_str, hit_cap, read_cap, success, sandbox_applied);
 
     let result = annotate_empty_search_result(&args.command, result, exit_code, &stderr_str);
     let spilled = output_max.is_some_and(|max| result.len() > max);
