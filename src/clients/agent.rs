@@ -531,9 +531,7 @@ impl Agent {
     /// reported no usage.
     ///
     /// A persist failure warns and is otherwise ignored: the audit record must
-    /// not abort the model conversation, and this method is called from the
-    /// grandfathered `Agent::send` loop without adding a `?` decision point
-    /// (reduction task #101).
+    /// not abort the model conversation.
     fn record_turn_usage(&mut self, usage: Option<&Usage>) {
         if let Some(usage) = usage {
             self.last_usage = Some(*usage);

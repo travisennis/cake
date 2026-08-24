@@ -33,6 +33,15 @@ completed tool calls or redo completed work.";
 
 type FunctionCall = (String, String, String);
 
+struct TurnContext<'a> {
+    turn_mode: &'a mut TurnMode,
+    corrections_used: &'a mut u32,
+    semantic_recovery_used: &'a mut bool,
+    provider_turn_start: usize,
+    invocation_start: usize,
+    termination: Option<&'a crate::session_telemetry::ProviderTermination>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TurnMode {
     Normal,
@@ -113,9 +122,8 @@ fn immediate_tool_error_result(
 
 impl Agent {
     /// Log the remaining context-window budget after a completed turn, when a
-    /// window is configured. Factored into its own method so the grandfathered
-    /// `send` loop (reduction task #101) does not grow its cyclomatic
-    /// complexity with an extra decision point.
+    /// window is configured. Factored into its own method so context accounting
+    /// stays separate from the main turn-control flow.
     pub(super) fn log_context_budget(&self) {
         if let Some(remaining) = self.context_remaining_tokens() {
             tracing::info!(
@@ -170,106 +178,160 @@ impl Agent {
                 .complete_turn_with_output_schema_fallback(turn_mode)
                 .await?;
 
-            // Count every completed API turn unconditionally; accumulate usage separately.
-            self.turn_count += 1;
-            self.accumulate_usage(usage.as_ref());
-            self.record_turn_usage(usage.as_ref());
-            self.log_context_budget();
-
-            // Extract owned function call data before moving items into history
-            let function_calls = Self::function_calls_from_items(&items);
-
-            self.stream_turn_items(&items)?;
-
-            // Move items into history
-            self.conversation.extend_turn_items(items);
-
-            // If no function calls, resolve the message; with a schema
-            // attached, the message must validate before it is returned.
-            if function_calls.is_empty() {
-                let message = self
-                    .conversation
-                    .resolve_assistant_message_from(provider_turn_start);
-                if message.is_none() || termination_marks_incomplete(termination.as_ref()) {
-                    if !semantic_recovery_used
-                        && semantic_incomplete_is_retryable(termination.as_ref())
-                    {
-                        semantic_recovery_used = true;
-                        turn_mode = TurnMode::SemanticRecovery;
-                        self.record_semantic_recovery_retry();
-                        let continuation = self
-                            .conversation
-                            .push_user_message(SEMANTIC_RECOVERY_PROMPT.to_string());
-                        self.stream_item(&continuation)?;
-                        continue;
-                    }
-
-                    let turn_items = self
-                        .conversation
-                        .history()
-                        .get(provider_turn_start..)
-                        .unwrap_or_default();
-                    return Err(cut_off_error(
-                        turn_items,
-                        termination.as_ref(),
-                        semantic_recovery_used.then_some(self.session_id),
-                    )
-                    .into());
-                }
-
-                if let Some(document) = self.resolve_final_message_or_correct(
-                    &mut corrections_used,
-                    &mut turn_mode,
-                    provider_turn_start,
-                )? {
-                    return Ok(document);
-                }
-                continue;
+            let function_calls = self.process_completed_turn(items, usage.as_ref())?;
+            let turn_context = TurnContext {
+                turn_mode: &mut turn_mode,
+                corrections_used: &mut corrections_used,
+                semantic_recovery_used: &mut semantic_recovery_used,
+                provider_turn_start,
+                invocation_start,
+                termination: termination.as_ref(),
+            };
+            if let Some(document) = self.process_turn(function_calls, turn_context).await? {
+                return Ok(document);
             }
-
-            // Correction turns offer no tools, so any function calls here come
-            // from a misbehaving provider. Do not execute them; treat the turn
-            // as a failed validation attempt.
-            if turn_mode.tools_disabled() {
-                // Append synthetic FunctionCallOutput items for every
-                // unexecuted call so the history stays well-formed for both
-                // the Responses API and Chat Completions backends.
-                for (call_id, name, _) in &function_calls {
-                    let output = format!(
-                        "not executed: correction turn offers no tools for {name}({call_id})"
-                    );
-                    let item = self.conversation.push_tool_output(call_id.clone(), output);
-                    self.stream_item(&item)?;
-                }
-                if turn_mode == TurnMode::SchemaCorrection {
-                    self.record_correction_tool_call_failure(
-                        &mut corrections_used,
-                        &mut turn_mode,
-                    )?;
-                    continue;
-                }
-
-                let turn_items = self
-                    .conversation
-                    .history()
-                    .get(provider_turn_start..)
-                    .unwrap_or_default();
-                return Err(
-                    cut_off_error(turn_items, termination.as_ref(), Some(self.session_id)).into(),
-                );
-            }
-
-            // Stop before executing a turn's tool calls when the turn
-            // already consumed the turn budget or the batch would exceed the
-            // tool-call budget: executing them could never lead to a final
-            // answer within the configured limits.
-            self.enforce_limits(function_calls.len(), invocation_start)?;
-
-            let results = self.execute_function_calls(function_calls).await?;
-            self.record_tool_results(results)?;
-
-            // Loop continues - send next request with tool results included
         }
+    }
+
+    fn process_completed_turn(
+        &mut self,
+        items: Vec<ConversationItem>,
+        usage: Option<&crate::types::Usage>,
+    ) -> anyhow::Result<Vec<FunctionCall>> {
+        // Count every completed API turn unconditionally; accumulate usage separately.
+        self.turn_count += 1;
+        self.accumulate_usage(usage);
+        self.record_turn_usage(usage);
+        self.log_context_budget();
+
+        // Extract owned function call data before moving items into history.
+        let function_calls = Self::function_calls_from_items(&items);
+        self.stream_turn_items(&items)?;
+        self.conversation.extend_turn_items(items);
+        Ok(function_calls)
+    }
+
+    async fn process_turn(
+        &mut self,
+        function_calls: Vec<FunctionCall>,
+        context: TurnContext<'_>,
+    ) -> anyhow::Result<Option<String>> {
+        if function_calls.is_empty() {
+            return self.handle_final_message(
+                context.corrections_used,
+                context.turn_mode,
+                context.semantic_recovery_used,
+                context.provider_turn_start,
+                context.termination,
+            );
+        }
+
+        if context.turn_mode.tools_disabled() {
+            self.handle_disabled_tools_turn(
+                &function_calls,
+                context.corrections_used,
+                context.turn_mode,
+                context.provider_turn_start,
+                context.termination,
+            )?;
+            return Ok(None);
+        }
+
+        self.execute_tool_turn(function_calls, context.invocation_start)
+            .await?;
+        Ok(None)
+    }
+
+    fn handle_final_message(
+        &mut self,
+        corrections_used: &mut u32,
+        turn_mode: &mut TurnMode,
+        semantic_recovery_used: &mut bool,
+        provider_turn_start: usize,
+        termination: Option<&crate::session_telemetry::ProviderTermination>,
+    ) -> anyhow::Result<Option<String>> {
+        let message = self
+            .conversation
+            .resolve_assistant_message_from(provider_turn_start);
+        if message.is_none() || termination_marks_incomplete(termination) {
+            if !*semantic_recovery_used && semantic_incomplete_is_retryable(termination) {
+                *semantic_recovery_used = true;
+                *turn_mode = TurnMode::SemanticRecovery;
+                self.record_semantic_recovery_retry();
+                let continuation = self
+                    .conversation
+                    .push_user_message(SEMANTIC_RECOVERY_PROMPT.to_string());
+                self.stream_item(&continuation)?;
+                return Ok(None);
+            }
+
+            let turn_items = self
+                .conversation
+                .history()
+                .get(provider_turn_start..)
+                .unwrap_or_default();
+            return Err(cut_off_error(
+                turn_items,
+                termination,
+                semantic_recovery_used.then_some(self.session_id),
+            )
+            .into());
+        }
+
+        if let Some(document) =
+            self.resolve_final_message_or_correct(corrections_used, turn_mode, provider_turn_start)?
+        {
+            return Ok(Some(document));
+        }
+        Ok(None)
+    }
+
+    fn handle_disabled_tools_turn(
+        &mut self,
+        function_calls: &[FunctionCall],
+        corrections_used: &mut u32,
+        turn_mode: &mut TurnMode,
+        provider_turn_start: usize,
+        termination: Option<&crate::session_telemetry::ProviderTermination>,
+    ) -> anyhow::Result<()> {
+        // Correction turns offer no tools, so any function calls here come
+        // from a misbehaving provider. Do not execute them; treat the turn
+        // as a failed validation attempt.
+        // Append synthetic FunctionCallOutput items for every unexecuted call
+        // so the history stays well-formed for both the Responses API and
+        // Chat Completions backends.
+        for (call_id, name, _) in function_calls {
+            let output =
+                format!("not executed: correction turn offers no tools for {name}({call_id})");
+            let item = self.conversation.push_tool_output(call_id.clone(), output);
+            self.stream_item(&item)?;
+        }
+        if *turn_mode == TurnMode::SchemaCorrection {
+            self.record_correction_tool_call_failure(corrections_used, turn_mode)?;
+            return Ok(());
+        }
+
+        let turn_items = self
+            .conversation
+            .history()
+            .get(provider_turn_start..)
+            .unwrap_or_default();
+        Err(cut_off_error(turn_items, termination, Some(self.session_id)).into())
+    }
+
+    async fn execute_tool_turn(
+        &mut self,
+        function_calls: Vec<FunctionCall>,
+        invocation_start: usize,
+    ) -> anyhow::Result<()> {
+        // Stop before executing a turn's tool calls when the turn
+        // already consumed the turn budget or the batch would exceed the
+        // tool-call budget: executing them could never lead to a final
+        // answer within the configured limits.
+        self.enforce_limits(function_calls.len(), invocation_start)?;
+        let results = self.execute_function_calls(function_calls).await?;
+        self.record_tool_results(results)?;
+        Ok(())
     }
 
     /// Stop the loop with a [`LimitExceededError`] when a user-configured
@@ -1112,5 +1174,291 @@ mod skill_activation_tests {
             detect_skill_activation("Read", &read_args(known_path), &locations, &activated)
                 .is_none()
         );
+    }
+}
+
+#[cfg(test)]
+mod helper_tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use crate::config::hooks::{HookCommand, HookEvent, HookGroup, HookMatcher, LoadedHooks};
+    use crate::config::model::{ApiType, ModelConfig, ResolvedModelConfig};
+    use crate::hooks::HookContext;
+    use crate::types::Role;
+
+    fn test_agent() -> Agent {
+        Agent::new(
+            ResolvedModelConfig {
+                model_config: ModelConfig {
+                    model: "test-model".to_string(),
+                    api_type: ApiType::ChatCompletions,
+                    base_url: "https://api.example.com".to_string(),
+                    api_key_env: "TEST_API_KEY".to_string(),
+                    provider: None,
+                    provider_headers: None,
+                    temperature: None,
+                    top_p: None,
+                    max_output_tokens: None,
+                    context_window: None,
+                    reasoning_effort: None,
+                    reasoning_summary: None,
+                    reasoning_max_tokens: None,
+                    providers: vec![],
+                },
+                api_key: "test-key".to_string(),
+            },
+            &[(Role::System, "test system prompt".to_string())],
+        )
+    }
+
+    fn hook_context() -> HookContext {
+        HookContext {
+            session_id: uuid::Uuid::new_v4(),
+            task_id: uuid::Uuid::new_v4(),
+            transcript_path: None,
+            hook_event_sink: None,
+            cwd: std::env::current_dir().expect("current directory"),
+            model: "test-model".to_string(),
+        }
+    }
+
+    fn hook_runner(event: HookEvent, command: &str, fail_closed: bool) -> Arc<HookRunner> {
+        Arc::new(HookRunner::new(
+            LoadedHooks {
+                groups: vec![HookGroup {
+                    event,
+                    matcher: HookMatcher::All,
+                    hooks: vec![HookCommand {
+                        command: command.to_string(),
+                        timeout: Duration::from_secs(2),
+                        fail_closed,
+                        status_message: None,
+                        source_path: PathBuf::from("test-hook.json"),
+                    }],
+                }],
+            },
+            hook_context(),
+        ))
+    }
+
+    fn empty_hook_runner() -> Arc<HookRunner> {
+        Arc::new(HookRunner::new(LoadedHooks::default(), hook_context()))
+    }
+
+    fn read_arguments(path: &std::path::Path) -> String {
+        serde_json::json!({ "path": path.display().to_string() }).to_string()
+    }
+
+    #[tokio::test]
+    async fn run_tool_call_covers_execute_error_and_block_paths() {
+        let dir = tempfile::tempdir_in(std::env::current_dir().expect("current directory"))
+            .expect("temporary directory");
+        let path = dir.path().join("input.txt");
+        std::fs::write(&path, "tool output\n").expect("input file");
+
+        let mut agent = test_agent().with_hook_runner(hook_runner(
+            HookEvent::PostToolUse,
+            "printf '%s' '{\"additional_context\":\"post context\"}'",
+            false,
+        ));
+        agent.turn_count = 4;
+        let success = agent
+            .run_tool_call(
+                "call-success".to_string(),
+                "Read".to_string(),
+                ToolHookPlan::Execute {
+                    arguments: read_arguments(&path),
+                    prefix_notice: Some("prefix notice\n".to_string()),
+                    additional_context: vec!["plan context".to_string()],
+                },
+            )
+            .await;
+        assert!(!success.telemetry.was_error);
+        assert_eq!(success.telemetry.turn_index, 4);
+        assert_eq!(success.telemetry.call_id, "call-success");
+        assert!(success.output.starts_with("prefix notice\n"));
+        assert!(success.output.contains("tool output"));
+        assert!(success.output.contains("post context"));
+        assert!(success.output.contains("plan context"));
+        assert_eq!(success.telemetry.output_bytes, success.output.len());
+
+        let missing = dir.path().join("missing.txt");
+        let error = agent
+            .run_tool_call(
+                "call-error".to_string(),
+                "Read".to_string(),
+                ToolHookPlan::Execute {
+                    arguments: read_arguments(&missing),
+                    prefix_notice: None,
+                    additional_context: Vec::new(),
+                },
+            )
+            .await;
+        assert!(error.telemetry.was_error);
+        assert!(error.output.starts_with("Error:"), "{}", error.output);
+
+        let blocked = agent
+            .run_tool_call(
+                "call-blocked".to_string(),
+                "Read".to_string(),
+                ToolHookPlan::Block {
+                    reason: "not allowed".to_string(),
+                    additional_context: vec!["block context".to_string()],
+                },
+            )
+            .await;
+        assert!(blocked.telemetry.was_error);
+        assert!(
+            blocked
+                .output
+                .contains("Hook blocked tool execution: not allowed")
+        );
+        assert!(blocked.output.contains("block context"));
+    }
+
+    #[tokio::test]
+    async fn post_tool_context_covers_all_hook_outcomes() {
+        let result = Ok("tool output".to_string());
+        assert_eq!(
+            post_tool_context(None, false, "Read", "call-1", "{}", &result).await,
+            None
+        );
+
+        let empty = empty_hook_runner();
+        assert_eq!(
+            post_tool_context(Some(&empty), false, "Read", "call-1", "{}", &result).await,
+            None
+        );
+
+        let context = hook_runner(
+            HookEvent::PostToolUse,
+            "printf '%s' '{\"additional_context\":\"post context\"}'",
+            false,
+        );
+        assert_eq!(
+            post_tool_context(Some(&context), false, "Read", "call-1", "{}", &result,)
+                .await
+                .as_deref(),
+            Some("post context")
+        );
+
+        let failed = hook_runner(HookEvent::PostToolUse, "exit 1", true);
+        assert_eq!(
+            post_tool_context(Some(&failed), false, "Read", "call-1", "{}", &result).await,
+            None
+        );
+    }
+
+    fn tool_result(
+        skill_activation: Option<SkillActivation>,
+        compensation_events: Vec<CompensationEventTelemetry>,
+    ) -> ToolRunResult {
+        ToolRunResult {
+            call_id: "call-1".to_string(),
+            output: "tool output".to_string(),
+            skill_activation,
+            telemetry: ToolCallTelemetry {
+                turn_index: 1,
+                call_id: "call-1".to_string(),
+                name: "Read".to_string(),
+                duration_ms: 1,
+                output_bytes: 11,
+                was_error: false,
+            },
+            compensation_events,
+        }
+    }
+
+    #[test]
+    fn record_tool_results_persists_skill_and_denial_records() {
+        let persisted = Arc::new(Mutex::new(Vec::<SessionRecord>::new()));
+        let persisted_clone = Arc::clone(&persisted);
+        let streamed = Arc::new(Mutex::new(Vec::<String>::new()));
+        let streamed_clone = Arc::clone(&streamed);
+        let mut agent = test_agent()
+            .with_persist_callback(move |record| {
+                persisted_clone
+                    .lock()
+                    .expect("persist lock")
+                    .push(record.clone());
+                Ok(())
+            })
+            .with_streaming_json(move |json| {
+                streamed_clone
+                    .lock()
+                    .expect("stream lock")
+                    .push(json.to_string());
+            });
+
+        agent
+            .record_tool_results(vec![tool_result(
+                Some(SkillActivation {
+                    name: "debugging-cake".to_string(),
+                    path: PathBuf::from("/skills/debugging-cake/SKILL.md"),
+                }),
+                vec![CompensationEventTelemetry::judge_verdict(
+                    "block",
+                    Some("unsafe-command"),
+                    1,
+                    false,
+                )],
+            )])
+            .expect("record tool result");
+
+        assert_eq!(
+            agent.permission_denials,
+            vec!["Read(call-1): judge block: unsafe-command"]
+        );
+        assert!(matches!(
+            persisted.lock().expect("persist lock").first(),
+            Some(SessionRecord::SkillActivated { name, .. }) if name == "debugging-cake"
+        ));
+        assert!(matches!(
+            agent.history().last(),
+            Some(ConversationItem::FunctionCallOutput { call_id, output, .. })
+                if call_id == "call-1" && output == "tool output"
+        ));
+        assert_eq!(streamed.lock().expect("stream lock").len(), 1);
+    }
+
+    #[test]
+    fn disabled_tool_turn_records_correction_and_cutoff_paths() {
+        let calls = vec![("call-1".to_string(), "Read".to_string(), "{}".to_string())];
+        let mut correction_agent = test_agent();
+        let mut corrections_used = 0;
+        let mut mode = TurnMode::SchemaCorrection;
+        let correction_start = correction_agent.history().len();
+        correction_agent
+            .handle_disabled_tools_turn(
+                &calls,
+                &mut corrections_used,
+                &mut mode,
+                correction_start,
+                None,
+            )
+            .expect("correction tool calls are recorded");
+        assert_eq!(corrections_used, 1);
+        assert!(correction_agent.history().iter().any(|item| matches!(
+            item,
+            ConversationItem::FunctionCallOutput { output, .. }
+                if output.contains("not executed: correction turn offers no tools")
+        )));
+
+        let mut recovery_agent = test_agent();
+        let mut recovery_mode = TurnMode::SemanticRecovery;
+        let recovery_start = recovery_agent.history().len();
+        let mut unused_corrections = 0;
+        let error = recovery_agent
+            .handle_disabled_tools_turn(
+                &calls,
+                &mut unused_corrections,
+                &mut recovery_mode,
+                recovery_start,
+                None,
+            )
+            .expect_err("semantic recovery tool calls must stop");
+        assert!(error.to_string().contains("response was incomplete"));
     }
 }
