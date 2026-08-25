@@ -6,13 +6,12 @@ This guardrail records the project's cyclomatic complexity (CC) and CRAP targets
 
 ## Targets
 
-  | Metric                            | Target | Applies to                                              |
-  | --------------------------------- | ------ | ------------------------------------------------------- |
-  | McCabe cyclomatic complexity (CC) | ≤ 10   | Most functions                                          |
-  |                                   | ≤ 15   | Inherently dispatch-heavy functions                     |
-  |                                   | ≤ 20   | Grandfathered structurally complex loop (`Agent::send`) |
-  | CRAP score                        | ≤ 30   | Every function                                          |
-  |                                   | ≤ 15   | Stretch goal for CC ≤ 10 functions with ≥ 90% coverage  |
+  | Metric                            | Target | Applies to                                             |
+  | --------------------------------- | ------ | ------------------------------------------------------ |
+  | McCabe cyclomatic complexity (CC) | ≤ 10   | Most functions                                         |
+  |                                   | ≤ 15   | Inherently dispatch-heavy functions                    |
+  | CRAP score                        | ≤ 30   | Every function                                         |
+  |                                   | ≤ 15   | Stretch goal for CC ≤ 10 functions with ≥ 90% coverage |
 
 Functions introduced or modified in a change must meet the CC target before merge. Grandfathered exceptions are recorded in the per-function baseline and in the table below, and carry a `#[expect(clippy::cognitive_complexity, reason = "...")]` annotation (where clippy's cognitive complexity also fires) referencing their reduction task.
 
@@ -38,7 +37,6 @@ Functions whose current McCabe CC is at or above the ≤ 15 dispatch-heavy allow
   | 27         | `check_rg_replace_flag`             | `src/clients/tools/bash_safety/checks.rs` | #96            |
   | 26         | `split_segments`                    | `src/clients/tools/bash_safety/parse.rs`  | #97            |
   | 22         | `check_dangerous_rm`                | `src/clients/tools/bash_safety/checks.rs` | #96            |
-  | 20         | `Agent::send`                       | `src/clients/agent/agent_loop.rs`         | #101           |
   | 18         | `SettingsLoader::load_with_profile` | `src/config/settings.rs`                  | #100           |
   | 16         | `Session::load`                     | `src/config/session.rs`                   | #102           |
   | 16         | `read_file`                         | `src/clients/tools/read.rs`               | #102           |
