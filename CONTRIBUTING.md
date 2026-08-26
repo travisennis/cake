@@ -97,7 +97,7 @@ Issues, research notes, ExecPlans, and ADRs are managed records; follow the issu
 
 ## Git and commits
 
-Commit and push freely on a feature branch, and commit often --- uncommitted work is the fragile state. Stage the paths you changed rather than `git add -A`, so unrelated in-flight edits stay out of your pull request. Ask first before force-pushing (it discards history) or opening a pull request.
+Commit and push freely on a feature branch, and commit often --- uncommitted work is the fragile state. Stage the paths you changed rather than `git add -A`, so unrelated in-flight edits stay out of your pull request. Ask first before force-pushing (it discards history); open the pull request when the work is ready for review.
 
 All work happens on a branch, which is what makes that safe: `master` is protected by a GitHub ruleset rejecting direct pushes, and by the `branch-guard` hook in `prek.toml`, which rejects commits and pushes on `master` at both `pre-commit` and `pre-push`. Branch names use the commit type as a prefix, such as `feat/turn-limits` or `fix/sandbox-read-only`. [Working on branches and worktrees](docs/runbooks/parallel-worktrees.md) covers the mechanics, including running several branches at once in linked worktrees.
 
