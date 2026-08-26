@@ -183,32 +183,6 @@ impl MacOsSandbox {
         profile.blank();
     }
 
-    /// Append SCM CLI (gh, glab) configuration, cache, and state rules to the profile.
-    ///
-    /// When `read_only` is true, emit read-only rules so the read-only
-    /// sandbox policy cannot write to SCM CLI state/cache directories.
-    fn append_scm_cli_rules(profile: &mut SeatbeltProfileBuilder, read_only: bool) {
-        profile.comment("SCM CLIs: GitHub CLI (gh) and GitLab CLI (glab)");
-        let access = if read_only {
-            "file-read*"
-        } else {
-            "file-read* file-write*"
-        };
-        if let Some(home) = home_dir() {
-            // GitHub CLI
-            profile.allow_subpath(access, home.join(".config/gh"));
-            profile.allow_subpath(access, home.join(".cache/gh"));
-            profile.allow_subpath(access, home.join(".local/share/gh"));
-            profile.allow_subpath(access, home.join(".local/state/gh"));
-            // GitLab CLI
-            profile.allow_subpath(access, home.join(".config/glab-cli"));
-            profile.allow_subpath(access, home.join(".cache/glab-cli"));
-            profile.allow_subpath(access, home.join(".local/share/glab-cli"));
-            profile.allow_subpath(access, home.join(".local/state/glab-cli"));
-        }
-        profile.blank();
-    }
-
     /// Append macOS Keychain access rules to the profile.
     ///
     /// Note: actual Keychain service access (used by `gh`, `security`, and
@@ -285,16 +259,11 @@ impl MacOsSandbox {
         profile.allow_literal("file-read*", "/");
         profile.blank();
 
-        // Ancestor directory literals for all read-write, read-only, and system paths.
-        // (agents and tools call readdir() and stat() on ancestors to traverse paths)
+        // Ancestor directory literals for all writable and read-and-execute paths.
+        // Agents and tools call readdir() and stat() on ancestors to traverse paths.
         profile.comment("Allow reading ancestor directories of allowed paths");
         let mut ancestor_set = std::collections::BTreeSet::new();
-        for path in config
-            .writable
-            .iter()
-            .chain(&config.system_paths)
-            .chain(&config.readable)
-        {
+        for path in config.writable.iter().chain(&config.read_execute) {
             let mut ancestor = path.as_path();
             while let Some(parent) = ancestor.parent() {
                 if parent != Path::new("/") {
@@ -317,19 +286,12 @@ impl MacOsSandbox {
             profile.blank();
         }
 
-        // Read + execute access for system paths
-        if !config.system_paths.is_empty() {
-            profile.comment("Read + execute access: system paths");
-            for path in &config.system_paths {
-                Self::allow_path_access(&mut profile, "file-read*", path);
-            }
-            profile.blank();
-        }
-
-        // Read-only access for config/device paths
-        if !config.readable.is_empty() {
-            profile.comment("Read-only access: config and device paths");
-            for path in &config.readable {
+        // Read and execute access for system paths, configured read-only paths,
+        // skill paths, and paths demoted by read-only policy. The global
+        // process-exec rule above supplies execution authority.
+        if !config.read_execute.is_empty() {
+            profile.comment("Read and execute access: read-only paths");
+            for path in &config.read_execute {
                 Self::allow_path_access(&mut profile, "file-read*", path);
             }
             profile.blank();
@@ -337,7 +299,6 @@ impl MacOsSandbox {
 
         Self::append_git_rules(&mut profile);
         Self::append_ssh_agent_rules(&mut profile);
-        Self::append_scm_cli_rules(&mut profile, config.policy == SandboxPolicy::ReadOnly);
         Self::append_keychain_rules(&mut profile, config.policy == SandboxPolicy::ReadOnly);
         Self::append_device_rules(&mut profile);
 
@@ -571,8 +532,11 @@ mod tests {
     fn test_config() -> SandboxConfig {
         SandboxConfig {
             writable: vec![PathBuf::from("/workspace")],
-            system_paths: vec![PathBuf::from("/usr"), PathBuf::from("/bin")],
-            readable: vec![PathBuf::from("/etc")],
+            read_execute: vec![
+                PathBuf::from("/usr"),
+                PathBuf::from("/bin"),
+                PathBuf::from("/etc"),
+            ],
             policy: SandboxPolicy::WorkspaceWrite,
         }
     }
@@ -715,8 +679,7 @@ mod tests {
     fn test_profile_allows_read_write_paths() {
         let config = SandboxConfig {
             writable: vec![PathBuf::from("/workspace"), PathBuf::from("/tmp")],
-            system_paths: vec![],
-            readable: vec![],
+            read_execute: vec![],
             policy: SandboxPolicy::WorkspaceWrite,
         };
 
@@ -727,36 +690,21 @@ mod tests {
     }
 
     #[test]
-    fn test_profile_allows_system_paths_with_read_and_exec() {
+    fn test_profile_allows_read_and_execute_paths() {
         let config = SandboxConfig {
             writable: vec![],
-            system_paths: vec![PathBuf::from("/usr"), PathBuf::from("/bin")],
-            readable: vec![],
+            read_execute: vec![PathBuf::from("/usr"), PathBuf::from("/etc")],
             policy: SandboxPolicy::WorkspaceWrite,
         };
 
         let profile = MacOsSandbox::generate_profile(&config);
 
         assert!(profile.contains("(allow file-read* (subpath \"/usr\"))"));
-        assert!(profile.contains("(allow file-read* (subpath \"/bin\"))"));
-    }
-
-    #[test]
-    fn test_profile_allows_read_only_paths() {
-        let config = SandboxConfig {
-            writable: vec![],
-            system_paths: vec![],
-            readable: vec![PathBuf::from("/etc")],
-            policy: SandboxPolicy::WorkspaceWrite,
-        };
-
-        let profile = MacOsSandbox::generate_profile(&config);
-
         assert!(profile.contains("(allow file-read* (subpath \"/etc\"))"));
     }
 
     #[test]
-    fn readable_file_emits_literal_rule_and_denies_siblings() {
+    fn read_execute_file_emits_literal_rule_and_denies_siblings() {
         let tmp = tempfile::tempdir().unwrap();
         let allowed = tmp.path().join("tool");
         let sibling = tmp.path().join("other-tool");
@@ -765,8 +713,7 @@ mod tests {
 
         let config = SandboxConfig {
             writable: vec![],
-            system_paths: vec![],
-            readable: vec![allowed.clone()],
+            read_execute: vec![allowed.clone()],
             policy: SandboxPolicy::WorkspaceWrite,
         };
 
@@ -797,8 +744,7 @@ mod tests {
 
         let config = SandboxConfig {
             writable: vec![allowed.clone()],
-            system_paths: vec![],
-            readable: vec![],
+            read_execute: vec![],
             policy: SandboxPolicy::WorkspaceWrite,
         };
 
@@ -876,7 +822,15 @@ mod tests {
             "HOME",
             Some("/Users/Test User/quote\"backslash\\paren(home)"),
             || {
-                let profile = MacOsSandbox::generate_profile(&test_config());
+                let config = SandboxConfig::build_with_policy(
+                    SandboxPolicy::WorkspaceWrite,
+                    Path::new("/workspace"),
+                    &[],
+                    &[],
+                    &[],
+                    &[],
+                );
+                let profile = MacOsSandbox::generate_profile(&config);
                 let escaped_home = "/Users/Test User/quote\\\"backslash\\\\paren(home)";
 
                 assert!(profile.contains(&format!(
@@ -902,20 +856,28 @@ mod tests {
     #[test]
     fn test_read_only_profile_denies_scm_and_keychain_writes() {
         temp_env::with_var("HOME", Some("/Users/testhome"), || {
-            let config = SandboxConfig {
-                writable: vec![PathBuf::from("/tmp")],
-                system_paths: vec![PathBuf::from("/usr")],
-                readable: vec![PathBuf::from("/workspace")],
-                policy: SandboxPolicy::ReadOnly,
-            };
+            let config = SandboxConfig::build_with_policy(
+                SandboxPolicy::ReadOnly,
+                Path::new("/workspace"),
+                &[PathBuf::from("/tmp")],
+                &[],
+                &[],
+                &[],
+            );
 
             let profile = MacOsSandbox::generate_profile(&config);
 
-            // Read-only policy must not re-grant writes through the hardcoded
-            // SCM CLI and keychain rules.
+            // Read-only policy must demote the shared SCM CLI paths and must
+            // not re-grant writes through the specialized Keychain rules.
+            let scm_rule = "(allow file-read* (subpath \"/Users/testhome/.config/gh\"))";
             assert!(
-                profile.contains("(allow file-read* (subpath \"/Users/testhome/.config/gh\"))"),
+                profile.contains(scm_rule),
                 "read-only profile should keep SCM CLI dirs readable"
+            );
+            assert_eq!(
+                profile.matches(scm_rule).count(),
+                1,
+                "shared SCM CLI paths must emit exactly one rule"
             );
             assert!(
                 !profile.contains(
@@ -998,47 +960,29 @@ mod tests {
     }
 
     #[test]
-    fn test_profile_allows_gh_cli_paths() {
-        let profile = MacOsSandbox::generate_profile(&test_config());
+    fn test_profile_emits_each_shared_scm_cli_path_once() {
+        temp_env::with_var("HOME", Some("/Users/testhome"), || {
+            let config = SandboxConfig::build_with_policy(
+                SandboxPolicy::WorkspaceWrite,
+                Path::new("/workspace"),
+                &[],
+                &[],
+                &[],
+                &[],
+            );
+            let profile = MacOsSandbox::generate_profile(&config);
 
-        assert!(
-            profile.contains(".config/gh"),
-            "Expected profile to allow gh config directory"
-        );
-        assert!(
-            profile.contains(".cache/gh"),
-            "Expected profile to allow gh cache directory"
-        );
-        assert!(
-            profile.contains(".local/share/gh"),
-            "Expected profile to allow gh share directory"
-        );
-        assert!(
-            profile.contains(".local/state/gh"),
-            "Expected profile to allow gh state directory"
-        );
-    }
-
-    #[test]
-    fn test_profile_allows_glab_cli_paths() {
-        let profile = MacOsSandbox::generate_profile(&test_config());
-
-        assert!(
-            profile.contains(".config/glab-cli"),
-            "Expected profile to allow glab config directory"
-        );
-        assert!(
-            profile.contains(".cache/glab-cli"),
-            "Expected profile to allow glab cache directory"
-        );
-        assert!(
-            profile.contains(".local/share/glab-cli"),
-            "Expected profile to allow glab share directory"
-        );
-        assert!(
-            profile.contains(".local/state/glab-cli"),
-            "Expected profile to allow glab state directory"
-        );
+            for &relative in crate::clients::tools::sandbox::SCM_CLI_PATHS {
+                let rule = format!(
+                    "(allow file-read* file-write* (subpath \"/Users/testhome/{relative}\"))"
+                );
+                assert_eq!(
+                    profile.matches(&rule).count(),
+                    1,
+                    "shared SCM CLI path must emit exactly one rule: {relative}"
+                );
+            }
+        });
     }
 
     #[test]
@@ -1060,8 +1004,7 @@ mod tests {
                 PathBuf::from("/workspace/project"),
                 PathBuf::from("/private/var/folders"),
             ],
-            system_paths: vec![PathBuf::from("/usr")],
-            readable: vec![PathBuf::from("/private/etc")],
+            read_execute: vec![PathBuf::from("/usr"), PathBuf::from("/private/etc")],
             policy: SandboxPolicy::WorkspaceWrite,
         };
 

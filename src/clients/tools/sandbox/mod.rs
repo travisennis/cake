@@ -5,9 +5,8 @@
 //! - Linux: Landlock LSM (kernel 5.13+)
 //!
 //! The sandbox restricts filesystem access to:
-//! - Read-write: current working directory, temp directories
-//! - Read-only + exec: system paths (/usr, /bin, /lib, etc.)
-//! - Read-only: config/device paths (/etc, /dev/null, etc.)
+//! - Read, write, and execute: workspace, temp, and configured writable paths
+//! - Read and execute, no write: system, config, skill, and demoted paths
 //! - Deny: everything else
 
 use std::path::{Path, PathBuf};
@@ -74,17 +73,26 @@ pub fn resolve_sandbox_policy(cli: Option<SandboxPolicy>) -> SandboxPolicy {
 
 #[derive(Clone, Debug)]
 pub(super) struct SandboxConfig {
-    /// Directories with read-write access (cwd, temp dirs)
+    /// Paths with read, write, and execute access.
     pub writable: Vec<PathBuf>,
-    /// Directories with read-only + execute access (system paths)
-    pub system_paths: Vec<PathBuf>,
-    /// Directories with read-only access
-    pub readable: Vec<PathBuf>,
+    /// Paths with read and execute access, but no write access.
+    pub read_execute: Vec<PathBuf>,
     /// The sandbox policy this config was built for. Platform strategies use
     /// this to adjust rules that are not derived purely from the path lists
-    /// (e.g. macOS SCM CLI read-write grants).
+    /// (e.g. macOS Keychain file grants).
     pub policy: SandboxPolicy,
 }
+
+const SCM_CLI_PATHS: &[&str] = &[
+    ".config/gh",
+    ".cache/gh",
+    ".local/share/gh",
+    ".local/state/gh",
+    ".config/glab-cli",
+    ".cache/glab-cli",
+    ".local/share/glab-cli",
+    ".local/state/glab-cli",
+];
 
 impl SandboxConfig {
     /// Build a sandbox configuration for the current context, honoring the
@@ -137,32 +145,30 @@ impl SandboxConfig {
         // (e.g., /tmp → /private/tmp on macOS)
         let writable = deduplicated_with_canonical(&writable);
 
-        let system_paths = Self::get_system_paths();
-        let mut readable = Self::get_read_only_paths();
+        let mut read_execute = Self::get_read_execute_paths();
 
         // Add additional directories from --add-dir flag as read-only
-        push_dirs_with_canonical(&mut readable, additional_dirs);
+        push_dirs_with_canonical(&mut read_execute, additional_dirs);
 
         // Add skill directories as read-only (so scripts like x-fetch.js can execute)
-        push_dirs_with_canonical(&mut readable, skill_dirs);
+        push_dirs_with_canonical(&mut read_execute, skill_dirs);
 
         // Read-only policy: keep only temp directories writable and move the
         // workspace dir, toolchain caches, and settings dirs into the
-        // read-only set. Temp directories stay read-write so commands can
+        // read-and-execute set. Temp directories stay read-write so commands can
         // still produce intermediate output (pipes, mktemp, overflow temp
         // files).
-        let (writable, readable) = if policy == SandboxPolicy::ReadOnly {
-            Self::partition_read_only(&writable, temp_dirs, readable)
+        let (writable, read_execute) = if policy == SandboxPolicy::ReadOnly {
+            Self::partition_read_only(&writable, temp_dirs, read_execute)
         } else {
             // WorkspaceWrite and DangerFullAccess use the same config; only
             // DangerFullAccess skips applying the sandbox entirely.
-            (writable, readable)
+            (writable, read_execute)
         };
 
         let config = Self {
             writable,
-            system_paths,
-            readable,
+            read_execute,
             policy,
         };
 
@@ -172,19 +178,18 @@ impl SandboxConfig {
         #[cfg(not(any(target_os = "macos", target_os = "linux")))]
         {
             let _ = &config.writable;
-            let _ = &config.system_paths;
-            let _ = &config.readable;
+            let _ = &config.read_execute;
         }
 
         config
     }
 
     /// Move every workspace/toolchain/settings path that is not a temp dir
-    /// from `writable` into `readable`, leaving only temp dirs writable.
+    /// from `writable` into `read_execute`, leaving only temp dirs writable.
     fn partition_read_only(
         full_writable: &[std::path::PathBuf],
         temp_dirs: &[std::path::PathBuf],
-        mut readable: Vec<PathBuf>,
+        mut read_execute: Vec<PathBuf>,
     ) -> (Vec<PathBuf>, Vec<PathBuf>) {
         // Build the set of temp paths (original and canonical) that must stay
         // writable so a command can still produce intermediate output.
@@ -206,13 +211,13 @@ impl SandboxConfig {
             if temp_set.contains(path) {
                 continue;
             }
-            readable.push(path.clone());
+            read_execute.push(path.clone());
             if let Ok(canonical) = path.canonicalize() {
-                readable.push(canonical);
+                read_execute.push(canonical);
             }
         }
 
-        (writable, dedup_vec(readable))
+        (writable, dedup_vec(read_execute))
     }
 
     /// Extend the writable paths with directories needed by common toolchains
@@ -244,17 +249,9 @@ impl SandboxConfig {
         // Pre-commit hook caches.
         writable.push(home.join(".cache/prek"));
 
-        // SCM CLIs: gh and glab.
-        writable.extend([
-            home.join(".config/gh"),
-            home.join(".cache/gh"),
-            home.join(".local/share/gh"),
-            home.join(".local/state/gh"),
-            home.join(".config/glab-cli"),
-            home.join(".cache/glab-cli"),
-            home.join(".local/share/glab-cli"),
-            home.join(".local/state/glab-cli"),
-        ]);
+        // SCM CLIs: gh and glab. This shared list is the only owner; platform
+        // strategies translate these paths like every other filesystem grant.
+        writable.extend(SCM_CLI_PATHS.iter().map(|path| home.join(path)));
 
         // Cross-language runtime managers.
         writable.extend([
@@ -504,8 +501,8 @@ impl SandboxConfig {
         ]);
     }
 
-    /// Get system paths that need read + execute access
-    fn get_system_paths() -> Vec<PathBuf> {
+    /// Get built-in paths that need read and execute access.
+    fn get_read_execute_paths() -> Vec<PathBuf> {
         let mut paths = Vec::new();
 
         #[cfg(target_os = "macos")]
@@ -524,6 +521,11 @@ impl SandboxConfig {
                 PathBuf::from("/Applications"),
                 PathBuf::from("/opt/homebrew"),
                 PathBuf::from("/opt/local"),
+                PathBuf::from("/etc"),
+                PathBuf::from("/private/etc"),
+                PathBuf::from("/private/var"),
+                PathBuf::from("/dev"),
+                PathBuf::from("/var"),
             ]);
         }
 
@@ -537,34 +539,14 @@ impl SandboxConfig {
                 PathBuf::from("/lib64"),
                 PathBuf::from("/etc/alternatives"),
                 PathBuf::from("/snap"),
+                PathBuf::from("/etc"),
+                PathBuf::from("/dev"),
+                PathBuf::from("/proc"),
+                PathBuf::from("/sys"),
             ]);
         }
 
-        paths.into_iter().filter(|p| p.exists()).collect()
-    }
-
-    /// Get paths that need read-only access
-    fn get_read_only_paths() -> Vec<PathBuf> {
-        let mut paths = Vec::new();
-
-        #[cfg(target_os = "macos")]
-        paths.extend([
-            PathBuf::from("/etc"),
-            PathBuf::from("/private/etc"),
-            PathBuf::from("/private/var"),
-            PathBuf::from("/dev"),
-            PathBuf::from("/var"),
-        ]);
-
-        #[cfg(target_os = "linux")]
-        paths.extend([
-            PathBuf::from("/etc"),
-            PathBuf::from("/dev"),
-            PathBuf::from("/proc"),
-            PathBuf::from("/sys"),
-        ]);
-
-        // Git configuration (read-only)
+        // Git configuration (read-only).
         if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
             paths.extend([home.join(".config/git"), home.join(".gitattributes")]);
         }
@@ -963,7 +945,7 @@ mod tests {
     }
 
     #[test]
-    fn read_only_policy_moves_workspace_and_toolchain_to_readable() {
+    fn read_only_policy_moves_workspace_and_toolchain_to_read_execute() {
         temp_env::with_var("HOME", Some("/tmp/cake-sandbox-test-home"), || {
             let home = PathBuf::from("/tmp/cake-sandbox-test-home");
             let temp_dir = PathBuf::from("/tmp/cake-sandbox-ro-temp");
@@ -984,7 +966,7 @@ mod tests {
                 "read-only policy must not grant writes to the workspace"
             );
             assert!(
-                config.readable.contains(&PathBuf::from("/workspace")),
+                config.read_execute.contains(&PathBuf::from("/workspace")),
                 "read-only policy must grant reads to the workspace"
             );
 
@@ -997,7 +979,7 @@ mod tests {
                 bun.display()
             );
             assert!(
-                config.readable.contains(&bun),
+                config.read_execute.contains(&bun),
                 "read-only policy must grant reads to {}",
                 bun.display()
             );
@@ -1012,7 +994,7 @@ mod tests {
                 sccache_cache.display()
             );
             assert!(
-                config.readable.contains(&sccache_cache),
+                config.read_execute.contains(&sccache_cache),
                 "read-only policy must grant reads to {}",
                 sccache_cache.display()
             );
@@ -1032,7 +1014,7 @@ mod tests {
                 settings_dir_path.display()
             );
             assert!(
-                config.readable.contains(&settings_dir_path),
+                config.read_execute.contains(&settings_dir_path),
                 "read-only policy must grant reads to {}",
                 settings_dir_path.display()
             );
@@ -1104,8 +1086,8 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn macos_system_paths_include_cryptexes() {
-        let paths = SandboxConfig::get_system_paths();
+    fn macos_read_execute_paths_include_cryptexes() {
+        let paths = SandboxConfig::get_read_execute_paths();
 
         if PathBuf::from("/System/Cryptexes").exists() {
             assert!(

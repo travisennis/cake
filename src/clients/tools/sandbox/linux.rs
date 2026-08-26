@@ -18,8 +18,7 @@ enum EnforcementFailure {
 #[derive(Debug, PartialEq, Eq)]
 struct RulePaths {
     writable: Vec<std::path::PathBuf>,
-    system_paths: Vec<std::path::PathBuf>,
-    readable: Vec<std::path::PathBuf>,
+    read_execute: Vec<std::path::PathBuf>,
 }
 
 /// Linux sandbox strategy using Landlock LSM
@@ -44,8 +43,7 @@ impl LandlockSandbox {
 
         RulePaths {
             writable: existing(&config.writable),
-            system_paths: existing(&config.system_paths),
-            readable: existing(&config.readable),
+            read_execute: existing(&config.read_execute),
         }
     }
 
@@ -73,24 +71,21 @@ impl LandlockSandbox {
                 .map_err(|e| format!("Failed to add rw rule for {}: {e}", path.display()))?;
         }
 
-        // Add read-only + exec rules for system paths.
-        let ro_exec_access = AccessFs::ReadFile | AccessFs::ReadDir | AccessFs::Execute;
-        for path in &paths.system_paths {
+        // Add read-and-execute rules for system paths, configured read-only
+        // paths, skill paths, and writable paths demoted by read-only policy.
+        // Execute is included so scripts and binaries can run while Landlock
+        // still denies mutation, matching macOS Seatbelt's file-read* plus
+        // global process-exec rules.
+        let read_execute_access = AccessFs::ReadFile | AccessFs::ReadDir | AccessFs::Execute;
+        for path in &paths.read_execute {
             ruleset = ruleset
-                .add_rules(landlock::path_beneath_rules([path], ro_exec_access))
-                .map_err(|e| format!("Failed to add ro+exec rule for {}: {e}", path.display()))?;
-        }
-
-        // Add read-only + exec rules for readable paths. Execute is included
-        // so read-only paths (skill dirs, --add-dir, and everything the
-        // read-only policy demotes from writable: workspace, toolchain
-        // caches) can still run scripts and binaries, matching macOS Seatbelt
-        // where file-read* plus the global process-exec allow is sufficient
-        // to exec. Read-only denies mutations, not execution.
-        for path in &paths.readable {
-            ruleset = ruleset
-                .add_rules(landlock::path_beneath_rules([path], ro_exec_access))
-                .map_err(|e| format!("Failed to add ro rule for {}: {e}", path.display()))?;
+                .add_rules(landlock::path_beneath_rules([path], read_execute_access))
+                .map_err(|e| {
+                    format!(
+                        "Failed to add read-and-execute rule for {}: {e}",
+                        path.display()
+                    )
+                })?;
         }
 
         Ok(ruleset)
@@ -171,8 +166,7 @@ mod tests {
 
         let config = SandboxConfig {
             writable: vec![missing.clone(), writable.clone()],
-            system_paths: vec![missing],
-            readable: vec![readable.clone(), readable_file.clone()],
+            read_execute: vec![missing, readable.clone(), readable_file.clone()],
             policy: crate::clients::tools::sandbox::SandboxPolicy::WorkspaceWrite,
         };
 
@@ -180,11 +174,10 @@ mod tests {
             LandlockSandbox::prepare_rule_paths(&config),
             RulePaths {
                 writable: vec![writable],
-                system_paths: Vec::new(),
                 // A `[sandbox].read_only` file grant survives classification
                 // and is handed to `path_beneath_rules`, which applies the
                 // rights to the file object itself.
-                readable: vec![readable, readable_file],
+                read_execute: vec![readable, readable_file],
             }
         );
     }

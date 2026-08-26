@@ -40,13 +40,11 @@ State in the pull request which contexts were inspected and which were changed. 
 
 Cake's sandbox is platform-specific, so the runner label decides which enforcement path CI actually executes.
 
-`Test` and `Coverage` run on `macos-latest`, so the Seatbelt path in `src/clients/tools/sandbox/` is exercised there. `sandbox-exec` behavior and profile handling vary across macOS releases, so a `macos-latest` migration to a new image family can change sandbox test results with no change to Cake. When investigating a sandbox test that began failing without a related code change, check whether the runner image moved before looking for a regression; see [Debugging Sandbox Denials](debugging-sandbox.md).
+`Test` and `Coverage` run on `macos-latest`, so the Seatbelt path in `src/clients/tools/sandbox/` is exercised there. `Test` requires the focused read-only enforcement tests to apply a real profile; it does not accept the nested-Seatbelt skip used by ordinary local test runs. `sandbox-exec` behavior and profile handling vary across macOS releases, so a `macos-latest` migration to a new image family can change sandbox test results with no change to Cake. When investigating a sandbox test that began failing without a related code change, check whether the runner image moved before looking for a regression; see [Debugging Sandbox Denials](debugging-sandbox.md).
 
-The Linux side runs `cargo check --all-features` (`Linux Check`) plus the sandbox module tests (`Linux Test`), so the Landlock tests in `src/clients/tools/sandbox/linux.rs` execute in CI. `Linux Test` is scoped to `clients::tools::sandbox`; the rest of the suite runs only on macOS, and Linux coverage beyond the sandbox module is a deliberate future step.
+The Linux side runs `cargo check --all-features` (`Linux Check`) on `ubuntu-latest`. `Linux Test` is pinned to `ubuntu-24.04`: it runs the sandbox module tests, then requires the cross-platform read-only allow/deny tests to execute against the runner kernel's Landlock enforcement. The required behavior test first executes an allowed read-only script and then verifies denied mutations, so sandbox initialization failure cannot create a false pass.
 
-The sandbox-module tests are pure unit tests and do not require the runner kernel to support a specific Landlock ABI. If kernel-dependent tests are added later, pin the Ubuntu label and make the tests degrade gracefully for unsupported ABI levels.
-
-Prefer an explicit image label over `*-latest` for a job whose coverage must be stable and explainable. Use `*-latest` only where tracking GitHub's moving default is the intent. Do not add a second label that merely duplicates what `*-latest` currently aliases.
+Kernel-dependent security tests must use an explicit Ubuntu image label whose kernel supports the configured Landlock ABI. A required enforcement test fails closed if that pinned image can no longer provide full enforcement; optional kernel-dependent tests should instead report an explicit skip on unsupported kernels. Do not use an unpinned `ubuntu-latest` runner for evidence that a specific Landlock ABI works.
 
 ## Release runners are a compatibility decision
 
