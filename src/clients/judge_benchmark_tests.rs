@@ -1618,7 +1618,10 @@ mod deterministic {
             terminal_class: JudgeAttemptTerminalClass::Verdict,
             usage: Some(Usage {
                 input_tokens: 100,
-                input_tokens_details: InputTokensDetails { cached_tokens: 5 },
+                input_tokens_details: InputTokensDetails {
+                    cached_tokens: 5,
+                    cache_write_tokens: 0,
+                },
                 output_tokens: 10,
                 output_tokens_details: OutputTokensDetails {
                     reasoning_tokens: 3,

@@ -20,6 +20,11 @@ pub struct Usage {
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, Default)]
 pub struct InputTokensDetails {
     pub cached_tokens: u64,
+    /// Tokens written to the provider's prompt cache on this request.
+    ///
+    /// Providers may omit this field. Missing values deserialize as zero.
+    #[serde(default)]
+    pub cache_write_tokens: u64,
 }
 
 /// Details about output tokens.
@@ -39,7 +44,23 @@ mod tests {
         assert_eq!(usage.output_tokens, 0);
         assert_eq!(usage.total_tokens, 0);
         assert_eq!(usage.input_tokens_details.cached_tokens, 0);
+        assert_eq!(usage.input_tokens_details.cache_write_tokens, 0);
         assert_eq!(usage.output_tokens_details.reasoning_tokens, 0);
+    }
+
+    #[test]
+    fn usage_deserialization_defaults_cache_write_tokens() {
+        let usage: Usage = serde_json::from_str(
+            r#"{
+                "input_tokens": 100,
+                "input_tokens_details": {"cached_tokens": 20},
+                "output_tokens": 50,
+                "output_tokens_details": {"reasoning_tokens": 10},
+                "total_tokens": 150
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(usage.input_tokens_details.cache_write_tokens, 0);
     }
 
     #[test]
@@ -48,7 +69,10 @@ mod tests {
             input_tokens: 100,
             output_tokens: 50,
             total_tokens: 150,
-            input_tokens_details: InputTokensDetails { cached_tokens: 20 },
+            input_tokens_details: InputTokensDetails {
+                cached_tokens: 20,
+                cache_write_tokens: 5,
+            },
             output_tokens_details: OutputTokensDetails {
                 reasoning_tokens: 10,
             },
@@ -57,5 +81,6 @@ mod tests {
         assert!(json.contains("\"input_tokens\":100"));
         assert!(json.contains("\"output_tokens\":50"));
         assert!(json.contains("\"total_tokens\":150"));
+        assert!(json.contains("\"cache_write_tokens\":5"));
     }
 }

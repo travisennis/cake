@@ -756,6 +756,7 @@ fn parse_response_extracts_cached_tokens() {
         total_tokens: Some(280),
         prompt_tokens_details: Some(PromptTokensDetails {
             cached_tokens: Some(150),
+            cache_write_tokens: Some(30),
         }),
         completion_tokens_details: None,
     };
@@ -769,6 +770,11 @@ fn parse_response_extracts_cached_tokens() {
                 .as_ref()
                 .and_then(|d| d.cached_tokens)
                 .unwrap_or(0),
+            cache_write_tokens: usage
+                .prompt_tokens_details
+                .as_ref()
+                .and_then(|d| d.cache_write_tokens)
+                .unwrap_or(0),
         },
         output_tokens_details: OutputTokensDetails {
             reasoning_tokens: usage
@@ -779,6 +785,7 @@ fn parse_response_extracts_cached_tokens() {
         },
     };
     assert_eq!(mapped.input_tokens_details.cached_tokens, 150);
+    assert_eq!(mapped.input_tokens_details.cache_write_tokens, 30);
 }
 
 #[test]
@@ -1592,7 +1599,11 @@ mod response_parsing_tests {
                 "usage": {
                     "prompt_tokens": 100,
                     "completion_tokens": 50,
-                    "total_tokens": 150
+                    "total_tokens": 150,
+                    "prompt_tokens_details": {
+                        "cached_tokens": 20,
+                        "cache_write_tokens": 10
+                    }
                 }
             })))
             .mount(&mock_server)
@@ -1613,6 +1624,8 @@ mod response_parsing_tests {
         assert_eq!(usage.input_tokens, 100);
         assert_eq!(usage.output_tokens, 50);
         assert_eq!(usage.total_tokens, 150);
+        assert_eq!(usage.input_tokens_details.cached_tokens, 20);
+        assert_eq!(usage.input_tokens_details.cache_write_tokens, 10);
     }
 
     #[tokio::test]

@@ -96,6 +96,8 @@ Records cover initialization, conversation and judge API attempts, retries, tool
 
 Each `judge_attempt` identifies the resolved model, API type, request controls, effective deadline, zero-tool/tool-choice state, prompt byte counts, attempt/retry ordinal, retry reason and backoff wait, terminal class, optional request identity digests (one-way SHA-256 of the provider request and originating tool call identifiers), usage, and termination. Timings separate construction, request through headers, response parsing, verdict parsing, and total time. Timeout and transport attempts retain elapsed time; absent usage is `null`. The record supplements the verdict or fail-closed compensation. One `judge_attempt` is emitted per provider call: one per evaluation, or two after a recovery.
 
+Main-provider `api_attempt.usage.input_tokens_details` may additionally contain provider-reported `cached_tokens` and `cache_write_tokens`; these optional usage details support the read-only cache-break analysis in `scripts/session-metrics/cache_breaks.py`. The same optional `cache_write_tokens` detail may appear in serialized `Usage` values in `turn_usage`, `task_complete`, and `session_summary` records.
+
 A `compensation` carries its `kind`, optional `detail`, judge-verdict `latency_ms`, and allowlist `overridden` flag. Kinds are `json_repair`, `judge_verdict`, `judge_fail_closed`, `judge_bypass`, `same_path_serialization`, `output_truncation`, `context_overflow_retry`, and `edit_invalid_arguments`. Judge details are `block:<code>`, `warn:<code>`, or `allow`; fail-closed details name the failure class.
 
 Consumers must tolerate added enum values and optional fields; old sidecars remain valid. Sidecars never drive continue, resume, fork, or session discovery.

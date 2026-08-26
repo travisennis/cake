@@ -199,6 +199,11 @@ pub(super) async fn parse_response(response: reqwest::Response) -> anyhow::Resul
                     .as_ref()
                     .and_then(|d| d.cached_tokens)
                     .unwrap_or(0),
+                cache_write_tokens: u
+                    .prompt_tokens_details
+                    .as_ref()
+                    .and_then(|d| d.cache_write_tokens)
+                    .unwrap_or(0),
             },
             output_tokens_details: OutputTokensDetails {
                 reasoning_tokens: u

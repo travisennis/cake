@@ -17,13 +17,14 @@ def _usage_rows(grouped: dict[str, dict[str, int]]) -> list[list[str]]:
     order = sorted(grouped.items(), key=lambda kv: -kv[1]["total"])
     for key, t in order:
         rows.append([
-            key, fmt_int(t["input"]), fmt_int(t["cached"]), fmt_pct(t["cached"], t["input"]),
+            key, fmt_int(t["input"]), fmt_int(t["cached"]),
+            fmt_int(t["cache_write"]), fmt_pct(t["cached"], t["input"]),
             fmt_int(t["output"]), fmt_int(t["reasoning"]), fmt_int(t["total"]),
         ])
     return rows
 
 
-USAGE_HEADERS = ["", "input", "cached", "cache%", "output", "reasoning", "total"]
+USAGE_HEADERS = ["", "input", "cached", "cache write", "cache%", "output", "reasoning", "total"]
 
 
 def run(data: cakelib.Dataset) -> None:

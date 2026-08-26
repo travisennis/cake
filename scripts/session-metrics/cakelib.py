@@ -567,13 +567,14 @@ def parse_ts(ts: str | None) -> datetime | None:
 
 
 def usage_totals(usages: list[dict]) -> dict[str, int]:
-    """Sum a list of Usage dicts into input/cached/output/reasoning/total."""
-    totals = {"input": 0, "cached": 0, "output": 0, "reasoning": 0, "total": 0}
+    """Sum Usage dicts into input/cache-read/cache-write/output totals."""
+    totals = {"input": 0, "cached": 0, "cache_write": 0, "output": 0, "reasoning": 0, "total": 0}
     for u in usages:
         if not u:
             continue
         totals["input"] += u.get("input_tokens", 0)
         totals["cached"] += (u.get("input_tokens_details") or {}).get("cached_tokens", 0)
+        totals["cache_write"] += (u.get("input_tokens_details") or {}).get("cache_write_tokens", 0)
         totals["output"] += u.get("output_tokens", 0)
         totals["reasoning"] += (u.get("output_tokens_details") or {}).get("reasoning_tokens", 0)
         totals["total"] += u.get("total_tokens", 0)

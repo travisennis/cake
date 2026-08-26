@@ -3,7 +3,7 @@
 Stdlib-only Python scripts that report how well cake is working, from the two places cake records evidence:
 
 - **Session transcripts** --- `~/.local/share/cake/sessions/{uuid}.jsonl` (or `{CAKE_DATA_DIR}/sessions`). Conversation records: `session_meta`, `message`, `function_call`/`function_call_output`, `reasoning`, `hook_event`, `task_start`/`task_complete`, `skill_activated`, plus legacy `session_start`/`init`/`result` from older format versions.
-- **Telemetry sidecars** --- `~/.cache/cake/session-telemetry/{uuid}.ndjson`. Operational records: `telemetry_init` (run mode, api type, settings), `api_attempt` (conversation-model latency, status, and token usage per request), `judge_attempt` (command-safety judge model controls, phase timing, status, termination, and token usage without raw prompts), `retry_scheduled`, `tool_call` (duration, output bytes, error flag), `session_summary` (success, duration, turns, total usage).
+- **Telemetry sidecars** --- `~/.cache/cake/session-telemetry/{uuid}.ndjson`. Operational records: `telemetry_init` (run mode, api type, settings), `api_attempt` (conversation-model latency, status, and token usage per request), `judge_attempt` (command-safety judge model controls, phase timing, status, termination, and token usage without raw prompts), `retry_scheduled`, `tool_call` (duration, output bytes, error flag), `session_summary` (success, duration, turns, total usage). `api_attempt.usage.input_tokens_details` may include provider-reported `cached_tokens` and `cache_write_tokens`; the metrics suite uses these optional fields for after-the-fact cache-break analysis.
 
 ## Usage
 
@@ -22,7 +22,8 @@ Every script accepts `--days`, `--sessions-dir`, `--telemetry-dir`, `--model`, a
   | Script              | Reports                                                                                                                                                                        |
   | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
   | `overview.py`       | Sessions per day, models, cake/format versions, run modes (new/continue/resume/fork), api types, top projects, per-session shape                                               |
-  | `tokens.py`         | Token totals with cache-hit rates, by model/project/day, per-invocation distribution, context growth per request                                                               |
+  | `tokens.py`         | Token totals with cache-read and cache-write counts, cache-hit rates, by model/project/day, per-invocation distribution, context growth per request                            |
+  | `cache_breaks.py`   | After-the-fact prompt-cache break detection from telemetry, with missed-token totals and likely model-switch, idle-TTL, or generic causes                                      |
   | `tools.py`          | Per-tool call volume and failure rates, failure taxonomy, Edit/Write retry recovery, durations/output sizes, per-turn parallelism                                              |
   | `api.py`            | API attempt failures, status codes, latency percentiles by model, retry reasons/delays, context-overflow overrides                                                             |
   | `time_breakdown.py` | Where wall-clock time goes (model API vs tools vs retries vs overhead), tool/model time shares, turn pacing, think time between tasks, slowest operations                      |
@@ -45,3 +46,4 @@ Run the metrics tests with `just session-metrics-check`.
 - Transcript tool failures are detected by the `Error` output prefix, matching how the agent loop records failed tool calls; telemetry `was_error` is authoritative for telemetry-covered sessions.
 - Telemetry sidecars only exist for sessions run since sidecar support landed; `overview.py` prints the coverage ratio. Transcript-based sections cover all sessions.
 - Tool failure taxonomy categories are keyed to current tool error message wording (`src/clients/tools/*.rs`); if those messages change, update `classify_tool_error` in `cakelib.py`.
+- Cache-break detection is heuristic: it requires a prior cache read or write, ignores misses at or below 1,024 tokens, and uses five minutes as the idle-TTL label threshold. Provider pricing is not stored, so the report shows missed tokens but does not estimate dollars.

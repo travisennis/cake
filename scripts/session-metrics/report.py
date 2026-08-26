@@ -8,6 +8,7 @@ Usage:
 """
 
 import api
+import cache_breaks
 import cakelib
 import compensations
 import hooks
@@ -24,6 +25,7 @@ def main() -> None:
     for module in (
         overview,
         tokens,
+        cache_breaks,
         tools,
         api,
         time_breakdown,

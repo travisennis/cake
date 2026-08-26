@@ -199,6 +199,7 @@ pub(super) struct ApiUsage {
 #[derive(Deserialize, Debug, Clone, Default)]
 pub(super) struct ApiInputTokensDetails {
     pub(super) cached_tokens: Option<u64>,
+    pub(super) cache_write_tokens: Option<u64>,
 }
 
 /// Internal output tokens details for API response deserialization.
