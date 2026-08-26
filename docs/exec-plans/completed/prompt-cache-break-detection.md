@@ -16,7 +16,7 @@ The implementation will remain additive. It will not add cache controls to provi
 - [x] (2026-08-26) Add sidecar cache-break scanner and focused Python tests.
 - [x] (2026-08-26) Integrate the scanner into the combined and standalone session-metrics reports; update operator documentation.
 - [x] (2026-08-26) Run formatting, focused tests, the required final gate, and review the diff.
-- [ ] Post verification and acceptance notes on issue #182 and prepare the pull request.
+- [x] (2026-08-26) Post verification and acceptance notes on issue #182 and prepare the pull request.
 
 ## Surprises & Discoveries
 
