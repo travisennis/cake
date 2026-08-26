@@ -15,7 +15,7 @@ use clap::Parser;
 use uuid::Uuid;
 
 use crate::OutputFormat;
-use crate::cli::{CmdRunner, CommandRunOptions};
+use crate::cli::{CliOutputSink, CmdRunner, CommandRunOptions};
 use crate::config::DataDir;
 use crate::config::session::CURRENT_FORMAT_VERSION;
 use crate::config::session_jsonl::SessionFramer;
@@ -142,7 +142,7 @@ fn fail(error: ReplayError) -> anyhow::Error {
 /// Print one stream record as a JSON line on stdout.
 fn emit(record: &StreamRecord) {
     match serde_json::to_string(record) {
-        Ok(json) => println!("{json}"),
+        Ok(json) => CliOutputSink::write_stream_record(&json),
         Err(error) => tracing::warn!("Replay serialization failed: {error}"),
     }
 }

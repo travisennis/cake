@@ -10,7 +10,12 @@
 
 mod support;
 
-use std::{fs, path::PathBuf, process::Stdio};
+use std::{
+    fs,
+    io::{BufRead, BufReader},
+    path::PathBuf,
+    process::Stdio,
+};
 
 use support::TestEnv;
 
@@ -149,6 +154,27 @@ fn write_fixture(env: &TestEnv) {
         .expect("failed to write session fixture");
 }
 
+fn write_large_fixture(env: &TestEnv) {
+    let mut lines: Vec<String> = session_meta_records()
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    let content = "x".repeat(1024);
+    lines.extend((0..4096).map(|index| {
+        serde_json::json!({
+            "type": "message",
+            "role": "assistant",
+            "content": content,
+            "id": format!("msg-{index}"),
+            "status": "completed",
+            "timestamp": "2026-08-14T12:00:02Z",
+        })
+        .to_string()
+    }));
+    fs::write(session_path(env, SESSION_ID), lines.join("\n") + "\n")
+        .expect("failed to write large session fixture");
+}
+
 fn parse_stream(stdout: &[u8]) -> Vec<serde_json::Value> {
     String::from_utf8_lossy(stdout)
         .lines()
@@ -208,6 +234,46 @@ fn replay_emits_complete_transcript_in_order() {
     assert_eq!(records[1]["task_id"], TASK_ID);
     assert_eq!(records[9]["subtype"], "success");
     assert_eq!(records[9]["usage"]["total_tokens"], 15);
+}
+
+#[test]
+fn replay_exits_cleanly_when_consumer_closes_stdout() {
+    let env = cake_env();
+    write_large_fixture(&env);
+
+    let mut child = env
+        .command()
+        .args(["--output-format", "stream-json", "replay", SESSION_ID])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn command");
+
+    let mut stdout = BufReader::new(child.stdout.take().expect("stdout should be piped"));
+    let mut first_line = String::new();
+    stdout
+        .read_line(&mut first_line)
+        .expect("failed to read the first stream record");
+    drop(stdout);
+
+    let output = child
+        .wait_with_output()
+        .expect("failed to wait for command");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "a closed stream consumer should be a successful exit, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.stderr.is_empty(),
+        "a broken pipe should not produce a diagnostic, got: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !first_line.is_empty(),
+        "the consumer should receive the first stream record"
+    );
 }
 
 #[test]
