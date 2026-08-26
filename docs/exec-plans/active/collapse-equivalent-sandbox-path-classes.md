@@ -18,8 +18,8 @@ Cake users keep the same sandbox behavior, but maintainers get one internal coll
 - [x] (2026-08-26 16:40Z) Strengthened the read-only allow/deny test for both macOS and Linux and made real platform enforcement required in CI.
 - [x] (2026-08-26 16:45Z) Updated `docs/security.md` and the CI runner runbook; focused tests and `just ci` pass locally.
 - [x] (2026-08-26 16:50Z) Completed all three L-change preflight passes and applied the worthwhile findings.
-- [ ] Obtain passing required real Seatbelt and Landlock results in pull-request CI.
-- [ ] Complete the issue acceptance record, archive this plan, commit, push, and open the pull request.
+- [x] (2026-08-26 17:19Z) Opened pull request #359 with the required security labels and issue linkage.
+- [ ] Obtain passing required real Seatbelt and Landlock results in pull-request CI, complete the issue acceptance record, and archive this plan.
 
 ## Surprises & Discoveries
 
@@ -40,7 +40,7 @@ Cake users keep the same sandbox behavior, but maintainers get one internal coll
 
 ## Outcomes & Retrospective
 
-Not complete. The intended outcome is unchanged effective authority with fewer internal policy owners. Final results and any remaining platform gaps will be recorded here before the plan moves to `docs/exec-plans/completed/`.
+Implementation and local verification are complete. The sandbox now has one internal collection for each effective ordinary filesystem authority, both platform translators consume those two collections, and the shared configuration is the only owner of SCM CLI paths. Focused profile and classification tests pass, and `just ci` passes with 93.85% line coverage, no CRAP regression, and no cyclomatic-complexity exceedance. Pull request #359 is open. Required real Seatbelt and Landlock enforcement results remain pending in pull-request CI; this plan stays active until those results are recorded.
 
 ## Context and Orientation
 
@@ -105,6 +105,8 @@ Issue and pull-request comments are additive. The issue body link update is safe
 The required local gate passed with 1,324 unit tests plus integration suites, 93.85% total line coverage, no CRAP regression, and no cyclomatic-complexity exceedance. `cargo test --all-features clients::tools::sandbox` passed 56 focused tests before the final simplification pass. The optional `just clippy-linux` could not run because this host lacks the `x86_64-unknown-linux-gnu` Rust target and cross compiler. Required real-platform results remain pending in pull-request CI.
 
 Revision note (2026-08-26): Updated the living sections after implementation and preflight, recorded the nested-Seatbelt baseline limitation, and pinned the Linux enforcement runner after review identified the Landlock ABI dependency.
+
+Revision note (2026-08-26): Recorded pull request #359 and kept the plan active while its required real-platform enforcement checks run.
 
 ## Interfaces and Dependencies
 
