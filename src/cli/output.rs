@@ -4,6 +4,7 @@
 //! terminal in text, JSON, or stream-JSON format, as well as the [`TurnResult`]
 //! struct used to carry a single agent-turn outcome and its duration.
 
+use std::io::{self, Write};
 use std::path::Path;
 
 use crate::OutputFormat;
@@ -160,8 +161,21 @@ impl CliOutputSink {
         json
     }
 
+    /// Write one stream-json record and treat a closed consumer as a normal
+    /// successful termination. A pipe reader such as `head` is allowed to stop
+    /// after the records it needs; it must not turn that choice into a panic.
     pub(crate) fn write_stream_record(json: &str) {
-        println!("{json}");
+        Self::handle_stream_write(json);
+    }
+
+    fn handle_stream_write(json: &str) {
+        let result = writeln!(io::stdout().lock(), "{json}");
+        if let Err(error) = result {
+            if error.kind() == io::ErrorKind::BrokenPipe {
+                std::process::exit(crate::exit_code::code::SUCCESS.into());
+            }
+            panic!("failed to write stream-json output: {error}");
+        }
     }
 
     fn write_text_response(content: &str) {
