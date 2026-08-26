@@ -81,15 +81,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --all-features
 
-  # Executes the Landlock enforcement path's tests, which are `#[cfg(test)]`
-  # unit tests and do not require the runner kernel to support a specific
-  # Landlock ABI. Scoped to the sandbox module: the rest of the suite already
-  # runs on macOS, and the known timing-flaky unix process tests belong in a
-  # broader Linux coverage effort, not a required security gate.
+  # Compiles the Landlock path and runs its focused module tests, then executes
+  # cross-platform read-only allow/deny behavior against the runner's real
+  # Landlock kernel enforcement. The behavior test must first run an allowed
+  # script, so a sandbox initialization failure cannot satisfy its deny checks.
   linux-test:
     name: Linux Test
     needs: linux-check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -97,6 +96,8 @@ jobs:
           toolchain: 1.97.1
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --all-features --quiet clients::tools::sandbox
+      - name: Require real Landlock read-only enforcement
+        run: cargo test --all-features --quiet test_sandbox_read_only
 
   fmt:
     name: Format
@@ -141,6 +142,10 @@ jobs:
         with:
           toolchain: 1.97.1
       - uses: Swatinem/rust-cache@v2
+      - name: Require real Seatbelt read-only enforcement
+        run: cargo test --all-features --quiet test_sandbox_read_only
+        env:
+          CAKE_REQUIRE_SANDBOX_TESTS: "1"
       - run: cargo test --all-features --quiet
 
   docs:

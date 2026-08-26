@@ -1,17 +1,16 @@
 use super::*;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use crate::clients::tools::ToolContext;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use crate::clients::tools::sandbox::SandboxPolicy;
 use sha2::{Digest, Sha256};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::sync::Arc;
 use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// Check whether `CAKE_REQUIRE_SANDBOX_TESTS` is set to a truthy value,
-/// indicating that sandbox integration tests must run (and fail if the
-/// sandbox is unavailable).
+/// indicating that macOS Seatbelt integration tests must run instead of skip.
 ///
 /// Accepted truthy values: `1`, `true`, `yes`, `on`.
 #[cfg(target_os = "macos")]
@@ -27,45 +26,50 @@ fn parse_sandbox_tests_required(value: Option<&str>) -> bool {
     matches!(value, Some("1" | "true" | "yes" | "on"))
 }
 
-/// Skip the current macOS sandbox integration test when the platform
-/// sandbox cannot be enforced, unless `CAKE_REQUIRE_SANDBOX_TESTS` is set.
+/// Skip the current sandbox integration test only on macOS when Seatbelt
+/// cannot be nested, unless `CAKE_REQUIRE_SANDBOX_TESTS` is set.
 ///
-/// Returns `true` to indicate the test should be skipped.
-/// When the sandbox is unavailable *and* tests are required, panics with
-/// an actionable message so the test fails rather than silently passing.
-#[cfg(target_os = "macos")]
+/// Linux never skips: the tests must fail if Landlock cannot fully enforce the
+/// configured ABI, so an unavailable boundary cannot satisfy a deny assertion.
+/// Returns `true` when the macOS test should be skipped. When Seatbelt is
+/// unavailable and tests are required, this function panics with an actionable
+/// message.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn skip_if_sandbox_unavailable() -> bool {
-    let required = is_sandbox_tests_required();
+    #[cfg(target_os = "macos")]
+    {
+        let required = is_sandbox_tests_required();
 
-    if super::super::sandbox::is_sandbox_disabled() {
-        let msg = "skipping macOS sandbox integration test: CAKE_SANDBOX disables sandboxing";
-        assert!(
-            !required,
-            "sandbox integration tests are required via CAKE_REQUIRE_SANDBOX_TESTS=1 \
-             but CAKE_SANDBOX disables sandboxing; unset CAKE_SANDBOX or set \
-             CAKE_REQUIRE_SANDBOX_TESTS=0 to skip"
-        );
-        eprintln!("{msg}");
-        return true;
-    }
+        if super::super::sandbox::is_sandbox_disabled() {
+            let msg = "skipping macOS sandbox integration test: CAKE_SANDBOX disables sandboxing";
+            assert!(
+                !required,
+                "sandbox integration tests are required via CAKE_REQUIRE_SANDBOX_TESTS=1 \
+                 but CAKE_SANDBOX disables sandboxing; unset CAKE_SANDBOX or set \
+                 CAKE_REQUIRE_SANDBOX_TESTS=0 to skip"
+            );
+            eprintln!("{msg}");
+            return true;
+        }
 
-    if !super::super::sandbox::can_enforce_platform_sandbox() {
-        let msg = "skipping macOS sandbox integration test: sandbox-exec cannot apply profiles \
-                    in this process context";
-        assert!(
-            !required,
-            "sandbox integration tests are required via CAKE_REQUIRE_SANDBOX_TESTS=1 \
-             but sandbox-exec cannot apply profiles in this process context; see the \
-             macOS sandbox design doc for requirements"
-        );
-        eprintln!("{msg}");
-        return true;
+        if !super::super::sandbox::can_enforce_platform_sandbox() {
+            let msg = "skipping macOS sandbox integration test: sandbox-exec cannot apply profiles \
+                        in this process context";
+            assert!(
+                !required,
+                "sandbox integration tests are required via CAKE_REQUIRE_SANDBOX_TESTS=1 \
+                 but sandbox-exec cannot apply profiles in this process context; see the \
+                 macOS sandbox design doc for requirements"
+            );
+            eprintln!("{msg}");
+            return true;
+        }
     }
 
     false
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn path_outside_cwd_for_sandbox_test() -> Option<std::path::PathBuf> {
     let cwd = std::env::current_dir().ok()?;
     cwd.parent().map(std::path::Path::to_path_buf)
@@ -762,7 +766,7 @@ async fn test_sandbox_blocks_read_outside_cwd() {
 /// A `[sandbox].read_only` file grant (which flows into `additional_dirs`)
 /// lets sandboxed Bash execute exactly that file; a sibling file in the same
 /// directory stays denied.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[tokio::test]
 async fn test_sandbox_read_only_file_grant_runs_file_but_denies_sibling() {
     if skip_if_sandbox_unavailable() {
@@ -774,7 +778,12 @@ async fn test_sandbox_read_only_file_grant_runs_file_but_denies_sibling() {
     let temp_dir = tempfile::TempDir::new_in(outside).expect("should create test dir outside cwd");
     let allowed = temp_dir.path().join("allowed.sh");
     let sibling = temp_dir.path().join("sibling.sh");
-    std::fs::write(&allowed, "#!/bin/sh\nprintf 'allowed-ran\\n'\n").unwrap();
+    let denied_marker = temp_dir.path().join("denied-marker");
+    let script = format!(
+        "#!/bin/sh\nprintf 'allowed-ran\\n'\nprintf 'must-not-write\\n' > '{}'\n",
+        denied_marker.display()
+    );
+    std::fs::write(&allowed, script).unwrap();
     std::fs::write(&sibling, "#!/bin/sh\nprintf 'sibling-ran\\n'\n").unwrap();
     {
         use std::os::unix::fs::PermissionsExt;
@@ -798,6 +807,10 @@ async fn test_sandbox_read_only_file_grant_runs_file_but_denies_sibling() {
         "sandbox should run a configured [sandbox].read_only file, got: {}",
         result.output
     );
+    assert!(
+        !denied_marker.exists(),
+        "a read-only executable must not mutate its granted path"
+    );
 
     let sibling_args = format!(r#"{{"command": "{}"}}"#, sibling.display());
     let result = Box::pin(execute_bash(&context, &sibling_args))
@@ -818,7 +831,7 @@ async fn test_sandbox_read_only_file_grant_runs_file_but_denies_sibling() {
 /// Build a `ToolContext` with a resolved sandbox policy for the current
 /// process. `execute_bash` reads `context.sandbox_policy` to override the
 /// args-level default.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn context_with_policy(policy: SandboxPolicy) -> Arc<ToolContext> {
     let mut context =
         ToolContext::from_current_process().with_judge(Some(bypassed_judge_context()));
@@ -835,7 +848,7 @@ fn sandbox_context() -> Arc<ToolContext> {
 }
 
 /// Read-only policy denies writes to the project directory.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[tokio::test]
 async fn test_sandbox_read_only_blocks_write_in_cwd() {
     if skip_if_sandbox_unavailable() {

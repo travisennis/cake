@@ -22,6 +22,8 @@ An explicit CLI policy takes precedence over `CAKE_SANDBOX`. For compatibility, 
 
 The `[sandbox]` and `directories` path lists feed both the in-process Read/Edit/Write/Grep validation and the OS sandbox, so the two enforcement layers cannot diverge. A `read_only` entry naming a single executable grants exactly that file (plus read access to its ancestor directories), so sibling files in the same directory remain denied.
 
+The OS sandbox represents ordinary filesystem grants with two effective path classes: read + write + execute, and read + execute without write. Built-in system and configuration paths, user read-only grants, skill paths, and paths demoted by the `read-only` policy share the second class. Platform-only capabilities such as macOS device, SSH agent, Keychain, Mach, process, and network rules stay separate because they are not ordinary filesystem path grants.
+
 Project-level `.cake/settings.toml` is fully trusted by design, the same trust model as the rest of project `.cake/` configuration. There is no deny-list and no trust prompt: any path a project declares in `[sandbox]` becomes accessible to model-generated commands. Treat a cloned repository's `.cake/settings.toml` the way you treat its hooks.
 
 `cake init` stays inside this trust model: its `.cake/settings.toml` is commented and behavior-preserving, with no sandbox grants, judge allowlist entries, or model selection; its `.cake/hooks.json.example` is inert because Cake never loads `.example` files.
