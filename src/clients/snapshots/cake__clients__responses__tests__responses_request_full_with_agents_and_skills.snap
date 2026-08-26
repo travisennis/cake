@@ -119,7 +119,7 @@ expression: value
       "type": "function"
     },
     {
-      "description": "Read a file's contents. Returns line-numbered content. Supports reading specific line ranges to avoid loading large files entirely.\n\nBehavior:\n- Defaults to reading lines 1-200 (the configured read_default_end_line window; configurable in [limits]). Provide start_line/end_line for large files.\n- Returns a \"N more lines\" note when the file extends beyond the requested range.\n- Rejects binary files (null-byte detection).\n- Rejects directory paths (use Bash with ls, find, or tree for directory listings).\n\nWarning: Ranged and truncated reads return only the requested region. Do not compose old_text for an Edit from content outside the returned lines — the match will fail.\n",
+      "description": "Read a file's contents. Returns line-numbered content. Supports reading specific line ranges to avoid loading large files entirely.\n\nBehavior:\n- Defaults to reading lines 1-200 (the configured read_default_end_line window; configurable in [limits]). Provide start_line/end_line for large files.\n- Returns a \"N more lines\" note when the file extends beyond the requested range; large files may report \"at least N more lines\" because the exact total is not read to the end of the file.\n- Rejects binary files (null-byte detection).\n- Rejects directory paths (use Bash with ls, find, or tree for directory listings).\n\nWarning: Ranged and truncated reads return only the requested region. Do not compose old_text for an Edit from content outside the returned lines — the match will fail.\n",
       "name": "Read",
       "parameters": {
         "properties": {

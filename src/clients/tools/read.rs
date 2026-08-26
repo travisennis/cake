@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use std::fmt::Write as _;
 use std::io::{BufRead, BufReader, Read as _};
 use std::path::Path;
 
@@ -112,8 +113,8 @@ fn probe_binary(reader: impl std::io::Read) -> Result<bool, std::io::Error> {
 ///
 /// When `start_line` is provided without `end_line`, the window expands from
 /// `start_line` instead of keeping the absolute default. An unlimited window
-/// (`read_default_end_line = "unlimited"`) reads to the end of the file; the
-/// later clamp to total lines bounds it.
+/// (`read_default_end_line = "unlimited"`) reads to the end of the file,
+/// bounded by the configured `read_max_output_bytes` output budget.
 const fn end_requested_line(
     start: usize,
     start_line: Option<usize>,
@@ -130,6 +131,14 @@ const fn end_requested_line(
         (None, None) => usize::MAX,
     }
 }
+
+/// Lines counted past the requested window before stopping the read.
+///
+/// The exact total is reported only when EOF arrives within this budget;
+/// otherwise the header and footer use "at least N" phrasing so the reported
+/// count never understates the file length. Counting further would trade I/O
+/// proportional to the file size for an exact total.
+const EXTRA_LINES_TO_COUNT: usize = 1000;
 
 /// Read and format a file with line numbers
 fn read_file(
@@ -151,15 +160,42 @@ fn read_file(
     let end_requested =
         end_requested_line(start, start_line, end_line, limits.read_default_end_line);
 
-    // Read the requested window using a buffered reader.
-    // Lines outside the window reuse a single buffer to avoid allocating a
-    // String per line through EOF.
     let file = std::fs::File::open(path)
         .map_err(|e| format!("Failed to read file '{}': {e}", path.display()))?;
     let mut reader = BufReader::new(file);
+    read_from_reader(&mut reader, start, end_requested, path, limits)
+}
 
-    let mut numbered_lines: Vec<String> = Vec::new();
+/// Read a line range from an open reader and format it with line numbers.
+///
+/// The work is bounded rather than proportional to the file:
+/// - In-window lines accumulate into a single `String` only while it stays
+///   under `read_max_output_bytes`; the byte cap trims the exact return.
+/// - After the last emitted line, at most [`EXTRA_LINES_TO_COUNT`] more lines
+///   are read to decide the footer. EOF within that budget yields the exact
+///   total; otherwise the header and footer use "at least N" phrasing, which
+///   never understates the file length.
+fn read_from_reader<R: BufRead>(
+    reader: &mut R,
+    start: usize,
+    end_requested: usize,
+    path: &Path,
+    limits: &ToolLimits,
+) -> Result<super::ToolResult, String> {
+    // The window is empty by request: nothing can be shown, so count to EOF
+    // for the exact total in the message.
+    if start > end_requested {
+        let total_lines = count_lines_to_eof(reader, path)?;
+        return Ok(no_content_result(path, total_lines));
+    }
+
+    // An unlimited budget accumulates the whole file by design.
+    let soft_cap = limits.read_max_output_bytes.unwrap_or(usize::MAX);
+
+    let mut body = String::new();
     let mut total_lines: usize = 0;
+    let mut last_emitted: Option<usize> = None;
+    let mut exact = false;
     let mut line_buf = String::new();
 
     loop {
@@ -168,6 +204,7 @@ fn read_file(
             .read_line(&mut line_buf)
             .map_err(|e| format!("Failed to read file '{}': {e}", path.display()))?;
         if n == 0 {
+            exact = true;
             break; // EOF
         }
 
@@ -177,45 +214,90 @@ fn read_file(
         if i < start {
             continue; // line_buf reused, no allocation
         }
-        if i > end_requested {
-            // Past the window — keep counting using the same reused buffer.
-            // No per-line String allocation.
-            continue;
+        if emit_line(i, end_requested, &body, soft_cap) {
+            append_line(&mut body, &line_buf, i);
+            last_emitted = Some(i);
         }
 
-        let trimmed = line_buf.trim_end_matches('\n').trim_end_matches('\r');
-        numbered_lines.push(format!("{:>6}: {trimmed}", i + 1));
+        // Stop once the window is satisfied and a bounded number of lines
+        // past the last emitted line has been counted for the footer.
+        if past_counting_budget(last_emitted, i) {
+            break;
+        }
     }
 
-    // Clamp end to actual file length
-    let end = end_requested.min(total_lines.saturating_sub(1));
-
-    if start > end || start >= total_lines {
-        return Ok(super::ToolResult {
-            output: format!(
-                "File: {}\n{total_lines} lines total\n(start_line > end_line, no content to show)",
-                path.display()
-            ),
-            compensation_events: Vec::new(),
-        });
-    }
+    let Some(end) = last_emitted else {
+        // `start` lay beyond EOF; only EOF stops the loop without an
+        // emitted line, so the count is exact.
+        return Ok(no_content_result(path, total_lines));
+    };
 
     let mut output = format!(
         "File: {}\nLines {}-{}/{}\n{}",
         path.display(),
         start + 1,
         end + 1,
-        total_lines,
-        numbered_lines.join("\n")
+        total_label(exact, total_lines),
+        body
     );
 
     let mut compensation_events = Vec::new();
-    // Truncate if too large, respecting the byte cap at valid UTF-8 boundaries.
-    // An unlimited budget (read_max_output_bytes = "unlimited") never truncates.
-    if let Some(max_bytes) = limits.read_max_output_bytes
+    if let Some(event) = apply_output_cap(&mut output, limits.read_max_output_bytes) {
+        compensation_events.push(event);
+    }
+
+    // Note remaining lines if applicable. The count is a lower bound when
+    // the read stopped at the counting budget, so say "at least".
+    append_more_lines(&mut output, end, total_lines, exact);
+
+    Ok(super::ToolResult {
+        output,
+        compensation_events,
+    })
+}
+
+/// Whether line `i` belongs in the output. The first in-window line is always
+/// emitted; later lines stop once the running body reaches the byte budget.
+const fn emit_line(i: usize, end_requested: usize, body: &str, soft_cap: usize) -> bool {
+    i <= end_requested && (body.is_empty() || body.len() < soft_cap)
+}
+
+/// Append one numbered line to the body.
+fn append_line(body: &mut String, line_buf: &str, i: usize) {
+    if !body.is_empty() {
+        body.push('\n');
+    }
+    let trimmed = line_buf.trim_end_matches('\n').trim_end_matches('\r');
+    _ = write!(body, "{:>6}: {trimmed}", i + 1);
+}
+
+/// Whether the read should stop: the window is satisfied and
+/// [`EXTRA_LINES_TO_COUNT`] lines have been counted past the last emitted
+/// line.
+fn past_counting_budget(last_emitted: Option<usize>, i: usize) -> bool {
+    last_emitted.is_some_and(|end| i >= end.saturating_add(EXTRA_LINES_TO_COUNT))
+}
+
+/// The header's total: the exact count, or a lower bound with "at least" so
+/// the model can never conclude the file is shorter than it is.
+fn total_label(exact: bool, total_lines: usize) -> String {
+    if exact {
+        total_lines.to_string()
+    } else {
+        format!("at least {total_lines}")
+    }
+}
+
+/// Truncate `output` to the byte cap at a UTF-8 boundary, returning the
+/// telemetry event when truncation happened. An unlimited budget
+/// (`read_max_output_bytes = "unlimited"`) never truncates.
+fn apply_output_cap(
+    output: &mut String,
+    max_bytes: Option<usize>,
+) -> Option<CompensationEventTelemetry> {
+    if let Some(max_bytes) = max_bytes
         && output.len() > max_bytes
     {
-        use std::fmt::Write;
         let reserve = 100; // bytes for the truncation marker
         let byte_end = output.floor_char_boundary(max_bytes.saturating_sub(reserve));
         let mut truncated = {
@@ -229,24 +311,57 @@ fn read_file(
             truncated,
             "\n[... output truncated at {max_bytes} bytes ...]"
         );
-        output = truncated;
-        compensation_events.push(CompensationEventTelemetry::new(
+        *output = truncated;
+        Some(CompensationEventTelemetry::new(
             CompensationKind::OutputTruncation,
             Some("Read".to_string()),
-        ));
+        ))
+    } else {
+        None
     }
+}
 
-    // Note remaining lines if applicable
+/// Append the remaining-lines footer, using "at least" when the count is a
+/// lower bound.
+fn append_more_lines(output: &mut String, end: usize, total_lines: usize, exact: bool) {
     if end < total_lines.saturating_sub(1) {
-        use std::fmt::Write;
-        let remaining = total_lines - end - 1;
-        _ = write!(output, "\n[... {remaining} more lines ...]");
+        let remaining = total_lines.saturating_sub(end + 1);
+        if exact {
+            _ = write!(output, "\n[... {remaining} more lines ...]");
+        } else {
+            _ = write!(output, "\n[... at least {remaining} more lines ...]");
+        }
     }
+}
 
-    Ok(super::ToolResult {
-        output,
-        compensation_events,
-    })
+/// Count every line of `reader` to EOF, reusing one buffer (no per-line
+/// allocation). Used when the window is empty by request and the message
+/// needs the exact total.
+fn count_lines_to_eof<R: BufRead>(reader: &mut R, path: &Path) -> Result<usize, String> {
+    let mut line_buf = String::new();
+    let mut total_lines = 0usize;
+    loop {
+        line_buf.clear();
+        let n = reader
+            .read_line(&mut line_buf)
+            .map_err(|e| format!("Failed to read file '{}': {e}", path.display()))?;
+        if n == 0 {
+            break;
+        }
+        total_lines += 1;
+    }
+    Ok(total_lines)
+}
+
+/// The "no content to show" result, reporting the exact total.
+fn no_content_result(path: &Path, total_lines: usize) -> super::ToolResult {
+    super::ToolResult {
+        output: format!(
+            "File: {}\n{total_lines} lines total\n(start_line > end_line, no content to show)",
+            path.display()
+        ),
+        compensation_events: Vec::new(),
+    }
 }
 
 #[cfg(test)]
@@ -343,6 +458,26 @@ mod tests {
         let result = execute_read(&ToolContext::from_current_process(), &args).unwrap();
         assert!(result.output.contains("Lines 1-2/3"));
         assert!(result.output.contains("[... 1 more lines ...]"));
+    }
+
+    #[test]
+    fn start_line_after_end_line_reports_exact_total() {
+        // An empty requested window (start_line > end_line) counts to EOF so
+        // the message can report the exact total without understating it.
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+        fs::write(&file_path, "a\nb\nc\nd\ne").unwrap();
+
+        let args = serde_json::json!({
+            "path": file_path.to_str().unwrap(),
+            "start_line": 4,
+            "end_line": 2
+        })
+        .to_string();
+
+        let result = execute_read(&ToolContext::from_current_process(), &args).unwrap();
+        assert!(result.output.contains("5 lines total"));
+        assert!(result.output.contains("no content to show"));
     }
 
     #[test]
@@ -444,9 +579,9 @@ mod tests {
 
     #[test]
     fn read_early_window_large_file() {
-        // An early window from a large file must not allocate a String per
-        // line through EOF.  This test verifies correct output for a small
-        // window in a 100K-line file.
+        // An early window of a large file must not read to EOF. The exact
+        // total is unreachable at a bounded cost, so the header and footer
+        // report a lower bound ("at least") that cannot understate the file.
         let temp_dir = TempDir::new().unwrap();
         let file_path = temp_dir.path().join("large.txt");
         let mut content = String::with_capacity(6_000_000);
@@ -464,10 +599,64 @@ mod tests {
         .to_string();
 
         let result = execute_read(&ToolContext::from_current_process(), &args).unwrap();
-        assert!(result.output.contains("Lines 1-200/100000"));
+        assert!(result.output.contains("Lines 1-200/at least 1200"));
         assert!(result.output.contains("   200: Line number 200"));
         assert!(!result.output.contains("Line number 201"));
-        assert!(result.output.contains("[... 99800 more lines ...]"));
+        assert!(result.output.contains("[... at least 1000 more lines ...]"));
+    }
+
+    /// A reader that counts bytes served to the caller, used to assert that
+    /// the Read tool stops well short of EOF on large files.
+    struct CountingReader<R> {
+        inner: R,
+        bytes: usize,
+    }
+
+    impl<R: std::io::Read> std::io::Read for CountingReader<R> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = self.inner.read(buf)?;
+            self.bytes += n;
+            Ok(n)
+        }
+    }
+
+    #[test]
+    fn huge_end_line_bounds_read_volume() {
+        // A huge end_line on a large file must stop at the output byte
+        // budget plus a bounded count, not read to EOF — so memory and I/O
+        // scale with the budget, not with the requested range.
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("big.log");
+        let lines: Vec<String> = (1..=200_000).map(|i| format!("log line {i}")).collect();
+        let content = lines.join("\n");
+        fs::write(&file_path, &content).unwrap();
+        let file_size = content.len();
+
+        let file = std::fs::File::open(&file_path).unwrap();
+        let counter = CountingReader {
+            inner: file,
+            bytes: 0,
+        };
+        let mut reader = BufReader::new(counter);
+
+        let limits = crate::config::settings::ToolLimits::defaults();
+        let result = read_from_reader(&mut reader, 0, 199_999_999, &file_path, &limits).unwrap();
+
+        let consumed = reader.get_ref().bytes;
+        assert!(
+            consumed < file_size / 4,
+            "read {consumed} of {file_size} bytes; expected to stop well before EOF"
+        );
+
+        let output = &result.output;
+        assert!(output.contains("output truncated"));
+        assert!(output.contains("at least"));
+        assert!(output.len() <= DEFAULT_READ_MAX_OUTPUT_BYTES as usize);
+        assert_eq!(
+            result.compensation_events.len(),
+            1,
+            "truncated read must record one compensation event"
+        );
     }
 
     #[test]
