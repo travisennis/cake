@@ -19,18 +19,19 @@ Every script accepts `--days`, `--sessions-dir`, `--telemetry-dir`, `--model`, a
 
 ## Scripts
 
-  | Script              | Reports                                                                                                                                                                        |
-  | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-  | `overview.py`       | Sessions per day, models, cake/format versions, run modes (new/continue/resume/fork), api types, top projects, per-session shape                                               |
-  | `tokens.py`         | Token totals with cache-read and cache-write counts, cache-hit rates, by model/project/day, per-invocation distribution, context growth per request                            |
-  | `cache_breaks.py`   | After-the-fact prompt-cache break detection from telemetry, with missed-token totals and likely model-switch, idle-TTL, or generic causes                                      |
-  | `tools.py`          | Per-tool call volume and failure rates, failure taxonomy, Edit/Write retry recovery, durations/output sizes, per-turn parallelism                                              |
-  | `api.py`            | API attempt failures, status codes, latency percentiles by model, retry reasons/delays, context-overflow overrides                                                             |
-  | `time_breakdown.py` | Where wall-clock time goes (model API vs tools vs retries vs overhead), tool/model time shares, turn pacing, think time between tasks, slowest operations                      |
-  | `outcomes.py`       | Task and invocation success rates, error subtypes, duration/turn distributions, per-session turn totals, permission denials, abnormal terminations                             |
-  | `hooks.py`          | Hook events, allow/deny decisions, denied commands, hook errors and durations, skill activations                                                                               |
-  | `compensations.py`  | Model-compensation counters per model: json repair, judge verdicts/fail-closed/bypass, same-path serialization, output truncation, Edit invalid args, context-overflow retries |
-  | `cakelib.py`        | Shared loading, call pairing, error classification, formatting (not a CLI)                                                                                                     |
+  | Script              | Reports                                                                                                                                                                                      |
+  | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | `overview.py`       | Sessions per day, models, cake/format versions, run modes (new/continue/resume/fork), api types, top projects, per-session shape                                                             |
+  | `tokens.py`         | Token totals with cache-read and cache-write counts, cache-hit rates, by model/project/day, per-invocation distribution, context growth per request                                          |
+  | `cache_breaks.py`   | After-the-fact prompt-cache break detection from telemetry, with missed-token totals and likely model-switch, idle-TTL, or generic causes                                                    |
+  | `tools.py`          | Per-tool call volume and failure rates, failure taxonomy, Edit/Write retry recovery, durations/output sizes, per-turn parallelism                                                            |
+  | `api.py`            | API attempt failures, status codes, latency percentiles by model, retry reasons/delays, context-overflow overrides                                                                           |
+  | `judge.py`          | LLM-judge reliability from `judge_attempt` telemetry: latency and phase timing, terminal classes (timeout/transport/...) and rates, retries, token cost, status codes, near-timeout attempts |
+  | `time_breakdown.py` | Where wall-clock time goes (model API vs tools vs retries vs overhead), tool/model time shares, turn pacing, think time between tasks, slowest operations                                    |
+  | `outcomes.py`       | Task and invocation success rates, error subtypes, duration/turn distributions, per-session turn totals, permission denials, abnormal terminations                                           |
+  | `hooks.py`          | Hook events, allow/deny decisions, denied commands, hook errors and durations, skill activations                                                                                             |
+  | `compensations.py`  | Model-compensation counters per model: json repair, judge verdicts/fail-closed/bypass, same-path serialization, output truncation, Edit invalid args, context-overflow retries               |
+  | `cakelib.py`        | Shared loading, call pairing, error classification, formatting (not a CLI)                                                                                                                   |
 
 ## Compensation review
 
