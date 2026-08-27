@@ -1,6 +1,6 @@
 use serde::Deserialize;
 use std::fmt::Write as _;
-use std::io::{BufRead, BufReader, Read as _};
+use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 use crate::clients::tools::{ToolContext, validate_path_in_cwd};
@@ -90,24 +90,6 @@ pub(super) fn execute_read(
     read_file(&path, args.start_line, args.end_line, &context.limits)
 }
 
-/// Check the first 8KB of a file for null bytes (binary detection)
-fn is_binary(path: &Path) -> Result<bool, String> {
-    let file = std::fs::File::open(path)
-        .map_err(|e| format!("Failed to open file '{}': {e}", path.display()))?;
-    probe_binary(file).map_err(|e| format!("Failed to read file '{}': {e}", path.display()))
-}
-
-/// Probe the first 8 KiB of a reader for null bytes.
-///
-/// Uses `read_to_end` on a `Take` to handle readers that return fewer bytes
-/// than requested on the first call (short reads from FIFOs, network mounts,
-/// or FUSE filesystems).
-fn probe_binary(reader: impl std::io::Read) -> Result<bool, std::io::Error> {
-    let mut buf = Vec::with_capacity(8192);
-    let n = reader.take(8192).read_to_end(&mut buf)?;
-    Ok(buf[..n].contains(&0))
-}
-
 /// Resolve the 0-indexed end line from the model's `start_line`/`end_line`
 /// arguments and the configured default window.
 ///
@@ -140,6 +122,13 @@ const fn end_requested_line(
 /// proportional to the file size for an exact total.
 const EXTRA_LINES_TO_COUNT: usize = 1000;
 
+/// Minimum prefix scanned for null bytes when the requested window is small.
+///
+/// This preserves the Read tool's previous binary-detection coverage without
+/// adding a second file pass. The line scanner may consume more to finish a
+/// line or to count the footer.
+const BINARY_DETECTION_BYTES: usize = 8192;
+
 /// Maximum bytes of one line delivered to the model.
 ///
 /// A longer line is held only up to this cap plus room for its trailing
@@ -157,14 +146,6 @@ fn read_file(
     end_line: Option<usize>,
     limits: &ToolLimits,
 ) -> Result<super::ToolResult, String> {
-    // Check for binary files (null bytes in first 8KB)
-    if is_binary(path)? {
-        return Err(format!(
-            "Cannot read binary file: {} (detected null bytes)",
-            path.display()
-        ));
-    }
-
     // Default line range (1-indexed from caller, convert to 0-indexed).
     let start = start_line.unwrap_or(1).saturating_sub(1);
     let end_requested =
@@ -188,6 +169,10 @@ fn read_file(
 ///   are read to decide the footer. EOF within that budget yields the exact
 ///   total; otherwise the header and footer use "at least N" phrasing, which
 ///   never understates the file length.
+/// - Null bytes are detected in every byte consumed by this bounded scan,
+///   including bytes discarded from over-long lines. The scan consumes at
+///   least [`BINARY_DETECTION_BYTES`] bytes when available, preserving the
+///   previous detection coverage; an unconsumed suffix is not inspected.
 fn read_from_reader<R: BufRead>(
     reader: &mut R,
     start: usize,
@@ -207,6 +192,7 @@ fn read_from_reader<R: BufRead>(
 
     let mut body = String::new();
     let mut total_lines: usize = 0;
+    let mut scanned_bytes: usize = 0;
     let mut last_emitted: Option<usize> = None;
     let mut exact = false;
     let mut line_buf = Vec::new();
@@ -219,6 +205,9 @@ fn read_from_reader<R: BufRead>(
             break; // EOF
         };
 
+        reject_binary_line(&line, path)?;
+
+        scanned_bytes = scanned_bytes.saturating_add(line.bytes_consumed);
         let i = total_lines;
         total_lines += 1;
 
@@ -232,7 +221,7 @@ fn read_from_reader<R: BufRead>(
 
         // Stop once the window is satisfied and a bounded number of lines
         // past the last emitted line has been counted for the footer.
-        if past_counting_budget(last_emitted, i) {
+        if past_counting_budget(last_emitted, i, scanned_bytes) {
             break;
         }
     }
@@ -291,13 +280,20 @@ fn append_truncation_marker(body: &mut String, truncated: bool) {
 }
 
 /// One line read by [`read_line_bounded`]: the text without its trailing
-/// newline, plus whether it was cut at the per-line byte cap.
+/// newline, whether it was cut at the byte cap, and whether the consumed line
+/// contained a null byte.
 struct BoundedLine<'a> {
     /// The line content, truncated to the byte cap at a UTF-8 boundary when
     /// the line is longer than the cap.
     text: &'a str,
     /// Whether the line exceeded the cap and `text` is a truncated prefix.
     truncated: bool,
+    /// Whether any byte in the consumed line was a null byte. This includes
+    /// bytes beyond the returned text when an over-long line is discarded.
+    contains_null_byte: bool,
+    /// Number of bytes consumed from the reader for this line, including its
+    /// newline and bytes discarded after the per-line cap.
+    bytes_consumed: usize,
 }
 
 /// Read one line into `buf`, keeping at most `cap` bytes of content.
@@ -307,7 +303,7 @@ struct BoundedLine<'a> {
 /// line is consumed and discarded, so a newline-free giant line cannot grow
 /// memory. The line still counts as one line. Invalid UTF-8 in a delivered
 /// line is an error, matching `BufRead::read_line`; bytes beyond the cap are
-/// never decoded.
+/// still scanned for null bytes before they are discarded.
 fn read_line_bounded<'a, R: BufRead>(
     reader: &mut R,
     buf: &'a mut Vec<u8>,
@@ -318,7 +314,9 @@ fn read_line_bounded<'a, R: BufRead>(
     // `cap` bytes (with or without a CRLF ending) is delivered without a
     // marker. `scan_line` reports EOF without distinguishing a final
     // unterminated line, so only an empty buffer means truly nothing read.
-    if !scan_line(reader, buf, cap.saturating_add(2))? && buf.is_empty() {
+    let (terminated, contains_null_byte, bytes_consumed) =
+        scan_line(reader, buf, cap.saturating_add(2))?;
+    if !terminated && buf.is_empty() {
         return Ok(None); // EOF before any byte
     }
 
@@ -334,36 +332,46 @@ fn read_line_bounded<'a, R: BufRead>(
             )
         })?
     };
-    Ok(Some(BoundedLine { text, truncated }))
+    Ok(Some(BoundedLine {
+        text,
+        truncated,
+        contains_null_byte,
+        bytes_consumed,
+    }))
 }
 
 /// Scan `reader` to the end of one line, appending at most `budget` bytes to
-/// `buf`. The rest of an over-long line is consumed and discarded. Returns
-/// true when the terminating newline was consumed; false when EOF arrived
-/// first — a final unterminated line returns false with its content already
-/// appended, so callers compare against the buffer to distinguish EOF with
-/// content from EOF with nothing.
+/// `buf`. The rest of an over-long line is consumed and discarded, while
+/// null-byte detection covers those discarded bytes too. Returns whether the
+/// terminating newline was consumed and whether the line contained a null
+/// byte; false from the first value means EOF arrived first — a final
+/// unterminated line still returns its content. The third value is the number
+/// of bytes consumed from the reader, including discarded bytes.
 fn scan_line<R: BufRead>(
     reader: &mut R,
     buf: &mut Vec<u8>,
     budget: usize,
-) -> Result<bool, std::io::Error> {
+) -> Result<(bool, bool, usize), std::io::Error> {
+    let mut contains_null_byte = false;
+    let mut bytes_consumed = 0usize;
     loop {
         let available = reader.fill_buf()?;
         if available.is_empty() {
-            return Ok(false); // EOF
+            return Ok((false, contains_null_byte, bytes_consumed)); // EOF
         }
         let (take, done) = available
             .iter()
             .position(|&b| b == b'\n')
             .map_or_else(|| (available.len(), false), |pos| (pos + 1, true));
+        contains_null_byte |= available[..take].contains(&0);
+        bytes_consumed = bytes_consumed.saturating_add(take);
         if buf.len() < budget {
             let room = budget - buf.len();
             buf.extend_from_slice(&available[..take.min(room)]);
         }
         reader.consume(take);
         if done {
-            return Ok(true);
+            return Ok((true, contains_null_byte, bytes_consumed));
         }
     }
 }
@@ -401,11 +409,12 @@ fn truncate_to_valid_utf8(bytes: &[u8], max: usize) -> &str {
     }
 }
 
-/// Whether the read should stop: the window is satisfied and
-/// [`EXTRA_LINES_TO_COUNT`] lines have been counted past the last emitted
-/// line.
-fn past_counting_budget(last_emitted: Option<usize>, i: usize) -> bool {
-    last_emitted.is_some_and(|end| i >= end.saturating_add(EXTRA_LINES_TO_COUNT))
+/// Whether the read should stop: the window is satisfied, the bounded footer
+/// budget has been counted, and the minimum binary-detection prefix is covered.
+fn past_counting_budget(last_emitted: Option<usize>, i: usize, scanned_bytes: usize) -> bool {
+    last_emitted.is_some_and(|end| {
+        i >= end.saturating_add(EXTRA_LINES_TO_COUNT) && scanned_bytes >= BINARY_DETECTION_BYTES
+    })
 }
 
 /// The header's total: the exact count, or a lower bound with "at least" so
@@ -470,12 +479,30 @@ fn append_more_lines(output: &mut String, end: usize, total_lines: usize, exact:
 fn count_lines_to_eof<R: BufRead>(reader: &mut R, path: &Path) -> Result<usize, String> {
     let mut buf = Vec::new();
     let mut total_lines = 0usize;
-    while let Some(_line) = read_line_bounded(reader, &mut buf, MAX_LINE_BYTES)
+    while let Some(line) = read_line_bounded(reader, &mut buf, MAX_LINE_BYTES)
         .map_err(|e| format!("Failed to read file '{}': {e}", path.display()))?
     {
+        reject_binary_line(&line, path)?;
         total_lines += 1;
     }
     Ok(total_lines)
+}
+
+/// Return the model-visible error for a file containing null bytes.
+fn binary_file_error(path: &Path) -> String {
+    format!(
+        "Cannot read binary file: {} (detected null bytes)",
+        path.display()
+    )
+}
+
+/// Reject a consumed line when it contains a null byte.
+fn reject_binary_line(line: &BoundedLine<'_>, path: &Path) -> Result<(), String> {
+    if line.contains_null_byte {
+        Err(binary_file_error(path))
+    } else {
+        Ok(())
+    }
 }
 
 /// The "no content to show" result, reporting the exact total.
@@ -878,37 +905,52 @@ mod tests {
     }
 
     #[test]
-    fn probe_binary_detects_null_byte_across_short_reads() {
+    fn read_line_bounded_detects_null_byte_across_short_reads() {
         // A reader that returns data in 100-byte chunks with a null byte
-        // at offset 512 (past the first few chunks).
+        // beyond the first few chunks.
         let mut data = vec![b'x'; 8192];
         data[512] = 0x00;
-        let reader = ShortReader::new(&data, 100);
+        let short_reader = ShortReader::new(&data, 100);
+        let mut reader = std::io::BufReader::new(short_reader);
+        let mut buf = Vec::new();
+        let line = read_line_bounded(&mut reader, &mut buf, MAX_LINE_BYTES)
+            .unwrap()
+            .expect("data should produce a line");
         assert!(
-            probe_binary(reader).unwrap(),
-            "should detect null byte at offset 512 across short-read boundary"
+            line.contains_null_byte,
+            "should detect null byte across short-read boundaries"
         );
     }
 
     #[test]
-    fn probe_binary_short_read_no_null() {
+    fn read_line_bounded_short_read_no_null() {
         // A reader returning data in small chunks without null bytes.
         let data = vec![b'x'; 8192];
-        let reader = ShortReader::new(&data, 100);
+        let short_reader = ShortReader::new(&data, 100);
+        let mut reader = std::io::BufReader::new(short_reader);
+        let mut buf = Vec::new();
+        let line = read_line_bounded(&mut reader, &mut buf, MAX_LINE_BYTES)
+            .unwrap()
+            .expect("data should produce a line");
         assert!(
-            !probe_binary(reader).unwrap(),
-            "should not detect binary without null bytes"
+            !line.contains_null_byte,
+            "text without null bytes should not be detected as binary"
         );
     }
 
     #[test]
-    fn probe_binary_short_read_short_file_no_null() {
-        // A file shorter than the probe window, returned in tiny chunks.
+    fn read_line_bounded_short_read_short_file_no_null() {
+        // A file shorter than the scan window, returned in tiny chunks.
         let data = vec![b'a'; 42];
-        let reader = ShortReader::new(&data, 7);
+        let short_reader = ShortReader::new(&data, 7);
+        let mut reader = std::io::BufReader::new(short_reader);
+        let mut buf = Vec::new();
+        let line = read_line_bounded(&mut reader, &mut buf, MAX_LINE_BYTES)
+            .unwrap()
+            .expect("data should produce a line");
         assert!(
-            !probe_binary(reader).unwrap(),
-            "short file without null bytes should not be detected as binary"
+            !line.contains_null_byte,
+            "short text without null bytes should not be detected as binary"
         );
     }
 
@@ -936,6 +978,48 @@ mod tests {
         let err = result.unwrap_err();
         assert!(err.contains("Cannot read binary file"), "{err}");
         assert!(err.contains("detected null bytes"), "{err}");
+    }
+
+    #[test]
+    fn early_window_preserves_initial_binary_detection() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("early-window-late-null.txt");
+        let mut content = b"a\n".repeat(5_000);
+        content[5_000] = 0;
+        fs::write(&file_path, content).unwrap();
+
+        let args = serde_json::json!({
+            "path": file_path.to_str().unwrap()
+        })
+        .to_string();
+
+        let result = execute_read(&ToolContext::from_current_process(), &args);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("Cannot read binary file"), "{err}");
+        assert!(err.contains("detected null bytes"), "{err}");
+    }
+
+    #[test]
+    fn error_on_null_byte_after_initial_8k() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("text-with-late-null.txt");
+        let mut content = vec![b'a'; MAX_LINE_BYTES + 100];
+        content.push(0);
+        content.extend_from_slice(b"tail");
+        fs::write(&file_path, content).unwrap();
+
+        let args = serde_json::json!({
+            "path": file_path.to_str().unwrap()
+        })
+        .to_string();
+
+        let result = execute_read(&ToolContext::from_current_process(), &args);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("Cannot read binary file"), "{err}");
+        assert!(err.contains("detected null bytes"), "{err}");
+        assert!(err.ends_with("(detected null bytes)"), "{err}");
     }
 
     // --- [limits] overrides ---

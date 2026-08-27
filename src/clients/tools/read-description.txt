@@ -4,7 +4,7 @@ Behavior:
 - Defaults to reading lines 1-200 (the configured read_default_end_line window; configurable in [limits]). Provide start_line/end_line for large files.
 - Returns a "N more lines" note when the file extends beyond the requested range; large files may report "at least N more lines" because the exact total is not read to the end of the file.
 - Truncates any line longer than 10000 bytes with a "... (line truncated to 10000 bytes)" marker, so a single huge line cannot exhaust the window.
-- Rejects binary files (null-byte detection).
+- Rejects files with null bytes. Detection covers at least the first 8 KiB and all bytes read for the requested range; large ranged reads stop at a bounded point.
 - Rejects directory paths (use Bash with ls, find, or tree for directory listings).
 
 Warning: Ranged and truncated reads return only the requested region. Do not compose old_text for an Edit from content outside the returned lines — the match will fail.
