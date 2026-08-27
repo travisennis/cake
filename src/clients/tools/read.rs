@@ -140,6 +140,16 @@ const fn end_requested_line(
 /// proportional to the file size for an exact total.
 const EXTRA_LINES_TO_COUNT: usize = 1000;
 
+/// Maximum bytes of one line delivered to the model.
+///
+/// A longer line is held only up to this cap plus room for its trailing
+/// newline; the rest is consumed and discarded, so memory grows with the cap,
+/// not with the longest line (a newline-free 50 MB line no longer allocates
+/// the whole line). The displayed prefix ends with a
+/// `... (line truncated to N bytes)` marker. `read-description.txt` states
+/// this value and must change with it.
+const MAX_LINE_BYTES: usize = 10_000;
+
 /// Read and format a file with line numbers
 fn read_file(
     path: &Path,
@@ -169,6 +179,9 @@ fn read_file(
 /// Read a line range from an open reader and format it with line numbers.
 ///
 /// The work is bounded rather than proportional to the file:
+/// - Each line is read into a reused buffer capped at [`MAX_LINE_BYTES`]
+///   bytes; the rest of an over-long line is consumed and discarded, so a
+///   newline-free giant line cannot grow memory (or per-line allocation).
 /// - In-window lines accumulate into a single `String` only while it stays
 ///   under `read_max_output_bytes`; the byte cap trims the exact return.
 /// - After the last emitted line, at most [`EXTRA_LINES_TO_COUNT`] more lines
@@ -196,17 +209,15 @@ fn read_from_reader<R: BufRead>(
     let mut total_lines: usize = 0;
     let mut last_emitted: Option<usize> = None;
     let mut exact = false;
-    let mut line_buf = String::new();
+    let mut line_buf = Vec::new();
 
     loop {
-        line_buf.clear();
-        let n = reader
-            .read_line(&mut line_buf)
-            .map_err(|e| format!("Failed to read file '{}': {e}", path.display()))?;
-        if n == 0 {
+        let Some(line) = read_line_bounded(reader, &mut line_buf, MAX_LINE_BYTES)
+            .map_err(|e| format!("Failed to read file '{}': {e}", path.display()))?
+        else {
             exact = true;
             break; // EOF
-        }
+        };
 
         let i = total_lines;
         total_lines += 1;
@@ -215,7 +226,7 @@ fn read_from_reader<R: BufRead>(
             continue; // line_buf reused, no allocation
         }
         if emit_line(i, end_requested, &body, soft_cap) {
-            append_line(&mut body, &line_buf, i);
+            append_line(&mut body, &line, i);
             last_emitted = Some(i);
         }
 
@@ -262,13 +273,132 @@ const fn emit_line(i: usize, end_requested: usize, body: &str, soft_cap: usize) 
     i <= end_requested && (body.is_empty() || body.len() < soft_cap)
 }
 
-/// Append one numbered line to the body.
-fn append_line(body: &mut String, line_buf: &str, i: usize) {
+/// Append one numbered line to the body, marking a line truncated at the
+/// per-line byte cap.
+fn append_line(body: &mut String, line: &BoundedLine<'_>, i: usize) {
     if !body.is_empty() {
         body.push('\n');
     }
-    let trimmed = line_buf.trim_end_matches('\n').trim_end_matches('\r');
-    _ = write!(body, "{:>6}: {trimmed}", i + 1);
+    _ = write!(body, "{:>6}: {}", i + 1, line.text);
+    append_truncation_marker(body, line.truncated);
+}
+
+/// Append the per-line truncation marker when the line was cut at the cap.
+fn append_truncation_marker(body: &mut String, truncated: bool) {
+    if truncated {
+        _ = write!(body, " ... (line truncated to {MAX_LINE_BYTES} bytes)");
+    }
+}
+
+/// One line read by [`read_line_bounded`]: the text without its trailing
+/// newline, plus whether it was cut at the per-line byte cap.
+struct BoundedLine<'a> {
+    /// The line content, truncated to the byte cap at a UTF-8 boundary when
+    /// the line is longer than the cap.
+    text: &'a str,
+    /// Whether the line exceeded the cap and `text` is a truncated prefix.
+    truncated: bool,
+}
+
+/// Read one line into `buf`, keeping at most `cap` bytes of content.
+///
+/// `buf` is cleared and refilled each call so lines do not allocate. Once the
+/// cap plus room for the trailing newline is reached, the rest of an over-long
+/// line is consumed and discarded, so a newline-free giant line cannot grow
+/// memory. The line still counts as one line. Invalid UTF-8 in a delivered
+/// line is an error, matching `BufRead::read_line`; bytes beyond the cap are
+/// never decoded.
+fn read_line_bounded<'a, R: BufRead>(
+    reader: &mut R,
+    buf: &'a mut Vec<u8>,
+    cap: usize,
+) -> Result<Option<BoundedLine<'a>>, std::io::Error> {
+    buf.clear();
+    // Room for the content plus the trailing newline, so a line of exactly
+    // `cap` bytes (with or without a CRLF ending) is delivered without a
+    // marker. `scan_line` reports EOF without distinguishing a final
+    // unterminated line, so only an empty buffer means truly nothing read.
+    if !scan_line(reader, buf, cap.saturating_add(2))? && buf.is_empty() {
+        return Ok(None); // EOF before any byte
+    }
+
+    let content = strip_line_ending(buf.as_slice());
+    let truncated = content.len() > cap;
+    let text = if truncated {
+        truncate_to_valid_utf8(content, cap)
+    } else {
+        std::str::from_utf8(content).map_err(|_err| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "stream did not contain valid UTF-8",
+            )
+        })?
+    };
+    Ok(Some(BoundedLine { text, truncated }))
+}
+
+/// Scan `reader` to the end of one line, appending at most `budget` bytes to
+/// `buf`. The rest of an over-long line is consumed and discarded. Returns
+/// true when the terminating newline was consumed; false when EOF arrived
+/// first — a final unterminated line returns false with its content already
+/// appended, so callers compare against the buffer to distinguish EOF with
+/// content from EOF with nothing.
+fn scan_line<R: BufRead>(
+    reader: &mut R,
+    buf: &mut Vec<u8>,
+    budget: usize,
+) -> Result<bool, std::io::Error> {
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            return Ok(false); // EOF
+        }
+        let (take, done) = available
+            .iter()
+            .position(|&b| b == b'\n')
+            .map_or_else(|| (available.len(), false), |pos| (pos + 1, true));
+        if buf.len() < budget {
+            let room = budget - buf.len();
+            buf.extend_from_slice(&available[..take.min(room)]);
+        }
+        reader.consume(take);
+        if done {
+            return Ok(true);
+        }
+    }
+}
+
+/// The line content without its trailing newline and CR.
+fn strip_line_ending(raw: &[u8]) -> &[u8] {
+    let mut content = raw;
+    if content.ends_with(b"\n") {
+        content = &content[..content.len() - 1];
+    }
+    if content.ends_with(b"\r") {
+        content = &content[..content.len() - 1];
+    }
+    content
+}
+
+/// The longest valid-UTF-8 prefix of `bytes` within the first `max` bytes.
+///
+/// Returns `max` itself when already valid; otherwise the prefix ends at a
+/// char boundary before the first invalid byte. The suffix is discarded, so an
+/// over-long line never needs to be decoded past the cap.
+fn truncate_to_valid_utf8(bytes: &[u8], max: usize) -> &str {
+    let max = max.min(bytes.len());
+    match std::str::from_utf8(&bytes[..max]) {
+        Ok(s) => s,
+        Err(e) => {
+            let valid = e.valid_up_to();
+            #[expect(
+                clippy::expect_used,
+                reason = "valid_up_to guarantees the prefix is valid UTF-8"
+            )]
+            std::str::from_utf8(&bytes[..valid])
+                .expect("valid_up_to always yields a valid UTF-8 prefix")
+        },
+    }
 }
 
 /// Whether the read should stop: the window is satisfied and
@@ -334,20 +464,15 @@ fn append_more_lines(output: &mut String, end: usize, total_lines: usize, exact:
     }
 }
 
-/// Count every line of `reader` to EOF, reusing one buffer (no per-line
-/// allocation). Used when the window is empty by request and the message
-/// needs the exact total.
+/// Count every line of `reader` to EOF, reusing one buffer capped at
+/// [`MAX_LINE_BYTES`] per line (no per-line allocation). Used when the window
+/// is empty by request and the message needs the exact total.
 fn count_lines_to_eof<R: BufRead>(reader: &mut R, path: &Path) -> Result<usize, String> {
-    let mut line_buf = String::new();
+    let mut buf = Vec::new();
     let mut total_lines = 0usize;
-    loop {
-        line_buf.clear();
-        let n = reader
-            .read_line(&mut line_buf)
-            .map_err(|e| format!("Failed to read file '{}': {e}", path.display()))?;
-        if n == 0 {
-            break;
-        }
+    while let Some(_line) = read_line_bounded(reader, &mut buf, MAX_LINE_BYTES)
+        .map_err(|e| format!("Failed to read file '{}': {e}", path.display()))?
+    {
         total_lines += 1;
     }
     Ok(total_lines)
@@ -667,16 +792,11 @@ mod tests {
         let file_path = temp_dir.path().join("emoji.txt");
 
         // Build content that when formatted exceeds the default read cap
-        // (100_000 bytes). Using '€' (3 bytes, U+20AC) repeated on one long
-        // line. Header: ~60 bytes. Line prefix "     1: ": 8 bytes.
-        // Each € = 3 bytes.  35_000 € → 105_000 bytes, comfortably over the cap.
-        let emoji_count = 35_000;
-        let mut line = String::with_capacity(emoji_count * 3);
-        for _ in 0..emoji_count {
-            line.push('\u{20AC}');
-        }
-        // File has one line with 35K € chars
-        fs::write(&file_path, &line).unwrap();
+        // (100_000 bytes). Using '€' (3 bytes, U+20AC): 200 lines of 600 €
+        // each are 1800 bytes per line — below the per-line cap, so only the
+        // output cap truncates. 200 × 1800 ≈ 360_000 bytes, over the cap.
+        let lines: Vec<String> = (0..200).map(|_| "\u{20AC}".repeat(600)).collect();
+        fs::write(&file_path, lines.join("\n")).unwrap();
 
         let args = serde_json::json!({
             "path": file_path.to_str().unwrap()
@@ -888,7 +1008,9 @@ mod tests {
     #[test]
     fn read_max_output_bytes_unlimited_never_truncates() {
         // 120,000 bytes exceeds the compiled 100,000-byte cap, but an
-        // unlimited budget passes it through untouched.
+        // unlimited output budget passes it through without the output
+        // truncation marker. The per-line cap still bounds the single long
+        // line itself.
         let temp_dir = TempDir::new().unwrap();
         let file_path = temp_dir.path().join("big.txt");
         fs::write(&file_path, "x".repeat(120_000)).unwrap();
@@ -901,12 +1023,108 @@ mod tests {
         let args = serde_json::json!({ "path": file_path.to_str().unwrap() }).to_string();
         let result = execute_read(&context, &args).unwrap();
         assert!(!result.output.contains("output truncated"));
+        assert!(result.output.contains("line truncated to 10000 bytes"));
         assert!(
             !result
                 .compensation_events
                 .iter()
                 .any(|e| e.kind == crate::session_telemetry::CompensationKind::OutputTruncation),
             "unlimited budget must not record a truncation event"
+        );
+    }
+
+    // --- per-line byte cap ---
+
+    #[test]
+    fn newline_free_giant_line_bounds_allocation() {
+        // A single newline-free line much larger than the cap must not be
+        // read into memory whole: the raw line buffer stays within a small
+        // multiple of the cap and the delivered text is a truncated prefix.
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("minified.json");
+        fs::write(&file_path, "x".repeat(50 * 1024 * 1024)).unwrap();
+
+        let file = std::fs::File::open(&file_path).unwrap();
+        let mut reader = BufReader::new(file);
+        let mut buf = Vec::new();
+        let line = read_line_bounded(&mut reader, &mut buf, MAX_LINE_BYTES)
+            .unwrap()
+            .expect("file has one line");
+        assert!(line.truncated, "50 MB line must count as truncated");
+        assert!(
+            line.text.len() <= MAX_LINE_BYTES,
+            "delivered {} bytes but cap is {MAX_LINE_BYTES}",
+            line.text.len()
+        );
+        assert!(
+            buf.capacity() < 4 * MAX_LINE_BYTES,
+            "line buffer capacity {} exceeds a small multiple of the cap",
+            buf.capacity()
+        );
+
+        // The line still counts as exactly one line: EOF follows immediately.
+        assert!(
+            read_line_bounded(&mut reader, &mut buf, MAX_LINE_BYTES)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn read_truncates_newline_free_giant_line() {
+        // The delivered line is truncated with a marker, the numbering is
+        // unchanged, and the file still totals exactly one line.
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("minified.json");
+        fs::write(&file_path, "y".repeat(20_000)).unwrap();
+
+        let args = serde_json::json!({ "path": file_path.to_str().unwrap() }).to_string();
+        let result = execute_read(&ToolContext::from_current_process(), &args).unwrap();
+        let output = &result.output;
+        assert!(output.contains("Lines 1-1/1"));
+        assert!(output.contains("     1: "));
+        assert!(
+            output.contains("... (line truncated to 10000 bytes)"),
+            "marker missing from: {output}"
+        );
+    }
+
+    #[test]
+    fn line_of_exactly_cap_bytes_gets_no_marker() {
+        // A line of exactly the cap is delivered in full without a marker.
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("exact.txt");
+        fs::write(&file_path, "z".repeat(MAX_LINE_BYTES)).unwrap();
+
+        let args = serde_json::json!({ "path": file_path.to_str().unwrap() }).to_string();
+        let result = execute_read(&ToolContext::from_current_process(), &args).unwrap();
+        let output = &result.output;
+        assert!(output.contains("Lines 1-1/1"));
+        assert!(
+            !output.contains("line truncated"),
+            "exact-cap line must not be marked: {output}"
+        );
+        let full = "z".repeat(MAX_LINE_BYTES);
+        assert!(output.contains(full.as_str()));
+    }
+
+    #[test]
+    fn read_truncates_multibyte_line_at_char_boundary() {
+        // A line of '€' (3 bytes each) exceeding the per-line cap is
+        // truncated at a char boundary with no replacement character.
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("emoji.txt");
+        // 4_000 € is 12_000 bytes, over the 10_000-byte cap.
+        fs::write(&file_path, "\u{20AC}".repeat(4_000)).unwrap();
+
+        let args = serde_json::json!({ "path": file_path.to_str().unwrap() }).to_string();
+        let result = execute_read(&ToolContext::from_current_process(), &args).unwrap();
+        let output = &result.output;
+        assert!(output.contains("Lines 1-1/1"));
+        assert!(output.contains("... (line truncated to 10000 bytes)"));
+        assert!(
+            !output.contains('\u{FFFD}'),
+            "Output contains replacement character (split code point)"
         );
     }
 }
