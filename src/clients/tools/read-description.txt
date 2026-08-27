@@ -2,7 +2,7 @@ Read a file's contents. Returns line-numbered content. Supports reading specific
 
 Behavior:
 - Defaults to reading lines 1-200 (the configured read_default_end_line window; configurable in [limits]). Provide start_line/end_line for large files.
-- Returns a "N more lines" note when the file extends beyond the requested range.
+- Returns a "N more lines" note when the file extends beyond the requested range; large files may report "at least N more lines" because the exact total is not read to the end of the file.
 - Rejects binary files (null-byte detection).
 - Rejects directory paths (use Bash with ls, find, or tree for directory listings).
 
