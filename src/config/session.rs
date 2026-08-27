@@ -150,14 +150,6 @@ impl Session {
             .ok_or_else(|| anyhow::anyhow!("Session file is empty"))?
             .text;
 
-        let id;
-        let working_dir;
-        let model;
-        let system_prompt;
-        let git;
-        let session_timestamp;
-        let mut records = Vec::new();
-
         if let Ok(value) = serde_json::from_str::<serde_json::Value>(&first_line)
             && value.get("type").and_then(|value| value.as_str()) != Some("session_meta")
         {
@@ -174,7 +166,7 @@ impl Session {
             )
         })?;
 
-        match &meta {
+        let (id, working_dir, model, system_prompt, git, session_timestamp) = match &meta {
             SessionRecord::SessionMeta {
                 format_version,
                 session_id,
@@ -193,13 +185,15 @@ impl Session {
                         path.display()
                     );
                 }
-                id = uuid::Uuid::parse_str(session_id)
-                    .with_context(|| format!("Invalid session UUID '{session_id}'"))?;
-                working_dir = working_directory.clone();
-                model = m.clone();
-                system_prompt = sp.clone();
-                git = Some(git_state.clone());
-                session_timestamp = *timestamp;
+                (
+                    uuid::Uuid::parse_str(session_id)
+                        .with_context(|| format!("Invalid session UUID '{session_id}'"))?,
+                    working_directory.clone(),
+                    m.clone(),
+                    sp.clone(),
+                    Some(git_state.clone()),
+                    *timestamp,
+                )
             },
             _ => {
                 return Err(anyhow::anyhow!(
@@ -207,7 +201,8 @@ impl Session {
                     path.display()
                 ));
             },
-        }
+        };
+        let mut records = Vec::new();
         records.push(meta);
 
         while let Some(line) = framer

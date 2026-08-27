@@ -34,6 +34,8 @@ impl CmdRunner for SessionsCommand {
         data_dir: &DataDir,
         _options: &CommandRunOptions<'_>,
     ) -> anyhow::Result<()> {
+        // CmdRunner is asynchronous, although this command has no async work.
+        std::future::ready(()).await;
         match &self.command {
             SessionsSubcommand::List { json } => {
                 let current_dir = std::env::current_dir()

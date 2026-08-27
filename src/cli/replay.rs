@@ -99,6 +99,8 @@ impl ReplayError {
 
 impl CmdRunner for ReplayCommand {
     async fn run(&self, data_dir: &DataDir, options: &CommandRunOptions<'_>) -> anyhow::Result<()> {
+        // CmdRunner is asynchronous, although this command has no async work.
+        std::future::ready(()).await;
         if options.output_format != OutputFormat::StreamJson {
             return Err(fail(ReplayError::OutputFormat));
         }

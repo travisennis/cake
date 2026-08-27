@@ -562,7 +562,7 @@ enum PatternToken {
 
 /// Classify the token starting at pattern index `pi`, which must be inside
 /// `pattern`.
-fn classify_token(pattern: &[u8], pi: usize) -> PatternToken {
+const fn classify_token(pattern: &[u8], pi: usize) -> PatternToken {
     match pattern[pi] {
         b'*' if pi + 1 < pattern.len() && pattern[pi + 1] == b'*' => PatternToken::DoubleStar,
         b'*' => PatternToken::Star,

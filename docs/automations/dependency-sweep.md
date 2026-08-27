@@ -63,7 +63,7 @@ just dependency-sweep --rust-channel /tmp/cake-rust-channel.toml --as-of "$(date
 
 The reason is not proof by itself. The review record must link the advisory and the upstream source diff. Security work stays separate from ordinary updates. Major-version changes, MSRV changes, API migrations, security-boundary changes, and updates with a large or unavailable upstream diff are `review-required` and need individual human review.
 
-The current repository pin is Rust `1.97.1`. On 2026-08-27, the official channel dated 2026-08-20 reports Rust `1.98.0`, so the complete report identifies `1.97.1` to `1.98.0` as actionable with age `7`. The fixture suite proves this same result without network access. The report does not apply that update by itself.
+The repository pin was Rust `1.97.1`. On 2026-08-27, the official channel dated 2026-08-20 reported Rust `1.98.0`, so the complete report identified `1.97.1` to `1.98.0` as actionable with age `7`. The report did not apply that update by itself.
 
 ## Manual procedure
 
