@@ -162,7 +162,8 @@ async fn parse_response_with_usage() {
                 "output_tokens": 50,
                 "total_tokens": 150,
                 "input_tokens_details": {
-                    "cached_tokens": 20
+                    "cached_tokens": 20,
+                    "cache_write_tokens": 10
                 },
                 "output_tokens_details": {
                     "reasoning_tokens": 10
@@ -188,6 +189,7 @@ async fn parse_response_with_usage() {
     assert_eq!(usage.output_tokens, 50);
     assert_eq!(usage.total_tokens, 150);
     assert_eq!(usage.input_tokens_details.cached_tokens, 20);
+    assert_eq!(usage.input_tokens_details.cache_write_tokens, 10);
     assert_eq!(usage.output_tokens_details.reasoning_tokens, 10);
 }
 
@@ -231,6 +233,7 @@ async fn parse_response_partial_usage() {
     assert_eq!(usage.output_tokens, 50);
     assert_eq!(usage.total_tokens, 0); // Default
     assert_eq!(usage.input_tokens_details.cached_tokens, 0); // Default
+    assert_eq!(usage.input_tokens_details.cache_write_tokens, 0); // Default
     assert_eq!(usage.output_tokens_details.reasoning_tokens, 0); // Default
 }
 

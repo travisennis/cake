@@ -122,7 +122,10 @@ fn accumulate_usage_adds_tokens() {
         input_tokens: 100,
         output_tokens: 50,
         total_tokens: 150,
-        input_tokens_details: InputTokensDetails { cached_tokens: 10 },
+        input_tokens_details: InputTokensDetails {
+            cached_tokens: 10,
+            cache_write_tokens: 7,
+        },
         output_tokens_details: OutputTokensDetails {
             reasoning_tokens: 5,
         },
@@ -132,6 +135,7 @@ fn accumulate_usage_adds_tokens() {
     assert_eq!(agent.total_usage.output_tokens, 50);
     assert_eq!(agent.total_usage.total_tokens, 150);
     assert_eq!(agent.total_usage.input_tokens_details.cached_tokens, 10);
+    assert_eq!(agent.total_usage.input_tokens_details.cache_write_tokens, 7);
     assert_eq!(agent.total_usage.output_tokens_details.reasoning_tokens, 5);
     // accumulate_usage no longer increments turn_count; the agent loop does.
     assert_eq!(agent.turn_count, 0);
@@ -152,7 +156,10 @@ fn accumulate_usage_accumulates_across_calls() {
         input_tokens: 100,
         output_tokens: 50,
         total_tokens: 150,
-        input_tokens_details: InputTokensDetails { cached_tokens: 0 },
+        input_tokens_details: InputTokensDetails {
+            cached_tokens: 0,
+            cache_write_tokens: 0,
+        },
         output_tokens_details: OutputTokensDetails {
             reasoning_tokens: 0,
         },

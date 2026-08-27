@@ -1,5 +1,5 @@
 ---
-source: src/types/session.rs
+source: src/types/session_tests.rs
 expression: session_record_json(record)
 ---
 {
@@ -18,6 +18,7 @@ expression: session_record_json(record)
   "usage": {
     "input_tokens": 100,
     "input_tokens_details": {
+      "cache_write_tokens": 0,
       "cached_tokens": 25
     },
     "output_tokens": 50,

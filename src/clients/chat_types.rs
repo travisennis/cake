@@ -144,6 +144,7 @@ pub(super) struct CompletionTokensDetails {
 #[derive(Deserialize, Debug, Default)]
 pub(super) struct PromptTokensDetails {
     pub(super) cached_tokens: Option<u64>,
+    pub(super) cache_write_tokens: Option<u64>,
 }
 
 #[derive(Deserialize, Debug)]

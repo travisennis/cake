@@ -11,6 +11,7 @@ expression: session_record_json(record)
   "usage": {
     "input_tokens": 1200,
     "input_tokens_details": {
+      "cache_write_tokens": 0,
       "cached_tokens": 300
     },
     "output_tokens": 100,

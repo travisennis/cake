@@ -878,7 +878,10 @@ fn snapshot_session_json_task_complete() {
         task_id: fixed_task_id(),
         usage: Usage {
             input_tokens: 100,
-            input_tokens_details: InputTokensDetails { cached_tokens: 25 },
+            input_tokens_details: InputTokensDetails {
+                cached_tokens: 25,
+                cache_write_tokens: 0,
+            },
             output_tokens: 50,
             output_tokens_details: OutputTokensDetails {
                 reasoning_tokens: 10,
@@ -899,7 +902,10 @@ fn snapshot_session_json_turn_usage() {
         turn: 2,
         usage: Usage {
             input_tokens: 1200,
-            input_tokens_details: InputTokensDetails { cached_tokens: 300 },
+            input_tokens_details: InputTokensDetails {
+                cached_tokens: 300,
+                cache_write_tokens: 0,
+            },
             output_tokens: 100,
             output_tokens_details: OutputTokensDetails {
                 reasoning_tokens: 40,
@@ -927,7 +933,10 @@ fn snapshot_session_json_limit_exceeded() {
         task_id: fixed_task_id(),
         usage: Usage {
             input_tokens: 100,
-            input_tokens_details: InputTokensDetails { cached_tokens: 25 },
+            input_tokens_details: InputTokensDetails {
+                cached_tokens: 25,
+                cache_write_tokens: 0,
+            },
             output_tokens: 50,
             output_tokens_details: OutputTokensDetails {
                 reasoning_tokens: 10,

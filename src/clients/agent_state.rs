@@ -133,6 +133,8 @@ pub(super) const fn accumulate_usage(total_usage: &mut Usage, turn_usage: Option
     if let Some(usage) = turn_usage {
         total_usage.input_tokens += usage.input_tokens;
         total_usage.input_tokens_details.cached_tokens += usage.input_tokens_details.cached_tokens;
+        total_usage.input_tokens_details.cache_write_tokens +=
+            usage.input_tokens_details.cache_write_tokens;
         total_usage.output_tokens += usage.output_tokens;
         total_usage.output_tokens_details.reasoning_tokens +=
             usage.output_tokens_details.reasoning_tokens;

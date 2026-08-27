@@ -540,6 +540,10 @@ fn map_usage(api_usage: &ApiUsage, api_response: &ApiResponse) -> Usage {
                 .input_tokens_details
                 .as_ref()
                 .map_or(0, |d| d.cached_tokens.unwrap_or(0)),
+            cache_write_tokens: api_usage
+                .input_tokens_details
+                .as_ref()
+                .map_or(0, |d| d.cache_write_tokens.unwrap_or(0)),
         },
         output_tokens_details: OutputTokensDetails {
             reasoning_tokens: api_usage
