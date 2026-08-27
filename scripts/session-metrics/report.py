@@ -12,6 +12,7 @@ import cache_breaks
 import cakelib
 import compensations
 import hooks
+import judge
 import outcomes
 import overview
 import time_breakdown
@@ -28,6 +29,7 @@ def main() -> None:
         cache_breaks,
         tools,
         api,
+        judge,
         time_breakdown,
         outcomes,
         hooks,
