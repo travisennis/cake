@@ -61,6 +61,9 @@ jobs:
       - name: Classifier fixture tests
         shell: bash
         run: scripts/test-classify-changes.sh
+      - name: Dependency sweep fixture tests
+        shell: bash
+        run: python3 scripts/test-dependency-sweep.py
       - name: Install just
         uses: taiki-e/install-action@v2
         with:

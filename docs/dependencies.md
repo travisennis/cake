@@ -74,6 +74,6 @@ Merge mechanically safe updates. Escalate an update that changes behavior, migra
 
 ## Enforcement
 
-`just ci` runs toolchain synchronization as part of the standard gate. `just check-deps` runs the advisory check, and `.github/workflows/scheduled.yml` runs advisories, outdated, unused dependencies, and MSRV weekly. Dependabot opens weekly Cargo and GitHub Actions updates.
+`just ci` runs toolchain synchronization as part of the standard gate. `just check-deps` runs the advisory check, and `.github/workflows/scheduled.yml` runs advisories, outdated, unused dependencies, and MSRV weekly. Dependabot opens weekly Cargo and GitHub Actions updates. The manual review procedure for the remaining version surfaces is [Dependency sweep](automations/dependency-sweep.md).
 
 These mechanisms enforce parts of this posture, not all of it. Where a rule here has no check, it is a rule a reviewer applies.
