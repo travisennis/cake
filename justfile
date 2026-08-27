@@ -162,6 +162,15 @@ clippy-no-default-features:
 rust-version-check:
     sh scripts/check-rust-toolchain.sh
 
+# Report dependency and tooling surfaces (pass e.g. --rust-channel PATH --as-of YYYY-MM-DD)
+[no-exit-message]
+dependency-sweep *args:
+    @python3 scripts/dependency-sweep.py {{ args }}
+
+# Run dependency-sweep fixture tests (no network or provider credentials)
+dependency-sweep-check:
+    @python3 scripts/test-dependency-sweep.py -v
+
 # Report session metrics from transcripts + telemetry (pass e.g. --days 7, --model X)
 session-metrics *args:
     @python3 scripts/session-metrics/report.py {{args}}
