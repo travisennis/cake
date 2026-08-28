@@ -18,8 +18,78 @@ from typing import Any
 
 DEFAULT_BINARY = Path("target/profiling/cake")
 DEFAULT_OUTPUT = Path("profiling/artifacts/agent-loop.jslb.gz")
+DEFAULT_TOOL_CALLS = 5_000
 API_KEY_ENV = "CAKE_PROFILE_API_KEY"
 XCTRACE_TIME_LIMIT = "30s"
+READ_OUTPUT_MARKERS = (
+    "Lines 1-32/32",
+    *(f"{number:>6}: profile line {number}" for number in range(1, 33)),
+)
+
+
+def positive_int(value: str) -> int:
+    """Parse a strictly positive integer for workload sizing."""
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("must be an integer") from error
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return parsed
+
+
+def function_calls(fixture_path: Path, count: int) -> list[dict[str, Any]]:
+    """Build one tool-heavy response with uniquely identifiable Read calls."""
+    arguments = json.dumps(
+        {
+            "path": str(fixture_path),
+            "start_line": 1,
+            "end_line": 32,
+        }
+    )
+    return [
+        {
+            "type": "function_call",
+            "id": f"profile-function-call-{number}",
+            "call_id": f"profile-call-{number}",
+            "name": "Read",
+            "arguments": arguments,
+        }
+        for number in range(1, count + 1)
+    ]
+
+
+def tool_output_error(input_items: Any, expected_call_ids: set[str]) -> str | None:
+    """Return why the second request does not prove every Read succeeded."""
+    if not isinstance(input_items, list):
+        return "second request input must be an array"
+
+    outputs: dict[str, Any] = {}
+    for item in input_items:
+        if not isinstance(item, dict) or item.get("type") != "function_call_output":
+            continue
+        call_id = item.get("call_id")
+        if not isinstance(call_id, str):
+            return "function call output is missing a string call_id"
+        if call_id in outputs:
+            return f"second request contains duplicate output for {call_id}"
+        outputs[call_id] = item.get("output")
+
+    actual_call_ids = set(outputs)
+    if actual_call_ids != expected_call_ids:
+        missing = len(expected_call_ids - actual_call_ids)
+        unexpected = len(actual_call_ids - expected_call_ids)
+        return (
+            "second request tool outputs do not match the requested batch "
+            f"(missing {missing}, unexpected {unexpected})"
+        )
+
+    for call_id, output in outputs.items():
+        if not isinstance(output, str) or not all(
+            marker in output for marker in READ_OUTPUT_MARKERS
+        ):
+            return f"{call_id} did not return the complete profiling fixture"
+    return None
 
 
 class ResponsesHandler(BaseHTTPRequestHandler):
@@ -49,34 +119,19 @@ class ResponsesHandler(BaseHTTPRequestHandler):
         if request_number == 0:
             response: dict[str, Any] = {
                 "id": "profile-tool-turn",
-                "output": [
-                    {
-                        "type": "function_call",
-                        "id": "profile-function-call",
-                        "call_id": "profile-call",
-                        "name": "Read",
-                        "arguments": json.dumps(
-                            {
-                                "path": str(self.server.fixture_path),
-                                "start_line": 1,
-                                "end_line": 32,
-                            }
-                        ),
-                    }
-                ],
+                "output": function_calls(
+                    self.server.fixture_path, self.server.tool_call_count
+                ),
                 "usage": {"input_tokens": 3, "output_tokens": 2, "total_tokens": 5},
             }
-        else:
-            input_items = request.get("input", [])
-            has_tool_output = any(
-                item.get("type") == "function_call_output"
-                for item in input_items
-                if isinstance(item, dict)
+        elif request_number == 1:
+            output_error = tool_output_error(
+                request.get("input"), self.server.expected_call_ids
             )
-            if not has_tool_output:
+            if output_error is not None:
                 self._send_json(
                     500,
-                    {"error": {"message": "second request did not contain tool output"}},
+                    {"error": {"message": output_error}},
                 )
                 return
             response = {
@@ -96,6 +151,12 @@ class ResponsesHandler(BaseHTTPRequestHandler):
                 ],
                 "usage": {"input_tokens": 4, "output_tokens": 1, "total_tokens": 5},
             }
+        else:
+            self._send_json(
+                500,
+                {"error": {"message": "profiling workload made more than two requests"}},
+            )
+            return
 
         self._send_json(200, response)
 
@@ -117,9 +178,13 @@ class ProfileServer(ThreadingHTTPServer):
 
     daemon_threads = True
 
-    def __init__(self, fixture_path: Path) -> None:
+    def __init__(self, fixture_path: Path, tool_call_count: int) -> None:
         super().__init__(("127.0.0.1", 0), ResponsesHandler)
         self.fixture_path = fixture_path
+        self.tool_call_count = tool_call_count
+        self.expected_call_ids = {
+            f"profile-call-{number}" for number in range(1, tool_call_count + 1)
+        }
         self.request_count = 0
         self.request_lock = threading.Lock()
 
@@ -145,6 +210,15 @@ def parser() -> argparse.ArgumentParser:
         choices=("samply", "instruments"),
         default="samply",
         help="profiler to run: samply for CPU samples or instruments for allocations",
+    )
+    result.add_argument(
+        "--tool-calls",
+        type=positive_int,
+        default=DEFAULT_TOOL_CALLS,
+        help=(
+            "Read calls in the profiled tool-heavy batch "
+            f"(default: {DEFAULT_TOOL_CALLS})"
+        ),
     )
     return result
 
@@ -239,7 +313,7 @@ def main() -> int:
             encoding="utf-8",
         )
 
-        server = ProfileServer(fixture)
+        server = ProfileServer(fixture, args.tool_calls)
         settings = workspace / ".cake" / "settings.toml"
         settings.write_text(
             "\n".join(

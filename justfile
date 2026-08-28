@@ -20,6 +20,10 @@ profile *args:
     cargo build --profile profiling
     python3 scripts/profile-agent-loop.py {{args}}
 
+# Run profiling-helper tests without invoking a profiler
+profile-check:
+    @python3 scripts/test-profile-agent-loop.py -v
+
 # Reject branch names outside the <type>/<slug> convention.
 # just interpolates a recipe argument into shell source, so an otherwise legal
 # Git ref such as `feat/x$(...)` would execute before Git ever saw it. The
@@ -259,7 +263,7 @@ lint-deps:
     @echo "Dependency lint passed!"
 
 # Run the primary local checks, including the always-on CI command set
-ci: rust-version-check check-linux fmt-check clippy-strict clippy-no-default-features test-all-features check-coverage lint-imports lint-deps lint-module-size lint-instruction-size lint-domain-glossary
+ci: rust-version-check check-linux fmt-check clippy-strict clippy-no-default-features test-all-features check-coverage profile-check lint-imports lint-deps lint-module-size lint-instruction-size lint-domain-glossary
     echo "All checks passed!"
 
 # Print the changed-path classification the pre-push gate routes on: docs | code | mixed | unknown | none

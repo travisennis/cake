@@ -4,14 +4,16 @@ This runbook defines a repeatable local workload for measuring Cake before a per
 
 ## Workload
 
-The repository provides one end-to-end agent-loop workload:
+The repository provides one amplified end-to-end agent-loop workload:
 
 - `scripts/profile-agent-loop.py` starts a fake Responses API on `127.0.0.1`.
-- The fake provider returns a `Read` tool call, then a final assistant message.
-- Cake reads a 32-line fixture in a temporary workspace and sends the tool output back to the fake provider.
+- The fake provider returns a tool-heavy batch of 5,000 `Read` calls, then a final assistant message. The large batch supplies enough repeated Cake-owned work for a sampled profile; it is measurement amplification, not a typical model response.
+- Cake reads the same 32-line fixture for every call in a temporary workspace and sends all tool outputs back to the fake provider. The provider rejects the run unless every output has the expected call ID and complete fixture markers.
 - Cake runs with `--no-session`, so this workload measures the agent loop and tool path without mixing in session persistence costs.
 
 The workload makes exactly two local HTTP requests. It uses no provider credentials and makes no network request outside the local mock server.
+
+The default batch size is part of the baseline. Use `--tool-calls N` to explore a different size, but do not compare artifacts recorded with different values. A valid default run reports `"turns":2` in Cake's completion JSON and ends with `Profile written to`.
 
 ## Prerequisites
 
@@ -33,7 +35,7 @@ Use this section after installing Xcode or when the terminal's developer-tool se
 Set the Xcode paths. These commands assume the standard installation path:
 
 ```sh
-cd /Users/travisennis/Projects/cake
+cd "$(git rev-parse --show-toplevel)"
 export XCODE_APP=/Applications/Xcode.app
 export XCODE_DEV="$XCODE_APP/Contents/Developer"
 test -d "$XCODE_DEV"
@@ -65,12 +67,14 @@ xcrun xctrace list templates | grep -i allocations
 
 `xcrun --find xctrace` must resolve inside the full Xcode installation, and the template list must contain `Allocations`. If `xcodebuild` asks for a license, run `sudo xcodebuild -license` and follow the prompt before continuing. Do not use `sudo` for the profiling command.
 
-If xctrace continues to request authorization, check and enable the developer-tool authorization policy:
+If xctrace requests administrator credentials or attachment still fails, check and enable the developer-tool authorization policy before running the control recording:
 
 ```sh
 /usr/sbin/DevToolsSecurity -status
 sudo /usr/sbin/DevToolsSecurity -enable
 ```
+
+After enabling it, quit the terminal application, reopen it normally, and repeat the status check. It must report that developer mode is enabled before the control result can diagnose anything else.
 
 Build and check the Cake profiling binary:
 
@@ -79,22 +83,30 @@ cargo build --profile profiling
 test -x target/profiling/cake
 ```
 
-Run a finite xctrace control recording before profiling Cake. This uses a long-lived system process to separate xctrace permissions and parent-process restrictions from Cake's workload:
+Run a finite xctrace control recording before profiling Cake. This uses the prerequisite Python executable as a long-lived, non-system target to separate xctrace permissions and parent-process restrictions from Cake's workload. Do not use `/bin/sleep`: Apple system binaries are restricted by System Integrity Protection and fail this attachment test even when xctrace is otherwise configured correctly.
 
 ```sh
 CONTROL_DIR="$(mktemp -d /tmp/cake-xctrace-control.XXXXXX)"
 CONTROL_TRACE="$CONTROL_DIR/control.trace"
-DEVELOPER_DIR="$XCODE_DEV" \
+PYTHON="$(python3 -c 'import os, sys; print(os.path.realpath(sys.executable))')"
+case "$PYTHON" in
+  /bin/*|/usr/bin/*|/System/*)
+    printf 'control target is an SIP-restricted system binary: %s\n' "$PYTHON" >&2
+    PYTHON=
+    ;;
+esac
+test -x "$PYTHON" &&
+  DEVELOPER_DIR="$XCODE_DEV" \
   xcrun xctrace record \
   --template Allocations \
   --time-limit 5s \
   --output "$CONTROL_TRACE" \
-  --launch -- /bin/sleep 10
-test -d "$CONTROL_TRACE"
-printf 'xctrace control recording passed: %s\n' "$CONTROL_TRACE"
+  --launch -- "$PYTHON" -c 'import time; time.sleep(10)' &&
+  test -d "$CONTROL_TRACE" &&
+  printf 'xctrace control recording passed: %s\n' "$CONTROL_TRACE"
 ```
 
-The control recording must end at the five-second limit without a `Failed to attach to target process` error. If this control test fails, do not debug Cake yet; fix the Xcode or terminal authorization first. If it passes, continue with Cake's complete workload below.
+The control recording must end at the five-second limit without a `Failed to attach to target process` error. The chained checks print the pass message only when xctrace exits successfully and creates the trace bundle; a failed recording can still leave a bundle and must not be accepted from the directory alone. If Python resolves under `/bin`, `/usr/bin`, or `/System`, install a non-system Python and reopen the terminal so `python3` selects it. If this control test fails, do not debug Cake yet; fix the Xcode or terminal authorization first. If it passes, continue with Cake's complete workload below.
 
 The helper passes `--time-limit 30s` to xctrace, so the recording stops automatically even if xctrace continues waiting after Cake finishes. It also passes `--target-stdout -` so Cake's JSON output is visible while diagnosing the run. The local workload should complete well before the limit. If xctrace asks for administrator credentials, enter them and let the recording finish. Do not press `Ctrl-C`.
 
@@ -140,6 +152,14 @@ just profile --output profiling/artifacts/agent-loop-before.jslb.gz
 
 The recipe first builds `target/profiling/cake` with the `profiling` Cargo profile. It then launches that binary against the local mock provider. Samply writes a compressed profile to `profiling/artifacts/`. The directory is ignored by Git because profiles are generated artifacts.
 
+The default 5,000-call batch is intentionally amplified so Samply can collect a useful population of Cake samples from one short-lived CLI process. Record the batch size with the artifact. If the workload is too heavy for a constrained machine, lower it explicitly and use that same value for every compared run:
+
+```sh
+just profile \
+  --tool-calls 1000 \
+  --output profiling/artifacts/agent-loop-1000.jslb.gz
+```
+
 To inspect a saved profile, use samply's loader:
 
 ```sh
@@ -176,7 +196,7 @@ Keep these variables constant:
 
 - commit or source diff, except for the change under test;
 - operating system, CPU architecture, Rust toolchain, and Cargo profile;
-- workload command and artifact format; and
+- workload command, `--tool-calls` value, and artifact format; and
 - provider response sequence and fixture size.
 
 A sampled profile is not a precise wall-clock benchmark. Repeat each profile three to five times when a candidate is small, compare the same call tree and self-time views, and report whether the difference is larger than normal run noise. For an allocation candidate, compare the Instruments allocation counters and the stacks that own those allocations. Do not treat one profile as proof of a small improvement.
@@ -202,6 +222,7 @@ Issue [#50] establishes the workload, Cargo profile, recipe, artifact location, 
 ## Limitations and recovery
 
 - The local provider removes network latency. These profiles describe Cake's local overhead, not end-to-end provider latency.
+- The 5,000-call batch amplifies per-tool scheduling, execution, and output ownership far beyond an ordinary model response. Use it to compare those paths, not to predict production turn latency or concurrency.
 - The workload uses `Read`, not `Bash`, so it does not exercise the LLM command judge or OS sandbox. Add a separate workload before drawing conclusions about those paths.
 - If the recipe reports that samply is missing, install it with the command in [Prerequisites]. If macOS profiling reports a signing or permission error, run `samply setup` and repeat the same command. If `xctrace` is unavailable, install Xcode and select it with `xcode-select --switch`.
 - On macOS, samply may report `Unknown(1100)` after its code-signing setup when a restricted parent cannot access the Mach bootstrap service. The `1100` value is `BOOTSTRAP_NOT_PRIVILEGED`; retry from an unrestricted local terminal. Setting `CAKE_SANDBOX=off` for the child does not remove a parent restriction.

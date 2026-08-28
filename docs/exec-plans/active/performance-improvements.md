@@ -16,18 +16,20 @@ The behavior is observable by running documented profiling commands, collecting 
 - [x] (2026-05-07 18:49Z) Migrated this plan to `docs/exec-plans/active/performance-improvements.md` and added the required ExecPlan lifecycle sections.
 - [ ] Confirm the current release profile and binary-size baseline in the working tree.
 - [x] (2026-08-28 00:00Z) Added the `profiling` Cargo profile, the `just profile` recipe, and a local fake-provider agent-loop workload with CPU and allocation profiling paths.
-- [ ] Profile representative workloads before changing hot-path code.
+- [ ] Profile representative workloads before changing hot-path code (completed: established and captured an amplified tool-heavy agent-loop workload; remaining: inspect and categorize its hotspots and add separate workloads only where the evidence requires them).
 - [ ] Implement only measured source-level improvements, then document results and run `just ci`.
 
 ## Surprises & Discoveries
 
 - Observation: This note already contains some decisions and a binary-size measurement, but it does not identify completed profiling artifacts or accepted benchmark infrastructure. Evidence: The original `Decisions Made` section records `panic = "abort"` and workload priority, while the profiling and benchmark sections remain instructions rather than completed outcomes.
 - Observation: A standalone compiled Cake binary is the useful profiling target. The repeatable workload therefore starts a local fake Responses API and a temporary fixture from `scripts/profile-agent-loop.py` instead of profiling a Cargo test harness. Evidence: The workload makes two localhost requests, executes `Read`, and checks the expected tool-output turn before accepting the profile.
+- Observation: One `Read` call completed too quickly for useful CPU sampling: four real Samply captures contained only 41-46 total samples over 8-9 ms. A single response containing 5,000 independently identified `Read` calls preserved the two-request agent-loop shape while producing 14,242 Cake samples over 184 ms in the verification capture. Evidence: `profiling/artifacts/verification-batched-5000.jslb.gz` on macOS 26.6.2 with samply 0.13.1.
 
 ## Decision Log
 
 - Decision: Classify this plan as active during the ExecPlan migration. Rationale: It has a partial historical decision but no evidence that the profiling, benchmark, and measured optimization milestones have been completed. Date/Author: 2026-05-07 / Codex
 - Decision: Use a temporary workspace and a localhost fake Responses API for the first repeatable workload. Rationale: Profiling the compiled Cake binary keeps the result focused on Cake while avoiding production latency, credentials, and a committed session fixture. Date/Author: 2026-08-28 / Cake
+- Decision: Amplify the default tool-heavy workload to 5,000 `Read` calls in one provider response and require every output to contain the complete fixture markers. Rationale: Repeating Cake-owned work in one process yields a useful sample population, while unique call IDs and content validation prevent failed or missing tool calls from being accepted as profiles. The batch is a comparison workload, not a claim about typical model behavior. Date/Author: 2026-08-28 / Codex
 
 ## Outcomes & Retrospective
 
@@ -202,3 +204,4 @@ Add `--timing` or use the existing `duration_ms` in result messages to track ful
 
 - 2026-05-07 / Codex: Migrated this historical plan into the new active ExecPlan directory and added lifecycle sections required by the ExecPlan workflow. The original profiling notes above remain as the implementation context.
 - 2026-08-28 / Cake: Added the deterministic agent-loop profiling workflow for issue #50. The remaining profiling, measurement, and source-optimization milestones stay open.
+- 2026-08-28 / Codex: Verified the real Samply path, recorded the insufficient sample population from the original one-call workload, amplified and validated the tool batch, and corrected the macOS xctrace control target. Representative hotspot analysis and source optimization remain open.
