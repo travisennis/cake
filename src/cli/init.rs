@@ -237,7 +237,9 @@ const DEFAULT_SETTINGS: &str = r#"# Cake project settings, created by `cake init
 # limit fires unless you configure one. The output-budget keys default to the
 # compiled constants; overriding them changes tool behavior without a
 # release. A limit is a positive integer or "unlimited" (no cap). See
-# docs/configuration.md for the full contract.
+# docs/configuration.md for the full contract. A selected profile can also set
+# limits under [profiles.NAME.limits]; profile values override top-level values
+# per key.
 # [limits]
 # max_turns = 10               # stop after 10 agent-loop turns
 # max_tool_calls = 50          # stop after 50 executed tool calls

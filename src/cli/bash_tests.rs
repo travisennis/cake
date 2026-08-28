@@ -2,7 +2,7 @@ use super::*;
 use crate::clients::judge::{JudgeDecision, JudgeError, judge_is_enabled};
 use crate::config::ModelDefinition;
 use crate::config::model::ApiType;
-use crate::config::settings::{JudgeSettings, LimitsSettings, SandboxSettings, SkillSettings};
+use crate::config::settings::{JudgeSettings, ResolvedLimits, SandboxSettings, SkillSettings};
 use clap::CommandFactory;
 use std::collections::HashMap;
 use wiremock::matchers::method;
@@ -81,7 +81,7 @@ fn loaded_settings(base_url: &str) -> LoadedSettings {
         skills: SkillSettings::default(),
         system_prompt: None,
         judge: JudgeSettings::default(),
-        limits: LimitsSettings::default(),
+        limits: ResolvedLimits::default(),
         warnings: Vec::new(),
     }
 }

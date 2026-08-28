@@ -1524,8 +1524,8 @@ max_tool_calls = 50
     })
     .unwrap();
 
-    assert_eq!(loaded.limits.max_turns, Some(Limit::max(10)));
-    assert_eq!(loaded.limits.max_tool_calls, Some(Limit::max(50)));
+    assert_eq!(loaded.limits.max_turns, Some(10));
+    assert_eq!(loaded.limits.max_tool_calls, Some(50));
     assert!(loaded.warnings.is_empty(), "{:#?}", loaded.warnings);
 }
 
@@ -1587,8 +1587,8 @@ max_turns = 10
     })
     .unwrap();
 
-    assert_eq!(loaded.limits.max_turns, Some(Limit::max(10)));
-    assert_eq!(loaded.limits.max_tool_calls, Some(Limit::max(50)));
+    assert_eq!(loaded.limits.max_turns, Some(10));
+    assert_eq!(loaded.limits.max_tool_calls, Some(50));
 }
 
 #[test]
@@ -1613,9 +1613,9 @@ max_tool_calls = "UNLIMITED"
     })
     .unwrap();
 
-    // An explicit "unlimited" is accepted and resolves to no cap in the
-    // effective settings. The key-stays-present distinction is what lets a
-    // project override a global cap, covered by the merge test below.
+    // An explicit `"unlimited"` is accepted and resolves to no cap in the
+    // runtime value. The overlay preserves the key-stays-present distinction
+    // during merging so a project can override a global cap.
     assert_eq!(loaded.limits.max_turns, None);
     assert_eq!(loaded.limits.max_tool_calls, None);
 }
@@ -1688,6 +1688,48 @@ max_turns = "unlimited"
     assert_eq!(loaded.limits.max_tool_calls, None);
 }
 
+#[test]
+fn test_limits_profile_overrides_top_level_per_key() {
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"
+[limits]
+max_turns = 20
+max_tool_calls = 40
+read_default_end_line = 10
+
+[profiles.review.limits]
+max_turns = 5
+read_default_end_line = 20
+read_max_output_bytes = "unlimited"
+"#,
+    );
+    let project = create_project_settings(
+        r"
+[limits]
+max_turns = 15
+
+[profiles.review.limits]
+max_turns = 8
+max_tool_calls = 7
+",
+    );
+
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load_with_profile(Some(project.path()), Some("review"))
+    })
+    .unwrap();
+
+    // Profile overlays apply after top-level settings, and project profile
+    // values apply after global profile values.
+    assert_eq!(loaded.limits.max_turns, Some(8));
+    assert_eq!(loaded.limits.max_tool_calls, Some(7));
+    assert_eq!(loaded.limits.tool_limits.read_default_end_line, Some(20));
+    assert_eq!(loaded.limits.tool_limits.read_max_output_bytes, None);
+    assert!(loaded.warnings.is_empty(), "{:#?}", loaded.warnings);
+}
+
 // --- [limits] tool output budgets ---
 
 #[test]
@@ -1715,14 +1757,14 @@ hook_output_limit = 1024
     })
     .unwrap();
 
-    assert_eq!(loaded.limits.bash_output_max_bytes, Some(Limit::max(5000)));
-    assert_eq!(loaded.limits.bash_read_cap, Some(Limit::max(10000)));
-    assert_eq!(loaded.limits.read_default_end_line, Some(Limit::max(50)));
-    assert_eq!(loaded.limits.read_max_output_bytes, Some(Limit::max(20000)));
-    assert_eq!(loaded.limits.hook_output_limit, Some(Limit::max(1024)));
+    assert_eq!(loaded.limits.tool_limits.bash_output_max_bytes, Some(5000));
+    assert_eq!(loaded.limits.tool_limits.bash_read_cap, Some(10000));
+    assert_eq!(loaded.limits.tool_limits.read_default_end_line, Some(50));
+    assert_eq!(loaded.limits.tool_limits.read_max_output_bytes, Some(20000));
+    assert_eq!(loaded.limits.tool_limits.hook_output_limit, Some(1024));
     assert!(loaded.warnings.is_empty(), "{:#?}", loaded.warnings);
 
-    let tool = loaded.limits.tool_limits();
+    let tool = loaded.limits.tool_limits;
     assert_eq!(tool.bash_output_max_bytes, Some(5000));
     assert_eq!(tool.bash_read_cap, Some(10000));
     assert_eq!(tool.read_default_end_line, Some(50));
@@ -1750,7 +1792,7 @@ api_key_env = "MY_KEY"
 
     // Absent keys resolve to the compiled defaults, so out-of-the-box tool
     // behavior is unchanged.
-    let tool = loaded.limits.tool_limits();
+    let tool = loaded.limits.tool_limits;
     assert_eq!(tool, ToolLimits::defaults());
     assert_eq!(
         tool.bash_output_max_bytes,
@@ -1793,7 +1835,7 @@ read_max_output_bytes = "unlimited"
     })
     .unwrap();
 
-    let tool = loaded.limits.tool_limits();
+    let tool = loaded.limits.tool_limits;
     assert_eq!(tool.bash_output_max_bytes, None);
     assert_eq!(tool.read_max_output_bytes, None);
     // Untouched keys keep their compiled defaults.
@@ -1838,7 +1880,7 @@ bash_output_max_bytes = 9000
     })
     .unwrap();
 
-    let tool = loaded.limits.tool_limits();
+    let tool = loaded.limits.tool_limits;
     assert_eq!(tool.bash_output_max_bytes, Some(9000));
     assert_eq!(tool.read_default_end_line, Some(10));
 }
@@ -2026,12 +2068,20 @@ path = "~/my-skills:/shared/team-skills"
 read_only = ["~/.local/bin/claude"]
 writable = ["~/.claude"]
 
+[limits]
+max_turns = 10
+bash_output_max_bytes = 50000
+
 [profiles.review]
 default_model = "zen"
 directories = ["../standards"]
 system_prompt = "prompts/review.md"
 skills = { disabled = true, only = ["review"], path = "~/review-skills" }
 sandbox = { read_only = ["~/.local/bin/other"], writable = ["~/.cache"] }
+
+[profiles.review.limits]
+max_tool_calls = 50
+read_max_output_bytes = "unlimited"
 
 [tools.bash.judge]
 model = "zen"

@@ -525,7 +525,7 @@ impl CodingAssistant {
             settings_dirs,
             sandbox_policy,
         )
-        .with_limits(loaded.limits.tool_limits());
+        .with_limits(loaded.limits.tool_limits);
 
         // Early detection of linked worktree issues: warn at session start if
         // the gitdir cannot be resolved. This fires before any Bash tool call,
@@ -1076,7 +1076,7 @@ impl CmdRunner for CodingAssistant {
             cwd: prepared.current_dir.clone(),
             model: client.model_name().to_string(),
         };
-        let hook_output_limit = resources.loaded.limits.tool_limits().hook_output_limit;
+        let hook_output_limit = resources.loaded.limits.tool_limits.hook_output_limit;
         let (client, hook_runner) = Self::attach_hooks(
             client,
             &prepared.current_dir,

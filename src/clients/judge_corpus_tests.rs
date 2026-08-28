@@ -20,7 +20,7 @@ use crate::clients::judge_rubric::VerdictCode;
 use crate::config::SettingsLoader;
 use crate::config::model::{ApiType, ResolvedModelConfig};
 use crate::config::settings::{
-    JUDGE_BYPASS_ENV, JudgeSettings, LimitsSettings, LoadedSettings, ModelDefinition,
+    JUDGE_BYPASS_ENV, JudgeSettings, LoadedSettings, ModelDefinition, ResolvedLimits,
     SandboxSettings, SkillSettings,
 };
 
@@ -773,7 +773,7 @@ fn corpus_loaded_settings() -> LoadedSettings {
             model: Some("judge-model".to_string()),
             ..JudgeSettings::default()
         },
-        limits: LimitsSettings::default(),
+        limits: ResolvedLimits::default(),
         warnings: Vec::new(),
     }
 }
