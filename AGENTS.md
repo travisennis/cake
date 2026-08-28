@@ -9,7 +9,7 @@ Users depend on CLI shape and exit behavior, machine-readable output, tool and s
 ## Operating loop
 
 1. Classify the change, pick the route below, and load only that route's documents.
-2. Create the branch before the first edit: `just branch <type>/<slug>`, or `just worktree <type>/<slug>` beside another agent.
+2. Decide whether the task will edit repository files. For read-only work such as backlog grooming, research, audits, or recommendations, stay on the current branch; do not create a branch or worktree. If edits become necessary, create the branch immediately before the first edit: `just branch <type>/<slug>`, or `just worktree <type>/<slug>` beside another agent.
 3. Read the smallest relevant code and tests. [ARCHITECTURE.md](ARCHITECTURE.md) names the code authority for each surface.
 4. Keep the diff narrow: no mixing behavior changes, dependency updates, formatting, snapshot regeneration, or unrelated cleanup. Churn hides the change a reviewer needs to see.
 5. Run checks proportionate to the risk, per [CONTRIBUTING.md](CONTRIBUTING.md), and preflight before handoff.

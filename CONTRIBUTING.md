@@ -29,7 +29,7 @@ Follow the [Auditing Binary Size runbook](docs/runbooks/auditing-binary-size.md)
 ## Development loop
 
 1. Inspect `git status --short` and preserve unrelated work.
-2. Create the branch before editing: `just branch <type>/<slug>`, or `just worktree <type>/<slug>` to work in a linked worktree beside other in-flight work.
+2. If the task will change repository files, create the branch before editing: `just branch <type>/<slug>`, or `just worktree <type>/<slug>` to work in a linked worktree beside other in-flight work. Read-only analysis, triage, or research that produces no repository changes can stay on the current branch.
 3. Read the implementation and its focused tests before editing.
 4. Make the smallest coherent change.
 5. Run a focused test or check while iterating.
@@ -100,7 +100,7 @@ Issues, research notes, ExecPlans, and ADRs are managed records; follow the issu
 
 Commit and push freely on a feature branch, and commit often --- uncommitted work is the fragile state. Stage the paths you changed rather than `git add -A`, so unrelated in-flight edits stay out of your pull request. Ask first before force-pushing (it discards history); open the pull request when the work is ready for review.
 
-All work happens on a branch, which is what makes that safe: `master` is protected by a GitHub ruleset rejecting direct pushes, and by the `branch-guard` hook in `prek.toml`, which rejects commits and pushes on `master` at both `pre-commit` and `pre-push`. Branch names use the commit type as a prefix, such as `feat/turn-limits` or `fix/sandbox-read-only`. [Working on branches and worktrees](docs/runbooks/parallel-worktrees.md) covers the mechanics, including running several branches at once in linked worktrees.
+Repository changes happen on a branch, which is what makes that safe: `master` is protected by a GitHub ruleset rejecting direct pushes, and by the `branch-guard` hook in `prek.toml`, which rejects commits and pushes on `master` at both `pre-commit` and `pre-push`. Branch names use the commit type as a prefix, such as `feat/turn-limits` or `fix/sandbox-read-only`. [Working on branches and worktrees](docs/runbooks/parallel-worktrees.md) covers the mechanics, including running several branches at once in linked worktrees.
 
 `ci/cargo-crap-baseline.json` is generated and committed, so parallel branches conflict on it. A three-way merge of that file is meaningless. Take `master`'s copy and regenerate with `just change-risk-baseline`.
 
