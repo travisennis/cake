@@ -26,6 +26,80 @@ On macOS, use `samply setup` if samply reports a permission or signing error. Th
 [samply]: https://github.com/mstange/samply
 [samply README]: https://github.com/mstange/samply#turn-on-debug-info-for-full-stacks
 
+## Fresh macOS verification
+
+Use this section after installing Xcode or when the terminal's developer-tool selection may be stale. Run these commands from an ordinary Ghostty or Terminal session, not from Cake's Bash tool. A child `CAKE_SANDBOX=off` setting cannot remove restrictions imposed by its parent process.
+
+Set the Xcode paths. These commands assume the standard installation path:
+
+```sh
+cd /Users/travisennis/Projects/cake
+export XCODE_APP=/Applications/Xcode.app
+export XCODE_DEV="$XCODE_APP/Contents/Developer"
+test -d "$XCODE_DEV"
+```
+
+If that path does not exist, find the installed application and set `XCODE_APP` to the returned path:
+
+```sh
+mdfind 'kMDItemCFBundleIdentifier == "com.apple.dt.Xcode"'
+```
+
+Select the full Xcode developer directory and complete its first-launch setup:
+
+```sh
+sudo xcode-select --switch "$XCODE_DEV"
+sudo xcodebuild -runFirstLaunch
+export DEVELOPER_DIR="$XCODE_DEV"
+```
+
+Verify the tools that the allocation workflow needs:
+
+```sh
+xcode-select -p
+xcodebuild -version
+xcrun --find xctrace
+xcrun xctrace version
+xcrun xctrace list templates | grep -i allocations
+```
+
+`xcrun --find xctrace` must resolve inside the full Xcode installation, and the template list must contain `Allocations`. If `xcodebuild` asks for a license, run `sudo xcodebuild -license` and follow the prompt before continuing. Do not use `sudo` for the profiling command.
+
+Build and check the Cake profiling binary:
+
+```sh
+cargo build --profile profiling
+test -x target/profiling/cake
+```
+
+Do not use `cake --version` as the profiling smoke test. It exits too quickly, so xctrace may fail to attach even though it creates a `.trace` directory. Use the complete local workload below instead. If xctrace asks for administrator credentials, enter them and let the recording finish. Do not press `Ctrl-C`.
+
+Run the complete allocation workload:
+
+```sh
+DEVELOPER_DIR="$XCODE_DEV" \
+  just profile \
+  --profiler instruments \
+  --output profiling/artifacts/agent-loop-allocations.trace
+```
+
+A valid run must satisfy all three conditions:
+
+1. the command exits with status 0;
+2. the output includes `Profile written to`; and
+3. `profiling/artifacts/agent-loop-allocations.trace` is a directory.
+
+Check and open the trace:
+
+```sh
+test -d profiling/artifacts/agent-loop-allocations.trace
+open profiling/artifacts/agent-loop-allocations.trace
+```
+
+In Instruments, select the Allocations instrument and inspect the `cake` process. Record the allocation count, allocated bytes, and relevant stacks. The directory check alone does not prove that the recording succeeded; trust the command's exit status and xctrace's output first.
+
+If the full workload reports `Failed to attach to target process`, check that you ran it from the ordinary terminal, not through Cake, and rerun it without interrupting it. A short-lived command such as `cake --version` is not a valid attachment test. If samply reports `Unknown(1100)`, use the recovery guidance below; that is a Mach bootstrap permission failure in the parent environment, not an xctrace failure.
+
 ## Record a CPU profile
 
 Run the deterministic workload through samply:
