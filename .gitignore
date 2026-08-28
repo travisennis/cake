@@ -10,6 +10,9 @@ target/llvm-cov/
 
 .local.justfile
 
+# Generated profiling artifacts
+profiling/artifacts/
+
 # Eval harness generated output (sessions, telemetry, run results)
 scripts/evals/results/
 

@@ -20,6 +20,12 @@ Audit a release binary and identify its principal size contributors.
 
 Diagnose sandbox failures using the platform-appropriate Seatbelt or Landlock path.
 
+### Profiling Cake
+
+[Profiling Cake](profiling-cake.md)
+
+Record and compare a deterministic agent-loop CPU profile without production API calls, with optional exploratory allocation inspection on macOS.
+
 ### Working on Branches and Worktrees
 
 [Working on Branches and Worktrees](parallel-worktrees.md)
