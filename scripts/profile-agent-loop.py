@@ -285,7 +285,8 @@ def main() -> int:
             )
             return 1
 
-    if not output.is_file():
+    # samply writes a file; xctrace writes an Instruments .trace bundle directory.
+    if not output.exists():
         print(f"error: profiler did not create {output}", file=sys.stderr)
         return 1
 
