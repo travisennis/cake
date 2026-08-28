@@ -28,7 +28,7 @@ On macOS, use `samply setup` if samply reports a permission or signing error. Th
 
 ## Fresh macOS verification
 
-Use this section after installing Xcode or when the terminal's developer-tool selection may be stale. Run these commands from an ordinary Ghostty or Terminal session, not from Cake's Bash tool. A child `CAKE_SANDBOX=off` setting cannot remove restrictions imposed by its parent process.
+Use this section after installing Xcode or when the terminal's developer-tool selection may be stale. Run these commands from an ordinary Ghostty or Terminal session, not from Cake's Bash tool. If the terminal was launched by Cake or an agent process, quit the entire terminal application and reopen it from the Dock, Finder, or Launchpad; starting a new shell in the same restricted parent may not be enough. A child `CAKE_SANDBOX=off` setting cannot remove restrictions imposed by its parent process.
 
 Set the Xcode paths. These commands assume the standard installation path:
 
