@@ -19,6 +19,7 @@ from typing import Any
 DEFAULT_BINARY = Path("target/profiling/cake")
 DEFAULT_OUTPUT = Path("profiling/artifacts/agent-loop.jslb.gz")
 API_KEY_ENV = "CAKE_PROFILE_API_KEY"
+XCTRACE_TIME_LIMIT = "30s"
 
 
 class ResponsesHandler(BaseHTTPRequestHandler):
@@ -180,6 +181,10 @@ def profiler_command(
         "Allocations",
         "--output",
         str(output),
+        "--time-limit",
+        XCTRACE_TIME_LIMIT,
+        "--target-stdout",
+        "-",
         "--launch",
         "--",
         *cake_args,

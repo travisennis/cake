@@ -72,7 +72,7 @@ cargo build --profile profiling
 test -x target/profiling/cake
 ```
 
-Do not use `cake --version` as the profiling smoke test. It exits too quickly, so xctrace may fail to attach even though it creates a `.trace` directory. Use the complete local workload below instead. If xctrace asks for administrator credentials, enter them and let the recording finish. Do not press `Ctrl-C`.
+The helper passes `--time-limit 30s` to xctrace, so the recording stops automatically even if xctrace continues waiting after Cake finishes. It also passes `--target-stdout -` so Cake's JSON output is visible while diagnosing the run. The local workload should complete well before the limit. If xctrace asks for administrator credentials, enter them and let the recording finish. Do not press `Ctrl-C`.
 
 Run the complete allocation workload:
 
@@ -98,7 +98,7 @@ open profiling/artifacts/agent-loop-allocations.trace
 
 In Instruments, select the Allocations instrument and inspect the `cake` process. Record the allocation count, allocated bytes, and relevant stacks. The directory check alone does not prove that the recording succeeded; trust the command's exit status and xctrace's output first.
 
-If the full workload reports `Failed to attach to target process`, check that you ran it from the ordinary terminal, not through Cake, and rerun it without interrupting it. A short-lived command such as `cake --version` is not a valid attachment test. If samply reports `Unknown(1100)`, use the recovery guidance below; that is a Mach bootstrap permission failure in the parent environment, not an xctrace failure.
+If the full workload reports `Failed to attach to target process`, check that you ran it from the ordinary terminal, not through Cake, and rerun it without interrupting it. A short-lived command such as `cake --version` is not a valid attachment test. The helper's 30-second time limit prevents an indefinite recording; if it expires before two provider requests complete, the helper rejects the run. If samply reports `Unknown(1100)`, use the recovery guidance below; that is a Mach bootstrap permission failure in the parent environment, not an xctrace failure.
 
 ## Record a CPU profile
 
