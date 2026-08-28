@@ -209,7 +209,10 @@ def parser() -> argparse.ArgumentParser:
         "--profiler",
         choices=("samply", "instruments"),
         default="samply",
-        help="profiler to run: samply for CPU samples or instruments for allocations",
+        help=(
+            "profiler to run: samply for the primary CPU workflow or instruments "
+            "for optional macOS allocation inspection"
+        ),
     )
     result.add_argument(
         "--tool-calls",

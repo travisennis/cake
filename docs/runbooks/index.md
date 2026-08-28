@@ -24,7 +24,7 @@ Diagnose sandbox failures using the platform-appropriate Seatbelt or Landlock pa
 
 [Profiling Cake](profiling-cake.md)
 
-Record a deterministic agent-loop profile without production API calls and compare CPU or allocation results before and after a performance change.
+Record and compare a deterministic agent-loop CPU profile without production API calls, with optional exploratory allocation inspection on macOS.
 
 ### Working on Branches and Worktrees
 

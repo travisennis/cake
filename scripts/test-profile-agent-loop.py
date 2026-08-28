@@ -27,6 +27,9 @@ class ProfileAgentLoopTests(unittest.TestCase):
 
         self.assertEqual(arguments.tool_calls, 5_000)
 
+    def test_parser_marks_instruments_as_optional(self) -> None:
+        self.assertIn("optional macOS", PROFILE.parser().format_help())
+
     def test_positive_int_rejects_zero(self) -> None:
         with self.assertRaises(argparse.ArgumentTypeError):
             PROFILE.positive_int("0")

@@ -15,7 +15,7 @@ setup:
     prek install --hook-type pre-commit --hook-type pre-push --hook-type commit-msg
     @echo "Setup complete! Run 'just --list' to see available commands."
 
-# Run a deterministic agent-loop profile against a local fake Responses API
+# Run the primary Samply profile; pass --profiler instruments for the optional macOS path
 profile *args:
     cargo build --profile profiling
     python3 scripts/profile-agent-loop.py {{args}}
