@@ -83,6 +83,12 @@ DEVELOPER_DIR="$XCODE_DEV" \
   --output profiling/artifacts/agent-loop-allocations.trace
 ```
 
+If the output path already exists, xctrace refuses to overwrite it. Use a new artifact name for each attempt, such as `agent-loop-allocations-2.trace`. Do not use `--append-run` for a separate measurement because it combines runs in one trace. Remove an incomplete old bundle only when you no longer need its diagnostics:
+
+```sh
+rm -r profiling/artifacts/agent-loop-allocations.trace
+```
+
 A valid run must satisfy all three conditions:
 
 1. the command exits with status 0;
