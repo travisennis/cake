@@ -54,7 +54,7 @@ just profile \
   --output profiling/artifacts/agent-loop-before.trace
 ```
 
-The recipe keeps the mock provider and fixture identical. The `--profiler instruments` option runs `xcrun xctrace` and writes an Instruments trace. Open the trace in Instruments, select Allocations, and compare the `cake` process' allocation count, bytes, and stack locations between before and after runs. This path requires Xcode Command Line Tools and is macOS-only.
+The recipe keeps the mock provider and fixture identical. The `--profiler instruments` option runs `xcrun xctrace` and writes an Instruments trace. Open the trace in Instruments, select Allocations, and compare the `cake` process' allocation count, bytes, and stack locations between before and after runs. This path requires Xcode with `xctrace` and is macOS-only.
 
 ## Compare before and after
 
@@ -100,4 +100,5 @@ Issue [#50] establishes the workload, Cargo profile, recipe, artifact location, 
 - The local provider removes network latency. These profiles describe Cake's local overhead, not end-to-end provider latency.
 - The workload uses `Read`, not `Bash`, so it does not exercise the LLM command judge or OS sandbox. Add a separate workload before drawing conclusions about those paths.
 - If the recipe reports that samply is missing, install it with the command in [Prerequisites]. If macOS profiling reports a signing or permission error, run `samply setup` and repeat the same command. If `xctrace` is unavailable, install Xcode and select it with `xcode-select --switch`.
+- On macOS, samply may report `Unknown(1100)` after its code-signing setup when a restricted parent cannot access the Mach bootstrap service. The `1100` value is `BOOTSTRAP_NOT_PRIVILEGED`; retry from an unrestricted local terminal. Setting `CAKE_SANDBOX=off` for the child does not remove a parent restriction.
 - If the mock provider does not receive two requests, treat the run as invalid rather than comparing its artifact. The helper exits non-zero in that case.
