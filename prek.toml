@@ -32,6 +32,13 @@ hooks = [
     pass_filenames = false,
   },
   {
+    id = "docs-format-check",
+    name = "panache docs format",
+    language = "system",
+    entry = "panache format --check --force-exclude --quiet",
+    files = "\\.md$",
+  },
+  {
     id = "docs-check",
     name = "panache docs check",
     language = "system",
