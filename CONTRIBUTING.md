@@ -62,6 +62,7 @@ Additional checks:
 - Label changes: `just labels-check-file` (file validation, also CI), `just labels-check` (repo drift vs `.github/labels.yml`), `just labels` (apply), `just labels-prune` (delete unlisted labels).
 - Full release-oriented validation: `just check-full`.
 - Documentation-only changes: targeted `panache format --check` and `panache lint` for changed living documents, link validation, and `git diff --check`. Use `just docs-check` when intentionally validating the complete Markdown corpus; it also runs `just lint-instruction-size`.
+- Markdown gate scopes are intentional: the pre-commit hook checks formatting for changed Markdown and lint for the full corpus. The pre-push route checks both for changed living documents. `just docs-check` and CI check the full corpus. This gives formatting feedback before commit without adding a full-corpus formatting pass to every commit; the full-corpus gates remain the final check.
 - Instruction changes (AGENTS.md, `.agents/skills/`, guardrails, runbooks): `just lint-instruction-size` caps AGENTS.md, the one document loaded every session, reports the corpus, and also runs in `just ci`. [Agent-facing instructions](docs/guardrails/agent-instructions.md) is the authority for what an added instruction must justify.
 
 ### Pre-push routing

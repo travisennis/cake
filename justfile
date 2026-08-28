@@ -387,7 +387,7 @@ update-dependencies:
 # Check markdown formatting and lint (requires panache; installed by `just setup`)
 docs-check: lint-instruction-size
 	panache format --check . --quiet
-	-panache lint . --quiet
+	panache lint . --quiet
 
 # Auto-format all markdown files
 docs-fmt:
