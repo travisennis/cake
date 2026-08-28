@@ -11,6 +11,11 @@ codegen-units = 1
 panic = "abort"
 strip = true
 
+[profile.profiling]
+inherits = "release"
+debug = true
+strip = false
+
 [profile.optimized]
 inherits = "release"
 lto = false

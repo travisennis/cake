@@ -15,6 +15,11 @@ setup:
     prek install --hook-type pre-commit --hook-type pre-push --hook-type commit-msg
     @echo "Setup complete! Run 'just --list' to see available commands."
 
+# Run a deterministic agent-loop profile against a local fake Responses API
+profile *args:
+    cargo build --profile profiling
+    python3 scripts/profile-agent-loop.py {{args}}
+
 # Reject branch names outside the <type>/<slug> convention.
 # just interpolates a recipe argument into shell source, so an otherwise legal
 # Git ref such as `feat/x$(...)` would execute before Git ever saw it. The

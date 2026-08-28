@@ -15,17 +15,19 @@ The behavior is observable by running documented profiling commands, collecting 
 - [x] (2026-05-07 18:49Z) Confirmed the historical note records that `panic = "abort"` was added and reduced binary size from about 6.6 MB to 5.8 MB.
 - [x] (2026-05-07 18:49Z) Migrated this plan to `docs/exec-plans/active/performance-improvements.md` and added the required ExecPlan lifecycle sections.
 - [ ] Confirm the current release profile and binary-size baseline in the working tree.
-- [ ] Add or verify a profiling profile and repeatable profiling command.
+- [x] (2026-08-28 00:00Z) Added the `profiling` Cargo profile, the `just profile` recipe, and a local fake-provider agent-loop workload with CPU and allocation profiling paths.
 - [ ] Profile representative workloads before changing hot-path code.
 - [ ] Implement only measured source-level improvements, then document results and run `just ci`.
 
 ## Surprises & Discoveries
 
 - Observation: This note already contains some decisions and a binary-size measurement, but it does not identify completed profiling artifacts or accepted benchmark infrastructure. Evidence: The original `Decisions Made` section records `panic = "abort"` and workload priority, while the profiling and benchmark sections remain instructions rather than completed outcomes.
+- Observation: A standalone compiled Cake binary is the useful profiling target. The repeatable workload therefore starts a local fake Responses API and a temporary fixture from `scripts/profile-agent-loop.py` instead of profiling a Cargo test harness. Evidence: The workload makes two localhost requests, executes `Read`, and checks the expected tool-output turn before accepting the profile.
 
 ## Decision Log
 
 - Decision: Classify this plan as active during the ExecPlan migration. Rationale: It has a partial historical decision but no evidence that the profiling, benchmark, and measured optimization milestones have been completed. Date/Author: 2026-05-07 / Codex
+- Decision: Use a temporary workspace and a localhost fake Responses API for the first repeatable workload. Rationale: Profiling the compiled Cake binary keeps the result focused on Cake while avoiding production latency, credentials, and a committed session fixture. Date/Author: 2026-08-28 / Cake
 
 ## Outcomes & Retrospective
 
@@ -67,10 +69,10 @@ This lets profiling tools (samply, flamegraph) resolve function names without af
 ```just
 profile *ARGS:
     cargo build --profile profiling
-    samply record ./target/profiling/cake {{ARGS}}
+    python3 scripts/profile-agent-loop.py {{ARGS}}
 ```
 
-Requires `cargo install samply` (macOS). samply uses dtrace under the hood and outputs to Firefox Profiler UI with no additional setup.
+The recipe uses a local fake Responses API, so it does not require provider credentials or production network access. It supports sampled CPU profiles with samply and allocation traces with macOS Instruments.
 
 ### 0.4 --- Identify Representative Workloads
 
@@ -199,3 +201,4 @@ Add `--timing` or use the existing `duration_ms` in result messages to track ful
 ## Revision Notes
 
 - 2026-05-07 / Codex: Migrated this historical plan into the new active ExecPlan directory and added lifecycle sections required by the ExecPlan workflow. The original profiling notes above remain as the implementation context.
+- 2026-08-28 / Cake: Added the deterministic agent-loop profiling workflow for issue #50. The remaining profiling, measurement, and source-optimization milestones stay open.
