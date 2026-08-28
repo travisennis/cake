@@ -65,12 +65,36 @@ xcrun xctrace list templates | grep -i allocations
 
 `xcrun --find xctrace` must resolve inside the full Xcode installation, and the template list must contain `Allocations`. If `xcodebuild` asks for a license, run `sudo xcodebuild -license` and follow the prompt before continuing. Do not use `sudo` for the profiling command.
 
+If xctrace continues to request authorization, check and enable the developer-tool authorization policy:
+
+```sh
+/usr/sbin/DevToolsSecurity -status
+sudo /usr/sbin/DevToolsSecurity -enable
+```
+
 Build and check the Cake profiling binary:
 
 ```sh
 cargo build --profile profiling
 test -x target/profiling/cake
 ```
+
+Run a finite xctrace control recording before profiling Cake. This uses a long-lived system process to separate xctrace permissions and parent-process restrictions from Cake's workload:
+
+```sh
+CONTROL_DIR="$(mktemp -d /tmp/cake-xctrace-control.XXXXXX)"
+CONTROL_TRACE="$CONTROL_DIR/control.trace"
+DEVELOPER_DIR="$XCODE_DEV" \
+  xcrun xctrace record \
+  --template Allocations \
+  --time-limit 5s \
+  --output "$CONTROL_TRACE" \
+  --launch -- /bin/sleep 10
+test -d "$CONTROL_TRACE"
+printf 'xctrace control recording passed: %s\n' "$CONTROL_TRACE"
+```
+
+The control recording must end at the five-second limit without a `Failed to attach to target process` error. If this control test fails, do not debug Cake yet; fix the Xcode or terminal authorization first. If it passes, continue with Cake's complete workload below.
 
 The helper passes `--time-limit 30s` to xctrace, so the recording stops automatically even if xctrace continues waiting after Cake finishes. It also passes `--target-stdout -` so Cake's JSON output is visible while diagnosing the run. The local workload should complete well before the limit. If xctrace asks for administrator credentials, enter them and let the recording finish. Do not press `Ctrl-C`.
 
