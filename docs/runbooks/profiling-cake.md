@@ -21,7 +21,7 @@ Install the Rust toolchain, `just`, Python 3, and [samply]. The repository's pro
 cargo install samply --locked
 ```
 
-On macOS, use `samply setup` if samply reports a permission or signing error. The [samply README] documents platform requirements and this profiling setup. The allocation workflow below also needs Xcode Command Line Tools.
+On macOS, use `samply setup` if samply reports a permission or signing error. The [samply README] documents platform requirements and this profiling setup. The allocation workflow below also needs Xcode with the `xctrace` command.
 
 [samply]: https://github.com/mstange/samply
 [samply README]: https://github.com/mstange/samply#turn-on-debug-info-for-full-stacks
@@ -99,5 +99,5 @@ Issue [#50] establishes the workload, Cargo profile, recipe, artifact location, 
 
 - The local provider removes network latency. These profiles describe Cake's local overhead, not end-to-end provider latency.
 - The workload uses `Read`, not `Bash`, so it does not exercise the LLM command judge or OS sandbox. Add a separate workload before drawing conclusions about those paths.
-- If the recipe reports that samply is missing, install it with the command in [Prerequisites]. If macOS profiling reports a signing or permission error, run `samply setup` and repeat the same command.
+- If the recipe reports that samply is missing, install it with the command in [Prerequisites]. If macOS profiling reports a signing or permission error, run `samply setup` and repeat the same command. If `xctrace` is unavailable, install Xcode and select it with `xcode-select --switch`.
 - If the mock provider does not receive two requests, treat the run as invalid rather than comparing its artifact. The helper exits non-zero in that case.

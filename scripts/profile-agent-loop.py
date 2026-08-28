@@ -216,7 +216,7 @@ def main() -> int:
             )
         else:
             print(
-                "error: xctrace is not available; install Xcode Command Line Tools",
+                "error: xctrace is not available; install Xcode and select its developer directory",
                 file=sys.stderr,
             )
         return 2
