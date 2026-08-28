@@ -15,7 +15,7 @@ use crate::clients::tools::{
 };
 use crate::config::model::ResolvedModelConfig;
 use crate::config::output_schema::OutputSchema;
-use crate::config::settings::LimitsSettings;
+use crate::config::settings::ResolvedLimits;
 use crate::config::skills::Skill;
 use crate::config::toolbox::ToolboxTool;
 use crate::hooks::HookRunner;
@@ -345,21 +345,11 @@ impl Agent {
         self
     }
 
-    /// Applies user-configured agent-loop resource limits.
-    ///
-    /// Both limits are off when the settings are absent; a `None` field
-    /// leaves that limit unlimited. An explicit `"unlimited"` (a present
-    /// `Limit` with no cap) resolves to `None` here too, so the loop sees
-    /// no cap.
-    pub const fn with_limits(mut self, limits: &LimitsSettings) -> Self {
-        self.max_turns = match limits.max_turns {
-            Some(limit) => limit.value(),
-            None => None,
-        };
-        self.max_tool_calls = match limits.max_tool_calls {
-            Some(limit) => limit.value(),
-            None => None,
-        };
+    /// Applies user-configured agent-loop resource limits that were already
+    /// resolved while loading settings.
+    pub const fn with_limits(mut self, limits: &ResolvedLimits) -> Self {
+        self.max_turns = limits.max_turns;
+        self.max_tool_calls = limits.max_tool_calls;
         self
     }
 

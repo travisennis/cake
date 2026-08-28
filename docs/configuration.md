@@ -94,7 +94,15 @@ The optional `[limits]` section bounds the agent loop and the tool output budget
 max_turns = "unlimited"  # explicit opt-out; overrides a global cap
 ```
 
-`0`, negative values, and any other string are rejected at load time. Project `[limits]` values override global values per key, including back to `"unlimited"`.
+`0`, negative values, and any other string are rejected at load time. Project `[limits]` values override global values per key, including back to `"unlimited"`. A selected profile may also define `[profiles.NAME.limits]`; profile values override the merged top-level values per key, with project profile values taking precedence over global profile values.
+
+```toml
+[profiles.review.limits]
+max_turns = 10
+read_max_output_bytes = "unlimited"
+```
+
+An absent key inherits the lower-precedence value. An explicit `"unlimited"` removes that value's cap.
 
 ### Agent loop limits
 

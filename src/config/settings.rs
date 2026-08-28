@@ -208,6 +208,10 @@ pub struct ProfileSettings {
     /// Path to a custom system prompt file for this profile.
     #[serde(default)]
     pub system_prompt: Option<String>,
+    /// Limits overlayed onto the merged top-level `[limits]` section. Each
+    /// configured key overrides the lower-precedence value.
+    #[serde(default)]
+    pub limits: Option<LimitsSettingsOverlay>,
     /// Model definitions are intentionally not supported in profiles.
     #[serde(default)]
     pub models: Option<Vec<ModelDefinition>>,
@@ -251,9 +255,9 @@ pub struct Settings {
     /// Tool-scoped settings.
     #[serde(default)]
     pub tools: Option<ToolsSettings>,
-    /// Agent-loop resource limits.
+    /// Agent-loop and tool output limits.
     #[serde(default)]
-    pub limits: Option<LimitsSettings>,
+    pub limits: Option<LimitsSettingsOverlay>,
 }
 
 /// A single user-configured agent-loop resource limit.
@@ -358,21 +362,14 @@ impl<'de> Deserialize<'de> for Limit {
     }
 }
 
-/// User-configured resource limits.
+/// TOML-facing resource-limit overlay.
 ///
-/// Two kinds of limits live here. The agent-loop limits (`max_turns`,
-/// `max_tool_calls`) are off by default: an uncapped agent loop is a
-/// deliberate design property, and no limit fires unless the user configures
-/// one. The tool output budgets (`bash_output_max_bytes` through
-/// `hook_output_limit`) instead have built-in compiled defaults that match
-/// the hard-coded constants they replaced; see [`LimitsSettings::tool_limits`]
-/// for the resolution. The keys are independent — turns, tool calls, and
-/// output budgets are different resource boundaries, so they are never
-/// derived from one another. An absent key (`None`) inherits
-/// lower-precedence settings; an explicit `"unlimited"` overrides them back
-/// to uncapped.
+/// The outer `Option` on each field means the setting key was absent. A
+/// present [`Limit`] may hold a positive cap or the explicit `"unlimited"`
+/// sentinel. This representation is kept only while settings are deserialized
+/// and merged; [`ResolvedLimits`] is used at runtime.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct LimitsSettings {
+pub struct LimitsSettingsOverlay {
     /// Maximum number of agent-loop turns before the run terminates with a
     /// limit-exceeded outcome. `None` means the key is absent (inherit); an
     /// explicit `"unlimited"` removes the cap.
@@ -409,6 +406,20 @@ pub struct LimitsSettings {
     /// truncation.
     #[serde(default)]
     pub hook_output_limit: Option<Limit>,
+}
+
+/// Resolved runtime limits for the agent loop and tools.
+///
+/// This type contains no TOML sentinel values or absent-key state. It is
+/// produced once after all settings overlays have been merged.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ResolvedLimits {
+    /// Maximum number of agent-loop turns, or `None` when uncapped.
+    pub max_turns: Option<u32>,
+    /// Maximum number of executed tool calls, or `None` when uncapped.
+    pub max_tool_calls: Option<u32>,
+    /// Resolved budgets for Bash, Read, and hooks.
+    pub tool_limits: ToolLimits,
 }
 
 /// Compiled-default output budgets for the Bash, Read, and hook tools.
@@ -466,36 +477,42 @@ impl Default for ToolLimits {
     }
 }
 
-impl LimitsSettings {
-    /// Resolve the merged `[limits]` settings into tool execution budgets,
-    /// applying the compiled defaults for absent keys.
-    ///
-    /// `None` in the result means the budget is unlimited (an explicit
-    /// `"unlimited"` override); absent keys resolve to the compiled default.
-    pub fn tool_limits(&self) -> ToolLimits {
-        let resolve = |limit: Option<Limit>, default: u32| {
-            limit
-                .unwrap_or_else(|| Limit::max(default))
-                .value()
-                .map(|v| v as usize)
-        };
-        ToolLimits {
-            bash_output_max_bytes: resolve(
-                self.bash_output_max_bytes,
-                DEFAULT_BASH_OUTPUT_MAX_BYTES,
-            ),
-            bash_read_cap: resolve(self.bash_read_cap, DEFAULT_BASH_READ_CAP),
-            read_default_end_line: resolve(
-                self.read_default_end_line,
-                DEFAULT_READ_DEFAULT_END_LINE,
-            ),
-            read_max_output_bytes: resolve(
-                self.read_max_output_bytes,
-                DEFAULT_READ_MAX_OUTPUT_BYTES,
-            ),
-            hook_output_limit: resolve(self.hook_output_limit, DEFAULT_HOOK_OUTPUT_LIMIT),
+/// Resolve the merged `[limits]` overlay into runtime values.
+impl LimitsSettingsOverlay {
+    /// Apply the compiled defaults and convert all configured sentinel values
+    /// into the concrete representation used by the runtime.
+    pub fn resolve(&self) -> ResolvedLimits {
+        ResolvedLimits {
+            max_turns: self.max_turns.and_then(Limit::value),
+            max_tool_calls: self.max_tool_calls.and_then(Limit::value),
+            tool_limits: ToolLimits {
+                bash_output_max_bytes: resolve_tool_limit(
+                    self.bash_output_max_bytes,
+                    DEFAULT_BASH_OUTPUT_MAX_BYTES,
+                ),
+                bash_read_cap: resolve_tool_limit(self.bash_read_cap, DEFAULT_BASH_READ_CAP),
+                read_default_end_line: resolve_tool_limit(
+                    self.read_default_end_line,
+                    DEFAULT_READ_DEFAULT_END_LINE,
+                ),
+                read_max_output_bytes: resolve_tool_limit(
+                    self.read_max_output_bytes,
+                    DEFAULT_READ_MAX_OUTPUT_BYTES,
+                ),
+                hook_output_limit: resolve_tool_limit(
+                    self.hook_output_limit,
+                    DEFAULT_HOOK_OUTPUT_LIMIT,
+                ),
+            },
         }
     }
+}
+
+/// Resolve one output budget, using its compiled default when the key is absent.
+fn resolve_tool_limit(limit: Option<Limit>, default: u32) -> Option<usize> {
+    limit.map_or(Some(default as usize), |limit| {
+        limit.value().map(|value| value as usize)
+    })
 }
 
 /// Result of loading and merging settings from all sources.
@@ -522,8 +539,8 @@ pub struct LoadedSettings {
     pub system_prompt: Option<String>,
     /// Effective LLM judge settings (global + project merged, defaults applied).
     pub judge: JudgeSettings,
-    /// Effective agent-loop resource limits (global + project merged).
-    pub limits: LimitsSettings,
+    /// Effective agent-loop and tool output limits after all overlays resolve.
+    pub limits: ResolvedLimits,
     /// Warnings about unrecognized keys in settings files, one per issue and
     /// already formatted with the source file path. Unrecognized keys are
     /// ignored (existing behavior); these warnings surface them instead of
@@ -932,19 +949,19 @@ impl SettingsLoader {
 
     /// Merge `[limits]` fields into the accumulator.
     ///
-    /// Absent keys keep lower-precedence values, so a project `[limits]`
-    /// section overrides only the keys it sets. An explicit `"unlimited"`
-    /// (a present [`Limit`] with no cap) overrides a lower-precedence cap
-    /// back to uncapped.
-    const fn merge_limits(limits: Option<LimitsSettings>, acc: &mut SettingsAccumulator) {
+    /// Absent keys keep lower-precedence values, so a project or profile
+    /// `[limits]` section overrides only the keys it sets. An explicit
+    /// `"unlimited"` (a present [`Limit`] with no cap) overrides a
+    /// lower-precedence cap back to uncapped.
+    const fn merge_limits(limits: Option<LimitsSettingsOverlay>, acc: &mut SettingsAccumulator) {
         let Some(limits) = limits else {
             return;
         };
-        if let Some(limit) = limits.max_turns {
-            acc.max_turns = limit.value();
+        if limits.max_turns.is_some() {
+            acc.max_turns = limits.max_turns;
         }
-        if let Some(limit) = limits.max_tool_calls {
-            acc.max_tool_calls = limit.value();
+        if limits.max_tool_calls.is_some() {
+            acc.max_tool_calls = limits.max_tool_calls;
         }
         Self::merge_output_budgets(&limits, acc);
     }
@@ -953,7 +970,7 @@ impl SettingsLoader {
     /// keeping [`Self::merge_limits`] at baseline complexity. Absent keys
     /// keep lower-precedence values; an explicit `"unlimited"` overrides
     /// back to no cap.
-    const fn merge_output_budgets(limits: &LimitsSettings, acc: &mut SettingsAccumulator) {
+    const fn merge_output_budgets(limits: &LimitsSettingsOverlay, acc: &mut SettingsAccumulator) {
         if limits.bash_output_max_bytes.is_some() {
             acc.bash_output_max_bytes = limits.bash_output_max_bytes;
         }
@@ -1100,8 +1117,8 @@ struct SettingsAccumulator {
     judge_rubric_file: Option<PathBuf>,
     judge_enabled: Option<bool>,
     judge_allowlist: Vec<String>,
-    max_turns: Option<u32>,
-    max_tool_calls: Option<u32>,
+    max_turns: Option<Limit>,
+    max_tool_calls: Option<Limit>,
     bash_output_max_bytes: Option<Limit>,
     bash_read_cap: Option<Limit>,
     read_default_end_line: Option<Limit>,
@@ -1129,10 +1146,20 @@ impl SettingsAccumulator {
                 .extend(overlay_sandbox.writable.iter().map(|p| expand_home_str(p)));
         }
         self.skills.apply_overlay(overlay.skills.clone());
+        SettingsLoader::merge_limits(overlay.limits.clone(), self);
     }
 
     /// Convert the accumulated merge state into the final [`LoadedSettings`].
     fn into_loaded(self) -> LoadedSettings {
+        let limits = LimitsSettingsOverlay {
+            max_turns: self.max_turns,
+            max_tool_calls: self.max_tool_calls,
+            bash_output_max_bytes: self.bash_output_max_bytes,
+            bash_read_cap: self.bash_read_cap,
+            read_default_end_line: self.read_default_end_line,
+            read_max_output_bytes: self.read_max_output_bytes,
+            hook_output_limit: self.hook_output_limit,
+        };
         LoadedSettings {
             models: self.models,
             default_model: self.default_model,
@@ -1156,15 +1183,7 @@ impl SettingsAccumulator {
                 enabled: self.judge_enabled.unwrap_or(true),
                 allowlist: self.judge_allowlist,
             },
-            limits: LimitsSettings {
-                max_turns: self.max_turns.map(Limit::max),
-                max_tool_calls: self.max_tool_calls.map(Limit::max),
-                bash_output_max_bytes: self.bash_output_max_bytes,
-                bash_read_cap: self.bash_read_cap,
-                read_default_end_line: self.read_default_end_line,
-                read_max_output_bytes: self.read_max_output_bytes,
-                hook_output_limit: self.hook_output_limit,
-            },
+            limits: limits.resolve(),
             warnings: self.warnings,
         }
     }

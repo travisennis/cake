@@ -1,6 +1,6 @@
 use super::*;
 use crate::config::model::{ApiType, ResolvedModelConfig};
-use crate::config::settings::{Limit, LimitsSettings};
+use crate::config::settings::ResolvedLimits;
 use crate::types::{InputTokensDetails, OutputTokensDetails, ReasoningSummary};
 
 fn test_resolved_model_config(api_type: ApiType, base_url: &str) -> ResolvedModelConfig {
@@ -1265,10 +1265,10 @@ mod error_tests {
             .mount(&mock_server)
             .await;
 
-        let mut agent = test_agent_with_url(&mock_server.uri()).with_limits(&LimitsSettings {
-            max_turns: Some(Limit::max(1)),
+        let mut agent = test_agent_with_url(&mock_server.uri()).with_limits(&ResolvedLimits {
+            max_turns: Some(1),
             max_tool_calls: None,
-            ..LimitsSettings::default()
+            ..ResolvedLimits::default()
         });
 
         let error = agent.send("run a command".to_string()).await.unwrap_err();
@@ -1320,10 +1320,10 @@ mod error_tests {
         let mut agent = test_agent_with_url(&mock_server.uri())
             .with_history(restored)
             .unwrap()
-            .with_limits(&LimitsSettings {
-                max_turns: Some(Limit::max(0)),
+            .with_limits(&ResolvedLimits {
+                max_turns: Some(0),
                 max_tool_calls: None,
-                ..LimitsSettings::default()
+                ..ResolvedLimits::default()
             });
 
         let error = agent.send("new prompt".to_string()).await.unwrap_err();
@@ -1346,10 +1346,10 @@ mod error_tests {
             .mount(&mock_server)
             .await;
 
-        let mut agent = test_agent_with_url(&mock_server.uri()).with_limits(&LimitsSettings {
-            max_turns: Some(Limit::max(1)),
+        let mut agent = test_agent_with_url(&mock_server.uri()).with_limits(&ResolvedLimits {
+            max_turns: Some(1),
             max_tool_calls: None,
-            ..LimitsSettings::default()
+            ..ResolvedLimits::default()
         });
 
         let result = agent.send("hello".to_string()).await.unwrap();
@@ -1369,10 +1369,10 @@ mod error_tests {
             .mount(&mock_server)
             .await;
 
-        let mut agent = test_agent_with_url(&mock_server.uri()).with_limits(&LimitsSettings {
+        let mut agent = test_agent_with_url(&mock_server.uri()).with_limits(&ResolvedLimits {
             max_turns: None,
-            max_tool_calls: Some(Limit::max(1)),
-            ..LimitsSettings::default()
+            max_tool_calls: Some(1),
+            ..ResolvedLimits::default()
         });
 
         let error = agent.send("run a command".to_string()).await.unwrap_err();
@@ -1435,10 +1435,10 @@ mod error_tests {
 
         let mut agent = test_agent_with_url(&mock_server.uri())
             .with_tools(crate::clients::tools::read_tool_registry())
-            .with_limits(&LimitsSettings {
+            .with_limits(&ResolvedLimits {
                 max_turns: None,
-                max_tool_calls: Some(Limit::max(1)),
-                ..LimitsSettings::default()
+                max_tool_calls: Some(1),
+                ..ResolvedLimits::default()
             });
 
         let error = agent.send("run a command".to_string()).await.unwrap_err();
@@ -1466,7 +1466,7 @@ mod error_tests {
 
         let mut agent = test_agent_with_url(&mock_server.uri())
             .with_tools(crate::clients::tools::read_tool_registry())
-            .with_limits(&LimitsSettings::default());
+            .with_limits(&ResolvedLimits::default());
 
         let result = agent.send("run a command".to_string()).await.unwrap();
         assert_eq!(result, "done");
