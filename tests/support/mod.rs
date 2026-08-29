@@ -2,8 +2,27 @@ use std::{fs, path::PathBuf, process::Command};
 
 use tempfile::TempDir;
 
+/// Resolve the path to the `cake` binary under test.
+///
+/// Prefer the path Cargo exports to the test process at **runtime** via
+/// `CARGO_BIN_EXE_cake`, so the resolved binary always matches the current
+/// build. A compile-time `env!` bake records whichever target directory first
+/// produced the test artifact; when that target layout later moves (e.g. a
+/// shared/parent workspace target dir), the baked path dangles and
+/// `Command::new` fails with `NotFound` until the test artifact is recompiled.
+/// Reading the variable at runtime, validated against the filesystem, keeps a
+/// warm `target/` from breaking the pre-push gate.
 fn binary_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_cake"))
+    choose_binary_path(
+        std::env::var_os("CARGO_BIN_EXE_cake").map(PathBuf::from),
+        PathBuf::from(env!("CARGO_BIN_EXE_cake")),
+    )
+}
+
+/// Pick the binary path to use, preferring a runtime-resolved path that exists
+/// on disk over the compile-time baked fallback.
+fn choose_binary_path(runtime: Option<PathBuf>, baked: PathBuf) -> PathBuf {
+    runtime.filter(|p| p.is_file()).unwrap_or(baked)
 }
 
 /// Environment variables no test may hand to `git` or to the binary under
