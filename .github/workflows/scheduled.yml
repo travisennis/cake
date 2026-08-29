@@ -12,7 +12,7 @@ on:
 
 permissions:
   contents: read
-  checks: write
+  issues: write
 
 jobs:
   deny:
@@ -74,3 +74,62 @@ jobs:
       - run: cargo doc --no-deps --document-private-items
         env:
           RUSTDOCFLAGS: -D warnings
+
+  label-drift:
+    name: Label Drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check label drift
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/sync-labels.py --check
+
+  report-failure:
+    # Open a GitHub issue when any scheduled check fails so the signal is not
+    # lost. Runs only when a needed job fails; a green run opens no issue.
+    name: Report Failure
+    if: failure()
+    needs: [deny, outdated, udeps, msrv, docs, label-drift]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Open issue on failure
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set +e
+          LOGS="$(gh run view "$RUN_ID" --log-failed 2>&1)"
+          # A log line with three or more backticks would close the code fence
+          # early; collapse such runs so the logs stay inside the fence.
+          LOGS="$(printf '%s\n' "$LOGS" | sed -E 's/`{3,}/`/g')"
+          {
+            echo "Scheduled checks failed for run $RUN_ID."
+            echo
+            echo "The failed run is [$RUN_URL]($RUN_URL)."
+            echo
+            echo "<details><summary>Failed job logs</summary>"
+            echo
+            echo '```'
+            printf '%s\n' "$LOGS"
+            echo '```'
+            echo '</details>'
+          } > body.md
+          # Reuse the open issue from a previous failed run: a check that stays
+          # broken opens one discussion instead of one new issue per week.
+          EXISTING="$(
+            gh issue list --repo "$GH_REPO" --state open \
+              --search 'Scheduled checks failed in:title' --json number \
+              --jq '.[0].number // empty' 2>/dev/null
+          )"
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --repo "$GH_REPO" --body-file body.md
+          else
+            gh issue create --repo "$GH_REPO" \
+              --title "Scheduled checks failed (run $RUN_ID)" \
+              --body-file body.md
+          fi
