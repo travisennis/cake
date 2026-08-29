@@ -4,11 +4,13 @@ Analyze the cake release binary to understand size contributors and identify opt
 
 ## Prerequisites
 
-Install the repository development tools with `just setup`, then install the audit-specific `cargo-bloat` utility:
+Install the repository development tools with `just setup`, then install the audit-specific `cargo-bloat` utility for the crate and function reports:
 
 ```bash
 cargo install cargo-bloat
 ```
+
+The committed baseline does not require either size-analysis tool. `cargo bsize` is an optional, installed subcommand that produces a broader report; record its version and warnings when using it.
 
 ## Workflow
 
@@ -26,6 +28,18 @@ Shows which dependencies contribute the most to the `.text` section:
 ```bash
 cargo bloat --release --crates
 ```
+
+For the broader optional report, run the repository's installed `cargo-bsize` subcommand without a Cargo release flag:
+
+```bash
+cargo bsize
+```
+
+`cargo bsize --release` is not valid for this subcommand; it selects its release analysis build itself.
+
+#### Native object attribution warnings
+
+The aggregate section sizes remain useful when `cargo bsize` warns that it cannot open native object files, but its per-crate attribution is incomplete for those objects. On the observed arm64 macOS run, `aws_lc_sys` stored 368 C and assembly object files inside its Rust archive. `cargo bsize` 0.0.2 emitted 168 warnings for members that existed both in that archive and in the crate's build output, but it looked for them through a deleted `target/bsize/release/deps/rustc*/` extraction directory. These warnings do not mean that AWS-LC code is missing from the final binary. Verify the shipped file with `just build` and treat the affected crate breakdown as partial.
 
 ### 3. Analyze size by function
 
@@ -58,34 +72,47 @@ The typical size breakdown for this project:
 - **Tokio features minimal?** The project currently uses `features = ["full"]`. If auditing for size regressions, check whether narrower features can support the current async, process, IO, signal, and macro usage before changing this.
 - **Unused dependencies?** Run `cargo machete` to detect unused deps (install with `cargo install cargo-machete`).
 
-### 6. Compare over time
+### 6. Commit release baseline
 
-To track whether binary size is growing, compare before and after changes:
+`ci/binary-size-baseline.json` records the exact byte size of the normal release artifact, along with its target and toolchain. Regenerate it with:
 
 ```bash
-ls -lh target/release/cake
-cargo bloat --release --crates | head -20
+just binary-size-baseline
 ```
 
-**What counts as a regression?** This project does not currently track a committed binary-size baseline, so judgment is required. Sensible heuristics (not measured from this project --- treat as starting points to discuss with the maintainer, not hard gates):
+The baseline is target-specific. The first entry records the native `aarch64-apple-darwin` build used for local analysis; do not compare it with the x86_64 or Linux release artifacts. The generator updates only the selected target record, so additional target baselines can be added from their matching release environments without replacing this measurement.
+
+The generator's fixture tests run without a release build or baseline change:
+
+```bash
+just binary-size-baseline-check
+```
+
+The target's Rust standard library and linker must be installed in the matching build environment. For example, a macOS host needs `rustup target add x86_64-unknown-linux-gnu` and an `x86_64-linux-gnu-gcc` cross-linker before the Linux example can run. For a cross-built target, pass its artifact explicitly:
+
+```bash
+cargo build --release --target x86_64-unknown-linux-gnu
+python3 scripts/binary-size-baseline.py \
+  --target x86_64-unknown-linux-gnu \
+  --artifact target/x86_64-unknown-linux-gnu/release/cake
+```
+
+The baseline records the shipped file size, not the larger `target/bsize` analysis artifact and not the estimated shipped size in a bsize report. Review an intentional change with:
+
+```bash
+just binary-size-baseline
+git diff -- ci/binary-size-baseline.json
+```
+
+### 7. Compare over time
+
+To track whether binary size is growing, compare before and after changes. The committed baseline is the review point; it is not a hard gate because native C and assembly builds can vary across targets and environments.
+
+**What counts as a regression?** The committed baseline provides a stable review point for the target it names. Judgment is still required when the build target or environment differs. Sensible heuristics (not measured from this project --- treat as starting points to discuss with the maintainer, not hard gates):
 
 - A noticeable relative jump (rule of thumb: more than a few percent) in one change usually signals a new dependency or a wider feature set.
 - A noticeable absolute jump (rule of thumb: hundreds of KB or more) is worth investigating even if relative growth is small.
 - A single crate moving meaningfully up the `cargo bloat --crates` list warrants checking whether new features were enabled or a heavier dependency was pulled in.
-
-If the project later commits a `binary-size-baseline.txt` or similar artifact, prefer comparing against it over these heuristics.
-
-Capture a local baseline before starting work so the comparison is meaningful:
-
-```bash
-just build
-ls -lh target/release/cake > /tmp/cake-size-before.txt
-cargo bloat --release --crates | head -20 > /tmp/cake-bloat-before.txt
-# ... make changes ...
-just build
-diff /tmp/cake-size-before.txt <(ls -lh target/release/cake)
-diff /tmp/cake-bloat-before.txt <(cargo bloat --release --crates | head -20)
-```
 
 ## Current Release Profile
 

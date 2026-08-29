@@ -67,6 +67,9 @@ jobs:
       - name: Profiling helper tests
         shell: bash
         run: python3 scripts/test-profile-agent-loop.py
+      - name: Binary-size baseline fixture tests
+        shell: bash
+        run: python3 scripts/test-binary-size-baseline.py
       - name: Install just
         uses: taiki-e/install-action@v2
         with:
