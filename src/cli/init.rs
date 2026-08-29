@@ -257,6 +257,7 @@ const DEFAULT_SETTINGS: &str = r#"# Cake project settings, created by `cake init
 # bash_read_cap = 100000           # Bash read cap before kill (bytes)
 # read_default_end_line = 200      # Read default window (lines)
 # read_max_output_bytes = 100000   # Read output cap (bytes)
+# read_max_line_bytes = 10000      # Read per-line cap (bytes; "unlimited" reads a whole line into memory)
 # hook_output_limit = 65536        # Hook stdout/stderr cap per hook (bytes)
 "#;
 

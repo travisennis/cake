@@ -129,6 +129,7 @@ bash_output_max_bytes = 50000   # Bash inline output cap (bytes; default 50000)
 bash_read_cap = 100000          # Bash read cap before kill (bytes; default 100000)
 read_default_end_line = 200     # Read default window (lines; default 200)
 read_max_output_bytes = 100000  # Read output cap (bytes; default 100000)
+read_max_line_bytes = 10000     # Read per-line cap (bytes; default 10000)
 hook_output_limit = 65536       # Hook stdout/stderr cap per hook (bytes; default 65536)
 ```
 
@@ -136,6 +137,7 @@ hook_output_limit = 65536       # Hook stdout/stderr cap per hook (bytes; defaul
 - `bash_read_cap`: maximum bytes of Bash output read before the process is killed and the capture ends. The default is 2× the inline cap, so a spill has enough data for a useful preview. `"unlimited"` reads until the process exits.
 - `read_default_end_line`: default Read window in lines when the model omits `end_line`. `"unlimited"` reads to the end of the file.
 - `read_max_output_bytes`: maximum bytes of Read output before truncation at a UTF-8 boundary. `"unlimited"` disables truncation.
+- `read_max_line_bytes`: maximum bytes delivered for a single Read line before it is truncated with a marker at a UTF-8 boundary. The cap bounds memory for newline-free giant lines. `"unlimited"` re-enables reading a whole line into memory, which can starve memory for such a file.
 - `hook_output_limit`: maximum bytes of hook stdout and stderr captured per hook invocation. `"unlimited"` disables truncation.
 
 When a project overrides a global budget back to no cap, `"unlimited"` is the explicit value that does so.
