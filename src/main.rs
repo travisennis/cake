@@ -12,7 +12,7 @@ mod session_telemetry;
 mod time_format;
 mod types;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -668,6 +668,29 @@ impl CodingAssistant {
         }
     }
 
+    fn unavailable_tool_names(requested: Option<&[String]>, available: &[String]) -> Vec<String> {
+        let Some(requested) = requested else {
+            return Vec::new();
+        };
+        let mut seen = HashSet::with_capacity(requested.len());
+        requested
+            .iter()
+            .filter(|name| {
+                !available
+                    .iter()
+                    .any(|available_name| available_name == *name)
+            })
+            .filter(|name| seen.insert(name.as_str()))
+            .cloned()
+            .collect()
+    }
+
+    fn warn_unavailable_tools(requested: Option<&[String]>, available: &[String]) {
+        for name in Self::unavailable_tool_names(requested, available) {
+            eprintln!("warning: configured tool '{name}' is not available in this session");
+        }
+    }
+
     fn attach_persistence(
         mut client: Agent,
         data_dir: &DataDir,
@@ -1038,10 +1061,16 @@ impl CmdRunner for CodingAssistant {
             &resources.skill_catalog,
             &resources.tool_context,
             &resources.toolbox_tools,
+            resources.loaded.tools_enabled.as_deref(),
             task_id,
             resources.loaded.system_prompt.as_deref(),
             &resources.loaded.judge,
         )?;
+
+        Self::warn_unavailable_tools(
+            resources.loaded.tools_enabled.as_deref(),
+            &run_session.agent.tool_names(),
+        );
 
         run_session.agent = run_session.agent.with_limits(&resources.loaded.limits);
         run_session.attach_output_schema(prepared.output_schema.as_ref());

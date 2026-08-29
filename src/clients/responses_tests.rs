@@ -4,7 +4,7 @@ use crate::clients::tools::{SandboxPolicy, default_tool_registry};
 use crate::config::model::{ApiType, ModelConfig, ResolvedModelConfig};
 use crate::config::skills::{Skill, SkillScope};
 use crate::config::{AgentsFile, SkillCatalog};
-use crate::prompts::build_initial_prompt_messages;
+use crate::prompts::build_initial_prompt_messages_with_enabled_tools;
 use crate::types::ReasoningSummary;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
@@ -37,7 +37,7 @@ fn full_prompt_history() -> Vec<ConversationItem> {
         scope: SkillScope::Project,
     });
 
-    let mut history = build_initial_prompt_messages(
+    let mut history = build_initial_prompt_messages_with_enabled_tools(
         Path::new("/project"),
         config_dir.path(),
         None,
@@ -46,6 +46,7 @@ fn full_prompt_history() -> Vec<ConversationItem> {
         &skill_catalog,
         SandboxPolicy::WorkspaceWrite,
         &[],
+        None,
     )
     .into_iter()
     .map(|(role, content)| ConversationItem::Message {
@@ -941,6 +942,8 @@ fn build_request_disables_storage_for_codex_backend() {
     .expect("build request");
     let wire: serde_json::Value = serde_json::from_slice(&bytes).expect("parse request");
 
+    assert!(wire.get("tools").is_none());
+    assert!(wire.get("tool_choice").is_none());
     assert_eq!(wire["store"], false);
     assert_eq!(wire["stream"], true);
     assert!(wire.get("temperature").is_none());

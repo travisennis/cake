@@ -1273,6 +1273,73 @@ api_key_env = "KEY"
 }
 
 #[test]
+fn test_tools_enabled_merge_and_profile_override() {
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"
+[tools]
+enabled = ["Bash", "Read"]
+
+[profiles.review.tools]
+enabled = ["Read"]
+"#,
+    );
+    let project = create_project_settings(
+        r#"
+[tools]
+enabled = ["Read", "Edit"]
+
+[profiles.review.tools]
+enabled = []
+"#,
+    );
+
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load(Some(project.path()))
+    })
+    .unwrap();
+    assert_eq!(
+        loaded.tools_enabled,
+        Some(vec!["Read".to_string(), "Edit".to_string()])
+    );
+
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load_with_profile(Some(project.path()), Some("review"))
+    })
+    .unwrap();
+    assert_eq!(loaded.tools_enabled, Some(Vec::new()));
+}
+
+#[test]
+fn test_tools_enabled_absent_preserves_default_behavior() {
+    let home = create_home_dir();
+    let loaded = with_var("HOME", Some(home.path()), || SettingsLoader::load(None)).unwrap();
+
+    assert_eq!(loaded.tools_enabled, None);
+}
+
+#[test]
+fn test_tools_enabled_is_not_an_unknown_key() {
+    let project = create_project_settings(
+        r#"
+[tools]
+enabled = ["Read"]
+
+[profiles.review.tools]
+enabled = ["Read"]
+"#,
+    );
+    let home = create_home_dir();
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load(Some(project.path()))
+    })
+    .unwrap();
+
+    assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+}
+
+#[test]
 fn test_judge_settings_allowlist_and_enabled_merge() {
     let home = create_home_dir();
     write_global_settings(
@@ -2082,6 +2149,12 @@ sandbox = { read_only = ["~/.local/bin/other"], writable = ["~/.cache"] }
 [profiles.review.limits]
 max_tool_calls = 50
 read_max_output_bytes = "unlimited"
+
+[profiles.review.tools]
+enabled = ["Read"]
+
+[tools]
+enabled = ["Read", "Edit"]
 
 [tools.bash.judge]
 model = "zen"

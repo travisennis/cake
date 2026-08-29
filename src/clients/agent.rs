@@ -58,6 +58,9 @@ pub struct Agent {
     /// Conversation history using typed items
     conversation: ConversationState,
     tools: ToolRegistry,
+    /// Optional exact-name selection applied to tools added after the initial
+    /// registry is filtered.
+    enabled_tool_names: Option<Vec<String>>,
     tool_context: Arc<ToolContext>,
     /// Session ID for tracking
     session_id: uuid::Uuid,
@@ -116,6 +119,7 @@ impl Agent {
             observer: AgentObserver::default(),
             conversation: ConversationState::new(initial_messages),
             tools: default_tool_registry(),
+            enabled_tool_names: None,
             tool_context: Arc::new(ToolContext::from_current_process()),
             session_id: uuid::Uuid::new_v4(),
             task_id: uuid::Uuid::new_v4(),
@@ -187,9 +191,24 @@ impl Agent {
         if self.tool_context.sandbox_policy == SandboxPolicy::ReadOnly {
             return self;
         }
-        for tool in toolbox_tools {
+        let enabled_tool_names = self.enabled_tool_names.clone();
+        for tool in toolbox_tools.into_iter().filter(move |tool| {
+            enabled_tool_names
+                .as_ref()
+                .is_none_or(|enabled| enabled.iter().any(|name| name == &tool.registered_name))
+        }) {
             self.tools
                 .push_entry(toolbox_tool_entry(tool, self.session_id));
+        }
+        self
+    }
+
+    /// Restrict the registry to an exact-name allowlist. An absent selection
+    /// leaves the registry unchanged; an empty selection removes every tool.
+    pub fn with_enabled_tools(mut self, enabled_tools: Option<&[String]>) -> Self {
+        self.enabled_tool_names = enabled_tools.map(<[String]>::to_vec);
+        if let Some(enabled_tools) = enabled_tools {
+            self.tools.retain_enabled_tools(enabled_tools);
         }
         self
     }

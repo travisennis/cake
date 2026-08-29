@@ -55,13 +55,26 @@ impl SkillSettings {
 
 /// Tool-scoped settings loaded from `settings.toml`.
 ///
-/// Holds per-tool configuration tables. Currently only the Bash tool has
-/// settings (`[tools.bash]`).
+/// `enabled` selects the exact model-visible tools. The optional list preserves
+/// the distinction between an absent setting (use all tools) and an explicit
+/// empty list (use no tools). Per-tool configuration currently only includes
+/// the Bash tool's judge settings.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ToolsSettings {
+    /// Exact registered tool names to expose; absent means all tools.
+    #[serde(default)]
+    pub enabled: Option<Vec<String>>,
     /// Bash tool settings.
     #[serde(default)]
     pub bash: Option<BashToolSettings>,
+}
+
+/// Tool settings overlay used by profiles.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ToolsSettingsOverlay {
+    /// If set, replaces the inherited exact tool-name selection.
+    #[serde(default)]
+    pub enabled: Option<Vec<String>>,
 }
 
 /// Bash tool settings loaded from `[tools.bash]`.
@@ -198,6 +211,9 @@ pub struct ProfileSettings {
     /// Skill configuration overlay.
     #[serde(default)]
     pub skills: SkillSettingsOverlay,
+    /// Tool selection overlay.
+    #[serde(default)]
+    pub tools: ToolsSettingsOverlay,
     /// Additional directories for read-write access.
     #[serde(default)]
     pub directories: Vec<String>,
@@ -533,6 +549,9 @@ pub struct LoadedSettings {
     pub sandbox: SandboxSettings,
     /// Effective skill settings (global + project + selected profile)
     pub skills: SkillSettings,
+    /// Exact registered tool names selected by settings and profile. `None`
+    /// means all tools; an empty list means no tools.
+    pub tools_enabled: Option<Vec<String>>,
     /// Resolved system prompt path from settings (global + project + selected profile).
     /// This is a path to a custom prompt file, checked after `.cake/system.md`
     /// but before `~/.config/cake/system.md` in the precedence chain.
@@ -939,7 +958,7 @@ impl SettingsLoader {
         if settings.system_prompt.is_some() {
             acc.system_prompt = settings.system_prompt;
         }
-        Self::merge_judge_settings(settings.tools, acc);
+        Self::merge_tools_settings(settings.tools, acc);
         Self::merge_limits(settings.limits, acc);
         for (name, profile) in settings.profiles {
             acc.profiles.entry(name).or_default().push(profile);
@@ -988,13 +1007,28 @@ impl SettingsLoader {
         }
     }
 
+    /// Merge the `[tools]` fields into the accumulator.
+    ///
+    /// The enabled list replaces lower-precedence selections when present, so
+    /// a project or profile can narrow a global selection. Bash judge fields
+    /// retain their existing merge behavior.
+    fn merge_tools_settings(tools: Option<ToolsSettings>, acc: &mut SettingsAccumulator) {
+        let Some(ToolsSettings { enabled, bash }) = tools else {
+            return;
+        };
+        if enabled.is_some() {
+            acc.tools_enabled = enabled;
+        }
+        Self::merge_judge_settings(bash, acc);
+    }
+
     /// Merge `[tools.bash.judge]` fields into the accumulator.
     ///
     /// Extracted so [`Self::merge_settings`] stays at baseline complexity.
     /// Absent fields keep lower-precedence values; defaults are applied later
     /// in [`SettingsAccumulator::into_loaded`].
-    fn merge_judge_settings(tools: Option<ToolsSettings>, acc: &mut SettingsAccumulator) {
-        let Some(judge) = tools.and_then(|t| t.bash).and_then(|b| b.judge) else {
+    fn merge_judge_settings(bash: Option<BashToolSettings>, acc: &mut SettingsAccumulator) {
+        let Some(judge) = bash.and_then(|b| b.judge) else {
             return;
         };
         let BashJudgeSettings {
@@ -1109,6 +1143,7 @@ struct SettingsAccumulator {
     sandbox_read_only: HashSet<String>,
     sandbox_writable: HashSet<String>,
     skills: SkillSettings,
+    tools_enabled: Option<Vec<String>>,
     profiles: HashMap<String, Vec<ProfileSettings>>,
     system_prompt: Option<String>,
     judge_model: Option<String>,
@@ -1146,7 +1181,14 @@ impl SettingsAccumulator {
                 .extend(overlay_sandbox.writable.iter().map(|p| expand_home_str(p)));
         }
         self.skills.apply_overlay(overlay.skills.clone());
+        self.apply_tools_overlay(&overlay.tools);
         SettingsLoader::merge_limits(overlay.limits.clone(), self);
+    }
+
+    fn apply_tools_overlay(&mut self, overlay: &ToolsSettingsOverlay) {
+        if overlay.enabled.is_some() {
+            self.tools_enabled.clone_from(&overlay.enabled);
+        }
     }
 
     /// Convert the accumulated merge state into the final [`LoadedSettings`].
@@ -1169,6 +1211,7 @@ impl SettingsAccumulator {
                 writable: self.sandbox_writable.into_iter().collect(),
             },
             skills: self.skills,
+            tools_enabled: self.tools_enabled,
             system_prompt: self.system_prompt,
             judge: JudgeSettings {
                 model: self.judge_model,

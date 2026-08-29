@@ -7,7 +7,7 @@ use crate::clients::tools::{SandboxPolicy, default_tool_registry};
 use crate::config::model::{ApiType, ModelConfig};
 use crate::config::skills::{Skill, SkillScope};
 use crate::config::{AgentsFile, SkillCatalog};
-use crate::prompts::build_initial_prompt_messages;
+use crate::prompts::build_initial_prompt_messages_with_enabled_tools;
 use crate::types::{ReasoningContent, ReasoningContentKind, ReasoningSummary};
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
@@ -28,7 +28,7 @@ fn full_prompt_history() -> Vec<ConversationItem> {
         scope: SkillScope::Project,
     });
 
-    let mut history = build_initial_prompt_messages(
+    let mut history = build_initial_prompt_messages_with_enabled_tools(
         Path::new("/project"),
         config_dir.path(),
         None,
@@ -37,6 +37,7 @@ fn full_prompt_history() -> Vec<ConversationItem> {
         &skill_catalog,
         SandboxPolicy::WorkspaceWrite,
         &[],
+        None,
     )
     .into_iter()
     .map(|(role, content)| ConversationItem::Message {
@@ -1762,6 +1763,14 @@ fn build_request_json_preserves_f32_sampling_fields_on_the_wire() {
     )
     .unwrap();
     let wire = String::from_utf8(bytes).unwrap();
+    assert!(
+        !wire.contains("\"tools\""),
+        "empty tool selection must omit Chat Completions tools"
+    );
+    assert!(
+        !wire.contains("\"tool_choice\""),
+        "empty tool selection must omit Chat Completions tool_choice"
+    );
     assert!(
         wire.contains("\"temperature\":0.9"),
         "f32 temperature must serialize as 0.9 on the wire, got: {wire}"

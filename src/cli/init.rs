@@ -217,6 +217,15 @@ const DEFAULT_SETTINGS: &str = r#"# Cake project settings, created by `cake init
 # api_key_env = "MY_MODEL_API_KEY"
 # api_type = "chat_completions"
 
+# Optional exact-name tool allowlist. An absent key keeps all tools; [] exposes
+# no tools. Built-in names are Bash, Read, Edit, and Write. Toolbox names use
+# their registered `tb__` prefix. A selected profile can override this list.
+# [tools]
+# enabled = ["Read", "Edit"]
+#
+# [profiles.review.tools]
+# enabled = ["Read"]
+#
 # The LLM command-safety judge evaluates every Bash command before it runs and
 # is the command-safety gate above the OS sandbox. It is default-on and
 # fail-closed: an unavailable judge blocks the command instead of running it

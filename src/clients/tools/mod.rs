@@ -785,6 +785,13 @@ impl ToolRegistry {
         self.definitions = self.entries.iter().map(|e| e.definition.clone()).collect();
     }
 
+    /// Retain only the exact registered names in `enabled`.
+    pub(super) fn retain_enabled_tools(&mut self, enabled: &[String]) {
+        self.entries
+            .retain(|entry| enabled.iter().any(|name| name == &entry.definition.name));
+        self.definitions = self.entries.iter().map(|e| e.definition.clone()).collect();
+    }
+
     /// Append a tool entry and refresh the cached definitions.
     pub(super) fn push_entry(&mut self, entry: ToolEntry) {
         self.definitions.push(entry.definition.clone());
@@ -1188,20 +1195,28 @@ fn execute_write_tool(
 /// (under `ReadOnly`, Edit and Write are not registered, and toolbox tools
 /// are excluded because they run unsandboxed). Each tool's one-line summary
 /// is its first sentence (up to the first `.`).
+/// The optional `enabled_tools` list is an exact-name allowlist. `None` keeps
+/// every tool that survives the sandbox and toolbox rules; an empty list keeps
+/// none.
 pub fn format_tool_list_section(
     sandbox_policy: SandboxPolicy,
     toolbox_tools: &[crate::config::toolbox::ToolboxTool],
+    enabled_tools: Option<&[String]>,
 ) -> String {
     let mut registry = default_tool_registry();
     if sandbox_policy == SandboxPolicy::ReadOnly {
         registry.retain_read_safe_tools();
     }
+    apply_enabled_tool_selection(&mut registry, enabled_tools);
     let mut s = String::from("## Available tools\n\n");
     let toolbox_lines = if sandbox_policy == SandboxPolicy::ReadOnly {
         &[]
     } else {
         toolbox_tools
     };
+    let has_toolbox_tools = toolbox_lines
+        .iter()
+        .any(|tool| is_enabled_tool(&tool.registered_name, enabled_tools));
     for (name, desc) in registry
         .definitions()
         .iter()
@@ -1209,6 +1224,7 @@ pub fn format_tool_list_section(
         .chain(
             toolbox_lines
                 .iter()
+                .filter(|tool| is_enabled_tool(&tool.registered_name, enabled_tools))
                 .map(|tool| (&tool.registered_name, &tool.description)),
         )
     {
@@ -1220,8 +1236,30 @@ pub fn format_tool_list_section(
             .trim_end_matches('.');
         _ = writeln!(s, "- **{name}**: {first_sentence}.");
     }
-    s.push_str("\nOnly these tools are available. There is no Glob, Grep, or LS tool.");
+    append_tool_availability_footer(&mut s, has_any_enabled_tools(&registry, has_toolbox_tools));
     s
+}
+
+fn has_any_enabled_tools(registry: &ToolRegistry, has_toolbox_tools: bool) -> bool {
+    !registry.definitions().is_empty() || has_toolbox_tools
+}
+
+fn append_tool_availability_footer(s: &mut String, has_tools: bool) {
+    if has_tools {
+        s.push_str("\nOnly these tools are available. There is no Glob, Grep, or LS tool.");
+    } else {
+        s.push_str("\nNo tools are available.");
+    }
+}
+
+fn apply_enabled_tool_selection(registry: &mut ToolRegistry, enabled_tools: Option<&[String]>) {
+    if let Some(enabled_tools) = enabled_tools {
+        registry.retain_enabled_tools(enabled_tools);
+    }
+}
+
+fn is_enabled_tool(name: &str, enabled_tools: Option<&[String]>) -> bool {
+    enabled_tools.is_none_or(|names| names.iter().any(|enabled| enabled == name))
 }
 
 /// Returns the default tool registry.
@@ -1423,6 +1461,61 @@ mod tests {
         let result_b =
             validate_path_with_dirs(file_b.to_str().unwrap(), &cwd, &[], &[], &[], &skill_dirs);
         assert!(result_b.is_ok());
+    }
+
+    #[test]
+    fn enabled_tool_selection_filters_registry_and_definitions() {
+        let mut registry = default_tool_registry();
+        registry.retain_enabled_tools(&["Read".to_string(), "Edit".to_string()]);
+
+        assert_eq!(registry.names(), vec!["Edit", "Read"]);
+        assert_eq!(
+            registry
+                .definitions()
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Edit", "Read"]
+        );
+    }
+
+    #[test]
+    fn empty_enabled_tool_selection_removes_all_tools() {
+        let mut registry = default_tool_registry();
+        registry.retain_enabled_tools(&[]);
+
+        assert!(registry.names().is_empty());
+        assert!(registry.definitions().is_empty());
+    }
+
+    #[test]
+    fn format_tool_list_section_applies_enabled_selection() {
+        let enabled = vec!["Read".to_string(), "tb__run_tests".to_string()];
+        let result = format_tool_list_section(
+            SandboxPolicy::WorkspaceWrite,
+            &[fixture_toolbox_tool()],
+            Some(&enabled),
+        );
+
+        assert!(result.contains("- **Read**:"));
+        assert!(result.contains("- **tb__run_tests**:"));
+        assert!(!result.contains("- **Bash**:"));
+        assert!(!result.contains("- **Edit**:"));
+        assert!(!result.contains("- **Write**:"));
+    }
+
+    #[test]
+    fn format_tool_list_section_empty_selection_has_no_tools() {
+        let result = format_tool_list_section(
+            SandboxPolicy::WorkspaceWrite,
+            &[fixture_toolbox_tool()],
+            Some(&[]),
+        );
+
+        assert!(!result.contains("- **Bash**:"));
+        assert!(!result.contains("- **Read**:"));
+        assert!(!result.contains("tb__run_tests"));
+        assert!(result.contains("No tools are available."));
     }
 
     #[test]
@@ -1729,7 +1822,7 @@ mod tests {
 
     #[test]
     fn format_tool_list_section_includes_all_tools() {
-        let result = format_tool_list_section(SandboxPolicy::WorkspaceWrite, &[]);
+        let result = format_tool_list_section(SandboxPolicy::WorkspaceWrite, &[], None);
         assert!(result.starts_with("## Available tools"));
         assert!(result.contains("- **Bash**:"));
         assert!(result.contains("- **Read**:"));
@@ -1741,14 +1834,18 @@ mod tests {
 
     #[test]
     fn format_tool_list_section_includes_toolbox_tools() {
-        let result =
-            format_tool_list_section(SandboxPolicy::WorkspaceWrite, &[fixture_toolbox_tool()]);
+        let result = format_tool_list_section(
+            SandboxPolicy::WorkspaceWrite,
+            &[fixture_toolbox_tool()],
+            None,
+        );
         assert!(result.contains("- **tb__run_tests**: Run the test suite.\n"));
     }
 
     #[test]
     fn format_tool_list_section_read_only_excludes_mutating_tools() {
-        let result = format_tool_list_section(SandboxPolicy::ReadOnly, &[fixture_toolbox_tool()]);
+        let result =
+            format_tool_list_section(SandboxPolicy::ReadOnly, &[fixture_toolbox_tool()], None);
         assert!(result.contains("- **Bash**:"));
         assert!(result.contains("- **Read**:"));
         assert!(

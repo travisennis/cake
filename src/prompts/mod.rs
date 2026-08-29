@@ -50,7 +50,8 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
 ///
 /// If none of these sources produce a readable file, the built-in default is used.
 /// The first readable file found wins. Empty files are valid (intentional blank prompt).
-/// Unreadable files produce a warning and are skipped.
+/// Unreadable files produce a warning and are skipped. The optional `enabled_tools`
+/// list filters the built-in available-tools section by exact registered name.
 #[expect(
     clippy::cognitive_complexity,
     reason = "inherently dispatch-heavy precedence scan (McCabe 14, cognitive 17; within the <= 15 McCabe allowance); reduction tracked in #102"
@@ -62,6 +63,7 @@ pub fn resolve_system_prompt(
     settings_system_prompt: Option<&Path>,
     sandbox_policy: SandboxPolicy,
     toolbox_tools: &[ToolboxTool],
+    enabled_tools: Option<&[String]>,
 ) -> String {
     // 1. --system-prompt CLI flag
     if let Some(path) = cli_system_prompt {
@@ -137,7 +139,7 @@ pub fn resolve_system_prompt(
     if builtin.contains("{{AVAILABLE_TOOLS}}") {
         builtin.replace(
             "{{AVAILABLE_TOOLS}}",
-            &format_tool_list_section(sandbox_policy, toolbox_tools),
+            &format_tool_list_section(sandbox_policy, toolbox_tools, enabled_tools),
         )
     } else {
         builtin
@@ -148,12 +150,14 @@ pub fn resolve_system_prompt(
 ///
 /// The first message is the stable system prompt. Mutable context such as
 /// AGENTS.md contents, available skills, and environment context is emitted as
-/// separate developer messages so it is not tied to the system prompt.
+/// separate developer messages so it is not tied to the system prompt. The
+/// optional exact-name tool allowlist narrows which tools are advertised to the
+/// model; `None` preserves the full registry.
 #[expect(
     clippy::too_many_arguments,
     reason = "prompt construction naturally requires many inputs"
 )]
-pub fn build_initial_prompt_messages(
+pub fn build_initial_prompt_messages_with_enabled_tools(
     working_dir: &Path,
     config_dir: &Path,
     cli_system_prompt: Option<&Path>,
@@ -162,6 +166,7 @@ pub fn build_initial_prompt_messages(
     skill_catalog: &SkillCatalog,
     sandbox_policy: SandboxPolicy,
     toolbox_tools: &[ToolboxTool],
+    enabled_tools: Option<&[String]>,
 ) -> Vec<(Role, String)> {
     let mut messages = vec![(
         Role::System,
@@ -172,6 +177,7 @@ pub fn build_initial_prompt_messages(
             settings_system_prompt,
             sandbox_policy,
             toolbox_tools,
+            enabled_tools,
         ),
     )];
     let context = format_agents_context(agents_files);
@@ -179,7 +185,9 @@ pub fn build_initial_prompt_messages(
         messages.push((Role::Developer, context));
     }
 
-    if !skill_catalog.skills.is_empty() {
+    let read_tool_available =
+        enabled_tools.is_none_or(|enabled| enabled.iter().any(|name| name == "Read"));
+    if read_tool_available && !skill_catalog.skills.is_empty() {
         let catalog_xml = skill_catalog.to_prompt_xml();
         if !catalog_xml.is_empty() {
             messages.push((
@@ -244,7 +252,7 @@ fn format_agents_context(agents_files: &[AgentsFile]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::skills::{Skill, SkillScope};
+    use crate::config::skills::{Skill, SkillScope, discover_skills};
     use std::path::PathBuf;
     use tempfile::TempDir;
 
@@ -284,8 +292,30 @@ mod tests {
             None,
             SandboxPolicy::WorkspaceWrite,
             &[],
+            None,
         );
         assert!(prompt.starts_with("You are cake."));
+    }
+
+    #[test]
+    fn resolve_builtin_filters_enabled_tools() {
+        let dir = TempDir::new().unwrap();
+        let config_dir = TempDir::new().unwrap();
+        let enabled = vec!["Read".to_string()];
+        let prompt = resolve_system_prompt(
+            dir.path(),
+            config_dir.path(),
+            None,
+            None,
+            SandboxPolicy::WorkspaceWrite,
+            &[],
+            Some(&enabled),
+        );
+
+        assert!(prompt.contains("- **Read**:"));
+        assert!(!prompt.contains("- **Bash**:"));
+        assert!(!prompt.contains("- **Edit**:"));
+        assert!(!prompt.contains("- **Write**:"));
     }
 
     #[test]
@@ -304,6 +334,7 @@ mod tests {
             None,
             SandboxPolicy::WorkspaceWrite,
             &[],
+            None,
         );
         assert_eq!(prompt, "Project prompt");
     }
@@ -322,6 +353,7 @@ mod tests {
             None,
             SandboxPolicy::WorkspaceWrite,
             &[],
+            None,
         );
         assert_eq!(prompt, "User prompt");
     }
@@ -343,6 +375,7 @@ mod tests {
             None,
             SandboxPolicy::WorkspaceWrite,
             &[],
+            None,
         );
         assert_eq!(prompt, "Project prompt");
     }
@@ -363,6 +396,7 @@ mod tests {
             None,
             SandboxPolicy::WorkspaceWrite,
             &[],
+            None,
         );
         assert_eq!(prompt, "");
     }
@@ -383,6 +417,7 @@ mod tests {
             None,
             SandboxPolicy::WorkspaceWrite,
             &[],
+            None,
         );
         assert_eq!(prompt, "");
     }
@@ -413,6 +448,7 @@ mod tests {
             None,
             SandboxPolicy::WorkspaceWrite,
             &[],
+            None,
         );
 
         #[cfg(unix)]
@@ -463,6 +499,7 @@ mod tests {
             None,
             SandboxPolicy::WorkspaceWrite,
             &[],
+            None,
         );
 
         #[cfg(unix)]
@@ -500,12 +537,13 @@ mod tests {
             None,
             SandboxPolicy::WorkspaceWrite,
             &[],
+            None,
         );
         assert!(!prompt.starts_with('\n'));
         assert!(!prompt.ends_with('\n'));
     }
 
-    // --- build_initial_prompt_messages tests ---
+    // --- build_initial_prompt_messages_with_enabled_tools tests ---
 
     fn default_config_dir() -> TempDir {
         TempDir::new().unwrap()
@@ -514,7 +552,7 @@ mod tests {
     #[test]
     fn empty_agents_files() {
         let config_dir = default_config_dir();
-        let messages = build_initial_prompt_messages(
+        let messages = build_initial_prompt_messages_with_enabled_tools(
             Path::new("/tmp"),
             config_dir.path(),
             None,
@@ -523,6 +561,7 @@ mod tests {
             &SkillCatalog::empty(),
             SandboxPolicy::WorkspaceWrite,
             &[],
+            None,
         );
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].0, Role::System);
@@ -547,7 +586,7 @@ mod tests {
                 content: "Project level instructions".to_string(),
             },
         ];
-        let messages = build_initial_prompt_messages(
+        let messages = build_initial_prompt_messages_with_enabled_tools(
             Path::new("/tmp"),
             config_dir.path(),
             None,
@@ -556,6 +595,7 @@ mod tests {
             &SkillCatalog::empty(),
             SandboxPolicy::WorkspaceWrite,
             &[],
+            None,
         );
         let prompt = render_messages(&messages);
         assert!(prompt.contains("## Additional Context"));
@@ -575,7 +615,7 @@ mod tests {
             path: "~/.cake/AGENTS.md".to_string(),
             content: "User instructions".to_string(),
         }];
-        let messages = build_initial_prompt_messages(
+        let messages = build_initial_prompt_messages_with_enabled_tools(
             Path::new("/tmp"),
             config_dir.path(),
             None,
@@ -584,6 +624,7 @@ mod tests {
             &SkillCatalog::empty(),
             SandboxPolicy::WorkspaceWrite,
             &[],
+            None,
         );
         let prompt = render_messages(&messages);
         assert!(prompt.contains("## Additional Context"));
@@ -606,7 +647,7 @@ mod tests {
                 content: "   ".to_string(), // whitespace only
             },
         ];
-        let messages = build_initial_prompt_messages(
+        let messages = build_initial_prompt_messages_with_enabled_tools(
             Path::new("/tmp"),
             config_dir.path(),
             None,
@@ -615,6 +656,7 @@ mod tests {
             &SkillCatalog::empty(),
             SandboxPolicy::WorkspaceWrite,
             &[],
+            None,
         );
         let prompt = render_messages(&messages);
         // Should not include Project Context section since all files are empty
@@ -636,7 +678,7 @@ mod tests {
             scope: SkillScope::Project,
         });
 
-        let messages = build_initial_prompt_messages(
+        let messages = build_initial_prompt_messages_with_enabled_tools(
             Path::new("/tmp"),
             config_dir.path(),
             None,
@@ -645,6 +687,7 @@ mod tests {
             &catalog,
             SandboxPolicy::WorkspaceWrite,
             &[],
+            None,
         );
         let prompt = render_messages(&messages);
         assert!(prompt.contains("## Skills"));
@@ -653,6 +696,43 @@ mod tests {
         assert!(prompt.contains("<name>debugging</name>"));
         assert!(prompt.contains("<description>How to debug things</description>"));
         assert!(prompt.contains("Current working directory: /tmp"));
+    }
+
+    #[test]
+    fn discovered_skill_is_omitted_without_read_tool() {
+        let working_dir = TempDir::new().unwrap();
+        let config_dir = default_config_dir();
+        let skill_dir = working_dir
+            .path()
+            .join(".agents")
+            .join("skills")
+            .join("debugging");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: debugging\ndescription: How to debug things\n---\n\nInstructions.",
+        )
+        .unwrap();
+
+        let catalog = discover_skills(working_dir.path());
+        assert!(catalog.skills.iter().any(|skill| skill.name == "debugging"));
+
+        let enabled = vec!["Bash".to_string()];
+        let messages = build_initial_prompt_messages_with_enabled_tools(
+            working_dir.path(),
+            config_dir.path(),
+            None,
+            None,
+            &[],
+            &catalog,
+            SandboxPolicy::WorkspaceWrite,
+            &[],
+            Some(&enabled),
+        );
+        let prompt = render_messages(&messages);
+
+        assert!(!prompt.contains("## Skills"));
+        assert!(!prompt.contains("<name>debugging</name>"));
     }
 
     #[test]
@@ -671,7 +751,7 @@ mod tests {
             scope: SkillScope::Project,
         });
 
-        let messages = build_initial_prompt_messages(
+        let messages = build_initial_prompt_messages_with_enabled_tools(
             Path::new("/tmp"),
             config_dir.path(),
             None,
@@ -680,6 +760,7 @@ mod tests {
             &catalog,
             SandboxPolicy::WorkspaceWrite,
             &[],
+            None,
         );
         let prompt = render_messages(&messages);
         // AGENTS.md comes before Skills
@@ -691,7 +772,7 @@ mod tests {
     #[test]
     fn snapshot_empty_prompt() {
         let config_dir = default_config_dir();
-        let messages = build_initial_prompt_messages(
+        let messages = build_initial_prompt_messages_with_enabled_tools(
             Path::new("/tmp"),
             config_dir.path(),
             None,
@@ -700,6 +781,7 @@ mod tests {
             &SkillCatalog::empty(),
             SandboxPolicy::WorkspaceWrite,
             &[],
+            None,
         );
         assert_prompt_snapshot("prompt_empty", &messages);
     }
@@ -711,7 +793,7 @@ mod tests {
             path: "./AGENTS.md".to_string(),
             content: "You are a Rust expert. Follow all project conventions.".to_string(),
         }];
-        let messages = build_initial_prompt_messages(
+        let messages = build_initial_prompt_messages_with_enabled_tools(
             Path::new("/project"),
             config_dir.path(),
             None,
@@ -720,6 +802,7 @@ mod tests {
             &SkillCatalog::empty(),
             SandboxPolicy::WorkspaceWrite,
             &[],
+            None,
         );
         assert_prompt_snapshot("prompt_with_project_agents", &messages);
     }
@@ -737,7 +820,7 @@ mod tests {
                 content: "Project-level overrides.".to_string(),
             },
         ];
-        let messages = build_initial_prompt_messages(
+        let messages = build_initial_prompt_messages_with_enabled_tools(
             Path::new("/project"),
             config_dir.path(),
             None,
@@ -746,6 +829,7 @@ mod tests {
             &SkillCatalog::empty(),
             SandboxPolicy::WorkspaceWrite,
             &[],
+            None,
         );
         assert_prompt_snapshot("prompt_with_user_and_project_agents", &messages);
     }
@@ -761,7 +845,7 @@ mod tests {
             base_directory: PathBuf::from("/project/.agents/skills/debugging"),
             scope: SkillScope::Project,
         });
-        let messages = build_initial_prompt_messages(
+        let messages = build_initial_prompt_messages_with_enabled_tools(
             Path::new("/project"),
             config_dir.path(),
             None,
@@ -770,6 +854,7 @@ mod tests {
             &catalog,
             SandboxPolicy::WorkspaceWrite,
             &[],
+            None,
         );
         assert_prompt_snapshot("prompt_with_skill_catalog", &messages);
     }
@@ -789,7 +874,7 @@ mod tests {
             base_directory: PathBuf::from("/project/.agents/skills/debugging"),
             scope: SkillScope::Project,
         });
-        let messages = build_initial_prompt_messages(
+        let messages = build_initial_prompt_messages_with_enabled_tools(
             Path::new("/project"),
             config_dir.path(),
             None,
@@ -798,6 +883,7 @@ mod tests {
             &catalog,
             SandboxPolicy::WorkspaceWrite,
             &[],
+            None,
         );
         assert_prompt_snapshot("prompt_with_agents_and_skills", &messages);
     }
