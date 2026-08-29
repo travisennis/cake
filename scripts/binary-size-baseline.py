@@ -93,7 +93,18 @@ def main(argv: list[str] | None = None) -> int:
     global ROOT
     args = parse_args(argv)
     ROOT = args.root.resolve()
-    target = args.target or rustc_host()
+
+    try:
+        target = args.target or rustc_host()
+        rustc_version = command_output("rustc", "--version")
+        cargo_version = command_output("cargo", "--version")
+    except (OSError, subprocess.CalledProcessError, RuntimeError) as error:
+        print(
+            f"error: could not read the Rust toolchain: {error}",
+            file=sys.stderr,
+        )
+        return 1
+
     artifact = args.artifact or (
         Path("target") / target / "release" / "cake"
         if args.target
@@ -125,8 +136,8 @@ def main(argv: list[str] | None = None) -> int:
     size_bytes = artifact.stat().st_size
     baselines[target] = {
         "toolchain": {
-            "rustc": command_output("rustc", "--version"),
-            "cargo": command_output("cargo", "--version"),
+            "rustc": rustc_version,
+            "cargo": cargo_version,
         },
         "artifact": artifact_name,
         "size_bytes": size_bytes,
