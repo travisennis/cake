@@ -290,8 +290,14 @@ async fn response_failed_server_error_retries_and_recovers() {
         .expect("expected a failed attempt");
     assert_eq!(failed["terminal_class"], "response_failed");
     assert_eq!(failed["provider_request_id"], "resp-fail");
-    assert_eq!(failed["responses_failed"]["error_code"], "server_error");
-    assert_eq!(failed["responses_failed"]["error_type"], "server_error");
+    assert_eq!(failed["responses_failed"]["code"], "server_error");
+    assert_eq!(failed["responses_failed"]["type"], "server_error");
+    assert!(
+        failed["responses_failed"]
+            .get("provider_request_id")
+            .is_none(),
+        "provider request id should not be duplicated in responses_failed"
+    );
     assert!(
         records.iter().any(|record| {
             record["type"] == "retry_scheduled" && record["reason"] == "server_error"
@@ -354,7 +360,7 @@ async fn response_failed_semantic_error_is_terminal() {
     assert_eq!(api_attempts.len(), 1, "{records:#?}");
     assert_eq!(api_attempts[0]["terminal_class"], "response_failed");
     assert_eq!(
-        api_attempts[0]["responses_failed"]["error_code"],
+        api_attempts[0]["responses_failed"]["code"],
         "invalid_request_error"
     );
     assert!(

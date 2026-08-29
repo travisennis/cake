@@ -229,12 +229,14 @@ pub fn classify_transport_error(
 /// Classify a terminal `response.failed` event received after an accepted HTTP
 /// 2xx on the Responses API.
 ///
-/// Only error `code` or `type` `server_error` is treated as transient and
-/// eligible for bounded retry. Authentication, invalid-request, quota, context,
-/// policy, and other semantic failures are not retried because re-issuing the
-/// same request cannot change the outcome. `code` and `error_type` come from
-/// the bounded metadata extracted by the Responses parser; passing them as
-/// primitives keeps this module decoupled from the provider-specific extraction.
+/// Error `code` is authoritative when present; `type` is a compatibility
+/// fallback only when `code` is absent. Only `server_error` is treated as
+/// transient and eligible for bounded retry. Authentication, invalid-request,
+/// quota, context, policy, and other semantic failures are not retried because
+/// re-issuing the same request cannot change the outcome. `code` and
+/// `error_type` come from the bounded metadata extracted by the Responses
+/// parser; passing them as primitives keeps this module decoupled from the
+/// provider-specific extraction.
 pub fn classify_response_failed(
     policy: &RetryPolicy,
     code: Option<&str>,
@@ -246,7 +248,7 @@ pub fn classify_response_failed(
         return RetryDecision::DoNotRetry;
     }
 
-    let is_server_error = code == Some("server_error") || error_type == Some("server_error");
+    let is_server_error = code.or(error_type) == Some("server_error");
     if !is_server_error {
         return RetryDecision::DoNotRetry;
     }
@@ -1107,6 +1109,30 @@ mod tests {
                 RetryDecision::DoNotRetry
             );
         }
+    }
+
+    #[test]
+    fn response_failed_code_takes_precedence_over_conflicting_type() {
+        assert_eq!(
+            classify_response_failed(
+                &retry_policy(),
+                Some("context_length_exceeded"),
+                Some("server_error"),
+                1,
+                session_id(),
+            ),
+            RetryDecision::DoNotRetry
+        );
+        assert!(matches!(
+            classify_response_failed(
+                &retry_policy(),
+                Some("server_error"),
+                Some("invalid_request_error"),
+                1,
+                session_id(),
+            ),
+            RetryDecision::Retry { .. }
+        ));
     }
 
     #[test]

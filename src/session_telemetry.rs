@@ -104,13 +104,15 @@ pub enum ApiAttemptTerminalClass {
 /// correlated without persisting the request.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
 pub struct ResponsesFailedMetadata {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Carried internally to the attempt-level field; never duplicated inside
+    /// the serialized `responses_failed` object.
+    #[serde(skip)]
     pub provider_request_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub error_type: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "code", skip_serializing_if = "Option::is_none")]
     pub error_code: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "param", skip_serializing_if = "Option::is_none")]
     pub error_param: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
@@ -702,9 +704,15 @@ mod tests {
         let value = serde_json::to_value(&attempt).unwrap();
         assert_eq!(value["terminal_class"], "response_failed");
         assert_eq!(value["provider_request_id"], "req-42");
-        assert_eq!(value["responses_failed"]["error_code"], "server_error");
-        assert_eq!(value["responses_failed"]["error_type"], "server_error");
-        assert!(value["responses_failed"].get("error_param").is_none());
+        assert_eq!(value["responses_failed"]["code"], "server_error");
+        assert_eq!(value["responses_failed"]["type"], "server_error");
+        assert!(value["responses_failed"].get("param").is_none());
+        assert!(
+            value["responses_failed"]
+                .get("provider_request_id")
+                .is_none(),
+            "provider request id belongs at the api_attempt level"
+        );
         for forbidden in [
             "response_body",
             "request_body",
