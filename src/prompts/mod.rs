@@ -212,7 +212,9 @@ pub fn build_initial_prompt_messages_with_enabled_tools(
         messages.push((Role::Developer, context));
     }
 
-    if !skill_catalog.skills.is_empty() {
+    let read_tool_available =
+        enabled_tools.is_none_or(|enabled| enabled.iter().any(|name| name == "Read"));
+    if read_tool_available && !skill_catalog.skills.is_empty() {
         let catalog_xml = skill_catalog.to_prompt_xml();
         if !catalog_xml.is_empty() {
             messages.push((
@@ -277,7 +279,7 @@ fn format_agents_context(agents_files: &[AgentsFile]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::skills::{Skill, SkillScope};
+    use crate::config::skills::{Skill, SkillScope, discover_skills};
     use std::path::PathBuf;
     use tempfile::TempDir;
 
@@ -716,6 +718,43 @@ mod tests {
         assert!(prompt.contains("<name>debugging</name>"));
         assert!(prompt.contains("<description>How to debug things</description>"));
         assert!(prompt.contains("Current working directory: /tmp"));
+    }
+
+    #[test]
+    fn discovered_skill_is_omitted_without_read_tool() {
+        let working_dir = TempDir::new().unwrap();
+        let config_dir = default_config_dir();
+        let skill_dir = working_dir
+            .path()
+            .join(".agents")
+            .join("skills")
+            .join("debugging");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: debugging\ndescription: How to debug things\n---\n\nInstructions.",
+        )
+        .unwrap();
+
+        let catalog = discover_skills(working_dir.path());
+        assert!(catalog.skills.iter().any(|skill| skill.name == "debugging"));
+
+        let enabled = vec!["Bash".to_string()];
+        let messages = build_initial_prompt_messages_with_enabled_tools(
+            working_dir.path(),
+            config_dir.path(),
+            None,
+            None,
+            &[],
+            &catalog,
+            SandboxPolicy::WorkspaceWrite,
+            &[],
+            Some(&enabled),
+        );
+        let prompt = render_messages(&messages);
+
+        assert!(!prompt.contains("## Skills"));
+        assert!(!prompt.contains("<name>debugging</name>"));
     }
 
     #[test]
