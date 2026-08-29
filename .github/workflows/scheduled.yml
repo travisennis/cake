@@ -104,6 +104,9 @@ jobs:
         run: |
           set +e
           LOGS="$(gh run view "$RUN_ID" --log-failed 2>&1)"
+          # A log line with three or more backticks would close the code fence
+          # early; collapse such runs so the logs stay inside the fence.
+          LOGS="$(printf '%s\n' "$LOGS" | sed -E 's/`{3,}/`/g')"
           {
             echo "Scheduled checks failed for run $RUN_ID."
             echo
@@ -116,7 +119,17 @@ jobs:
             echo '```'
             echo '</details>'
           } > body.md
-          gh issue create \
-            --repo "$GH_REPO" \
-            --title "Scheduled checks failed (run $RUN_ID)" \
-            --body-file body.md
+          # Reuse the open issue from a previous failed run: a check that stays
+          # broken opens one discussion instead of one new issue per week.
+          EXISTING="$(
+            gh issue list --repo "$GH_REPO" --state open \
+              --search 'Scheduled checks failed in:title' --json number \
+              --jq '.[0].number // empty' 2>/dev/null
+          )"
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --repo "$GH_REPO" --body-file body.md
+          else
+            gh issue create --repo "$GH_REPO" \
+              --title "Scheduled checks failed (run $RUN_ID)" \
+              --body-file body.md
+          fi
