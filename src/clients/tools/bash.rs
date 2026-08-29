@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Instant;
 use tokio::io::AsyncReadExt;
@@ -143,6 +144,164 @@ fn is_sandbox_violation(sandbox_applied: bool, success: bool, output: &str) -> b
     output.contains("Operation not permitted")
         || output.contains("os error 1")
         || (output.contains("Permission denied") && output.contains("sandbox"))
+}
+
+/// The filesystem operation a path token in a shell command needed, inferred
+/// from the command text. Executable command tokens (the leading command or a
+/// bare word resolved via `PATH`) are `Execute`; file and directory arguments
+/// are `Read`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SandboxPathOperation {
+    Execute,
+    Read,
+}
+
+/// A path referenced by a shell command that exists on disk, with the
+/// operation the command likely needed for it.
+#[derive(Debug)]
+struct SandboxPathRef {
+    path: PathBuf,
+    operation: SandboxPathOperation,
+}
+
+/// Scan a failed sandboxed command for path tokens that exist on disk but fall
+/// outside the sandbox's allowed directories. This names the missing grant
+/// instead of echoing the generic "Operation not permitted". Only existing
+/// paths are considered, avoiding false positives on shell words, flags, and
+/// operators.
+fn denied_paths_in_command(
+    command: &str,
+    cwd: &Path,
+    config: &super::sandbox::SandboxConfig,
+) -> Vec<String> {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    let mut refs: Vec<SandboxPathRef> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for raw in command.split_whitespace() {
+        let token = strip_shell_quotes(raw);
+        if token.is_empty() || is_shell_noise(token) {
+            continue;
+        }
+        let Some(resolved) = resolve_path_token(token, &home, cwd) else {
+            continue;
+        };
+        if seen.insert(resolved.path.clone()) {
+            refs.push(resolved);
+        }
+    }
+
+    refs.into_iter()
+        .filter(|r| !config.is_path_allowed(&r.path))
+        .map(|r| format_path_ref(&r))
+        .collect()
+}
+
+/// Format a denied path reference as a bullet line naming the operation.
+fn format_path_ref(r: &SandboxPathRef) -> String {
+    let op = match r.operation {
+        SandboxPathOperation::Execute => "execute",
+        SandboxPathOperation::Read => "read",
+    };
+    format!("  - {} ({op})", r.path.display())
+}
+
+/// Remove a surrounding layer of shell quotes from a token.
+fn strip_shell_quotes(token: &str) -> &str {
+    token.trim_matches(|c| matches!(c, '"' | '\'' | '`'))
+}
+
+/// Shell tokens that are never path references: operators, redirections,
+/// variable expansions, and flags.
+fn is_shell_noise(token: &str) -> bool {
+    if token.starts_with('-') || token.starts_with('$') {
+        return true;
+    }
+    if token.contains('>') || token.contains('<') || token.contains('=') {
+        return true;
+    }
+    matches!(
+        token,
+        "|" | "||"
+            | "&&"
+            | "&"
+            | ";"
+            | ";;"
+            | "("
+            | ")"
+            | "{"
+            | "}"
+            | "!"
+            | "["
+            | "]"
+            | "then"
+            | "do"
+            | "else"
+            | "fi"
+            | "done"
+    )
+}
+
+/// Resolve a single command token to an on-disk path and its likely operation.
+fn resolve_path_token(token: &str, home: &Path, cwd: &Path) -> Option<SandboxPathRef> {
+    if let Some(rest) = token.strip_prefix("~/") {
+        return existing_ref(home.join(rest), SandboxPathOperation::Read);
+    }
+    if token == "~" {
+        return existing_ref(home.to_path_buf(), SandboxPathOperation::Read);
+    }
+    if token.starts_with('/') {
+        return existing_ref(PathBuf::from(token), SandboxPathOperation::Read);
+    }
+    if token.contains('/') {
+        return existing_ref(cwd.join(token), SandboxPathOperation::Read);
+    }
+    // Bare word: a command name resolves via `PATH` as an executable; otherwise
+    // fall back to a path relative to the working directory.
+    if let Some(found) = lookup_executable_in_path(token) {
+        return Some(SandboxPathRef {
+            path: found,
+            operation: SandboxPathOperation::Execute,
+        });
+    }
+    existing_ref(cwd.join(token), SandboxPathOperation::Read)
+}
+
+/// Wrap `path` as a reference only when it exists on disk, classifying an
+/// executable file as `Execute` and everything else as `Read`.
+fn existing_ref(path: PathBuf, op: SandboxPathOperation) -> Option<SandboxPathRef> {
+    if !path.exists() {
+        return None;
+    }
+    let operation = if is_executable_file(&path) {
+        SandboxPathOperation::Execute
+    } else {
+        op
+    };
+    Some(SandboxPathRef { path, operation })
+}
+
+#[cfg(unix)]
+fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    path.is_file() && std::fs::metadata(path).is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn is_executable_file(_path: &Path) -> bool {
+    false
+}
+
+/// Resolve a bare command name to its executable location via `PATH`.
+fn lookup_executable_in_path(name: &str) -> Option<PathBuf> {
+    std::env::var_os("PATH").and_then(|path| {
+        std::env::split_paths(&path).find_map(|dir| {
+            let full = dir.join(name);
+            is_executable_file(&full).then_some(full)
+        })
+    })
 }
 
 /// Detect when the sandbox engine itself failed before the requested command ran.
@@ -712,6 +871,7 @@ fn compose_text_output(
     read_cap: Option<usize>,
     success: bool,
     sandbox_applied: bool,
+    denials: &[String],
 ) -> String {
     if output.is_empty() {
         String::new()
@@ -725,14 +885,31 @@ fn compose_text_output(
         format!(
             "{output}\n\n\
             [Sandbox restriction]: This command was blocked by the filesystem sandbox. \
-            The sandbox restricts file access to the project directory and standard system paths. \
+            The sandbox restricts file access to the project directory and standard system paths.\
+            {}\n\
             Do NOT retry with different workarounds — the restriction is intentional. \
             Instead, inform the user that this command requires access outside the sandbox \
-            and suggest they run it directly in their terminal."
+            and suggest they run it directly in their terminal.",
+            sandbox_denial_detail(denials)
         )
     } else {
         output.to_owned()
     }
+}
+
+/// Build the denial-detail paragraph appended to a `[Sandbox restriction]`
+/// notice. When one or more denied paths were found, the missing grant is
+/// named so the model reports the specific path instead of guessing.
+fn sandbox_denial_detail(denials: &[String]) -> String {
+    if denials.is_empty() {
+        return String::new();
+    }
+    format!(
+        "\n\nThe following path(s) are outside the allowed directories:\n{}\n\
+        Add each path (or its parent directory) to `directories` in `.cake/settings.toml` \
+        (or pass it with `--add-dir`) to grant that access.",
+        denials.join("\n")
+    )
 }
 
 async fn execute_bash_with_args(
@@ -829,7 +1006,22 @@ async fn execute_bash_with_args(
         ));
     }
 
-    let result = compose_text_output(&output_str, hit_cap, read_cap, success, sandbox_applied);
+    let denials: Vec<String> = if is_sandbox_violation(sandbox_applied, success, &output_str) {
+        // Name the missing grant: scan the command for on-disk paths that fall
+        // outside the sandbox's allowed directories.
+        let config = super::sandbox::SandboxConfig::build(context);
+        denied_paths_in_command(&args.command, &context.cwd, &config)
+    } else {
+        Vec::new()
+    };
+    let result = compose_text_output(
+        &output_str,
+        hit_cap,
+        read_cap,
+        success,
+        sandbox_applied,
+        &denials,
+    );
 
     let result = annotate_empty_search_result(&args.command, result, exit_code, &stderr_str);
     let spilled = output_max.is_some_and(|max| result.len() > max);

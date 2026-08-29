@@ -763,6 +763,42 @@ async fn test_sandbox_blocks_read_outside_cwd() {
     );
 }
 
+/// The `[Sandbox restriction]` notice after a denial names the specific path
+/// that fell outside the allowed directories, instead of only the generic
+/// "Operation not permitted".
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn test_sandbox_denial_names_denied_path() {
+    if skip_if_sandbox_unavailable() {
+        return;
+    }
+
+    let outside =
+        path_outside_cwd_for_sandbox_test().expect("should find a parent directory outside cwd");
+    let temp_dir = tempfile::TempDir::new_in(outside).expect("should create test dir outside cwd");
+    let outside_dir_str = temp_dir.path().display().to_string();
+    let args = format!(r#"{{"command": "ls {outside_dir_str}"}}"#);
+    let result = Box::pin(execute_bash(&sandbox_context(), &args))
+        .await
+        .unwrap();
+
+    assert!(
+        result.output.contains("[Sandbox restriction]"),
+        "expected a sandbox restriction notice, got: {}",
+        result.output
+    );
+    assert!(
+        result.output.contains(&outside_dir_str),
+        "sandbox notice should name the denied path {outside_dir_str}, got: {}",
+        result.output
+    );
+    assert!(
+        result.output.contains("(read)"),
+        "sandbox notice should identify a read operation, got: {}",
+        result.output
+    );
+}
+
 /// A `[sandbox].read_only` file grant (which flows into `additional_dirs`)
 /// lets sandboxed Bash execute exactly that file; a sibling file in the same
 /// directory stays denied.
@@ -1344,6 +1380,120 @@ async fn failed_unsandboxed_command_output_does_not_trigger_sandbox_warning() {
         "unsandboxed command output should not be classified as sandbox restriction: {}",
         result.output
     );
+}
+
+// ===========================================================================
+// Sandbox denial path naming (issue #219)
+// ===========================================================================
+
+/// Build a `WorkspaceWrite` config whose only allowed directory is `cwd`.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn minimal_sandbox_config(cwd: &std::path::Path) -> crate::clients::tools::sandbox::SandboxConfig {
+    crate::clients::tools::sandbox::SandboxConfig::build_with_policy(
+        crate::clients::tools::sandbox::SandboxPolicy::WorkspaceWrite,
+        cwd,
+        &[],
+        &[],
+        &[],
+        &[],
+    )
+}
+
+/// A directory guaranteed to fall outside the sandbox's allowed dirs (the
+/// workspace's parent), mirroring the integration-test fixture.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn outside_test_root() -> std::path::PathBuf {
+    path_outside_cwd_for_sandbox_test().expect("should find a parent directory outside cwd")
+}
+
+#[test]
+fn denied_paths_in_command_names_a_file_outside_allowed_dirs() {
+    let cwd = tempfile::TempDir::new().unwrap();
+    let outside = tempfile::TempDir::new_in(outside_test_root()).unwrap();
+    let secret = outside.path().join("secret.json");
+    std::fs::write(&secret, "{}").unwrap();
+
+    let config = minimal_sandbox_config(cwd.path());
+    let command = format!("cat {}", secret.display());
+    let denials = denied_paths_in_command(&command, cwd.path(), &config);
+
+    assert_eq!(denials.len(), 1, "expected one denial, got: {denials:?}");
+    assert!(denials[0].contains("secret.json"), "{denials:?}");
+    assert!(denials[0].contains("(read)"), "{denials:?}");
+}
+
+#[test]
+fn denied_paths_in_command_names_an_executable_outside_allowed_dirs() {
+    let cwd = tempfile::TempDir::new().unwrap();
+    let outside = tempfile::TempDir::new_in(outside_test_root()).unwrap();
+    let bin = outside.path().join("tool");
+    std::fs::write(&bin, "#!/bin/sh\necho hi\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let config = minimal_sandbox_config(cwd.path());
+    let command = bin.display().to_string();
+    let denials = denied_paths_in_command(&command, cwd.path(), &config);
+
+    assert_eq!(denials.len(), 1, "expected one denial, got: {denials:?}");
+    assert!(denials[0].contains("(execute)"), "{denials:?}");
+}
+
+#[test]
+fn denied_paths_in_command_ignores_paths_inside_allowed_dirs() {
+    let cwd = tempfile::TempDir::new().unwrap();
+    std::fs::write(cwd.path().join("ok.txt"), "data").unwrap();
+
+    let config = minimal_sandbox_config(cwd.path());
+    let command = "cat ok.txt";
+    let denials = denied_paths_in_command(command, cwd.path(), &config);
+
+    assert!(
+        denials.is_empty(),
+        "expected no denials for cwd-relative read, got: {denials:?}"
+    );
+}
+
+#[test]
+fn denied_paths_in_command_skips_shell_noise_and_flags() {
+    let cwd = tempfile::TempDir::new().unwrap();
+
+    let config = minimal_sandbox_config(cwd.path());
+    let command = "ls -la 2>/dev/null".to_string();
+    let denials = denied_paths_in_command(&command, cwd.path(), &config);
+
+    assert!(
+        denials.is_empty(),
+        "flags and redirects must not be reported, got: {denials:?}"
+    );
+}
+
+#[test]
+fn compose_text_output_includes_named_denials() {
+    let output = compose_text_output(
+        "Operation not permitted",
+        false,
+        None,
+        false,
+        true,
+        &["  - /tmp/x/secret.json (read)".to_string()],
+    );
+    assert!(output.contains("[Sandbox restriction]"));
+    assert!(output.contains("secret.json"));
+    assert!(output.contains("(read)"));
+    assert!(output.contains("directories"));
+    assert!(output.contains("Do NOT retry"));
+}
+
+#[test]
+fn compose_text_output_without_denials_keeps_original_guidance() {
+    let output = compose_text_output("Operation not permitted", false, None, false, true, &[]);
+    assert!(output.contains("[Sandbox restriction]"));
+    assert!(output.contains("Do NOT retry"));
+    assert!(!output.contains("outside the allowed directories"));
 }
 
 #[test]
