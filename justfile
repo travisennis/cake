@@ -263,7 +263,7 @@ lint-deps:
     @echo "Dependency lint passed!"
 
 # Run the primary local checks, including the always-on CI command set
-ci: rust-version-check check-linux fmt-check clippy-strict clippy-no-default-features test-all-features check-coverage profile-check lint-imports lint-deps lint-module-size lint-instruction-size lint-domain-glossary
+ci: rust-version-check check-linux fmt-check clippy-strict clippy-no-default-features test-all-features check-coverage profile-check binary-size-baseline-check lint-imports lint-deps lint-module-size lint-instruction-size lint-domain-glossary
     echo "All checks passed!"
 
 # Print the changed-path classification the pre-push gate routes on: docs | code | mixed | unknown | none
@@ -404,6 +404,15 @@ docs-fmt:
 
 build:
     cargo build --release
+
+# Build the native release binary and record its exact byte size in the committed baseline.
+# This baseline is target-specific; do not compare binaries built for different release targets.
+binary-size-baseline: build
+    python3 scripts/binary-size-baseline.py
+
+# Run fixture tests for the binary-size baseline generator without building or changing the baseline.
+binary-size-baseline-check:
+    @PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-binary-size-baseline.py -v
 
 # Print release notes from conventional commits; scope with a range, e.g. `just changelog v0.1.0..HEAD` (release-time step)
 changelog range="":

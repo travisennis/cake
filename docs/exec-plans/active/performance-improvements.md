@@ -14,8 +14,8 @@ The behavior is observable by running documented profiling commands, collecting 
 
 - [x] (2026-05-07 18:49Z) Confirmed the historical note records that `panic = "abort"` was added and reduced binary size from about 6.6 MB to 5.8 MB.
 - [x] (2026-05-07 18:49Z) Migrated this plan to `docs/exec-plans/active/performance-improvements.md` and added the required ExecPlan lifecycle sections.
-- [ ] Confirm the current release profile and binary-size baseline in the working tree.
 - [x] (2026-08-28 00:00Z) Added the `profiling` Cargo profile, the `just profile` recipe, and a local fake-provider agent-loop workload with a verified Samply CPU path and optional exploratory Instruments allocation path.
+- [x] (2026-08-29 00:00Z) Confirmed the current release profile and recorded the native `aarch64-apple-darwin` binary baseline at 8,891,552 bytes in `ci/binary-size-baseline.json`.
 - [ ] Profile representative workloads before changing hot-path code (completed: established and captured an amplified tool-heavy agent-loop workload; remaining: inspect and categorize its hotspots and add separate workloads only where the evidence requires them).
 - [ ] Implement only measured source-level improvements, then document results and run `just ci`.
 
@@ -25,6 +25,7 @@ The behavior is observable by running documented profiling commands, collecting 
 - Observation: A standalone compiled Cake binary is the useful profiling target. The repeatable workload therefore starts a local fake Responses API and a temporary fixture from `scripts/profile-agent-loop.py` instead of profiling a Cargo test harness. Evidence: The workload makes two localhost requests, executes `Read`, and checks the expected tool-output turn before accepting the profile.
 - Observation: One `Read` call completed too quickly for useful CPU sampling: four real Samply captures contained only 41-46 total samples over 8-9 ms. A single response containing 5,000 independently identified `Read` calls preserved the two-request agent-loop shape while producing 14,242 Cake samples over 184 ms in the verification capture. Evidence: `profiling/artifacts/verification-batched-5000.jslb.gz` on macOS 26.6.2 with samply 0.13.1.
 - Observation: Instruments is not reliable enough to be the primary allocation workflow for this short-lived workload. Evidence: after developer mode was enabled and the full command was run from an ordinary terminal, `xctrace` waited for its 30-second limit and reported `Failed to attach to target process`; the same workload normally completes under Samply in about 200 ms.
+- Observation: The current native release binary is 8,891,552 bytes (8.48 MiB) with the release profile. `cargo bsize` reports 10.6 MiB for its debuginfo analysis artifact and emits 168 missing-object warnings for `aws_lc_sys`; the warned members exist in the archive and build output, so the issue is incomplete native-object attribution rather than missing linked code.
 
 ## Decision Log
 
@@ -32,6 +33,7 @@ The behavior is observable by running documented profiling commands, collecting 
 - Decision: Use a temporary workspace and a localhost fake Responses API for the first repeatable workload. Rationale: Profiling the compiled Cake binary keeps the result focused on Cake while avoiding production latency, credentials, and a committed session fixture. Date/Author: 2026-08-28 / Cake
 - Decision: Amplify the default tool-heavy workload to 5,000 `Read` calls in one provider response and require every output to contain the complete fixture markers. Rationale: Repeating Cake-owned work in one process yields a useful sample population, while unique call IDs and content validation prevent failed or missing tool calls from being accepted as profiles. The batch is a comparison workload, not a claim about typical model behavior. Date/Author: 2026-08-28 / Codex
 - Decision: Treat Samply as the supported primary workflow and Instruments as an optional exploratory secondary path. Rationale: the Samply capture is repeatable and measured, while Instruments remains macOS-only, authorization-sensitive, and unable to attach to the verified short-lived workload. Issue #383 will evaluate `dhat-rs` and alternatives as a portable allocation workflow and decide whether Instruments remains useful. Date/Author: 2026-08-28 / Codex
+- Decision: Use the exact native release artifact size as the committed baseline, not the larger `target/bsize` artifact or the bsize report's estimated shipped size. Rationale: the baseline must represent the file distributed to users; target and toolchain metadata make comparisons explicit, while separate release targets require separate baselines. Date/Author: 2026-08-29 / Codex
 
 ## Outcomes & Retrospective
 
@@ -39,7 +41,7 @@ The behavior is observable by running documented profiling commands, collecting 
 
 cake is an I/O-bound CLI (network requests to LLM APIs, subprocess execution for tools, JSON serialization of conversation history). This is fundamentally different from seqpacker's compute-bound bin-packing. The article's methodology still applies: profile first, fix in source, skip compiler heroics.
 
-Current state: - Release binary: \~6.6 MB (with `lto = true`, `codegen-units = 1`, `strip = true`) - No profiling infrastructure exists - No benchmarks exist - `[profile.release]` already has LTO and single codegen unit, but uses `lto = true` (thin) rather than `lto = "fat"`
+Current state: - Release binary: 8.48 MiB (with `lto = true`, `codegen-units = 1`, `strip = true`) - Native `aarch64-apple-darwin` size baseline is committed in `ci/binary-size-baseline.json` - Profiling infrastructure exists - No benchmarks exist
 
 ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
@@ -49,9 +51,9 @@ Current state: - Release binary: \~6.6 MB (with `lto = true`, `codegen-units = 1
 
 ### 0.1 --- Release Profile Audit
 
-The current release profile uses `lto = true`, which defaults to **thin LTO**. The article calls out `lto = "fat"` as the single most impactful setting because it gives LLVM whole-program visibility for cross-module inlining. Switch to `lto = "fat"` and measure compile time and binary size difference.
+The current release profile uses `lto = true`, which is Cargo's fat-LTO setting. The article calls out whole-program visibility as useful for cross-module inlining; measure any future profile change against the committed binary baseline.
 
-Also consider adding `panic = "abort"` to the release profile. This removes unwind tables and reduces binary size. cake already denies `unwrap_used`/`expect_used`, so panic paths should be rare.
+Also, `panic = "abort"` is already set in the release profile. It removes unwind machinery at the cost of no stack unwinding or panic recovery.
 
 > **Question:** Is there any scenario where cake needs to catch panics (e.g., `std::panic::catch_unwind`)? If not, `panic = "abort"` is free.
 
@@ -152,9 +154,9 @@ This tells LLVM to optimize the common path at the expense of cold paths.
 
 Only after code-level fixes are applied and measured.
 
-### 3.1 --- `lto = "fat"` vs `lto = true`
+### 3.1 --- LTO experiments
 
-Measure the difference. The article found fat LTO was the single most impactful compiler setting. cake already uses thin LTO; the delta may be small or significant depending on cross-crate inlining opportunities (reqwest, serde, tokio are all separate crates).
+Measure any future LTO change against the current fat-LTO release profile. The binary baseline is the comparison point for compiler experiments.
 
 ### 3.2 --- PGO (Measure, Probably Skip)
 
@@ -168,7 +170,7 @@ The article found this neutral-to-harmful for non-SIMD workloads. cake has no ve
 
 ### 3.4 --- BOLT (Skip)
 
-The article found no improvement for small, cache-friendly binaries. cake at 6.6 MB is small. The critical path is I/O-bound. Skip this.
+The article found no improvement for small, cache-friendly binaries. The historical estimate described cake at 6.6 MB; the current native release is 8.48 MiB. The critical path is I/O-bound.
 
 ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
@@ -186,11 +188,11 @@ Add `--timing` or use the existing `duration_ms` in result messages to track ful
 
 ## Decisions Made
 
-1. **`panic = "abort"`** --- ✅ Added. Binary dropped from 6.6 MB to 5.8 MB (\~12% smaller). Revert if crash diagnostics become a problem in practice.
+1. **`panic = "abort"`** --- ✅ Added. The historical binary measurement dropped from 6.6 MB to 5.8 MB (about 12% smaller). Revert if crash diagnostics become a problem in practice.
 2. **Workload priority** --- Tool-heavy turns > long conversations > session load/save.
 3. **Conversation history size** --- Typical long session is 60-80 turns, expected to grow. Real sessions exist in `~/.cache/cake/` for measurement.
 4. **`to_api_input()` dynamic JSON** --- No reason for the current approach. Open to replacing with typed structs (perf + maintainability win).
-5. **Binary size** --- 5.8 MB is acceptable. Further reductions welcome if they don't sacrifice other wins.
+5. **Binary size** --- The earlier 5.8 MB decision is historical. The current native `aarch64-apple-darwin` release baseline is 8.48 MiB in `ci/binary-size-baseline.json`; further reductions are welcome if they do not sacrifice other wins.
 
 ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
