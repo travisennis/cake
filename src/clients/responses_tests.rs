@@ -1073,6 +1073,63 @@ fn parse_streaming_response_failed_event_bails() {
 }
 
 #[test]
+fn parse_streaming_response_failed_carries_structured_metadata() {
+    let body = concat!(
+        "data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp-123\",\"error\":",
+        "{\"message\":\"server exploded\",\"type\":\"server_error\",\"code\":\"server_error\",\"param\":null}}}\n\n",
+    );
+    let error = parse_streaming_response(body).unwrap_err();
+    assert!(error.to_string().contains("stream failed: server exploded"));
+
+    let failed = error
+        .downcast_ref::<ResponsesStreamFailed>()
+        .expect("response.failed should downcast to a typed error");
+    let metadata = failed.metadata();
+    assert_eq!(metadata.provider_request_id.as_deref(), Some("resp-123"));
+    assert_eq!(metadata.error_type.as_deref(), Some("server_error"));
+    assert_eq!(metadata.error_code.as_deref(), Some("server_error"));
+    assert_eq!(metadata.error_param, None);
+    assert_eq!(metadata.message.as_deref(), Some("server exploded"));
+}
+
+#[test]
+fn parse_streaming_response_failed_missing_optional_metadata() {
+    let body = "data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp-9\"}}\n\n";
+    let error = parse_streaming_response(body).unwrap_err();
+    assert!(error.to_string().contains("stream failed: unknown error"));
+
+    let failed = error
+        .downcast_ref::<ResponsesStreamFailed>()
+        .expect("response.failed should downcast to a typed error");
+    let metadata = failed.metadata();
+    assert_eq!(metadata.provider_request_id.as_deref(), Some("resp-9"));
+    assert_eq!(metadata.error_type, None);
+    assert_eq!(metadata.error_code, None);
+    assert_eq!(metadata.error_param, None);
+    assert_eq!(metadata.message, None);
+}
+
+#[test]
+fn parse_streaming_response_failed_malformed_error_object() {
+    // The `error` field is a plain string rather than an object: the bounded
+    // fields default to `None` and the user-facing message falls back to
+    // "unknown error", while the response id is still preserved.
+    let body = "data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp-9\",\"error\":\"oops\"}}\n\n";
+    let error = parse_streaming_response(body).unwrap_err();
+    assert!(error.to_string().contains("stream failed: unknown error"));
+
+    let failed = error
+        .downcast_ref::<ResponsesStreamFailed>()
+        .expect("response.failed should downcast to a typed error");
+    let metadata = failed.metadata();
+    assert_eq!(metadata.provider_request_id.as_deref(), Some("resp-9"));
+    assert_eq!(metadata.error_type, None);
+    assert_eq!(metadata.error_code, None);
+    assert_eq!(metadata.error_param, None);
+    assert_eq!(metadata.message, None);
+}
+
+#[test]
 fn parse_streaming_response_requires_completed_event() {
     let body = concat!(
         "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}\n\n",
