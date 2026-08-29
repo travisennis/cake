@@ -73,6 +73,51 @@ pub struct SessionTelemetryContext {
     pub invocation_id: String,
 }
 
+/// Terminal outcome of one provider attempt, independent of the semantic
+/// [`TerminationClassification`]. Lets consumers tell apart a transport
+/// failure, a non-2xx HTTP failure, a 2xx body/SSE decode failure, an accepted
+/// 2xx request that ended in `response.failed`, and a completed turn without
+/// parsing provider messages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApiAttemptTerminalClass {
+    /// The turn completed and produced an item.
+    Completed,
+    /// The request phase failed (connect, timeout, stale connection).
+    Transport,
+    /// The provider returned a non-2xx HTTP response.
+    Http,
+    /// The 2xx body could not be decoded as JSON/SSE, or the stream ended
+    /// before a terminal event.
+    BodyParse,
+    /// The provider accepted the request (HTTP 2xx) then emitted a terminal
+    /// `response.failed` event.
+    ResponseFailed,
+}
+
+/// Bounded, structured metadata from a terminal `response.failed` stream event
+/// on the Responses API after an accepted HTTP 2xx.
+///
+/// Never carries raw response bodies, prompts, tool outputs, authorization
+/// data, or credentials. Only the provider-supplied error identity fields and
+/// the provider response ID are retained so an attempt can be diagnosed and
+/// correlated without persisting the request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
+pub struct ResponsesFailedMetadata {
+    /// Carried internally to the attempt-level field; never duplicated inside
+    /// the serialized `responses_failed` object.
+    #[serde(skip)]
+    pub provider_request_id: Option<String>,
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub error_type: Option<String>,
+    #[serde(rename = "code", skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+    #[serde(rename = "param", skip_serializing_if = "Option::is_none")]
+    pub error_param: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ApiAttemptTelemetry {
     pub turn_index: u32,
@@ -86,6 +131,19 @@ pub struct ApiAttemptTelemetry {
     pub usage: Option<Usage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub termination: Option<ProviderTermination>,
+    /// How this attempt ended, so consumers can tell a transient provider
+    /// failure from a request/transport or decode failure without parsing
+    /// error text. `None` on legacy records.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminal_class: Option<ApiAttemptTerminalClass>,
+    /// Provider response ID, when the provider supplied one. Retained on
+    /// success and on `response.failed` so the attempt can be correlated with
+    /// provider logs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_request_id: Option<String>,
+    /// Bounded structured metadata when the attempt ended in `response.failed`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub responses_failed: Option<Box<ResponsesFailedMetadata>>,
     pub request_overrides: RequestOverridesSnapshot,
 }
 
@@ -559,6 +617,9 @@ mod tests {
             error: None,
             usage: None,
             termination,
+            terminal_class: None,
+            provider_request_id: None,
+            responses_failed: None,
             request_overrides: RequestOverridesSnapshot {
                 max_output_tokens: None,
                 reasoning_max_tokens: None,
@@ -625,6 +686,55 @@ mod tests {
 
         let without_termination = serde_json::to_value(api_attempt(None)).unwrap();
         assert!(without_termination.get("termination").is_none());
+    }
+
+    #[test]
+    fn api_attempt_serializes_terminal_class_and_response_failed_metadata() {
+        let mut attempt = api_attempt(None);
+        attempt.terminal_class = Some(ApiAttemptTerminalClass::ResponseFailed);
+        attempt.provider_request_id = Some("req-42".to_string());
+        attempt.responses_failed = Some(Box::new(ResponsesFailedMetadata {
+            provider_request_id: Some("req-42".to_string()),
+            error_type: Some("server_error".to_string()),
+            error_code: Some("server_error".to_string()),
+            error_param: None,
+            message: Some("provider failed".to_string()),
+        }));
+
+        let value = serde_json::to_value(&attempt).unwrap();
+        assert_eq!(value["terminal_class"], "response_failed");
+        assert_eq!(value["provider_request_id"], "req-42");
+        assert_eq!(value["responses_failed"]["code"], "server_error");
+        assert_eq!(value["responses_failed"]["type"], "server_error");
+        assert!(value["responses_failed"].get("param").is_none());
+        assert!(
+            value["responses_failed"]
+                .get("provider_request_id")
+                .is_none(),
+            "provider request id belongs at the api_attempt level"
+        );
+        for forbidden in [
+            "response_body",
+            "request_body",
+            "prompt",
+            "api_key",
+            "authorization",
+        ] {
+            assert!(
+                value.get(forbidden).is_none(),
+                "unexpected {forbidden} in {value}"
+            );
+            assert!(
+                value["responses_failed"].get(forbidden).is_none(),
+                "unexpected {forbidden} in responses_failed metadata"
+            );
+        }
+
+        let bare = api_attempt(None);
+        let value = serde_json::to_value(bare).unwrap();
+        assert!(value.get("terminal_class").is_none());
+        assert!(value.get("responses_failed").is_none());
+        assert!(value.get("provider_request_id").is_none());
     }
 
     #[test]

@@ -12,7 +12,9 @@ use crate::clients::responses_types::{
 };
 use crate::clients::retry::RequestOverrides;
 use crate::clients::tools::Tool;
-use crate::session_telemetry::{ProviderTermination, TerminationClassification};
+use crate::session_telemetry::{
+    ProviderTermination, ResponsesFailedMetadata, TerminationClassification,
+};
 use crate::types::{
     ConversationItem, InputTokensDetails, OutputTokensDetails, ReasoningContentKind,
     ReasoningSummary, Role, Usage,
@@ -339,13 +341,61 @@ fn apply_response_incomplete(accumulator: &mut StreamAccumulator, event: &serde_
 }
 
 fn apply_response_failed(event: &serde_json::Value) -> anyhow::Result<()> {
-    let message = event
-        .get("response")
-        .and_then(|response| response.get("error"))
-        .and_then(|error| error.get("message"))
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("unknown error");
-    anyhow::bail!("Responses API stream failed: {message}");
+    let response = event.get("response");
+    let error = response.and_then(|response| response.get("error"));
+
+    let metadata = ResponsesFailedMetadata {
+        provider_request_id: response
+            .and_then(|response| response.get("id"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+        error_type: error
+            .and_then(|error| error.get("type"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+        error_code: error
+            .and_then(|error| error.get("code"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+        error_param: error
+            .and_then(|error| error.get("param"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+        message: error
+            .and_then(|error| error.get("message"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+    };
+
+    // Return a typed error so the agent runner can downcast it, classify
+    // retryability from the bounded metadata, and carry structured diagnostics
+    // to telemetry instead of a flattened string.
+    Err(anyhow::Error::new(ResponsesStreamFailed(metadata)))
+}
+
+/// Terminal `response.failed` event received after an accepted HTTP 2xx.
+///
+/// Wraps [`ResponsesFailedMetadata`] so the agent runner can downcast the
+/// parse error, classify retryability, and record bounded diagnostics without
+/// re-parsing the raw event. The `Display` text is kept stable for users while
+/// the structured fields inform telemetry and retry policy.
+#[derive(Debug, thiserror::Error)]
+pub(super) struct ResponsesStreamFailed(pub(super) ResponsesFailedMetadata);
+
+impl ResponsesStreamFailed {
+    fn message(&self) -> &str {
+        self.0.message.as_deref().unwrap_or("unknown error")
+    }
+
+    pub(super) const fn metadata(&self) -> &ResponsesFailedMetadata {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for ResponsesStreamFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Responses API stream failed: {}", self.message())
+    }
 }
 
 /// Assembles the final `TurnResult` from the accumulated stream state.

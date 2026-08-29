@@ -5,12 +5,14 @@ use tracing::debug;
 
 use crate::clients::agent::TurnResult;
 use crate::clients::backend::{Backend, FinalOutputConstraint};
+use crate::clients::responses::ResponsesStreamFailed;
 use crate::clients::retry::{self, HttpFailure, RequestOverrides, RetryPolicy, RetryStatus};
 use crate::clients::tools::Tool;
 use crate::config::model::ResolvedModelConfig;
 use crate::session_telemetry::{
-    AgentRunnerTelemetryEvent, ApiAttemptTelemetry, CompensationEventTelemetry, CompensationKind,
-    RequestOverridesSnapshot, RetryScheduledTelemetry,
+    AgentRunnerTelemetryEvent, ApiAttemptTelemetry, ApiAttemptTerminalClass,
+    CompensationEventTelemetry, CompensationKind, RequestOverridesSnapshot,
+    RetryScheduledTelemetry,
 };
 use crate::types::ConversationItem;
 
@@ -34,6 +36,16 @@ pub(super) struct AgentRunner {
     retry_policy: RetryPolicy,
 }
 
+/// Outcome of one provider attempt, driving the bounded retry loop.
+enum AttemptResult {
+    /// The turn completed; return the `TurnResult`.
+    Completed(TurnResult),
+    /// The attempt failed but a retry is scheduled; continue the loop.
+    RetryNeeded,
+    /// The attempt failed terminally; return the error.
+    Terminal(anyhow::Error),
+}
+
 impl AgentRunner {
     pub(super) fn new(backend: Backend) -> Self {
         Self {
@@ -43,10 +55,6 @@ impl AgentRunner {
         }
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "retry loop keeps request, parse, retry, and telemetry sequencing together"
-    )]
     #[expect(
         clippy::too_many_arguments,
         reason = "a turn naturally threads config, identity, history, tools, and constraint"
@@ -90,162 +98,339 @@ impl AgentRunner {
                 .await;
             let request_ms = elapsed_ms(request_start);
 
-            match request_result {
+            let outcome = match request_result {
                 Ok(response) => {
                     let status_code = response.status().as_u16();
                     if response.status().is_success() {
-                        let parse_start = Instant::now();
-                        let parse_result = self.backend.parse_response(response).await;
-                        let parse_ms = elapsed_ms(parse_start);
-                        let total_ms = elapsed_ms(total_start);
-                        let usage = parse_result.as_ref().ok().and_then(|turn| turn.usage);
-                        let termination = parse_result
-                            .as_ref()
-                            .ok()
-                            .and_then(|turn| turn.termination.clone());
-                        let error = parse_result.as_ref().err().map(ToString::to_string);
-                        report_telemetry(AgentRunnerTelemetryEvent::ApiAttempt(
-                            ApiAttemptTelemetry {
-                                turn_index,
-                                attempt,
-                                request_ms,
-                                parse_ms,
-                                total_ms,
-                                history_items: history.len(),
-                                status_code: Some(status_code),
-                                error,
-                                usage,
-                                termination,
-                                request_overrides: RequestOverridesSnapshot::from(
-                                    &request_overrides,
-                                ),
-                            },
-                        ));
-
-                        return parse_result;
-                    }
-
-                    let headers = response.headers().clone();
-                    let body = response.text().await.unwrap_or_default();
-
-                    let failure = HttpFailure {
-                        status: status_code,
-                        headers,
-                        body,
-                    };
-                    report_telemetry(AgentRunnerTelemetryEvent::ApiAttempt(ApiAttemptTelemetry {
-                        turn_index,
-                        attempt,
-                        request_ms,
-                        parse_ms: 0,
-                        total_ms: elapsed_ms(total_start),
-                        history_items: history.len(),
-                        status_code: Some(status_code),
-                        error: Some(format!("{} {}", failure.status, failure.body)),
-                        usage: None,
-                        termination: None,
-                        request_overrides: RequestOverridesSnapshot::from(&request_overrides),
-                    }));
-
-                    match retry::classify_http_failure(
-                        &self.retry_policy,
-                        &failure,
-                        attempt,
-                        session_id,
-                        &request_overrides,
-                    ) {
-                        retry::RetryDecision::Retry { status } => {
-                            report_telemetry(AgentRunnerTelemetryEvent::RetryScheduled(
-                                RetryScheduledTelemetry::from_status(
-                                    &status,
-                                    turn_index,
-                                    false,
-                                    &request_overrides,
-                                ),
-                            ));
-                            wait_for_retry(&status).await;
-                            attempt += 1;
-                        },
-                        retry::RetryDecision::RetryWithOverrides { status, overrides } => {
-                            report_telemetry(AgentRunnerTelemetryEvent::RetryScheduled(
-                                RetryScheduledTelemetry::from_status(
-                                    &status, turn_index, true, &overrides,
-                                ),
-                            ));
-                            report_telemetry(AgentRunnerTelemetryEvent::Compensation(
-                                CompensationEventTelemetry::new(
-                                    CompensationKind::ContextOverflowRetry,
-                                    None,
-                                ),
-                            ));
-                            request_overrides = overrides;
-                            wait_for_retry(&status).await;
-                            attempt += 1;
-                        },
-                        retry::RetryDecision::DoNotRetry => {
-                            return Err(api_error_from_failure(
-                                &config.model_config.model,
-                                &failure,
-                            )
-                            .into());
-                        },
+                        self.handle_success_response(
+                            response,
+                            session_id,
+                            turn_index,
+                            attempt,
+                            request_ms,
+                            total_start,
+                            history.len(),
+                            status_code,
+                            &request_overrides,
+                            &mut report_telemetry,
+                        )
+                        .await
+                    } else {
+                        self.handle_http_failure(
+                            response,
+                            config,
+                            session_id,
+                            turn_index,
+                            attempt,
+                            request_ms,
+                            total_start,
+                            history.len(),
+                            status_code,
+                            &mut request_overrides,
+                            &mut report_telemetry,
+                        )
+                        .await
                     }
                 },
                 Err(error) => {
-                    report_telemetry(AgentRunnerTelemetryEvent::ApiAttempt(ApiAttemptTelemetry {
+                    self.handle_transport_error(
+                        error,
+                        session_id,
                         turn_index,
                         attempt,
                         request_ms,
-                        parse_ms: 0,
-                        total_ms: elapsed_ms(total_start),
-                        history_items: history.len(),
-                        status_code: None,
-                        error: Some(error.to_string()),
-                        usage: None,
-                        termination: None,
-                        request_overrides: RequestOverridesSnapshot::from(&request_overrides),
-                    }));
-                    match retry::classify_transport_error(
-                        &self.retry_policy,
-                        &error,
-                        attempt,
-                        session_id,
-                    ) {
-                        retry::RetryDecision::Retry { status } => {
-                            if retry::should_disable_connection_reuse(&error)
-                                && !disable_connection_reuse
-                            {
-                                // Only this turn's remaining attempts use the
-                                // no-reuse client; `self.client` is untouched.
-                                client = build_http_client(true);
-                                disable_connection_reuse = true;
-                            }
-
-                            report_telemetry(AgentRunnerTelemetryEvent::RetryScheduled(
-                                RetryScheduledTelemetry::from_status(
-                                    &status,
-                                    turn_index,
-                                    false,
-                                    &request_overrides,
-                                ),
-                            ));
-                            wait_for_retry(&status).await;
-                            attempt += 1;
-                        },
-                        retry::RetryDecision::RetryWithOverrides { status, overrides } => {
-                            report_telemetry(AgentRunnerTelemetryEvent::RetryScheduled(
-                                RetryScheduledTelemetry::from_status(
-                                    &status, turn_index, true, &overrides,
-                                ),
-                            ));
-                            request_overrides = overrides;
-                            wait_for_retry(&status).await;
-                            attempt += 1;
-                        },
-                        retry::RetryDecision::DoNotRetry => return Err(error),
-                    }
+                        total_start,
+                        history.len(),
+                        &mut client,
+                        &mut disable_connection_reuse,
+                        &mut request_overrides,
+                        &mut report_telemetry,
+                    )
+                    .await
                 },
+            };
+
+            match outcome {
+                AttemptResult::Completed(turn) => return Ok(turn),
+                AttemptResult::RetryNeeded => {
+                    attempt += 1;
+                },
+                AttemptResult::Terminal(error) => return Err(error),
             }
+        }
+    }
+
+    /// Parse an accepted 2xx provider body, record per-attempt telemetry, and
+    /// either return the completed turn, schedule a retry for a transient
+    /// `response.failed`, or surface the terminal parse error.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one turn phase threads identity, timing, attempt, and telemetry"
+    )]
+    async fn handle_success_response(
+        &self,
+        response: reqwest::Response,
+        session_id: uuid::Uuid,
+        turn_index: u32,
+        attempt: u32,
+        request_ms: u64,
+        total_start: Instant,
+        history_items: usize,
+        status_code: u16,
+        request_overrides: &RequestOverrides,
+        report_telemetry: &mut impl FnMut(AgentRunnerTelemetryEvent),
+    ) -> AttemptResult {
+        let parse_start = Instant::now();
+        let parse_result = self.backend.parse_response(response).await;
+        let parse_ms = elapsed_ms(parse_start);
+        let total_ms = elapsed_ms(total_start);
+
+        let failed = parse_result
+            .as_ref()
+            .err()
+            .and_then(|error| error.downcast_ref::<ResponsesStreamFailed>());
+        let terminal_class = match (parse_result.is_ok(), failed.is_some()) {
+            (true, _) => Some(ApiAttemptTerminalClass::Completed),
+            (false, true) => Some(ApiAttemptTerminalClass::ResponseFailed),
+            (false, false) => Some(ApiAttemptTerminalClass::BodyParse),
+        };
+        let provider_request_id = parse_result
+            .as_ref()
+            .ok()
+            .and_then(|turn| turn.provider_request_id.clone())
+            .or_else(|| failed.and_then(|failed| failed.metadata().provider_request_id.clone()));
+        let responses_failed = failed.map(|failed| Box::new(failed.metadata().clone()));
+        let usage = parse_result.as_ref().ok().and_then(|turn| turn.usage);
+        let termination = parse_result
+            .as_ref()
+            .ok()
+            .and_then(|turn| turn.termination.clone());
+        let error = parse_result.as_ref().err().map(ToString::to_string);
+
+        report_telemetry(AgentRunnerTelemetryEvent::ApiAttempt(ApiAttemptTelemetry {
+            turn_index,
+            attempt,
+            request_ms,
+            parse_ms,
+            total_ms,
+            history_items,
+            status_code: Some(status_code),
+            error,
+            usage,
+            termination,
+            terminal_class,
+            provider_request_id,
+            responses_failed,
+            request_overrides: RequestOverridesSnapshot::from(request_overrides),
+        }));
+
+        match parse_result {
+            Ok(turn) => AttemptResult::Completed(turn),
+            Err(parse_error) => match self
+                .recover_response_failed(
+                    parse_error,
+                    session_id,
+                    turn_index,
+                    attempt,
+                    request_overrides,
+                    report_telemetry,
+                )
+                .await
+            {
+                Ok(()) => AttemptResult::RetryNeeded,
+                Err(parse_error) => AttemptResult::Terminal(parse_error),
+            },
+        }
+    }
+
+    /// Handle a terminal `response.failed` parse error after an accepted HTTP
+    /// 2xx. Retries a transient `server_error` under the bounded retry/deadline
+    /// policy, or returns the error when the failure is semantic (auth,
+    /// invalid-request, quota, context, policy) or retries are exhausted.
+    async fn recover_response_failed(
+        &self,
+        parse_error: anyhow::Error,
+        session_id: uuid::Uuid,
+        turn_index: u32,
+        attempt: u32,
+        request_overrides: &RequestOverrides,
+        report_telemetry: &mut impl FnMut(AgentRunnerTelemetryEvent),
+    ) -> Result<(), anyhow::Error> {
+        let Some(failed) = parse_error.downcast_ref::<ResponsesStreamFailed>() else {
+            return Err(parse_error);
+        };
+        match retry::classify_response_failed(
+            &self.retry_policy,
+            failed.metadata().error_code.as_deref(),
+            failed.metadata().error_type.as_deref(),
+            attempt,
+            session_id,
+        ) {
+            retry::RetryDecision::Retry { status } => {
+                report_telemetry(AgentRunnerTelemetryEvent::RetryScheduled(
+                    RetryScheduledTelemetry::from_status(
+                        &status,
+                        turn_index,
+                        false,
+                        request_overrides,
+                    ),
+                ));
+                wait_for_retry(&status).await;
+                Ok(())
+            },
+            retry::RetryDecision::RetryWithOverrides { .. } | retry::RetryDecision::DoNotRetry => {
+                Err(parse_error)
+            },
+        }
+    }
+
+    /// Handle a non-2xx HTTP response: record attempt telemetry, then classify
+    /// the failure for retry (rate-limit, overload, context overflow) or return
+    /// it as an `ApiError`.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the HTTP-failure phase threads identity, timing, attempt, and telemetry"
+    )]
+    async fn handle_http_failure(
+        &self,
+        response: reqwest::Response,
+        config: &ResolvedModelConfig,
+        session_id: uuid::Uuid,
+        turn_index: u32,
+        attempt: u32,
+        request_ms: u64,
+        total_start: Instant,
+        history_items: usize,
+        status_code: u16,
+        request_overrides: &mut RequestOverrides,
+        report_telemetry: &mut impl FnMut(AgentRunnerTelemetryEvent),
+    ) -> AttemptResult {
+        let headers = response.headers().clone();
+        let body = response.text().await.unwrap_or_default();
+        let failure = HttpFailure {
+            status: status_code,
+            headers,
+            body,
+        };
+        report_telemetry(AgentRunnerTelemetryEvent::ApiAttempt(ApiAttemptTelemetry {
+            turn_index,
+            attempt,
+            request_ms,
+            parse_ms: 0,
+            total_ms: elapsed_ms(total_start),
+            history_items,
+            status_code: Some(status_code),
+            error: Some(format!("{} {}", failure.status, failure.body)),
+            usage: None,
+            termination: None,
+            terminal_class: Some(ApiAttemptTerminalClass::Http),
+            provider_request_id: None,
+            responses_failed: None,
+            request_overrides: RequestOverridesSnapshot::from(&*request_overrides),
+        }));
+
+        match retry::classify_http_failure(
+            &self.retry_policy,
+            &failure,
+            attempt,
+            session_id,
+            request_overrides,
+        ) {
+            retry::RetryDecision::Retry { status } => {
+                report_telemetry(AgentRunnerTelemetryEvent::RetryScheduled(
+                    RetryScheduledTelemetry::from_status(
+                        &status,
+                        turn_index,
+                        false,
+                        &*request_overrides,
+                    ),
+                ));
+                wait_for_retry(&status).await;
+                AttemptResult::RetryNeeded
+            },
+            retry::RetryDecision::RetryWithOverrides { status, overrides } => {
+                report_telemetry(AgentRunnerTelemetryEvent::RetryScheduled(
+                    RetryScheduledTelemetry::from_status(&status, turn_index, true, &overrides),
+                ));
+                report_telemetry(AgentRunnerTelemetryEvent::Compensation(
+                    CompensationEventTelemetry::new(CompensationKind::ContextOverflowRetry, None),
+                ));
+                *request_overrides = overrides;
+                wait_for_retry(&status).await;
+                AttemptResult::RetryNeeded
+            },
+            retry::RetryDecision::DoNotRetry => AttemptResult::Terminal(
+                api_error_from_failure(&config.model_config.model, &failure).into(),
+            ),
+        }
+    }
+
+    /// Handle a request-phase transport error: record attempt telemetry, then
+    /// classify a stale-connection retry (swapping in a no-reuse client) or
+    /// return the error as terminal.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the transport-failure phase threads identity, timing, and telemetry"
+    )]
+    async fn handle_transport_error(
+        &self,
+        error: anyhow::Error,
+        session_id: uuid::Uuid,
+        turn_index: u32,
+        attempt: u32,
+        request_ms: u64,
+        total_start: Instant,
+        history_items: usize,
+        client: &mut reqwest::Client,
+        disable_connection_reuse: &mut bool,
+        request_overrides: &mut RequestOverrides,
+        report_telemetry: &mut impl FnMut(AgentRunnerTelemetryEvent),
+    ) -> AttemptResult {
+        report_telemetry(AgentRunnerTelemetryEvent::ApiAttempt(ApiAttemptTelemetry {
+            turn_index,
+            attempt,
+            request_ms,
+            parse_ms: 0,
+            total_ms: elapsed_ms(total_start),
+            history_items,
+            status_code: None,
+            error: Some(error.to_string()),
+            usage: None,
+            termination: None,
+            terminal_class: Some(ApiAttemptTerminalClass::Transport),
+            provider_request_id: None,
+            responses_failed: None,
+            request_overrides: RequestOverridesSnapshot::from(&*request_overrides),
+        }));
+
+        match retry::classify_transport_error(&self.retry_policy, &error, attempt, session_id) {
+            retry::RetryDecision::Retry { status } => {
+                if retry::should_disable_connection_reuse(&error) && !*disable_connection_reuse {
+                    // Only this turn's remaining attempts use the no-reuse
+                    // client; `self.client` is untouched.
+                    *client = build_http_client(true);
+                    *disable_connection_reuse = true;
+                }
+                report_telemetry(AgentRunnerTelemetryEvent::RetryScheduled(
+                    RetryScheduledTelemetry::from_status(
+                        &status,
+                        turn_index,
+                        false,
+                        &*request_overrides,
+                    ),
+                ));
+                wait_for_retry(&status).await;
+                AttemptResult::RetryNeeded
+            },
+            retry::RetryDecision::RetryWithOverrides { status, overrides } => {
+                report_telemetry(AgentRunnerTelemetryEvent::RetryScheduled(
+                    RetryScheduledTelemetry::from_status(&status, turn_index, true, &overrides),
+                ));
+                *request_overrides = overrides;
+                wait_for_retry(&status).await;
+                AttemptResult::RetryNeeded
+            },
+            retry::RetryDecision::DoNotRetry => AttemptResult::Terminal(error),
         }
     }
 }

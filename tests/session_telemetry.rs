@@ -57,6 +57,25 @@ fn reasoning_only_response() -> serde_json::Value {
     })
 }
 
+/// An SSE `response.failed` event matching the observed provider shape
+/// (openai/codex#1002): both `type` and `code` set, plus an id and message.
+fn response_failed_body(id: &str, code: &str, message: &str) -> String {
+    format!(
+        "data: {}\n\n",
+        serde_json::json!({
+            "type": "response.failed",
+            "response": {
+                "id": id,
+                "error": {
+                    "message": message,
+                    "type": code,
+                    "code": code,
+                }
+            }
+        })
+    )
+}
+
 fn write_responses_settings(env: &TestEnv, base_url: &str) {
     env.write_project_settings(&format!(
         r#"
@@ -213,6 +232,146 @@ async fn session_telemetry_records_retry_attempts() {
             record["type"] == "retry_scheduled" && record["reason"] == "rate_limit"
         }),
         "{records:#?}"
+    );
+}
+
+#[tokio::test]
+async fn response_failed_server_error_retries_and_recovers() {
+    let env = TestEnv::new("cake-response-failed-retry-test");
+    let mock_server = MockServer::start().await;
+    write_responses_settings(&env, &mock_server.uri());
+
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(response_failed_body(
+                "resp-fail",
+                "server_error",
+                "provider exploded",
+            )),
+        )
+        .expect(1)
+        .up_to_n_times(1)
+        .mount(&mock_server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(success_response()))
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let output = env
+        .command()
+        .arg("--output-format")
+        .arg("json")
+        .arg("test prompt")
+        .env("SESSION_TELEMETRY_TEST_KEY", "test-token")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute cake");
+
+    assert!(
+        output.status.success(),
+        "cake should succeed after retry. stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let records = telemetry_records(&env);
+    let api_attempts = records
+        .iter()
+        .filter(|record| record["type"] == "api_attempt")
+        .collect::<Vec<_>>();
+    assert_eq!(api_attempts.len(), 2, "{records:#?}");
+    let failed = api_attempts
+        .iter()
+        .find(|record| record["error"].as_str().is_some())
+        .expect("expected a failed attempt");
+    assert_eq!(failed["terminal_class"], "response_failed");
+    assert_eq!(failed["provider_request_id"], "resp-fail");
+    assert_eq!(failed["responses_failed"]["code"], "server_error");
+    assert_eq!(failed["responses_failed"]["type"], "server_error");
+    assert!(
+        failed["responses_failed"]
+            .get("provider_request_id")
+            .is_none(),
+        "provider request id should not be duplicated in responses_failed"
+    );
+    assert!(
+        records.iter().any(|record| {
+            record["type"] == "retry_scheduled" && record["reason"] == "server_error"
+        }),
+        "{records:#?}"
+    );
+    assert!(
+        records.iter().any(|record| {
+            record["type"] == "api_attempt" && record["terminal_class"] == "completed"
+        }),
+        "completed attempt should be classified: {records:#?}"
+    );
+}
+
+#[tokio::test]
+async fn response_failed_semantic_error_is_terminal() {
+    let env = TestEnv::new("cake-response-failed-semantic-test");
+    let mock_server = MockServer::start().await;
+    write_responses_settings(&env, &mock_server.uri());
+
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(response_failed_body(
+                "resp-auth",
+                "invalid_request_error",
+                "bad request",
+            )),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let output = env
+        .command()
+        .arg("--output-format")
+        .arg("json")
+        .arg("test prompt")
+        .env("SESSION_TELEMETRY_TEST_KEY", "test-token")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute cake");
+
+    assert!(
+        !output.status.success(),
+        "cake should fail on a semantic response.failed"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("Responses API stream failed: bad request"),
+        "user-facing error should stay compatible"
+    );
+
+    let records = telemetry_records(&env);
+    let api_attempts = records
+        .iter()
+        .filter(|record| record["type"] == "api_attempt")
+        .collect::<Vec<_>>();
+    assert_eq!(api_attempts.len(), 1, "{records:#?}");
+    assert_eq!(api_attempts[0]["terminal_class"], "response_failed");
+    assert_eq!(
+        api_attempts[0]["responses_failed"]["code"],
+        "invalid_request_error"
+    );
+    assert!(
+        api_attempts[0]["usage"].is_null(),
+        "usage stays unavailable"
+    );
+    assert!(
+        !records
+            .iter()
+            .any(|record| record["type"] == "retry_scheduled"),
+        "semantic failures must not retry: {records:#?}"
     );
 }
 
