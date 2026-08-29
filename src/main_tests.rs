@@ -507,6 +507,23 @@ fn unavailable_tool_names_are_reported_without_affecting_available_tools() {
 }
 
 #[test]
+fn unavailable_tool_names_deduplicate_duplicate_names() {
+    let requested = vec![
+        "NoSuchTool".to_string(),
+        "Read".to_string(),
+        "NoSuchTool".to_string(),
+        "AnotherMissing".to_string(),
+        "NoSuchTool".to_string(),
+    ];
+    let available = vec!["Read".to_string()];
+
+    assert_eq!(
+        CodingAssistant::unavailable_tool_names(Some(&requested), &available),
+        vec!["NoSuchTool", "AnotherMissing"]
+    );
+}
+
+#[test]
 fn forked_session_seeds_skills_from_structured_records() {
     let restored = session_with_skill_records();
     let run_session = CodingAssistant::forked_client_and_session(

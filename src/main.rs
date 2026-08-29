@@ -12,7 +12,7 @@ mod session_telemetry;
 mod time_format;
 mod types;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -672,6 +672,7 @@ impl CodingAssistant {
         let Some(requested) = requested else {
             return Vec::new();
         };
+        let mut seen = HashSet::with_capacity(requested.len());
         requested
             .iter()
             .filter(|name| {
@@ -679,6 +680,7 @@ impl CodingAssistant {
                     .iter()
                     .any(|available_name| available_name == *name)
             })
+            .filter(|name| seen.insert(name.as_str()))
             .cloned()
             .collect()
     }
