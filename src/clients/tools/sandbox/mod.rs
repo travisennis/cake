@@ -553,6 +553,26 @@ impl SandboxConfig {
 
         paths.into_iter().filter(|p| p.exists()).collect()
     }
+
+    /// Whether `path` may be read, written, or executed under this config.
+    ///
+    /// A path is allowed when it is inside a writable directory
+    /// (read/write/execute) or a read-and-execute directory (read/execute).
+    /// Both the lexical path and its canonical form are checked so symlinked
+    /// paths (e.g. `/tmp` -> `/private/tmp` on macOS) match their grant.
+    ///
+    /// This is a best-effort hint for naming a missing directory grant after
+    /// a sandbox denial; it is not an exact model of Seatbelt/Landlock
+    /// enforcement. A sibling of a `[sandbox].read_only` file grant is still
+    /// reported as allowed here even though the OS denies it, because the
+    /// command token resolves to a path outside the granted file.
+    pub(super) fn is_path_allowed(&self, path: &Path) -> bool {
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        self.writable
+            .iter()
+            .chain(self.read_execute.iter())
+            .any(|allowed| path.starts_with(allowed) || canonical.starts_with(allowed))
+    }
 }
 
 /// Push each existing directory and its canonical form into the target vector.
@@ -942,6 +962,37 @@ mod tests {
                 SandboxPolicy::WorkspaceWrite
             );
         });
+    }
+
+    #[test]
+    fn is_path_allowed_flags_paths_outside_the_allowed_dirs_only() {
+        let cwd = tempfile::tempdir().unwrap();
+        let inside = cwd.path().join("sub/file.txt");
+        // A path under no allowed directory: not the workspace, not home's
+        // toolchain caches, and not a standard system read/execute path.
+        let outside = Path::new("/cake-is-path-allowed-probe-outside/file.txt");
+
+        let config = SandboxConfig::build_with_policy(
+            SandboxPolicy::WorkspaceWrite,
+            cwd.path(),
+            &[],
+            &[],
+            &[],
+            &[],
+        );
+
+        assert!(
+            config.is_path_allowed(&inside),
+            "path under cwd should be allowed"
+        );
+        assert!(
+            config.is_path_allowed(cwd.path()),
+            "cwd itself should be allowed"
+        );
+        assert!(
+            !config.is_path_allowed(outside),
+            "path outside cwd should be denied"
+        );
     }
 
     #[test]
