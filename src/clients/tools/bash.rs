@@ -168,7 +168,11 @@ struct SandboxPathRef {
 /// outside the sandbox's allowed directories. This names the missing grant
 /// instead of echoing the generic "Operation not permitted". Only existing
 /// paths are considered, avoiding false positives on shell words, flags, and
-/// operators.
+/// operators. A bare word resolves via `PATH` as an executable only in command
+/// position (the leading word, or the word after a command separator); bare
+/// words in argument position resolve relative to `cwd` as a file read, so an
+/// argument that merely shares a name with a `PATH` executable is not mistaken
+/// for the denied command.
 fn denied_paths_in_command(
     command: &str,
     cwd: &Path,
@@ -179,15 +183,24 @@ fn denied_paths_in_command(
         .unwrap_or_default();
     let mut refs: Vec<SandboxPathRef> = Vec::new();
     let mut seen = std::collections::HashSet::new();
+    let mut expect_command = true;
 
     for raw in command.split_whitespace() {
         let token = strip_shell_quotes(raw);
-        if token.is_empty() || is_shell_noise(token) {
+        if token.is_empty() {
             continue;
         }
-        let Some(resolved) = resolve_path_token(token, &home, cwd) else {
+        if is_command_separator(token) {
+            expect_command = true;
+            continue;
+        }
+        if is_shell_noise(token) {
+            continue;
+        }
+        let Some(resolved) = resolve_path_token(token, &home, cwd, expect_command) else {
             continue;
         };
+        expect_command = false;
         if seen.insert(resolved.path.clone()) {
             refs.push(resolved);
         }
@@ -222,6 +235,12 @@ fn is_shell_noise(token: &str) -> bool {
     if token.contains('>') || token.contains('<') || token.contains('=') {
         return true;
     }
+    is_command_separator(token) || matches!(token, "!" | "[" | "]")
+}
+
+/// Shell tokens that end one command and start another. The next bare word is
+/// a command resolved via `PATH` rather than a file argument.
+fn is_command_separator(token: &str) -> bool {
     matches!(
         token,
         "|" | "||"
@@ -233,9 +252,6 @@ fn is_shell_noise(token: &str) -> bool {
             | ")"
             | "{"
             | "}"
-            | "!"
-            | "["
-            | "]"
             | "then"
             | "do"
             | "else"
@@ -245,7 +261,16 @@ fn is_shell_noise(token: &str) -> bool {
 }
 
 /// Resolve a single command token to an on-disk path and its likely operation.
-fn resolve_path_token(token: &str, home: &Path, cwd: &Path) -> Option<SandboxPathRef> {
+///
+/// Bare words resolve via `PATH` as an executable only in command position
+/// (`in_command_position`); otherwise they are file arguments relative to
+/// `cwd`, so an argument named like a `PATH` executable stays a file read.
+fn resolve_path_token(
+    token: &str,
+    home: &Path,
+    cwd: &Path,
+    in_command_position: bool,
+) -> Option<SandboxPathRef> {
     if let Some(rest) = token.strip_prefix("~/") {
         return existing_ref(home.join(rest), SandboxPathOperation::Read);
     }
@@ -260,7 +285,7 @@ fn resolve_path_token(token: &str, home: &Path, cwd: &Path) -> Option<SandboxPat
     }
     // Bare word: a command name resolves via `PATH` as an executable; otherwise
     // fall back to a path relative to the working directory.
-    if let Some(found) = lookup_executable_in_path(token) {
+    if in_command_position && let Some(found) = lookup_executable_in_path(token) {
         return Some(SandboxPathRef {
             path: found,
             operation: SandboxPathOperation::Execute,

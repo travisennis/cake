@@ -1472,6 +1472,67 @@ fn denied_paths_in_command_skips_shell_noise_and_flags() {
 }
 
 #[test]
+fn bare_command_word_resolves_via_path_and_reports_execute() {
+    // A bare word in command position resolves via `PATH`: an executable that
+    // is only reachable through `PATH` and sits outside the allowed dirs is
+    // reported as an execute denial.
+    let cwd = tempfile::TempDir::new().unwrap();
+    let outside = tempfile::TempDir::new_in(outside_test_root()).unwrap();
+    let tool = outside.path().join("ztool-cake-path-probe");
+    std::fs::write(&tool, "#!/bin/sh\necho hi\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let config = minimal_sandbox_config(cwd.path());
+    let existing_path = std::env::var_os("PATH")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_default();
+    let path_with_tool = format!("{}:{}", outside.path().display(), existing_path.display());
+
+    temp_env::with_var("PATH", Some(&path_with_tool), || {
+        let denials = denied_paths_in_command("ztool-cake-path-probe", cwd.path(), &config);
+        assert_eq!(denials.len(), 1, "expected one denial, got: {denials:?}");
+        assert!(denials[0].contains("(execute)"), "{denials:?}");
+    });
+}
+
+#[test]
+fn bare_word_arguments_resolve_from_cwd_not_path() {
+    // A bare word in argument position must resolve relative to `cwd` as a
+    // file read, even when a same-named executable exists on `PATH` outside
+    // the allowed dirs. Treating it as the denied command would be a false
+    // positive.
+    let cwd = tempfile::TempDir::new().unwrap();
+    let outside = tempfile::TempDir::new_in(outside_test_root()).unwrap();
+    std::fs::write(cwd.path().join("weird"), "data").unwrap();
+    let stray_bin = outside.path().join("weird");
+    std::fs::write(&stray_bin, "#!/bin/sh\necho hi\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&stray_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    std::fs::write(cwd.path().join("ok.txt"), "data").unwrap();
+
+    let config = minimal_sandbox_config(cwd.path());
+    let existing_path = std::env::var_os("PATH")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_default();
+    let path_with_stray = format!("{}:{}", outside.path().display(), existing_path.display());
+
+    temp_env::with_var("PATH", Some(&path_with_stray), || {
+        let denials = denied_paths_in_command("cat weird", cwd.path(), &config);
+        assert!(
+            denials.is_empty(),
+            "argument `weird` must resolve from cwd, not `PATH`; got: {denials:?}"
+        );
+    });
+}
+
+#[test]
 fn compose_text_output_includes_named_denials() {
     let output = compose_text_output(
         "Operation not permitted",
