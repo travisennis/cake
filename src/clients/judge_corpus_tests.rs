@@ -768,6 +768,7 @@ fn corpus_loaded_settings() -> LoadedSettings {
         directories: Vec::new(),
         sandbox: SandboxSettings::default(),
         skills: SkillSettings::default(),
+        tools_enabled: None,
         system_prompt: None,
         judge: JudgeSettings {
             model: Some("judge-model".to_string()),

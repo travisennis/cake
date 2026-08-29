@@ -495,6 +495,18 @@ fn test_build_content_prompt_and_stdin() {
 }
 
 #[test]
+fn unavailable_tool_names_are_reported_without_affecting_available_tools() {
+    let requested = vec!["Read".to_string(), "NoSuchTool".to_string()];
+    let available = vec!["Read".to_string()];
+
+    assert_eq!(
+        CodingAssistant::unavailable_tool_names(Some(&requested), &available),
+        vec!["NoSuchTool"]
+    );
+    assert!(CodingAssistant::unavailable_tool_names(None, &available).is_empty());
+}
+
+#[test]
 fn forked_session_seeds_skills_from_structured_records() {
     let restored = session_with_skill_records();
     let run_session = CodingAssistant::forked_client_and_session(
@@ -505,6 +517,7 @@ fn forked_session_seeds_skills_from_structured_records() {
         HashMap::new(),
         Arc::new(ToolContext::from_current_process()),
         Vec::new(),
+        None,
         uuid::uuid!("550e8400-e29b-41d4-a716-446655440001"),
     )
     .unwrap();

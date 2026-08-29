@@ -19,7 +19,7 @@ use crate::config::toolbox::ToolboxTool;
 use crate::config::{
     AgentsFile, DataDir, ModelDefinition, ResolvedModelConfig, Session, SkillCatalog,
 };
-use crate::prompts::build_initial_prompt_messages;
+use crate::prompts::build_initial_prompt_messages_with_enabled_tools;
 use crate::types::SessionRecord;
 
 /// A fully assembled agent, session, and storage strategy ready for execution.
@@ -62,6 +62,10 @@ pub fn skill_locations(skill_catalog: &SkillCatalog) -> HashMap<PathBuf, Skill> 
 
 impl crate::CodingAssistant {
     /// Convert a restored session into the agent/session pair used for a continued run.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "session construction naturally requires many parameters"
+    )]
     pub(crate) fn restored_client_and_session(
         restored: Session,
         resolved: ResolvedModelConfig,
@@ -69,6 +73,7 @@ impl crate::CodingAssistant {
         skill_locations: &HashMap<PathBuf, Skill>,
         tool_context: Arc<ToolContext>,
         toolbox_tools: Vec<ToolboxTool>,
+        enabled_tools: Option<&[String]>,
         task_id: uuid::Uuid,
     ) -> anyhow::Result<RunSession> {
         let messages = restored.messages();
@@ -81,6 +86,7 @@ impl crate::CodingAssistant {
             .with_task_id(task_id)
             .with_tool_context(tool_context)
             .with_toolbox_tools(toolbox_tools)
+            .with_enabled_tools(enabled_tools)
             // Flattened rather than layered: the CLI prints only the outermost
             // error, and the underlying diagnostic is the useful part.
             .with_history(messages)
@@ -99,6 +105,10 @@ impl crate::CodingAssistant {
     }
 
     /// Build the agent/session pair for a new run using the agent-generated session id.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "session construction naturally requires many parameters"
+    )]
     pub(crate) fn new_client_and_session(
         resolved: ResolvedModelConfig,
         current_dir: PathBuf,
@@ -106,12 +116,14 @@ impl crate::CodingAssistant {
         skill_locations: HashMap<PathBuf, Skill>,
         tool_context: Arc<ToolContext>,
         toolbox_tools: Vec<ToolboxTool>,
+        enabled_tools: Option<&[String]>,
         task_id: uuid::Uuid,
     ) -> RunSession {
         let agent = Agent::new(resolved.clone(), initial_messages)
             .with_task_id(task_id)
             .with_tool_context(tool_context)
             .with_toolbox_tools(toolbox_tools)
+            .with_enabled_tools(enabled_tools)
             .with_skill_locations(skill_locations);
         let new_id = agent.session_id();
         info!(target: "cake", "New session: {new_id}");
@@ -139,12 +151,14 @@ impl crate::CodingAssistant {
         skill_locations: HashMap<PathBuf, Skill>,
         tool_context: Arc<ToolContext>,
         toolbox_tools: Vec<ToolboxTool>,
+        enabled_tools: Option<&[String]>,
         task_id: uuid::Uuid,
     ) -> anyhow::Result<RunSession> {
         let agent = Agent::new(resolved.clone(), initial_messages)
             .with_task_id(task_id)
             .with_tool_context(tool_context)
             .with_toolbox_tools(toolbox_tools)
+            .with_enabled_tools(enabled_tools)
             .with_history(restored.messages())
             .map_err(|error| anyhow::anyhow!("Cannot fork session {}: {error:#}", restored.id))?
             .with_last_usage(restored.last_turn_usage())
@@ -203,11 +217,12 @@ impl crate::CodingAssistant {
         skill_catalog: &SkillCatalog,
         tool_context: &Arc<ToolContext>,
         toolbox_tools: &[ToolboxTool],
+        enabled_tools: Option<&[String]>,
         task_id: uuid::Uuid,
         loaded_system_prompt: Option<&str>,
         judge: &JudgeSettings,
     ) -> anyhow::Result<RunSession> {
-        let initial_messages = build_initial_prompt_messages(
+        let initial_messages = build_initial_prompt_messages_with_enabled_tools(
             &current_dir,
             config_dir,
             self.system_prompt.as_deref().map(std::path::Path::new),
@@ -216,6 +231,7 @@ impl crate::CodingAssistant {
             skill_catalog,
             tool_context.sandbox_policy,
             toolbox_tools,
+            enabled_tools,
         );
         let inputs = RunInputs {
             current_dir,
@@ -225,6 +241,7 @@ impl crate::CodingAssistant {
             default_model,
             tool_context,
             toolbox_tools,
+            tools_enabled: enabled_tools,
             task_id,
             judge,
         };
@@ -276,6 +293,7 @@ impl crate::CodingAssistant {
             &inputs.skill_locations,
             tool_context,
             inputs.toolbox_tools.to_vec(),
+            inputs.tools_enabled,
             inputs.task_id,
         )
     }
@@ -319,6 +337,7 @@ impl crate::CodingAssistant {
             inputs.skill_locations.clone(),
             tool_context,
             inputs.toolbox_tools.to_vec(),
+            inputs.tools_enabled,
             inputs.task_id,
         )
     }
@@ -335,6 +354,7 @@ impl crate::CodingAssistant {
             inputs.skill_locations.clone(),
             attach_judge(inputs.tool_context, &resolved, inputs.judge, inputs.models),
             inputs.toolbox_tools.to_vec(),
+            inputs.tools_enabled,
             inputs.task_id,
         ))
     }
@@ -349,6 +369,7 @@ struct RunInputs<'a> {
     default_model: Option<&'a str>,
     tool_context: &'a Arc<ToolContext>,
     toolbox_tools: &'a [ToolboxTool],
+    tools_enabled: Option<&'a [String]>,
     task_id: uuid::Uuid,
     judge: &'a JudgeSettings,
 }
@@ -524,6 +545,7 @@ mod tests {
                     },
                     &tool_context,
                     &[],
+                    None,
                     uuid::Uuid::new_v4(),
                     None,
                     &JudgeSettings::default(),
@@ -593,6 +615,7 @@ mod tests {
             &HashMap::new(),
             tool_context,
             Vec::new(),
+            None,
             uuid::Uuid::new_v4(),
         )
         .expect("restore should succeed");
@@ -617,6 +640,7 @@ mod tests {
             &HashMap::new(),
             test_tool_context(),
             Vec::new(),
+            None,
             uuid::Uuid::new_v4(),
         )
         .expect("restore should succeed");
@@ -641,6 +665,7 @@ mod tests {
             HashMap::new(),
             test_tool_context(),
             Vec::new(),
+            None,
             uuid::Uuid::new_v4(),
         )
         .expect("fork should succeed");
@@ -720,6 +745,7 @@ mod tests {
             },
             &tool_context,
             &[],
+            None,
             uuid::Uuid::new_v4(),
             None,
             &JudgeSettings::default(),

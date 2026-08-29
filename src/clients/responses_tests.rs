@@ -941,6 +941,8 @@ fn build_request_disables_storage_for_codex_backend() {
     .expect("build request");
     let wire: serde_json::Value = serde_json::from_slice(&bytes).expect("parse request");
 
+    assert!(wire.get("tools").is_none());
+    assert!(wire.get("tool_choice").is_none());
     assert_eq!(wire["store"], false);
     assert_eq!(wire["stream"], true);
     assert!(wire.get("temperature").is_none());

@@ -79,6 +79,7 @@ fn loaded_settings(base_url: &str) -> LoadedSettings {
         directories: vec![],
         sandbox: SandboxSettings::default(),
         skills: SkillSettings::default(),
+        tools_enabled: None,
         system_prompt: None,
         judge: JudgeSettings::default(),
         limits: ResolvedLimits::default(),

@@ -1763,6 +1763,14 @@ fn build_request_json_preserves_f32_sampling_fields_on_the_wire() {
     .unwrap();
     let wire = String::from_utf8(bytes).unwrap();
     assert!(
+        !wire.contains("\"tools\""),
+        "empty tool selection must omit Chat Completions tools"
+    );
+    assert!(
+        !wire.contains("\"tool_choice\""),
+        "empty tool selection must omit Chat Completions tool_choice"
+    );
+    assert!(
         wire.contains("\"temperature\":0.9"),
         "f32 temperature must serialize as 0.9 on the wire, got: {wire}"
     );

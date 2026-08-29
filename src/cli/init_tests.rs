@@ -73,6 +73,14 @@ fn initialize_creates_behavior_preserving_settings() {
         "generated settings must not activate any keys"
     );
     assert!(
+        content.contains("enabled = [\"Read\", \"Edit\"]"),
+        "generated settings must document the tool-selection key"
+    );
+    assert!(
+        content.contains("[profiles.review.tools]"),
+        "generated settings must document profile tool selection"
+    );
+    assert!(
         content.contains("[tools.bash.judge]"),
         "generated settings must reference the judge vocabulary"
     );

@@ -50,7 +50,8 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
 ///
 /// If none of these sources produce a readable file, the built-in default is used.
 /// The first readable file found wins. Empty files are valid (intentional blank prompt).
-/// Unreadable files produce a warning and are skipped.
+/// Unreadable files produce a warning and are skipped. The optional `enabled_tools`
+/// list filters the built-in available-tools section by exact registered name.
 #[expect(
     clippy::cognitive_complexity,
     reason = "inherently dispatch-heavy precedence scan (McCabe 14, cognitive 17; within the <= 15 McCabe allowance); reduction tracked in #102"
@@ -62,6 +63,7 @@ pub fn resolve_system_prompt(
     settings_system_prompt: Option<&Path>,
     sandbox_policy: SandboxPolicy,
     toolbox_tools: &[ToolboxTool],
+    enabled_tools: Option<&[String]>,
 ) -> String {
     // 1. --system-prompt CLI flag
     if let Some(path) = cli_system_prompt {
@@ -137,7 +139,7 @@ pub fn resolve_system_prompt(
     if builtin.contains("{{AVAILABLE_TOOLS}}") {
         builtin.replace(
             "{{AVAILABLE_TOOLS}}",
-            &format_tool_list_section(sandbox_policy, toolbox_tools),
+            &format_tool_list_section(sandbox_policy, toolbox_tools, enabled_tools),
         )
     } else {
         builtin
@@ -149,9 +151,10 @@ pub fn resolve_system_prompt(
 /// The first message is the stable system prompt. Mutable context such as
 /// AGENTS.md contents, available skills, and environment context is emitted as
 /// separate developer messages so it is not tied to the system prompt.
+#[cfg(test)]
 #[expect(
     clippy::too_many_arguments,
-    reason = "prompt construction naturally requires many inputs"
+    reason = "test compatibility wrapper mirrors the prompt builder's inputs"
 )]
 pub fn build_initial_prompt_messages(
     working_dir: &Path,
@@ -163,6 +166,35 @@ pub fn build_initial_prompt_messages(
     sandbox_policy: SandboxPolicy,
     toolbox_tools: &[ToolboxTool],
 ) -> Vec<(Role, String)> {
+    build_initial_prompt_messages_with_enabled_tools(
+        working_dir,
+        config_dir,
+        cli_system_prompt,
+        settings_system_prompt,
+        agents_files,
+        skill_catalog,
+        sandbox_policy,
+        toolbox_tools,
+        None,
+    )
+}
+
+/// Builds initial prompt messages with an optional exact-name tool allowlist.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "prompt construction naturally requires many inputs"
+)]
+pub fn build_initial_prompt_messages_with_enabled_tools(
+    working_dir: &Path,
+    config_dir: &Path,
+    cli_system_prompt: Option<&Path>,
+    settings_system_prompt: Option<&Path>,
+    agents_files: &[AgentsFile],
+    skill_catalog: &SkillCatalog,
+    sandbox_policy: SandboxPolicy,
+    toolbox_tools: &[ToolboxTool],
+    enabled_tools: Option<&[String]>,
+) -> Vec<(Role, String)> {
     let mut messages = vec![(
         Role::System,
         resolve_system_prompt(
@@ -172,6 +204,7 @@ pub fn build_initial_prompt_messages(
             settings_system_prompt,
             sandbox_policy,
             toolbox_tools,
+            enabled_tools,
         ),
     )];
     let context = format_agents_context(agents_files);
@@ -284,8 +317,30 @@ mod tests {
             None,
             SandboxPolicy::WorkspaceWrite,
             &[],
+            None,
         );
         assert!(prompt.starts_with("You are cake."));
+    }
+
+    #[test]
+    fn resolve_builtin_filters_enabled_tools() {
+        let dir = TempDir::new().unwrap();
+        let config_dir = TempDir::new().unwrap();
+        let enabled = vec!["Read".to_string()];
+        let prompt = resolve_system_prompt(
+            dir.path(),
+            config_dir.path(),
+            None,
+            None,
+            SandboxPolicy::WorkspaceWrite,
+            &[],
+            Some(&enabled),
+        );
+
+        assert!(prompt.contains("- **Read**:"));
+        assert!(!prompt.contains("- **Bash**:"));
+        assert!(!prompt.contains("- **Edit**:"));
+        assert!(!prompt.contains("- **Write**:"));
     }
 
     #[test]
@@ -304,6 +359,7 @@ mod tests {
             None,
             SandboxPolicy::WorkspaceWrite,
             &[],
+            None,
         );
         assert_eq!(prompt, "Project prompt");
     }
@@ -322,6 +378,7 @@ mod tests {
             None,
             SandboxPolicy::WorkspaceWrite,
             &[],
+            None,
         );
         assert_eq!(prompt, "User prompt");
     }
@@ -343,6 +400,7 @@ mod tests {
             None,
             SandboxPolicy::WorkspaceWrite,
             &[],
+            None,
         );
         assert_eq!(prompt, "Project prompt");
     }
@@ -363,6 +421,7 @@ mod tests {
             None,
             SandboxPolicy::WorkspaceWrite,
             &[],
+            None,
         );
         assert_eq!(prompt, "");
     }
@@ -383,6 +442,7 @@ mod tests {
             None,
             SandboxPolicy::WorkspaceWrite,
             &[],
+            None,
         );
         assert_eq!(prompt, "");
     }
@@ -413,6 +473,7 @@ mod tests {
             None,
             SandboxPolicy::WorkspaceWrite,
             &[],
+            None,
         );
 
         #[cfg(unix)]
@@ -463,6 +524,7 @@ mod tests {
             None,
             SandboxPolicy::WorkspaceWrite,
             &[],
+            None,
         );
 
         #[cfg(unix)]
@@ -500,6 +562,7 @@ mod tests {
             None,
             SandboxPolicy::WorkspaceWrite,
             &[],
+            None,
         );
         assert!(!prompt.starts_with('\n'));
         assert!(!prompt.ends_with('\n'));

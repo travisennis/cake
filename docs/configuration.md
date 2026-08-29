@@ -140,6 +140,20 @@ hook_output_limit = 65536       # Hook stdout/stderr cap per hook (bytes; defaul
 
 When a project overrides a global budget back to no cap, `"unlimited"` is the explicit value that does so.
 
+## Tool selection
+
+The optional `[tools]` section can limit the exact tools exposed to the model and accepted by the agent. When `enabled` is absent, Cake keeps the normal built-in tools and any discovered toolbox tools. An explicit empty list exposes no tools.
+
+```toml
+[tools]
+enabled = ["Read", "Edit"]
+
+[profiles.review.tools]
+enabled = ["Read"]
+```
+
+Names are case-sensitive registered names: `Bash`, `Read`, `Edit`, `Write`, or a toolbox name such as `tb__run_tests`. The list replaces lower-precedence global or project values, so a selected profile can narrow the top-level selection. A profile that omits `enabled` inherits the lower-precedence list; there is no `all` value that restores every tool. Unknown or unavailable names are warned about and are never registered. The selection is applied after sandbox filtering; for example, `--sandbox read-only` still removes `Edit`, `Write`, and toolbox tools. `tools.enabled = []` also causes provider requests to omit tool definitions.
+
 ## Bash tool settings
 
 `[tools.bash]` configures the Bash tool. The `[tools.bash.judge]` table holds settings for the LLM command-safety judge, which evaluates every Bash command before it runs and is the command-safety gate above the OS sandbox. The judge is default-on and fail-closed: an unavailable judge (unresolvable model, rubric read failure, timeout, transport error, or malformed verdict) blocks the command rather than running it ungated. A `block` verdict prevents the command from running; a `warn` verdict runs it with the judge's guidance prepended to the output. `enabled = false` or `CAKE_JUDGE=off` disables the judge entirely for every command.
