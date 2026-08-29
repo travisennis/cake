@@ -8,7 +8,7 @@ use crate::config::settings::ToolLimits;
 use crate::session_telemetry::{CompensationEventTelemetry, CompensationKind};
 
 #[cfg(test)]
-use crate::config::settings::DEFAULT_READ_MAX_OUTPUT_BYTES;
+use crate::config::settings::{DEFAULT_READ_MAX_LINE_BYTES, DEFAULT_READ_MAX_OUTPUT_BYTES};
 
 // =============================================================================
 // Read Tool Definition
@@ -129,15 +129,16 @@ const EXTRA_LINES_TO_COUNT: usize = 1000;
 /// line or to count the footer.
 const BINARY_DETECTION_BYTES: usize = 8192;
 
-/// Maximum bytes of one line delivered to the model.
-///
-/// A longer line is held only up to this cap plus room for its trailing
-/// newline; the rest is consumed and discarded, so memory grows with the cap,
-/// not with the longest line (a newline-free 50 MB line no longer allocates
-/// the whole line). The displayed prefix ends with a
-/// `... (line truncated to N bytes)` marker. `read-description.txt` states
-/// this value and must change with it.
-const MAX_LINE_BYTES: usize = 10_000;
+// Maximum bytes of one line delivered to the model.
+//
+// A longer line is held only up to this cap plus room for its trailing
+// newline; the rest is consumed and discarded, so memory grows with the cap,
+// not with the longest line (a newline-free 50 MB line no longer allocates
+// the whole line). The displayed prefix ends with a
+// `... (line truncated to N bytes)` marker. The cap is configurable via the
+// `read_max_line_bytes` `[limits]` key (compiled default 10,000); `"unlimited"`
+// re-enables the pre-#362 whole-line-in-memory behavior. `read-description.txt`
+// documents the config and must change with it.
 
 /// Read and format a file with line numbers
 fn read_file(
@@ -160,7 +161,7 @@ fn read_file(
 /// Read a line range from an open reader and format it with line numbers.
 ///
 /// The work is bounded rather than proportional to the file:
-/// - Each line is read into a reused buffer capped at [`MAX_LINE_BYTES`]
+/// - Each line is read into a reused buffer capped at `read_max_line_bytes`
 ///   bytes; the rest of an over-long line is consumed and discarded, so a
 ///   newline-free giant line cannot grow memory (or per-line allocation).
 /// - In-window lines accumulate into a single `String` only while it stays
@@ -182,8 +183,9 @@ fn read_from_reader<R: BufRead>(
 ) -> Result<super::ToolResult, String> {
     // The window is empty by request: nothing can be shown, so count to EOF
     // for the exact total in the message.
+    let line_cap = limits.read_max_line_bytes.unwrap_or(usize::MAX);
     if start > end_requested {
-        let total_lines = count_lines_to_eof(reader, path)?;
+        let total_lines = count_lines_to_eof(reader, path, line_cap)?;
         return Ok(no_content_result(path, total_lines));
     }
 
@@ -198,7 +200,7 @@ fn read_from_reader<R: BufRead>(
     let mut line_buf = Vec::new();
 
     loop {
-        let Some(line) = read_line_bounded(reader, &mut line_buf, MAX_LINE_BYTES)
+        let Some(line) = read_line_bounded(reader, &mut line_buf, line_cap)
             .map_err(|e| format!("Failed to read file '{}': {e}", path.display()))?
         else {
             exact = true;
@@ -215,7 +217,7 @@ fn read_from_reader<R: BufRead>(
             continue; // line_buf reused, no allocation
         }
         if emit_line(i, end_requested, &body, soft_cap) {
-            append_line(&mut body, &line, i);
+            append_line(&mut body, &line, i, line_cap);
             last_emitted = Some(i);
         }
 
@@ -264,18 +266,18 @@ const fn emit_line(i: usize, end_requested: usize, body: &str, soft_cap: usize) 
 
 /// Append one numbered line to the body, marking a line truncated at the
 /// per-line byte cap.
-fn append_line(body: &mut String, line: &BoundedLine<'_>, i: usize) {
+fn append_line(body: &mut String, line: &BoundedLine<'_>, i: usize, cap: usize) {
     if !body.is_empty() {
         body.push('\n');
     }
     _ = write!(body, "{:>6}: {}", i + 1, line.text);
-    append_truncation_marker(body, line.truncated);
+    append_truncation_marker(body, line.truncated, cap);
 }
 
 /// Append the per-line truncation marker when the line was cut at the cap.
-fn append_truncation_marker(body: &mut String, truncated: bool) {
+fn append_truncation_marker(body: &mut String, truncated: bool, cap: usize) {
     if truncated {
-        _ = write!(body, " ... (line truncated to {MAX_LINE_BYTES} bytes)");
+        _ = write!(body, " ... (line truncated to {cap} bytes)");
     }
 }
 
@@ -474,12 +476,16 @@ fn append_more_lines(output: &mut String, end: usize, total_lines: usize, exact:
 }
 
 /// Count every line of `reader` to EOF, reusing one buffer capped at
-/// [`MAX_LINE_BYTES`] per line (no per-line allocation). Used when the window
+/// `read_max_line_bytes` per line (no per-line allocation). Used when the window
 /// is empty by request and the message needs the exact total.
-fn count_lines_to_eof<R: BufRead>(reader: &mut R, path: &Path) -> Result<usize, String> {
+fn count_lines_to_eof<R: BufRead>(
+    reader: &mut R,
+    path: &Path,
+    line_cap: usize,
+) -> Result<usize, String> {
     let mut buf = Vec::new();
     let mut total_lines = 0usize;
-    while let Some(line) = read_line_bounded(reader, &mut buf, MAX_LINE_BYTES)
+    while let Some(line) = read_line_bounded(reader, &mut buf, line_cap)
         .map_err(|e| format!("Failed to read file '{}': {e}", path.display()))?
     {
         reject_binary_line(&line, path)?;
@@ -913,7 +919,7 @@ mod tests {
         let short_reader = ShortReader::new(&data, 100);
         let mut reader = std::io::BufReader::new(short_reader);
         let mut buf = Vec::new();
-        let line = read_line_bounded(&mut reader, &mut buf, MAX_LINE_BYTES)
+        let line = read_line_bounded(&mut reader, &mut buf, DEFAULT_READ_MAX_LINE_BYTES as usize)
             .unwrap()
             .expect("data should produce a line");
         assert!(
@@ -929,7 +935,7 @@ mod tests {
         let short_reader = ShortReader::new(&data, 100);
         let mut reader = std::io::BufReader::new(short_reader);
         let mut buf = Vec::new();
-        let line = read_line_bounded(&mut reader, &mut buf, MAX_LINE_BYTES)
+        let line = read_line_bounded(&mut reader, &mut buf, DEFAULT_READ_MAX_LINE_BYTES as usize)
             .unwrap()
             .expect("data should produce a line");
         assert!(
@@ -945,7 +951,7 @@ mod tests {
         let short_reader = ShortReader::new(&data, 7);
         let mut reader = std::io::BufReader::new(short_reader);
         let mut buf = Vec::new();
-        let line = read_line_bounded(&mut reader, &mut buf, MAX_LINE_BYTES)
+        let line = read_line_bounded(&mut reader, &mut buf, DEFAULT_READ_MAX_LINE_BYTES as usize)
             .unwrap()
             .expect("data should produce a line");
         assert!(
@@ -1004,7 +1010,7 @@ mod tests {
     fn error_on_null_byte_after_initial_8k() {
         let temp_dir = TempDir::new().unwrap();
         let file_path = temp_dir.path().join("text-with-late-null.txt");
-        let mut content = vec![b'a'; MAX_LINE_BYTES + 100];
+        let mut content = vec![b'a'; DEFAULT_READ_MAX_LINE_BYTES as usize + 100];
         content.push(0);
         content.extend_from_slice(b"tail");
         fs::write(&file_path, content).unwrap();
@@ -1117,6 +1123,47 @@ mod tests {
         );
     }
 
+    #[test]
+    fn read_max_line_bytes_override_changes_marker() {
+        // A custom per-line cap both bounds the delivered line and is reported
+        // by the truncation marker, overriding the compiled 10,000 default.
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("long.txt");
+        fs::write(&file_path, "x".repeat(500)).unwrap();
+
+        let mut context = ToolContext::from_current_process();
+        let mut limits = crate::config::settings::ToolLimits::defaults();
+        limits.read_max_line_bytes = Some(100);
+        context.limits = limits;
+
+        let args = serde_json::json!({ "path": file_path.to_str().unwrap() }).to_string();
+        let result = execute_read(&context, &args).unwrap();
+        assert!(
+            result.output.contains("... (line truncated to 100 bytes)"),
+            "marker must report the configured cap: {}",
+            result.output
+        );
+    }
+
+    #[test]
+    fn read_max_line_bytes_unlimited_reads_whole_line() {
+        // An unlimited per-line cap re-enables reading a line whole, so a
+        // long line is delivered in full without a truncation marker.
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("long.txt");
+        fs::write(&file_path, "y".repeat(50_000)).unwrap();
+
+        let mut context = ToolContext::from_current_process();
+        let mut limits = crate::config::settings::ToolLimits::defaults();
+        limits.read_max_line_bytes = None;
+        context.limits = limits;
+
+        let args = serde_json::json!({ "path": file_path.to_str().unwrap() }).to_string();
+        let result = execute_read(&context, &args).unwrap();
+        assert!(!result.output.contains("line truncated"));
+        assert!(result.output.contains(&"y".repeat(50_000)));
+    }
+
     // --- per-line byte cap ---
 
     #[test]
@@ -1131,24 +1178,25 @@ mod tests {
         let file = std::fs::File::open(&file_path).unwrap();
         let mut reader = BufReader::new(file);
         let mut buf = Vec::new();
-        let line = read_line_bounded(&mut reader, &mut buf, MAX_LINE_BYTES)
+        let cap = DEFAULT_READ_MAX_LINE_BYTES as usize;
+        let line = read_line_bounded(&mut reader, &mut buf, cap)
             .unwrap()
             .expect("file has one line");
         assert!(line.truncated, "50 MB line must count as truncated");
         assert!(
-            line.text.len() <= MAX_LINE_BYTES,
-            "delivered {} bytes but cap is {MAX_LINE_BYTES}",
+            line.text.len() <= cap,
+            "delivered {} bytes but cap is {cap}",
             line.text.len()
         );
         assert!(
-            buf.capacity() < 4 * MAX_LINE_BYTES,
+            buf.capacity() < 4 * cap,
             "line buffer capacity {} exceeds a small multiple of the cap",
             buf.capacity()
         );
 
         // The line still counts as exactly one line: EOF follows immediately.
         assert!(
-            read_line_bounded(&mut reader, &mut buf, MAX_LINE_BYTES)
+            read_line_bounded(&mut reader, &mut buf, cap)
                 .unwrap()
                 .is_none()
         );
@@ -1178,7 +1226,7 @@ mod tests {
         // A line of exactly the cap is delivered in full without a marker.
         let temp_dir = TempDir::new().unwrap();
         let file_path = temp_dir.path().join("exact.txt");
-        fs::write(&file_path, "z".repeat(MAX_LINE_BYTES)).unwrap();
+        fs::write(&file_path, "z".repeat(DEFAULT_READ_MAX_LINE_BYTES as usize)).unwrap();
 
         let args = serde_json::json!({ "path": file_path.to_str().unwrap() }).to_string();
         let result = execute_read(&ToolContext::from_current_process(), &args).unwrap();
@@ -1188,7 +1236,7 @@ mod tests {
             !output.contains("line truncated"),
             "exact-cap line must not be marked: {output}"
         );
-        let full = "z".repeat(MAX_LINE_BYTES);
+        let full = "z".repeat(DEFAULT_READ_MAX_LINE_BYTES as usize);
         assert!(output.contains(full.as_str()));
     }
 

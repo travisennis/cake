@@ -1069,10 +1069,10 @@
     {
       "file": "./src/config/settings.rs",
       "function": "SettingsLoader::merge_output_budgets",
-      "line": 956,
-      "cyclomatic": 6.0,
+      "line": 1008,
+      "cyclomatic": 7.0,
       "coverage": 100.0,
-      "crap": 6.0
+      "crap": 7.0
     },
     {
       "file": "./src/config/settings.rs",

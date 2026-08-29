@@ -417,6 +417,12 @@ pub struct LimitsSettingsOverlay {
     /// disables truncation.
     #[serde(default)]
     pub read_max_output_bytes: Option<Limit>,
+    /// Maximum bytes of one Read line delivered before it is truncated.
+    /// Absent uses the compiled default of 10,000; `"unlimited"` re-enables
+    /// reading a whole line into memory, which can starve memory for a
+    /// newline-free giant line.
+    #[serde(default)]
+    pub read_max_line_bytes: Option<Limit>,
     /// Maximum bytes of hook stdout and stderr captured per hook invocation.
     /// Absent uses the compiled default of 64 KiB; `"unlimited"` disables
     /// truncation.
@@ -456,6 +462,8 @@ pub struct ToolLimits {
     pub read_default_end_line: Option<usize>,
     /// Maximum bytes of Read output before truncation (default 100,000).
     pub read_max_output_bytes: Option<usize>,
+    /// Maximum bytes delivered for a single Read line (default 10,000).
+    pub read_max_line_bytes: Option<usize>,
     /// Maximum bytes of hook stdout/stderr captured per hook (default 64 KiB).
     pub hook_output_limit: Option<usize>,
 }
@@ -470,6 +478,9 @@ pub const DEFAULT_BASH_READ_CAP: u32 = 100_000;
 pub const DEFAULT_READ_DEFAULT_END_LINE: u32 = 200;
 /// Compiled default for [`ToolLimits::read_max_output_bytes`].
 pub const DEFAULT_READ_MAX_OUTPUT_BYTES: u32 = 100_000;
+/// Compiled default for [`ToolLimits::read_max_line_bytes`], matching the
+/// constant it replaced in `src/clients/tools/read.rs`.
+pub const DEFAULT_READ_MAX_LINE_BYTES: u32 = 10_000;
 /// Compiled default for [`ToolLimits::hook_output_limit`].
 pub const DEFAULT_HOOK_OUTPUT_LIMIT: u32 = 64 * 1024;
 
@@ -482,6 +493,7 @@ impl ToolLimits {
             bash_read_cap: Some(DEFAULT_BASH_READ_CAP as usize),
             read_default_end_line: Some(DEFAULT_READ_DEFAULT_END_LINE as usize),
             read_max_output_bytes: Some(DEFAULT_READ_MAX_OUTPUT_BYTES as usize),
+            read_max_line_bytes: Some(DEFAULT_READ_MAX_LINE_BYTES as usize),
             hook_output_limit: Some(DEFAULT_HOOK_OUTPUT_LIMIT as usize),
         }
     }
@@ -514,6 +526,10 @@ impl LimitsSettingsOverlay {
                 read_max_output_bytes: resolve_tool_limit(
                     self.read_max_output_bytes,
                     DEFAULT_READ_MAX_OUTPUT_BYTES,
+                ),
+                read_max_line_bytes: resolve_tool_limit(
+                    self.read_max_line_bytes,
+                    DEFAULT_READ_MAX_LINE_BYTES,
                 ),
                 hook_output_limit: resolve_tool_limit(
                     self.hook_output_limit,
@@ -1002,6 +1018,9 @@ impl SettingsLoader {
         if limits.read_max_output_bytes.is_some() {
             acc.read_max_output_bytes = limits.read_max_output_bytes;
         }
+        if limits.read_max_line_bytes.is_some() {
+            acc.read_max_line_bytes = limits.read_max_line_bytes;
+        }
         if limits.hook_output_limit.is_some() {
             acc.hook_output_limit = limits.hook_output_limit;
         }
@@ -1158,6 +1177,7 @@ struct SettingsAccumulator {
     bash_read_cap: Option<Limit>,
     read_default_end_line: Option<Limit>,
     read_max_output_bytes: Option<Limit>,
+    read_max_line_bytes: Option<Limit>,
     hook_output_limit: Option<Limit>,
     warnings: Vec<String>,
 }
@@ -1200,6 +1220,7 @@ impl SettingsAccumulator {
             bash_read_cap: self.bash_read_cap,
             read_default_end_line: self.read_default_end_line,
             read_max_output_bytes: self.read_max_output_bytes,
+            read_max_line_bytes: self.read_max_line_bytes,
             hook_output_limit: self.hook_output_limit,
         };
         LoadedSettings {
