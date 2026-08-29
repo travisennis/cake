@@ -2,8 +2,27 @@ use std::{fs, path::PathBuf, process::Command};
 
 use tempfile::TempDir;
 
+/// Resolve the path to the `cake` binary under test.
+///
+/// Prefer the path Cargo exports to the test process at **runtime** via
+/// `CARGO_BIN_EXE_cake`, so the resolved binary always matches the current
+/// build. A compile-time `env!` bake records whichever target directory first
+/// produced the test artifact; when that target layout later moves (e.g. a
+/// shared/parent workspace target dir), the baked path dangles and
+/// `Command::new` fails with `NotFound` until the test artifact is recompiled.
+/// Reading the variable at runtime, validated against the filesystem, keeps a
+/// warm `target/` from breaking the pre-push gate.
 fn binary_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_cake"))
+    choose_binary_path(
+        std::env::var_os("CARGO_BIN_EXE_cake").map(PathBuf::from),
+        PathBuf::from(env!("CARGO_BIN_EXE_cake")),
+    )
+}
+
+/// Pick the binary path to use, preferring a runtime-resolved path that exists
+/// on disk over the compile-time baked fallback.
+fn choose_binary_path(runtime: Option<PathBuf>, baked: PathBuf) -> PathBuf {
+    runtime.filter(|p| p.is_file()).unwrap_or(baked)
 }
 
 /// Environment variables no test may hand to `git` or to the binary under
@@ -85,5 +104,39 @@ impl TestEnv {
         fs::create_dir_all(&settings_dir).expect("failed to create .cake directory");
         fs::write(settings_dir.join("settings.toml"), content)
             .expect("failed to write project settings.toml");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::choose_binary_path;
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    #[test]
+    fn choose_binary_path_prefers_existing_runtime_path() {
+        // A runtime path that exists on disk wins over the baked fallback.
+        let dir = TempDir::new().unwrap();
+        let runtime = dir.path().join("cake");
+        std::fs::write(&runtime, "x").unwrap();
+        let baked = PathBuf::from("/missing/baked/cake");
+        assert_eq!(choose_binary_path(Some(runtime.clone()), baked), runtime);
+    }
+
+    #[test]
+    fn choose_binary_path_falls_back_when_runtime_path_is_missing() {
+        // A runtime path that does not exist (stale baked reference) must not
+        // be selected; the baked fallback keeps the pre-fix behavior.
+        let runtime = PathBuf::from("/missing/runtime/cake");
+        let baked = PathBuf::from("/missing/baked/cake");
+        assert_eq!(choose_binary_path(Some(runtime), baked.clone()), baked);
+    }
+
+    #[test]
+    fn choose_binary_path_falls_back_when_no_runtime_var_is_set() {
+        // Outside `cargo test`, no `CARGO_BIN_EXE_cake` is exported; the baked
+        // value remains the answer.
+        let baked = PathBuf::from("/missing/baked/cake");
+        assert_eq!(choose_binary_path(None, baked.clone()), baked);
     }
 }
