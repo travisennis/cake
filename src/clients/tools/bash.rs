@@ -862,6 +862,26 @@ async fn drain_to_eof<R: tokio::io::AsyncRead + Unpin>(
     }
 }
 
+/// Collect the denied-path names to append to a `[Sandbox restriction]`
+/// notice. Only scans the command when the run looks like a sandbox denial;
+/// otherwise it returns an empty list. Kept off the hot path and out of
+/// `execute_bash_with_args` so that function's cyclomatic complexity stays
+/// within the gate.
+fn sandbox_denials(
+    context: &super::ToolContext,
+    command: &str,
+    cwd: &Path,
+    sandbox_applied: bool,
+    success: bool,
+    output: &str,
+) -> Vec<String> {
+    if !is_sandbox_violation(sandbox_applied, success, output) {
+        return Vec::new();
+    }
+    let config = super::sandbox::SandboxConfig::build(context);
+    denied_paths_in_command(command, cwd, &config)
+}
+
 /// Select the model-visible text form of a completed run's combined output:
 /// empty stays empty, a read-cap cut gets a truncation marker, and a failed
 /// sandboxed run that looks like a denial gets the sandbox-restriction notice.
@@ -1006,14 +1026,14 @@ async fn execute_bash_with_args(
         ));
     }
 
-    let denials: Vec<String> = if is_sandbox_violation(sandbox_applied, success, &output_str) {
-        // Name the missing grant: scan the command for on-disk paths that fall
-        // outside the sandbox's allowed directories.
-        let config = super::sandbox::SandboxConfig::build(context);
-        denied_paths_in_command(&args.command, &context.cwd, &config)
-    } else {
-        Vec::new()
-    };
+    let denials = sandbox_denials(
+        context,
+        &args.command,
+        &context.cwd,
+        sandbox_applied,
+        success,
+        &output_str,
+    );
     let result = compose_text_output(
         &output_str,
         hit_cap,
