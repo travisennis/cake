@@ -94,16 +94,20 @@ class ToolCall:
 
     @property
     def reason(self) -> str | None:
-        """The Bash `reason` argument value, when present and parseable.
+        """The Bash `reason` argument, when it is a non-empty string.
 
         Presence/absence is the signal the metrics count; the value itself is
-        never reported. Returns None when the arguments do not parse or the
-        key is absent.
+        never reported. Returns None for malformed or non-object arguments,
+        missing keys, and non-string or empty values.
         """
         try:
-            return json.loads(self.arguments).get("reason")
-        except (json.JSONDecodeError, AttributeError):
+            arguments = json.loads(self.arguments)
+        except (TypeError, json.JSONDecodeError):
             return None
+        if not isinstance(arguments, dict):
+            return None
+        reason = arguments.get("reason")
+        return reason if isinstance(reason, str) and reason else None
 
 
 @dataclass

@@ -91,6 +91,27 @@ class BashReasonCoverageTest(unittest.TestCase):
         rows = tools.bash_reason_coverage(make_dataset([s]))
         self.assertEqual(rows, [["alpha", "1", "0", "0.0%"], ["TOTAL", "1", "0", "0.0%"]])
 
+    def test_null_arguments_count_as_no_reason(self):
+        records = [
+            {"type": "function_call", "call_id": "c1", "name": "Bash",
+             "arguments": None},
+            {"type": "function_call_output", "call_id": "c1", "output": "ok"},
+        ]
+        s = cakelib.Session(id="s", path=None, size=0,
+                            mtime=datetime.now(timezone.utc), records=records)
+        s.model = "alpha"
+        rows = tools.bash_reason_coverage(make_dataset([s]))
+        self.assertEqual(rows, [["alpha", "1", "0", "0.0%"], ["TOTAL", "1", "0", "0.0%"]])
+
+    def test_non_string_reason_values_count_as_absent(self):
+        values = [None, 123, True, ["reason"], {"reason": "value"}]
+        s = session(
+            "alpha",
+            [("Bash", {"command": "ls", "reason": value}) for value in values],
+        )
+        rows = tools.bash_reason_coverage(make_dataset([s]))
+        self.assertEqual(rows, [["alpha", "5", "0", "0.0%"], ["TOTAL", "5", "0", "0.0%"]])
+
     def test_empty_reason_string_counts_absent(self):
         s = session("alpha", [("Bash", {"command": "ls", "reason": ""})])
         rows = tools.bash_reason_coverage(make_dataset([s]))
