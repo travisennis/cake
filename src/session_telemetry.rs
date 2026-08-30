@@ -1042,11 +1042,58 @@ mod tests {
         }
     }
 
+    struct PrefixThenPanicWriter {
+        output: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl PrefixThenPanicWriter {
+        fn new(output: Arc<Mutex<Vec<u8>>>) -> Self {
+            Self { output }
+        }
+    }
+
+    impl TelemetryRecordWriter for PrefixThenPanicWriter {
+        fn append_record(&mut self, _record: &SessionTelemetryRecord) -> anyhow::Result<()> {
+            self.output
+                .lock()
+                .unwrap()
+                .extend_from_slice(PARTIAL_PREFIX);
+            panic!("deterministic telemetry panic");
+        }
+    }
+
     fn assert_partial_output(output: &Arc<Mutex<Vec<u8>>>) {
         let output = output.lock().unwrap().clone();
         assert_eq!(output.as_slice(), PARTIAL_PREFIX);
         assert!(!output.contains(&b'\n'));
         assert!(serde_json::from_slice::<serde_json::Value>(&output).is_err());
+    }
+
+    #[test]
+    fn shared_writer_poison_after_partial_write_reports_one_failed_then_disabled() {
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let shared = SharedSessionTelemetryWriter::new_for_test(PrefixThenPanicWriter::new(
+            Arc::clone(&output),
+        ));
+        let record = telemetry_summary();
+
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            shared.append(&record);
+        }));
+        assert!(panicked.is_err());
+
+        let results = [
+            shared.append(&record),
+            shared.append(&record),
+            shared.append(&record),
+        ];
+        assert!(matches!(&results[0], TelemetryAppend::Failed(_)));
+        assert!(
+            results[1..]
+                .iter()
+                .all(|result| matches!(result, TelemetryAppend::Disabled))
+        );
+        assert_partial_output(&output);
     }
 
     #[test]
