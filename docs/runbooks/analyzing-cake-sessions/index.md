@@ -28,11 +28,20 @@ Accept any of:
 If the input is ambiguous, list recent candidates and choose by working directory, timestamp, and visible task content.
 
 ```bash
-# List recent session files
-ls -t ~/.local/share/cake/sessions/*.jsonl 2>/dev/null | head -10
+if [ -n "${CAKE_DATA_DIR:-}" ]; then
+  SESSION_DIR="$CAKE_DATA_DIR/sessions"
+  TELEMETRY_DIR="$CAKE_DATA_DIR/session-telemetry"
+else
+  SESSION_DIR="$HOME/.local/share/cake/sessions"
+  TELEMETRY_DIR="$HOME/.cache/cake/session-telemetry"
+fi
+
+# List recent session files. The variable keeps a path with spaces intact.
+ls -t "$SESSION_DIR"/*.jsonl 2>/dev/null | head -10
 
 # Latest session
-ls -t ~/.local/share/cake/sessions/*.jsonl 2>/dev/null | head -1
+SESSION="$(ls -t "$SESSION_DIR"/*.jsonl 2>/dev/null | head -1)"
+printf '%s\n' "$SESSION"
 ```
 
 ### Format and Validation
@@ -55,13 +64,12 @@ Treat files beginning with `session_start`, `init`, or `result` as legacy or uns
 
 ### Liveness
 
-Before treating a missing trailing `task_complete` as truncation or a crash, check whether Cake is still writing. The JSONL transcript and its telemetry sidecar are flushed while the invocation runs, so either file's recent mtime can show that the task is live.
+Before treating a missing trailing `task_complete` as truncation or a crash, check whether Cake is still writing. Mtimes are only a signal: a provider request can be active without changing either file. Use the mtime check and an open-file check together.
 
 After resolving `SESSION` and confirming its header, run this check before classifying a trailing task:
 
 ```bash
-SESSION_ID="$(head -1 "$SESSION" | jq -r '.session_id')"
-TELEMETRY_DIR="${CAKE_DATA_DIR:-$HOME/.cache/cake}/session-telemetry"
+SESSION_ID="$(awk 'NF { print; exit }' "$SESSION" | jq -r '.session_id')"
 TELEMETRY="$TELEMETRY_DIR/$SESSION_ID.ndjson"
 
 printf 'Current UTC: %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
@@ -79,9 +87,30 @@ if [ -f "$TELEMETRY" ]; then
   printf '\nLatest telemetry records:\n'
   tail -3 "$TELEMETRY"
 fi
+
+printf '\nCake processes holding the session file (empty means none was found):\n'
+if command -v lsof >/dev/null 2>&1; then
+  lsof_status=0
+  PIDS="$(lsof -t "$SESSION" 2>/dev/null)" || lsof_status=$?
+  if [ "$lsof_status" -gt 1 ]; then
+    echo 'Cannot inspect the session file with lsof; liveness is unknown.' >&2
+  else
+    printf '%s\n' "$PIDS"
+  fi
+elif command -v fuser >/dev/null 2>&1; then
+  fuser_status=0
+  PIDS="$(fuser "$SESSION" 2>/dev/null)" || fuser_status=$?
+  if [ "$fuser_status" -gt 1 ]; then
+    echo 'Cannot inspect the session file with fuser; liveness is unknown.' >&2
+  else
+    printf '%s\n' "$PIDS"
+  fi
+else
+  echo 'No lsof or fuser available; liveness is unknown.' >&2
+fi
 ```
 
-On Linux, use `TZ=UTC stat -c 'JSONL mtime: %y' "$SESSION"` and `TZ=UTC stat -c 'telemetry mtime: %y' "$TELEMETRY"` for the two mtime commands. If either mtime is close to the current UTC time, or advances when you repeat the check, the invocation may still be live. Wait and recheck the files before classifying a missing trailing `task_complete` as truncated or crashed. Only make that classification after the mtimes stop advancing and the process is not running.
+On Linux, replace the two macOS `stat` commands with `TZ=UTC stat -c 'JSONL mtime: %y' "$SESSION"` and, when the sidecar exists, `TZ=UTC stat -c 'telemetry mtime: %y' "$TELEMETRY"`. A non-empty `lsof` or `fuser` result means that Cake still has the session open. If either mtime advances, wait and recheck. If the process check is unavailable or reports an error, treat liveness as unknown. Classify a missing trailing `task_complete` as truncated or crashed only after the mtimes stop advancing and the process check finds no writer.
 
 ## Phase 2: Understand Record Types
 
