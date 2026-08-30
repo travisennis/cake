@@ -70,7 +70,7 @@ Additional checks:
 The pre-push hook routes by changed path class instead of running the full local validation suite unconditionally.
 
 - Markdown-only pushes run `just pre-push-docs`: targeted `panache format --check` and `panache lint` on the changed living documents, plus `git diff --check`.
-- Pushes touching `src/`, `tests/`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `.cargo/`, `.github/workflows/`, `justfile`, or `ci/` run the fast `just check` gate.
+- Pushes touching `src/`, `tests/`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `.cargo/`, `.github/workflows/`, `justfile`, `scripts/`, or `ci/` run the fast `just check` gate.
 - Mixed pushes run both.
 - Anything unclassified or unresolvable fails closed to `just check-full`.
 - `just pre-push-force` always runs `just check-full`; `just pre-push-classify` prints the classification for the current branch.

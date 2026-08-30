@@ -76,8 +76,13 @@ commit_files code-1 src/lib.rs "pub fn f() {}"
 expect_class code-1 code
 expect_files code-1 ""
 
+# scripts: every changed file in scripts/ is a code-class path
+commit_files scripts-1 scripts/helper.sh "helper"
+expect_class scripts-1 code
+expect_files scripts-1 ""
+
 # mixed: both Markdown and code paths changed
-commit_files mixed-1 src/lib.rs "pub fn g() {}" docs/readme.md "readme"
+commit_files mixed-1 scripts/helper.sh "helper" docs/readme.md "readme"
 expect_class mixed-1 mixed
 expect_files mixed-1 "docs/readme.md"
 
