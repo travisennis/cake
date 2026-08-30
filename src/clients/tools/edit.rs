@@ -81,6 +81,9 @@ struct EditArgs {
 }
 
 /// Path-only arguments for edit summaries.
+///
+/// This intentionally lenient view supports advisory summaries and duplicate-mutation target
+/// extraction. Full edit execution remains strict via `EditArgs`.
 #[derive(Debug, Deserialize)]
 struct EditSummaryArgs {
     path: String,
