@@ -11,17 +11,78 @@ Triage reads two contracts first: exit codes and persisted-session layout and re
 
 ## Step 1: Find the Failing Session
 
+The newest file may be the session running this investigation. This happens when a probe launches cake from inside another cake run. Inspect the first user message in the newest few files before choosing a target; do not let the probe select itself.
+
+Set the storage roots first. `CAKE_DATA_DIR` relocates the cache, logs, telemetry, and sessions together; without it, sessions and cache use their normal separate locations.
+
 ```bash
-# Latest session file (most recently modified .jsonl)
-LATEST=$(ls -t ~/.local/share/cake/sessions/*.jsonl 2>/dev/null | head -1)
+if [ -n "${CAKE_DATA_DIR:-}" ]; then
+  SESSION_DIR="$CAKE_DATA_DIR/sessions"
+  CACHE_DIR="$CAKE_DATA_DIR"
+else
+  SESSION_DIR="$HOME/.local/share/cake/sessions"
+  CACHE_DIR="$HOME/.cache/cake"
+fi
+TELEMETRY_DIR="$CACHE_DIR/session-telemetry"
+LOG_DIR="$CACHE_DIR"
+
+# Inspect the newest three candidates before launching any cake probe. Read
+# each line as one path so spaces in the data-root or filename are preserved.
+ls -t "$SESSION_DIR"/*.jsonl 2>/dev/null | head -3 |
+while IFS= read -r candidate; do
+  printf '\n%s\n' "$candidate"
+  prompt="$(jq -r 'select(.type == "message" and .role == "user") | .content' \
+    "$candidate" 2>/dev/null | head -1)"
+  printf '%s\n' "${prompt:-"(no user message)"}"
+done
+```
+
+Compare each first user message with the task you are investigating. If the newest file contains the probe's own request, skip it and choose the matching older file. Set `LATEST` to that explicit target. Before snapshotting or classifying it, check that no Cake process still has the target open:
+
+```bash
+LATEST="/absolute/path/to/the-selected-session.jsonl"
+
+if command -v lsof >/dev/null 2>&1; then
+  lsof_status=0
+  PIDS="$(lsof -t "$LATEST" 2>/dev/null)" || lsof_status=$?
+  if [ "$lsof_status" -gt 1 ]; then
+    echo 'Cannot inspect the session file with lsof; liveness is unknown.' >&2
+    exit 1
+  fi
+elif command -v fuser >/dev/null 2>&1; then
+  fuser_status=0
+  PIDS="$(fuser "$LATEST" 2>/dev/null)" || fuser_status=$?
+  if [ "$fuser_status" -gt 1 ]; then
+    echo 'Cannot inspect the session file with fuser; liveness is unknown.' >&2
+    exit 1
+  fi
+else
+  echo 'Cannot verify that Cake stopped: install lsof or fuser, then retry.' >&2
+  exit 1
+fi
+
+if [ -n "$PIDS" ]; then
+  printf 'Cake is still using %s (processes: %s). Wait, then retry.\n' "$LATEST" "$PIDS" >&2
+  exit 1
+fi
+```
+
+If the process check reports an error, or if the target's mtime changes while you wait, do not classify it yet. A live session must not be resumed or diagnosed from a partial snapshot. Once the check shows no writer, snapshot the target securely before running further analysis:
+
+```bash
+umask 077
+TARGET_SNAPSHOT="$(mktemp "${TMPDIR:-/tmp}/cake-session-target.XXXXXX")"
+trap 'rm -f "$TARGET_SNAPSHOT"' EXIT
+cp "$LATEST" "$TARGET_SNAPSHOT"
+LATEST="$TARGET_SNAPSHOT"
 echo "$LATEST"
 ```
 
-If `$CAKE_DATA_DIR` is set, sessions live under `$CAKE_DATA_DIR/sessions/`.
+Analyze the snapshot through the rest of this runbook. If `$CAKE_DATA_DIR` is set, sessions, logs, and telemetry use that root.
 
 ## Step 2: Check How the Session Ended
 
-A complete invocation ends with `task_complete`. Anything else means the task did not finish cleanly.
+After Step 1 confirms that no writer holds the target, a complete invocation ends with `task_complete`. Anything else means the task did not finish cleanly.
 
 ```bash
 tail -1 "$LATEST" | jq '{type, is_error, subtype, error}'
@@ -49,7 +110,7 @@ This usually reveals: the last tool the model invoked, the last output it saw, o
 ## Step 4: Check Today's Log
 
 ```bash
-tail -100 ~/.cache/cake/cake.$(date +%Y-%m-%d).log | grep -iE "error|warn|truncat"
+tail -100 "$LOG_DIR"/cake.$(date +%Y-%m-%d).log | grep -iE "error|warn|truncat"
 ```
 
 Common patterns:
@@ -62,17 +123,21 @@ Common patterns:
 ## Step 5: Check Telemetry for Retries and Timing
 
 ```bash
-SESSION_ID="$(head -1 "$LATEST" | jq -r '.session_id')"
-TELEMETRY="$HOME/.cache/cake/session-telemetry/$SESSION_ID.ndjson"
+SESSION_ID="$(awk 'NF { print; exit }' "$LATEST" | jq -r '.session_id')"
+TELEMETRY="$TELEMETRY_DIR/$SESSION_ID.ndjson"
 
-# Retry decisions (model retries with backoff)
-jq 'select(.type == "retry_scheduled") | {attempt, reason, delay_ms, detail}' "$TELEMETRY"
+if [ -f "$TELEMETRY" ]; then
+  # Retry decisions (model retries with backoff)
+  jq 'select(.type == "retry_scheduled") | {attempt, reason, delay_ms, detail}' "$TELEMETRY"
 
-# Per-tool durations
-jq 'select(.type == "tool_call") | {turn_index, name, duration_ms, output_bytes, was_error}' "$TELEMETRY"
+  # Per-tool durations
+  jq 'select(.type == "tool_call") | {turn_index, name, duration_ms, output_bytes, was_error}' "$TELEMETRY"
 
-# Final session summary (if present)
-jq 'select(.type == "session_summary")' "$TELEMETRY"
+  # Final session summary (if present)
+  jq 'select(.type == "session_summary")' "$TELEMETRY"
+else
+  echo "Telemetry sidecar not found: $TELEMETRY" >&2
+fi
 ```
 
 Telemetry is **not** resumable conversation history; it is a separate performance sidecar.
@@ -80,8 +145,8 @@ Telemetry is **not** resumable conversation history; it is a separate performanc
 ## Step 6: Correlate Session and Log
 
 ```bash
-SESSION_ID="$(head -1 "$LATEST" | jq -r '.session_id')"
-grep "$SESSION_ID" ~/.cache/cake/cake.*.log
+SESSION_ID="$(awk 'NF { print; exit }' "$LATEST" | jq -r '.session_id')"
+grep "$SESSION_ID" "$LOG_DIR"/cake.*.log
 ```
 
 ## Why "None" Happens
@@ -110,7 +175,9 @@ When this happens, the session file ends without a `task_complete` record (or `t
 User reports: "I ran cake and it just printed `None`."
 
 ```bash
-$ LATEST=$(ls -t ~/.local/share/cake/sessions/*.jsonl | head -1)
+$ SESSION_DIR="${CAKE_DATA_DIR:-$HOME/.local/share/cake}/sessions"
+$ LATEST="$(ls -t "$SESSION_DIR"/*.jsonl | head -1)"
+$ lsof -t "$LATEST"
 $ tail -1 "$LATEST" | jq '{type, is_error, subtype, error}'
 {
   "type": "reasoning",
@@ -120,7 +187,7 @@ $ tail -1 "$LATEST" | jq '{type, is_error, subtype, error}'
 }
 ```
 
-Last record is `reasoning`, not `task_complete` → task was interrupted mid-stream.
+Last record is `reasoning`, not `task_complete`, and the preceding `lsof` check found no writer → task was interrupted mid-stream.
 
 ```bash
 $ tail -3 "$LATEST" | jq '{type, name: .name, content: (.content // .arguments)[0:120]}'
@@ -132,7 +199,8 @@ $ tail -3 "$LATEST" | jq '{type, name: .name, content: (.content // .arguments)[
 Model was reasoning about running tests when the stream ended.
 
 ```bash
-$ grep -iE "error|timeout|truncat" ~/.cache/cake/cake.$(date +%Y-%m-%d).log | tail -5
+$ LOG_DIR="${CAKE_DATA_DIR:-$HOME/.cache/cake}"
+$ grep -iE "error|timeout|truncat" "$LOG_DIR"/cake.$(date +%Y-%m-%d).log | tail -5
 2026-05-21T14:32:18Z ERROR cake::clients::responses: stream error: connection reset by peer
 2026-05-21T14:32:18Z WARN  cake::session: task ended without task_complete; session may be incomplete
 ```
@@ -143,11 +211,11 @@ $ grep -iE "error|timeout|truncat" ~/.cache/cake/cake.$(date +%Y-%m-%d).log | ta
 
 ## File Locations
 
-  | File                                            | Purpose                                              |
-  | ----------------------------------------------- | ---------------------------------------------------- |
-  | `~/.local/share/cake/sessions/{uuid}.jsonl`     | Session files (or `$CAKE_DATA_DIR/sessions/`)        |
-  | `~/.cache/cake/session-telemetry/{uuid}.ndjson` | Per-session telemetry (timings, retries)             |
-  | `~/.cache/cake/cake.YYYY-MM-DD.log`             | Daily logs (or `$CAKE_DATA_DIR/cake.YYYY-MM-DD.log`) |
+  | File                           | Purpose                                  |
+  | ------------------------------ | ---------------------------------------- |
+  | `$SESSION_DIR/{uuid}.jsonl`    | Session files                            |
+  | `$TELEMETRY_DIR/{uuid}.ndjson` | Per-session telemetry (timings, retries) |
+  | `$LOG_DIR/cake.YYYY-MM-DD.log` | Daily logs                               |
 
 ## When to Switch Procedures
 
