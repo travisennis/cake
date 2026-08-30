@@ -66,16 +66,17 @@ class BashReasonCoverageTest(unittest.TestCase):
         beta = session("beta", [
             ("Bash", {"command": "git push", "reason": "publish the release"}),
             ("Bash", {"command": "cargo fmt", "reason": "format"}),
+            ("Bash", {"command": "cargo test", "reason": "verify the change"}),
         ])
         # alpha: 2 Bash calls, 1 with reason -> 50.0%
-        # beta: 2 Bash calls, 2 with reason -> 100.0%
+        # beta: 3 Bash calls, 3 with reason -> 100.0%
         rows = tools.bash_reason_coverage(make_dataset([alpha, beta]))
         self.assertEqual(
             rows,
             [
+                ["beta", "3", "3", "100.0%"],
                 ["alpha", "2", "1", "50.0%"],
-                ["beta", "2", "2", "100.0%"],
-                ["TOTAL", "4", "3", "75.0%"],
+                ["TOTAL", "5", "4", "80.0%"],
             ],
         )
 
@@ -91,10 +92,10 @@ class BashReasonCoverageTest(unittest.TestCase):
         rows = tools.bash_reason_coverage(make_dataset([s]))
         self.assertEqual(rows, [["alpha", "1", "0", "0.0%"], ["TOTAL", "1", "0", "0.0%"]])
 
-    def test_null_arguments_count_as_no_reason(self):
+    def test_json_null_arguments_count_as_no_reason(self):
         records = [
             {"type": "function_call", "call_id": "c1", "name": "Bash",
-             "arguments": None},
+             "arguments": "null"},
             {"type": "function_call_output", "call_id": "c1", "output": "ok"},
         ]
         s = cakelib.Session(id="s", path=None, size=0,
