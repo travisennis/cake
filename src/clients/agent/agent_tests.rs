@@ -4123,4 +4123,71 @@ mod output_schema_constraint_tests {
         // successful unconstrained correction retry.
         assert_eq!(agent.turn_count(), 2);
     }
+
+    #[tokio::test]
+    async fn provider_constraint_fallback_preserves_attempt_metadata() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .and(ConstrainedResponsesRequest)
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "error": {"message": "unsupported schema feature"},
+                "usage": {"input_tokens": 3, "output_tokens": 2, "total_tokens": 5}
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .and(InitialResponsesRequest)
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(responses_text_response("not json")),
+            )
+            .up_to_n_times(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .and(InitialResponsesRequest)
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(responses_text_response("{\"summary\": \"ok\"}")),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let records = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let records_sink = Arc::clone(&records);
+        let mut agent = test_agent_for(ApiType::Responses, &mock_server.uri())
+            .with_output_schema(test_schema())
+            .with_persist_callback(move |record| {
+                records_sink
+                    .lock()
+                    .unwrap()
+                    .push(serde_json::to_value(record).unwrap());
+                Ok(())
+            });
+
+        assert_eq!(
+            agent.send("go".to_string()).await.unwrap(),
+            "{\"summary\": \"ok\"}"
+        );
+
+        let persisted_records = records.lock().unwrap().clone();
+        let usages = persisted_records
+            .iter()
+            .filter(|record| record["type"] == "turn_usage")
+            .collect::<Vec<_>>();
+        assert_eq!(usages.len(), 3);
+        assert!(usages[0].get("attempt").is_none());
+        assert_eq!(usages[1]["turn"], 2);
+        assert_eq!(usages[1]["attempt"], 1);
+        assert_eq!(usages[1]["terminal_class"], "http");
+        assert_eq!(usages[1]["usage"]["total_tokens"], 5);
+        assert_eq!(usages[2]["turn"], 2);
+        assert_eq!(usages[2]["attempt"], 2);
+        assert_eq!(usages[2]["terminal_class"], "completed");
+    }
 }

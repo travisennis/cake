@@ -1048,7 +1048,7 @@ fn parse_streaming_response_completed_output_overrides_item_events() {
 #[test]
 fn parse_streaming_response_records_incomplete_reason() {
     let body = concat!(
-        "data: {\"type\":\"response.incomplete\",\"response\":{\"incomplete_details\":{\"reason\":\"max_output_tokens\"}}}\n\n",
+        "data: {\"type\":\"response.incomplete\",\"response\":{\"id\":\"resp-1\",\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"},\"usage\":{\"input_tokens\":12,\"output_tokens\":7,\"total_tokens\":19}}}\n\n",
         "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\"}}\n\n",
     );
 
@@ -1061,6 +1061,26 @@ fn parse_streaming_response_records_incomplete_reason() {
             ..
         })
     ));
+    assert_eq!(result.usage.unwrap().total_tokens, 19);
+}
+
+#[test]
+fn parse_streaming_response_incomplete_usage_is_preserved_when_stream_ends() {
+    let body = concat!(
+        "data: {\"type\":\"response.incomplete\",\"response\":{\"id\":\"resp-1\",\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"},\"usage\":{\"input_tokens\":12,\"output_tokens\":7,\"total_tokens\":19}}}\n\n",
+        "data: [DONE]\n\n",
+    );
+
+    let error = parse_streaming_response(body).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("ended before response.completed")
+    );
+    let parse_error = error
+        .downcast_ref::<ResponseParseError>()
+        .expect("incomplete stream should preserve a typed parse error");
+    assert_eq!(parse_error.usage().unwrap().total_tokens, 19);
 }
 
 #[test]
@@ -1079,7 +1099,8 @@ fn parse_streaming_response_failed_event_bails() {
 fn parse_streaming_response_failed_carries_structured_metadata() {
     let body = concat!(
         "data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp-123\",\"error\":",
-        "{\"message\":\"server exploded\",\"type\":\"server_error\",\"code\":\"server_error\",\"param\":null}}}\n\n",
+        "{\"message\":\"server exploded\",\"type\":\"server_error\",\"code\":\"server_error\",\"param\":null},",
+        "\"usage\":{\"input_tokens\":11,\"output_tokens\":7,\"total_tokens\":18}}}\n\n",
     );
     let error = parse_streaming_response(body).unwrap_err();
     assert!(error.to_string().contains("stream failed: server exploded"));
@@ -1093,6 +1114,7 @@ fn parse_streaming_response_failed_carries_structured_metadata() {
     assert_eq!(metadata.error_code.as_deref(), Some("server_error"));
     assert_eq!(metadata.error_param, None);
     assert_eq!(metadata.message.as_deref(), Some("server exploded"));
+    assert_eq!(failed.usage().unwrap().total_tokens, 18);
 }
 
 #[test]

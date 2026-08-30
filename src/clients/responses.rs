@@ -3,7 +3,7 @@ use tracing::{debug, trace, warn};
 use crate::config::model::ResolvedModelConfig;
 
 use crate::clients::agent::TurnResult;
-use crate::clients::backend::{FinalOutputConstraint, ResponseDecodeError};
+use crate::clients::backend::{FinalOutputConstraint, ResponseDecodeError, ResponseParseError};
 use crate::clients::provider_strategy::ProviderStrategy;
 use crate::clients::responses_types::{
     ApiResponse, ApiResponseEnvelope, ApiUsage, OutputContent, OutputMessage, ReasoningConfig,
@@ -159,8 +159,19 @@ fn build_response_request(
 /// Decode the Responses API envelope, attaching a bounded preview of the raw
 /// body to the error when the 2xx body is not the expected JSON shape.
 fn parse_response_envelope(bytes: &[u8]) -> anyhow::Result<ApiResponseEnvelope> {
-    serde_json::from_slice::<ApiResponseEnvelope>(bytes)
-        .map_err(|error| ResponseDecodeError::new("Responses API", bytes, error).into())
+    serde_json::from_slice::<ApiResponseEnvelope>(bytes).map_err(|error| {
+        ResponseDecodeError::new("Responses API", bytes, reported_usage(bytes), error).into()
+    })
+}
+
+pub(super) fn reported_usage(body: &[u8]) -> Option<Usage> {
+    let value = serde_json::from_slice::<serde_json::Value>(body).ok()?;
+    let response_id = value
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("<missing id>");
+    let api_usage = serde_json::from_value::<ApiUsage>(value.get("usage")?.clone()).ok()?;
+    Some(map_usage(&api_usage, response_id))
 }
 
 /// Parse an HTTP response from the Responses API into a `TurnResult`.
@@ -225,11 +236,13 @@ fn parse_json_response(body: &[u8]) -> anyhow::Result<TurnResult> {
         );
     }
 
+    let response_id = api_response.id.as_deref().unwrap_or("<missing id>");
     let usage = api_response
         .usage
         .as_ref()
-        .map(|u| map_usage(u, &api_response));
-    let items = parse_output_items(&api_response)?;
+        .map(|usage| map_usage(usage, response_id));
+    let items = parse_output_items(&api_response)
+        .map_err(|error| anyhow::Error::new(ResponseParseError::new(error, usage)))?;
 
     Ok(TurnResult {
         items,
@@ -258,13 +271,25 @@ fn parse_streaming_response(body: &str) -> anyhow::Result<TurnResult> {
         if data == "[DONE]" {
             continue;
         }
-
-        let event: serde_json::Value = serde_json::from_str(&data)
-            .map_err(|error| anyhow::anyhow!("failed to parse Responses API SSE event: {error}"))?;
-        apply_stream_event(&mut accumulator, &event)?;
+        apply_stream_data(&mut accumulator, &data)?;
     }
 
+    ensure_stream_completed(&accumulator)?;
     finalize_stream(accumulator)
+}
+
+fn apply_stream_data(accumulator: &mut StreamAccumulator, data: &str) -> anyhow::Result<()> {
+    let event = serde_json::from_str::<serde_json::Value>(data).map_err(|error| {
+        stream_parse_error(
+            anyhow::anyhow!("failed to parse Responses API SSE event: {error}"),
+            accumulator,
+        )
+    })?;
+    match apply_stream_event(accumulator, &event) {
+        Ok(()) => Ok(()),
+        Err(error) if error.downcast_ref::<ResponsesStreamFailed>().is_some() => Err(error),
+        Err(error) => Err(stream_parse_error(error, accumulator)),
+    }
 }
 
 /// Applies one SSE event to the running stream state.
@@ -310,6 +335,11 @@ fn apply_output_item_done(accumulator: &mut StreamAccumulator, event: &serde_jso
 
 fn apply_response_completed(accumulator: &mut StreamAccumulator, event: &serde_json::Value) {
     let response = event.get("response").cloned().unwrap_or_default();
+    apply_response_metadata(accumulator, &response);
+    accumulator.completed = true;
+}
+
+fn apply_response_metadata(accumulator: &mut StreamAccumulator, response: &serde_json::Value) {
     accumulator.response_id = response
         .get("id")
         .and_then(serde_json::Value::as_str)
@@ -318,23 +348,26 @@ fn apply_response_completed(accumulator: &mut StreamAccumulator, event: &serde_j
         .get("status")
         .and_then(serde_json::Value::as_str)
         .map(str::to_string);
-    accumulator.usage = response
+    if let Some(usage) = response
         .get("usage")
         .cloned()
-        .and_then(|usage| serde_json::from_value::<ApiUsage>(usage).ok());
+        .and_then(|usage| serde_json::from_value::<ApiUsage>(usage).ok())
+    {
+        accumulator.usage = Some(usage);
+    }
     if let Some(items) = response.get("output").cloned()
         && let Ok(items) = serde_json::from_value::<Vec<OutputMessage>>(items)
         && !items.is_empty()
     {
         accumulator.output = items;
     }
-    accumulator.completed = true;
 }
 
 fn apply_response_incomplete(accumulator: &mut StreamAccumulator, event: &serde_json::Value) {
-    accumulator.incomplete_reason = event
-        .get("response")
-        .and_then(|response| response.get("incomplete_details"))
+    let response = event.get("response").cloned().unwrap_or_default();
+    apply_response_metadata(accumulator, &response);
+    accumulator.incomplete_reason = response
+        .get("incomplete_details")
         .and_then(|details| details.get("reason"))
         .and_then(serde_json::Value::as_str)
         .map(str::to_string);
@@ -366,11 +399,32 @@ fn apply_response_failed(event: &serde_json::Value) -> anyhow::Result<()> {
             .and_then(serde_json::Value::as_str)
             .map(str::to_string),
     };
+    let response_id = metadata
+        .provider_request_id
+        .as_deref()
+        .unwrap_or("<missing id>");
+    let reported_usage = response
+        .and_then(|response| response.get("usage"))
+        .cloned()
+        .and_then(|usage| serde_json::from_value::<ApiUsage>(usage).ok())
+        .map(|usage| map_usage(&usage, response_id));
 
     // Return a typed error so the agent runner can downcast it, classify
     // retryability from the bounded metadata, and carry structured diagnostics
     // to telemetry instead of a flattened string.
-    Err(anyhow::Error::new(ResponsesStreamFailed(metadata)))
+    Err(anyhow::Error::new(ResponsesStreamFailed {
+        metadata,
+        reported_usage,
+    }))
+}
+
+fn stream_parse_error(error: anyhow::Error, accumulator: &StreamAccumulator) -> anyhow::Error {
+    let response_id = accumulator.response_id.as_deref().unwrap_or("<missing id>");
+    let usage = accumulator
+        .usage
+        .as_ref()
+        .map(|usage| map_usage(usage, response_id));
+    anyhow::Error::new(ResponseParseError::new(error, usage))
 }
 
 /// Terminal `response.failed` event received after an accepted HTTP 2xx.
@@ -380,21 +434,39 @@ fn apply_response_failed(event: &serde_json::Value) -> anyhow::Result<()> {
 /// re-parsing the raw event. The `Display` text is kept stable for users while
 /// the structured fields inform telemetry and retry policy.
 #[derive(Debug, thiserror::Error)]
-pub(super) struct ResponsesStreamFailed(pub(super) ResponsesFailedMetadata);
+pub(super) struct ResponsesStreamFailed {
+    pub(super) metadata: ResponsesFailedMetadata,
+    pub(super) reported_usage: Option<Usage>,
+}
 
 impl ResponsesStreamFailed {
     fn message(&self) -> &str {
-        self.0.message.as_deref().unwrap_or("unknown error")
+        self.metadata.message.as_deref().unwrap_or("unknown error")
     }
 
     pub(super) const fn metadata(&self) -> &ResponsesFailedMetadata {
-        &self.0
+        &self.metadata
+    }
+
+    pub(super) const fn usage(&self) -> Option<Usage> {
+        self.reported_usage
     }
 }
 
 impl std::fmt::Display for ResponsesStreamFailed {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Responses API stream failed: {}", self.message())
+    }
+}
+
+fn ensure_stream_completed(accumulator: &StreamAccumulator) -> anyhow::Result<()> {
+    if accumulator.completed {
+        Ok(())
+    } else {
+        Err(stream_parse_error(
+            anyhow::anyhow!("Responses API stream ended before response.completed"),
+            accumulator,
+        ))
     }
 }
 
@@ -405,11 +477,6 @@ impl std::fmt::Display for ResponsesStreamFailed {
 /// Returns an error when the stream ended before `response.completed`, or when
 /// the accumulated output items cannot be parsed into conversation items.
 fn finalize_stream(mut accumulator: StreamAccumulator) -> anyhow::Result<TurnResult> {
-    anyhow::ensure!(
-        accumulator.completed,
-        "Responses API stream ended before response.completed"
-    );
-
     if !accumulator.output_text.is_empty()
         && !accumulator
             .output
@@ -446,11 +513,13 @@ fn finalize_stream(mut accumulator: StreamAccumulator) -> anyhow::Result<TurnRes
         accumulator.incomplete_reason.as_deref(),
         response_contains_refusal(&api_response),
     );
+    let response_id = api_response.id.as_deref().unwrap_or("<missing id>");
     let usage = api_response
         .usage
         .as_ref()
-        .map(|usage| map_usage(usage, &api_response));
-    let items = parse_output_items(&api_response)?;
+        .map(|usage| map_usage(usage, response_id));
+    let items = parse_output_items(&api_response)
+        .map_err(|error| anyhow::Error::new(ResponseParseError::new(error, usage)))?;
 
     Ok(TurnResult {
         items,
@@ -553,9 +622,7 @@ fn response_contains_refusal(api_response: &ApiResponse) -> bool {
 }
 
 /// Map API-level usage to the canonical `Usage` type.
-fn map_usage(api_usage: &ApiUsage, api_response: &ApiResponse) -> Usage {
-    let response_id = api_response.id.as_deref().unwrap_or("<missing id>");
-
+fn map_usage(api_usage: &ApiUsage, response_id: &str) -> Usage {
     if api_usage.input_tokens.is_none() {
         warn!(
             target: "cake",

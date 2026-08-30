@@ -1532,7 +1532,8 @@ mod response_parsing_tests {
                 "id": "chatcmpl-123",
                 "usage": {
                     "prompt_tokens": 10,
-                    "completion_tokens": 5
+                    "completion_tokens": 5,
+                    "total_tokens": 15
                 }
             })))
             .mount(&mock_server)
@@ -1547,7 +1548,16 @@ mod response_parsing_tests {
 
         let result = parse_response(response).await;
         // Should fail because "choices" is a required field
-        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert_eq!(
+            error
+                .downcast_ref::<ResponseDecodeError>()
+                .unwrap()
+                .usage()
+                .unwrap()
+                .total_tokens,
+            15
+        );
     }
 
     #[tokio::test]

@@ -3,8 +3,10 @@ source: src/types/session_tests.rs
 expression: session_record_json(record)
 ---
 {
+  "attempt": 2,
   "session_id": "550e8400-e29b-41d4-a716-446655440000",
   "task_id": "550e8400-e29b-41d4-a716-446655440001",
+  "terminal_class": "response_failed",
   "timestamp": "2026-05-10T12:34:56Z",
   "turn": 2,
   "type": "turn_usage",

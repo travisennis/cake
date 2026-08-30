@@ -1,14 +1,42 @@
+use std::sync::Arc;
+
 use crate::clients::agent::Agent;
 use crate::session_telemetry::{
     AgentRunnerTelemetryEvent, CompensationEventTelemetry, SessionTelemetryContext,
-    SessionTelemetryRecord, TelemetryAppend, ToolCallTelemetry,
+    SessionTelemetryRecord, SharedSessionTelemetryWriter, TelemetryAppend, ToolCallTelemetry,
 };
+
+pub(super) struct AgentRunnerTelemetrySink {
+    context: SessionTelemetryContext,
+    writer: Arc<SharedSessionTelemetryWriter>,
+}
+
+impl AgentRunnerTelemetrySink {
+    pub(super) fn record(&self, event: AgentRunnerTelemetryEvent) {
+        let record = runner_telemetry_record(self.context.clone(), event);
+        if let TelemetryAppend::Failed(error) = self.writer.append(&record) {
+            tracing::warn!(
+                target: "cake",
+                "Disabling session telemetry after write failure: {error}"
+            );
+        }
+    }
+}
 
 impl Agent {
     pub(super) fn telemetry_context(&self) -> Option<SessionTelemetryContext> {
         self.telemetry
             .as_ref()
             .map(|telemetry| telemetry.context.clone())
+    }
+
+    pub(super) fn runner_telemetry_sink(&self) -> Option<AgentRunnerTelemetrySink> {
+        self.telemetry
+            .as_ref()
+            .map(|telemetry| AgentRunnerTelemetrySink {
+                context: telemetry.context.clone(),
+                writer: Arc::clone(&telemetry.writer),
+            })
     }
 
     pub(super) fn append_runner_telemetry(&mut self, event: AgentRunnerTelemetryEvent) {

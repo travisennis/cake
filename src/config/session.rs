@@ -109,11 +109,11 @@ impl Session {
             .collect()
     }
 
-    /// Returns the token usage of the most recent completed turn, if any.
+    /// Returns the usage of the most recent provider attempt that reported it.
     ///
     /// Scans from the end of the record history so later task-boundary
-    /// records (for example `TaskComplete`) do not hide the last per-turn
-    /// usage. Lets a resumed session know its current context size before the
+    /// records (for example `TaskComplete`) do not hide the last usage audit.
+    /// Lets a resumed session know its current context size before the
     /// first new provider request.
     pub fn last_turn_usage(&self) -> Option<Usage> {
         self.records.iter().rev().find_map(|record| match record {
@@ -407,6 +407,8 @@ mod tests {
                 ..Usage::default()
             },
             timestamp: chrono::Utc::now(),
+            attempt: None,
+            terminal_class: None,
         })
     }
 

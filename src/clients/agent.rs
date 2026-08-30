@@ -24,8 +24,8 @@ use crate::session_telemetry::{
     SessionTelemetrySettings, SessionTelemetryWriter, SharedSessionTelemetryWriter,
 };
 use crate::types::{
-    ConversationItem, Role, SessionRecord, StreamRecord, TaskCompleteData, TaskOutcome,
-    TaskStartData, TurnUsageData, Usage,
+    ApiAttemptTerminalClass, ConversationItem, Role, SessionRecord, StreamRecord, TaskCompleteData,
+    TaskOutcome, TaskStartData, TurnUsageData, Usage,
 };
 
 /// Result of a single API turn (one request/response cycle).
@@ -35,6 +35,48 @@ pub(super) struct TurnResult {
     pub(super) usage: Option<Usage>,
     pub(super) termination: Option<ProviderTermination>,
     pub(super) provider_request_id: Option<String>,
+}
+
+/// One provider attempt whose reported usage must be settled into the
+/// session ledger before the runner classifies or retries the attempt.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct TurnUsageSettlement {
+    pub(super) turn_index: u32,
+    pub(super) attempt: u32,
+    pub(super) terminal_class: ApiAttemptTerminalClass,
+    pub(super) usage: Usage,
+}
+
+pub(super) fn record_turn_usage(
+    observer: &mut AgentObserver,
+    total_usage: &mut Usage,
+    last_usage: &mut Option<Usage>,
+    session_id: uuid::Uuid,
+    task_id: uuid::Uuid,
+    settlement: TurnUsageSettlement,
+) {
+    let TurnUsageSettlement {
+        turn_index,
+        attempt,
+        terminal_class,
+        usage,
+    } = settlement;
+    accumulate_usage(total_usage, Some(&usage));
+    *last_usage = Some(usage);
+
+    let legacy_shape = attempt == 1 && terminal_class == ApiAttemptTerminalClass::Completed;
+    let record = SessionRecord::TurnUsage(TurnUsageData {
+        session_id: session_id.to_string(),
+        task_id: task_id.to_string(),
+        turn: turn_index,
+        usage,
+        timestamp: chrono::Utc::now(),
+        attempt: (!legacy_shape).then_some(attempt),
+        terminal_class: (!legacy_shape).then_some(terminal_class),
+    });
+    if let Err(error) = observer.persist_record(&record) {
+        tracing::warn!(target: "cake", %error, "Failed to persist per-attempt usage");
+    }
 }
 
 struct AgentTelemetry {
@@ -66,9 +108,9 @@ pub struct Agent {
     session_id: uuid::Uuid,
     /// Task ID for the current CLI invocation.
     task_id: uuid::Uuid,
-    /// Accumulated usage across all API calls
+    /// Accumulated usage across all reported provider attempts
     total_usage: Usage,
-    /// Usage reported by the most recent completed API turn. The basis for
+    /// Usage reported by the most recent provider attempt. The basis for
     /// estimating remaining context-window budget. `None` before the first
     /// turn or when no turn has reported usage.
     last_usage: Option<Usage>,
@@ -288,7 +330,7 @@ impl Agent {
         &self.total_usage
     }
 
-    /// Returns the usage reported by the most recent completed API turn, if any.
+    /// Returns the usage reported by the most recent provider attempt, if any.
     ///
     /// The provider's `input_tokens` for that turn is the full request size
     /// (system prompt, tool schemas, and history), which is the current
@@ -304,8 +346,8 @@ impl Agent {
 
     /// Returns the token budget remaining in the configured context window.
     ///
-    /// Computed from the input tokens of the most recent completed turn: the
-    /// provider's count of the full request just sent. The next request grows
+    /// Computed from the input tokens of the most recent provider attempt:
+    /// the provider's count of the full request just sent. The next request grows
     /// the context by its own output and any client-added tool outputs, which
     /// cake does not tokenize, so callers should reserve a buffer (for example
     /// compact when remaining falls below a threshold) rather than estimate
@@ -350,7 +392,7 @@ impl Agent {
         self
     }
 
-    /// Sets the usage of the most recent completed turn (for restored sessions
+    /// Sets the usage of the most recent provider attempt (for restored sessions
     /// and test fixtures).
     pub const fn with_last_usage(mut self, usage: Option<Usage>) -> Self {
         self.last_usage = usage;
@@ -532,31 +574,6 @@ impl Agent {
         self.observer.persist_record(record)
     }
 
-    /// Record per-turn usage after a completed API turn.
-    ///
-    /// Updates the last-usage basis used by [`Self::context_remaining_tokens`]
-    /// and persists a session-only `TurnUsage` audit record so resumed
-    /// sessions can reconstruct the current context size. No-op when the turn
-    /// reported no usage.
-    ///
-    /// A persist failure warns and is otherwise ignored: the audit record must
-    /// not abort the model conversation.
-    fn record_turn_usage(&mut self, usage: Option<&Usage>) {
-        if let Some(usage) = usage {
-            self.last_usage = Some(*usage);
-            let record = SessionRecord::TurnUsage(TurnUsageData {
-                session_id: self.session_id.to_string(),
-                task_id: self.task_id.to_string(),
-                turn: self.turn_count,
-                usage: *usage,
-                timestamp: chrono::Utc::now(),
-            });
-            if let Err(error) = self.persist_record(&record) {
-                tracing::warn!(target: "cake", %error, "Failed to persist per-turn usage");
-            }
-        }
-    }
-
     /// Stream a conversation item as JSON via the streaming callback, if set.
     fn stream_item(&mut self, item: &ConversationItem) -> anyhow::Result<()> {
         self.observer.stream_item(item)
@@ -632,6 +649,7 @@ impl Agent {
         Ok(())
     }
 
+    #[cfg(test)]
     /// Accumulate usage from an API turn.
     const fn accumulate_usage(&mut self, turn_usage: Option<&Usage>) {
         accumulate_usage(&mut self.total_usage, turn_usage);

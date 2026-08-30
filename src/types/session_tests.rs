@@ -913,9 +913,61 @@ fn snapshot_session_json_turn_usage() {
             total_tokens: 1300,
         },
         timestamp: fixed_timestamp(),
+        attempt: Some(2),
+        terminal_class: Some(ApiAttemptTerminalClass::ResponseFailed),
     });
 
     insta::assert_json_snapshot!("session_json_turn_usage", session_record_json(record));
+}
+
+#[test]
+fn legacy_turn_usage_shape_deserializes_without_attempt_metadata() {
+    let record = serde_json::from_value::<SessionRecord>(serde_json::json!({
+        "type": "turn_usage",
+        "session_id": fixed_session_id(),
+        "task_id": fixed_task_id(),
+        "turn": 1,
+        "usage": {
+            "input_tokens": 10,
+            "input_tokens_details": {
+                "cached_tokens": 0,
+                "cache_write_tokens": 0
+            },
+            "output_tokens": 5,
+            "output_tokens_details": {
+                "reasoning_tokens": 0
+            },
+            "total_tokens": 15
+        },
+        "timestamp": "2026-05-10T12:34:56Z"
+    }))
+    .unwrap();
+
+    assert!(matches!(
+        record,
+        SessionRecord::TurnUsage(TurnUsageData {
+            attempt: None,
+            terminal_class: None,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn turn_usage_without_attempt_metadata_keeps_legacy_shape() {
+    let record = SessionRecord::TurnUsage(TurnUsageData {
+        session_id: fixed_session_id(),
+        task_id: fixed_task_id(),
+        turn: 1,
+        usage: Usage::default(),
+        timestamp: fixed_timestamp(),
+        attempt: None,
+        terminal_class: None,
+    });
+    let json = session_record_json(record);
+
+    assert!(json.get("attempt").is_none());
+    assert!(json.get("terminal_class").is_none());
 }
 
 #[test]

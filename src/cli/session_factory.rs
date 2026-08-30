@@ -578,6 +578,8 @@ mod tests {
                     turn: 3,
                     usage: last_usage,
                     timestamp: chrono::Utc::now(),
+                    attempt: None,
+                    terminal_class: None,
                 },
             ));
 

@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::clients::agent::{Agent, TurnResult};
+use crate::clients::agent::{Agent, TurnResult, record_turn_usage};
 use crate::clients::backend::FinalOutputConstraint;
 use crate::clients::retry::{RequestOverrides, RetryReason, RetryStatus};
 use crate::clients::tools::{
@@ -170,15 +170,12 @@ impl Agent {
 
             let provider_turn_start = self.conversation.history().len();
             let TurnResult {
-                items,
-                usage,
-                termination,
-                provider_request_id: _,
+                items, termination, ..
             } = self
                 .complete_turn_with_output_schema_fallback(turn_mode)
                 .await?;
 
-            let function_calls = self.process_completed_turn(items, usage.as_ref())?;
+            let function_calls = self.process_completed_turn(items)?;
             let turn_context = TurnContext {
                 turn_mode: &mut turn_mode,
                 corrections_used: &mut corrections_used,
@@ -196,12 +193,10 @@ impl Agent {
     fn process_completed_turn(
         &mut self,
         items: Vec<ConversationItem>,
-        usage: Option<&crate::types::Usage>,
     ) -> anyhow::Result<Vec<FunctionCall>> {
-        // Count every completed API turn unconditionally; accumulate usage separately.
+        // Count every completed API turn unconditionally. Usage is settled by
+        // AgentRunner before it classifies or retries the provider attempt.
         self.turn_count += 1;
-        self.accumulate_usage(usage);
-        self.record_turn_usage(usage);
         self.log_context_budget();
 
         // Extract owned function call data before moving items into history.
@@ -682,9 +677,13 @@ impl Agent {
         &mut self,
         turn_mode: TurnMode,
     ) -> anyhow::Result<TurnResult> {
+        let mut next_attempt = 1;
         loop {
             let constraint_attached = self.native_constraint_attached(turn_mode);
-            match self.complete_turn_in_mode(turn_mode).await {
+            match self
+                .complete_turn_in_mode(turn_mode, &mut next_attempt)
+                .await
+            {
                 Ok(turn) => return Ok(turn),
                 Err(error) if constraint_attached && is_native_constraint_rejection(&error) => {
                     self.native_constraint_enabled = false;
@@ -776,19 +775,28 @@ impl Agent {
     /// Correction turns offer no tools — the model must answer with the final
     /// JSON document, not more tool calls — and attach the provider's native
     /// structured-output constraint while it remains enabled for this run.
-    async fn complete_turn_in_mode(&mut self, turn_mode: TurnMode) -> anyhow::Result<TurnResult> {
+    async fn complete_turn_in_mode(
+        &mut self,
+        turn_mode: TurnMode,
+        next_attempt: &mut u32,
+    ) -> anyhow::Result<TurnResult> {
         let tool_definitions = tool_definitions_for_turn(&self.tools, turn_mode);
+        let native_constraint_attached = self.native_constraint_attached(turn_mode);
         let constraint = final_output_constraint_for_turn(
             self.output_schema.as_deref(),
-            self.native_constraint_attached(turn_mode),
+            native_constraint_attached,
         );
         let config = &self.config;
         let session_id = self.session_id;
+        let task_id = self.task_id;
         let history = self.conversation.history();
         let turn_index = self.turn_count.saturating_add(1);
-        let mut telemetry_events = Vec::new();
-        let result = self
-            .runner
+        let runner = &self.runner;
+        let runner_telemetry = self.runner_telemetry_sink();
+        let observer = &mut self.observer;
+        let total_usage = &mut self.total_usage;
+        let last_usage = &mut self.last_usage;
+        runner
             .complete_turn(
                 config,
                 session_id,
@@ -796,15 +804,24 @@ impl Agent {
                 history,
                 tool_definitions,
                 constraint,
+                next_attempt,
                 |event| {
-                    telemetry_events.push(event);
+                    if let Some(sink) = &runner_telemetry {
+                        sink.record(event);
+                    }
+                },
+                |settlement| {
+                    record_turn_usage(
+                        observer,
+                        total_usage,
+                        last_usage,
+                        session_id,
+                        task_id,
+                        settlement,
+                    );
                 },
             )
-            .await;
-        for event in telemetry_events {
-            self.append_runner_telemetry(event);
-        }
-        result
+            .await
     }
 
     #[cfg(test)]
@@ -817,7 +834,9 @@ impl Agent {
         } else {
             TurnMode::Normal
         };
-        self.complete_turn_in_mode(turn_mode).await
+        let mut next_attempt = 1;
+        self.complete_turn_in_mode(turn_mode, &mut next_attempt)
+            .await
     }
 
     fn record_semantic_recovery_retry(&mut self) {
