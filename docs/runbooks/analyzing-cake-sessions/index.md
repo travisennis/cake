@@ -53,6 +53,36 @@ Validate:
 
 Treat files beginning with `session_start`, `init`, or `result` as legacy or unsupported unless compatibility is the subject of the analysis. Redirected `--output-format stream-json` output is not a persisted resumable session.
 
+### Liveness
+
+Before treating a missing trailing `task_complete` as truncation or a crash, check whether Cake is still writing. The JSONL transcript and its telemetry sidecar are flushed while the invocation runs, so either file's recent mtime can show that the task is live.
+
+After resolving `SESSION` and confirming its header, run this check before classifying a trailing task:
+
+```bash
+SESSION_ID="$(head -1 "$SESSION" | jq -r '.session_id')"
+TELEMETRY_DIR="${CAKE_DATA_DIR:-$HOME/.cache/cake}/session-telemetry"
+TELEMETRY="$TELEMETRY_DIR/$SESSION_ID.ndjson"
+
+printf 'Current UTC: %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+# macOS:
+TZ=UTC stat -f 'JSONL mtime: %Sm' -t '%Y-%m-%dT%H:%M:%SZ' "$SESSION"
+if [ -f "$TELEMETRY" ]; then
+  TZ=UTC stat -f 'telemetry mtime: %Sm' -t '%Y-%m-%dT%H:%M:%SZ' "$TELEMETRY"
+else
+  echo 'telemetry mtime: (missing)'
+fi
+
+printf '\nLatest JSONL records:\n'
+tail -3 "$SESSION"
+if [ -f "$TELEMETRY" ]; then
+  printf '\nLatest telemetry records:\n'
+  tail -3 "$TELEMETRY"
+fi
+```
+
+On Linux, use `TZ=UTC stat -c 'JSONL mtime: %y' "$SESSION"` and `TZ=UTC stat -c 'telemetry mtime: %y' "$TELEMETRY"` for the two mtime commands. If either mtime is close to the current UTC time, or advances when you repeat the check, the invocation may still be live. Wait and recheck the files before classifying a missing trailing `task_complete` as truncated or crashed. Only make that classification after the mtimes stop advancing and the process is not running.
+
 ## Phase 2: Understand Record Types
 
 Distinguish records restored into model history (which consume LLM context) from purely diagnostic metadata. This is critical for any recommendation about "session bloat" or "context growth".

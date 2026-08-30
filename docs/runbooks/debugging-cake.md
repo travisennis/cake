@@ -11,13 +11,31 @@ Triage reads two contracts first: exit codes and persisted-session layout and re
 
 ## Step 1: Find the Failing Session
 
+The newest file may be the session running this investigation. This happens when a probe launches cake from inside another cake run. Inspect the first user message in the newest few files before choosing a target; do not let the probe select itself.
+
 ```bash
-# Latest session file (most recently modified .jsonl)
-LATEST=$(ls -t ~/.local/share/cake/sessions/*.jsonl 2>/dev/null | head -1)
+SESSION_DIR="${CAKE_DATA_DIR:-$HOME/.local/share/cake}/sessions"
+
+# Inspect the newest three candidates before launching any cake probe.
+for candidate in $(ls -t "$SESSION_DIR"/*.jsonl 2>/dev/null | head -3); do
+  printf '\n%s\n' "$candidate"
+  prompt="$(jq -r 'select(.type == "message" and .role == "user") | .content' \
+    "$candidate" 2>/dev/null | head -1)"
+  printf '%s\n' "${prompt:-"(no user message)"}"
+done
+```
+
+Compare each first user message with the task you are investigating. If the newest file contains the probe's own request, skip it and choose the matching older file. Set `LATEST` to that explicit target, then snapshot it before launching the probe or running further analysis:
+
+```bash
+LATEST="/absolute/path/to/the-selected-session.jsonl"
+TARGET_SNAPSHOT="${TMPDIR:-/tmp}/cake-session-target.$$.jsonl"
+cp "$LATEST" "$TARGET_SNAPSHOT"
+LATEST="$TARGET_SNAPSHOT"
 echo "$LATEST"
 ```
 
-If `$CAKE_DATA_DIR` is set, sessions live under `$CAKE_DATA_DIR/sessions/`.
+Analyze the snapshot through the rest of this runbook. If `$CAKE_DATA_DIR` is set, sessions live under `$CAKE_DATA_DIR/sessions/`.
 
 ## Step 2: Check How the Session Ended
 
