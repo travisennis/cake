@@ -1,10 +1,11 @@
-//! Session run-mode abstraction.
+//! Session run-mode and persistence-plan abstractions.
 //!
 //! Defines [`RunMode`], which translates the CLI flags (`--continue`, `--resume`,
 //! `--fork`, `--no-session`) into an enum controlling session lifecycle, and
-//! [`SessionStorage`] for whether a session file is created fresh or appended to.
+//! [`SessionPersistencePlan`] for creating or appending a session file.
 
 use crate::session_telemetry::SessionTelemetryRunMode;
+use crate::types::SessionRecord;
 
 /// How a session should be started.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -80,11 +81,11 @@ impl RunMode {
     }
 }
 
-/// Whether to open a fresh session file or append to an existing one.
-#[derive(Clone, Copy)]
-pub enum SessionStorage {
-    /// Create a new session file.
-    New,
+/// One complete plan for opening a session's persistence handle.
+#[derive(Debug)]
+pub enum SessionPersistencePlan {
+    /// Create a new session file and write these records after its metadata.
+    Create { seed_records: Vec<SessionRecord> },
     /// Append to an existing session file.
     Append,
 }

@@ -19,7 +19,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use crate::cli::{
-    CliOutputSink, CmdRunner, CommandRunOptions, Commands, RunMode, SessionStorage, TurnResult,
+    CliOutputSink, CmdRunner, CommandRunOptions, Commands, RunMode, SessionPersistencePlan,
+    TurnResult, execute_persistence_plan,
 };
 use crate::clients::resolve_linked_worktree_dirs;
 use crate::clients::{Agent, SandboxPolicy, ToolContext, resolve_sandbox_policy};
@@ -695,36 +696,18 @@ impl CodingAssistant {
         mut client: Agent,
         data_dir: &DataDir,
         session: &Session,
-        storage: SessionStorage,
-        persists_session: bool,
+        plan: Option<SessionPersistencePlan>,
     ) -> anyhow::Result<(Agent, Option<crate::config::SessionWriter>)> {
-        if !persists_session {
+        let Some(file) = execute_persistence_plan(plan, data_dir, session, client.tool_names())?
+        else {
             return Ok((client, None));
-        }
-
-        let file = match storage {
-            SessionStorage::New => data_dir.create_session_file(session, client.tool_names())?,
-            SessionStorage::Append => data_dir.open_session_for_append(session.id)?,
         };
+
         let writer = crate::config::SessionWriter::new(file);
         let writer_for_callback = writer.clone();
         client =
             client.with_persist_callback(move |record| writer_for_callback.append_record(record));
         Ok((client, Some(writer)))
-    }
-
-    fn prepare_seeded_session(
-        data_dir: &DataDir,
-        run_session: &mut crate::cli::RunSession,
-    ) -> anyhow::Result<()> {
-        if let Some(seed_records) = run_session.seed_records.take() {
-            let mut file = data_dir
-                .create_session_file(&run_session.session, run_session.agent.tool_names())?;
-            crate::config::Session::append_records(&mut file, &seed_records)?;
-            run_session.storage = SessionStorage::Append;
-        }
-
-        Ok(())
     }
 
     fn attach_session_telemetry(
@@ -1075,8 +1058,6 @@ impl CmdRunner for CodingAssistant {
         run_session.agent = run_session.agent.with_limits(&resources.loaded.limits);
         run_session.attach_output_schema(prepared.output_schema.as_ref());
 
-        Self::prepare_seeded_session(data_dir, &mut run_session)?;
-
         let session_start_source =
             HookSource::SessionStart(run_mode.session_start_source().to_owned());
         let session = run_session.session;
@@ -1084,8 +1065,7 @@ impl CmdRunner for CodingAssistant {
             run_session.agent,
             data_dir,
             &session,
-            run_session.storage,
-            run_mode.persists_session(),
+            run_session.persistence,
         )?;
         let client = Self::attach_session_telemetry(
             client,

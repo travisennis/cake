@@ -539,11 +539,10 @@ fn forked_session_seeds_skills_from_structured_records() {
     )
     .unwrap();
 
-    assert!(matches!(run_session.storage, SessionStorage::New));
-    let seed_records = run_session
-        .seed_records
-        .as_ref()
-        .expect("fork should produce seed records");
+    let Some(SessionPersistencePlan::Create { seed_records }) = run_session.persistence.as_ref()
+    else {
+        panic!("fork should produce a create plan with seed records")
+    };
     assert!(seed_records.iter().any(|record| matches!(
         record,
         SessionRecord::SkillActivated { name, .. }

@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use tracing::info;
 
-use crate::cli::run_mode::{RunMode, SessionStorage};
+use crate::cli::run_mode::{RunMode, SessionPersistencePlan};
 use crate::clients::judge::JudgeContext;
 use crate::clients::{Agent, ToolContext};
 use crate::config::settings::JudgeSettings;
@@ -22,12 +22,11 @@ use crate::config::{
 use crate::prompts::build_initial_prompt_messages_with_enabled_tools;
 use crate::types::SessionRecord;
 
-/// A fully assembled agent, session, and storage strategy ready for execution.
+/// A fully assembled agent, session, and persistence plan ready for execution.
 pub struct RunSession {
     pub(crate) agent: Agent,
     pub(crate) session: Session,
-    pub(crate) storage: SessionStorage,
-    pub(crate) seed_records: Option<Vec<SessionRecord>>,
+    pub(crate) persistence: Option<SessionPersistencePlan>,
 }
 
 impl RunSession {
@@ -99,8 +98,7 @@ impl crate::CodingAssistant {
         Ok(RunSession {
             agent,
             session,
-            storage: SessionStorage::Append,
-            seed_records: None,
+            persistence: Some(SessionPersistencePlan::Append),
         })
     }
 
@@ -118,6 +116,7 @@ impl crate::CodingAssistant {
         toolbox_tools: Vec<ToolboxTool>,
         enabled_tools: Option<&[String]>,
         task_id: uuid::Uuid,
+        persistence: Option<SessionPersistencePlan>,
     ) -> RunSession {
         let agent = Agent::new(resolved.clone(), initial_messages)
             .with_task_id(task_id)
@@ -133,8 +132,7 @@ impl crate::CodingAssistant {
         RunSession {
             agent,
             session,
-            storage: SessionStorage::New,
-            seed_records: None,
+            persistence,
         }
     }
 
@@ -196,8 +194,7 @@ impl crate::CodingAssistant {
         Ok(RunSession {
             agent,
             session,
-            storage: SessionStorage::New,
-            seed_records: Some(seed_records),
+            persistence: Some(SessionPersistencePlan::Create { seed_records }),
         })
     }
 
@@ -251,7 +248,13 @@ impl crate::CodingAssistant {
             RunMode::ForkLatest | RunMode::Fork { .. } => {
                 self.forked_run(run_mode, data_dir, &inputs)
             },
-            RunMode::NewSession | RunMode::Ephemeral => self.new_run(&inputs),
+            RunMode::NewSession => self.new_run(
+                &inputs,
+                Some(SessionPersistencePlan::Create {
+                    seed_records: Vec::new(),
+                }),
+            ),
+            RunMode::Ephemeral => self.new_run(&inputs, None),
         }
     }
 
@@ -343,7 +346,11 @@ impl crate::CodingAssistant {
     }
 
     /// New and ephemeral runs: start fresh from the CLI-selected model.
-    fn new_run(&self, inputs: &RunInputs<'_>) -> anyhow::Result<RunSession> {
+    fn new_run(
+        &self,
+        inputs: &RunInputs<'_>,
+        persistence: Option<SessionPersistencePlan>,
+    ) -> anyhow::Result<RunSession> {
         let resolved = ResolvedModelConfig::resolve(
             self.resolve_model_config(inputs.models, inputs.default_model)?,
         )?;
@@ -356,6 +363,7 @@ impl crate::CodingAssistant {
             inputs.toolbox_tools.to_vec(),
             inputs.tools_enabled,
             inputs.task_id,
+            persistence,
         ))
     }
 }
@@ -679,8 +687,12 @@ mod tests {
             HashSet::from(["debugging-cake".to_string()])
         );
         assert!(matches!(
-            run.seed_records.as_deref().and_then(|records| records.first()),
-            Some(SessionRecord::SkillActivated { name, .. }) if name == "debugging-cake"
+            run.persistence.as_ref(),
+            Some(SessionPersistencePlan::Create { seed_records })
+                if matches!(
+                    seed_records.first(),
+                    Some(SessionRecord::SkillActivated { name, .. }) if name == "debugging-cake"
+                )
         ));
     }
 
@@ -772,8 +784,10 @@ mod tests {
             .expect("continue should succeed");
 
             assert_eq!(run.agent.session_id(), saved.id);
-            assert!(matches!(run.storage, SessionStorage::Append));
-            assert!(run.seed_records.is_none());
+            assert!(matches!(
+                run.persistence,
+                Some(SessionPersistencePlan::Append)
+            ));
         });
     }
 
@@ -839,7 +853,10 @@ mod tests {
             .expect("resume should succeed");
 
             assert_eq!(run.agent.session_id(), saved.id);
-            assert!(matches!(run.storage, SessionStorage::Append));
+            assert!(matches!(
+                run.persistence,
+                Some(SessionPersistencePlan::Append)
+            ));
         });
     }
 
@@ -882,11 +899,14 @@ mod tests {
                 .expect("fork should succeed");
 
             assert_ne!(run.agent.session_id(), saved.id);
-            assert!(matches!(run.storage, SessionStorage::New));
             assert!(
                 matches!(
-                    run.seed_records.as_deref().and_then(|records| records.first()),
-                    Some(SessionRecord::SkillActivated { name, .. }) if name == "debugging-cake"
+                    run.persistence.as_ref(),
+                    Some(SessionPersistencePlan::Create { seed_records })
+                        if matches!(
+                            seed_records.first(),
+                            Some(SessionRecord::SkillActivated { name, .. }) if name == "debugging-cake"
+                        )
                 ),
                 "fork should seed activation records"
             );
@@ -929,7 +949,25 @@ mod tests {
     }
 
     #[test]
-    fn ephemeral_runs_start_a_fresh_unseeded_session() {
+    fn new_runs_start_with_an_empty_create_plan() {
+        temp_env::with_var("SESSION_FACTORY_TEST_KEY", Some("test-key"), || {
+            let cli = crate::CodingAssistant::parse_from(["cake"]);
+            let data_dir_dir = tempfile::tempdir().expect("temp data dir");
+            let data_dir = DataDir::new_in_dir(data_dir_dir.path());
+            let working_dir = tempfile::tempdir().expect("temp working dir");
+
+            let run = build_for_mode(&cli, &RunMode::NewSession, &data_dir, working_dir.path())
+                .expect("new run should assemble");
+
+            assert!(matches!(
+                run.persistence,
+                Some(SessionPersistencePlan::Create { seed_records }) if seed_records.is_empty()
+            ));
+        });
+    }
+
+    #[test]
+    fn ephemeral_runs_start_without_a_persistence_plan() {
         temp_env::with_var("SESSION_FACTORY_TEST_KEY", Some("test-key"), || {
             let cli = crate::CodingAssistant::parse_from(["cake"]);
             let data_dir_dir = tempfile::tempdir().expect("temp data dir");
@@ -939,8 +977,7 @@ mod tests {
             let run = build_for_mode(&cli, &RunMode::Ephemeral, &data_dir, working_dir.path())
                 .expect("ephemeral run should assemble");
 
-            assert!(matches!(run.storage, SessionStorage::New));
-            assert!(run.seed_records.is_none());
+            assert!(run.persistence.is_none());
         });
     }
 }
