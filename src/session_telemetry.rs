@@ -2,7 +2,6 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{BufWriter, Write},
     path::Path,
-    sync::atomic::{AtomicBool, Ordering},
     sync::{Arc, Mutex},
 };
 
@@ -478,6 +477,11 @@ pub struct SessionTelemetryWriter {
     writer: BufWriter<File>,
 }
 
+#[cfg(test)]
+trait TelemetryRecordWriter: Send {
+    fn append_record(&mut self, record: &SessionTelemetryRecord) -> anyhow::Result<()>;
+}
+
 impl SessionTelemetryWriter {
     pub fn open(path: &Path) -> anyhow::Result<Self> {
         if let Some(parent) = path.parent() {
@@ -510,45 +514,87 @@ pub enum TelemetryAppend {
     Failed(anyhow::Error),
 }
 
-/// Shared session-telemetry writer with a fail-stop disabled flag.
+/// Shared session-telemetry writer with a fail-stop disabled state.
 ///
 /// The agent loop and the judge-attempt sink share one instance, so a write
 /// failure on either path disables telemetry for both: once any append fails,
 /// no further records are written and a partial NDJSON line is never followed
 /// by more records (see the recovery contract in the judge-attempt-diagnostics
-/// exec plan). The disabled check and the failure transition happen while the
-/// writer lock is held, so concurrent appends cannot race past the flag.
+/// exec plan). Availability and the failure transition are one mutex-wrapped
+/// state, so the pair cannot drift: exactly one caller observes `Failed`, and
+/// every later caller observes `Disabled`.
 pub struct SharedSessionTelemetryWriter {
-    writer: Mutex<SessionTelemetryWriter>,
-    disabled: Arc<AtomicBool>,
+    state: Mutex<TelemetryWriterState>,
+}
+
+/// Whether the shared writer is still accepting records.
+///
+/// `Disabled` is terminal; it is never written again once set, so every caller
+/// after a failure observes `Disabled`.
+enum TelemetryWriterState {
+    Active(SessionTelemetryWriter),
+    #[cfg(test)]
+    TestActive(Box<dyn TelemetryRecordWriter>),
+    Disabled,
+}
+
+impl TelemetryWriterState {
+    fn append(&mut self, record: &SessionTelemetryRecord) -> Option<anyhow::Result<()>> {
+        match self {
+            Self::Active(writer) => Some(writer.append(record)),
+            #[cfg(test)]
+            Self::TestActive(writer) => Some(writer.append_record(record)),
+            Self::Disabled => None,
+        }
+    }
 }
 
 impl SharedSessionTelemetryWriter {
-    pub fn new(writer: SessionTelemetryWriter) -> Self {
+    pub const fn new(writer: SessionTelemetryWriter) -> Self {
         Self {
-            writer: Mutex::new(writer),
-            disabled: Arc::new(AtomicBool::new(false)),
+            state: Mutex::new(TelemetryWriterState::Active(writer)),
+        }
+    }
+
+    #[cfg(test)]
+    fn new_for_test<W: TelemetryRecordWriter + 'static>(writer: W) -> Self {
+        Self {
+            state: Mutex::new(TelemetryWriterState::TestActive(Box::new(writer))),
         }
     }
 
     /// Append one record, fail-stop: after the first failure no further
     /// records are written.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the lock must cover the writer and the Disabled transition together, so the guard is held for the whole append rather than dropped early"
+    )]
     pub fn append(&self, record: &SessionTelemetryRecord) -> TelemetryAppend {
-        let mut writer = match self.writer.lock() {
-            Ok(writer) => writer,
+        let mut state = match self.state.lock() {
+            Ok(state) => state,
             Err(poisoned) => {
-                return TelemetryAppend::Failed(anyhow::anyhow!(
-                    "session telemetry writer poisoned: {poisoned:?}"
-                ));
+                // A panic poisoned the lock while it held a writer that may
+                // have left a partial NDJSON line. Recover the state so the
+                // mutex stays the single availability authority, then fail-stop:
+                // never write after a partial line. Exactly one caller observes
+                // `Failed`; later callers observe `Disabled`.
+                let mut state = poisoned.into_inner();
+                if !matches!(&*state, TelemetryWriterState::Disabled) {
+                    *state = TelemetryWriterState::Disabled;
+                    return TelemetryAppend::Failed(anyhow::anyhow!(
+                        "session telemetry writer poisoned: telemetry disabled"
+                    ));
+                }
+                return TelemetryAppend::Disabled;
             },
         };
-        if self.disabled.load(Ordering::Relaxed) {
+        let Some(append_result) = state.append(record) else {
             return TelemetryAppend::Disabled;
-        }
-        match writer.append(record) {
+        };
+        match append_result {
             Ok(()) => TelemetryAppend::Written,
             Err(error) => {
-                self.disabled.store(true, Ordering::Relaxed);
+                *state = TelemetryWriterState::Disabled;
                 TelemetryAppend::Failed(error)
             },
         }
@@ -663,6 +709,19 @@ mod tests {
                 provider_status: Some("completed".to_string()),
                 provider_reason: None,
             }),
+        }
+    }
+
+    fn telemetry_summary() -> SessionTelemetryRecord {
+        SessionTelemetryRecord::SessionSummary {
+            session_id: "session".to_string(),
+            invocation_id: "invocation".to_string(),
+            timestamp: Utc::now(),
+            success: true,
+            duration_ms: 1,
+            turn_count: 1,
+            usage: Usage::default(),
+            error: None,
         }
     }
 
@@ -948,5 +1007,228 @@ mod tests {
             "boom"
         );
         assert!(contents.ends_with('\n'));
+    }
+
+    const PARTIAL_PREFIX: &[u8] = b"{\"type\":\"session_summary\"";
+
+    struct PrefixThenFailWriter {
+        output: Arc<Mutex<Vec<u8>>>,
+        failed: bool,
+    }
+
+    impl PrefixThenFailWriter {
+        fn new(output: Arc<Mutex<Vec<u8>>>) -> Self {
+            Self {
+                output,
+                failed: false,
+            }
+        }
+    }
+
+    impl TelemetryRecordWriter for PrefixThenFailWriter {
+        fn append_record(&mut self, _record: &SessionTelemetryRecord) -> anyhow::Result<()> {
+            if self.failed {
+                return Err(
+                    std::io::Error::other("unexpected append after deterministic failure").into(),
+                );
+            }
+
+            self.failed = true;
+            self.output
+                .lock()
+                .unwrap()
+                .extend_from_slice(PARTIAL_PREFIX);
+            Err(std::io::Error::other("deterministic telemetry failure").into())
+        }
+    }
+
+    struct PrefixThenPanicWriter {
+        output: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl PrefixThenPanicWriter {
+        fn new(output: Arc<Mutex<Vec<u8>>>) -> Self {
+            Self { output }
+        }
+    }
+
+    impl TelemetryRecordWriter for PrefixThenPanicWriter {
+        fn append_record(&mut self, _record: &SessionTelemetryRecord) -> anyhow::Result<()> {
+            self.output
+                .lock()
+                .unwrap()
+                .extend_from_slice(PARTIAL_PREFIX);
+            panic!("deterministic telemetry panic");
+        }
+    }
+
+    fn assert_partial_output(output: &Arc<Mutex<Vec<u8>>>) {
+        let output = output.lock().unwrap().clone();
+        assert_eq!(output.as_slice(), PARTIAL_PREFIX);
+        assert!(!output.contains(&b'\n'));
+        assert!(serde_json::from_slice::<serde_json::Value>(&output).is_err());
+    }
+
+    #[test]
+    fn shared_writer_poison_after_partial_write_reports_one_failed_then_disabled() {
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let shared = SharedSessionTelemetryWriter::new_for_test(PrefixThenPanicWriter::new(
+            Arc::clone(&output),
+        ));
+        let record = telemetry_summary();
+
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            shared.append(&record);
+        }));
+        assert!(panicked.is_err());
+
+        let results = [
+            shared.append(&record),
+            shared.append(&record),
+            shared.append(&record),
+        ];
+        assert!(matches!(&results[0], TelemetryAppend::Failed(_)));
+        assert!(
+            results[1..]
+                .iter()
+                .all(|result| matches!(result, TelemetryAppend::Disabled))
+        );
+        assert_partial_output(&output);
+    }
+
+    #[test]
+    fn shared_writer_reports_one_failed_then_disabled_after_partial_write() {
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let shared = SharedSessionTelemetryWriter::new_for_test(PrefixThenFailWriter::new(
+            Arc::clone(&output),
+        ));
+        let record = telemetry_summary();
+
+        assert!(matches!(shared.append(&record), TelemetryAppend::Failed(_)));
+        assert!(matches!(shared.append(&record), TelemetryAppend::Disabled));
+        assert!(matches!(shared.append(&record), TelemetryAppend::Disabled));
+        assert_partial_output(&output);
+    }
+
+    #[test]
+    fn shared_writer_concurrent_failure_reports_one_failed_then_disabled() {
+        const CALLERS: usize = 32;
+
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let shared = Arc::new(SharedSessionTelemetryWriter::new_for_test(
+            PrefixThenFailWriter::new(Arc::clone(&output)),
+        ));
+        let barrier = Arc::new(std::sync::Barrier::new(CALLERS + 1));
+        let mut callers = Vec::with_capacity(CALLERS);
+        for _ in 0..CALLERS {
+            let shared = Arc::clone(&shared);
+            let barrier = Arc::clone(&barrier);
+            callers.push(std::thread::spawn(move || {
+                barrier.wait();
+                shared.append(&telemetry_summary())
+            }));
+        }
+
+        barrier.wait();
+        let results = callers
+            .into_iter()
+            .map(|caller| caller.join().unwrap())
+            .collect::<Vec<_>>();
+
+        let failed = results
+            .iter()
+            .filter(|result| matches!(result, TelemetryAppend::Failed(_)))
+            .count();
+        let disabled = results
+            .iter()
+            .filter(|result| matches!(result, TelemetryAppend::Disabled))
+            .count();
+        assert_eq!(failed, 1);
+        assert_eq!(disabled, CALLERS - 1);
+        assert_eq!(failed + disabled, CALLERS);
+        assert_partial_output(&output);
+    }
+
+    #[test]
+    fn shared_writer_poison_reports_one_failed_then_disabled() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let writer = SessionTelemetryWriter::open(&dir.path().join("telemetry.ndjson")).unwrap();
+        let shared = SharedSessionTelemetryWriter::new(writer);
+        let record = telemetry_summary();
+
+        // Poison the lock by panicking while the guard is held; the guard drops
+        // during unwind and poisons the mutex.
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = shared.state.lock().unwrap();
+            panic!("boom");
+        }));
+        assert!(poisoned.is_err());
+
+        // A poison may mean a partial NDJSON line is already buffered, so the
+        // first append reports Failed and disables the writer; no further
+        // record is written after it.
+        assert!(
+            matches!(shared.append(&record), TelemetryAppend::Failed(_)),
+            "a poisoned writer must report exactly one Failed transition"
+        );
+        assert!(matches!(shared.append(&record), TelemetryAppend::Disabled));
+        assert!(matches!(shared.append(&record), TelemetryAppend::Disabled));
+    }
+
+    #[test]
+    fn shared_writer_disabled_state_writes_nothing() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("telemetry.ndjson");
+        let shared =
+            SharedSessionTelemetryWriter::new(SessionTelemetryWriter::open(&path).unwrap());
+        {
+            let mut state = shared.state.lock().unwrap();
+            *state = TelemetryWriterState::Disabled;
+        }
+        let record = telemetry_summary();
+
+        assert!(matches!(shared.append(&record), TelemetryAppend::Disabled));
+        assert!(matches!(shared.append(&record), TelemetryAppend::Disabled));
+
+        let contents = std::fs::read_to_string(path).unwrap();
+        assert!(
+            contents.is_empty(),
+            "no record may be written once disabled"
+        );
+    }
+
+    #[test]
+    fn shared_writer_concurrent_appends_are_interleaved_safely() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("telemetry.ndjson");
+        let shared = std::sync::Arc::new(SharedSessionTelemetryWriter::new(
+            SessionTelemetryWriter::open(&path).unwrap(),
+        ));
+
+        let writers = (0..8)
+            .map(|thread| {
+                let shared = std::sync::Arc::clone(&shared);
+                std::thread::spawn(move || {
+                    for record in 0..25 {
+                        let result = shared.append(&telemetry_summary());
+                        assert!(
+                            matches!(result, TelemetryAppend::Written),
+                            "thread {thread} record {record} failed: {result:?}"
+                        );
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+
+        let contents = std::fs::read_to_string(path).unwrap();
+        let lines = contents.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), 8 * 25);
+        for line in lines {
+            let value: serde_json::Value = serde_json::from_str(line).unwrap();
+            assert_eq!(value["type"], "session_summary");
+        }
     }
 }
