@@ -28,7 +28,7 @@ Managed work starts here too: set the GitHub issue's Status to In Progress on th
 
 ### 2. Work and verify
 
-Follow the development loop in [CONTRIBUTING.md](../../CONTRIBUTING.md). The pre-push hook runs `just pre-push`, which routes by changed path class: documentation-only pushes run the targeted docs checks, everything else runs the full `just ci` gate. [Pre-push routing](../../CONTRIBUTING.md#pre-push-routing) lists the classes.
+Follow the development loop in [CONTRIBUTING.md](../../CONTRIBUTING.md). The pre-push hook runs `just pre-push`, which routes by changed path class: documentation-only pushes run the targeted docs checks, code-class pushes run the fast `just check` gate, and unknown changes run `just check-full`. [Pre-push routing](../../CONTRIBUTING.md#pre-push-routing) lists the classes.
 
 The classifier is `scripts/classify-changes.sh`, shared with the `changes` job in `.github/workflows/ci.yml` so the local gate and CI agree on what a change touches. It measures the changed set against the upstream branch when one is set, otherwise against `origin/master` --- branches from `just branch` and `just worktree` deliberately have no upstream, so they take the second path.
 

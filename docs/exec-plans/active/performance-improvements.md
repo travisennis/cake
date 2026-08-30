@@ -17,7 +17,7 @@ The behavior is observable by running documented profiling commands, collecting 
 - [x] (2026-08-28 00:00Z) Added the `profiling` Cargo profile, the `just profile` recipe, and a local fake-provider agent-loop workload with a verified Samply CPU path and optional exploratory Instruments allocation path.
 - [x] (2026-08-29 00:00Z) Confirmed the current release profile and recorded the native `aarch64-apple-darwin` binary baseline at 8,891,552 bytes in `ci/binary-size-baseline.json`.
 - [ ] Profile representative workloads before changing hot-path code (completed: established and captured an amplified tool-heavy agent-loop workload; remaining: inspect and categorize its hotspots and add separate workloads only where the evidence requires them).
-- [ ] Implement only measured source-level improvements, then document results and run `just ci`.
+- [ ] Implement only measured source-level improvements, then document results and run `just check-full`.
 
 ## Surprises & Discoveries
 

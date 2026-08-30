@@ -140,9 +140,10 @@ just dependency-sweep --rust-channel /tmp/cake-rust-channel.toml --as-of "$(date
 For a pull request that changes Rust, configuration, CI, fixtures, or dependency surfaces, run:
 
 ```
-just rust-version-check
+just check
 just check-deps
-just ci
 ```
 
-`just ci` is the final repository gate. If a check cannot run, record the exact reason and the narrower checks that did run. The report and fixture suite require no provider credentials or network access; only the live Rust channel acquisition requires network access. The `changes` job in `.github/workflows/ci.yml` runs the fixture suite, and maintainers can run it locally with `just dependency-sweep-check`.
+Use `just check-full` when the change needs complete local validation, including coverage, all CI fixtures, documentation, and a release build.
+
+`just check` is the fast local gate. If a check cannot run, record the exact reason and the narrower checks that did run. GitHub CI remains authoritative for platform tests and coverage/change risk. The report and fixture suite require no provider credentials or network access; only the live Rust channel acquisition requires network access. The `changes` job in `.github/workflows/ci.yml` runs the fixture suite, and maintainers can run it locally with `just check-full`.

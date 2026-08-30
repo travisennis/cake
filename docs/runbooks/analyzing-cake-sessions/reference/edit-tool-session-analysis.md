@@ -194,7 +194,7 @@ Direct failure pattern:
 Hidden underperformance pattern:
 
 1. `function_call_output` says edits were applied.
-2. Later `cargo check --tests`, `cargo test`, `just ci`, or another validation fails.
+2. Later `cargo check --tests`, `cargo test`, `just check`, or another validation fails.
 3. The error points to the edited file or removed/changed symbol.
 4. The agent performs corrective edits, restores the file, or reruns broad searches.
 

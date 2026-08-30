@@ -12,7 +12,8 @@
 
 ## Checklist
 
-- [ ] `just ci` passes locally, including coverage/change-risk
+- [ ] `just check` passes locally
+- [ ] GitHub CI passes, including platform checks and coverage/change-risk
 - [ ] Tests added/updated for new functionality
 - [ ] Acceptance criteria and verification evidence are complete on the managed issue
 - [ ] If an ExecPlan applies, its Outcomes & Retrospective is complete and the plan is in `docs/exec-plans/completed/`

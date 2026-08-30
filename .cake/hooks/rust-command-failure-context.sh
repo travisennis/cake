@@ -32,7 +32,7 @@ tool_result = payload.get("tool_result") or {}
 output = str(tool_result.get("text_result_for_llm") or "")
 
 rust_workflow = re.search(
-    r"(^|[;&|\s])(cargo|just)\s+(test|clippy|fmt|build|ci-full|ci|rust-version-check|lint-imports|doc|deny)\b",
+    r"(^|[;&|\s])(cargo|just)\s+(test|clippy|fmt|build|check-full|check|rust-version-check|lint-imports|doc|deny)\b",
     command,
 )
 rust_error = re.search(
@@ -48,7 +48,7 @@ if not (nonzero_exit and (rust_workflow or rust_error)):
 context = (
     "A Rust workflow command failed in the cake repo. Prefer fixing the first compiler, "
     "clippy, formatting, or test failure in the command output before retrying broader checks. "
-    "Before finishing code changes here, run `just ci`; it covers rust-version-check, fmt-check, "
+    "Before finishing code changes here, run `just check`; it covers rust-version-check, fmt-check, "
     "clippy-strict, tests, and import lint. If the failure is platform-specific, inspect sandbox "
     "cfg paths and scripts/check-rust-toolchain.sh."
 )

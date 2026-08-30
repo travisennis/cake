@@ -131,7 +131,7 @@ Include:
    - Don't narrate every implementation detail unless it affects future work.
 
 2. **What was verified**
-   - List the exact checks run, such as `cargo test foo`, `cargo fmt`, `just ci`, browser verification, etc.
+   - List the exact checks run, such as `cargo test foo`, `cargo fmt`, `just check`, browser verification, etc.
    - If a relevant check was skipped or failed, say exactly why.
 
 3. **What remains**
