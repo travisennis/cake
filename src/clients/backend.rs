@@ -3,7 +3,7 @@ use crate::clients::retry::RequestOverrides;
 use crate::clients::tools::Tool;
 use crate::clients::{chat_completions, responses};
 use crate::config::model::{ApiType, ResolvedModelConfig};
-use crate::types::ConversationItem;
+use crate::types::{ConversationItem, Usage};
 
 /// A successful provider response whose body does not match the backend's
 /// JSON envelope.
@@ -19,19 +19,54 @@ pub(super) struct ResponseDecodeError {
     backend: &'static str,
     preview_len: usize,
     preview: String,
+    reported_usage: Option<Usage>,
     #[source]
     source: serde_json::Error,
 }
 
 impl ResponseDecodeError {
-    pub(super) fn new(backend: &'static str, body: &[u8], source: serde_json::Error) -> Self {
+    pub(super) fn new(
+        backend: &'static str,
+        body: &[u8],
+        reported_usage: Option<Usage>,
+        source: serde_json::Error,
+    ) -> Self {
         let preview_len = body.len().min(400);
         Self {
             backend,
             preview_len,
             preview: String::from_utf8_lossy(&body[..preview_len]).into_owned(),
+            reported_usage,
             source,
         }
+    }
+
+    pub(super) const fn usage(&self) -> Option<Usage> {
+        self.reported_usage
+    }
+}
+
+/// A valid provider response whose content could not be converted into
+/// conversation items. The normalized usage remains available to the runner
+/// even though the response itself is discarded.
+#[derive(Debug, thiserror::Error)]
+#[error("{source}")]
+pub(super) struct ResponseParseError {
+    #[source]
+    source: anyhow::Error,
+    reported_usage: Option<Usage>,
+}
+
+impl ResponseParseError {
+    pub(super) const fn new(source: anyhow::Error, reported_usage: Option<Usage>) -> Self {
+        Self {
+            source,
+            reported_usage,
+        }
+    }
+
+    pub(super) const fn usage(&self) -> Option<Usage> {
+        self.reported_usage
     }
 }
 
@@ -114,6 +149,13 @@ impl Backend {
             Self::ChatCompletions => {
                 chat_completions::send_request_json(client, config, request).await
             },
+        }
+    }
+
+    pub(super) fn reported_usage(self, body: &[u8]) -> Option<Usage> {
+        match self {
+            Self::Responses => responses::reported_usage(body),
+            Self::ChatCompletions => chat_completions::reported_usage(body),
         }
     }
 

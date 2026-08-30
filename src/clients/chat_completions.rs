@@ -5,10 +5,10 @@ use tracing::{debug, trace, warn};
 use crate::config::model::ResolvedModelConfig;
 
 use crate::clients::agent::TurnResult;
-use crate::clients::backend::{FinalOutputConstraint, ResponseDecodeError};
+use crate::clients::backend::{FinalOutputConstraint, ResponseDecodeError, ResponseParseError};
 use crate::clients::chat_types::{
     ChatFunction, ChatFunctionCallRef, ChatMessage, ChatRequest, ChatResponse, ChatTool,
-    ChatToolCallRef, ResponseFormat, ResponseFormatJsonSchema,
+    ChatToolCallRef, ChatUsage, ResponseFormat, ResponseFormatJsonSchema,
 };
 use crate::clients::provider_strategy::ProviderStrategy;
 use crate::clients::retry::RequestOverrides;
@@ -138,8 +138,19 @@ fn build_chat_request(
 /// from the error text.
 async fn read_chat_response(response: reqwest::Response) -> anyhow::Result<ChatResponse> {
     let bytes = response.bytes().await?;
-    serde_json::from_slice::<ChatResponse>(&bytes)
-        .map_err(|error| ResponseDecodeError::new("Chat Completions", &bytes, error).into())
+    serde_json::from_slice::<ChatResponse>(&bytes).map_err(|error| {
+        ResponseDecodeError::new("Chat Completions", &bytes, reported_usage(&bytes), error).into()
+    })
+}
+
+pub(super) fn reported_usage(body: &[u8]) -> Option<Usage> {
+    let value = serde_json::from_slice::<serde_json::Value>(body).ok()?;
+    let response_id = value
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("<missing id>");
+    let api_usage = serde_json::from_value::<ChatUsage>(value.get("usage")?.clone()).ok()?;
+    Some(map_usage(&api_usage, response_id))
 }
 
 /// Parse an HTTP response from the Chat Completions API into a `TurnResult`.
@@ -164,58 +175,13 @@ pub(super) async fn parse_response(response: reqwest::Response) -> anyhow::Resul
         );
     }
 
-    let usage = chat_response.usage.as_ref().map(|u| {
-        if u.prompt_tokens.is_none() {
-            warn!(
-                target: "cake",
-                response_id,
-                field = "prompt_tokens",
-                "Chat Completions usage missing field, defaulting to 0"
-            );
-        }
-        if u.completion_tokens.is_none() {
-            warn!(
-                target: "cake",
-                response_id,
-                field = "completion_tokens",
-                "Chat Completions usage missing field, defaulting to 0"
-            );
-        }
-        if u.total_tokens.is_none() {
-            warn!(
-                target: "cake",
-                response_id,
-                field = "total_tokens",
-                "Chat Completions usage missing field, defaulting to 0"
-            );
-        }
-        Usage {
-            input_tokens: u.prompt_tokens.unwrap_or(0),
-            output_tokens: u.completion_tokens.unwrap_or(0),
-            total_tokens: u.total_tokens.unwrap_or(0),
-            input_tokens_details: InputTokensDetails {
-                cached_tokens: u
-                    .prompt_tokens_details
-                    .as_ref()
-                    .and_then(|d| d.cached_tokens)
-                    .unwrap_or(0),
-                cache_write_tokens: u
-                    .prompt_tokens_details
-                    .as_ref()
-                    .and_then(|d| d.cache_write_tokens)
-                    .unwrap_or(0),
-            },
-            output_tokens_details: OutputTokensDetails {
-                reasoning_tokens: u
-                    .completion_tokens_details
-                    .as_ref()
-                    .and_then(|d| d.reasoning_tokens)
-                    .unwrap_or(0),
-            },
-        }
-    });
+    let usage = chat_response
+        .usage
+        .as_ref()
+        .map(|usage| map_usage(usage, response_id));
 
-    let items = parse_choices(&chat_response)?;
+    let items = parse_choices(&chat_response)
+        .map_err(|error| anyhow::Error::new(ResponseParseError::new(error, usage)))?;
     let termination = chat_response
         .choices
         .first()
@@ -227,6 +193,57 @@ pub(super) async fn parse_response(response: reqwest::Response) -> anyhow::Resul
         termination,
         provider_request_id: chat_response.id,
     })
+}
+
+fn map_usage(api_usage: &ChatUsage, response_id: &str) -> Usage {
+    if api_usage.prompt_tokens.is_none() {
+        warn!(
+            target: "cake",
+            response_id,
+            field = "prompt_tokens",
+            "Chat Completions usage missing field, defaulting to 0"
+        );
+    }
+    if api_usage.completion_tokens.is_none() {
+        warn!(
+            target: "cake",
+            response_id,
+            field = "completion_tokens",
+            "Chat Completions usage missing field, defaulting to 0"
+        );
+    }
+    if api_usage.total_tokens.is_none() {
+        warn!(
+            target: "cake",
+            response_id,
+            field = "total_tokens",
+            "Chat Completions usage missing field, defaulting to 0"
+        );
+    }
+    Usage {
+        input_tokens: api_usage.prompt_tokens.unwrap_or(0),
+        output_tokens: api_usage.completion_tokens.unwrap_or(0),
+        total_tokens: api_usage.total_tokens.unwrap_or(0),
+        input_tokens_details: InputTokensDetails {
+            cached_tokens: api_usage
+                .prompt_tokens_details
+                .as_ref()
+                .and_then(|d| d.cached_tokens)
+                .unwrap_or(0),
+            cache_write_tokens: api_usage
+                .prompt_tokens_details
+                .as_ref()
+                .and_then(|d| d.cache_write_tokens)
+                .unwrap_or(0),
+        },
+        output_tokens_details: OutputTokensDetails {
+            reasoning_tokens: api_usage
+                .completion_tokens_details
+                .as_ref()
+                .and_then(|d| d.reasoning_tokens)
+                .unwrap_or(0),
+        },
+    }
 }
 
 fn chat_choice_termination(

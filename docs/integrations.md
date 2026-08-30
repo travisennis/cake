@@ -64,7 +64,9 @@ The current format version is 4:
 3. Conversation and metadata records are appended live.
 4. The invocation ends with one `task_complete` when Cake can record an outcome.
 
-Conversation records restored into model history are `message`, `function_call`, `function_call_output`, and `reasoning`. `session_meta`, `task_start`, `prompt_context`, `skill_activated`, `hook_event`, `turn_usage`, and `task_complete` are audit or lifecycle metadata and are not replayed as conversation. `turn_usage` records one normalized `usage` per completed API turn; Cake uses the most recent one to seed the agent's last-usage basis on continue, resume, and fork, so a resumed run knows its current context size before the first new provider request.
+Conversation records restored into model history are `message`, `function_call`, `function_call_output`, and `reasoning`. `session_meta`, `task_start`, `prompt_context`, `skill_activated`, `hook_event`, `turn_usage`, and `task_complete` are audit or lifecycle metadata and are not replayed as conversation. `turn_usage` records one normalized `usage` for every provider attempt that reports it, before retry or discard classification. A retried or discarded attempt therefore has optional 1-based `attempt` and `terminal_class` fields; a terminal failed turn is audited when usage is available. Cake uses the most recent record to seed the agent's last-usage basis on continue, resume, and fork, so a resumed run knows its current context size before the first new provider request. `task_complete.usage` totals all reported attempts, including failed or retried attempts.
+
+Session consumers should ignore unknown optional fields. `terminal_class` uses the bounded values `completed`, `transport`, `http`, `body_parse`, and `response_failed`.
 
 `--continue` selects the newest session whose header working directory matches the current directory. `--resume <UUID>` opens a specific session. `--fork [UUID]` creates a new session identity seeded with conversation records and prior `skill_activated` metadata from the selected parent. It does not copy parent session, task, prompt-context, hook, or completion metadata.
 

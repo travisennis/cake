@@ -123,7 +123,12 @@ async fn parse_response_function_call_missing_required_fields_fails() {
                 "type": "function_call",
                 "call_id": "call-1",
                 "arguments": "{}"
-            }]
+            }],
+            "usage": {
+                "input_tokens": 11,
+                "output_tokens": 7,
+                "total_tokens": 18
+            }
         })))
         .mount(&mock_server)
         .await;
@@ -140,6 +145,10 @@ async fn parse_response_function_call_missing_required_fields_fails() {
     assert!(message.contains("malformed Responses API function_call"));
     assert!(message.contains("resp-123"));
     assert!(message.contains("id, name"));
+    let parse_error = error
+        .downcast_ref::<ResponseParseError>()
+        .expect("discarded output should retain its parse error type");
+    assert_eq!(parse_error.usage().unwrap().total_tokens, 18);
 }
 
 #[tokio::test]

@@ -11,7 +11,7 @@ use serde::Serialize;
 use crate::OutputFormat;
 use crate::clients::retry::{RequestOverrides, RetryReason, RetryStatus};
 use crate::config::model::{ApiType, ReasoningEffort};
-use crate::types::Usage;
+use crate::types::{ApiAttemptTerminalClass, Usage};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -70,28 +70,6 @@ pub struct SessionTelemetrySettings {
 pub struct SessionTelemetryContext {
     pub session_id: String,
     pub invocation_id: String,
-}
-
-/// Terminal outcome of one provider attempt, independent of the semantic
-/// [`TerminationClassification`]. Lets consumers tell apart a transport
-/// failure, a non-2xx HTTP failure, a 2xx body/SSE decode failure, an accepted
-/// 2xx request that ended in `response.failed`, and a completed turn without
-/// parsing provider messages.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ApiAttemptTerminalClass {
-    /// The turn completed and produced an item.
-    Completed,
-    /// The request phase failed (connect, timeout, stale connection).
-    Transport,
-    /// The provider returned a non-2xx HTTP response.
-    Http,
-    /// The 2xx body could not be decoded as JSON/SSE, or the stream ended
-    /// before a terminal event.
-    BodyParse,
-    /// The provider accepted the request (HTTP 2xx) then emitted a terminal
-    /// `response.failed` event.
-    ResponseFailed,
 }
 
 /// Bounded, structured metadata from a terminal `response.failed` stream event

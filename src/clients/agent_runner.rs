@@ -3,18 +3,19 @@ use std::time::{Duration, Instant};
 use tokio::time::sleep;
 use tracing::debug;
 
-use crate::clients::agent::TurnResult;
-use crate::clients::backend::{Backend, FinalOutputConstraint};
+use crate::clients::agent::{TurnResult, TurnUsageSettlement};
+use crate::clients::backend::{
+    Backend, FinalOutputConstraint, ResponseDecodeError, ResponseParseError,
+};
 use crate::clients::responses::ResponsesStreamFailed;
 use crate::clients::retry::{self, HttpFailure, RequestOverrides, RetryPolicy, RetryStatus};
 use crate::clients::tools::Tool;
 use crate::config::model::ResolvedModelConfig;
 use crate::session_telemetry::{
-    AgentRunnerTelemetryEvent, ApiAttemptTelemetry, ApiAttemptTerminalClass,
-    CompensationEventTelemetry, CompensationKind, RequestOverridesSnapshot,
-    RetryScheduledTelemetry,
+    AgentRunnerTelemetryEvent, ApiAttemptTelemetry, CompensationEventTelemetry, CompensationKind,
+    RequestOverridesSnapshot, RetryScheduledTelemetry,
 };
-use crate::types::ConversationItem;
+use crate::types::{ApiAttemptTerminalClass, ConversationItem, Usage};
 
 pub(super) fn build_http_client(disable_connection_reuse: bool) -> reqwest::Client {
     let mut builder = reqwest::Client::builder()
@@ -67,9 +68,11 @@ impl AgentRunner {
         history: &'a [ConversationItem],
         tools: &'a [Tool],
         constraint: Option<FinalOutputConstraint<'a>>,
+        next_attempt: &mut u32,
         mut report_telemetry: impl FnMut(AgentRunnerTelemetryEvent),
+        mut settle_usage: impl FnMut(TurnUsageSettlement),
     ) -> anyhow::Result<TurnResult> {
-        let mut attempt = 1;
+        let mut attempt = *next_attempt;
         let mut request_overrides = RequestOverrides {
             max_output_tokens: config.model_config.max_output_tokens,
             reasoning_max_tokens: config.model_config.reasoning_max_tokens,
@@ -113,6 +116,7 @@ impl AgentRunner {
                             status_code,
                             &request_overrides,
                             &mut report_telemetry,
+                            &mut settle_usage,
                         )
                         .await
                     } else {
@@ -128,6 +132,7 @@ impl AgentRunner {
                             status_code,
                             &mut request_overrides,
                             &mut report_telemetry,
+                            &mut settle_usage,
                         )
                         .await
                     }
@@ -151,11 +156,17 @@ impl AgentRunner {
             };
 
             match outcome {
-                AttemptResult::Completed(turn) => return Ok(turn),
-                AttemptResult::RetryNeeded => {
-                    attempt += 1;
+                AttemptResult::Completed(turn) => {
+                    *next_attempt = attempt.saturating_add(1);
+                    return Ok(turn);
                 },
-                AttemptResult::Terminal(error) => return Err(error),
+                AttemptResult::RetryNeeded => {
+                    attempt = attempt.saturating_add(1);
+                },
+                AttemptResult::Terminal(error) => {
+                    *next_attempt = attempt.saturating_add(1);
+                    return Err(error);
+                },
             }
         }
     }
@@ -179,6 +190,7 @@ impl AgentRunner {
         status_code: u16,
         request_overrides: &RequestOverrides,
         report_telemetry: &mut impl FnMut(AgentRunnerTelemetryEvent),
+        settle_usage: &mut impl FnMut(TurnUsageSettlement),
     ) -> AttemptResult {
         let parse_start = Instant::now();
         let parse_result = self.backend.parse_response(response).await;
@@ -190,9 +202,9 @@ impl AgentRunner {
             .err()
             .and_then(|error| error.downcast_ref::<ResponsesStreamFailed>());
         let terminal_class = match (parse_result.is_ok(), failed.is_some()) {
-            (true, _) => Some(ApiAttemptTerminalClass::Completed),
-            (false, true) => Some(ApiAttemptTerminalClass::ResponseFailed),
-            (false, false) => Some(ApiAttemptTerminalClass::BodyParse),
+            (true, _) => ApiAttemptTerminalClass::Completed,
+            (false, true) => ApiAttemptTerminalClass::ResponseFailed,
+            (false, false) => ApiAttemptTerminalClass::BodyParse,
         };
         let provider_request_id = parse_result
             .as_ref()
@@ -200,7 +212,7 @@ impl AgentRunner {
             .and_then(|turn| turn.provider_request_id.clone())
             .or_else(|| failed.and_then(|failed| failed.metadata().provider_request_id.clone()));
         let responses_failed = failed.map(|failed| Box::new(failed.metadata().clone()));
-        let usage = parse_result.as_ref().ok().and_then(|turn| turn.usage);
+        let usage = reported_usage_from_result(&parse_result);
         let termination = parse_result
             .as_ref()
             .ok()
@@ -218,11 +230,20 @@ impl AgentRunner {
             error,
             usage,
             termination,
-            terminal_class,
+            terminal_class: Some(terminal_class),
             provider_request_id,
             responses_failed,
             request_overrides: RequestOverridesSnapshot::from(request_overrides),
         }));
+
+        if let Some(usage) = usage {
+            settle_usage(TurnUsageSettlement {
+                turn_index,
+                attempt,
+                terminal_class,
+                usage,
+            });
+        }
 
         match parse_result {
             Ok(turn) => AttemptResult::Completed(turn),
@@ -304,6 +325,7 @@ impl AgentRunner {
         status_code: u16,
         request_overrides: &mut RequestOverrides,
         report_telemetry: &mut impl FnMut(AgentRunnerTelemetryEvent),
+        settle_usage: &mut impl FnMut(TurnUsageSettlement),
     ) -> AttemptResult {
         let headers = response.headers().clone();
         let body = response.text().await.unwrap_or_default();
@@ -312,6 +334,7 @@ impl AgentRunner {
             headers,
             body,
         };
+        let usage = self.backend.reported_usage(failure.body.as_bytes());
         report_telemetry(AgentRunnerTelemetryEvent::ApiAttempt(ApiAttemptTelemetry {
             turn_index,
             attempt,
@@ -321,13 +344,21 @@ impl AgentRunner {
             history_items,
             status_code: Some(status_code),
             error: Some(format!("{} {}", failure.status, failure.body)),
-            usage: None,
+            usage,
             termination: None,
             terminal_class: Some(ApiAttemptTerminalClass::Http),
             provider_request_id: None,
             responses_failed: None,
             request_overrides: RequestOverridesSnapshot::from(&*request_overrides),
         }));
+        if let Some(usage) = usage {
+            settle_usage(TurnUsageSettlement {
+                turn_index,
+                attempt,
+                terminal_class: ApiAttemptTerminalClass::Http,
+                usage,
+            });
+        }
 
         match retry::classify_http_failure(
             &self.retry_policy,
@@ -433,6 +464,29 @@ impl AgentRunner {
             retry::RetryDecision::DoNotRetry => AttemptResult::Terminal(error),
         }
     }
+}
+
+fn reported_usage_from_result(result: &Result<TurnResult, anyhow::Error>) -> Option<Usage> {
+    result
+        .as_ref()
+        .ok()
+        .and_then(|turn| turn.usage)
+        .or_else(|| {
+            let error = result.as_ref().err()?;
+            error
+                .downcast_ref::<ResponsesStreamFailed>()
+                .and_then(ResponsesStreamFailed::usage)
+                .or_else(|| {
+                    error
+                        .downcast_ref::<ResponseParseError>()
+                        .and_then(ResponseParseError::usage)
+                })
+                .or_else(|| {
+                    error
+                        .downcast_ref::<ResponseDecodeError>()
+                        .and_then(ResponseDecodeError::usage)
+                })
+        })
 }
 
 fn elapsed_ms(start: Instant) -> u64 {

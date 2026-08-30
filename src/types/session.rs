@@ -366,20 +366,49 @@ pub struct TaskCompleteData {
     pub permission_denials: Option<Vec<String>>,
 }
 
-/// Token usage for one completed API turn.
+/// Bounded terminal outcome of one provider attempt.
+///
+/// This vocabulary is shared by provider-attempt telemetry and session usage
+/// audit records. It describes the provider request boundary, not the later
+/// agent-loop result classification.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ApiAttemptTerminalClass {
+    /// The request completed and produced a parseable provider response.
+    Completed,
+    /// The request phase failed (connect, timeout, stale connection).
+    Transport,
+    /// The provider returned a non-2xx HTTP response.
+    Http,
+    /// The 2xx body could not be decoded or parsed into a provider response.
+    BodyParse,
+    /// The provider accepted the request, then emitted a terminal
+    /// `response.failed` event.
+    ResponseFailed,
+}
+
+/// Token usage for one provider attempt.
 ///
 /// Session-only audit record: persisted to the session file but never emitted
-/// to stream-json output. Per-turn usage lets a resumed session know the
-/// current context size before the next provider request and makes token
-/// growth across turns reconstructible.
+/// to stream-json output. Per-attempt usage lets a resumed session know the
+/// current context size before the next provider request and makes token cost
+/// reconstructible even when a response is retried or discarded.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct TurnUsageData {
     pub session_id: String,
     pub task_id: String,
-    /// 1-based index of the completed turn.
+    /// 1-based index of the logical agent turn.
     pub turn: u32,
     pub usage: Usage,
     pub timestamp: DateTime<Utc>,
+    /// 1-based provider-attempt ordinal. Absent on the original successful
+    /// single-attempt shape for compatibility with existing records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt: Option<u32>,
+    /// Provider-attempt terminal class. Absent on the original successful
+    /// single-attempt shape for compatibility with existing records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_class: Option<ApiAttemptTerminalClass>,
 }
 
 /// Shared data for `HookEvent` records in both `StreamRecord` and `SessionRecord`.
@@ -470,7 +499,7 @@ pub enum SessionRecord {
 
     TaskComplete(TaskCompleteData),
 
-    /// Per-turn token usage (session-only; not emitted to stream-json).
+    /// Per-attempt token usage (session-only; not emitted to stream-json).
     TurnUsage(TurnUsageData),
 }
 

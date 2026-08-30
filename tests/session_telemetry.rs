@@ -76,6 +76,28 @@ fn response_failed_body(id: &str, code: &str, message: &str) -> String {
     )
 }
 
+fn response_failed_body_with_usage(id: &str, code: &str, message: &str) -> String {
+    format!(
+        "data: {}\n\n",
+        serde_json::json!({
+            "type": "response.failed",
+            "response": {
+                "id": id,
+                "error": {
+                    "message": message,
+                    "type": code,
+                    "code": code,
+                },
+                "usage": {
+                    "input_tokens": 11,
+                    "output_tokens": 7,
+                    "total_tokens": 18,
+                },
+            }
+        })
+    )
+}
+
 fn write_responses_settings(env: &TestEnv, base_url: &str) {
     env.write_project_settings(&format!(
         r#"
@@ -244,7 +266,7 @@ async fn response_failed_server_error_retries_and_recovers() {
     Mock::given(method("POST"))
         .and(path("/responses"))
         .respond_with(
-            ResponseTemplate::new(200).set_body_string(response_failed_body(
+            ResponseTemplate::new(200).set_body_string(response_failed_body_with_usage(
                 "resp-fail",
                 "server_error",
                 "provider exploded",
@@ -278,11 +300,31 @@ async fn response_failed_server_error_retries_and_recovers() {
         String::from_utf8_lossy(&output.stderr)
     );
 
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["usage"]["total_tokens"], 33);
+    let session = session_records(&env);
+    let usages = session
+        .iter()
+        .filter(|record| record["type"] == "turn_usage")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        usages.len(),
+        2,
+        "each reported retry attempt should be audited"
+    );
+    assert_eq!(usages[0]["attempt"], 1);
+    assert_eq!(usages[0]["terminal_class"], "response_failed");
+    assert_eq!(usages[0]["usage"]["total_tokens"], 18);
+    assert_eq!(usages[1]["attempt"], 2);
+    assert_eq!(usages[1]["terminal_class"], "completed");
+    assert_eq!(usages[1]["usage"]["total_tokens"], 15);
+
     let records = telemetry_records(&env);
     let api_attempts = records
         .iter()
         .filter(|record| record["type"] == "api_attempt")
         .collect::<Vec<_>>();
+
     assert_eq!(api_attempts.len(), 2, "{records:#?}");
     let failed = api_attempts
         .iter()
@@ -310,6 +352,143 @@ async fn response_failed_server_error_retries_and_recovers() {
         }),
         "completed attempt should be classified: {records:#?}"
     );
+}
+
+#[tokio::test]
+async fn response_failed_usage_is_persisted_in_session_totals_without_stream_record() {
+    let env = TestEnv::new("cake-response-failed-usage-test");
+    let mock_server = MockServer::start().await;
+    write_responses_settings(&env, &mock_server.uri());
+
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(response_failed_body_with_usage(
+                "resp-usage",
+                "invalid_request_error",
+                "bad request",
+            )),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let output = env
+        .command()
+        .arg("--output-format")
+        .arg("stream-json")
+        .arg("test prompt")
+        .env("SESSION_TELEMETRY_TEST_KEY", "test-token")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute cake");
+
+    assert!(
+        output.status.success(),
+        "stream-json should represent the provider failure in task_complete. stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stream = String::from_utf8(output.stdout).expect("stream-json should be UTF-8");
+    let stream_records = stream
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert!(
+        stream_records
+            .iter()
+            .all(|record| record["type"] != "turn_usage"),
+        "session-only usage audit records must not enter stream-json: {stream_records:#?}"
+    );
+    let complete = stream_records
+        .iter()
+        .find(|record| record["type"] == "task_complete")
+        .expect("stream-json should contain task_complete");
+    assert_eq!(complete["subtype"], "error_during_execution");
+    assert_eq!(complete["usage"]["input_tokens"], 11);
+    assert_eq!(complete["usage"]["output_tokens"], 7);
+    assert_eq!(complete["usage"]["total_tokens"], 18);
+
+    let session = session_records(&env);
+    let usage = session
+        .iter()
+        .find(|record| record["type"] == "turn_usage")
+        .expect("failed provider usage should be persisted");
+    assert_eq!(usage["turn"], 1);
+    assert_eq!(usage["attempt"], 1);
+    assert_eq!(usage["terminal_class"], "response_failed");
+    assert_eq!(usage["usage"]["total_tokens"], 18);
+
+    let telemetry = telemetry_records(&env);
+    let attempt = telemetry
+        .iter()
+        .find(|record| record["type"] == "api_attempt")
+        .expect("provider attempt telemetry should exist");
+    assert_eq!(attempt["usage"]["total_tokens"], 18);
+}
+
+#[tokio::test]
+async fn discarded_overflow_usage_is_settled_before_retry() {
+    let env = TestEnv::new("cake-overflow-usage-test");
+    let mock_server = MockServer::start().await;
+    write_responses_settings(&env, &mock_server.uri());
+
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "error": {
+                "message": "input length and max_tokens exceed context limit: 12000 + 5000 > 16384"
+            },
+            "usage": {
+                "input_tokens": 12,
+                "output_tokens": 3,
+                "total_tokens": 15
+            }
+        })))
+        .expect(1)
+        .up_to_n_times(1)
+        .mount(&mock_server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(success_response()))
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let output = env
+        .command()
+        .arg("--output-format")
+        .arg("json")
+        .arg("test prompt")
+        .env("SESSION_TELEMETRY_TEST_KEY", "test-token")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute cake");
+
+    assert!(
+        output.status.success(),
+        "overflow recovery should succeed. stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["usage"]["total_tokens"], 30);
+
+    let session = session_records(&env);
+    let usages = session
+        .iter()
+        .filter(|record| record["type"] == "turn_usage")
+        .collect::<Vec<_>>();
+    assert_eq!(usages.len(), 2, "both billed attempts should be audited");
+    assert_eq!(usages[0]["turn"], 1);
+    assert_eq!(usages[0]["attempt"], 1);
+    assert_eq!(usages[0]["terminal_class"], "http");
+    assert_eq!(usages[0]["usage"]["total_tokens"], 15);
+    assert_eq!(usages[1]["turn"], 1);
+    assert_eq!(usages[1]["attempt"], 2);
+    assert_eq!(usages[1]["terminal_class"], "completed");
+    assert_eq!(usages[1]["usage"]["total_tokens"], 15);
 }
 
 #[tokio::test]
