@@ -68,6 +68,19 @@ def run(data: cakelib.Dataset) -> None:
         print("\nAPI type / output format (telemetry):")
         print_table(["api type", "output format", "invocations"], [[a, o, n] for (a, o), n in apis.most_common()])
 
+        efforts = Counter(
+            (((inv.init or {}).get("settings") or {}).get("reasoning_effort") or "unknown")
+            for inv in data.invocations
+        )
+        print("\nReasoning effort (telemetry):")
+        print_table(["reasoning effort", "invocations"], [[e, n] for e, n in efforts.most_common()])
+
+        tools_present = Counter(
+            tool for inv in data.invocations for tool in ((inv.init or {}).get("tools") or [])
+        )
+        print("\nTools present (telemetry):")
+        print_table(["tool", "invocations"], [[t, n] for t, n in tools_present.most_common()])
+
     print("\nTop projects (working directory):")
     projects = Counter(s.working_directory for s in sessions)
     print_table(["working directory", "sessions"], [[wd, n] for wd, n in projects.most_common(10)])

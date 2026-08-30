@@ -10,11 +10,52 @@ import cakelib
 from cakelib import fmt_int, fmt_ms, fmt_pct, percentile, print_header, print_table
 
 
+def _retry_reason_rows(retries: list[dict]) -> list[dict]:
+    """Per-reason retry aggregates: count, delays, depth, cap, override changes."""
+    reasons = Counter(r.get("reason", "?") for r in retries)
+    delay_by_reason = cakelib.group_by(retries, lambda r: r.get("reason", "?"))
+    rows = []
+    for reason, n in reasons.most_common():
+        group = delay_by_reason[reason]
+        delays = [r["delay_ms"] for r in group]
+        rows.append({
+            "reason": reason,
+            "count": n,
+            "delay_p50": percentile(delays, 50),
+            "delay_max": max(delays),
+            "deepest": max(r.get("attempt", 1) for r in group),
+            "max_retries": max(r.get("max_retries", 0) for r in group),
+            "changed_overrides": sum(1 for r in group if r.get("changed_request_overrides")),
+        })
+    return rows
+
+
+def aggregate(data: cakelib.Dataset) -> dict:
+    """Collate API attempt and retry aggregates used by the report.
+
+    Returns a dict of:
+    - attempts: list of (invocation, attempt) pairs
+    - terminations: Counter(classification -> attempts)
+    - retry_reasons: per-reason list of dicts from _retry_reason_rows
+    """
+    attempts = [(inv, a) for inv in data.invocations for a in inv.attempts]
+    retries = [r for inv in data.invocations for r in inv.retries]
+    return {
+        "attempts": attempts,
+        "terminations": Counter(
+            (a.get("termination") or {}).get("classification", "unknown")
+            for _, a in attempts
+        ),
+        "retry_reasons": _retry_reason_rows(retries),
+    }
+
+
 def run(data: cakelib.Dataset) -> None:
     print_header("API RELIABILITY")
     print(cakelib.describe_window(data))
 
-    attempts = [(inv, a) for inv in data.invocations for a in inv.attempts]
+    agg = aggregate(data)
+    attempts = agg["attempts"]
     if not attempts:
         print("\nNo telemetry api_attempt records in window.")
         return
@@ -35,6 +76,12 @@ def run(data: cakelib.Dataset) -> None:
         errors = Counter((a.get("error") or "?").splitlines()[0][:90] for _, a in failures)
         print_table(["error", "count"], [[e, n] for e, n in errors.most_common(10)])
 
+    print("\nTermination classification:")
+    print_table(
+        ["classification", "attempts"],
+        [[c, fmt_int(n)] for c, n in agg["terminations"].most_common()],
+    )
+
     print("\nLatency by model (request_ms):")
     rows = []
     by_model = cakelib.group_by(attempts, lambda ia: ia[0].model)
@@ -47,16 +94,15 @@ def run(data: cakelib.Dataset) -> None:
     retries = [r for inv in data.invocations for r in inv.retries]
     print(f"\nRetries scheduled: {fmt_int(len(retries))} "
           f"({fmt_pct(len(retries), len(attempts))} of attempts)")
-    if retries:
+    if agg["retry_reasons"]:
         print("\nRetry reasons:")
-        reasons = Counter(r.get("reason", "?") for r in retries)
-        delay_by_reason = cakelib.group_by(retries, lambda r: r.get("reason", "?"))
-        rows = []
-        for reason, n in reasons.most_common():
-            delays = [r["delay_ms"] for r in delay_by_reason[reason]]
-            attempts_depth = max(r.get("attempt", 1) for r in delay_by_reason[reason])
-            rows.append([reason, n, fmt_ms(percentile(delays, 50)), fmt_ms(max(delays)), attempts_depth])
-        print_table(["reason", "count", "delay p50", "delay max", "deepest attempt"], rows)
+        rows = [
+            [row["reason"], row["count"], fmt_ms(row["delay_p50"]), fmt_ms(row["delay_max"]),
+             row["deepest"], row["max_retries"], row["changed_overrides"]]
+            for row in agg["retry_reasons"]
+        ]
+        print_table(["reason", "count", "delay p50", "delay max", "deepest attempt",
+                     "max retries", "changed overrides"], rows)
 
     overflow = sum(
         1 for _, a in attempts

@@ -184,7 +184,7 @@ class CountEventsTest(unittest.TestCase):
             {"kind": "json_repair", "detail": "Write"},
             {"kind": "same_path_serialization", "detail": "/p/f.txt"},
             {"kind": "judge_verdict", "detail": "block:rm-rf", "latency_ms": 120},
-            {"kind": "judge_verdict", "detail": "allow", "latency_ms": 60},
+            {"kind": "judge_verdict", "detail": "block:curl", "overridden": True, "latency_ms": 60},
         ]
         alpha_1.retries = [{"reason": "context_overflow"}]
 
@@ -194,7 +194,7 @@ class CountEventsTest(unittest.TestCase):
         beta = invocation("s3", "i3", "beta")
         beta.compensations = [{"kind": "edit_invalid_arguments"}]
 
-        by_model, by_kind_detail, latencies, overflow = compensations.count_events(
+        by_model, by_kind_detail, latencies, overflow, judge_overridden = compensations.count_events(
             make_dataset([alpha_1, alpha_2, beta])
         )
 
@@ -212,17 +212,20 @@ class CountEventsTest(unittest.TestCase):
 
         self.assertEqual(sorted(latencies), [60, 120])
         self.assertEqual(overflow["alpha"], 1)
+        self.assertEqual(judge_overridden["alpha"], 1)
+        self.assertEqual(judge_overridden.get("beta", 0), 0)
 
     def test_unknown_kinds_do_not_break_aggregation(self):
         inv = invocation("s1", "i1", "alpha")
         inv.compensations = [{"kind": "future_kind"}]
-        by_model, by_kind_detail, latencies, overflow = compensations.count_events(
+        by_model, by_kind_detail, latencies, overflow, judge_overridden = compensations.count_events(
             make_dataset([inv])
         )
         self.assertEqual(by_model["alpha"]["future_kind"], 1)
         self.assertEqual(by_kind_detail[("future_kind", "-")], 1)
         self.assertEqual(latencies, [])
         self.assertEqual(dict(overflow), {})
+        self.assertEqual(dict(judge_overridden), {})
 
     def test_flatlined_models_appear_in_report(self):
         # A model with telemetry coverage but zero compensation events is the
@@ -269,6 +272,23 @@ class CountEventsTest(unittest.TestCase):
 
         # Overflow column 1, total column 1, not 2.
         self.assertRegex(output, r"alpha\s+0\s+0\s+0\s+0\s+0\s+0\s+0\s+1\s+1")
+
+    def test_judge_overridden_reports_model_and_count(self):
+        inv = invocation("s1", "i1", "alpha")
+        inv.compensations = [
+            {"kind": "judge_verdict", "detail": "block:rm", "overridden": True, "latency_ms": 5},
+            {"kind": "judge_verdict", "detail": "block:rm", "latency_ms": 4},
+        ]
+
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            compensations.run(make_dataset([inv]))
+        output = buffer.getvalue()
+
+        self.assertIn("Judge block overridden by allowlist", output)
+        self.assertIn("alpha", output)
+        # Only the overridden verdict counts: one, not two.
+        self.assertIn("1", output)
 
     def test_total_includes_retry_derived_overflow(self):
         # A legacy sidecar has the retry_scheduled record but no compensation
