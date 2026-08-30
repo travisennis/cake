@@ -792,11 +792,11 @@ impl Agent {
         let history = self.conversation.history();
         let turn_index = self.turn_count.saturating_add(1);
         let runner = &self.runner;
+        let runner_telemetry = self.runner_telemetry_sink();
         let observer = &mut self.observer;
         let total_usage = &mut self.total_usage;
         let last_usage = &mut self.last_usage;
-        let mut telemetry_events = Vec::new();
-        let result = runner
+        runner
             .complete_turn(
                 config,
                 session_id,
@@ -806,7 +806,9 @@ impl Agent {
                 constraint,
                 next_attempt,
                 |event| {
-                    telemetry_events.push(event);
+                    if let Some(sink) = &runner_telemetry {
+                        sink.record(event);
+                    }
                 },
                 |settlement| {
                     record_turn_usage(
@@ -819,11 +821,7 @@ impl Agent {
                     );
                 },
             )
-            .await;
-        for event in telemetry_events {
-            self.append_runner_telemetry(event);
-        }
-        result
+            .await
     }
 
     #[cfg(test)]

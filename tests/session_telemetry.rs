@@ -827,6 +827,31 @@ async fn wait_for_provider_request(mock_server: &MockServer) {
     }
 }
 
+#[cfg(unix)]
+async fn wait_for_session_record(env: &TestEnv, record_type: &str) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        let found = fs::read_dir(env.data_dir.join("sessions")).is_ok_and(|entries| {
+            entries.filter_map(Result::ok).any(|entry| {
+                fs::read_to_string(entry.path()).is_ok_and(|contents| {
+                    contents.lines().any(|line| {
+                        serde_json::from_str::<serde_json::Value>(line)
+                            .is_ok_and(|record| record["type"] == record_type)
+                    })
+                })
+            })
+        });
+        if found {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for session record {record_type}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
 /// Cancelling cake with SIGTERM (the signal the cake-repl runner sends)
 /// takes the same graceful interruption path as Ctrl-C: the session closes
 /// with an interrupted `task_complete` record, the telemetry summary is
@@ -899,4 +924,97 @@ async fn sigterm_interrupts_session_cleanly() {
         .find(|record| record["type"] == "session_summary")
         .expect("telemetry should contain a session_summary");
     assert_eq!(summary["success"], false);
+}
+
+/// A finalized provider attempt must reach the telemetry sidecar before retry
+/// backoff. Otherwise SIGTERM can preserve its settled usage in the session and
+/// summary while dropping the attempt that explains those tokens.
+#[cfg(unix)]
+#[tokio::test]
+async fn sigterm_during_retry_keeps_settled_attempt_telemetry() {
+    let env = TestEnv::new("cake-sigterm-retry-telemetry-test");
+    let mock_server = MockServer::start().await;
+    write_responses_settings(&env, &mock_server.uri());
+
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(
+            ResponseTemplate::new(429)
+                .insert_header("Retry-After", "30")
+                .set_body_json(serde_json::json!({
+                    "error": {"message": "retry later"},
+                    "usage": {
+                        "input_tokens": 11,
+                        "output_tokens": 7,
+                        "total_tokens": 18
+                    }
+                })),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let mut child = env
+        .command()
+        .arg("--output-format")
+        .arg("json")
+        .arg("test prompt")
+        .env("SESSION_TELEMETRY_TEST_KEY", "test-token")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn cake");
+
+    wait_for_session_record(&env, "turn_usage").await;
+    // Settlement precedes retry classification by only synchronous work. Give
+    // that work time to enter the 30-second backoff before interrupting it.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // SAFETY: this is the still-running Cake child spawned by this test.
+    unsafe {
+        libc::kill(
+            i32::try_from(child.id()).expect("pid must fit in an i32"),
+            libc::SIGTERM,
+        );
+    }
+
+    let status = child.wait().expect("failed to wait for cake");
+    assert_eq!(
+        status.code(),
+        Some(130),
+        "cake should exit with the interrupted status. stderr: {}",
+        stderr_tail(&mut child)
+    );
+
+    let session = session_records(&env);
+    let usage = session
+        .iter()
+        .find(|record| record["type"] == "turn_usage")
+        .expect("session should preserve the failed attempt usage");
+    assert_eq!(usage["usage"]["total_tokens"], 18);
+    let complete = session
+        .iter()
+        .find(|record| record["type"] == "task_complete")
+        .expect("session should end with task_complete");
+    assert_eq!(complete["subtype"], "interrupted");
+    assert_eq!(complete["usage"]["total_tokens"], 18);
+
+    let telemetry = telemetry_records(&env);
+    let attempt = telemetry
+        .iter()
+        .find(|record| record["type"] == "api_attempt")
+        .expect("finalized attempt must survive interruption during backoff");
+    assert_eq!(attempt["terminal_class"], "http");
+    assert_eq!(attempt["usage"]["total_tokens"], 18);
+    assert!(
+        telemetry
+            .iter()
+            .any(|record| record["type"] == "retry_scheduled"),
+        "retry scheduling must be durable before backoff: {telemetry:#?}"
+    );
+    let summary = telemetry
+        .iter()
+        .find(|record| record["type"] == "session_summary")
+        .expect("telemetry should contain a session_summary");
+    assert_eq!(summary["usage"]["total_tokens"], 18);
 }
