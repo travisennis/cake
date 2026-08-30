@@ -35,19 +35,21 @@ KINDS = [
 RETRY_DERIVED_KIND = "context_overflow_retry"
 
 
-def count_events(data: cakelib.Dataset) -> tuple[Counter, Counter, list[int], Counter]:
+def count_events(data: cakelib.Dataset) -> tuple[Counter, Counter, list[int], Counter, Counter]:
     """Aggregate compensation events for testing.
 
-    Returns (by_model, by_kind_detail, judge_latencies, overflow_by_model):
+    Returns (by_model, by_kind_detail, judge_latencies, overflow_by_model, judge_overridden):
     - by_model maps model -> Counter(kind -> count)
     - by_kind_detail maps (kind, detail) -> count
     - judge_latencies lists judge_verdict latency_ms values
     - overflow_by_model maps model -> context-overflow retry count
+    - judge_overridden maps model -> judge_verdicts where the allowlist overrode the block
     """
     by_model: dict[str, Counter] = {}
     by_kind_detail: Counter = Counter()
     judge_latencies: list[int] = []
     overflow_by_model: Counter = Counter()
+    judge_overridden: Counter = Counter()
 
     for inv in data.invocations:
         for c in inv.compensations:
@@ -55,13 +57,16 @@ def count_events(data: cakelib.Dataset) -> tuple[Counter, Counter, list[int], Co
             detail = c.get("detail") or "-"
             by_model.setdefault(inv.model, Counter())[kind] += 1
             by_kind_detail[(kind, detail)] += 1
-            if kind == "judge_verdict" and c.get("latency_ms") is not None:
-                judge_latencies.append(c["latency_ms"])
+            if kind == "judge_verdict":
+                if c.get("latency_ms") is not None:
+                    judge_latencies.append(c["latency_ms"])
+                if c.get("overridden"):
+                    judge_overridden[inv.model] += 1
         for r in inv.retries:
             if r.get("reason") == "context_overflow":
                 overflow_by_model[inv.model] += 1
 
-    return by_model, by_kind_detail, judge_latencies, overflow_by_model
+    return by_model, by_kind_detail, judge_latencies, overflow_by_model, judge_overridden
 
 
 def run(data: cakelib.Dataset) -> None:
@@ -72,7 +77,7 @@ def run(data: cakelib.Dataset) -> None:
         print("\nNo telemetry invocations in window.")
         return
 
-    by_model, by_kind_detail, judge_latencies, overflow_by_model = count_events(data)
+    by_model, by_kind_detail, judge_latencies, overflow_by_model, judge_overridden = count_events(data)
     # Every model with telemetry coverage appears, including flatlined-zero
     # models: a zero row is exactly the deletion-candidate signal.
     all_models = sorted({inv.model for inv in data.invocations})
@@ -111,6 +116,13 @@ def run(data: cakelib.Dataset) -> None:
             [[fmt_ms(percentile(judge_latencies, 50)),
               fmt_ms(percentile(judge_latencies, 90)),
               fmt_ms(max(judge_latencies))]],
+        )
+
+    if judge_overridden:
+        print("\nJudge block overridden by allowlist:")
+        print_table(
+            ["model", "count"],
+            [[m, fmt_int(n)] for m, n in judge_overridden.most_common()],
         )
 
     print(

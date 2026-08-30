@@ -8,6 +8,32 @@ import cakelib
 from cakelib import fmt_bytes, fmt_int, fmt_pct, print_header, print_table
 
 
+UNKNOWN_SETTING = "unknown"
+TELEMETRY_SETTINGS = (
+    ("reasoning_effort", "Reasoning effort"),
+    ("max_output_tokens", "Max output tokens"),
+    ("reasoning_max_tokens", "Reasoning max tokens"),
+)
+
+
+def _setting_distribution(invocations: list[cakelib.Invocation], field: str) -> Counter:
+    values = []
+    for inv in invocations:
+        settings = (inv.init or {}).get("settings") or {}
+        value = settings.get(field)
+        values.append(UNKNOWN_SETTING if value is None else value)
+    return Counter(values)
+
+
+def _tools_present_distribution(invocations: list[cakelib.Invocation]) -> Counter:
+    # Count each tool once per invocation, even if a tools list repeats a name.
+    return Counter(
+        tool
+        for inv in invocations
+        for tool in dict.fromkeys(((inv.init or {}).get("tools") or []))
+    )
+
+
 def run(data: cakelib.Dataset) -> None:
     print_header("OVERVIEW")
     print(cakelib.describe_window(data))
@@ -67,6 +93,18 @@ def run(data: cakelib.Dataset) -> None:
         )
         print("\nAPI type / output format (telemetry):")
         print_table(["api type", "output format", "invocations"], [[a, o, n] for (a, o), n in apis.most_common()])
+
+        for field, label in TELEMETRY_SETTINGS:
+            values = _setting_distribution(data.invocations, field)
+            print(f"\n{label} (telemetry):")
+            print_table(
+                [label.lower(), "invocations"],
+                [[value, n] for value, n in values.most_common()],
+            )
+
+        tools_present = _tools_present_distribution(data.invocations)
+        print("\nTools present (telemetry):")
+        print_table(["tool", "invocations"], [[t, n] for t, n in tools_present.most_common()])
 
     print("\nTop projects (working directory):")
     projects = Counter(s.working_directory for s in sessions)
