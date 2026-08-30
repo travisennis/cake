@@ -89,20 +89,20 @@ class TelemetrySurfaceTest(unittest.TestCase):
         self.assertIn("Reasoning max tokens (telemetry)", output)
         max_output_section = report_section(output, "Max output tokens")
         reasoning_max_section = report_section(output, "Reasoning max tokens")
-        for value, count in ((4096, 2), (2048, 1), ("unset", 1)):
+        for value, count in ((4096, 2), (2048, 1), ("unknown", 1)):
             self.assertRegex(max_output_section, rf"(?m)^\s+{value}\s+{count}\s*$")
-        for value, count in ((2048, 1), (1024, 1), ("unset", 2)):
+        for value, count in ((2048, 1), (1024, 1), ("unknown", 2)):
             self.assertRegex(reasoning_max_section, rf"(?m)^\s+{value}\s+{count}\s*$")
         self.assertEqual(
             overview._setting_distribution(invocations, "max_output_tokens"),
-            Counter({4096: 2, 2048: 1, "unset": 1}),
+            Counter({4096: 2, 2048: 1, "unknown": 1}),
         )
         self.assertEqual(
             overview._setting_distribution(invocations, "reasoning_max_tokens"),
-            Counter({2048: 1, 1024: 1, "unset": 2}),
+            Counter({2048: 1, 1024: 1, "unknown": 2}),
         )
 
-    def test_unset_settings_report_safe_value(self):
+    def test_missing_settings_report_unknown(self):
         inv = invocation("s1", "i1")
         output = run_overview([session("s1")], [inv])
 
@@ -110,11 +110,11 @@ class TelemetrySurfaceTest(unittest.TestCase):
             self.assertIn(f"{label} (telemetry)", output)
             self.assertRegex(
                 report_section(output, label),
-                r"(?m)^\s+unset\s+1\s*$",
+                r"(?m)^\s+unknown\s+1\s*$",
             )
             self.assertEqual(
                 overview._setting_distribution([inv], field),
-                Counter({"unset": 1}),
+                Counter({"unknown": 1}),
             )
 
     def test_tools_present_counts_each_tool_once_per_invocation(self):

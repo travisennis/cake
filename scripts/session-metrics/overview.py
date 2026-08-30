@@ -8,7 +8,7 @@ import cakelib
 from cakelib import fmt_bytes, fmt_int, fmt_pct, print_header, print_table
 
 
-UNSET_SETTING = "unset"
+UNKNOWN_SETTING = "unknown"
 TELEMETRY_SETTINGS = (
     ("reasoning_effort", "Reasoning effort"),
     ("max_output_tokens", "Max output tokens"),
@@ -21,7 +21,7 @@ def _setting_distribution(invocations: list[cakelib.Invocation], field: str) -> 
     for inv in invocations:
         settings = (inv.init or {}).get("settings") or {}
         value = settings.get(field)
-        values.append(UNSET_SETTING if value is None else value)
+        values.append(UNKNOWN_SETTING if value is None else value)
     return Counter(values)
 
 
