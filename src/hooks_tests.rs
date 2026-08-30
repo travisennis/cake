@@ -721,9 +721,9 @@ fn resolved_decision_label_explicit_allow_is_allow() {
 
 #[test]
 fn tool_input_summary_prefers_command() {
-    let summary = tool_input_summary(false, r#"{"command":"just ci","timeout":120}"#);
+    let summary = tool_input_summary(false, r#"{"command":"just check","timeout":120}"#);
 
-    assert_eq!(summary, "just ci");
+    assert_eq!(summary, "just check");
 }
 
 #[test]

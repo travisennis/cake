@@ -19,7 +19,7 @@ What someone can do after this change that they could not do before:
 How to verify it works:
 
 - Run `cargo test edit` from `/Users/travisennis/Projects/cake` and observe the new edit semantics tests pass.
-- Run `just ci` from `/Users/travisennis/Projects/cake` and observe the full project check pass.
+- Run `just check-full` from `/Users/travisennis/Projects/cake` and observe the full local validation suite pass.
 - Read the final documentation added by this plan and confirm it explains the Lean workflow, the model scope, the properties considered, and lessons learned.
 
 ## Progress
@@ -30,7 +30,7 @@ How to verify it works:
 - [ ] Build a small Lean model of non-overlapping replacement and document the properties it checks.
 - [ ] Translate useful Lean insights into Rust fixtures or property tests.
 - [ ] Document the reusable workflow and lessons learned.
-- [ ] Run `cargo fmt`, focused Rust tests, and `just ci`.
+- [ ] Run `cargo fmt`, focused Rust tests, and `just check-full`.
 
 ## Surprises & Discoveries
 
@@ -220,7 +220,7 @@ Implementation Note: After completing this milestone and automated verification,
 
 Overview: This milestone uses Lean to model the algorithm at the right abstraction level. At the end, there should be a small Lean research artifact that models non-overlapping replacements and records what was proved, attempted, or learned.
 
-Repository Context: Create a page in the [Notion Research database](https://app.notion.com/p/e4b33f5fa8cb438e93dd85727b26e928) (Type=Investigations) for the Lean experiment evidence. Do not add Lean files to production source directories or commit them to the repository. Do not add Lean execution to `just ci` in this milestone.
+Repository Context: Create a page in the [Notion Research database](https://app.notion.com/p/e4b33f5fa8cb438e93dd85727b26e928) (Type=Investigations) for the Lean experiment evidence. Do not add Lean files to production source directories or commit them to the repository. Do not add Lean execution to `just check-full` in this milestone.
 
 Plan of Work: Model content as a list of abstract symbols rather than Rust UTF-8 strings. Model an edit as a start index, a length, and replacement content. Define what it means for edits to be sorted and non-overlapping. Define replacement in two ways: reverse-order application and simultaneous left-to-right reconstruction. Prove, or at minimum machine-check through examples while documenting the gap, that reverse-order application on sorted non-overlapping edits produces the same result as simultaneous replacement.
 
@@ -285,14 +285,14 @@ cargo test edit
 Run full validation:
 
 ```
-just ci
+just check-full
 ```
 
-Expected outcome: `just ci` completes successfully. The project AGENTS instructions require running the full CI check before finishing code changes.
+Expected outcome: `just check-full` completes successfully. The project AGENTS instructions require running the full local validation suite before finishing code changes.
 
 Validation and Acceptance: A future contributor should be able to read the documentation and understand how to repeat a one-time Lean-assisted pass on another small algorithm without needing this conversation.
 
-Idempotence and Recovery: Documentation and tests are additive. If `just ci` fails for an unrelated existing issue, record the exact failure and the evidence that focused edit tests passed.
+Idempotence and Recovery: Documentation and tests are additive. If `just check-full` fails for an unrelated existing issue, record the exact failure and the evidence that focused edit tests passed.
 
 Artifacts and Evidence: Add concise command output to this plan after running validation:
 
@@ -300,7 +300,7 @@ Artifacts and Evidence: Add concise command output to this plan after running va
 cargo test edit
 test result: ok. N passed; 0 failed
 
-just ci
+just check-full
 ...
 finished successfully
 ```
@@ -311,7 +311,7 @@ Automated verification:
 
 - [ ] `cargo fmt` passes.
 - [ ] `cargo test edit` passes.
-- [ ] `just ci` passes, or the plan records a precise unrelated blocker.
+- [ ] `just check-full` passes, or the plan records a precise unrelated blocker.
 - [ ] Documentation exists describing the Lean-assisted workflow and lessons learned.
 
 Manual verification:
@@ -352,7 +352,7 @@ Do not use destructive git commands to roll back work. Prefer small manual patch
 - Existing prover research: [Provers](https://app.notion.com/p/provers-3b630bc66cc781ab951cef7be888f840) (Notion Research database)
 - Production edit implementation: `src/clients/tools/edit.rs`
 - Shared tool path validation: `src/clients/tools/mod.rs`
-- Full project validation command: `just ci`
+- Full project validation command: `just check-full`
 
 ## Revision History
 

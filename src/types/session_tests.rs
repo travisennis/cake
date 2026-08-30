@@ -45,7 +45,7 @@ fn hook_event_data_with_optional_fields() -> HookEventData {
         source: Some("Bash".to_string()),
         call_id: Some("call-1".to_string()),
         tool_name: Some("Bash".to_string()),
-        tool_input_summary: Some("just ci".to_string()),
+        tool_input_summary: Some("just check".to_string()),
         source_file: PathBuf::from("/workspace/cake/.cake/hooks/post-tool-use.sh"),
         command: "./post-tool-use.sh".to_string(),
         exit_code: Some(0),

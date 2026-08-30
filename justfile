@@ -18,7 +18,7 @@ setup:
 # Run the primary Samply profile; pass --profiler instruments for the optional macOS path
 profile *args:
     cargo build --profile profiling
-    python3 scripts/profile-agent-loop.py {{args}}
+    python3 scripts/profile-agent-loop.py {{ args }}
 
 # Run profiling-helper tests without invoking a profiler
 profile-check:
@@ -88,64 +88,10 @@ ready-queue:
 #   labels  comma-separated labels, checked against .github/labels.yml
 #   body    pull request description file (default: fill title/body from commits)
 #   title   pull request title (default: HEAD commit subject; wins over --fill)
-#   issue   comment the pull request URL back on this issue number
+# issue   comment the pull request URL back on this issue number
 pr option1="" option2="" option3="" option4="":
     #!/usr/bin/env bash
-    set -euo pipefail
-    labels=""
-    body_file=""
-    title=""
-    issue=""
-    for option in {{ quote(option1) }} {{ quote(option2) }} {{ quote(option3) }} {{ quote(option4) }}; do
-        [[ -z "$option" ]] && continue
-        case "$option" in
-            labels=*) labels="${option#labels=}" ;;
-            body=*)   body_file="${option#body=}" ;;
-            title=*)  title="${option#title=}" ;;
-            issue=*)  issue="${option#issue=}" ;;
-            *) echo "ERROR: unknown option '$option' (expected labels=..., body=<file>, title=..., issue=<number>)" >&2; exit 1 ;;
-        esac
-    done
-
-    args=(--base master)
-    # Trim each label and drop empties before validating, so the checks see
-    # exactly the argv element gh receives; its CSV split keeps inner spaces.
-    labels=$(printf '%s\n' "$labels" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | sed '/^$/d' | paste -sd, -)
-    if [[ -n "$labels" ]]; then
-        known_labels=$(sed -n 's/^[[:space:]]*- name:[[:space:]]*//p' .github/labels.yml)
-        while IFS= read -r label; do
-            [[ -z "$label" ]] && continue
-            if ! grep -Fxq "$label" <<< "$known_labels"; then
-                echo "ERROR: label '$label' is not in .github/labels.yml (see 'just labels-check-file')" >&2
-                exit 1
-            fi
-        done < <(printf '%s\n' "$labels" | tr ',' '\n')
-        args+=(--label "$labels")
-    fi
-    if [[ -n "$body_file" ]]; then
-        [[ -f "$body_file" ]] || { echo "ERROR: pull request body file not found: $body_file" >&2; exit 1; }
-        args+=(--body-file "$body_file")
-        # Non-interactive gh needs an explicit title; fall back to the HEAD subject.
-        if [[ -z "$title" ]]; then
-            # --body-file alone would prompt; default to the HEAD commit subject.
-            title=$(git log -1 --pretty=%s)
-        fi
-    else
-        args+=(--fill)
-    fi
-    # An explicit title wins over --fill autofill (see gh pr create --help);
-    # --fill still supplies the body when no body file was given.
-    if [[ -n "$title" ]]; then
-        args+=(--title "$title")
-    fi
-    if [[ -n "$issue" ]]; then
-        [[ "$issue" =~ ^[0-9]+$ ]] || { echo "ERROR: issue must be a number, got: $issue" >&2; exit 1; }
-    fi
-    url=$(gh pr create "${args[@]}")
-    printf '%s\n' "$url"
-    if [[ -n "$issue" ]]; then
-        gh issue comment "$issue" --body "PR: $url"
-    fi
+    scripts/just-pr.sh {{ quote(option1) }} {{ quote(option2) }} {{ quote(option3) }} {{ quote(option4) }}
 
 # Check code formatting (use in CI)
 fmt-check:
@@ -159,12 +105,12 @@ fmt:
 clippy:
     cargo clippy
 
-# Ultra-strict clippy for CI (deny all warnings, lint all targets)
-clippy-strict:
+# Ultra-strict clippy for the local gate (all targets and features)
+_clippy-strict:
     cargo clippy --all-targets --all-features -- -D warnings
 
-# Ultra-strict clippy without default features, matching the CI matrix
-clippy-no-default-features:
+# Ultra-strict clippy for the local gate without default features
+_clippy-no-default-features:
     cargo clippy --all-targets --no-default-features -- -D warnings
 
 # Verify Rust toolchain pins stay synchronized
@@ -182,7 +128,7 @@ dependency-sweep-check:
 
 # Report session metrics from transcripts + telemetry (pass e.g. --days 7, --model X)
 session-metrics *args:
-    @python3 scripts/session-metrics/report.py {{args}}
+    @python3 scripts/session-metrics/report.py {{ args }}
 
 # List the committed model-evaluation fixture cases (no model credentials needed)
 eval-cases:
@@ -190,7 +136,7 @@ eval-cases:
 
 # Run the controlled model evaluation harness (e.g. `just eval --model NAME --repetitions 3`; requires credentials and authorized spend)
 eval *args:
-    @python3 scripts/evals/run_eval.py {{args}}
+    @python3 scripts/evals/run_eval.py {{ args }}
 
 # Run the evaluation harness test suite with a fake cake executable (no credentials, no network)
 eval-check:
@@ -242,8 +188,8 @@ clippy-linux:
 test:
     cargo test --quiet
 
-# Run tests with all features enabled, matching CI
-test-all-features:
+# Run tests with all features enabled for the local gate
+_test-all-features:
     cargo test --all-features --quiet
 
 # Run insta snapshot tests (requires cargo-insta; installed by `just setup`)
@@ -262,9 +208,9 @@ lint-deps:
     @grep -rn 'use crate::' src/types/ --include='*.rs' | grep -v 'use crate::types' | grep -v '_tests\.rs:' | { if grep -q .; then echo "ERROR: src/types/ imports from a non-types crate module. Violations:"; grep -rn 'use crate::' src/types/ --include='*.rs' | grep -v 'use crate::types' | grep -v '_tests\.rs:'; exit 1; fi; }
     @echo "Dependency lint passed!"
 
-# Run the primary local checks, including the always-on CI command set
-ci: rust-version-check check-linux fmt-check clippy-strict clippy-no-default-features test-all-features check-coverage profile-check binary-size-baseline-check lint-imports lint-deps lint-module-size lint-instruction-size lint-domain-glossary
-    echo "All checks passed!"
+# Run the fast local correctness gate for code changes
+check: rust-version-check fmt-check _clippy-strict _clippy-no-default-features _test-all-features lint-imports lint-deps lint-module-size lint-instruction-size lint-domain-glossary
+    echo "Fast local checks passed!"
 
 # Print the changed-path classification the pre-push gate routes on: docs | code | mixed | unknown | none
 pre-push-classify:
@@ -279,27 +225,30 @@ test-just-pr:
     @scripts/test-just-pr.sh
 
 # Run the pre-push gate, routed by changed path class (see CONTRIBUTING.md).
-# Documentation-only changes run the targeted docs checks; code-class changes run the full Rust
-# gate; mixed changes run both. Fail closed: an unclassifiable changed file (or an unresolvable
-# base) runs the full gate. The class is measured for the checked-out branch only: the hook runner
-# (prek) does not forward git's pushed-ref list, so pushing another branch is gated by the checkout's
-# class. Use `just pre-push-force` to always run the full gate.
+# Documentation-only pushes run the targeted docs checks; code-class pushes run the fast local
+# gate; mixed pushes run both. Unknown changes fail closed to the full local validation suite.
+# The class is measured for the checked-out branch only: the hook runner (prek) does not forward
+# git's pushed-ref list, so pushing another branch is gated by the checkout's class.
 pre-push:
     @set -e; class=$(scripts/classify-changes.sh); \
     if [ "$class" = "docs" ] || [ "$class" = "none" ]; then \
         echo "pre-push: $class change — running documentation checks"; \
         just pre-push-docs; \
+    elif [ "$class" = "unknown" ]; then \
+        echo "pre-push: unknown change — running full local validation"; \
+        just check-full; \
+        just pre-push-docs; \
     else \
-        echo "pre-push: $class change — running full gate"; \
-        just ci; \
-        if [ "$class" = "mixed" ] || [ "$class" = "unknown" ]; then \
-            echo "pre-push: $class change — also running documentation checks"; \
+        echo "pre-push: $class change — running fast local gate"; \
+        just check; \
+        if [ "$class" = "mixed" ]; then \
+            echo "pre-push: mixed change — also running documentation checks"; \
             just pre-push-docs; \
         fi; \
     fi
 
-# Escape hatch: always run the full pre-push gate, whatever the changed path class
-pre-push-force: ci
+# Run the full local validation suite, including coverage, documentation, and all CI fixtures
+pre-push-force: check-full
 
 # Run the documentation-only pre-push checks on changed living documents.
 # panache is required only when Markdown changed; run `just setup` to install it (pinned to 3.0.0 in CI).
@@ -320,16 +269,16 @@ pre-push-docs:
     scripts/classify-changes.sh --check
     @python3 scripts/lint-domain-glossary.py
 
-# Run the macOS correctness path used by GitHub Actions
-ci-macos: rust-version-check fmt-check clippy-strict clippy-no-default-features test-all-features
-    echo "macOS CI checks passed!"
+# Run all CI fixture suites as part of full local validation
+_check-fixtures: dependency-sweep-check profile-check binary-size-baseline-check test-classify-changes test-just-pr
+    @:
 
-# Run the Linux compatibility gate command used by GitHub Actions
-check-linux:
+# Run the Linux compatibility check corresponding to GitHub Actions
+_check-linux:
     cargo check --all-features
 
-# Run the broad local validation suite
-check-full: ci check-deps doc build
+# Run the full local validation suite, including coverage, documentation, and all CI fixtures
+check-full: check _check-linux _check-fixtures check-coverage check-deps doc docs-check build
     echo "Full check suite passed!"
 
 # Check module sizes against thresholds (informational, always passes)
@@ -395,12 +344,12 @@ update-dependencies:
 
 # Check markdown formatting and lint (requires panache; installed by `just setup`)
 docs-check: lint-instruction-size
-	panache format --check . --quiet
-	panache lint . --quiet
+    panache format --check . --quiet
+    panache lint . --quiet
 
 # Auto-format all markdown files
 docs-fmt:
-	panache format .
+    panache format .
 
 build:
     cargo build --release

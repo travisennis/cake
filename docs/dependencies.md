@@ -21,7 +21,7 @@ Each version-bearing input belongs to one surface, and the owning surface determ
   | Input                            | Owning file               | Enforcement                         |
   | -------------------------------- | ------------------------- | ----------------------------------- |
   | Crate compatibility requirements | `Cargo.toml`              | `cargo deny check advisories`       |
-  | Concrete crate selections        | `Cargo.lock`, committed   | `just ci` builds against it         |
+  | Concrete crate selections        | `Cargo.lock`, committed   | `just check` builds against it      |
   | Rust toolchain version           | `rust-toolchain.toml`     | `scripts/check-rust-toolchain.sh`   |
   | Local toolchain bootstrap        | `.mise.toml`              | none; see [Toolchains](#toolchains) |
   | Cargo-installed developer tools  | `justfile` `setup` recipe | none                                |
@@ -33,7 +33,7 @@ Each version-bearing input belongs to one surface, and the owning surface determ
 
 ## Toolchains
 
-`rust-toolchain.toml` is the source of truth for the Rust version. `scripts/check-rust-toolchain.sh`, which runs as part of `just ci`, verifies that every `toolchain:` pin in `ci.yml`, `release.yml`, and `scheduled.yml` matches it, and rejects both floating `toolchain: stable` inputs and `dtolnay/rust-toolchain@stable` steps that omit an explicit version. Changing the Rust version means changing `rust-toolchain.toml` and letting that check identify the workflow pins that must follow.
+`rust-toolchain.toml` is the source of truth for the Rust version. `scripts/check-rust-toolchain.sh`, which runs as part of `just check`, verifies that every `toolchain:` pin in `ci.yml`, `release.yml`, and `scheduled.yml` matches it, and rejects both floating `toolchain: stable` inputs and `dtolnay/rust-toolchain@stable` steps that omit an explicit version. Changing the Rust version means changing `rust-toolchain.toml` and letting that check identify the workflow pins that must follow.
 
 The MSRV job in `.github/workflows/scheduled.yml` is the one deliberate exception, and the check script special-cases it by job name. MSRV is a compatibility claim about the oldest compiler Cake builds on; it moves independently of the toolchain the project develops and releases against, and it should move only as a deliberate decision.
 
@@ -74,6 +74,6 @@ Merge mechanically safe updates. Escalate an update that changes behavior, migra
 
 ## Enforcement
 
-`just ci` runs toolchain synchronization as part of the standard gate. `just check-deps` runs the advisory check, and `.github/workflows/scheduled.yml` runs advisories, outdated, unused dependencies, and MSRV weekly. Dependabot opens weekly Cargo and GitHub Actions updates. The manual review procedure for the remaining version surfaces is [Dependency sweep](automations/dependency-sweep.md).
+`just check` runs the fast local gate. `just check-full` adds coverage/change-risk, the CI fixture suites, dependency checks, documentation, and a release build. The scheduled workflow runs advisories, outdated dependencies, unused dependencies, and MSRV weekly. Dependabot opens weekly Cargo and GitHub Actions updates. The manual review procedure for the remaining version surfaces is [Dependency sweep](automations/dependency-sweep.md).
 
 These mechanisms enforce parts of this posture, not all of it. Where a rule here has no check, it is a rule a reviewer applies.

@@ -48,10 +48,10 @@ Append cases to `src/clients/tools/corpus/commands.jsonl` as documented in its R
 **Definition of done:** run the final gate your change class routes to, matching [Pre-push routing](#pre-push-routing). For Rust, configuration, CI, fixture, or dependency changes, that gate is:
 
 ```bash
-just ci
+just check
 ```
 
-This checks toolchain synchronization, Linux compilation, formatting, strict Clippy in both feature modes, tests, coverage/change risk, imports, and module size. Run focused commands such as `cargo test <name>` before the full gate.
+This fast gate checks toolchain synchronization, formatting, strict Clippy in both feature modes, all-feature tests, imports, dependency direction, module size, instruction size, and the domain glossary. GitHub CI remains the source of truth for platform sandbox tests and coverage/change risk. Use `just check-full` when you need the complete local validation suite, including Rust and Markdown documentation checks. Run focused commands such as `cargo test <name>` before the gate.
 
 Additional checks:
 
@@ -60,20 +60,20 @@ Additional checks:
 - Linux-sensitive changes on macOS: `just clippy-linux` when the target and cross-compiler are installed.
 - Snapshot changes: `just snapshots`, then `cargo insta review`.
 - Label changes: `just labels-check-file` (file validation, also CI), `just labels-check` (repo drift vs `.github/labels.yml`), `just labels` (apply), `just labels-prune` (delete unlisted labels).
-- Full release-oriented validation: `just check-full`.
+- Full local validation, including the compatibility check, all CI fixture suites, coverage/change risk, dependency checks, Rust and Markdown documentation, and a release build: `just check-full`.
 - Documentation-only changes: targeted `panache format --check` and `panache lint` for changed living documents, link validation, and `git diff --check`. Use `just docs-check` when intentionally validating the complete Markdown corpus; it also runs `just lint-instruction-size`.
 - Markdown gate scopes are intentional: the pre-commit hook checks formatting for changed Markdown and lint for the full corpus. The pre-push route checks both for changed living documents. `just docs-check` and CI check the full corpus. This gives formatting feedback before commit without adding a full-corpus formatting pass to every commit; the full-corpus gates remain the final check.
-- Instruction changes (AGENTS.md, `.agents/skills/`, guardrails, runbooks): `just lint-instruction-size` caps AGENTS.md, the one document loaded every session, reports the corpus, and also runs in `just ci`. [Agent-facing instructions](docs/guardrails/agent-instructions.md) is the authority for what an added instruction must justify.
+- Instruction changes (AGENTS.md, `.agents/skills/`, guardrails, runbooks): `just lint-instruction-size` caps AGENTS.md, the one document loaded every session, reports the corpus, and also runs in `just check`. [Agent-facing instructions](docs/guardrails/agent-instructions.md) is the authority for what an added instruction must justify.
 
 ### Pre-push routing
 
-The pre-push hook routes by changed path class instead of running the full gate unconditionally.
+The pre-push hook routes by changed path class instead of running the full local validation suite unconditionally.
 
 - Markdown-only pushes run `just pre-push-docs`: targeted `panache format --check` and `panache lint` on the changed living documents, plus `git diff --check`.
-- Pushes touching `src/`, `tests/`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `.cargo/`, `.github/workflows/`, `justfile`, or `ci/` run the full `just ci` gate.
+- Pushes touching `src/`, `tests/`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `.cargo/`, `.github/workflows/`, `justfile`, or `ci/` run the fast `just check` gate.
 - Mixed pushes run both.
-- Anything unclassified or unresolvable fails closed to the full gate.
-- `just pre-push-force` always runs the full gate; `just pre-push-classify` prints the classification for the current branch.
+- Anything unclassified or unresolvable fails closed to `just check-full`.
+- `just pre-push-force` always runs `just check-full`; `just pre-push-classify` prints the classification for the current branch.
 
 [Working on branches and worktrees](docs/runbooks/parallel-worktrees.md) covers how the base is resolved and why the gate follows the checkout rather than the pushed ref.
 

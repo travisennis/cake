@@ -17,7 +17,7 @@ expression: session_record_json(record)
   "stdout": "ok",
   "task_id": "550e8400-e29b-41d4-a716-446655440001",
   "timestamp": "2026-05-10T12:34:56Z",
-  "tool_input_summary": "just ci",
+  "tool_input_summary": "just check",
   "tool_name": "Bash",
   "type": "hook_event"
 }

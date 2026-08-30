@@ -19,7 +19,7 @@ Functions introduced or modified in a change must meet the CC target before merg
 
 ### Per-function CC gate
 
-`just cc-check` (`scripts/check-cc.sh`) is the operating-loop check agents run before handoff. It is part of `just ci` via the cyclomatic-complexity gate in `scripts/check-coverage.sh`, so CI fails on exceedances. Cyclomatic complexity is coverage-independent, so the gate runs without a coverage pass:
+`just cc-check` (`scripts/check-cc.sh`) is the operating-loop check agents can run before handoff. The full local gate includes the same check through `scripts/check-coverage.sh` in `just check-full`, so CI fails on exceedances. Cyclomatic complexity is coverage-independent, so the standalone check runs without a coverage pass:
 
 - A function absent from `ci/cargo-crap-baseline.json` (a new function) may not exceed CC 10 (the target).
 - A function present in the baseline may not exceed the CC it had when the baseline was generated (a ratchet). Reductions are tracked in the reduction tasks referenced below; when a reduction lands, regenerate the baseline with `just change-risk-baseline`.
