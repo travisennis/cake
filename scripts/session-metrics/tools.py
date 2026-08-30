@@ -13,6 +13,36 @@ from cakelib import (
 FILE_TOOLS = ("Edit", "Write")
 
 
+def bash_reason_coverage(data: cakelib.Dataset) -> list[list]:
+    """Share of Bash calls that carry a parsed, non-empty `reason`, per model.
+
+    Returns rows of [model, calls, with_reason, coverage] ordered by call
+    volume, ending with a TOTAL row. Only the presence/absence of `reason` is
+    counted (an empty string is absent); the reason text and the command never
+    enter the report.
+    """
+    per_model: dict[str, list] = {}
+    for s in data.sessions:
+        for c in s.tool_calls_in_window(data.cutoff):
+            if c.name != "Bash":
+                continue
+            stats = per_model.setdefault(s.model, [0, 0])
+            stats[0] += 1  # calls
+            if c.reason:
+                stats[1] += 1  # with_reason
+    rows = []
+    for model, (calls, with_reason) in sorted(
+        per_model.items(), key=lambda kv: (-kv[1][0], kv[0])
+    ):
+        rows.append([model, fmt_int(calls), fmt_int(with_reason),
+                     fmt_pct(with_reason, calls)])
+    total_calls = sum(stats[0] for stats in per_model.values())
+    total_with = sum(stats[1] for stats in per_model.values())
+    rows.append(["TOTAL", fmt_int(total_calls), fmt_int(total_with),
+                 fmt_pct(total_with, total_calls)])
+    return rows
+
+
 def run(data: cakelib.Dataset) -> None:
     print_header("TOOL CALLS")
     print(cakelib.describe_window(data))
@@ -33,6 +63,9 @@ def run(data: cakelib.Dataset) -> None:
     rows.append(["TOTAL", fmt_int(len(all_calls)), fmt_int(total_failures),
                  fmt_pct(total_failures, len(all_calls))])
     print_table(["tool", "calls", "failures", "failure rate"], rows)
+
+    print("\nBash `reason` coverage (calls with a parsed, non-empty `reason`, per model):")
+    print_table(["model", "calls", "with reason", "coverage"], bash_reason_coverage(data))
 
     print("\nFailure taxonomy:")
     taxonomy = Counter()

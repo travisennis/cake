@@ -92,6 +92,23 @@ class ToolCall:
         except (json.JSONDecodeError, AttributeError):
             return None
 
+    @property
+    def reason(self) -> str | None:
+        """The Bash `reason` argument, when it is a non-empty string.
+
+        Presence/absence is the signal the metrics count; the value itself is
+        never reported. Returns None for malformed or non-object arguments,
+        missing keys, and non-string or empty values.
+        """
+        try:
+            arguments = json.loads(self.arguments)
+        except (TypeError, json.JSONDecodeError):
+            return None
+        if not isinstance(arguments, dict):
+            return None
+        reason = arguments.get("reason")
+        return reason if isinstance(reason, str) and reason else None
+
 
 @dataclass
 class Session:
