@@ -271,18 +271,25 @@ fn parse_streaming_response(body: &str) -> anyhow::Result<TurnResult> {
         if data == "[DONE]" {
             continue;
         }
-
-        let event = serde_json::from_str::<serde_json::Value>(&data)
-            .map_err(|error| stream_parse_error(anyhow::Error::new(error), &accumulator))?;
-        if let Err(error) = apply_stream_event(&mut accumulator, &event) {
-            if error.downcast_ref::<ResponsesStreamFailed>().is_some() {
-                return Err(error);
-            }
-            return Err(stream_parse_error(error, &accumulator));
-        }
+        apply_stream_data(&mut accumulator, &data)?;
     }
 
+    ensure_stream_completed(&accumulator)?;
     finalize_stream(accumulator)
+}
+
+fn apply_stream_data(accumulator: &mut StreamAccumulator, data: &str) -> anyhow::Result<()> {
+    let event = serde_json::from_str::<serde_json::Value>(data).map_err(|error| {
+        stream_parse_error(
+            anyhow::anyhow!("failed to parse Responses API SSE event: {error}"),
+            accumulator,
+        )
+    })?;
+    match apply_stream_event(accumulator, &event) {
+        Ok(()) => Ok(()),
+        Err(error) if error.downcast_ref::<ResponsesStreamFailed>().is_some() => Err(error),
+        Err(error) => Err(stream_parse_error(error, accumulator)),
+    }
 }
 
 /// Applies one SSE event to the running stream state.
@@ -328,6 +335,11 @@ fn apply_output_item_done(accumulator: &mut StreamAccumulator, event: &serde_jso
 
 fn apply_response_completed(accumulator: &mut StreamAccumulator, event: &serde_json::Value) {
     let response = event.get("response").cloned().unwrap_or_default();
+    apply_response_metadata(accumulator, &response);
+    accumulator.completed = true;
+}
+
+fn apply_response_metadata(accumulator: &mut StreamAccumulator, response: &serde_json::Value) {
     accumulator.response_id = response
         .get("id")
         .and_then(serde_json::Value::as_str)
@@ -349,32 +361,11 @@ fn apply_response_completed(accumulator: &mut StreamAccumulator, event: &serde_j
     {
         accumulator.output = items;
     }
-    accumulator.completed = true;
 }
 
 fn apply_response_incomplete(accumulator: &mut StreamAccumulator, event: &serde_json::Value) {
     let response = event.get("response").cloned().unwrap_or_default();
-    accumulator.response_id = response
-        .get("id")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_string);
-    accumulator.status = response
-        .get("status")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_string);
-    if let Some(usage) = response
-        .get("usage")
-        .cloned()
-        .and_then(|usage| serde_json::from_value::<ApiUsage>(usage).ok())
-    {
-        accumulator.usage = Some(usage);
-    }
-    if let Some(items) = response.get("output").cloned()
-        && let Ok(items) = serde_json::from_value::<Vec<OutputMessage>>(items)
-        && !items.is_empty()
-    {
-        accumulator.output = items;
-    }
+    apply_response_metadata(accumulator, &response);
     accumulator.incomplete_reason = response
         .get("incomplete_details")
         .and_then(|details| details.get("reason"))
@@ -468,6 +459,17 @@ impl std::fmt::Display for ResponsesStreamFailed {
     }
 }
 
+fn ensure_stream_completed(accumulator: &StreamAccumulator) -> anyhow::Result<()> {
+    if accumulator.completed {
+        Ok(())
+    } else {
+        Err(stream_parse_error(
+            anyhow::anyhow!("Responses API stream ended before response.completed"),
+            accumulator,
+        ))
+    }
+}
+
 /// Assembles the final `TurnResult` from the accumulated stream state.
 ///
 /// # Errors
@@ -475,13 +477,6 @@ impl std::fmt::Display for ResponsesStreamFailed {
 /// Returns an error when the stream ended before `response.completed`, or when
 /// the accumulated output items cannot be parsed into conversation items.
 fn finalize_stream(mut accumulator: StreamAccumulator) -> anyhow::Result<TurnResult> {
-    if !accumulator.completed {
-        return Err(stream_parse_error(
-            anyhow::anyhow!("Responses API stream ended before response.completed"),
-            &accumulator,
-        ));
-    }
-
     if !accumulator.output_text.is_empty()
         && !accumulator
             .output
