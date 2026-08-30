@@ -2,7 +2,6 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{BufWriter, Write},
     path::Path,
-    sync::atomic::{AtomicBool, Ordering},
     sync::{Arc, Mutex},
 };
 
@@ -510,45 +509,67 @@ pub enum TelemetryAppend {
     Failed(anyhow::Error),
 }
 
-/// Shared session-telemetry writer with a fail-stop disabled flag.
+/// Shared session-telemetry writer with a fail-stop disabled state.
 ///
 /// The agent loop and the judge-attempt sink share one instance, so a write
 /// failure on either path disables telemetry for both: once any append fails,
 /// no further records are written and a partial NDJSON line is never followed
 /// by more records (see the recovery contract in the judge-attempt-diagnostics
-/// exec plan). The disabled check and the failure transition happen while the
-/// writer lock is held, so concurrent appends cannot race past the flag.
+/// exec plan). Availability and the failure transition are one mutex-wrapped
+/// state, so the pair cannot drift: exactly one caller observes `Failed`, and
+/// every later caller observes `Disabled`.
 pub struct SharedSessionTelemetryWriter {
-    writer: Mutex<SessionTelemetryWriter>,
-    disabled: Arc<AtomicBool>,
+    state: Mutex<TelemetryWriterState>,
+}
+
+/// Whether the shared writer is still accepting records.
+///
+/// `Disabled` is terminal; it is never written again once set, so every caller
+/// after a failure observes `Disabled`.
+enum TelemetryWriterState {
+    Active(SessionTelemetryWriter),
+    Disabled,
 }
 
 impl SharedSessionTelemetryWriter {
-    pub fn new(writer: SessionTelemetryWriter) -> Self {
+    pub const fn new(writer: SessionTelemetryWriter) -> Self {
         Self {
-            writer: Mutex::new(writer),
-            disabled: Arc::new(AtomicBool::new(false)),
+            state: Mutex::new(TelemetryWriterState::Active(writer)),
         }
     }
 
     /// Append one record, fail-stop: after the first failure no further
     /// records are written.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the lock must cover the writer and the Disabled transition together, so the guard is held for the whole append rather than dropped early"
+    )]
     pub fn append(&self, record: &SessionTelemetryRecord) -> TelemetryAppend {
-        let mut writer = match self.writer.lock() {
-            Ok(writer) => writer,
+        let mut state = match self.state.lock() {
+            Ok(state) => state,
             Err(poisoned) => {
-                return TelemetryAppend::Failed(anyhow::anyhow!(
-                    "session telemetry writer poisoned: {poisoned:?}"
-                ));
+                // A panic poisoned the lock while it held a writer that may
+                // have left a partial NDJSON line. Recover the state so the
+                // mutex stays the single availability authority, then fail-stop:
+                // never write after a partial line. Exactly one caller observes
+                // `Failed`; later callers observe `Disabled`.
+                let mut state = poisoned.into_inner();
+                if matches!(&*state, TelemetryWriterState::Active(_)) {
+                    *state = TelemetryWriterState::Disabled;
+                    return TelemetryAppend::Failed(anyhow::anyhow!(
+                        "session telemetry writer poisoned: telemetry disabled"
+                    ));
+                }
+                return TelemetryAppend::Disabled;
             },
         };
-        if self.disabled.load(Ordering::Relaxed) {
+        let TelemetryWriterState::Active(writer) = &mut *state else {
             return TelemetryAppend::Disabled;
-        }
+        };
         match writer.append(record) {
             Ok(()) => TelemetryAppend::Written,
             Err(error) => {
-                self.disabled.store(true, Ordering::Relaxed);
+                *state = TelemetryWriterState::Disabled;
                 TelemetryAppend::Failed(error)
             },
         }
@@ -663,6 +684,19 @@ mod tests {
                 provider_status: Some("completed".to_string()),
                 provider_reason: None,
             }),
+        }
+    }
+
+    fn telemetry_summary() -> SessionTelemetryRecord {
+        SessionTelemetryRecord::SessionSummary {
+            session_id: "session".to_string(),
+            invocation_id: "invocation".to_string(),
+            timestamp: Utc::now(),
+            success: true,
+            duration_ms: 1,
+            turn_count: 1,
+            usage: Usage::default(),
+            error: None,
         }
     }
 
@@ -948,5 +982,137 @@ mod tests {
             "boom"
         );
         assert!(contents.ends_with('\n'));
+    }
+
+    #[test]
+    fn shared_writer_reports_one_failed_then_disabled_on_write_error() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let pipe = dir.path().join("telemetry-fifo");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&pipe)
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        // A reader opens the FIFO (unblocking the writer open below), then
+        // closes it only once told to, so the first write deterministically
+        // fails with EPIPE without depending on disk exhaustion or device
+        // behavior.
+        let reader_pipe = pipe.clone();
+        let (opened_tx, opened_rx) = std::sync::mpsc::channel();
+        let (close_tx, close_rx) = std::sync::mpsc::channel();
+        let (closed_tx, closed_rx) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let file = File::open(&reader_pipe).unwrap();
+            opened_tx.send(()).unwrap();
+            close_rx.recv().unwrap();
+            drop(file);
+            closed_tx.send(()).unwrap();
+        });
+
+        let file = OpenOptions::new().write(true).open(&pipe).unwrap();
+        opened_rx.recv().unwrap();
+        close_tx.send(()).unwrap();
+        closed_rx.recv().unwrap();
+        reader.join().unwrap();
+
+        let writer = SessionTelemetryWriter {
+            writer: BufWriter::new(file),
+        };
+        let shared = SharedSessionTelemetryWriter::new(writer);
+        let record = telemetry_summary();
+
+        assert!(
+            matches!(shared.append(&record), TelemetryAppend::Failed(_)),
+            "the failing write must report exactly one Failed transition"
+        );
+        assert!(
+            matches!(shared.append(&record), TelemetryAppend::Disabled),
+            "every later append must observe Disabled"
+        );
+        assert!(matches!(shared.append(&record), TelemetryAppend::Disabled));
+    }
+
+    #[test]
+    fn shared_writer_poison_reports_one_failed_then_disabled() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let writer = SessionTelemetryWriter::open(&dir.path().join("telemetry.ndjson")).unwrap();
+        let shared = SharedSessionTelemetryWriter::new(writer);
+        let record = telemetry_summary();
+
+        // Poison the lock by panicking while the guard is held; the guard drops
+        // during unwind and poisons the mutex.
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = shared.state.lock().unwrap();
+            panic!("boom");
+        }));
+        assert!(poisoned.is_err());
+
+        // A poison may mean a partial NDJSON line is already buffered, so the
+        // first append reports Failed and disables the writer; no further
+        // record is written after it.
+        assert!(
+            matches!(shared.append(&record), TelemetryAppend::Failed(_)),
+            "a poisoned writer must report exactly one Failed transition"
+        );
+        assert!(matches!(shared.append(&record), TelemetryAppend::Disabled));
+        assert!(matches!(shared.append(&record), TelemetryAppend::Disabled));
+    }
+
+    #[test]
+    fn shared_writer_disabled_state_writes_nothing() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("telemetry.ndjson");
+        let shared =
+            SharedSessionTelemetryWriter::new(SessionTelemetryWriter::open(&path).unwrap());
+        {
+            let mut state = shared.state.lock().unwrap();
+            *state = TelemetryWriterState::Disabled;
+        }
+        let record = telemetry_summary();
+
+        assert!(matches!(shared.append(&record), TelemetryAppend::Disabled));
+        assert!(matches!(shared.append(&record), TelemetryAppend::Disabled));
+
+        let contents = std::fs::read_to_string(path).unwrap();
+        assert!(
+            contents.is_empty(),
+            "no record may be written once disabled"
+        );
+    }
+
+    #[test]
+    fn shared_writer_concurrent_appends_are_interleaved_safely() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("telemetry.ndjson");
+        let shared = std::sync::Arc::new(SharedSessionTelemetryWriter::new(
+            SessionTelemetryWriter::open(&path).unwrap(),
+        ));
+
+        let writers = (0..8)
+            .map(|thread| {
+                let shared = std::sync::Arc::clone(&shared);
+                std::thread::spawn(move || {
+                    for record in 0..25 {
+                        let result = shared.append(&telemetry_summary());
+                        assert!(
+                            matches!(result, TelemetryAppend::Written),
+                            "thread {thread} record {record} failed: {result:?}"
+                        );
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+
+        let contents = std::fs::read_to_string(path).unwrap();
+        let lines = contents.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), 8 * 25);
+        for line in lines {
+            let value: serde_json::Value = serde_json::from_str(line).unwrap();
+            assert_eq!(value["type"], "session_summary");
+        }
     }
 }
