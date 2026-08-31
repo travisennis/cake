@@ -3430,7 +3430,12 @@ mod error_tests {
         // falls back to a fresh client and the turn succeeds.
         let server = spawn_stale_connection_server(listener, false);
 
-        let mut agent = test_agent_with_url(&format!("http://{addr}"));
+        let telemetry_dir = tempfile::TempDir::new().unwrap();
+        let telemetry_path = telemetry_dir.path().join("sidecar.ndjson");
+        let mut agent = test_agent_with_url(&format!("http://{addr}")).with_session_telemetry(
+            SessionTelemetryWriter::open(&telemetry_path).unwrap(),
+            uuid::Uuid::new_v4(),
+        );
         agent.history_mut().push(ConversationItem::Message {
             role: Role::User,
             content: "test".to_string(),
@@ -3444,6 +3449,20 @@ mod error_tests {
             result.is_ok(),
             "stale-connection recovery should fall back to a fresh client, got: {result:?}"
         );
+        let sidecar = std::fs::read_to_string(&telemetry_path).unwrap();
+        let transport_attempt = sidecar
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .find(|record| record["type"] == "api_attempt")
+            .expect("the reset attempt must be recorded");
+        assert_eq!(transport_attempt["terminal_class"], "transport");
+        assert!(
+            transport_attempt["error"]
+                .as_str()
+                .is_some_and(|error| error.to_ascii_lowercase().contains("connection reset")),
+            "transport telemetry should retain the underlying cause: {transport_attempt}"
+        );
+
         let result = agent.complete_turn(false).await;
         assert!(result.is_ok(), "subsequent turn must keep working");
 

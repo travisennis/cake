@@ -670,7 +670,7 @@ fn output_sink_builds_error_json() {
             Ok(data_dir) => data_dir,
             Err(err) => panic!("data dir should be created: {err}"),
         };
-        let result = Err(anyhow::anyhow!("provider failed"));
+        let result = Err(anyhow::anyhow!("root cause").context("provider failed"));
 
         let json = CliOutputSink::turn_result_json(
             &result,
@@ -683,7 +683,7 @@ fn output_sink_builds_error_json() {
         );
 
         assert_eq!(json["result"], serde_json::Value::Null);
-        assert_eq!(json["error"], "provider failed");
+        assert_eq!(json["error"], "provider failed: root cause");
         assert_eq!(json["elapsed_time"], 250);
         assert!(json["session_file"].is_string());
         assert!(
@@ -772,6 +772,18 @@ fn output_sink_builds_limit_exceeded_json() {
         assert_eq!(json["subtype"], "limit_exceeded");
         assert_eq!(json["result"], "partial work");
     });
+}
+
+#[test]
+fn task_outcome_for_error_includes_cause_chain() {
+    let error = anyhow::anyhow!("root cause").context("provider failed");
+
+    assert_eq!(
+        CodingAssistant::task_outcome_for_error(&error),
+        TaskOutcome::ErrorDuringExecution {
+            error: "provider failed: root cause".to_string(),
+        }
+    );
 }
 
 #[test]

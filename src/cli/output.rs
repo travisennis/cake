@@ -137,7 +137,7 @@ impl CliOutputSink {
             },
             Err(e) => {
                 json["result"] = serde_json::Value::Null;
-                json["error"] = serde_json::json!(e.to_string());
+                json["error"] = serde_json::json!(format!("{e:#}"));
                 // Additive discriminator so consumers can tell a cut-off from
                 // other agent errors — parity with stream-json's task_complete
                 // subtype.
@@ -192,7 +192,7 @@ impl CliOutputSink {
     }
 
     pub(crate) fn write_error(error: &anyhow::Error) {
-        eprintln!("Error: {error}");
+        eprintln!("Error: {error:#}");
     }
 }
 
