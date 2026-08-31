@@ -110,6 +110,10 @@ impl<'a, F: FnMut(AgentRunnerTelemetryEvent)> InFlightAttempt<'a, F> {
             closed: false,
         };
         attempt.report_in_flight();
+        // Keep provider timing separate from the synchronous telemetry write.
+        let operation_start = Instant::now();
+        attempt.total_start = operation_start;
+        attempt.request_start = operation_start;
         attempt
     }
 
@@ -132,8 +136,10 @@ impl<'a, F: FnMut(AgentRunnerTelemetryEvent)> InFlightAttempt<'a, F> {
         self.request_ms = Some(request_ms);
         self.status_code = Some(status_code);
         self.phase = ApiAttemptPhase::ReadingBody;
-        self.parse_start = Some(Instant::now());
         self.report_in_flight();
+        // The body timer begins after the phase update has been persisted, so
+        // telemetry I/O is not attributed to provider response parsing.
+        self.parse_start = Some(Instant::now());
     }
 
     fn request_ms(&self) -> u64 {
