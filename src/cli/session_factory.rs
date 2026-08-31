@@ -248,13 +248,14 @@ impl crate::CodingAssistant {
             RunMode::ForkLatest | RunMode::Fork { .. } => {
                 self.forked_run(run_mode, data_dir, &inputs)
             },
-            RunMode::NewSession => self.new_run(
+            RunMode::NewSession | RunMode::Ephemeral => self.new_run(
                 &inputs,
-                Some(SessionPersistencePlan::Create {
-                    seed_records: Vec::new(),
-                }),
+                run_mode
+                    .persists_session()
+                    .then_some(SessionPersistencePlan::Create {
+                        seed_records: Vec::new(),
+                    }),
             ),
-            RunMode::Ephemeral => self.new_run(&inputs, None),
         }
     }
 
