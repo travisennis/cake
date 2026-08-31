@@ -26,6 +26,10 @@ impl<'a> ProviderStrategy<'a> {
         }
     }
 
+    pub(super) const fn provider(&self) -> Option<ModelProvider> {
+        self.provider
+    }
+
     pub(super) fn apply_headers(
         &self,
         request: reqwest::RequestBuilder,

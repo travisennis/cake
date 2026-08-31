@@ -800,6 +800,7 @@ impl Agent {
             .complete_turn(
                 config,
                 session_id,
+                task_id,
                 turn_index,
                 history,
                 tool_definitions,

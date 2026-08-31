@@ -10,7 +10,7 @@ use serde::Serialize;
 
 use crate::OutputFormat;
 use crate::clients::retry::{RequestOverrides, RetryReason, RetryStatus};
-use crate::config::model::{ApiType, ReasoningEffort};
+use crate::config::model::{ApiType, ModelProvider, ReasoningEffort};
 use crate::types::{ApiAttemptTerminalClass, Usage};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -95,6 +95,43 @@ pub struct ResponsesFailedMetadata {
     pub message: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApiAttemptPhase {
+    AwaitingHeaders,
+    ReadingBody,
+}
+
+impl ApiAttemptPhase {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AwaitingHeaders => "awaiting_headers",
+            Self::ReadingBody => "reading_body",
+        }
+    }
+}
+
+/// Bounded context for a provider attempt that has started but has not yet
+/// produced a terminal [`ApiAttemptTelemetry`] record.
+///
+/// The first record identifies an attempt before the HTTP future is awaited;
+/// an optional second record changes `phase` to `reading_body` once headers
+/// arrive. This keeps the sidecar useful during a stalled request without
+/// buffering request or response bodies.
+#[derive(Debug, Clone, Serialize)]
+pub struct ApiAttemptInFlightTelemetry {
+    pub task_id: String,
+    pub turn_index: u32,
+    pub attempt: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<ModelProvider>,
+    pub model: String,
+    pub started_at: DateTime<Utc>,
+    pub phase: ApiAttemptPhase,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_code: Option<u16>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ApiAttemptTelemetry {
     pub turn_index: u32,
@@ -121,6 +158,10 @@ pub struct ApiAttemptTelemetry {
     /// Bounded structured metadata when the attempt ended in `response.failed`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub responses_failed: Option<Box<ResponsesFailedMetadata>>,
+    /// The last known phase when this attempt completed. This is optional so
+    /// historical sidecars retain their original shape.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phase: Option<ApiAttemptPhase>,
     pub request_overrides: RequestOverridesSnapshot,
 }
 
@@ -216,6 +257,7 @@ pub struct ToolCallTelemetry {
 
 #[derive(Debug, Clone)]
 pub enum AgentRunnerTelemetryEvent {
+    ApiAttemptInFlight(ApiAttemptInFlightTelemetry),
     ApiAttempt(ApiAttemptTelemetry),
     RetryScheduled(RetryScheduledTelemetry),
     Compensation(CompensationEventTelemetry),
@@ -403,6 +445,13 @@ pub enum SessionTelemetryRecord {
         output_format: OutputFormat,
         tools: Vec<String>,
         settings: SessionTelemetrySettings,
+    },
+    ApiAttemptInFlight {
+        session_id: String,
+        invocation_id: String,
+        timestamp: DateTime<Utc>,
+        #[serde(flatten)]
+        attempt: ApiAttemptInFlightTelemetry,
     },
     ApiAttempt {
         session_id: String,
@@ -644,6 +693,7 @@ mod tests {
             terminal_class: None,
             provider_request_id: None,
             responses_failed: None,
+            phase: None,
             request_overrides: RequestOverridesSnapshot {
                 max_output_tokens: None,
                 reasoning_max_tokens: None,
@@ -772,6 +822,52 @@ mod tests {
         assert!(value.get("terminal_class").is_none());
         assert!(value.get("responses_failed").is_none());
         assert!(value.get("provider_request_id").is_none());
+    }
+
+    #[test]
+    fn api_attempt_in_flight_serializes_bounded_context_and_phase() {
+        let started_at = Utc::now();
+        let record = SessionTelemetryRecord::ApiAttemptInFlight {
+            session_id: "session".to_string(),
+            invocation_id: "invocation".to_string(),
+            timestamp: started_at,
+            attempt: ApiAttemptInFlightTelemetry {
+                task_id: "task".to_string(),
+                turn_index: 2,
+                attempt: 3,
+                provider: Some(ModelProvider::OpenRouter),
+                model: "provider/model".to_string(),
+                started_at,
+                phase: ApiAttemptPhase::AwaitingHeaders,
+                status_code: None,
+            },
+        };
+        let value = serde_json::to_value(record).unwrap();
+
+        assert_eq!(value["type"], "api_attempt_in_flight");
+        assert_eq!(value["session_id"], "session");
+        assert_eq!(value["invocation_id"], "invocation");
+        assert_eq!(value["task_id"], "task");
+        assert_eq!(value["turn_index"], 2);
+        assert_eq!(value["attempt"], 3);
+        assert_eq!(value["provider"], "openrouter");
+        assert_eq!(value["model"], "provider/model");
+        assert_eq!(value["phase"], "awaiting_headers");
+        assert!(value["started_at"].is_string());
+        assert!(value.get("status_code").is_none());
+    }
+
+    #[test]
+    fn api_attempt_phase_labels_match_serialized_values() {
+        assert_eq!(
+            ApiAttemptPhase::AwaitingHeaders.as_str(),
+            "awaiting_headers"
+        );
+        assert_eq!(ApiAttemptPhase::ReadingBody.as_str(), "reading_body");
+        assert_eq!(
+            serde_json::to_value(ApiAttemptPhase::ReadingBody).unwrap(),
+            "reading_body"
+        );
     }
 
     #[test]

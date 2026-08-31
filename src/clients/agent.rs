@@ -385,6 +385,13 @@ impl Agent {
         self
     }
 
+    /// Sets a short HTTP timeout for provider tests.
+    #[cfg(test)]
+    pub(super) fn with_request_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.runner.with_request_timeout(timeout);
+        self
+    }
+
     /// Sets accumulated usage (for test fixtures).
     #[cfg(test)]
     pub const fn with_total_usage(mut self, usage: Usage) -> Self {
