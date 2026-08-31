@@ -3,14 +3,15 @@
 //! This module defines:
 //! - The [`CmdRunner`] trait for CLI commands.
 //! - [`CliOutputSink`] for rendering responses.
-//! - [`RunMode`] / [`SessionStorage`] for session lifecycle.
-//! - [`RunSession`] and [`crate::cli::session_factory::skill_locations`] for session construction.
+//! - [`RunMode`] / [`SessionPersistencePlan`] for session lifecycle.
+//! - [`session_factory::RunSession`] and [`session_factory::skill_locations`] for session construction.
 
 mod bash;
 mod cmd_runner;
 mod debug;
 mod init;
 mod output;
+mod persistence;
 mod replay;
 mod run_mode;
 mod session_factory;
@@ -22,11 +23,11 @@ pub use cmd_runner::{CmdRunner, CommandRunOptions};
 pub use debug::DebugCommand;
 pub use init::{InitCommand, InitError};
 pub use output::{CliOutputSink, TurnResult};
+pub use persistence::execute_persistence_plan;
 pub use replay::{ReplayCommand, ReplayError};
 pub use sessions::SessionsCommand;
 
-pub use run_mode::{RunMode, SessionStorage};
-pub use session_factory::RunSession;
+pub use run_mode::{RunMode, SessionPersistencePlan};
 
 /// Top-level CLI subcommands.
 #[derive(Clone, Debug, clap::Subcommand)]
