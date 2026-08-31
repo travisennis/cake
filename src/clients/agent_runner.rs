@@ -136,7 +136,13 @@ impl<'a, F: FnMut(AgentRunnerTelemetryEvent)> InFlightAttempt<'a, F> {
         self.request_ms = Some(request_ms);
         self.status_code = Some(status_code);
         self.phase = ApiAttemptPhase::ReadingBody;
+        // The phase record is synchronous so it must be removed from the
+        // provider's total duration as well as from body parsing time.
+        let telemetry_start = Instant::now();
         self.report_in_flight();
+        if let Some(total_start) = self.total_start.checked_add(telemetry_start.elapsed()) {
+            self.total_start = total_start;
+        }
         // The body timer begins after the phase update has been persisted, so
         // telemetry I/O is not attributed to provider response parsing.
         self.parse_start = Some(Instant::now());
