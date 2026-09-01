@@ -61,7 +61,7 @@ Hooks are user or project control-plane commands. Toolbox tools are user-provide
 
 `PreToolUse` hooks are a primary enforcement path for in-process mutations (Edit and Write) and for toolbox calls, which run unsandboxed. Hooks evaluate the same structured `tool_input` the tool will act on, so a payload whose raw JSON is malformed but repairable cannot bypass a hook that inspects the tool's structured arguments.
 
-Only enable hook files and toolbox directories you trust. A cloned repository does not automatically contribute toolbox executables, but explicitly adding a project directory is a trust decision. Read-only mode skips toolbox discovery; hooks remain trusted control-plane behavior.
+Only enable hook files and toolbox directories you trust. The project-local `.cake/tools` directory is discovered automatically, so a cloned repository can contribute executables when run with a writable sandbox; inspect or remove those files before running untrusted code. Read-only mode skips toolbox discovery; hooks remain trusted control-plane behavior.
 
 ## Sessions, logs, and telemetry
 

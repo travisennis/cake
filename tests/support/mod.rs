@@ -91,7 +91,8 @@ impl TestEnv {
         // identity pinned by the environment the suite was launched from, and
         // never let an ambient `CAKE_TOOLBOX` point the binary at a host
         // program the tests did not stage. Toolbox tests set `CAKE_TOOLBOX`
-        // (or `--toolbox`) explicitly for themselves.
+        // (or `--toolbox`) explicitly or stage a project-local `.cake/tools`
+        // directory for themselves.
         for var in GIT_AMBIENT_ENV_VARS {
             cmd.env_remove(var);
         }

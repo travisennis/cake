@@ -1,7 +1,8 @@
 //! User-defined toolbox tool discovery and describe-protocol parsing.
 //!
 //! Toolbox tools are user-provided executables discovered from toolbox
-//! directories (`CAKE_TOOLBOX`, `--toolbox`, default `~/.config/cake/tools`).
+//! directories (`CAKE_TOOLBOX`, `--toolbox`, the project-local
+//! `.cake/tools`, and the default `~/.config/cake/tools`).
 //! Each executable implements a two-action protocol selected by the
 //! `TOOLBOX_ACTION` environment variable:
 //!
@@ -88,21 +89,24 @@ pub struct ToolboxTool {
 /// - `env_value` unset: the default directory is scanned.
 /// - `env_value` set and non-empty: its colon-separated entries are scanned
 ///   instead of the default.
-/// - `env_value` set to the empty string: environment-driven scanning is
-///   disabled entirely (the default directory is not scanned).
+/// - `env_value` set to the empty string: the global/default directory is not
+///   scanned.
 ///
 /// `extra_dirs` (from `--toolbox`) are appended after the environment
-/// directories in all cases. Earlier directories take precedence for tool
-/// name conflicts.
+/// directories, and the active project's `.cake/tools` directory is appended
+/// after those explicit directories. Earlier directories take precedence for
+/// tool name conflicts.
 ///
-/// Relative entries are anchored to `base_dir` — the directory cake was
-/// invoked from — so they stay stable even if the process cwd changes
-/// later (e.g. via `--worktree`), matching the `--add-dir` handling.
+/// Relative environment and flag entries are anchored to `base_dir` — the
+/// directory Cake was invoked from — so they stay stable even if the process
+/// cwd changes later (e.g. via `--worktree`). The project-local directory is
+/// anchored to `project_dir`, which is the active worktree when one is used.
 pub fn toolbox_directories(
     env_value: Option<&str>,
     extra_dirs: &[PathBuf],
     default_dir: &Path,
     base_dir: &Path,
+    project_dir: &Path,
 ) -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = env_value.map_or_else(
         || vec![default_dir.to_path_buf()],
@@ -123,6 +127,7 @@ pub fn toolbox_directories(
                 base_dir.join(dir)
             }
         })
+        .chain(std::iter::once(project_dir.join(".cake").join("tools")))
         .collect()
 }
 
