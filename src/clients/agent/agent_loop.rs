@@ -971,7 +971,7 @@ async fn post_tool_context_for_result(
     arguments: &str,
     result: &Result<ToolResult, ToolError>,
 ) -> Option<String> {
-    let runner = hook_runner?;
+    let runner = hook_runner.filter(|runner| runner.has_matching_post_tool_hook(name))?;
     let hook_result = result
         .as_ref()
         .map(|result| result.output.clone())
@@ -1374,6 +1374,29 @@ mod helper_tests {
                 .contains("Hook blocked tool execution: not allowed")
         );
         assert!(blocked.output.contains("block context"));
+    }
+
+    #[tokio::test]
+    async fn post_tool_context_skips_nonmatching_hook_configuration() {
+        let runner = hook_runner(HookEvent::PreToolUse, "exit 1", true);
+        let result = ToolResult {
+            output: "tool output".to_string(),
+            compensation_events: Vec::new(),
+        };
+        let agent = test_agent().with_hook_runner(Arc::clone(&runner));
+
+        assert_eq!(
+            post_tool_context_for_result(
+                Some(&runner),
+                &agent.tools,
+                "Read",
+                "call-1",
+                "{}",
+                &Ok(result),
+            )
+            .await,
+            None
+        );
     }
 
     #[tokio::test]
