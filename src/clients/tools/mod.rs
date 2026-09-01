@@ -33,6 +33,7 @@ use std::sync::Arc;
 use crate::clients::judge::JudgeContext;
 use crate::config::settings::ToolLimits;
 use crate::session_telemetry::{CompensationEventTelemetry, CompensationKind};
+use crate::types::ReplaySafety;
 
 mod sandbox;
 
@@ -675,6 +676,9 @@ pub(super) struct ToolCapabilities {
     /// The tool cannot mutate host state in-process, so it stays available
     /// under the read-only sandbox policy.
     pub(super) read_safe: bool,
+    /// Whether an interrupted call may be re-executed after recovery. The
+    /// conservative default is [`ReplaySafety::Never`].
+    pub(super) replay_safety: ReplaySafety,
     /// Resolves the canonical path this call would mutate when the tool
     /// mutates a resolvable path; drives same-file serialization (ADR-013).
     pub(super) mutating_target: Option<MutationTargetFn>,
@@ -685,6 +689,7 @@ impl ToolCapabilities {
         Self {
             repairs_arguments: false,
             read_safe: false,
+            replay_safety: ReplaySafety::Never,
             mutating_target: None,
         }
     }
@@ -719,6 +724,19 @@ impl ToolEntry {
     /// available under the read-only sandbox policy.
     const fn read_safe(mut self) -> Self {
         self.capabilities.read_safe = true;
+        self
+    }
+
+    /// Mark the tool as safe to re-execute after recovery when the current
+    /// registry declaration still agrees.
+    const fn replay_safe(mut self) -> Self {
+        self.capabilities.replay_safety = ReplaySafety::Safe;
+        self
+    }
+
+    /// Set the replay declaration for a tool supplied by an external manifest.
+    const fn with_replay_safety(mut self, replay_safety: ReplaySafety) -> Self {
+        self.capabilities.replay_safety = replay_safety;
         self
     }
 
@@ -832,6 +850,14 @@ impl ToolRegistry {
     pub(super) fn repairs_arguments(&self, name: &str) -> bool {
         self.find(name)
             .is_some_and(|entry| entry.capabilities.repairs_arguments)
+    }
+
+    /// Return the replay declaration for a registered tool. Unknown tools
+    /// default to `never` so a missing registry entry fails closed.
+    pub(super) fn replay_safety(&self, name: &str) -> ReplaySafety {
+        self.find(name).map_or(ReplaySafety::Never, |entry| {
+            entry.capabilities.replay_safety
+        })
     }
 
     /// Return the canonical path a registered tool would write, using the
@@ -1273,7 +1299,9 @@ pub(super) fn default_tool_registry() -> ToolRegistry {
         ToolEntry::new(edit::edit_tool(), execute_edit_tool)
             .repairs_arguments()
             .mutates_path(edit::mutating_target),
-        ToolEntry::new(read::read_tool(), execute_read_tool).read_safe(),
+        ToolEntry::new(read::read_tool(), execute_read_tool)
+            .read_safe()
+            .replay_safe(),
         ToolEntry::new(write::write_tool(), execute_write_tool)
             .repairs_arguments()
             .mutates_path(write::mutating_target),
@@ -1289,7 +1317,9 @@ pub(super) fn default_tool_registry() -> ToolRegistry {
 #[cfg(test)]
 pub(super) fn read_tool_registry() -> ToolRegistry {
     ToolRegistry::new(vec![
-        ToolEntry::new(read::read_tool(), execute_read_tool).read_safe(),
+        ToolEntry::new(read::read_tool(), execute_read_tool)
+            .read_safe()
+            .replay_safe(),
     ])
 }
 
@@ -1817,6 +1847,7 @@ mod tests {
             parameters: serde_json::json!({ "type": "object", "properties": {} }),
             format: crate::config::toolbox::ToolboxFormat::Json,
             timeout_secs: 60,
+            replay: crate::types::ReplaySafety::Never,
         }
     }
 
@@ -2016,6 +2047,42 @@ mod tests {
         assert!(
             registry.mutating_target(&context, "Bash", "{}").is_none(),
             "non-mutating tools declare no resolver"
+        );
+    }
+
+    /// Replay safety is declared by each registry entry and defaults to
+    /// `never`, including unknown tools and toolbox tools without a manifest
+    /// declaration. Only Read is safe among the built-ins.
+    #[test]
+    fn replay_safety_reflects_registration() {
+        let mut registry = default_tool_registry();
+        assert_eq!(
+            registry.replay_safety("Bash"),
+            crate::types::ReplaySafety::Never
+        );
+        assert_eq!(
+            registry.replay_safety("Edit"),
+            crate::types::ReplaySafety::Never
+        );
+        assert_eq!(
+            registry.replay_safety("Read"),
+            crate::types::ReplaySafety::Safe
+        );
+        assert_eq!(
+            registry.replay_safety("Write"),
+            crate::types::ReplaySafety::Never
+        );
+        assert_eq!(
+            registry.replay_safety("tb__unknown"),
+            crate::types::ReplaySafety::Never
+        );
+
+        let mut safe_tool = fixture_toolbox_tool();
+        safe_tool.replay = crate::types::ReplaySafety::Safe;
+        registry.push_entry(toolbox_tool_entry(safe_tool, uuid::Uuid::nil()));
+        assert_eq!(
+            registry.replay_safety("tb__run_tests"),
+            crate::types::ReplaySafety::Safe
         );
     }
 

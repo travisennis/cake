@@ -24,8 +24,8 @@ use crate::session_telemetry::{
     SessionTelemetrySettings, SessionTelemetryWriter, SharedSessionTelemetryWriter,
 };
 use crate::types::{
-    ApiAttemptTerminalClass, ConversationItem, Role, SessionRecord, StreamRecord, TaskCompleteData,
-    TaskOutcome, TaskStartData, TurnUsageData, Usage,
+    ApiAttemptTerminalClass, ConversationItem, ReplaySafety, Role, SessionRecord, StreamRecord,
+    TaskCompleteData, TaskOutcome, TaskStartData, TurnUsageData, Usage,
 };
 
 /// Result of a single API turn (one request/response cycle).
@@ -584,6 +584,14 @@ impl Agent {
     /// Stream a conversation item as JSON via the streaming callback, if set.
     fn stream_item(&mut self, item: &ConversationItem) -> anyhow::Result<()> {
         self.observer.stream_item(item)
+    }
+
+    fn stream_item_with_replay(
+        &mut self,
+        item: &ConversationItem,
+        replay: Option<ReplaySafety>,
+    ) -> anyhow::Result<()> {
+        self.observer.stream_item_with_replay(item, replay)
     }
 
     fn report_progress(&self, message: &str) {

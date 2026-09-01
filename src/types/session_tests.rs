@@ -7,8 +7,25 @@ fn stream_json_for(item: &ConversationItem) -> serde_json::Value {
     serde_json::to_value(StreamRecord::from_conversation_item(item)).unwrap()
 }
 
+fn stream_json_for_with_replay(item: &ConversationItem, replay: ReplaySafety) -> serde_json::Value {
+    serde_json::to_value(StreamRecord::from_conversation_item_with_replay(
+        item,
+        Some(replay),
+    ))
+    .unwrap()
+}
+
 fn session_json_for(item: &ConversationItem) -> serde_json::Value {
     let stream_record = StreamRecord::from_conversation_item(item);
+    let session_record = SessionRecord::from(stream_record);
+    serde_json::to_value(session_record).unwrap()
+}
+
+fn session_json_for_with_replay(
+    item: &ConversationItem,
+    replay: ReplaySafety,
+) -> serde_json::Value {
+    let stream_record = StreamRecord::from_conversation_item_with_replay(item, Some(replay));
     let session_record = SessionRecord::from(stream_record);
     serde_json::to_value(session_record).unwrap()
 }
@@ -779,6 +796,34 @@ fn snapshot_stream_record_json_function_call_output() {
 }
 
 #[test]
+fn snapshot_stream_record_json_function_call_with_replay() {
+    let item = ConversationItem::FunctionCall {
+        id: "fc-1".to_string(),
+        call_id: "call-1".to_string(),
+        name: "Read".to_string(),
+        arguments: r#"{"path":"README.md"}"#.to_string(),
+        timestamp: Some(timestamp_at("2026-05-10T00:00:00Z")),
+    };
+    insta::assert_json_snapshot!(
+        "stream_record_json_function_call_with_replay",
+        stream_json_for_with_replay(&item, ReplaySafety::Safe)
+    );
+}
+
+#[test]
+fn snapshot_session_json_function_call_output_with_replay() {
+    let item = ConversationItem::FunctionCallOutput {
+        call_id: "call-1".to_string(),
+        output: "result".to_string(),
+        timestamp: Some(timestamp_at("2026-05-10T00:00:00Z")),
+    };
+    insta::assert_json_snapshot!(
+        "session_json_function_call_output_with_replay",
+        session_json_for_with_replay(&item, ReplaySafety::Safe)
+    );
+}
+
+#[test]
 fn snapshot_session_json_message_with_id_and_status() {
     let item = ConversationItem::Message {
         role: Role::Assistant,
@@ -831,6 +876,21 @@ fn snapshot_session_json_function_call_output() {
         timestamp: Some(timestamp_at("2026-05-10T00:00:00Z")),
     };
     insta::assert_json_snapshot!("session_json_function_call_output", session_json_for(&item));
+}
+
+#[test]
+fn snapshot_session_json_function_call_with_replay() {
+    let item = ConversationItem::FunctionCall {
+        id: "fc-1".to_string(),
+        call_id: "call-1".to_string(),
+        name: "Read".to_string(),
+        arguments: r#"{"path":"README.md"}"#.to_string(),
+        timestamp: Some(timestamp_at("2026-05-10T00:00:00Z")),
+    };
+    insta::assert_json_snapshot!(
+        "session_json_function_call_with_replay",
+        session_json_for_with_replay(&item, ReplaySafety::Safe)
+    );
 }
 
 #[test]

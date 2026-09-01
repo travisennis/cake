@@ -72,7 +72,9 @@ Session consumers should ignore unknown optional fields. `terminal_class` uses t
 
 Session files are append-only and locked for one writer per invocation. Loading tolerates an interrupted final task without `task_complete`. Unsupported format versions fail explicitly; Cake does not silently rewrite older files.
 
-An interrupted task can leave a `function_call` whose `function_call_output` was never written. Continue, resume, and fork close each such call by appending an ordinary `function_call_output` that records the call as not executed, so the restored history stays valid for providers. Repair appends only; prior bytes are never rewritten, and a history whose pairing is ambiguous fails with a diagnostic instead of being guessed at.
+An interrupted task can leave a `function_call` whose `function_call_output` was never written. Continue, resume, and fork close each such call by appending an ordinary `function_call_output` that records the call as not executed, so the restored history stays valid for providers. Repair appends only; prior bytes are never rewritten, and a history whose pairing is ambiguous fails with a diagnostic instead of being guessed at. Repair does not yet consult replay declarations or re-execute calls.
+
+Live `function_call` and `function_call_output` records may carry an optional `replay` field with the execution-time tool declaration, either `"safe"` or `"never"`. Read is declared `safe`; Bash, Edit, and Write are `never`; toolbox tools default to `never` and may opt into `safe` through their describe manifest. Missing declarations in historical records and synthetic repair outputs are treated as `"never"`. A call is eligible for a future automatic replay only when both its persisted snapshot and the current registry declaration are `"safe"`; this release only records the declaration and does not change repair behavior.
 
 ### Record semantics
 
@@ -150,15 +152,16 @@ A toolbox tool is one executable implementing two actions selected with the `TOO
 
 ### Describe
 
-With `TOOLBOX_ACTION=describe`, the executable prints either JSON or a line-based text description. JSON may use a compact `args` map or a draft 2020-12 `inputSchema` whose top level is an object. Text uses:
+With `TOOLBOX_ACTION=describe`, the executable prints either JSON or a line-based text description. JSON may use a compact `args` map or a draft 2020-12 `inputSchema` whose top level is an object. Both formats accept an optional `replay` declaration (`"safe"` or `"never"`); missing declarations default to `"never"`. Text uses:
 
 ```text
 name: run_tests
 description: Run the project test suite
 path: string? Optional test path
+replay: never
 ```
 
-Names use letters, numbers, `_`, or `-` and are registered as `tb__<name>`. Descriptions run with bounded time and output. Invalid, duplicate, timed-out, or unencodable tools are skipped.
+A `safe` declaration is only a replay hint for future recovery; it does not make a toolbox executable sandboxed or change current repair behavior. Names use letters, numbers, `_`, or `-` and are registered as `tb__<name>`. Descriptions run with bounded time and output. Invalid, duplicate, timed-out, or unencodable tools are skipped.
 
 ### Execute
 

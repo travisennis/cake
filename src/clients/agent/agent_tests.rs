@@ -154,6 +154,7 @@ fn test_toolbox_tool() -> crate::config::toolbox::ToolboxTool {
         parameters: serde_json::json!({ "type": "object", "properties": {} }),
         format: crate::config::toolbox::ToolboxFormat::Json,
         timeout_secs: 60,
+        replay: crate::types::ReplaySafety::Never,
     }
 }
 

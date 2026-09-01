@@ -1,0 +1,13 @@
+---
+source: src/types/session_tests.rs
+expression: "stream_json_for_with_replay(&item, ReplaySafety::Safe)"
+---
+{
+  "arguments": "{\"path\":\"README.md\"}",
+  "call_id": "call-1",
+  "id": "fc-1",
+  "name": "Read",
+  "replay": "safe",
+  "timestamp": "2026-05-10T00:00:00Z",
+  "type": "function_call"
+}

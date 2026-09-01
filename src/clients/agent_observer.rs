@@ -1,4 +1,4 @@
-use crate::types::{ConversationItem, SessionRecord, StreamRecord};
+use crate::types::{ConversationItem, ReplaySafety, SessionRecord, StreamRecord};
 
 type StreamingCallback = Box<dyn Fn(&str) + Send + Sync>;
 type PersistCallback = Box<dyn FnMut(&SessionRecord) -> anyhow::Result<()> + Send + Sync>;
@@ -60,5 +60,15 @@ impl AgentObserver {
 
     pub(super) fn stream_item(&mut self, item: &ConversationItem) -> anyhow::Result<()> {
         self.stream_record(StreamRecord::from_conversation_item(item))
+    }
+
+    pub(super) fn stream_item_with_replay(
+        &mut self,
+        item: &ConversationItem,
+        replay: Option<ReplaySafety>,
+    ) -> anyhow::Result<()> {
+        self.stream_record(StreamRecord::from_conversation_item_with_replay(
+            item, replay,
+        ))
     }
 }

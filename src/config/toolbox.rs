@@ -22,6 +22,8 @@ use std::time::Duration;
 
 use tracing::{debug, warn};
 
+use crate::types::ReplaySafety;
+
 /// Prefix applied to every registered toolbox tool name.
 pub const TOOLBOX_PREFIX: &str = "tb__";
 
@@ -81,6 +83,9 @@ pub struct ToolboxTool {
     /// Execute timeout in seconds (describe `timeout` field, JSON format
     /// only; defaults to [`DEFAULT_EXECUTE_TIMEOUT_SECS`]).
     pub timeout_secs: u64,
+    /// Replay declaration from the describe manifest. Missing declarations
+    /// default to [`ReplaySafety::Never`].
+    pub replay: ReplaySafety,
 }
 
 /// Resolve the ordered list of toolbox directories to scan.
@@ -467,6 +472,7 @@ fn parse_describe_output(stdout: &str, path: &Path) -> Result<ToolboxTool, Strin
         parameters: parsed.parameters,
         format,
         timeout_secs: parsed.timeout_secs.unwrap_or(DEFAULT_EXECUTE_TIMEOUT_SECS),
+        replay: parsed.replay,
     })
 }
 
@@ -484,6 +490,7 @@ struct ParsedDescribe {
     description: String,
     parameters: serde_json::Value,
     timeout_secs: Option<u64>,
+    replay: ReplaySafety,
 }
 
 /// Maximum length of a tool's original name. OpenAI-compatible tool APIs
@@ -521,7 +528,8 @@ fn validate_tool_name(name: &str) -> Result<(), String> {
 /// Supports the compact `args` form (`{"param": ["type", "description"]}`)
 /// and the full `inputSchema` form (a top-level object JSON Schema). A `?`
 /// suffix on a compact-form type marks the parameter optional. An optional
-/// `timeout` field (seconds) overrides the execute timeout.
+/// `timeout` field (seconds) overrides the execute timeout. An optional
+/// `replay` field accepts `"safe"` or `"never"`; it defaults to `"never"`.
 fn parse_json_describe(value: &serde_json::Value) -> Result<ParsedDescribe, String> {
     let object = value
         .as_object()
@@ -544,6 +552,7 @@ fn parse_json_describe(value: &serde_json::Value) -> Result<ParsedDescribe, Stri
                 .ok_or_else(|| "describe 'timeout' must be a positive integer".to_string())?,
         ),
     };
+    let replay = parse_replay_declaration(object.get("replay"))?;
 
     let parameters = if let Some(schema) = object.get("inputSchema") {
         normalize_input_schema(schema)?
@@ -558,7 +567,21 @@ fn parse_json_describe(value: &serde_json::Value) -> Result<ParsedDescribe, Stri
         description,
         parameters,
         timeout_secs,
+        replay,
     })
+}
+
+/// Parse the optional replay declaration shared by toolbox describe formats.
+fn parse_replay_declaration(value: Option<&serde_json::Value>) -> Result<ReplaySafety, String> {
+    match value {
+        None => Ok(ReplaySafety::Never),
+        Some(serde_json::Value::String(value)) => match value.as_str() {
+            "safe" => Ok(ReplaySafety::Safe),
+            "never" => Ok(ReplaySafety::Never),
+            _ => Err("describe 'replay' must be either 'safe' or 'never'".to_string()),
+        },
+        Some(_) => Err("describe 'replay' must be either 'safe' or 'never'".to_string()),
+    }
 }
 
 /// Require the full schema to match the executor's object-only argument
@@ -632,6 +655,7 @@ fn parse_text_describe(stdout: &str) -> Result<ParsedDescribe, String> {
     let mut description_lines: Vec<String> = Vec::new();
     let mut properties = serde_json::Map::new();
     let mut required = Vec::new();
+    let mut replay = ReplaySafety::Never;
 
     for line in stdout.lines() {
         let line = line.trim();
@@ -645,6 +669,10 @@ fn parse_text_describe(stdout: &str) -> Result<ParsedDescribe, String> {
         match key {
             "name" => name = Some(value.to_string()),
             "description" => description_lines.push(value.to_string()),
+            "replay" => {
+                replay =
+                    parse_replay_declaration(Some(&serde_json::Value::String(value.to_string())))?;
+            },
             param => {
                 insert_text_parameter(&mut properties, &mut required, param, value)?;
             },
@@ -657,6 +685,7 @@ fn parse_text_describe(stdout: &str) -> Result<ParsedDescribe, String> {
         description: description_lines.join("\n"),
         parameters: assemble_input_schema(properties, required),
         timeout_secs: None,
+        replay,
     })
 }
 

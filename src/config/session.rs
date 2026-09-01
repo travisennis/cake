@@ -575,11 +575,13 @@ mod tests {
                 name: "bash".to_string(),
                 arguments: r#"{"cmd":"ls"}"#.to_string(),
                 arguments_parse_error: None,
+                replay: None,
                 timestamp: None,
             }),
             SessionRecord::FunctionCallOutput(FunctionCallOutputData {
                 call_id: "call-1".to_string(),
                 output: "file.txt".to_string(),
+                replay: None,
                 timestamp: None,
             }),
             SessionRecord::Reasoning(ReasoningData {
@@ -612,6 +614,7 @@ mod tests {
                 SessionRecord::FunctionCallOutput(FunctionCallOutputData {
                     call_id: "call-1".to_string(),
                     output: "echoed text: Skill 'not-real' activated".to_string(),
+                    replay: None,
                     timestamp: None,
                 }),
                 SessionRecord::SkillActivated {

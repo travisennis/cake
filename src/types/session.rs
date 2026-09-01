@@ -313,6 +313,19 @@ pub struct MessageData {
     pub timestamp: Option<DateTime<Utc>>,
 }
 
+/// Declared safety of replaying a tool call after an interrupted execution.
+///
+/// The declaration is snapshotted in tool-call records. A missing declaration
+/// in a historical record is treated as [`Self::Never`].
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ReplaySafety {
+    /// Re-execution is safe when the current declaration also says `safe`.
+    Safe,
+    /// Re-execution must not happen automatically.
+    Never,
+}
+
 /// Shared data for `FunctionCall` records in both `StreamRecord` and `SessionRecord`.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct FunctionCallData {
@@ -324,6 +337,10 @@ pub struct FunctionCallData {
     /// emitted malformed tool arguments. Present only when parsing fails.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arguments_parse_error: Option<String>,
+    /// Tool replay declaration captured when Cake handled the call. Absent on
+    /// historical records written before replay declarations were added.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay: Option<ReplaySafety>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<DateTime<Utc>>,
 }
@@ -333,6 +350,10 @@ pub struct FunctionCallData {
 pub struct FunctionCallOutputData {
     pub call_id: String,
     pub output: String,
+    /// The replay declaration associated with the tool call that produced this
+    /// output. Synthetic recovery outputs leave this absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay: Option<ReplaySafety>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<DateTime<Utc>>,
 }
@@ -731,8 +752,20 @@ impl From<SessionRecord> for StreamRecord {
 }
 
 impl StreamRecord {
-    /// Convert a `ConversationItem` into its corresponding `StreamRecord` variant.
+    /// Convert a [`ConversationItem`] into its corresponding `StreamRecord`
+    /// variant without a replay declaration.
     pub fn from_conversation_item(item: &ConversationItem) -> Self {
+        Self::from_conversation_item_with_replay(item, None)
+    }
+
+    /// Convert a [`ConversationItem`] into a stream record and attach the
+    /// registry's execution-time replay declaration to tool call/output data.
+    /// The declaration is metadata only and is not part of the provider-facing
+    /// conversation item.
+    pub fn from_conversation_item_with_replay(
+        item: &ConversationItem,
+        replay: Option<ReplaySafety>,
+    ) -> Self {
         match item {
             ConversationItem::Message {
                 role,
@@ -761,6 +794,7 @@ impl StreamRecord {
                 arguments_parse_error: serde_json::from_str::<serde_json::Value>(arguments)
                     .err()
                     .map(|e| e.to_string()),
+                replay,
                 timestamp: *timestamp,
             }),
             ConversationItem::FunctionCallOutput {
@@ -770,6 +804,7 @@ impl StreamRecord {
             } => Self::FunctionCallOutput(FunctionCallOutputData {
                 call_id: call_id.clone(),
                 output: output.clone(),
+                replay,
                 timestamp: *timestamp,
             }),
             ConversationItem::Reasoning {
@@ -833,6 +868,7 @@ impl SessionRecord {
                 name,
                 arguments,
                 arguments_parse_error: _,
+                replay: _,
                 timestamp,
             }) => Some(ConversationItem::FunctionCall {
                 id: id.clone(),
@@ -844,6 +880,7 @@ impl SessionRecord {
             Self::FunctionCallOutput(FunctionCallOutputData {
                 call_id,
                 output,
+                replay: _,
                 timestamp,
             }) => Some(ConversationItem::FunctionCallOutput {
                 call_id: call_id.clone(),
