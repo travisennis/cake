@@ -297,6 +297,17 @@ fn text_format_replay_declaration_is_parsed() {
 }
 
 #[test]
+fn text_format_replay_parameter_remains_compatible() {
+    let tool = parse("name: inspect\nreplay: string Replay token\n").unwrap();
+    assert_eq!(
+        tool.parameters["properties"]["replay"],
+        serde_json::json!({ "type": "string", "description": "Replay token" })
+    );
+    assert_eq!(tool.parameters["required"], serde_json::json!(["replay"]));
+    assert_eq!(tool.replay, crate::types::ReplaySafety::Never);
+}
+
+#[test]
 fn text_format_param_without_explicit_type_rejected() {
     let err = parse("name: t\npattern: the filter to use").unwrap_err();
     assert!(err.contains("unsupported type"), "unexpected error: {err}");

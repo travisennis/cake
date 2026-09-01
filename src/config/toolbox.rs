@@ -669,9 +669,16 @@ fn parse_text_describe(stdout: &str) -> Result<ParsedDescribe, String> {
         match key {
             "name" => name = Some(value.to_string()),
             "description" => description_lines.push(value.to_string()),
-            "replay" => {
+            // `replay` became metadata in this protocol, but preserve the
+            // pre-existing ability to declare a text parameter with that
+            // name. Only the two exact declaration values are metadata;
+            // every other value retains the parameter grammar.
+            "replay" if matches!(value, "safe" | "never") => {
                 replay =
                     parse_replay_declaration(Some(&serde_json::Value::String(value.to_string())))?;
+            },
+            "replay" => {
+                insert_text_parameter(&mut properties, &mut required, key, value)?;
             },
             param => {
                 insert_text_parameter(&mut properties, &mut required, param, value)?;

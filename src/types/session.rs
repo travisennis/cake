@@ -326,6 +326,25 @@ pub enum ReplaySafety {
     Never,
 }
 
+/// Decode a persisted replay declaration conservatively. Session files may be
+/// produced by a newer Cake version, so an unknown or malformed value must not
+/// make an otherwise usable history unloadable; it is equivalent to an absent
+/// declaration and therefore fails closed as `never`.
+fn deserialize_replay_safety<'de, D>(deserializer: D) -> Result<Option<ReplaySafety>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(match value {
+        Some(serde_json::Value::String(value)) => match value.as_str() {
+            "safe" => Some(ReplaySafety::Safe),
+            "never" => Some(ReplaySafety::Never),
+            _ => None,
+        },
+        _ => None,
+    })
+}
+
 /// Shared data for `FunctionCall` records in both `StreamRecord` and `SessionRecord`.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct FunctionCallData {
@@ -339,7 +358,11 @@ pub struct FunctionCallData {
     pub arguments_parse_error: Option<String>,
     /// Tool replay declaration captured when Cake handled the call. Absent on
     /// historical records written before replay declarations were added.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_replay_safety",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub replay: Option<ReplaySafety>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<DateTime<Utc>>,
@@ -352,7 +375,11 @@ pub struct FunctionCallOutputData {
     pub output: String,
     /// The replay declaration associated with the tool call that produced this
     /// output. Synthetic recovery outputs leave this absent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_replay_safety",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub replay: Option<ReplaySafety>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<DateTime<Utc>>,

@@ -546,6 +546,52 @@ fn reasoning_without_summary_omits_summary_and_roundtrips() {
 }
 
 #[test]
+fn unknown_persisted_replay_declarations_fail_closed() {
+    let function_call: SessionRecord = serde_json::from_value(serde_json::json!({
+        "type": "function_call",
+        "id": "fc-1",
+        "call_id": "call-1",
+        "name": "Read",
+        "arguments": "{}",
+        "replay": "future-value"
+    }))
+    .unwrap();
+    let SessionRecord::FunctionCall(data) = function_call else {
+        panic!("expected function call record");
+    };
+    assert_eq!(data.replay, None);
+
+    let function_call_output: SessionRecord = serde_json::from_value(serde_json::json!({
+        "type": "function_call_output",
+        "call_id": "call-1",
+        "output": "result",
+        "replay": { "unexpected": true }
+    }))
+    .unwrap();
+    let SessionRecord::FunctionCallOutput(data) = function_call_output else {
+        panic!("expected function call output record");
+    };
+    assert_eq!(data.replay, None);
+}
+
+#[test]
+fn unknown_stream_replay_declaration_fails_closed() {
+    let record: StreamRecord = serde_json::from_value(serde_json::json!({
+        "type": "function_call",
+        "id": "fc-1",
+        "call_id": "call-1",
+        "name": "Read",
+        "arguments": "{}",
+        "replay": "future-value"
+    }))
+    .unwrap();
+    let StreamRecord::FunctionCall(data) = record else {
+        panic!("expected function call stream record");
+    };
+    assert_eq!(data.replay, None);
+}
+
+#[test]
 fn stream_record_json_function_call() {
     let item = ConversationItem::FunctionCall {
         id: "fc-1".to_string(),
