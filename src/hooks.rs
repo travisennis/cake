@@ -3,12 +3,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
+use tokio::sync::Semaphore;
 use tokio::time::timeout;
 
+use crate::concurrency::MAX_CONCURRENT_AGENT_OPERATIONS;
 use crate::config::hooks::{HookCommand, HookEvent, HookSource, LoadedHooks};
 use crate::config::settings::DEFAULT_HOOK_OUTPUT_LIMIT;
 use crate::types::{HookEventData, StreamRecord};
@@ -17,6 +20,10 @@ use crate::types::{HookEventData, StreamRecord};
 pub struct HookRunner {
     loaded: LoadedHooks,
     context: HookContext,
+    /// Per-runner semaphore shared by cloned runners and all lifecycle/tool
+    /// events, so concurrent tool calls cannot each create a separate hook
+    /// subprocess batch.
+    hook_semaphore: Arc<Semaphore>,
     /// Per-hook stdout/stderr byte cap from `[limits] hook_output_limit`;
     /// `None` means unlimited.
     output_limit: Option<usize>,
@@ -228,10 +235,11 @@ impl ToolHookMetadata {
 }
 
 impl HookRunner {
-    pub const fn new(loaded: LoadedHooks, context: HookContext) -> Self {
+    pub fn new(loaded: LoadedHooks, context: HookContext) -> Self {
         Self {
             loaded,
             context,
+            hook_semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_AGENT_OPERATIONS)),
             output_limit: Some(DEFAULT_HOOK_OUTPUT_LIMIT as usize),
         }
     }
@@ -431,16 +439,33 @@ impl HookRunner {
             }
         }
 
-        let futures = commands.into_iter().map(|command| {
+        let semaphore = Arc::clone(&self.hook_semaphore);
+        let futures = commands.into_iter().enumerate().map(|(index, command)| {
             let payload = payload.clone();
             let cwd = self.context.cwd.clone();
             let output_limit = self.output_limit;
-            async move { run_command_hook(command, payload, cwd, output_limit).await }
+            let semaphore = Arc::clone(&semaphore);
+            async move {
+                let _permit = semaphore
+                    .acquire_owned()
+                    .await
+                    .context("hook concurrency limiter closed unexpectedly")?;
+                anyhow::Ok((
+                    index,
+                    run_command_hook(command, payload, cwd, output_limit).await,
+                ))
+            }
         });
-        let outcomes = futures::future::join_all(futures).await;
+        let mut outcomes = futures::stream::iter(futures)
+            .buffer_unordered(MAX_CONCURRENT_AGENT_OPERATIONS)
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        outcomes.sort_unstable_by_key(|(index, _)| *index);
 
         let mut aggregated = AggregatedHookResult::default();
-        for outcome in outcomes {
+        for (_, outcome) in outcomes {
             self.record_outcome(event, source, tool_metadata.as_ref(), &outcome);
 
             match &outcome.status {
