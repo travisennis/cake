@@ -38,7 +38,8 @@ pub fn schedule_tool_calls(
     context: &ToolContext,
     tool_plans: Vec<(String, String, ToolHookPlan)>,
 ) -> Vec<Vec<ScheduledToolCall>> {
-    let mut groups: Vec<Vec<ScheduledToolCall>> = Vec::new();
+    let expected_groups = tool_plans.len();
+    let mut groups: Vec<Vec<ScheduledToolCall>> = Vec::with_capacity(expected_groups);
     let mut mutating_path_groups: HashMap<PathBuf, usize> = HashMap::new();
 
     for (index, (call_id, name, plan)) in tool_plans.into_iter().enumerate() {
