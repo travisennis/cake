@@ -347,6 +347,15 @@ impl HookRunner {
         })
     }
 
+    /// Whether this runner has a matching post-tool hook for the tool.
+    pub fn has_matching_post_tool_hook(&self, tool_name: &str) -> bool {
+        self.loaded
+            .has_matching_tool_hook(HookEvent::PostToolUse, tool_name)
+            || self
+                .loaded
+                .has_matching_tool_hook(HookEvent::PostToolUseFailure, tool_name)
+    }
+
     pub async fn post_tool_use(
         &self,
         tool_name: &str,

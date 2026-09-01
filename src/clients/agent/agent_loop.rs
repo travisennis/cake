@@ -6,8 +6,8 @@ use crate::clients::agent::{Agent, TurnResult, record_turn_usage};
 use crate::clients::backend::FinalOutputConstraint;
 use crate::clients::retry::{RequestOverrides, RetryReason, RetryStatus};
 use crate::clients::tools::{
-    ScheduledToolCall, Tool, ToolRegistry, argument_compensation_events, read_extract_path,
-    schedule_tool_calls,
+    ScheduledToolCall, Tool, ToolError, ToolRegistry, ToolResult, argument_compensation_events,
+    read_extract_path, schedule_tool_calls,
 };
 use crate::config::output_schema::{OutputSchema, OutputSchemaError};
 use crate::hooks::{HookRunner, ToolHookPlan};
@@ -475,13 +475,16 @@ impl Agent {
         &self,
         tool_plans: Vec<(String, String, ToolHookPlan)>,
     ) -> Vec<ToolRunResult> {
+        let expected_results = tool_plans.len();
         let groups = schedule_tool_calls(&self.tools, self.tool_context.as_ref(), tool_plans);
         let group_futures = groups.into_iter().map(|group| self.run_group(group));
-        let mut results: Vec<(usize, ToolRunResult)> = futures::future::join_all(group_futures)
-            .await
-            .into_iter()
-            .flatten()
-            .collect();
+        let mut results = Vec::with_capacity(expected_results);
+        results.extend(
+            futures::future::join_all(group_futures)
+                .await
+                .into_iter()
+                .flatten(),
+        );
         results.sort_unstable_by_key(|(index, _)| *index);
         results.into_iter().map(|(_, result)| result).collect()
     }
@@ -535,18 +538,13 @@ impl Agent {
                     .tools
                     .execute(Arc::clone(&self.tool_context), &name, &call_id, &arguments)
                     .await;
-                let hook_result = result
-                    .as_ref()
-                    .map(|result| result.output.clone())
-                    .map_err(|error| error.message.clone());
-
-                let post_context = post_tool_context(
+                let post_context = post_tool_context_for_result(
                     self.hook_runner.as_ref(),
-                    self.tools.repairs_arguments(&name),
+                    &self.tools,
                     &name,
                     &call_id,
                     &arguments,
-                    &hook_result,
+                    &result,
                 )
                 .await;
 
@@ -582,7 +580,7 @@ impl Agent {
                 let skill_activation = if was_error {
                     None
                 } else {
-                    detect_skill_activation(
+                    detect_skill_activation_if_configured(
                         &name,
                         &arguments,
                         &self.skill_locations,
@@ -873,22 +871,21 @@ impl Agent {
     }
 
     fn function_calls_from_items(items: &[ConversationItem]) -> Vec<FunctionCall> {
-        items
-            .iter()
-            .filter_map(|item| {
-                if let ConversationItem::FunctionCall {
-                    call_id,
-                    name,
-                    arguments,
-                    ..
-                } = item
-                {
-                    Some((call_id.clone(), name.clone(), arguments.clone()))
-                } else {
-                    None
-                }
-            })
-            .collect()
+        let mut calls = Vec::with_capacity(items.len());
+        calls.extend(items.iter().filter_map(|item| {
+            if let ConversationItem::FunctionCall {
+                call_id,
+                name,
+                arguments,
+                ..
+            } = item
+            {
+                Some((call_id.clone(), name.clone(), arguments.clone()))
+            } else {
+                None
+            }
+        }));
+        calls
     }
 
     fn stream_turn_items(&mut self, items: &[ConversationItem]) -> anyhow::Result<()> {
@@ -962,6 +959,34 @@ fn append_hook_context(mut output: String, contexts: &[String]) -> String {
     output
 }
 
+/// Prepare the post-tool hook payload only when a post-tool hook exists.
+///
+/// Successful tool output is otherwise already owned by the caller, so copying
+/// it just to pass an unused hook result would add one allocation per call.
+async fn post_tool_context_for_result(
+    hook_runner: Option<&Arc<HookRunner>>,
+    tools: &ToolRegistry,
+    name: &str,
+    call_id: &str,
+    arguments: &str,
+    result: &Result<ToolResult, ToolError>,
+) -> Option<String> {
+    let runner = hook_runner.filter(|runner| runner.has_matching_post_tool_hook(name))?;
+    let hook_result = result
+        .as_ref()
+        .map(|result| result.output.clone())
+        .map_err(|error| error.message.clone());
+    post_tool_context(
+        Some(runner),
+        tools.repairs_arguments(name),
+        name,
+        call_id,
+        arguments,
+        &hook_result,
+    )
+    .await
+}
+
 async fn post_tool_context(
     hook_runner: Option<&Arc<HookRunner>>,
     repairs_arguments: bool,
@@ -987,6 +1012,19 @@ async fn post_tool_context(
             None
         },
     }
+}
+
+/// Skip the skill activation probe entirely when no skills were discovered.
+fn detect_skill_activation_if_configured(
+    name: &str,
+    arguments: &str,
+    skill_locations: &std::collections::HashMap<PathBuf, crate::config::skills::Skill>,
+    activated_skills: &std::sync::Mutex<std::collections::HashSet<String>>,
+) -> Option<SkillActivation> {
+    if skill_locations.is_empty() {
+        return None;
+    }
+    detect_skill_activation(name, arguments, skill_locations, activated_skills)
 }
 
 /// Check whether a just-executed tool call targeted a known SKILL.md path and,
@@ -1336,6 +1374,29 @@ mod helper_tests {
                 .contains("Hook blocked tool execution: not allowed")
         );
         assert!(blocked.output.contains("block context"));
+    }
+
+    #[tokio::test]
+    async fn post_tool_context_skips_nonmatching_hook_configuration() {
+        let runner = hook_runner(HookEvent::PreToolUse, "exit 1", true);
+        let result = ToolResult {
+            output: "tool output".to_string(),
+            compensation_events: Vec::new(),
+        };
+        let agent = test_agent().with_hook_runner(Arc::clone(&runner));
+
+        assert_eq!(
+            post_tool_context_for_result(
+                Some(&runner),
+                &agent.tools,
+                "Read",
+                "call-1",
+                "{}",
+                &Ok(result),
+            )
+            .await,
+            None
+        );
     }
 
     #[tokio::test]

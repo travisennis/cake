@@ -27,6 +27,14 @@ impl LoadedHooks {
             .filter(|group| group.event == event && group.matcher.matches(source))
             .collect()
     }
+
+    /// Whether a tool event has at least one configured matching hook.
+    pub fn has_matching_tool_hook(&self, event: HookEvent, tool_name: &str) -> bool {
+        let source = HookSource::Tool(tool_name.to_owned());
+        self.groups
+            .iter()
+            .any(|group| group.event == event && group.matcher.matches(&source))
+    }
 }
 
 #[derive(Debug, Clone)]
