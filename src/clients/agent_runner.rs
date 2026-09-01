@@ -1,5 +1,6 @@
 use std::time::{Duration, Instant};
 
+use chrono::{DateTime, Utc};
 use tokio::time::sleep;
 use tracing::debug;
 
@@ -12,15 +13,23 @@ use crate::clients::retry::{self, HttpFailure, RequestOverrides, RetryPolicy, Re
 use crate::clients::tools::Tool;
 use crate::config::model::ResolvedModelConfig;
 use crate::session_telemetry::{
-    AgentRunnerTelemetryEvent, ApiAttemptTelemetry, CompensationEventTelemetry, CompensationKind,
-    RequestOverridesSnapshot, RetryScheduledTelemetry,
+    AgentRunnerTelemetryEvent, ApiAttemptInFlightTelemetry, ApiAttemptPhase, ApiAttemptTelemetry,
+    CompensationEventTelemetry, CompensationKind, RequestOverridesSnapshot,
+    RetryScheduledTelemetry,
 };
 use crate::types::{ApiAttemptTerminalClass, ConversationItem, Usage};
 
 pub(super) fn build_http_client(disable_connection_reuse: bool) -> reqwest::Client {
+    build_http_client_with_timeout(disable_connection_reuse, Duration::from_mins(5))
+}
+
+fn build_http_client_with_timeout(
+    disable_connection_reuse: bool,
+    timeout: Duration,
+) -> reqwest::Client {
     let mut builder = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_mins(5));
+        .timeout(timeout);
 
     if disable_connection_reuse {
         builder = builder.pool_max_idle_per_host(0);
@@ -47,6 +56,158 @@ enum AttemptResult {
     Terminal(anyhow::Error),
 }
 
+/// Emits a bounded start/phase record immediately and closes the attempt when
+/// the provider operation finishes or is cancelled.
+struct InFlightAttempt<'a, F: FnMut(AgentRunnerTelemetryEvent)> {
+    reporter: &'a mut F,
+    task_id: String,
+    turn_index: u32,
+    attempt: u32,
+    provider: Option<crate::config::model::ModelProvider>,
+    model: String,
+    started_at: DateTime<Utc>,
+    total_start: Instant,
+    request_start: Instant,
+    request_ms: Option<u64>,
+    parse_start: Option<Instant>,
+    phase: ApiAttemptPhase,
+    status_code: Option<u16>,
+    history_items: usize,
+    request_overrides: RequestOverridesSnapshot,
+    closed: bool,
+}
+
+impl<'a, F: FnMut(AgentRunnerTelemetryEvent)> InFlightAttempt<'a, F> {
+    fn new(
+        reporter: &'a mut F,
+        task_id: uuid::Uuid,
+        config: &ResolvedModelConfig,
+        turn_index: u32,
+        attempt: u32,
+        history_items: usize,
+        request_overrides: &RequestOverrides,
+    ) -> Self {
+        let started_at = Utc::now();
+        let total_start = Instant::now();
+        let request_start = Instant::now();
+        let mut attempt = Self {
+            reporter,
+            task_id: task_id.to_string(),
+            turn_index,
+            attempt,
+            provider: crate::clients::provider_strategy::ProviderStrategy::from_config(config)
+                .provider(),
+            model: config.model_config.model.clone(),
+            started_at,
+            total_start,
+            request_start,
+            request_ms: None,
+            parse_start: None,
+            phase: ApiAttemptPhase::AwaitingHeaders,
+            status_code: None,
+            history_items,
+            request_overrides: RequestOverridesSnapshot::from(request_overrides),
+            closed: false,
+        };
+        attempt.report_in_flight();
+        // Keep provider timing separate from the synchronous telemetry write.
+        let operation_start = Instant::now();
+        attempt.total_start = operation_start;
+        attempt.request_start = operation_start;
+        attempt
+    }
+
+    fn report_in_flight(&mut self) {
+        (self.reporter)(AgentRunnerTelemetryEvent::ApiAttemptInFlight(
+            ApiAttemptInFlightTelemetry {
+                task_id: self.task_id.clone(),
+                turn_index: self.turn_index,
+                attempt: self.attempt,
+                provider: self.provider,
+                model: self.model.clone(),
+                started_at: self.started_at,
+                phase: self.phase,
+                status_code: self.status_code,
+            },
+        ));
+    }
+
+    fn headers_received(&mut self, status_code: u16, request_ms: u64) {
+        self.request_ms = Some(request_ms);
+        self.status_code = Some(status_code);
+        self.phase = ApiAttemptPhase::ReadingBody;
+        // The phase record is synchronous so it must be removed from the
+        // provider's total duration as well as from body parsing time.
+        let telemetry_start = Instant::now();
+        self.report_in_flight();
+        if let Some(total_start) = self.total_start.checked_add(telemetry_start.elapsed()) {
+            self.total_start = total_start;
+        }
+        // The body timer begins after the phase update has been persisted, so
+        // telemetry I/O is not attributed to provider response parsing.
+        self.parse_start = Some(Instant::now());
+    }
+
+    fn request_ms(&self) -> u64 {
+        self.request_ms
+            .unwrap_or_else(|| elapsed_ms(self.request_start))
+    }
+
+    fn parse_ms(&self) -> u64 {
+        self.parse_start.map_or(0, elapsed_ms)
+    }
+
+    fn total_ms(&self) -> u64 {
+        elapsed_ms(self.total_start)
+    }
+
+    fn finish(&mut self, attempt: ApiAttemptTelemetry) {
+        self.closed = true;
+        (self.reporter)(AgentRunnerTelemetryEvent::ApiAttempt(attempt));
+    }
+
+    fn report(&mut self, event: AgentRunnerTelemetryEvent) {
+        (self.reporter)(event);
+    }
+}
+
+impl<F: FnMut(AgentRunnerTelemetryEvent)> Drop for InFlightAttempt<'_, F> {
+    fn drop(&mut self) {
+        if self.closed {
+            return;
+        }
+
+        let phase = self.phase;
+        let request_ms = self.request_ms();
+        let parse_ms = self.parse_ms();
+        let total_ms = self.total_ms();
+        let history_items = self.history_items;
+        let status_code = self.status_code;
+        let request_overrides = self.request_overrides.clone();
+        self.closed = true;
+        (self.reporter)(AgentRunnerTelemetryEvent::ApiAttempt(ApiAttemptTelemetry {
+            turn_index: self.turn_index,
+            attempt: self.attempt,
+            request_ms,
+            parse_ms,
+            total_ms,
+            history_items,
+            status_code,
+            error: Some(format!(
+                "provider attempt cancelled while {}",
+                phase.as_str()
+            )),
+            usage: None,
+            termination: None,
+            terminal_class: Some(ApiAttemptTerminalClass::Cancelled),
+            provider_request_id: None,
+            responses_failed: None,
+            phase: Some(phase),
+            request_overrides,
+        }));
+    }
+}
+
 impl AgentRunner {
     pub(super) fn new(backend: Backend) -> Self {
         Self {
@@ -54,6 +215,11 @@ impl AgentRunner {
             client: build_http_client(false),
             retry_policy: RetryPolicy::default(),
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_request_timeout(&mut self, timeout: Duration) {
+        self.client = build_http_client_with_timeout(false, timeout);
     }
 
     #[expect(
@@ -64,6 +230,7 @@ impl AgentRunner {
         &self,
         config: &ResolvedModelConfig,
         session_id: uuid::Uuid,
+        task_id: uuid::Uuid,
         turn_index: u32,
         history: &'a [ConversationItem],
         tools: &'a [Tool],
@@ -86,8 +253,15 @@ impl AgentRunner {
         let mut client = self.client.clone();
 
         loop {
-            let total_start = Instant::now();
-            let request_start = Instant::now();
+            let mut in_flight = InFlightAttempt::new(
+                &mut report_telemetry,
+                task_id,
+                config,
+                turn_index,
+                attempt,
+                history.len(),
+                &request_overrides,
+            );
             let request_result = self
                 .backend
                 .send_request(
@@ -99,23 +273,19 @@ impl AgentRunner {
                     constraint,
                 )
                 .await;
-            let request_ms = elapsed_ms(request_start);
+            let request_ms = in_flight.request_ms();
 
             let outcome = match request_result {
                 Ok(response) => {
                     let status_code = response.status().as_u16();
+                    in_flight.headers_received(status_code, request_ms);
                     if response.status().is_success() {
                         self.handle_success_response(
                             response,
                             session_id,
                             turn_index,
-                            attempt,
-                            request_ms,
-                            total_start,
-                            history.len(),
-                            status_code,
+                            &mut in_flight,
                             &request_overrides,
-                            &mut report_telemetry,
                             &mut settle_usage,
                         )
                         .await
@@ -125,13 +295,8 @@ impl AgentRunner {
                             config,
                             session_id,
                             turn_index,
-                            attempt,
-                            request_ms,
-                            total_start,
-                            history.len(),
-                            status_code,
+                            &mut in_flight,
                             &mut request_overrides,
-                            &mut report_telemetry,
                             &mut settle_usage,
                         )
                         .await
@@ -142,14 +307,10 @@ impl AgentRunner {
                         error,
                         session_id,
                         turn_index,
-                        attempt,
-                        request_ms,
-                        total_start,
-                        history.len(),
+                        &mut in_flight,
                         &mut client,
                         &mut disable_connection_reuse,
                         &mut request_overrides,
-                        &mut report_telemetry,
                     )
                     .await
                 },
@@ -174,37 +335,34 @@ impl AgentRunner {
     /// Parse an accepted 2xx provider body, record per-attempt telemetry, and
     /// either return the completed turn, schedule a retry for a transient
     /// `response.failed`, or surface the terminal parse error.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "one turn phase threads identity, timing, attempt, and telemetry"
-    )]
-    async fn handle_success_response(
+    async fn handle_success_response<F>(
         &self,
         response: reqwest::Response,
         session_id: uuid::Uuid,
         turn_index: u32,
-        attempt: u32,
-        request_ms: u64,
-        total_start: Instant,
-        history_items: usize,
-        status_code: u16,
+        in_flight: &mut InFlightAttempt<'_, F>,
         request_overrides: &RequestOverrides,
-        report_telemetry: &mut impl FnMut(AgentRunnerTelemetryEvent),
         settle_usage: &mut impl FnMut(TurnUsageSettlement),
-    ) -> AttemptResult {
-        let parse_start = Instant::now();
+    ) -> AttemptResult
+    where
+        F: FnMut(AgentRunnerTelemetryEvent),
+    {
         let parse_result = self.backend.parse_response(response).await;
-        let parse_ms = elapsed_ms(parse_start);
-        let total_ms = elapsed_ms(total_start);
+        let parse_ms = in_flight.parse_ms();
+        let total_ms = in_flight.total_ms();
 
         let failed = parse_result
             .as_ref()
             .err()
             .and_then(|error| error.downcast_ref::<ResponsesStreamFailed>());
-        let terminal_class = match (parse_result.is_ok(), failed.is_some()) {
-            (true, _) => ApiAttemptTerminalClass::Completed,
-            (false, true) => ApiAttemptTerminalClass::ResponseFailed,
-            (false, false) => ApiAttemptTerminalClass::BodyParse,
+        let terminal_class = if parse_result.as_ref().err().is_some_and(error_is_timeout) {
+            ApiAttemptTerminalClass::Timeout
+        } else {
+            match (parse_result.is_ok(), failed.is_some()) {
+                (true, _) => ApiAttemptTerminalClass::Completed,
+                (false, true) => ApiAttemptTerminalClass::ResponseFailed,
+                (false, false) => ApiAttemptTerminalClass::BodyParse,
+            }
         };
         let provider_request_id = parse_result
             .as_ref()
@@ -221,23 +379,28 @@ impl AgentRunner {
             .as_ref()
             .err()
             .map(|error| format!("{error:#}"));
+        let attempt = in_flight.attempt;
+        let request_ms = in_flight.request_ms();
+        let status_code = in_flight.status_code;
+        let phase = Some(in_flight.phase);
 
-        report_telemetry(AgentRunnerTelemetryEvent::ApiAttempt(ApiAttemptTelemetry {
+        in_flight.finish(ApiAttemptTelemetry {
             turn_index,
-            attempt,
+            attempt: in_flight.attempt,
             request_ms,
             parse_ms,
             total_ms,
-            history_items,
-            status_code: Some(status_code),
+            history_items: in_flight.history_items,
+            status_code,
             error,
             usage,
             termination,
             terminal_class: Some(terminal_class),
             provider_request_id,
             responses_failed,
+            phase,
             request_overrides: RequestOverridesSnapshot::from(request_overrides),
-        }));
+        });
 
         if let Some(usage) = usage {
             settle_usage(TurnUsageSettlement {
@@ -255,9 +418,8 @@ impl AgentRunner {
                     parse_error,
                     session_id,
                     turn_index,
-                    attempt,
+                    in_flight,
                     request_overrides,
-                    report_telemetry,
                 )
                 .await
             {
@@ -271,15 +433,17 @@ impl AgentRunner {
     /// 2xx. Retries a transient `server_error` under the bounded retry/deadline
     /// policy, or returns the error when the failure is semantic (auth,
     /// invalid-request, quota, context, policy) or retries are exhausted.
-    async fn recover_response_failed(
+    async fn recover_response_failed<F>(
         &self,
         parse_error: anyhow::Error,
         session_id: uuid::Uuid,
         turn_index: u32,
-        attempt: u32,
+        in_flight: &mut InFlightAttempt<'_, F>,
         request_overrides: &RequestOverrides,
-        report_telemetry: &mut impl FnMut(AgentRunnerTelemetryEvent),
-    ) -> Result<(), anyhow::Error> {
+    ) -> Result<(), anyhow::Error>
+    where
+        F: FnMut(AgentRunnerTelemetryEvent),
+    {
         let Some(failed) = parse_error.downcast_ref::<ResponsesStreamFailed>() else {
             return Err(parse_error);
         };
@@ -287,11 +451,11 @@ impl AgentRunner {
             &self.retry_policy,
             failed.metadata().error_code.as_deref(),
             failed.metadata().error_type.as_deref(),
-            attempt,
+            in_flight.attempt,
             session_id,
         ) {
             retry::RetryDecision::Retry { status } => {
-                report_telemetry(AgentRunnerTelemetryEvent::RetryScheduled(
+                in_flight.report(AgentRunnerTelemetryEvent::RetryScheduled(
                     RetryScheduledTelemetry::from_status(
                         &status,
                         turn_index,
@@ -315,50 +479,64 @@ impl AgentRunner {
         clippy::too_many_arguments,
         reason = "the HTTP-failure phase threads identity, timing, attempt, and telemetry"
     )]
-    async fn handle_http_failure(
+    async fn handle_http_failure<F>(
         &self,
         response: reqwest::Response,
         config: &ResolvedModelConfig,
         session_id: uuid::Uuid,
         turn_index: u32,
-        attempt: u32,
-        request_ms: u64,
-        total_start: Instant,
-        history_items: usize,
-        status_code: u16,
+        in_flight: &mut InFlightAttempt<'_, F>,
         request_overrides: &mut RequestOverrides,
-        report_telemetry: &mut impl FnMut(AgentRunnerTelemetryEvent),
         settle_usage: &mut impl FnMut(TurnUsageSettlement),
-    ) -> AttemptResult {
+    ) -> AttemptResult
+    where
+        F: FnMut(AgentRunnerTelemetryEvent),
+    {
         let headers = response.headers().clone();
-        let body = response.text().await.unwrap_or_default();
+        let body_result = response.text().await;
+        let (body, body_error) = match body_result {
+            Ok(body) => (body, None),
+            Err(error) => (String::new(), Some(error)),
+        };
         let failure = HttpFailure {
-            status: status_code,
+            status: in_flight.status_code.unwrap_or_default(),
             headers,
             body,
         };
         let usage = self.backend.reported_usage(failure.body.as_bytes());
-        report_telemetry(AgentRunnerTelemetryEvent::ApiAttempt(ApiAttemptTelemetry {
+        let terminal_class = body_error
+            .as_ref()
+            .map_or(ApiAttemptTerminalClass::Http, |error| {
+                if error.is_timeout() {
+                    ApiAttemptTerminalClass::Timeout
+                } else {
+                    ApiAttemptTerminalClass::Http
+                }
+            });
+        let error = format!("{} {}", failure.status, failure.body);
+        let attempt = in_flight.attempt;
+        in_flight.finish(ApiAttemptTelemetry {
             turn_index,
             attempt,
-            request_ms,
+            request_ms: in_flight.request_ms(),
             parse_ms: 0,
-            total_ms: elapsed_ms(total_start),
-            history_items,
-            status_code: Some(status_code),
-            error: Some(format!("{} {}", failure.status, failure.body)),
+            total_ms: in_flight.total_ms(),
+            history_items: in_flight.history_items,
+            status_code: in_flight.status_code,
+            error: Some(error),
             usage,
             termination: None,
-            terminal_class: Some(ApiAttemptTerminalClass::Http),
+            terminal_class: Some(terminal_class),
             provider_request_id: None,
             responses_failed: None,
+            phase: Some(in_flight.phase),
             request_overrides: RequestOverridesSnapshot::from(&*request_overrides),
-        }));
+        });
         if let Some(usage) = usage {
             settle_usage(TurnUsageSettlement {
                 turn_index,
                 attempt,
-                terminal_class: ApiAttemptTerminalClass::Http,
+                terminal_class,
                 usage,
             });
         }
@@ -371,7 +549,7 @@ impl AgentRunner {
             request_overrides,
         ) {
             retry::RetryDecision::Retry { status } => {
-                report_telemetry(AgentRunnerTelemetryEvent::RetryScheduled(
+                in_flight.report(AgentRunnerTelemetryEvent::RetryScheduled(
                     RetryScheduledTelemetry::from_status(
                         &status,
                         turn_index,
@@ -383,10 +561,10 @@ impl AgentRunner {
                 AttemptResult::RetryNeeded
             },
             retry::RetryDecision::RetryWithOverrides { status, overrides } => {
-                report_telemetry(AgentRunnerTelemetryEvent::RetryScheduled(
+                in_flight.report(AgentRunnerTelemetryEvent::RetryScheduled(
                     RetryScheduledTelemetry::from_status(&status, turn_index, true, &overrides),
                 ));
-                report_telemetry(AgentRunnerTelemetryEvent::Compensation(
+                in_flight.report(AgentRunnerTelemetryEvent::Compensation(
                     CompensationEventTelemetry::new(CompensationKind::ContextOverflowRetry, None),
                 ));
                 *request_overrides = overrides;
@@ -404,22 +582,21 @@ impl AgentRunner {
     /// or return the error as terminal.
     #[expect(
         clippy::too_many_arguments,
-        reason = "the transport-failure phase threads identity, timing, and telemetry"
+        reason = "the transport-failure phase threads identity, timing, attempt, and telemetry"
     )]
-    async fn handle_transport_error(
+    async fn handle_transport_error<F>(
         &self,
         error: anyhow::Error,
         session_id: uuid::Uuid,
         turn_index: u32,
-        attempt: u32,
-        request_ms: u64,
-        total_start: Instant,
-        history_items: usize,
+        in_flight: &mut InFlightAttempt<'_, F>,
         client: &mut reqwest::Client,
         disable_connection_reuse: &mut bool,
         request_overrides: &mut RequestOverrides,
-        report_telemetry: &mut impl FnMut(AgentRunnerTelemetryEvent),
-    ) -> AttemptResult {
+    ) -> AttemptResult
+    where
+        F: FnMut(AgentRunnerTelemetryEvent),
+    {
         let error_detail = format!("{error:#}");
         debug!(
             target: "cake",
@@ -427,22 +604,29 @@ impl AgentRunner {
             "API request failed before receiving an HTTP response"
         );
 
-        report_telemetry(AgentRunnerTelemetryEvent::ApiAttempt(ApiAttemptTelemetry {
+        let terminal_class = if error_is_timeout(&error) {
+            ApiAttemptTerminalClass::Timeout
+        } else {
+            ApiAttemptTerminalClass::Transport
+        };
+        let attempt = in_flight.attempt;
+        in_flight.finish(ApiAttemptTelemetry {
             turn_index,
             attempt,
-            request_ms,
+            request_ms: in_flight.request_ms(),
             parse_ms: 0,
-            total_ms: elapsed_ms(total_start),
-            history_items,
+            total_ms: in_flight.total_ms(),
+            history_items: in_flight.history_items,
             status_code: None,
             error: Some(error_detail),
             usage: None,
             termination: None,
-            terminal_class: Some(ApiAttemptTerminalClass::Transport),
+            terminal_class: Some(terminal_class),
             provider_request_id: None,
             responses_failed: None,
+            phase: Some(in_flight.phase),
             request_overrides: RequestOverridesSnapshot::from(&*request_overrides),
-        }));
+        });
 
         match retry::classify_transport_error(&self.retry_policy, &error, attempt, session_id) {
             retry::RetryDecision::Retry { status } => {
@@ -452,7 +636,7 @@ impl AgentRunner {
                     *client = build_http_client(true);
                     *disable_connection_reuse = true;
                 }
-                report_telemetry(AgentRunnerTelemetryEvent::RetryScheduled(
+                in_flight.report(AgentRunnerTelemetryEvent::RetryScheduled(
                     RetryScheduledTelemetry::from_status(
                         &status,
                         turn_index,
@@ -464,7 +648,7 @@ impl AgentRunner {
                 AttemptResult::RetryNeeded
             },
             retry::RetryDecision::RetryWithOverrides { status, overrides } => {
-                report_telemetry(AgentRunnerTelemetryEvent::RetryScheduled(
+                in_flight.report(AgentRunnerTelemetryEvent::RetryScheduled(
                     RetryScheduledTelemetry::from_status(&status, turn_index, true, &overrides),
                 ));
                 *request_overrides = overrides;
@@ -497,6 +681,14 @@ fn reported_usage_from_result(result: &Result<TurnResult, anyhow::Error>) -> Opt
                         .and_then(ResponseDecodeError::usage)
                 })
         })
+}
+
+fn error_is_timeout(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<reqwest::Error>()
+            .is_some_and(reqwest::Error::is_timeout)
+    })
 }
 
 fn elapsed_ms(start: Instant) -> u64 {

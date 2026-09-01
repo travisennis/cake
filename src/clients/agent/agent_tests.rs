@@ -2656,6 +2656,162 @@ mod error_tests {
     }
 
     #[tokio::test]
+    async fn incomplete_response_body_emits_in_flight_and_timeout_telemetry() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                     Content-Length: 128\r\nConnection: keep-alive\r\n\r\n{\"id\":\"partial\"}",
+                )
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        });
+
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let telemetry_path = temp_dir.path().join("telemetry.ndjson");
+        let task_id = uuid::uuid!("550e8400-e29b-41d4-a716-446655440001");
+        let invocation_id = uuid::uuid!("550e8400-e29b-41d4-a716-446655440002");
+        let mut agent = test_agent_with_url(&format!("http://{address}"))
+            .with_task_id(task_id)
+            .with_session_telemetry(
+                crate::session_telemetry::SessionTelemetryWriter::open(&telemetry_path).unwrap(),
+                invocation_id,
+            )
+            .with_request_timeout(Duration::from_millis(100));
+        agent.history_mut().push(ConversationItem::Message {
+            role: Role::User,
+            content: "test".to_string(),
+            id: None,
+            status: None,
+            timestamp: None,
+        });
+
+        let mut turn = Box::pin(agent.complete_turn(false));
+        tokio::select! {
+            result = &mut turn => panic!("incomplete response should remain pending: {result:?}"),
+            () = tokio::time::sleep(Duration::from_millis(20)) => {},
+        }
+
+        let records = std::fs::read_to_string(&telemetry_path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        let initial = records
+            .iter()
+            .find(|record| record["type"] == "api_attempt_in_flight")
+            .expect("attempt-start telemetry should be flushed before the request settles");
+        assert_eq!(initial["task_id"], task_id.to_string());
+        assert_eq!(initial["turn_index"], 1);
+        assert_eq!(initial["attempt"], 1);
+        assert_eq!(initial["model"], "test-model");
+        assert_eq!(initial["phase"], "awaiting_headers");
+        assert!(initial["started_at"].is_string());
+
+        let result = tokio::time::timeout(Duration::from_secs(1), &mut turn)
+            .await
+            .expect("body timeout should be bounded");
+        assert!(result.is_err());
+        drop(turn);
+        server.abort();
+
+        let records = std::fs::read_to_string(&telemetry_path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        let in_flight = records
+            .iter()
+            .filter(|record| record["type"] == "api_attempt_in_flight")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            in_flight.len(),
+            2,
+            "start and header phase records expected"
+        );
+        assert_eq!(in_flight[1]["phase"], "reading_body");
+        assert_eq!(in_flight[1]["status_code"], 200);
+
+        let completed = records
+            .iter()
+            .find(|record| record["type"] == "api_attempt")
+            .expect("timeout should close the in-flight attempt");
+        assert_eq!(completed["terminal_class"], "timeout");
+        assert_eq!(completed["phase"], "reading_body");
+        assert_eq!(completed["status_code"], 200);
+        assert!(completed["total_ms"].as_u64().unwrap_or_default() >= 90);
+        assert!(
+            completed["error"]
+                .as_str()
+                .is_some_and(|error| !error.is_empty())
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelling_pending_response_closes_telemetry_explicitly() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                     Content-Length: 128\r\nConnection: keep-alive\r\n\r\n{\"id\":\"partial\"}",
+                )
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        });
+
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let telemetry_path = temp_dir.path().join("telemetry.ndjson");
+        let task_id = uuid::uuid!("550e8400-e29b-41d4-a716-446655440011");
+        let invocation_id = uuid::uuid!("550e8400-e29b-41d4-a716-446655440012");
+        let mut agent = test_agent_with_url(&format!("http://{address}"))
+            .with_task_id(task_id)
+            .with_session_telemetry(
+                crate::session_telemetry::SessionTelemetryWriter::open(&telemetry_path).unwrap(),
+                invocation_id,
+            );
+        agent.history_mut().push(ConversationItem::Message {
+            role: Role::User,
+            content: "test".to_string(),
+            id: None,
+            status: None,
+            timestamp: None,
+        });
+
+        let mut turn = Box::pin(agent.complete_turn(false));
+        tokio::select! {
+            result = &mut turn => panic!("incomplete response should remain pending: {result:?}"),
+            () = tokio::time::sleep(Duration::from_millis(20)) => {},
+        }
+        drop(turn);
+        server.abort();
+
+        let records = std::fs::read_to_string(&telemetry_path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        let completed = records
+            .iter()
+            .find(|record| record["type"] == "api_attempt")
+            .expect("cancellation should close the in-flight attempt");
+        assert_eq!(completed["terminal_class"], "cancelled");
+        assert!(
+            completed["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("cancelled"))
+        );
+        assert!(completed["total_ms"].as_u64().is_some());
+    }
+
+    #[tokio::test]
     async fn test_400_bad_request_returns_error() {
         let mock_server = MockServer::start().await;
 

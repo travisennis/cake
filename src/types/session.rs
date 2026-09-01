@@ -376,7 +376,11 @@ pub struct TaskCompleteData {
 pub enum ApiAttemptTerminalClass {
     /// The request completed and produced a parseable provider response.
     Completed,
-    /// The request phase failed (connect, timeout, stale connection).
+    /// The request exceeded the configured HTTP deadline.
+    Timeout,
+    /// The provider attempt future was cancelled before it completed.
+    Cancelled,
+    /// The request phase failed (connect or stale connection).
     Transport,
     /// The provider returned a non-2xx HTTP response.
     Http,

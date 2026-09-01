@@ -91,7 +91,40 @@ fn runner_telemetry_record(
     context: SessionTelemetryContext,
     event: AgentRunnerTelemetryEvent,
 ) -> SessionTelemetryRecord {
+    if let Some(record) = in_flight_telemetry_record(&context, &event) {
+        return record;
+    }
+    runner_telemetry_terminal_record(context, event)
+}
+
+fn in_flight_telemetry_record(
+    context: &SessionTelemetryContext,
+    event: &AgentRunnerTelemetryEvent,
+) -> Option<SessionTelemetryRecord> {
+    let AgentRunnerTelemetryEvent::ApiAttemptInFlight(attempt) = event else {
+        return None;
+    };
+    Some(SessionTelemetryRecord::ApiAttemptInFlight {
+        session_id: context.session_id.clone(),
+        invocation_id: context.invocation_id.clone(),
+        timestamp: chrono::Utc::now(),
+        attempt: attempt.clone(),
+    })
+}
+
+fn runner_telemetry_terminal_record(
+    context: SessionTelemetryContext,
+    event: AgentRunnerTelemetryEvent,
+) -> SessionTelemetryRecord {
     match event {
+        AgentRunnerTelemetryEvent::ApiAttemptInFlight(attempt) => {
+            SessionTelemetryRecord::ApiAttemptInFlight {
+                session_id: context.session_id,
+                invocation_id: context.invocation_id,
+                timestamp: chrono::Utc::now(),
+                attempt,
+            }
+        },
         AgentRunnerTelemetryEvent::ApiAttempt(attempt) => SessionTelemetryRecord::ApiAttempt {
             session_id: context.session_id,
             invocation_id: context.invocation_id,

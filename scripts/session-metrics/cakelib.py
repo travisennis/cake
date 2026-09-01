@@ -7,7 +7,8 @@ Data sources:
   function_call_output, reasoning, hook_event, prompt_context,
   task_start, task_complete, result, skill_activated.
 - Telemetry sidecars: ~/.cache/cake/session-telemetry/{uuid}.ndjson
-  Record types: telemetry_init, api_attempt, judge_attempt, retry_scheduled, tool_call,
+  Record types: telemetry_init, api_attempt_in_flight, api_attempt, judge_attempt,
+  retry_scheduled, tool_call,
   compensation, session_summary. One file can span multiple invocations (continue/resume).
 """
 
