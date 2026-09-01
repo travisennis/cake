@@ -89,59 +89,48 @@ async fn hook_subprocesses_are_bounded_across_events_and_runner_clones() {
     let runner = bounded_hook_runner(&dir);
     let cloned_runner = runner.clone();
 
-    let pre_results = futures::future::join_all((0..12).map(|index| {
+    let results = futures::future::join_all((0..36).map(|index| {
         let runner = if index % 2 == 0 {
             runner.clone()
         } else {
             cloned_runner.clone()
         };
         async move {
-            runner
-                .pre_tool_use(
-                    "Bash",
-                    &format!("pre-{index}"),
-                    r#"{"command":"true"}"#,
-                    false,
-                )
-                .await
+            match index % 3 {
+                0 => runner
+                    .pre_tool_use(
+                        "Bash",
+                        &format!("pre-{index}"),
+                        r#"{"command":"true"}"#,
+                        false,
+                    )
+                    .await
+                    .map(|_| ()),
+                1 => runner
+                    .post_tool_use(
+                        "Bash",
+                        &format!("success-{index}"),
+                        r#"{"command":"true"}"#,
+                        &Ok("ok".to_string()),
+                        false,
+                    )
+                    .await
+                    .map(|_| ()),
+                _ => runner
+                    .post_tool_use(
+                        "Bash",
+                        &format!("failure-{index}"),
+                        r#"{"command":"true"}"#,
+                        &Err("failed".to_string()),
+                        false,
+                    )
+                    .await
+                    .map(|_| ()),
+            }
         }
     }))
     .await;
-    assert!(pre_results.iter().all(Result::is_ok));
-
-    let post_success_results = futures::future::join_all((0..12).map(|index| {
-        let runner = runner.clone();
-        async move {
-            runner
-                .post_tool_use(
-                    "Bash",
-                    &format!("success-{index}"),
-                    r#"{"command":"true"}"#,
-                    &Ok("ok".to_string()),
-                    false,
-                )
-                .await
-        }
-    }))
-    .await;
-    assert!(post_success_results.iter().all(Result::is_ok));
-
-    let post_failure_results = futures::future::join_all((0..12).map(|index| {
-        let runner = cloned_runner.clone();
-        async move {
-            runner
-                .post_tool_use(
-                    "Bash",
-                    &format!("failure-{index}"),
-                    r#"{"command":"true"}"#,
-                    &Err("failed".to_string()),
-                    false,
-                )
-                .await
-        }
-    }))
-    .await;
-    assert!(post_failure_results.iter().all(Result::is_ok));
+    assert!(results.iter().all(Result::is_ok));
 
     let maximum: usize = std::fs::read_to_string(dir.path().join(".hook-max"))
         .unwrap()

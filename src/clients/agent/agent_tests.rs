@@ -1660,6 +1660,10 @@ printf 'completed:%s' "$index"
             .unwrap()
             .parse()
             .unwrap();
+        assert!(
+            maximum > 1,
+            "fixture should exercise concurrent tool execution"
+        );
         assert!(maximum <= 8, "tool concurrency was {maximum}");
         assert_eq!(
             std::fs::read_to_string(dir.path().join(".tool-active")).unwrap(),
