@@ -514,17 +514,31 @@ fn parse_last_u32(input: &str) -> Option<u32> {
 }
 
 fn transport_retry_detail(error: &Error) -> Option<String> {
-    for cause in error.chain() {
-        if let Some(reqwest_error) = cause.downcast_ref::<reqwest::Error>() {
-            if reqwest_error.is_timeout() {
-                return Some("stale connection timeout".to_string());
-            }
-            if reqwest_error.is_connect() {
-                return Some("stale connection failure".to_string());
-            }
-        }
-    }
+    stale_reqwest_retry_detail(error)
+        .or_else(|| legacy_transport_retry_detail(error))
+        .or_else(|| {
+            is_request_phase_transport_error(error)
+                .then_some("request transport failure".to_string())
+        })
+}
 
+fn stale_reqwest_retry_detail(error: &Error) -> Option<String> {
+    error.chain().find_map(|cause| {
+        let reqwest_error = cause.downcast_ref::<reqwest::Error>()?;
+        if !reqwest_error.is_request() || reqwest_error.status().is_some() {
+            return None;
+        }
+        if reqwest_error.is_timeout() {
+            return Some("stale connection timeout".to_string());
+        }
+        if reqwest_error.is_connect() {
+            return Some("stale connection failure".to_string());
+        }
+        None
+    })
+}
+
+fn legacy_transport_retry_detail(error: &Error) -> Option<String> {
     let lower = error
         .chain()
         .map(|cause| cause.to_string().to_ascii_lowercase())
@@ -544,11 +558,23 @@ fn transport_retry_detail(error: &Error) -> Option<String> {
     }
 }
 
+fn is_request_phase_transport_error(error: &Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<reqwest::Error>()
+            .is_some_and(|reqwest_error| {
+                reqwest_error.is_request() && reqwest_error.status().is_none()
+            })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use chrono::TimeZone;
     use reqwest::header::HeaderValue;
+    use tokio::io::AsyncWriteExt;
+    use tokio::net::TcpListener;
 
     fn session_id() -> uuid::Uuid {
         uuid::uuid!("550e8400-e29b-41d4-a716-446655440000")
@@ -1073,6 +1099,58 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn unmatched_request_transport_error_retries_until_policy_cap() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            stream.write_all(b"not an HTTP response\r\n").await.unwrap();
+        });
+
+        let error = reqwest::Client::new()
+            .get(format!("http://{address}"))
+            .send()
+            .await
+            .unwrap_err();
+        server.await.unwrap();
+
+        assert!(error.is_request(), "expected request error, got {error}");
+        assert!(
+            !error.is_connect(),
+            "error should reach the server: {error}"
+        );
+        assert!(
+            !error.is_timeout(),
+            "error should not be a timeout: {error}"
+        );
+        assert!(
+            !error.to_string().contains("connection reset")
+                && !error.to_string().contains("broken pipe")
+                && !error.to_string().contains("unexpected eof"),
+            "test error unexpectedly matched a legacy marker: {error}"
+        );
+
+        let error: Error = error.into();
+        let policy = retry_policy();
+        for attempt in 1..=policy.max_retries {
+            let decision = classify_transport_error(&policy, &error, attempt, session_id());
+            if attempt < policy.max_retries {
+                match decision {
+                    RetryDecision::Retry { status } => {
+                        assert_eq!(status.attempt, attempt + 1);
+                        assert_eq!(status.max_retries, policy.max_retries);
+                        assert_eq!(status.reason, RetryReason::Network);
+                        assert_eq!(status.detail, "request transport failure");
+                    },
+                    other => panic!("expected retry at attempt {attempt}, got {other:?}"),
+                }
+            } else {
+                assert_eq!(decision, RetryDecision::DoNotRetry);
+            }
+        }
+        assert!(should_disable_connection_reuse(&error));
+    }
     #[test]
     fn response_failed_server_error_is_retryable() {
         // Matches the observed provider event (openai/codex#1002) where both

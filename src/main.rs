@@ -982,11 +982,11 @@ impl CodingAssistant {
         }
         if is_output_schema_exhaustion(error) {
             TaskOutcome::ErrorOutputSchema {
-                error: error.to_string(),
+                error: format!("{error:#}"),
             }
         } else {
             TaskOutcome::ErrorDuringExecution {
-                error: error.to_string(),
+                error: format!("{error:#}"),
             }
         }
     }
@@ -1003,11 +1003,11 @@ fn is_output_schema_exhaustion(error: &anyhow::Error) -> bool {
 ///
 /// A [`LimitExceededError`]'s `Display` embeds the partial assistant message
 /// so text mode can surface it, but these sinks must not carry assistant
-/// text; they get the concise detail instead. All other errors pass through
-/// unchanged.
+/// text; they get the concise detail instead. Other errors retain their full
+/// cause chain.
 fn sink_safe_error_text(error: &anyhow::Error) -> String {
     error.downcast_ref::<LimitExceededError>().map_or_else(
-        || error.to_string(),
+        || format!("{error:#}"),
         |limit_exceeded| limit_exceeded.detail.clone(),
     )
 }

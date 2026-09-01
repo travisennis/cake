@@ -375,7 +375,10 @@ impl AgentRunner {
             .as_ref()
             .ok()
             .and_then(|turn| turn.termination.clone());
-        let error = parse_result.as_ref().err().map(ToString::to_string);
+        let error = parse_result
+            .as_ref()
+            .err()
+            .map(|error| format!("{error:#}"));
         let attempt = in_flight.attempt;
         let request_ms = in_flight.request_ms();
         let status_code = in_flight.status_code;
@@ -575,8 +578,8 @@ impl AgentRunner {
     }
 
     /// Handle a request-phase transport error: record attempt telemetry, then
-    /// classify a stale-connection retry (swapping in a no-reuse client) or
-    /// return the error as terminal.
+    /// classify a retryable transport failure (swapping in a no-reuse client)
+    /// or return the error as terminal.
     #[expect(
         clippy::too_many_arguments,
         reason = "the transport-failure phase threads identity, timing, attempt, and telemetry"
@@ -594,6 +597,13 @@ impl AgentRunner {
     where
         F: FnMut(AgentRunnerTelemetryEvent),
     {
+        let error_detail = format!("{error:#}");
+        debug!(
+            target: "cake",
+            error = %error_detail,
+            "API request failed before receiving an HTTP response"
+        );
+
         let terminal_class = if error_is_timeout(&error) {
             ApiAttemptTerminalClass::Timeout
         } else {
@@ -608,7 +618,7 @@ impl AgentRunner {
             total_ms: in_flight.total_ms(),
             history_items: in_flight.history_items,
             status_code: None,
-            error: Some(error.to_string()),
+            error: Some(error_detail),
             usage: None,
             termination: None,
             terminal_class: Some(terminal_class),
