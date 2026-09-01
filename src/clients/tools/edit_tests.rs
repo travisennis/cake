@@ -494,13 +494,12 @@ fn preserves_lf_line_endings() {
 
 #[test]
 fn lf_only_content_uses_identity_offset_mapping() {
-    // LF-only content must not allocate a per-byte offset table.
-    // The offset mapping is implicitly the identity, represented as None.
+    // LF-only content needs no removed-CR markers; the offset mapping is implicit.
     let lf_content = "hello\nworld\n";
-    let normalized = normalize_crlf_line_endings(lf_content).unwrap();
+    let normalized = normalize_crlf_line_endings(lf_content);
     assert!(
-        normalized.original_offsets.is_none(),
-        "LF-only content should not allocate a per-byte offset table"
+        normalized.removed_cr_positions.is_empty(),
+        "LF-only content should not allocate removed-CR markers"
     );
     // Verify byte-level identity: every normalized offset maps to itself.
     for i in 0..lf_content.len() {
@@ -510,7 +509,7 @@ fn lf_only_content_uses_identity_offset_mapping() {
             "normalized offset {i} should map to original offset {i} for LF-only content"
         );
     }
-    // The mapping works past the end for the end-of-string boundary.
+    // The mapping works at the end-of-string boundary.
     assert_eq!(
         normalized.original_offset(lf_content.len()).unwrap(),
         lf_content.len()
@@ -518,41 +517,62 @@ fn lf_only_content_uses_identity_offset_mapping() {
 }
 
 #[test]
-fn crlf_content_uses_explicit_offset_table() {
-    // CRLF content must allocate a per-byte offset table.
+fn crlf_content_uses_sparse_removed_cr_positions() {
     let crlf_content = "hello\r\nworld\r\n";
-    let normalized = normalize_crlf_line_endings(crlf_content).unwrap();
-    let offsets = normalized
-        .original_offsets
-        .as_ref()
-        .expect("CRLF content should have a per-byte offset table");
+    let normalized = normalize_crlf_line_endings(crlf_content);
+
     // The normalized content is shorter: each \r\n pair becomes one \n.
     assert_eq!(normalized.content.len(), crlf_content.len() - 2);
-    assert_eq!(offsets.len(), normalized.content.len());
-    // Entries are u32: the narrowed element type halves the table size.
-    assert_eq!(offsets[0], 0u32, "offset table entries are u32");
-    // The original \r\n pairs should be mapped: \n at normalized index 5 maps to
-    // original index 5 (the \r), and so on.
-    assert_eq!(normalized.original_offset(5).unwrap(), 5); // \r at original[5]
+    assert_eq!(normalized.removed_cr_positions, vec![5, 11]);
+
+    // A marker maps the normalized newline to the removed CR. Offsets after a
+    // marker include that CR, and the end boundary maps to the original length.
+    assert_eq!(normalized.original_offset(5).unwrap(), 5);
+    assert_eq!(normalized.original_offset(6).unwrap(), 7);
+    assert_eq!(normalized.original_offset(11).unwrap(), 12);
+    assert_eq!(
+        normalized
+            .original_offset(normalized.content.len())
+            .unwrap(),
+        14
+    );
 }
 
 #[test]
-fn crlf_offset_table_rejects_files_above_u32_ceiling() {
-    // The ceiling is fixed at u32::MAX (4 GiB), which is impractical to allocate
-    // in a unit test, so exercise the size check directly rather than building a
-    // 4 GiB string. The check runs before any table allocation in
-    // `normalize_crlf_line_endings`.
-    check_crlf_offset_table_size(MAX_OFFSET_TABLE_BYTES).unwrap();
+fn crlf_mapping_preserves_utf8_match_boundaries() {
+    let original = "é before\r\ncafé target\r\n";
+    let normalized = normalize_crlf_line_endings(original);
+    let old_text = "café target\n";
+    let start = normalized.content.find(old_text).unwrap();
 
-    let err = check_crlf_offset_table_size(MAX_OFFSET_TABLE_BYTES + 1).unwrap_err();
-    assert!(
-        err.contains("4 GiB"),
-        "error should name the ceiling: {err}"
+    let (original_start, original_len) = normalized.original_range(start, old_text.len()).unwrap();
+    assert!(original.is_char_boundary(original_start));
+    assert!(original.is_char_boundary(original_start + original_len));
+    assert_eq!(
+        original.get(original_start..original_start + original_len),
+        Some("café target\r\n")
     );
-    assert!(
-        err.contains(&(MAX_OFFSET_TABLE_BYTES + 1).to_string()),
-        "error should report the file size: {err}"
-    );
+}
+
+#[test]
+fn match_result_keeps_exact_count_and_first_five_positions() {
+    let content = "target\ntarget\ntarget\ntarget\ntarget\ntarget\ntarget\n";
+
+    assert!(matches!(
+        find_match_result("nothing", "target"),
+        MatchResult::None
+    ));
+    assert!(matches!(
+        find_match_result("before target after", "target"),
+        MatchResult::Unique(7)
+    ));
+    assert!(matches!(
+        find_match_result(content, "target"),
+        MatchResult::Ambiguous {
+            count: 7,
+            first_five
+        } if first_five == vec![0, 7, 14, 21, 28]
+    ));
 }
 
 #[test]

@@ -12,6 +12,8 @@ use crate::clients::tools::{
 
 /// Maximum number of edits allowed in a single call
 const MAX_EDITS_PER_CALL: usize = 20;
+/// Maximum number of candidate matches included in an ambiguous-match error.
+const MAX_AMBIGUOUS_MATCHES: usize = 5;
 /// Maximum per-edit status lines included in a failed multi-edit preflight.
 const MAX_PREFLIGHT_STATUS_LINES: usize = 6;
 
@@ -70,6 +72,17 @@ pub(super) fn edit_tool() -> super::Tool {
 struct Edit {
     old_text: String,
     new_text: String,
+}
+
+/// The bounded result of searching for one edit's old text.
+#[derive(Debug)]
+enum MatchResult {
+    None,
+    Unique(usize),
+    Ambiguous {
+        count: usize,
+        first_five: Vec<usize>,
+    },
 }
 
 /// Arguments for the Edit tool
@@ -131,13 +144,11 @@ struct PreflightedEdits {
 struct NormalizedContent {
     /// Content with CRLF line endings represented as LF.
     content: String,
-    /// Original byte offset for each normalized byte offset.
-    /// `None` when the content has no CRLF line endings, i.e. every normalized byte
-    /// offset is its own original offset (identity mapping).
-    /// `u32` elements halve the table size compared to `usize`; offsets need only
-    /// 32 bits because CRLF-containing files larger than `u32::MAX` bytes are
-    /// rejected (see `MAX_OFFSET_TABLE_BYTES`).
-    original_offsets: Option<Vec<u32>>,
+    /// Normalized byte offsets where a CR was removed from a CRLF pair.
+    ///
+    /// The positions are sparse: there is one marker per removed CR rather than
+    /// one offset for every byte in the normalized content.
+    removed_cr_positions: Vec<usize>,
     /// Original content length in bytes.
     original_len: usize,
 }
@@ -204,7 +215,7 @@ pub(super) fn execute_edit(
     let line_ending = detect_line_ending(content);
 
     // Normalize CRLF to LF for matching while keeping original byte ranges.
-    let normalized_content = normalize_crlf_line_endings(content)?;
+    let normalized_content = normalize_crlf_line_endings(content);
 
     // Preflight validation: find all match positions
     let preflighted_edits = preflight_edits(&args.edits, &normalized_content, line_ending, &path)?;
@@ -295,6 +306,88 @@ pub(super) fn arguments_are_invalid(arguments: &str) -> bool {
 // Preflight Validation
 // =============================================================================
 
+/// Find all matches while retaining only the bounded candidate list needed for errors.
+fn find_match_result(content: &str, needle: &str) -> MatchResult {
+    let mut count = 0;
+    let mut first_five = [0; MAX_AMBIGUOUS_MATCHES];
+
+    for (index, _) in content.match_indices(needle) {
+        if count < MAX_AMBIGUOUS_MATCHES {
+            first_five[count] = index;
+        }
+        count += 1;
+    }
+
+    match count {
+        0 => MatchResult::None,
+        1 => MatchResult::Unique(first_five[0]),
+        _ => MatchResult::Ambiguous {
+            count,
+            first_five: first_five[..count.min(MAX_AMBIGUOUS_MATCHES)].to_vec(),
+        },
+    }
+}
+
+fn unique_match_index(
+    content: &str,
+    old_text: &str,
+    total: usize,
+    matched_edits: &[MatchedEdit],
+    skipped_noop_indexes: &[usize],
+    edit_index: usize,
+    path: &Path,
+) -> Result<usize, String> {
+    match find_match_result(content, old_text) {
+        MatchResult::None => {
+            let preflight_summary = preflight_failure_summary(
+                total,
+                matched_edits,
+                skipped_noop_indexes,
+                edit_index,
+                "failed: could not find the exact text to replace",
+            );
+            let mut message = format!(
+                "Edit {} of {} failed in {}: could not find the exact text to replace. The old_text must match exactly, including all whitespace and newlines.",
+                edit_index,
+                total,
+                path.display(),
+            );
+            if let Some(hint) = nearest_match_hint(content, old_text) {
+                _ = write!(message, "\nNearest matching context in file:\n{hint}");
+            }
+            _ = write!(
+                message,
+                "{}\n{}\nRetry by re-reading the target range and providing a narrower old_text, or split the request into smaller edits.",
+                preflight_summary,
+                atomic_rollback_notice(total),
+            );
+            Err(message)
+        },
+        MatchResult::Unique(index) => Ok(index),
+        MatchResult::Ambiguous { count, first_five } => {
+            let contexts = ambiguous_match_contexts(content, &first_five, count);
+            let failure_status = format!("failed: old_text matched {count} locations");
+            let preflight_summary = preflight_failure_summary(
+                total,
+                matched_edits,
+                skipped_noop_indexes,
+                edit_index,
+                &failure_status,
+            );
+            Err(format!(
+                "Edit {} of {} failed in {}: old_text matches {} locations but must match exactly 1.\nCandidate match contexts:\n{}{}\n{}\nProvide a more specific old_text that includes more surrounding context.",
+                edit_index,
+                total,
+                path.display(),
+                count,
+                contexts,
+                preflight_summary,
+                atomic_rollback_notice(total),
+            ))
+        },
+    }
+}
+
 /// Validate all edits and find their match positions
 fn preflight_edits(
     edits: &[Edit],
@@ -314,64 +407,19 @@ fn preflight_edits(
             continue;
         }
 
-        // Count occurrences
-        let occurrences: Vec<usize> = normalized_content
-            .content
-            .match_indices(&edit.old_text)
-            .map(|(idx, _)| idx)
-            .collect();
-
-        if occurrences.is_empty() {
-            let preflight_summary = preflight_failure_summary(
-                total,
-                &matched_edits,
-                &skipped_noop_indexes,
-                edit_index,
-                "failed: could not find the exact text to replace",
-            );
-            let mut message = format!(
-                "Edit {} of {} failed in {}: could not find the exact text to replace. The old_text must match exactly, including all whitespace and newlines.",
-                edit_index,
-                total,
-                path.display(),
-            );
-            if let Some(hint) = nearest_match_hint(&normalized_content.content, &edit.old_text) {
-                _ = write!(message, "\nNearest matching context in file:\n{hint}");
-            }
-            _ = write!(
-                message,
-                "{}\n{}\nRetry by re-reading the target range and providing a narrower old_text, or split the request into smaller edits.",
-                preflight_summary,
-                atomic_rollback_notice(total),
-            );
-            return Err(message);
-        }
-
-        if occurrences.len() > 1 {
-            let contexts = ambiguous_match_contexts(&normalized_content.content, &occurrences);
-            let failure_status =
-                format!("failed: old_text matched {} locations", occurrences.len());
-            let preflight_summary = preflight_failure_summary(
-                total,
-                &matched_edits,
-                &skipped_noop_indexes,
-                edit_index,
-                &failure_status,
-            );
-            return Err(format!(
-                "Edit {} of {} failed in {}: old_text matches {} locations but must match exactly 1.\nCandidate match contexts:\n{}{}\n{}\nProvide a more specific old_text that includes more surrounding context.",
-                edit_index,
-                total,
-                path.display(),
-                occurrences.len(),
-                contexts,
-                preflight_summary,
-                atomic_rollback_notice(total),
-            ));
-        }
+        // Count occurrences while retaining only the first five positions for an error.
+        let index = unique_match_index(
+            &normalized_content.content,
+            &edit.old_text,
+            total,
+            &matched_edits,
+            &skipped_noop_indexes,
+            edit_index,
+            path,
+        )?;
 
         let (index, match_length) =
-            normalized_content.original_range(occurrences[0], edit.old_text.len())?;
+            normalized_content.original_range(index, edit.old_text.len())?;
 
         matched_edits.push(MatchedEdit {
             new_text: normalize_replacement_line_endings(&edit.new_text, line_ending),
@@ -551,21 +599,20 @@ const fn atomic_rollback_notice(total: usize) -> &'static str {
 
 /// Render compact, capped snippets for ambiguous matches so callers can make
 /// the next `old_text` more specific without re-reading the whole file.
-fn ambiguous_match_contexts(content: &str, occurrences: &[usize]) -> String {
+fn ambiguous_match_contexts(content: &str, first_five: &[usize], match_count: usize) -> String {
     const CONTEXT_RADIUS: usize = 1;
-    const MAX_CANDIDATES: usize = 5;
     const MAX_LINE_LEN: usize = 160;
 
-    let lines: Vec<&str> = content.lines().collect();
-    if lines.is_empty() {
+    let line_count = content.lines().count();
+    if line_count == 0 {
         return "  (no line context available)".to_string();
     }
 
     let mut out = String::new();
-    for (candidate_index, occurrence) in occurrences.iter().take(MAX_CANDIDATES).enumerate() {
-        let line_index = line_index_for_offset(content, *occurrence).min(lines.len() - 1);
+    for (candidate_index, occurrence) in first_five.iter().take(MAX_AMBIGUOUS_MATCHES).enumerate() {
+        let line_index = line_index_for_offset(content, *occurrence).min(line_count - 1);
         let start = line_index.saturating_sub(CONTEXT_RADIUS);
-        let end = (line_index + CONTEXT_RADIUS + 1).min(lines.len());
+        let end = (line_index + CONTEXT_RADIUS + 1).min(line_count);
 
         if candidate_index > 0 {
             out.push('\n');
@@ -577,8 +624,7 @@ fn ambiguous_match_contexts(content: &str, occurrences: &[usize]) -> String {
             line_index + 1
         );
 
-        for (offset, line) in lines[start..end].iter().enumerate() {
-            let current_index = start + offset;
+        for (current_index, line) in content.lines().enumerate().skip(start).take(end - start) {
             let marker = if current_index == line_index {
                 ">"
             } else {
@@ -589,11 +635,10 @@ fn ambiguous_match_contexts(content: &str, occurrences: &[usize]) -> String {
         }
     }
 
-    if occurrences.len() > MAX_CANDIDATES {
+    if match_count > MAX_AMBIGUOUS_MATCHES {
         _ = writeln!(
             out,
-            "\nShowing first {MAX_CANDIDATES} of {} matches.",
-            occurrences.len()
+            "\nShowing first {MAX_AMBIGUOUS_MATCHES} of {match_count} matches."
         );
     }
 
@@ -622,14 +667,14 @@ fn nearest_match_hint(content: &str, needle: &str) -> Option<String> {
         return None;
     }
 
-    let lines: Vec<&str> = content.lines().collect();
-    if lines.is_empty() {
+    let line_count = content.lines().count();
+    if line_count == 0 {
         return None;
     }
 
     let mut best_idx: Option<usize> = None;
     let mut best_score: usize = 0;
-    for (idx, line) in lines.iter().enumerate() {
+    for (idx, line) in content.lines().enumerate() {
         let score = common_prefix_len(line.trim_start(), needle_trimmed);
         if score > best_score {
             best_score = score;
@@ -645,12 +690,12 @@ fn nearest_match_hint(content: &str, needle: &str) -> Option<String> {
 
     let center = best_idx?;
     let start = center.saturating_sub(HINT_RADIUS);
-    let end = (center + HINT_RADIUS + 1).min(lines.len());
+    let end = (center + HINT_RADIUS + 1).min(line_count);
 
     let mut out = String::new();
-    for (offset, line) in lines[start..end].iter().enumerate() {
-        let line_no = start + offset + 1;
-        let marker = if start + offset == center { ">" } else { " " };
+    for (idx, line) in content.lines().enumerate().skip(start).take(end - start) {
+        let line_no = idx + 1;
+        let marker = if idx == center { ">" } else { " " };
         let truncated = truncate_to_chars(line, MAX_LINE_LEN);
         _ = writeln!(out, "{marker} {line_no:>5} | {truncated}");
     }
@@ -706,76 +751,46 @@ fn detect_line_ending(content: &str) -> LineEnding {
     }
 }
 
-/// Maximum file size (in bytes) whose CRLF offset table can use `u32` elements.
-/// `u32` addresses offsets up to `u32::MAX` (just under 4 GiB), so any file at or
-/// below this size is representable; CRLF-containing files above it are rejected
-/// with an explicit error.
-const MAX_OFFSET_TABLE_BYTES: usize = u32::MAX as usize;
-
-/// Check that a CRLF-containing file of `content_len` bytes fits the `u32`
-/// offset table. Returns an error naming the ceiling and the offending size.
-fn check_crlf_offset_table_size(content_len: usize) -> Result<(), String> {
-    if content_len > MAX_OFFSET_TABLE_BYTES {
-        return Err(format!(
-            "Cannot edit file with CRLF line endings: file is {content_len} bytes, exceeding the {MAX_OFFSET_TABLE_BYTES} byte (just under 4 GiB) limit for the CRLF offset mapping",
-        ));
-    }
-    Ok(())
-}
-
 /// Normalize CRLF line endings to LF for consistent processing.
 ///
-/// Bare CR characters are preserved, and every normalized byte offset can be
-/// mapped back to the original string so unrelated bytes are not rewritten.
-///
-/// Returns an error when the content contains CRLF line endings and is larger
-/// than `MAX_OFFSET_TABLE_BYTES`, since the per-byte offset table cannot address
-/// such files with `u32` elements. LF-only content is unaffected at any size.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "the ceiling check guarantees content.len() <= u32::MAX, so every byte index fits in u32"
-)]
-fn normalize_crlf_line_endings(content: &str) -> Result<NormalizedContent, String> {
+/// Bare CR characters are preserved. The normalized byte offsets where CRs were
+/// removed are retained so offsets can be mapped back to the original string
+/// with a binary search. This keeps the mapping sparse and supports file sizes
+/// representable by the platform's `usize`.
+fn normalize_crlf_line_endings(content: &str) -> NormalizedContent {
     // When the content has no CRLF line endings, normalization is a no-op and the
-    // offset mapping is the identity. Skip both the normalized copy and the per-byte
-    // offset table. This avoids an 8× memory overhead over the file size for LF-only
-    // files while still cloning the content so the result is owned.
+    // empty marker list represents the identity mapping.
     if !content.contains("\r\n") {
-        return Ok(NormalizedContent {
+        return NormalizedContent {
             content: content.to_string(),
-            original_offsets: None,
+            removed_cr_positions: Vec::new(),
             original_len: content.len(),
-        });
+        };
     }
 
-    // Only CRLF-containing files allocate an offset table, so only they are
-    // subject to the u32 ceiling. Check before allocating the table.
-    check_crlf_offset_table_size(content.len())?;
-
     let mut normalized = String::with_capacity(content.len());
-    let mut original_offsets = Vec::with_capacity(content.len());
+    let mut removed_cr_positions = Vec::new();
     let mut chars = content.char_indices().peekable();
 
-    while let Some((index, ch)) = chars.next() {
+    while let Some((_, ch)) = chars.next() {
         if ch == '\r' && chars.peek().is_some_and(|(_, next)| *next == '\n') {
+            removed_cr_positions.push(normalized.len());
             normalized.push('\n');
-            original_offsets.push(index as u32);
             let _ = chars.next();
             continue;
         }
 
         let normalized_index = normalized.len();
         normalized.push(ch);
-        original_offsets.resize(normalized.len(), index as u32);
 
         debug_assert!(normalized.is_char_boundary(normalized_index));
     }
 
-    Ok(NormalizedContent {
+    NormalizedContent {
         content: normalized,
-        original_offsets: Some(original_offsets),
+        removed_cr_positions,
         original_len: content.len(),
-    })
+    }
 }
 
 /// Convert replacement LF line endings to the file's dominant line ending.
@@ -819,15 +834,11 @@ impl NormalizedContent {
 
     /// Return the original byte offset for a normalized byte offset.
     fn original_offset(&self, index: usize) -> Result<usize, String> {
-        // Identity mapping when None: no CRLF in the original, so normalized offset == original offset.
-        self.original_offsets.as_ref().map_or(Ok(index), |offsets| {
-            offsets
-                .get(index)
-                .copied()
-                .map(|o| o as usize)
-                .ok_or_else(|| {
-                    "Internal error: edit match did not map to original file content".to_string()
-                })
+        let removed_crs_before = self
+            .removed_cr_positions
+            .partition_point(|position| *position < index);
+        index.checked_add(removed_crs_before).ok_or_else(|| {
+            "Internal error: edit match did not map to original file content".to_string()
         })
     }
 }
