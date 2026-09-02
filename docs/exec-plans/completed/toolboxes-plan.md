@@ -6,9 +6,9 @@ This document follows [docs/workflow/exec-plans.md](../../workflow/exec-plans.md
 
 ## Purpose / Big Picture
 
-Cake should support user-defined executable tools in addition to built-in Bash, Read, Edit, and Write. After this work, a user can place executable tool scripts in configured toolbox directories, run cake, and have those tools discovered, described, exposed to the model with a `tb__` prefix, and invoked through the same tool execution path as built-in tools.
+Cake should support user-defined executable tools in addition to built-in Bash, Read, Edit, and Write. After this work, a user can place executable tool scripts in configured toolbox directories or the project's `.cake/tools` directory, run cake, and have those tools discovered, described, exposed to the model with a `tb__` prefix, and invoked through the same tool execution path as built-in tools.
 
-The behavior is observable by creating a tiny executable toolbox script, passing its directory through `CAKE_TOOLBOX` or `--toolbox`, and seeing the model receive and execute the corresponding `tb__<name>` tool.
+The behavior is observable by creating a tiny executable toolbox script, passing its directory through `CAKE_TOOLBOX` or `--toolbox`, or placing it in `.cake/tools`, and seeing the model receive and execute the corresponding `tb__<name>` tool.
 
 ## Progress
 
@@ -19,12 +19,13 @@ The behavior is observable by creating a tiny executable toolbox script, passing
 - [x] (2026-07-14) Registered discovered toolbox tools with the agent and dispatched `tb__*` calls (`ToolExecutor` widened to a shared closure; `clients/tools/toolbox.rs` execute protocol; `Agent::with_toolbox_tools`; read-only exclusion in both builder orders; system-prompt tool list includes toolbox tools).
 - [x] (2026-07-14) Added `--toolbox <DIR>` flag, unit tests (describe parsing, discovery filtering, execute protocol via fixture scripts), end-to-end integration tests (`tests/toolbox.rs`: discovery → prompt → dispatch → session record through the real binary against a mocked Responses API), and documentation (README, `docs/design-docs/tools.md`, ARCHITECTURE.md).
 - [x] (2026-07-14) Applied review fixes: toolbox executables are never run (not even describe) under the read-only sandbox policy; stdout/stderr are read with hard caps (50KB/10KB) instead of buffering unbounded output; the execute timeout covers argument delivery, output capture, and process exit (stdin fed from a detached writer); tool names are capped at 60 characters so `tb__` + name stays within the 64-character provider limit.
-- [x] (2026-07-14) Applied second review round: describe output is now read through the shared bounded reader (64KB stdout / 10KB stderr caps; a runaway tool like `yes` is skipped instead of exhausting memory), and toolbox directories are resolved in `prepare_run` against the invocation directory before any `--worktree` cwd change (relative `CAKE_TOOLBOX`/`--toolbox` entries anchored like `--add-dir`). `read_streams_bounded` moved to `config::toolbox` (config cannot import clients; clients reuses it downward).
+- [x] (2026-07-14) Applied second review round: describe output is now read through the shared bounded reader (64KB stdout / 10KB stderr caps; a runaway tool like `yes` is skipped instead of exhausting memory), and configured toolbox directories are resolved in `prepare_run` against the invocation directory before any `--worktree` cwd change (relative `CAKE_TOOLBOX`/`--toolbox` entries anchored like `--add-dir`). The active project's `.cake/tools` directory is resolved from the post-worktree cwd. `read_streams_bounded` moved to `config::toolbox` (config cannot import clients; clients reuses it downward).
 - [x] (2026-07-14) Applied third review round: every toolbox describe and execute subprocess starts in its own Unix process group, and timeout/output-cap paths kill the entire group so descendants cannot continue consuming resources or mutating the workspace after cake reports termination. Added descendant-mutation regressions for execute timeout, execute output cap, and describe output cap.
 - [x] (2026-07-14) Applied fourth review round: full `inputSchema` declarations are normalized or rejected to preserve the executor's top-level object contract, and text-format calls reject line-breaking names/values before spawn so multiline input cannot create injected protocol records.
 - [x] (2026-07-14) Applied fifth review round: text-format describe parsing now applies the executor's shared argument-name validation, so tools declaring names the `key=value` protocol cannot encode are skipped instead of advertised unusably.
 - [x] (2026-07-14) Applied sixth review round: duplicate text-format parameter declarations are rejected during describe parsing, preventing overwritten properties and duplicate JSON Schema `required` entries from reaching providers.
 - [x] (2026-07-14) Ran an XL preflight: added ADR-017 and missing CLI/sandbox design documentation, compiled all discovered schemas as JSON Schema draft 2020-12, removed speculative `Tool::new`/`ToolboxEntry::source_dir` API, and reconciled the task and ExecPlan with the implemented state.
+- [x] (2026-09-01) Extended discovery to append the active project's `.cake/tools` directory after configured sources, preserving explicit empty-`CAKE_TOOLBOX` semantics, `--worktree` anchoring, read-only exclusion, and first-seen precedence when a configured path is repeated.
 - [x] (2026-07-14) Completed final verification with `just ci`: 1,009 unit tests and all integration targets passed, coverage reached 91.56%, and the CRAP regression gate reported zero regressions. Optional `cake tools` subcommands remain separate follow-up scope.
 
 ## Surprises & Discoveries
@@ -114,7 +115,7 @@ The toolbox feature touches these layers:
 
 **Default directory**: `~/.config/cake/tools` (under cake's config directory).
 
-**Discovery logic**: 1. If `CAKE_TOOLBOX` is set and non-empty, split on `:` and scan those directories. 2. If `CAKE_TOOLBOX` is unset, scan the default directory (`~/.config/cake/tools`). 3. If `CAKE_TOOLBOX` is set to empty string, skip toolbox scanning entirely. 4. For each directory, enumerate files, applying these filters: - **Skip** hidden files (dot-prefix). - **Skip** files with `.md` or `.txt` extensions. - **Skip** non-executable files (check execute bit via `std::os::unix::fs::PermissionsExt`). - **Skip** directories. 5. Earlier directories take precedence for name conflicts.
+**Discovery logic**: 1. If `CAKE_TOOLBOX` is set and non-empty, split on `:` and scan those directories. 2. If `CAKE_TOOLBOX` is unset, scan the default directory (`~/.config/cake/tools`). 3. If `CAKE_TOOLBOX` is set to an empty string, skip the global/default directory but still scan repeated `--toolbox` entries and the active project's `.cake/tools`. 4. Append the active project's `.cake/tools` after configured sources so earlier directories retain precedence. 5. Deduplicate equivalent configured and project-local directories before running describe actions. 6. For each directory, enumerate files, applying these filters: - **Skip** hidden files (dot-prefix). - **Skip** files with `.md` or `.txt` extensions. - **Skip** non-executable files (check execute bit via `std::os::unix::fs::PermissionsExt`). - **Skip** directories. 7. Earlier directories take precedence for name conflicts.
 
 > **Note on Amp compatibility**: The Amp documentation is ambiguous on the unset case (one sentence says it uses the default directory, the next says no scanning). Our behavior (scan default directory when unset) is the more user-friendly interpretation and likely matches Amp's actual behavior.
 
@@ -340,7 +341,7 @@ No new dependency was added for the core implementation. If protocol surface exp
 
 ## Resolved Questions
 
-1. **Project-level tools (`.cake/tools/`)**: Only scanned when explicitly listed in `CAKE_TOOLBOX`. No automatic scanning of project-level directories. This avoids the security risk of cloned repos injecting tools.
+1. **Project-level tools (`.cake/tools/`)**: The original core implementation scanned this directory only when explicitly listed in `CAKE_TOOLBOX`, avoiding automatic execution from cloned repositories. Issue #167 supersedes that choice: the active project's `.cake/tools` directory is now scanned automatically after configured sources, except under `read-only`, where toolbox discovery remains disabled.
 
 2. **Timeout configuration**: Per-tool timeout, specified in the describe schema. Tools can declare a `timeout` field (in seconds). If omitted, falls back to a default (e.g., 60s, matching the Bash tool default).
 

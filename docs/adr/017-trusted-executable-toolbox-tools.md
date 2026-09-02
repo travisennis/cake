@@ -30,9 +30,9 @@ Toolbox discovery executes user-provided files during both description and invoc
 
 ## Decision Outcome
 
-Chosen option: register trusted executable tools as ordinary `ToolEntry` values. Cake discovers executables from configured toolbox directories, runs `TOOLBOX_ACTION=describe`, validates and normalizes their top-level object schema, prefixes registered names with `tb__`, and captures each executable's state in its registry executor closure.
+Chosen option: register trusted executable tools as ordinary `ToolEntry` values. Cake discovers executables from configured toolbox directories (`CAKE_TOOLBOX`, `--toolbox`, and the global default) and the active project's `.cake/tools` directory, runs `TOOLBOX_ACTION=describe`, validates and normalizes their top-level object schema, prefixes registered names with `tb__`, and captures each executable's state in its registry executor closure. Configured directories precede project-local discovery so explicit user configuration retains precedence.
 
-Toolbox processes intentionally run outside cake's Bash sandbox. Cake therefore skips discovery and registration entirely under `SandboxPolicy::ReadOnly`, including the describe action. Under other policies, users are responsible for trusting configured toolbox executables.
+Toolbox processes intentionally run outside cake's Bash sandbox. Cake therefore skips discovery and registration entirely under `SandboxPolicy::ReadOnly`, including the describe action. Under other policies, users are responsible for trusting configured and project-local toolbox executables.
 
 Each describe or execute invocation starts in its own Unix process group. Timeout and output-cap failures terminate the entire group. Stdout and stderr are bounded. Text arguments reject names or values that the `key=value` line protocol cannot encode without changing record structure.
 
@@ -42,7 +42,7 @@ Each describe or execute invocation starts in its own Unix process group. Timeou
 - Good, because malformed or unencodable descriptions are skipped before they can invalidate a provider request or advertise unusable tools.
 - Good, because runaway descendants cannot continue after cake reports a timeout or output-cap failure.
 - Good, because `read-only` continues to mean that the agent is not offered unsandboxed mutation paths.
-- Bad, because toolbox executables have the user's ambient filesystem and network authority under `workspace-write` and `danger-full-access`; directory configuration is a trust decision.
+- Bad, because toolbox executables have the user's ambient filesystem and network authority under `workspace-write` and `danger-full-access`; directory configuration and automatic project-local discovery are trust decisions. A cloned repository may therefore contribute toolbox code unless the user inspects it or uses `read-only`.
 - Bad, because the text protocol cannot represent multiline values and cake rejects them instead of silently changing their structure.
 - Neutral, because toolbox calls receive singleton scheduling groups: cake cannot infer their mutation targets for per-path serialization.
 

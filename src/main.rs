@@ -128,7 +128,8 @@ pub(crate) struct CodingAssistant {
     pub add_dir: Vec<String>,
 
     /// Add a directory of user-defined toolbox tools. Can be repeated;
-    /// appended after `CAKE_TOOLBOX` directories.
+    /// appended after `CAKE_TOOLBOX` directories and before project-local
+    /// `.cake/tools` discovery.
     #[arg(long, value_name = "DIR")]
     pub toolbox: Vec<PathBuf>,
 
@@ -426,17 +427,6 @@ impl CodingAssistant {
     fn prepare_run(&self) -> anyhow::Result<PreparedRun> {
         let original_dir = std::env::current_dir()?;
         let additional_dirs = self.resolve_additional_dirs(&original_dir);
-        // Resolve toolbox directories against the invocation directory
-        // before any cwd change (e.g. --worktree), matching --add-dir.
-        let toolbox_dirs = crate::config::toolbox::toolbox_directories(
-            std::env::var(crate::config::toolbox::TOOLBOX_ENV_VAR)
-                .ok()
-                .as_deref(),
-            &self.toolbox,
-            &crate::config::config_dir().join("cake").join("tools"),
-            &original_dir,
-        );
-
         // Validate stdin/content and the output schema before creating the
         // worktree so that input errors don't leave a stale registered
         // worktree.
@@ -446,6 +436,18 @@ impl CodingAssistant {
         let worktree = self.setup_worktree(&original_dir)?;
         let current_dir = std::env::current_dir()
             .map_err(|e| anyhow::anyhow!("Failed to get current directory: {e}"))?;
+        // Keep configured relative paths anchored to the invocation directory,
+        // but discover the project-local toolbox from the active directory so
+        // --worktree selects that worktree's `.cake/tools`.
+        let toolbox_dirs = crate::config::toolbox::toolbox_directories(
+            std::env::var(crate::config::toolbox::TOOLBOX_ENV_VAR)
+                .ok()
+                .as_deref(),
+            &self.toolbox,
+            &crate::config::config_dir().join("cake").join("tools"),
+            &original_dir,
+            &current_dir,
+        );
 
         Ok(PreparedRun {
             current_dir,
@@ -548,10 +550,11 @@ impl CodingAssistant {
 
         Self::log_skill_diagnostics(&skill_catalog);
 
-        // Discover and describe user-defined toolbox tools (directories were
-        // resolved in prepare_run, before any --worktree cwd change). Broken
-        // tools are skipped with a warning inside load_toolbox_tools; they
-        // never block startup. Under the read-only sandbox policy, toolbox
+        // Discover and describe user-defined toolbox tools. Configured
+        // directories retain invocation-directory anchoring, while the
+        // project-local directory follows the active worktree. Broken tools
+        // are skipped with a warning inside load_toolbox_tools; they never
+        // block startup. Under the read-only sandbox policy, toolbox
         // executables are never run at all: even the describe action
         // executes user code outside the OS sandbox and could mutate the
         // workspace.

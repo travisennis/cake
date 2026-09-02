@@ -11,42 +11,115 @@ fn base() -> &'static Path {
 #[test]
 fn directories_default_when_env_unset() {
     let default_dir = Path::new("/home/user/.config/cake/tools");
-    let dirs = toolbox_directories(None, &[], default_dir, base());
-    assert_eq!(dirs, vec![default_dir.to_path_buf()]);
+    let dirs = toolbox_directories(None, &[], default_dir, base(), Path::new("/project"));
+    assert_eq!(
+        dirs,
+        vec![
+            default_dir.to_path_buf(),
+            PathBuf::from("/project/.cake/tools")
+        ]
+    );
 }
 
 #[test]
 fn directories_env_replaces_default() {
-    let dirs = toolbox_directories(Some("/a:/b"), &[], Path::new("/default"), base());
-    assert_eq!(dirs, vec![PathBuf::from("/a"), PathBuf::from("/b")]);
+    let dirs = toolbox_directories(
+        Some("/a:/b"),
+        &[],
+        Path::new("/default"),
+        base(),
+        Path::new("/project"),
+    );
+    assert_eq!(
+        dirs,
+        vec![
+            PathBuf::from("/a"),
+            PathBuf::from("/b"),
+            PathBuf::from("/project/.cake/tools"),
+        ]
+    );
 }
 
 #[test]
-fn directories_empty_env_disables_default() {
-    let dirs = toolbox_directories(Some(""), &[], Path::new("/default"), base());
-    assert!(dirs.is_empty());
+fn directories_empty_env_preserves_project_local_tools() {
+    let dirs = toolbox_directories(
+        Some(""),
+        &[],
+        Path::new("/default"),
+        base(),
+        Path::new("/project"),
+    );
+    assert_eq!(dirs, vec![PathBuf::from("/project/.cake/tools")]);
 }
 
 #[test]
 fn directories_skips_empty_env_segments() {
-    let dirs = toolbox_directories(Some("/a::/b:"), &[], Path::new("/default"), base());
-    assert_eq!(dirs, vec![PathBuf::from("/a"), PathBuf::from("/b")]);
+    let dirs = toolbox_directories(
+        Some("/a::/b:"),
+        &[],
+        Path::new("/default"),
+        base(),
+        Path::new("/project"),
+    );
+    assert_eq!(
+        dirs,
+        vec![
+            PathBuf::from("/a"),
+            PathBuf::from("/b"),
+            PathBuf::from("/project/.cake/tools"),
+        ]
+    );
 }
 
 #[test]
 fn directories_extra_dirs_appended_after_env() {
     let extra = vec![PathBuf::from("/extra")];
-    let dirs = toolbox_directories(Some("/a"), &extra, Path::new("/default"), base());
-    assert_eq!(dirs, vec![PathBuf::from("/a"), PathBuf::from("/extra")]);
-
-    let dirs = toolbox_directories(None, &extra, Path::new("/default"), base());
+    let dirs = toolbox_directories(
+        Some("/a"),
+        &extra,
+        Path::new("/default"),
+        base(),
+        Path::new("/project"),
+    );
     assert_eq!(
         dirs,
-        vec![PathBuf::from("/default"), PathBuf::from("/extra")]
+        vec![
+            PathBuf::from("/a"),
+            PathBuf::from("/extra"),
+            PathBuf::from("/project/.cake/tools"),
+        ]
     );
 
-    let dirs = toolbox_directories(Some(""), &extra, Path::new("/default"), base());
-    assert_eq!(dirs, vec![PathBuf::from("/extra")]);
+    let dirs = toolbox_directories(
+        None,
+        &extra,
+        Path::new("/default"),
+        base(),
+        Path::new("/project"),
+    );
+    assert_eq!(
+        dirs,
+        vec![
+            PathBuf::from("/default"),
+            PathBuf::from("/extra"),
+            PathBuf::from("/project/.cake/tools"),
+        ]
+    );
+
+    let dirs = toolbox_directories(
+        Some(""),
+        &extra,
+        Path::new("/default"),
+        base(),
+        Path::new("/project"),
+    );
+    assert_eq!(
+        dirs,
+        vec![
+            PathBuf::from("/extra"),
+            PathBuf::from("/project/.cake/tools"),
+        ]
+    );
 }
 
 #[test]
@@ -59,6 +132,7 @@ fn directories_relative_entries_anchored_to_base_dir() {
         &extra,
         Path::new("/default"),
         base(),
+        Path::new("/project"),
     );
     assert_eq!(
         dirs,
@@ -66,8 +140,39 @@ fn directories_relative_entries_anchored_to_base_dir() {
             PathBuf::from(format!("{BASE}/env/tools")),
             PathBuf::from("/abs"),
             PathBuf::from(format!("{BASE}/flag/tools")),
+            PathBuf::from("/project/.cake/tools"),
         ]
     );
+}
+
+#[test]
+fn directories_project_local_uses_active_worktree_root() {
+    let dirs = toolbox_directories(
+        Some("/configured"),
+        &[],
+        Path::new("/default"),
+        base(),
+        Path::new("/active/worktree"),
+    );
+    assert_eq!(
+        dirs,
+        vec![
+            PathBuf::from("/configured"),
+            PathBuf::from("/active/worktree/.cake/tools"),
+        ]
+    );
+}
+
+#[test]
+fn directories_deduplicate_configured_project_local_path() {
+    let dirs = toolbox_directories(
+        Some(".cake/tools"),
+        &[PathBuf::from(".cake/tools")],
+        Path::new("/default"),
+        base(),
+        base(),
+    );
+    assert_eq!(dirs, vec![PathBuf::from(format!("{BASE}/.cake/tools"))]);
 }
 
 // ── discovery filtering ──

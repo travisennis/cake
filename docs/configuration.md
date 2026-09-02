@@ -271,9 +271,9 @@ Hook commands run outside the model tool sandbox with the project root as their 
 
 ## Toolbox tools
 
-Toolbox directories come from `CAKE_TOOLBOX`, then repeated `--toolbox` arguments. When `CAKE_TOOLBOX` is unset, Cake scans `<config>/cake/tools`; an explicitly empty value disables that default. Earlier directories win name conflicts.
+Toolbox directories are scanned in this order: entries from `CAKE_TOOLBOX`, the repeated `--toolbox` arguments, and the active project's `.cake/tools` directory. When `CAKE_TOOLBOX` is unset, Cake scans `<config>/cake/tools` before the explicit and project-local directories; a non-empty value replaces that global default, while an explicitly empty value suppresses only the global/default scan. Earlier directories win name conflicts. Relative `CAKE_TOOLBOX` and `--toolbox` entries resolve from the invocation directory. With `--worktree`, project-local discovery uses the active worktree's `.cake/tools` directory.
 
-Each executable implements a describe and execute protocol. Valid tools are registered for the model with a `tb__` prefix. Broken tools are skipped with a warning rather than blocking startup.
+Each executable implements a describe and execute protocol. Valid tools are registered for the model with a `tb__` prefix. Project-local `.cake/tools` executables are trusted project configuration and are discovered automatically; inspect or remove them before running a cloned repository with a writable sandbox. Broken tools are skipped with a warning rather than blocking startup.
 
 Toolbox executables are trusted and unsandboxed. Under `read-only`, Cake skips toolbox discovery entirely so even the describe action cannot mutate the workspace. See [Integrations](integrations.md) for the protocol and [Security](security.md) for the trust boundary.
 

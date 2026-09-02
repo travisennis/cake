@@ -1,8 +1,8 @@
 //! Integration tests for user-defined toolbox tools.
 //!
 //! These tests drive the real binary against a mocked Responses API and a
-//! fixture toolbox executable, covering discovery (`CAKE_TOOLBOX` and
-//! `--toolbox`), describe parsing, system-prompt/tool registration, `tb__*`
+//! fixture toolbox executable, covering discovery (`CAKE_TOOLBOX`, `--toolbox`, and
+//! project-local `.cake/tools`), describe parsing, system-prompt/tool registration, `tb__*`
 //! dispatch through the execute protocol, and the read-only exclusion.
 
 #![expect(clippy::expect_used, reason = "test code uses expect for assertions")]
@@ -14,7 +14,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
-use support::TestEnv;
+use support::{GIT_AMBIENT_ENV_VARS, TestEnv};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -55,6 +55,78 @@ fn write_greet_tool(dir: &Path) {
          read -r line\n\
          printf 'Hello, %s!' \"${line#who=}\"\n\
          fi\n",
+    );
+}
+
+fn write_named_tool(dir: &Path, filename: &str, name: &str, description: &str) {
+    write_executable(
+        dir,
+        filename,
+        &format!("#!/bin/sh\nprintf 'name: {name}\\ndescription: {description}\\n'\n"),
+    );
+}
+
+fn write_counted_describe_tool(dir: &Path) {
+    write_executable(
+        dir,
+        "counted",
+        "#!/bin/sh\n\
+         if [ \"$TOOLBOX_ACTION\" = \"describe\" ]; then\n\
+         count=$(cat \"$TOOLBOX_DESCRIBE_COUNT\" 2>/dev/null || printf 0)\n\
+         printf '%s' \"$((count + 1))\" > \"$TOOLBOX_DESCRIBE_COUNT\"\n\
+         printf 'name: counted\\ndescription: Counted.\\n'\n\
+         fi\n",
+    );
+}
+
+/// Build a hermetic git command for a fixture repository.
+fn git(working_dir: &Path) -> std::process::Command {
+    let mut cmd = std::process::Command::new("git");
+    cmd.current_dir(working_dir);
+    for var in GIT_AMBIENT_ENV_VARS {
+        cmd.env_remove(var);
+    }
+    cmd.env("GIT_CONFIG_GLOBAL", "/dev/null");
+    cmd.env("GIT_CONFIG_NOSYSTEM", "1");
+    cmd.args([
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-c",
+        "user.name=Cake Test",
+        "-c",
+        "user.email=cake-test@example.invalid",
+    ]);
+    cmd
+}
+
+/// Initialize a fixture repository with the current project files committed.
+fn init_git_repo(dir: &Path) {
+    let init = git(dir)
+        .args(["init"])
+        .output()
+        .expect("failed to initialize git repository");
+    assert!(
+        init.status.success(),
+        "git init should succeed: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+    let add = git(dir)
+        .args(["add", "."])
+        .output()
+        .expect("failed to stage fixture repository");
+    assert!(
+        add.status.success(),
+        "git add should succeed: {}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+    let commit = git(dir)
+        .args(["commit", "-m", "initial"])
+        .output()
+        .expect("failed to commit fixture repository");
+    assert!(
+        commit.status.success(),
+        "git commit should succeed: {}",
+        String::from_utf8_lossy(&commit.stderr)
     );
 }
 
@@ -158,6 +230,155 @@ async fn toolbox_tool_discovered_registered_and_dispatched() {
 }
 
 #[tokio::test]
+async fn project_local_toolbox_is_discovered_without_configuration() {
+    let env = TestEnv::new("cake-project-toolbox-test");
+    let mock_server = MockServer::start().await;
+    write_responses_settings(&env, &mock_server.uri());
+
+    let toolbox_dir = env.workspace_dir.join(".cake").join("tools");
+    fs::create_dir_all(&toolbox_dir).expect("failed to create project toolbox dir");
+    write_greet_tool(&toolbox_dir);
+
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(final_response()))
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let output = env
+        .command()
+        .arg("test prompt")
+        .env("TOOLBOX_TEST_KEY", "test-token")
+        .env_remove("CAKE_TOOLBOX")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute cake");
+
+    assert!(
+        output.status.success(),
+        "cake should succeed. stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let session = session_file_contents(&env);
+    assert!(
+        session.contains("tb__greet"),
+        "project-local toolbox should be discovered without configuration: {session}"
+    );
+}
+
+#[tokio::test]
+async fn explicit_project_toolbox_path_is_described_once() {
+    let env = TestEnv::new("cake-project-toolbox-dedup-test");
+    let mock_server = MockServer::start().await;
+    write_responses_settings(&env, &mock_server.uri());
+
+    let toolbox_dir = env.workspace_dir.join(".cake").join("tools");
+    fs::create_dir_all(&toolbox_dir).expect("failed to create project toolbox dir");
+    write_counted_describe_tool(&toolbox_dir);
+    fs::create_dir_all(&env.data_dir).expect("failed to create data directory");
+    let count_file = env.data_dir.join("describe-count");
+    fs::write(&count_file, "0").expect("failed to initialize describe counter");
+
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(final_response()))
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let output = env
+        .command()
+        .arg("test prompt")
+        .env("TOOLBOX_TEST_KEY", "test-token")
+        // This was the documented way to activate a project toolbox before
+        // automatic project-local discovery was added.
+        .env("CAKE_TOOLBOX", ".cake/tools")
+        .env("TOOLBOX_DESCRIBE_COUNT", &count_file)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute cake");
+
+    assert!(
+        output.status.success(),
+        "cake should succeed. stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(count_file).expect("failed to read describe counter"),
+        "1",
+        "an explicitly configured project toolbox should not be described twice"
+    );
+}
+
+#[tokio::test]
+async fn worktree_uses_active_project_local_toolbox() {
+    let env = TestEnv::new("cake-worktree-toolbox-test");
+    let mock_server = MockServer::start().await;
+    write_responses_settings(&env, &mock_server.uri());
+
+    let toolbox_dir = env.workspace_dir.join(".cake").join("tools");
+    fs::create_dir_all(&toolbox_dir).expect("failed to create project toolbox dir");
+    write_named_tool(
+        &toolbox_dir,
+        "selected",
+        "worktree",
+        "Active worktree toolbox.",
+    );
+    init_git_repo(&env.workspace_dir);
+    // Leave a different uncommitted version in the invocation directory. A
+    // resolver that runs before worktree setup would discover this one,
+    // whereas the active worktree contains the committed version above.
+    write_named_tool(
+        &toolbox_dir,
+        "selected",
+        "invocation",
+        "Invocation toolbox.",
+    );
+
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(final_response()))
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let output = env
+        .command()
+        .arg("--worktree=toolbox-selection")
+        .arg("test prompt")
+        .env("TOOLBOX_TEST_KEY", "test-token")
+        .env_remove("CAKE_TOOLBOX")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute cake");
+
+    assert!(
+        output.status.success(),
+        "cake should succeed. stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let session = session_file_contents(&env);
+    assert!(
+        session.contains("tb__worktree"),
+        "the active worktree's project toolbox should be discovered: {session}"
+    );
+    assert!(
+        session.contains("Active worktree toolbox."),
+        "the active worktree's describe output should win: {session}"
+    );
+    assert!(
+        !session.contains("tb__invocation"),
+        "the original invocation directory's toolbox must not be used with --worktree: {session}"
+    );
+}
+
+#[tokio::test]
 async fn toolbox_flag_adds_directory_without_env() {
     let env = TestEnv::new("cake-toolbox-flag-test");
     let mock_server = MockServer::start().await;
@@ -166,6 +387,14 @@ async fn toolbox_flag_adds_directory_without_env() {
     let toolbox_dir = env.workspace_dir.join("toolbox");
     fs::create_dir_all(&toolbox_dir).expect("failed to create toolbox dir");
     write_greet_tool(&toolbox_dir);
+    let project_toolbox_dir = env.workspace_dir.join(".cake").join("tools");
+    fs::create_dir_all(&project_toolbox_dir).expect("failed to create project toolbox dir");
+    write_named_tool(
+        &project_toolbox_dir,
+        "greet",
+        "greet",
+        "Project toolbox should lose.",
+    );
 
     Mock::given(method("POST"))
         .and(path("/responses"))
@@ -194,8 +423,12 @@ async fn toolbox_flag_adds_directory_without_env() {
 
     let session = session_file_contents(&env);
     assert!(
-        session.contains("tb__greet"),
-        "--toolbox directory should be scanned: {session}"
+        session.contains("- **tb__greet**: Greets someone."),
+        "explicit --toolbox entries must take precedence over project-local tools: {session}"
+    );
+    assert!(
+        !session.contains("Project toolbox should lose."),
+        "project-local duplicate should not replace an explicit toolbox entry: {session}"
     );
 }
 
