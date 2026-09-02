@@ -431,50 +431,70 @@ fn collect_matching_files(
     for entry in
         std::fs::read_dir(dir).with_context(|| format!("Failed to read dir {}", dir.display()))?
     {
-        let entry = entry?;
-        let path = entry.path();
-
-        // Use the non-following file type: `path.is_dir()` / `path.is_file()`
-        // follow symlinks, which would let a symlink cycle recurse without
-        // bound and let symlinks escape the repository. Skip symlinks entirely.
-        let file_type = entry
-            .file_type()
-            .with_context(|| format!("Failed to stat {}", path.display()))?;
-        if file_type.is_symlink() {
-            continue;
-        }
-
-        if file_type.is_dir() {
-            let name = entry.file_name();
-            // Skip internal git and cake directories.
-            if name == ".git" || name == ".cake" {
-                continue;
-            }
-            // Prune directories whose contents cannot match any pattern.
-            let relative_dir = path.strip_prefix(base).with_context(|| {
-                format!(
-                    "path {} is not under base {}",
-                    path.display(),
-                    base.display()
-                )
-            })?;
-            let relative_dir_str = relative_dir.to_string_lossy();
-            if !any_pattern_could_match_under(patterns, &relative_dir_str) {
-                continue;
-            }
-            collect_matching_files(base, &path, patterns, dest_root, copied)?;
-        } else if file_type.is_file() {
-            let relative = path.strip_prefix(base).with_context(|| {
-                format!(
-                    "path {} is not under base {}",
-                    path.display(),
-                    base.display()
-                )
-            })?;
-            copy_matching_file(&path, relative, patterns, dest_root, copied)?;
-        }
+        collect_matching_entry(base, &entry?, patterns, dest_root, copied)?;
     }
     Ok(())
+}
+
+fn collect_matching_entry(
+    base: &Path,
+    entry: &std::fs::DirEntry,
+    patterns: &[String],
+    dest_root: &Path,
+    copied: &mut usize,
+) -> anyhow::Result<()> {
+    let path = entry.path();
+
+    // Use the non-following file type: `path.is_dir()` / `path.is_file()`
+    // follow symlinks, which would let a symlink cycle recurse without
+    // bound and let symlinks escape the repository. Skip symlinks entirely.
+    let file_type = entry
+        .file_type()
+        .with_context(|| format!("Failed to stat {}", path.display()))?;
+    if file_type.is_symlink() {
+        return Ok(());
+    }
+
+    if file_type.is_dir() {
+        collect_matching_directory(base, &path, &entry.file_name(), patterns, dest_root, copied)?;
+    } else if file_type.is_file() {
+        let relative = path.strip_prefix(base).with_context(|| {
+            format!(
+                "path {} is not under base {}",
+                path.display(),
+                base.display()
+            )
+        })?;
+        copy_matching_file(&path, relative, patterns, dest_root, copied)?;
+    }
+    Ok(())
+}
+
+fn collect_matching_directory(
+    base: &Path,
+    path: &Path,
+    name: &std::ffi::OsStr,
+    patterns: &[String],
+    dest_root: &Path,
+    copied: &mut usize,
+) -> anyhow::Result<()> {
+    // Skip internal git and cake directories.
+    if name == ".git" || name == ".cake" {
+        return Ok(());
+    }
+    // Prune directories whose contents cannot match any pattern.
+    let relative_dir = path.strip_prefix(base).with_context(|| {
+        format!(
+            "path {} is not under base {}",
+            path.display(),
+            base.display()
+        )
+    })?;
+    let relative_dir_str = relative_dir.to_string_lossy();
+    if !any_pattern_could_match_under(patterns, &relative_dir_str) {
+        return Ok(());
+    }
+    collect_matching_files(base, path, patterns, dest_root, copied)
 }
 
 /// Copy `path` to `dest_root.join(relative)` when any pattern matches
@@ -1198,6 +1218,47 @@ mod tests {
     }
 
     // ── copy_worktree_includes pruning tests ─────────────────────────────────
+
+    #[test]
+    fn test_collect_matching_files_reports_unreadable_directory() {
+        let base = TempDir::new().unwrap();
+        let dest = TempDir::new().unwrap();
+        let missing = base.path().join("missing");
+        let patterns = vec!["**".to_string()];
+        let mut copied = 0;
+
+        let error =
+            collect_matching_files(base.path(), &missing, &patterns, dest.path(), &mut copied)
+                .unwrap_err();
+
+        assert!(error.to_string().contains("Failed to read dir"));
+        assert_eq!(copied, 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_collect_matching_files_skips_non_regular_files() -> TestResult {
+        use std::os::unix::net::UnixListener;
+
+        let source = TempDir::new()?;
+        let dest = TempDir::new()?;
+        let socket_path = source.path().join("ignored.sock");
+        let _socket = UnixListener::bind(&socket_path)?;
+        let patterns = vec!["**".to_string()];
+        let mut copied = 0;
+
+        collect_matching_files(
+            source.path(),
+            source.path(),
+            &patterns,
+            dest.path(),
+            &mut copied,
+        )?;
+
+        assert_eq!(copied, 0);
+        assert!(!dest.path().join("ignored.sock").exists());
+        Ok(())
+    }
 
     #[test]
     fn test_copy_worktree_includes_prunes_unreachable_dirs() -> TestResult {

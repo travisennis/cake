@@ -1035,67 +1035,93 @@ pub(super) fn validate_path_for_write(
 /// non-existing segment cancel a preceding pending normal component.
 pub(super) fn resolve_write_path(path: &Path) -> (PathBuf, Vec<OsString>) {
     let mut resolved = PathBuf::new();
-    let mut pending: Vec<OsString> = Vec::new();
+    let mut pending = Vec::new();
     let mut missing = false;
 
     for component in path.components() {
-        match component {
-            std::path::Component::RootDir => {
-                resolved = PathBuf::from("/");
-                pending.clear();
-                missing = false;
-            },
-            std::path::Component::Prefix(p) => {
-                resolved.push(p.as_os_str());
-                pending.clear();
-                missing = false;
-            },
-            std::path::Component::CurDir => {
-                // skip `.`
-            },
-            std::path::Component::Normal(name) => {
-                if missing {
-                    pending.push(name.to_os_string());
-                } else {
-                    let candidate = resolved.join(name);
-                    if candidate.exists() {
-                        // Follow symlinks by canonicalizing
-                        resolved = candidate.canonicalize().unwrap_or(candidate);
-                    } else {
-                        missing = true;
-                        pending.push(name.to_os_string());
-                    }
-                }
-            },
-            std::path::Component::ParentDir => {
-                if !missing {
-                    let candidate = resolved.join("..");
-                    if candidate.exists() {
-                        resolved = candidate.canonicalize().unwrap_or(candidate);
-                    } else {
-                        missing = true;
-                        pending.push(OsStr::new("..").to_os_string());
-                    }
-                } else if !pending.is_empty() {
-                    // `..` in the non-existing segment cancels the last
-                    // pending normal component. If pending is now empty,
-                    // resume filesystem resolution so that subsequent
-                    // existing symlinks are canonicalized correctly.
-                    pending.pop();
-                    if pending.is_empty() {
-                        missing = false;
-                    }
-                } else if resolved.as_os_str().is_empty() || resolved == Path::new("/") {
-                    // `..` at root or empty base is a no-op
-                } else {
-                    // `..` above a fully-resolved non-root base — go up
-                    resolved.pop();
-                }
-            },
-        }
+        resolve_write_path_component(component, &mut resolved, &mut pending, &mut missing);
     }
 
     (resolved, pending)
+}
+
+fn resolve_write_path_component(
+    component: std::path::Component<'_>,
+    resolved: &mut PathBuf,
+    pending: &mut Vec<OsString>,
+    missing: &mut bool,
+) {
+    match component {
+        std::path::Component::RootDir => {
+            *resolved = PathBuf::from("/");
+            pending.clear();
+            *missing = false;
+        },
+        std::path::Component::Prefix(prefix) => {
+            resolved.push(prefix.as_os_str());
+            pending.clear();
+            *missing = false;
+        },
+        std::path::Component::CurDir => {
+            // skip `.`
+        },
+        std::path::Component::Normal(name) => {
+            resolve_normal_write_component(name, resolved, pending, missing);
+        },
+        std::path::Component::ParentDir => {
+            resolve_parent_write_component(resolved, pending, missing);
+        },
+    }
+}
+
+fn resolve_normal_write_component(
+    name: &OsStr,
+    resolved: &mut PathBuf,
+    pending: &mut Vec<OsString>,
+    missing: &mut bool,
+) {
+    if *missing {
+        pending.push(name.to_os_string());
+        return;
+    }
+
+    let candidate = resolved.join(name);
+    if candidate.exists() {
+        // Follow symlinks by canonicalizing.
+        *resolved = candidate.canonicalize().unwrap_or(candidate);
+    } else {
+        *missing = true;
+        pending.push(name.to_os_string());
+    }
+}
+
+fn resolve_parent_write_component(
+    resolved: &mut PathBuf,
+    pending: &mut Vec<OsString>,
+    missing: &mut bool,
+) {
+    if !*missing {
+        let candidate = resolved.join("..");
+        if candidate.exists() {
+            *resolved = candidate.canonicalize().unwrap_or(candidate);
+        } else {
+            *missing = true;
+            pending.push(OsStr::new("..").to_os_string());
+        }
+    } else if !pending.is_empty() {
+        // `..` in the non-existing segment cancels the last pending normal
+        // component. If pending is now empty, resume filesystem resolution so
+        // that subsequent existing symlinks are canonicalized correctly.
+        pending.pop();
+        if pending.is_empty() {
+            *missing = false;
+        }
+    } else if resolved.as_os_str().is_empty() || resolved == Path::new("/") {
+        // `..` at root or empty base is a no-op.
+    } else {
+        // `..` above a fully-resolved non-root base — go up.
+        resolved.pop();
+    }
 }
 
 /// Resolve a write-target path for scheduling without requiring the file to
@@ -1836,6 +1862,35 @@ mod tests {
         let err =
             resolve_path_for_write_scheduling(&context, target.to_str().unwrap()).unwrap_err();
         assert!(err.contains("read-only"), "got: {err}");
+    }
+
+    #[test]
+    fn resolve_write_path_normalizes_existing_and_missing_components() {
+        let dir = tempfile::tempdir().unwrap();
+        let existing = dir.path().join("existing");
+        fs::create_dir(&existing).unwrap();
+
+        let path = dir
+            .path()
+            .join(".")
+            .join("existing")
+            .join("..")
+            .join("missing")
+            .join("child")
+            .join("..")
+            .join("new.txt");
+        let (resolved, pending) = resolve_write_path(&path);
+
+        assert_eq!(resolved, fs::canonicalize(dir.path()).unwrap());
+        assert_eq!(
+            pending,
+            vec![OsString::from("missing"), OsString::from("new.txt")]
+        );
+
+        let path = dir.path().join("missing").join("..").join("another.txt");
+        let (resolved, pending) = resolve_write_path(&path);
+        assert_eq!(resolved, fs::canonicalize(dir.path()).unwrap());
+        assert_eq!(pending, vec![OsString::from("another.txt")]);
     }
 
     fn fixture_toolbox_tool() -> crate::config::toolbox::ToolboxTool {

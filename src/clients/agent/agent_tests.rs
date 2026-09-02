@@ -1628,6 +1628,7 @@ printf 'completed:%s' "$index"
             }),
             format: crate::config::toolbox::ToolboxFormat::Json,
             timeout_secs: 5,
+            replay: crate::types::ReplaySafety::Never,
         }
     }
 
