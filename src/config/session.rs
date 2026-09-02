@@ -143,103 +143,15 @@ impl Session {
         let file = fs::File::open(path)
             .with_context(|| format!("Failed to open session file: {}", path.display()))?;
         let mut framer = SessionFramer::new(BufReader::new(file));
-
-        let first_line = framer
-            .next_record()
-            .with_context(|| format!("Failed to read session file: {}", path.display()))?
-            .ok_or_else(|| anyhow::anyhow!("Session file is empty"))?
-            .text;
-
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&first_line)
-            && value.get("type").and_then(|value| value.as_str()) != Some("session_meta")
-        {
-            anyhow::bail!(
-                "Unsupported or legacy session file format: expected session_meta as first record in {}",
-                path.display()
-            );
-        }
-
-        let meta: SessionRecord = serde_json::from_str(&first_line).with_context(|| {
-            format!(
-                "Failed to parse session_meta record of session file: {}",
-                path.display()
-            )
-        })?;
-
-        let (id, working_dir, model, system_prompt, git, session_timestamp) = match &meta {
-            SessionRecord::SessionMeta {
-                format_version,
-                session_id,
-                timestamp,
-                working_directory,
-                model: m,
-                system_prompt: sp,
-                git: git_state,
-                ..
-            } => {
-                if *format_version != CURRENT_FORMAT_VERSION {
-                    anyhow::bail!(
-                        "Unsupported session format_version: {} (expected {}). Session file: {}",
-                        format_version,
-                        CURRENT_FORMAT_VERSION,
-                        path.display()
-                    );
-                }
-                (
-                    uuid::Uuid::parse_str(session_id)
-                        .with_context(|| format!("Invalid session UUID '{session_id}'"))?,
-                    working_directory.clone(),
-                    m.clone(),
-                    sp.clone(),
-                    Some(git_state.clone()),
-                    *timestamp,
-                )
-            },
-            _ => {
-                return Err(anyhow::anyhow!(
-                    "Unsupported or legacy session file format: expected session_meta as first record in {}",
-                    path.display()
-                ));
-            },
-        };
-        let mut records = Vec::new();
-        records.push(meta);
-
-        while let Some(line) = framer
-            .next_record()
-            .with_context(|| format!("Failed to read session file: {}", path.display()))?
-        {
-            match serde_json::from_str::<SessionRecord>(&line.text) {
-                Ok(mut record) => {
-                    record.normalize_legacy_fields(session_timestamp);
-                    records.push(record);
-                },
-                Err(error) if line.partial_tail => {
-                    tracing::warn!(
-                        "Ignoring partial final session record in {}: {}",
-                        path.display(),
-                        error
-                    );
-                    break;
-                },
-                Err(error) => {
-                    return Err(error).with_context(|| {
-                        format!(
-                            "Failed to parse line {} of session file: {}",
-                            line.line_number,
-                            path.display()
-                        )
-                    });
-                },
-            }
-        }
+        let (meta, header) = read_session_header(&mut framer, path)?;
+        let records = read_session_records(&mut framer, path, header.timestamp, meta)?;
 
         Ok(Self {
-            id,
-            working_dir,
-            model,
-            system_prompt,
-            git,
+            id: header.id,
+            working_dir: header.working_dir,
+            model: header.model,
+            system_prompt: header.system_prompt,
+            git: header.git,
             records,
         })
     }
@@ -294,6 +206,121 @@ impl Session {
         }
         Ok(())
     }
+}
+
+struct SessionHeader {
+    id: uuid::Uuid,
+    working_dir: PathBuf,
+    model: Option<String>,
+    system_prompt: Option<String>,
+    git: Option<GitState>,
+    timestamp: chrono::DateTime<chrono::Utc>,
+}
+
+fn read_session_header<R: std::io::BufRead>(
+    framer: &mut SessionFramer<R>,
+    path: &Path,
+) -> anyhow::Result<(SessionRecord, SessionHeader)> {
+    let first_line = framer
+        .next_record()
+        .with_context(|| format!("Failed to read session file: {}", path.display()))?
+        .ok_or_else(|| anyhow::anyhow!("Session file is empty"))?
+        .text;
+
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&first_line)
+        && value.get("type").and_then(|value| value.as_str()) != Some("session_meta")
+    {
+        anyhow::bail!(
+            "Unsupported or legacy session file format: expected session_meta as first record in {}",
+            path.display()
+        );
+    }
+
+    let meta: SessionRecord = serde_json::from_str(&first_line).with_context(|| {
+        format!(
+            "Failed to parse session_meta record of session file: {}",
+            path.display()
+        )
+    })?;
+
+    let header = match &meta {
+        SessionRecord::SessionMeta {
+            format_version,
+            session_id,
+            timestamp,
+            working_directory,
+            model,
+            system_prompt,
+            git,
+            ..
+        } => {
+            if *format_version != CURRENT_FORMAT_VERSION {
+                anyhow::bail!(
+                    "Unsupported session format_version: {} (expected {}). Session file: {}",
+                    format_version,
+                    CURRENT_FORMAT_VERSION,
+                    path.display()
+                );
+            }
+            SessionHeader {
+                id: uuid::Uuid::parse_str(session_id)
+                    .with_context(|| format!("Invalid session UUID '{session_id}'"))?,
+                working_dir: working_directory.clone(),
+                model: model.clone(),
+                system_prompt: system_prompt.clone(),
+                git: Some(git.clone()),
+                timestamp: *timestamp,
+            }
+        },
+        _ => {
+            return Err(anyhow::anyhow!(
+                "Unsupported or legacy session file format: expected session_meta as first record in {}",
+                path.display()
+            ));
+        },
+    };
+
+    Ok((meta, header))
+}
+
+fn read_session_records<R: std::io::BufRead>(
+    framer: &mut SessionFramer<R>,
+    path: &Path,
+    session_timestamp: chrono::DateTime<chrono::Utc>,
+    meta: SessionRecord,
+) -> anyhow::Result<Vec<SessionRecord>> {
+    let mut records = vec![meta];
+
+    while let Some(line) = framer
+        .next_record()
+        .with_context(|| format!("Failed to read session file: {}", path.display()))?
+    {
+        match serde_json::from_str::<SessionRecord>(&line.text) {
+            Ok(mut record) => {
+                record.normalize_legacy_fields(session_timestamp);
+                records.push(record);
+            },
+            Err(error) if line.partial_tail => {
+                tracing::warn!(
+                    "Ignoring partial final session record in {}: {}",
+                    path.display(),
+                    error
+                );
+                break;
+            },
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "Failed to parse line {} of session file: {}",
+                        line.line_number,
+                        path.display()
+                    )
+                });
+            },
+        }
+    }
+
+    Ok(records)
 }
 
 fn lock_session_file(file: &File, path: &Path) -> anyhow::Result<()> {
@@ -444,6 +471,61 @@ mod tests {
         assert_eq!(session.working_dir, PathBuf::from("/tmp/test"));
         assert!(session.records.is_empty());
         assert!(session.model.is_none());
+    }
+
+    #[test]
+    fn test_session_load_rejects_empty_file() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("empty.jsonl");
+        fs::write(&path, "\n  \n").unwrap();
+
+        let error = Session::load(&path).unwrap_err().to_string();
+        assert!(error.contains("Session file is empty"));
+    }
+
+    #[test]
+    fn test_session_load_rejects_invalid_session_uuid() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("invalid-uuid.jsonl");
+        fs::write(
+            &path,
+            concat!(
+                r#"{"type":"session_meta","format_version":4,"session_id":"not-a-uuid","timestamp":"2026-04-04T15:51:54Z","working_directory":"/tmp/test","tools":[],"git":{"repository_url":null,"branch":null,"commit_hash":null}}"#,
+                "\n"
+            ),
+        )
+        .unwrap();
+
+        let error = Session::load(&path).unwrap_err().to_string();
+        assert!(error.contains("Invalid session UUID 'not-a-uuid'"));
+    }
+
+    #[test]
+    fn test_session_load_rejects_malformed_nonfinal_record() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("malformed.jsonl");
+        let session = make_test_session();
+        let header = serde_json::to_string(&meta_record(&session)).unwrap();
+        fs::write(&path, format!("{header}\n{{\"type\":\"message\"\n")).unwrap();
+
+        let error = Session::load(&path).unwrap_err().to_string();
+        assert!(error.contains("Failed to parse line 2 of session file"));
+    }
+
+    #[test]
+    fn test_session_load_ignores_partial_final_record() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("partial-tail.jsonl");
+        let session = make_test_session();
+        let header = serde_json::to_string(&meta_record(&session)).unwrap();
+        fs::write(&path, format!("{header}\n{{\"type\":\"message\"")).unwrap();
+
+        let loaded = Session::load(&path).unwrap();
+        assert_eq!(loaded.records.len(), 1);
+        assert!(matches!(
+            loaded.records[0],
+            SessionRecord::SessionMeta { .. }
+        ));
     }
 
     #[test]

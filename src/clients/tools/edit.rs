@@ -170,43 +170,11 @@ pub(super) fn execute_edit(
     arguments: &str,
 ) -> Result<super::ToolResult, String> {
     let args = parse_edit_args(arguments)?;
-
-    // Validate number of edits
-    if args.edits.is_empty() {
-        return Err("No edits provided. At least one edit is required.".to_string());
-    }
-
-    if args.edits.len() > MAX_EDITS_PER_CALL {
-        return Err(format!(
-            "Too many edits ({}). Maximum {} edits per call. Please split your changes into multiple tool calls.",
-            args.edits.len(),
-            MAX_EDITS_PER_CALL
-        ));
-    }
+    validate_edit_count(&args.edits)?;
 
     // Validate and canonicalize the path (ensures it's not read-only)
     let path = validate_path_for_write(tool_context, &args.path)?;
-
-    // Check if file exists and is a file
-    let metadata = std::fs::metadata(&path)
-        .map_err(|e| format!("Failed to access file '{}': {e}", path.display()))?;
-    if !metadata.is_file() {
-        return Err(format!("Path is not a file: {}", path.display()));
-    }
-
-    // Refuse binary files before treating the bytes as editable UTF-8 text.
-    let file_bytes = std::fs::read(&path)
-        .map_err(|e| format!("Failed to read file '{}': {e}", path.display()))?;
-    if file_bytes.contains(&0) {
-        return Err(format!(
-            "Cannot edit binary file: {} (detected null bytes)",
-            path.display()
-        ));
-    }
-
-    // Read file content as string
-    let content = String::from_utf8(file_bytes)
-        .map_err(|_e| format!("File contains invalid UTF-8: {}", path.display()))?;
+    let content = read_edit_file(&path)?;
 
     // Detect and strip BOM
     let (bom, content) = strip_bom(&content);
@@ -268,6 +236,44 @@ pub(super) fn execute_edit(
         output: result,
         compensation_events: Vec::new(),
     })
+}
+
+fn validate_edit_count(edits: &[Edit]) -> Result<(), String> {
+    if edits.is_empty() {
+        return Err("No edits provided. At least one edit is required.".to_string());
+    }
+
+    if edits.len() > MAX_EDITS_PER_CALL {
+        return Err(format!(
+            "Too many edits ({}). Maximum {} edits per call. Please split your changes into multiple tool calls.",
+            edits.len(),
+            MAX_EDITS_PER_CALL
+        ));
+    }
+
+    Ok(())
+}
+
+fn read_edit_file(path: &Path) -> Result<String, String> {
+    // Check if file exists and is a file.
+    let metadata = std::fs::metadata(path)
+        .map_err(|e| format!("Failed to access file '{}': {e}", path.display()))?;
+    if !metadata.is_file() {
+        return Err(format!("Path is not a file: {}", path.display()));
+    }
+
+    // Refuse binary files before treating the bytes as editable UTF-8 text.
+    let file_bytes = std::fs::read(path)
+        .map_err(|e| format!("Failed to read file '{}': {e}", path.display()))?;
+    if file_bytes.contains(&0) {
+        return Err(format!(
+            "Cannot edit binary file: {} (detected null bytes)",
+            path.display()
+        ));
+    }
+
+    String::from_utf8(file_bytes)
+        .map_err(|_e| format!("File contains invalid UTF-8: {}", path.display()))
 }
 
 /// Expected JSON shape for the Edit tool arguments.

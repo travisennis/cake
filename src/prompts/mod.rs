@@ -40,6 +40,59 @@ When a skill references relative paths, resolve them against the skill's
 directory (the parent of SKILL.md) and use absolute paths in tool calls.
 </skill_instructions>";
 
+#[derive(Clone, Copy)]
+enum PromptSource {
+    Cli,
+    Project,
+    Settings,
+    User,
+}
+
+impl PromptSource {
+    fn log_success(self, path: &Path) {
+        match self {
+            Self::Cli => debug!("Using --system-prompt file: {}", path.display()),
+            Self::Project => debug!("Using project-level system prompt: {}", path.display()),
+            Self::Settings => debug!("Using settings system prompt from {}", path.display()),
+            Self::User => debug!("Using user-level system prompt: {}", path.display()),
+        }
+    }
+
+    fn log_failure(self, path: &Path, error: &std::io::Error) {
+        match self {
+            Self::Cli => warn!(
+                "Skipping unreadable --system-prompt file at {}: {error}",
+                path.display()
+            ),
+            Self::Project => warn!(
+                "Skipping unreadable system prompt file at {}: {error}",
+                path.display()
+            ),
+            Self::Settings => warn!(
+                "Skipping unreadable settings system prompt at {}: {error}",
+                path.display()
+            ),
+            Self::User => warn!(
+                "Skipping unreadable system prompt file at {}: {error}",
+                path.display()
+            ),
+        }
+    }
+}
+
+fn read_prompt_override(path: &Path, source: PromptSource) -> Option<String> {
+    match std::fs::read_to_string(path) {
+        Ok(content) => {
+            source.log_success(path);
+            Some(content.trim().to_string())
+        },
+        Err(error) => {
+            source.log_failure(path, &error);
+            None
+        },
+    }
+}
+
 /// Resolves the system prompt from CLI flags, override files, settings, or the built-in default.
 ///
 /// Checks sources in precedence order (highest to lowest):
@@ -52,10 +105,6 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
 /// The first readable file found wins. Empty files are valid (intentional blank prompt).
 /// Unreadable files produce a warning and are skipped. The optional `enabled_tools`
 /// list filters the built-in available-tools section by exact registered name.
-#[expect(
-    clippy::cognitive_complexity,
-    reason = "inherently dispatch-heavy precedence scan (McCabe 14, cognitive 17; within the <= 15 McCabe allowance); reduction tracked in #102"
-)]
 pub fn resolve_system_prompt(
     working_dir: &Path,
     config_dir: &Path,
@@ -66,72 +115,33 @@ pub fn resolve_system_prompt(
     enabled_tools: Option<&[String]>,
 ) -> String {
     // 1. --system-prompt CLI flag
-    if let Some(path) = cli_system_prompt {
-        match std::fs::read_to_string(path) {
-            Ok(content) => {
-                debug!("Using --system-prompt file: {}", path.display());
-                return content.trim().to_string();
-            },
-            Err(e) => {
-                warn!(
-                    "Skipping unreadable --system-prompt file at {}: {e}",
-                    path.display()
-                );
-            },
-        }
+    if let Some(path) = cli_system_prompt
+        && let Some(prompt) = read_prompt_override(path, PromptSource::Cli)
+    {
+        return prompt;
     }
 
     // 2. Project-level file: .cake/system.md
     let project_path = working_dir.join(".cake").join("system.md");
-    if project_path.exists() {
-        match std::fs::read_to_string(&project_path) {
-            Ok(content) => {
-                debug!(
-                    "Using project-level system prompt: {}",
-                    project_path.display()
-                );
-                return content.trim().to_string();
-            },
-            Err(e) => {
-                warn!(
-                    "Skipping unreadable system prompt file at {}: {e}",
-                    project_path.display()
-                );
-            },
-        }
+    if project_path.exists()
+        && let Some(prompt) = read_prompt_override(&project_path, PromptSource::Project)
+    {
+        return prompt;
     }
 
     // 3. Settings system_prompt path
-    if let Some(path) = settings_system_prompt {
-        match std::fs::read_to_string(path) {
-            Ok(content) => {
-                debug!("Using settings system prompt from {}", path.display());
-                return content.trim().to_string();
-            },
-            Err(e) => {
-                warn!(
-                    "Skipping unreadable settings system prompt at {}: {e}",
-                    path.display()
-                );
-            },
-        }
+    if let Some(path) = settings_system_prompt
+        && let Some(prompt) = read_prompt_override(path, PromptSource::Settings)
+    {
+        return prompt;
     }
 
     // 4. User-level file: ~/.config/cake/system.md
     let user_path = config_dir.join("system.md");
-    if user_path.exists() {
-        match std::fs::read_to_string(&user_path) {
-            Ok(content) => {
-                debug!("Using user-level system prompt: {}", user_path.display());
-                return content.trim().to_string();
-            },
-            Err(e) => {
-                warn!(
-                    "Skipping unreadable system prompt file at {}: {e}",
-                    user_path.display()
-                );
-            },
-        }
+    if user_path.exists()
+        && let Some(prompt) = read_prompt_override(&user_path, PromptSource::User)
+    {
+        return prompt;
     }
 
     debug!("Using built-in system prompt (no override found)");
@@ -316,6 +326,85 @@ mod tests {
         assert!(!prompt.contains("- **Bash**:"));
         assert!(!prompt.contains("- **Edit**:"));
         assert!(!prompt.contains("- **Write**:"));
+    }
+
+    #[test]
+    fn resolve_uses_cli_override_and_trims() {
+        let working_dir = TempDir::new().unwrap();
+        let config_dir = TempDir::new().unwrap();
+        let cli_file = working_dir.path().join("cli-system.md");
+        std::fs::write(&cli_file, "  CLI prompt  \n").unwrap();
+
+        let prompt = resolve_system_prompt(
+            working_dir.path(),
+            config_dir.path(),
+            Some(&cli_file),
+            None,
+            SandboxPolicy::WorkspaceWrite,
+            &[],
+            None,
+        );
+
+        assert_eq!(prompt, "CLI prompt");
+    }
+
+    #[test]
+    fn resolve_uses_settings_override_when_no_higher_precedence_file_exists() {
+        let working_dir = TempDir::new().unwrap();
+        let config_dir = TempDir::new().unwrap();
+        let settings_file = working_dir.path().join("settings-system.md");
+        std::fs::write(&settings_file, "Settings prompt").unwrap();
+
+        let prompt = resolve_system_prompt(
+            working_dir.path(),
+            config_dir.path(),
+            None,
+            Some(&settings_file),
+            SandboxPolicy::WorkspaceWrite,
+            &[],
+            None,
+        );
+
+        assert_eq!(prompt, "Settings prompt");
+    }
+
+    #[test]
+    fn resolve_unreadable_cli_override_falls_back_to_user_level() {
+        let working_dir = TempDir::new().unwrap();
+        let config_dir = TempDir::new().unwrap();
+        let missing_cli_file = working_dir.path().join("missing-cli-system.md");
+        std::fs::write(config_dir.path().join("system.md"), "User prompt").unwrap();
+
+        let prompt = resolve_system_prompt(
+            working_dir.path(),
+            config_dir.path(),
+            Some(&missing_cli_file),
+            None,
+            SandboxPolicy::WorkspaceWrite,
+            &[],
+            None,
+        );
+
+        assert_eq!(prompt, "User prompt");
+    }
+
+    #[test]
+    fn resolve_unreadable_settings_override_falls_back_to_builtin() {
+        let working_dir = TempDir::new().unwrap();
+        let config_dir = TempDir::new().unwrap();
+        let missing_settings_file = working_dir.path().join("missing-settings-system.md");
+
+        let prompt = resolve_system_prompt(
+            working_dir.path(),
+            config_dir.path(),
+            None,
+            Some(&missing_settings_file),
+            SandboxPolicy::WorkspaceWrite,
+            &[],
+            None,
+        );
+
+        assert!(prompt.starts_with("You are cake."));
     }
 
     #[test]
