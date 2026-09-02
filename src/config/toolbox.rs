@@ -18,6 +18,7 @@
 //! are user-provided and trusted. They are therefore never offered under
 //! the read-only sandbox policy.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -119,6 +120,7 @@ pub fn toolbox_directories(
         },
     );
     dirs.extend(extra_dirs.iter().cloned());
+    let mut seen = HashSet::new();
     dirs.into_iter()
         .map(|dir| {
             if dir.is_absolute() {
@@ -128,7 +130,18 @@ pub fn toolbox_directories(
             }
         })
         .chain(std::iter::once(project_dir.join(".cake").join("tools")))
+        // Automatic project-local discovery can duplicate an explicitly
+        // configured directory (the documented `CAKE_TOOLBOX=.cake/tools`
+        // setup is one example). Avoid running an unsandboxed describe action
+        // twice while retaining the first source's precedence.
+        .filter(|dir| seen.insert(toolbox_directory_identity(dir)))
         .collect()
+}
+
+/// Return a stable identity for an existing directory, including symlinked
+/// paths, while retaining missing paths for diagnostics/discovery filtering.
+fn toolbox_directory_identity(dir: &Path) -> PathBuf {
+    std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf())
 }
 
 /// Scan the given directories for toolbox executables, in order.

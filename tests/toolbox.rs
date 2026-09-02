@@ -66,6 +66,19 @@ fn write_named_tool(dir: &Path, filename: &str, name: &str, description: &str) {
     );
 }
 
+fn write_counted_describe_tool(dir: &Path) {
+    write_executable(
+        dir,
+        "counted",
+        "#!/bin/sh\n\
+         if [ \"$TOOLBOX_ACTION\" = \"describe\" ]; then\n\
+         count=$(cat \"$TOOLBOX_DESCRIBE_COUNT\" 2>/dev/null || printf 0)\n\
+         printf '%s' \"$((count + 1))\" > \"$TOOLBOX_DESCRIBE_COUNT\"\n\
+         printf 'name: counted\\ndescription: Counted.\\n'\n\
+         fi\n",
+    );
+}
+
 /// Build a hermetic git command for a fixture repository.
 fn git(working_dir: &Path) -> std::process::Command {
     let mut cmd = std::process::Command::new("git");
@@ -253,6 +266,51 @@ async fn project_local_toolbox_is_discovered_without_configuration() {
     assert!(
         session.contains("tb__greet"),
         "project-local toolbox should be discovered without configuration: {session}"
+    );
+}
+
+#[tokio::test]
+async fn explicit_project_toolbox_path_is_described_once() {
+    let env = TestEnv::new("cake-project-toolbox-dedup-test");
+    let mock_server = MockServer::start().await;
+    write_responses_settings(&env, &mock_server.uri());
+
+    let toolbox_dir = env.workspace_dir.join(".cake").join("tools");
+    fs::create_dir_all(&toolbox_dir).expect("failed to create project toolbox dir");
+    write_counted_describe_tool(&toolbox_dir);
+    fs::create_dir_all(&env.data_dir).expect("failed to create data directory");
+    let count_file = env.data_dir.join("describe-count");
+    fs::write(&count_file, "0").expect("failed to initialize describe counter");
+
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(final_response()))
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let output = env
+        .command()
+        .arg("test prompt")
+        .env("TOOLBOX_TEST_KEY", "test-token")
+        // This was the documented way to activate a project toolbox before
+        // automatic project-local discovery was added.
+        .env("CAKE_TOOLBOX", ".cake/tools")
+        .env("TOOLBOX_DESCRIBE_COUNT", &count_file)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute cake");
+
+    assert!(
+        output.status.success(),
+        "cake should succeed. stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(count_file).expect("failed to read describe counter"),
+        "1",
+        "an explicitly configured project toolbox should not be described twice"
     );
 }
 

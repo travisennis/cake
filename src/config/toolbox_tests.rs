@@ -163,6 +163,18 @@ fn directories_project_local_uses_active_worktree_root() {
     );
 }
 
+#[test]
+fn directories_deduplicate_configured_project_local_path() {
+    let dirs = toolbox_directories(
+        Some(".cake/tools"),
+        &[PathBuf::from(".cake/tools")],
+        Path::new("/default"),
+        base(),
+        base(),
+    );
+    assert_eq!(dirs, vec![PathBuf::from(format!("{BASE}/.cake/tools"))]);
+}
+
 // ── discovery filtering ──
 
 #[cfg(unix)]
