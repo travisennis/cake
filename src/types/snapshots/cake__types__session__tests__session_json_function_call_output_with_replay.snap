@@ -1,0 +1,11 @@
+---
+source: src/types/session_tests.rs
+expression: "session_json_for_with_replay(&item, ReplaySafety::Safe)"
+---
+{
+  "call_id": "call-1",
+  "output": "result",
+  "replay": "safe",
+  "timestamp": "2026-05-10T00:00:00Z",
+  "type": "function_call_output"
+}

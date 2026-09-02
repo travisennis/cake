@@ -10,6 +10,7 @@ fn fixture_tool(path: PathBuf, format: ToolboxFormat) -> ToolboxTool {
         parameters: serde_json::json!({ "type": "object", "properties": {} }),
         format,
         timeout_secs: 5,
+        replay: crate::types::ReplaySafety::Never,
     }
 }
 

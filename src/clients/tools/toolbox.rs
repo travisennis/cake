@@ -46,6 +46,7 @@ pub fn toolbox_tool_entry(tool: ToolboxTool, session_id: uuid::Uuid) -> ToolEntr
         description: tool.description.clone(),
         parameters: tool.parameters.clone(),
     };
+    let replay = tool.replay;
     let tool = Arc::new(tool);
     let session_id = session_id.to_string();
     // Toolbox executors repair arguments before parsing (#185) but are never
@@ -59,6 +60,7 @@ pub fn toolbox_tool_entry(tool: ToolboxTool, session_id: uuid::Uuid) -> ToolEntr
         )
     })
     .repairs_arguments()
+    .with_replay_safety(replay)
 }
 
 /// Run a toolbox tool's `execute` action and capture its output.

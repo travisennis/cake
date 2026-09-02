@@ -314,6 +314,21 @@ fn json_timeout_field_overrides_default() {
 }
 
 #[test]
+fn json_replay_declaration_is_parsed_and_defaults_to_never() {
+    let safe = parse(r#"{"name": "inspect", "replay": "safe"}"#).unwrap();
+    assert_eq!(safe.replay, crate::types::ReplaySafety::Safe);
+
+    let omitted = parse(r#"{"name": "inspect"}"#).unwrap();
+    assert_eq!(omitted.replay, crate::types::ReplaySafety::Never);
+}
+
+#[test]
+fn json_invalid_replay_declaration_rejected() {
+    let err = parse(r#"{"name": "inspect", "replay": "maybe"}"#).unwrap_err();
+    assert!(err.contains("replay"), "unexpected error: {err}");
+}
+
+#[test]
 fn json_invalid_timeout_rejected() {
     let err = parse(r#"{"name": "bad", "timeout": 0}"#).unwrap_err();
     assert!(err.contains("timeout"), "unexpected error: {err}");
@@ -378,6 +393,23 @@ fn text_format_with_params_and_multiline_description() {
 fn text_format_missing_name_rejected() {
     let err = parse("description: No name here.").unwrap_err();
     assert!(err.contains("name"), "unexpected error: {err}");
+}
+
+#[test]
+fn text_format_replay_declaration_is_parsed() {
+    let tool = parse("name: inspect\nreplay: safe\n").unwrap();
+    assert_eq!(tool.replay, crate::types::ReplaySafety::Safe);
+}
+
+#[test]
+fn text_format_replay_parameter_remains_compatible() {
+    let tool = parse("name: inspect\nreplay: string Replay token\n").unwrap();
+    assert_eq!(
+        tool.parameters["properties"]["replay"],
+        serde_json::json!({ "type": "string", "description": "Replay token" })
+    );
+    assert_eq!(tool.parameters["required"], serde_json::json!(["replay"]));
+    assert_eq!(tool.replay, crate::types::ReplaySafety::Never);
 }
 
 #[test]

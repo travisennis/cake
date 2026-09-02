@@ -16,8 +16,8 @@ pub use conversation::{
 #[doc(inline)]
 pub use session::{
     ApiAttemptTerminalClass, CutOffError, GitState, HookEventData, LimitExceededError,
-    ReplayErrorKind, SessionRecord, StreamRecord, TaskCompleteData, TaskOutcome, TaskStartData,
-    TurnUsageData,
+    ReplayErrorKind, ReplaySafety, SessionRecord, StreamRecord, TaskCompleteData, TaskOutcome,
+    TaskStartData, TurnUsageData,
 };
 #[doc(inline)]
 pub use usage::{InputTokensDetails, OutputTokensDetails, Usage};

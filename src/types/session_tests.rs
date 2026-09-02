@@ -7,8 +7,25 @@ fn stream_json_for(item: &ConversationItem) -> serde_json::Value {
     serde_json::to_value(StreamRecord::from_conversation_item(item)).unwrap()
 }
 
+fn stream_json_for_with_replay(item: &ConversationItem, replay: ReplaySafety) -> serde_json::Value {
+    serde_json::to_value(StreamRecord::from_conversation_item_with_replay(
+        item,
+        Some(replay),
+    ))
+    .unwrap()
+}
+
 fn session_json_for(item: &ConversationItem) -> serde_json::Value {
     let stream_record = StreamRecord::from_conversation_item(item);
+    let session_record = SessionRecord::from(stream_record);
+    serde_json::to_value(session_record).unwrap()
+}
+
+fn session_json_for_with_replay(
+    item: &ConversationItem,
+    replay: ReplaySafety,
+) -> serde_json::Value {
+    let stream_record = StreamRecord::from_conversation_item_with_replay(item, Some(replay));
     let session_record = SessionRecord::from(stream_record);
     serde_json::to_value(session_record).unwrap()
 }
@@ -529,6 +546,52 @@ fn reasoning_without_summary_omits_summary_and_roundtrips() {
 }
 
 #[test]
+fn unknown_persisted_replay_declarations_fail_closed() {
+    let function_call: SessionRecord = serde_json::from_value(serde_json::json!({
+        "type": "function_call",
+        "id": "fc-1",
+        "call_id": "call-1",
+        "name": "Read",
+        "arguments": "{}",
+        "replay": "future-value"
+    }))
+    .unwrap();
+    let SessionRecord::FunctionCall(data) = function_call else {
+        panic!("expected function call record");
+    };
+    assert_eq!(data.replay, None);
+
+    let function_call_output: SessionRecord = serde_json::from_value(serde_json::json!({
+        "type": "function_call_output",
+        "call_id": "call-1",
+        "output": "result",
+        "replay": { "unexpected": true }
+    }))
+    .unwrap();
+    let SessionRecord::FunctionCallOutput(data) = function_call_output else {
+        panic!("expected function call output record");
+    };
+    assert_eq!(data.replay, None);
+}
+
+#[test]
+fn unknown_stream_replay_declaration_fails_closed() {
+    let record: StreamRecord = serde_json::from_value(serde_json::json!({
+        "type": "function_call",
+        "id": "fc-1",
+        "call_id": "call-1",
+        "name": "Read",
+        "arguments": "{}",
+        "replay": "future-value"
+    }))
+    .unwrap();
+    let StreamRecord::FunctionCall(data) = record else {
+        panic!("expected function call stream record");
+    };
+    assert_eq!(data.replay, None);
+}
+
+#[test]
 fn stream_record_json_function_call() {
     let item = ConversationItem::FunctionCall {
         id: "fc-1".to_string(),
@@ -779,6 +842,34 @@ fn snapshot_stream_record_json_function_call_output() {
 }
 
 #[test]
+fn snapshot_stream_record_json_function_call_with_replay() {
+    let item = ConversationItem::FunctionCall {
+        id: "fc-1".to_string(),
+        call_id: "call-1".to_string(),
+        name: "Read".to_string(),
+        arguments: r#"{"path":"README.md"}"#.to_string(),
+        timestamp: Some(timestamp_at("2026-05-10T00:00:00Z")),
+    };
+    insta::assert_json_snapshot!(
+        "stream_record_json_function_call_with_replay",
+        stream_json_for_with_replay(&item, ReplaySafety::Safe)
+    );
+}
+
+#[test]
+fn snapshot_session_json_function_call_output_with_replay() {
+    let item = ConversationItem::FunctionCallOutput {
+        call_id: "call-1".to_string(),
+        output: "result".to_string(),
+        timestamp: Some(timestamp_at("2026-05-10T00:00:00Z")),
+    };
+    insta::assert_json_snapshot!(
+        "session_json_function_call_output_with_replay",
+        session_json_for_with_replay(&item, ReplaySafety::Safe)
+    );
+}
+
+#[test]
 fn snapshot_session_json_message_with_id_and_status() {
     let item = ConversationItem::Message {
         role: Role::Assistant,
@@ -831,6 +922,21 @@ fn snapshot_session_json_function_call_output() {
         timestamp: Some(timestamp_at("2026-05-10T00:00:00Z")),
     };
     insta::assert_json_snapshot!("session_json_function_call_output", session_json_for(&item));
+}
+
+#[test]
+fn snapshot_session_json_function_call_with_replay() {
+    let item = ConversationItem::FunctionCall {
+        id: "fc-1".to_string(),
+        call_id: "call-1".to_string(),
+        name: "Read".to_string(),
+        arguments: r#"{"path":"README.md"}"#.to_string(),
+        timestamp: Some(timestamp_at("2026-05-10T00:00:00Z")),
+    };
+    insta::assert_json_snapshot!(
+        "session_json_function_call_with_replay",
+        session_json_for_with_replay(&item, ReplaySafety::Safe)
+    );
 }
 
 #[test]

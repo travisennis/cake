@@ -39,11 +39,13 @@ fn session_with_skill_records() -> Session {
             name: "Bash".to_string(),
             arguments: r#"{"command":"echo hi"}"#.to_string(),
             arguments_parse_error: None,
+            replay: None,
             timestamp: None,
         }),
         SessionRecord::FunctionCallOutput(FunctionCallOutputData {
             call_id: "call-1".to_string(),
             output: "echoed text: Skill 'fake-skill' activated".to_string(),
+            replay: None,
             timestamp: None,
         }),
         SessionRecord::SkillActivated {

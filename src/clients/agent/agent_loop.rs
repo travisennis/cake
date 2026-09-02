@@ -178,7 +178,7 @@ impl Agent {
                 .complete_turn_with_output_schema_fallback(turn_mode)
                 .await?;
 
-            let function_calls = self.process_completed_turn(items)?;
+            let function_calls = self.process_completed_turn(items, turn_mode)?;
             let turn_context = TurnContext {
                 turn_mode: &mut turn_mode,
                 corrections_used: &mut corrections_used,
@@ -196,6 +196,7 @@ impl Agent {
     fn process_completed_turn(
         &mut self,
         items: Vec<ConversationItem>,
+        turn_mode: TurnMode,
     ) -> anyhow::Result<Vec<FunctionCall>> {
         // Count every completed API turn unconditionally. Usage is settled by
         // AgentRunner before it classifies or retries the provider attempt.
@@ -204,7 +205,7 @@ impl Agent {
 
         // Extract owned function call data before moving items into history.
         let function_calls = Self::function_calls_from_items(&items);
-        self.stream_turn_items(&items)?;
+        self.stream_turn_items(&items, !turn_mode.tools_disabled())?;
         self.conversation.extend_turn_items(items);
         Ok(function_calls)
     }
@@ -636,6 +637,7 @@ impl Agent {
                 &result.call_id,
                 &result.compensation_events,
             );
+            let replay = Some(self.tools.replay_safety(&result.telemetry.name));
             self.append_tool_call_telemetry(result.telemetry);
             self.record_compensation_events(result.compensation_events);
             if let Some(skill_activation) = result.skill_activation {
@@ -651,7 +653,7 @@ impl Agent {
             let item = self
                 .conversation
                 .push_tool_output(result.call_id, result.output);
-            self.stream_item(&item)?;
+            self.stream_item_with_replay(&item, replay)?;
         }
         Ok(())
     }
@@ -900,9 +902,21 @@ impl Agent {
         calls
     }
 
-    fn stream_turn_items(&mut self, items: &[ConversationItem]) -> anyhow::Result<()> {
+    fn stream_turn_items(
+        &mut self,
+        items: &[ConversationItem],
+        replay_eligible: bool,
+    ) -> anyhow::Result<()> {
         for item in items {
-            self.stream_item(item)?;
+            let replay = replay_eligible
+                .then(|| match item {
+                    ConversationItem::FunctionCall { name, .. } => {
+                        Some(self.tools.replay_safety(name))
+                    },
+                    _ => None,
+                })
+                .flatten();
+            self.stream_item_with_replay(item, replay)?;
         }
         Ok(())
     }
@@ -1509,11 +1523,92 @@ mod helper_tests {
             Some(SessionRecord::SkillActivated { name, .. }) if name == "debugging-cake"
         ));
         assert!(matches!(
+            persisted.lock().expect("persist lock").get(1),
+            Some(SessionRecord::FunctionCallOutput(data))
+                if data.replay == Some(crate::types::ReplaySafety::Safe)
+        ));
+        assert!(matches!(
             agent.history().last(),
             Some(ConversationItem::FunctionCallOutput { call_id, output, .. })
                 if call_id == "call-1" && output == "tool output"
         ));
-        assert_eq!(streamed.lock().expect("stream lock").len(), 1);
+        let streamed = streamed.lock().expect("stream lock");
+        assert_eq!(streamed.len(), 1);
+        let streamed_record: serde_json::Value = serde_json::from_str(&streamed[0]).unwrap();
+        assert_eq!(streamed_record["replay"], "safe");
+        drop(streamed);
+    }
+
+    #[test]
+    fn stream_turn_items_persists_replay_snapshot_for_read() {
+        let persisted = Arc::new(Mutex::new(Vec::<SessionRecord>::new()));
+        let persisted_clone = Arc::clone(&persisted);
+        let streamed = Arc::new(Mutex::new(Vec::<String>::new()));
+        let streamed_clone = Arc::clone(&streamed);
+        let mut agent = test_agent()
+            .with_persist_callback(move |record| {
+                persisted_clone
+                    .lock()
+                    .expect("persist lock")
+                    .push(record.clone());
+                Ok(())
+            })
+            .with_streaming_json(move |json| {
+                streamed_clone
+                    .lock()
+                    .expect("stream lock")
+                    .push(json.to_string());
+            });
+
+        let items = vec![ConversationItem::FunctionCall {
+            id: "fc-1".to_string(),
+            call_id: "call-1".to_string(),
+            name: "Read".to_string(),
+            arguments: "{}".to_string(),
+            timestamp: None,
+        }];
+        agent
+            .stream_turn_items(&items, true)
+            .expect("stream tool call record");
+
+        assert!(matches!(
+            persisted.lock().expect("persist lock").first(),
+            Some(SessionRecord::FunctionCall(data))
+                if data.replay == Some(crate::types::ReplaySafety::Safe)
+        ));
+        let streamed = streamed.lock().expect("stream lock");
+        let streamed_record: serde_json::Value = serde_json::from_str(&streamed[0]).unwrap();
+        assert_eq!(streamed_record["replay"], "safe");
+        drop(streamed);
+    }
+
+    #[test]
+    fn disabled_turn_omits_replay_snapshot_for_unexecuted_call() {
+        let persisted = Arc::new(Mutex::new(Vec::<SessionRecord>::new()));
+        let persisted_clone = Arc::clone(&persisted);
+        let mut agent = test_agent().with_persist_callback(move |record| {
+            persisted_clone
+                .lock()
+                .expect("persist lock")
+                .push(record.clone());
+            Ok(())
+        });
+        let items = vec![ConversationItem::FunctionCall {
+            id: "fc-1".to_string(),
+            call_id: "call-1".to_string(),
+            name: "Read".to_string(),
+            arguments: "{}".to_string(),
+            timestamp: None,
+        }];
+
+        agent
+            .stream_turn_items(&items, false)
+            .expect("stream disabled-turn tool call record");
+
+        assert!(matches!(
+            persisted.lock().expect("persist lock").first(),
+            Some(SessionRecord::FunctionCall(data)) if data.replay.is_none()
+        ));
     }
 
     #[test]
