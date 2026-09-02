@@ -553,14 +553,7 @@ fn parse_json_describe(value: &serde_json::Value) -> Result<ParsedDescribe, Stri
         ),
     };
     let replay = parse_replay_declaration(object.get("replay"))?;
-
-    let parameters = if let Some(schema) = object.get("inputSchema") {
-        normalize_input_schema(schema)?
-    } else if let Some(args) = object.get("args") {
-        args_to_input_schema(args)?
-    } else {
-        empty_input_schema()
-    };
+    let parameters = parse_json_parameters(object)?;
 
     Ok(ParsedDescribe {
         name,
@@ -569,6 +562,19 @@ fn parse_json_describe(value: &serde_json::Value) -> Result<ParsedDescribe, Stri
         timeout_secs,
         replay,
     })
+}
+
+fn parse_json_parameters(
+    object: &serde_json::Map<String, serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    object.get("inputSchema").map_or_else(
+        || {
+            object
+                .get("args")
+                .map_or_else(|| Ok(empty_input_schema()), args_to_input_schema)
+        },
+        normalize_input_schema,
+    )
 }
 
 /// Parse the optional replay declaration shared by toolbox describe formats.
@@ -662,28 +668,14 @@ fn parse_text_describe(stdout: &str) -> Result<ParsedDescribe, String> {
         if line.is_empty() {
             continue;
         }
-        let (key, value) = line
-            .split_once(':')
-            .ok_or_else(|| format!("unparseable describe line: '{line}'"))?;
-        let (key, value) = (key.trim(), value.trim());
-        match key {
-            "name" => name = Some(value.to_string()),
-            "description" => description_lines.push(value.to_string()),
-            // `replay` became metadata in this protocol, but preserve the
-            // pre-existing ability to declare a text parameter with that
-            // name. Only the two exact declaration values are metadata;
-            // every other value retains the parameter grammar.
-            "replay" if matches!(value, "safe" | "never") => {
-                replay =
-                    parse_replay_declaration(Some(&serde_json::Value::String(value.to_string())))?;
-            },
-            "replay" => {
-                insert_text_parameter(&mut properties, &mut required, key, value)?;
-            },
-            param => {
-                insert_text_parameter(&mut properties, &mut required, param, value)?;
-            },
-        }
+        parse_text_describe_line(
+            line,
+            &mut name,
+            &mut description_lines,
+            &mut properties,
+            &mut required,
+            &mut replay,
+        )?;
     }
 
     let name = name.ok_or_else(|| "describe output has no 'name:' line".to_string())?;
@@ -694,6 +686,40 @@ fn parse_text_describe(stdout: &str) -> Result<ParsedDescribe, String> {
         timeout_secs: None,
         replay,
     })
+}
+
+fn parse_text_describe_line(
+    line: &str,
+    name: &mut Option<String>,
+    description_lines: &mut Vec<String>,
+    properties: &mut serde_json::Map<String, serde_json::Value>,
+    required: &mut Vec<serde_json::Value>,
+    replay: &mut ReplaySafety,
+) -> Result<(), String> {
+    let (key, value) = line
+        .split_once(':')
+        .ok_or_else(|| format!("unparseable describe line: '{line}'"))?;
+    let (key, value) = (key.trim(), value.trim());
+    if key == "replay"
+        && let Some(declaration) = text_replay_declaration(value)
+    {
+        *replay = declaration;
+        return Ok(());
+    }
+    match key {
+        "name" => *name = Some(value.to_string()),
+        "description" => description_lines.push(value.to_string()),
+        param => insert_text_parameter(properties, required, param, value)?,
+    }
+    Ok(())
+}
+
+fn text_replay_declaration(value: &str) -> Option<ReplaySafety> {
+    match value {
+        "safe" => Some(ReplaySafety::Safe),
+        "never" => Some(ReplaySafety::Never),
+        _ => None,
+    }
 }
 
 /// Insert one unique text-format parameter into the assembled schema.
