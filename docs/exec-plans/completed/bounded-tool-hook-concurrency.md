@@ -9,12 +9,12 @@ A model can return a pathological tool-call batch. Before this change, Cake star
 ## Progress
 
 - [x] (2026-09-01) Read `AGENTS.md`, the task workflow, architecture guidance, issue #90, and the relevant agent, tool-scheduling, and hook implementations.
-- [x] (2026-09-01) Claim issue #90 and create the required task branch.
+- [x] (2026-09-01) Attempt to claim issue #90; the claim command failed closed because the command-safety judge returned a malformed empty response, and the required task branch was created.
 - [x] (2026-09-01) Add the shared fixed concurrency constant, bound pre-tool planning, bound scheduling groups, and bound hook subprocesses across cloned runners and hook event types.
 - [x] (2026-09-01) Add deterministic agent and hook regression tests covering peak concurrency, exactly-once completion, event coverage, and result ordering.
 - [x] (2026-09-01) Update `ARCHITECTURE.md` with the resource-bound invariant.
 - [x] (2026-09-01) Run focused tests, formatting, strict Clippy, and the fast check gate. The fast gate's all-feature test phase is blocked by the host sandbox on four pre-existing tests that create temporary directories beside this clone.
-- [x] (2026-09-01) Complete the implementation and verification record. The user requested a commit without pushing or opening a pull request, so the issue remains open for the normal PR lifecycle.
+- [x] (2026-09-01) Complete the implementation and verification record, then open pull request #426 with `Closes #90`; the issue remains open pending review.
 
 ## Surprises & Discoveries
 
