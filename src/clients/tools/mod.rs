@@ -1893,6 +1893,52 @@ mod tests {
         assert_eq!(pending, vec![OsString::from("another.txt")]);
     }
 
+    #[test]
+    fn resolve_parent_write_component_handles_resolution_states() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let mut resolved = dir.path().join("not-created");
+        let mut pending = Vec::new();
+        let mut missing = false;
+        resolve_parent_write_component(&mut resolved, &mut pending, &mut missing);
+        assert!(missing);
+        assert_eq!(pending, vec![OsString::from("..")]);
+
+        let mut resolved = fs::canonicalize(dir.path()).unwrap();
+        let mut pending = Vec::new();
+        let mut missing = false;
+        resolve_parent_write_component(&mut resolved, &mut pending, &mut missing);
+        assert_eq!(
+            resolved,
+            fs::canonicalize(dir.path().parent().unwrap()).unwrap()
+        );
+
+        let mut resolved = PathBuf::from("/tmp/base");
+        let mut pending = vec![OsString::from("one"), OsString::from("two")];
+        let mut missing = true;
+        resolve_parent_write_component(&mut resolved, &mut pending, &mut missing);
+        assert_eq!(pending, vec![OsString::from("one")]);
+        assert!(missing);
+
+        resolve_parent_write_component(&mut resolved, &mut pending, &mut missing);
+        assert!(pending.is_empty());
+        assert!(!missing);
+
+        let mut resolved = PathBuf::from("/");
+        let mut pending = Vec::new();
+        let mut missing = true;
+        resolve_parent_write_component(&mut resolved, &mut pending, &mut missing);
+        assert_eq!(resolved, Path::new("/"));
+        assert!(missing);
+
+        let mut resolved = PathBuf::from("/tmp/base");
+        let mut pending = Vec::new();
+        let mut missing = true;
+        resolve_parent_write_component(&mut resolved, &mut pending, &mut missing);
+        assert_eq!(resolved, Path::new("/tmp"));
+        assert!(missing);
+    }
+
     fn fixture_toolbox_tool() -> crate::config::toolbox::ToolboxTool {
         crate::config::toolbox::ToolboxTool {
             registered_name: "tb__run_tests".to_string(),
