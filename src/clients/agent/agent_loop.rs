@@ -175,7 +175,7 @@ impl Agent {
                 .complete_turn_with_output_schema_fallback(turn_mode)
                 .await?;
 
-            let function_calls = self.process_completed_turn(items)?;
+            let function_calls = self.process_completed_turn(items, turn_mode)?;
             let turn_context = TurnContext {
                 turn_mode: &mut turn_mode,
                 corrections_used: &mut corrections_used,
@@ -193,6 +193,7 @@ impl Agent {
     fn process_completed_turn(
         &mut self,
         items: Vec<ConversationItem>,
+        turn_mode: TurnMode,
     ) -> anyhow::Result<Vec<FunctionCall>> {
         // Count every completed API turn unconditionally. Usage is settled by
         // AgentRunner before it classifies or retries the provider attempt.
@@ -201,7 +202,7 @@ impl Agent {
 
         // Extract owned function call data before moving items into history.
         let function_calls = Self::function_calls_from_items(&items);
-        self.stream_turn_items(&items)?;
+        self.stream_turn_items(&items, !turn_mode.tools_disabled())?;
         self.conversation.extend_turn_items(items);
         Ok(function_calls)
     }
@@ -889,12 +890,20 @@ impl Agent {
         calls
     }
 
-    fn stream_turn_items(&mut self, items: &[ConversationItem]) -> anyhow::Result<()> {
+    fn stream_turn_items(
+        &mut self,
+        items: &[ConversationItem],
+        replay_eligible: bool,
+    ) -> anyhow::Result<()> {
         for item in items {
-            let replay = match item {
-                ConversationItem::FunctionCall { name, .. } => Some(self.tools.replay_safety(name)),
-                _ => None,
-            };
+            let replay = replay_eligible
+                .then(|| match item {
+                    ConversationItem::FunctionCall { name, .. } => {
+                        Some(self.tools.replay_safety(name))
+                    },
+                    _ => None,
+                })
+                .flatten();
             self.stream_item_with_replay(item, replay)?;
         }
         Ok(())
@@ -1547,7 +1556,7 @@ mod helper_tests {
             timestamp: None,
         }];
         agent
-            .stream_turn_items(&items)
+            .stream_turn_items(&items, true)
             .expect("stream tool call record");
 
         assert!(matches!(
@@ -1559,6 +1568,35 @@ mod helper_tests {
         let streamed_record: serde_json::Value = serde_json::from_str(&streamed[0]).unwrap();
         assert_eq!(streamed_record["replay"], "safe");
         drop(streamed);
+    }
+
+    #[test]
+    fn disabled_turn_omits_replay_snapshot_for_unexecuted_call() {
+        let persisted = Arc::new(Mutex::new(Vec::<SessionRecord>::new()));
+        let persisted_clone = Arc::clone(&persisted);
+        let mut agent = test_agent().with_persist_callback(move |record| {
+            persisted_clone
+                .lock()
+                .expect("persist lock")
+                .push(record.clone());
+            Ok(())
+        });
+        let items = vec![ConversationItem::FunctionCall {
+            id: "fc-1".to_string(),
+            call_id: "call-1".to_string(),
+            name: "Read".to_string(),
+            arguments: "{}".to_string(),
+            timestamp: None,
+        }];
+
+        agent
+            .stream_turn_items(&items, false)
+            .expect("stream disabled-turn tool call record");
+
+        assert!(matches!(
+            persisted.lock().expect("persist lock").first(),
+            Some(SessionRecord::FunctionCall(data)) if data.replay.is_none()
+        ));
     }
 
     #[test]
