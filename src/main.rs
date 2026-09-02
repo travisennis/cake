@@ -3,6 +3,7 @@
 mod auth;
 mod cli;
 mod clients;
+mod concurrency;
 mod config;
 mod exit_code;
 mod hooks;

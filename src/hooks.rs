@@ -3,12 +3,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
+use tokio::sync::Semaphore;
 use tokio::time::timeout;
 
+use crate::concurrency::MAX_CONCURRENT_AGENT_OPERATIONS;
 use crate::config::hooks::{HookCommand, HookEvent, HookSource, LoadedHooks};
 use crate::config::settings::DEFAULT_HOOK_OUTPUT_LIMIT;
 use crate::types::{HookEventData, StreamRecord};
@@ -17,6 +20,10 @@ use crate::types::{HookEventData, StreamRecord};
 pub struct HookRunner {
     loaded: LoadedHooks,
     context: HookContext,
+    /// Per-runner semaphore shared by cloned runners and all lifecycle/tool
+    /// events, so concurrent tool calls cannot each create a separate hook
+    /// subprocess batch.
+    hook_semaphore: Arc<Semaphore>,
     /// Per-hook stdout/stderr byte cap from `[limits] hook_output_limit`;
     /// `None` means unlimited.
     output_limit: Option<usize>,
@@ -228,10 +235,11 @@ impl ToolHookMetadata {
 }
 
 impl HookRunner {
-    pub const fn new(loaded: LoadedHooks, context: HookContext) -> Self {
+    pub fn new(loaded: LoadedHooks, context: HookContext) -> Self {
         Self {
             loaded,
             context,
+            hook_semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_AGENT_OPERATIONS)),
             output_limit: Some(DEFAULT_HOOK_OUTPUT_LIMIT as usize),
         }
     }
@@ -419,29 +427,65 @@ impl HookRunner {
         payload: Value,
         tool_metadata: Option<ToolHookMetadata>,
     ) -> anyhow::Result<AggregatedHookResult> {
-        let matched = self.loaded.matching_groups(event, source);
-        if matched.is_empty() {
+        let commands = self.matching_commands(event, source);
+        if commands.is_empty() {
             return Ok(AggregatedHookResult::default());
         }
 
-        let mut commands = Vec::new();
-        for group in matched {
-            for hook in &group.hooks {
-                commands.push(hook.clone());
-            }
-        }
+        let outcomes = self.run_hook_commands(commands, payload).await?;
+        self.aggregate_hook_outcomes(event, source, tool_metadata.as_ref(), outcomes)
+    }
 
-        let futures = commands.into_iter().map(|command| {
+    fn matching_commands(&self, event: HookEvent, source: &HookSource) -> Vec<HookCommand> {
+        self.loaded
+            .matching_groups(event, source)
+            .into_iter()
+            .flat_map(|group| group.hooks.iter().cloned())
+            .collect()
+    }
+
+    async fn run_hook_commands(
+        &self,
+        commands: Vec<HookCommand>,
+        payload: Value,
+    ) -> anyhow::Result<Vec<InvocationOutcome>> {
+        let semaphore = Arc::clone(&self.hook_semaphore);
+        let futures = commands.into_iter().enumerate().map(|(index, command)| {
             let payload = payload.clone();
             let cwd = self.context.cwd.clone();
             let output_limit = self.output_limit;
-            async move { run_command_hook(command, payload, cwd, output_limit).await }
+            let semaphore = Arc::clone(&semaphore);
+            async move {
+                let _permit = semaphore
+                    .acquire_owned()
+                    .await
+                    .context("hook concurrency limiter closed unexpectedly")?;
+                anyhow::Ok((
+                    index,
+                    run_command_hook(command, payload, cwd, output_limit).await,
+                ))
+            }
         });
-        let outcomes = futures::future::join_all(futures).await;
+        let mut outcomes = futures::stream::iter(futures)
+            .buffer_unordered(MAX_CONCURRENT_AGENT_OPERATIONS)
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        outcomes.sort_unstable_by_key(|(index, _)| *index);
+        Ok(outcomes.into_iter().map(|(_, outcome)| outcome).collect())
+    }
 
+    fn aggregate_hook_outcomes(
+        &self,
+        event: HookEvent,
+        source: &HookSource,
+        tool_metadata: Option<&ToolHookMetadata>,
+        outcomes: Vec<InvocationOutcome>,
+    ) -> anyhow::Result<AggregatedHookResult> {
         let mut aggregated = AggregatedHookResult::default();
         for outcome in outcomes {
-            self.record_outcome(event, source, tool_metadata.as_ref(), &outcome);
+            self.record_outcome(event, source, tool_metadata, &outcome);
 
             match &outcome.status {
                 InvocationStatus::Failed(error) => {
@@ -453,7 +497,6 @@ impl HookRunner {
                 },
             }
         }
-
         Ok(aggregated)
     }
 

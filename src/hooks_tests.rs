@@ -31,6 +31,174 @@ fn runner(command: &str, fail_closed: bool) -> HookRunner {
     )
 }
 
+#[cfg(unix)]
+fn bounded_hook_runner(dir: &tempfile::TempDir) -> HookRunner {
+    let command = r#"while ! mkdir .hook-lock 2>/dev/null; do sleep 0.001; done
+active=$(cat .hook-active 2>/dev/null || printf 0)
+next=$((active + 1))
+printf '%s' "$next" > .hook-active
+max=$(cat .hook-max 2>/dev/null || printf 0)
+if [ "$next" -gt "$max" ]; then printf '%s' "$next" > .hook-max; fi
+rmdir .hook-lock
+sleep 0.02
+while ! mkdir .hook-lock 2>/dev/null; do sleep 0.001; done
+active=$(cat .hook-active)
+printf '%s' "$((active - 1))" > .hook-active
+completed=$(cat .hook-completed 2>/dev/null || printf 0)
+printf '%s' "$((completed + 1))" > .hook-completed
+rmdir .hook-lock
+printf '{\"permission\":\"allow\"}'"#;
+    let hooks = [
+        HookEvent::PreToolUse,
+        HookEvent::PostToolUse,
+        HookEvent::PostToolUseFailure,
+    ]
+    .into_iter()
+    .map(|event| HookGroup {
+        event,
+        matcher: HookMatcher::All,
+        hooks: vec![HookCommand {
+            command: command.to_string(),
+            timeout: Duration::from_secs(2),
+            fail_closed: false,
+            status_message: None,
+            source_path: dir.path().join("hooks.json"),
+        }],
+    })
+    .collect();
+    HookRunner::new(
+        LoadedHooks { groups: hooks },
+        HookContext {
+            session_id: uuid::Uuid::new_v4(),
+            task_id: uuid::Uuid::new_v4(),
+            transcript_path: None,
+            hook_event_sink: None,
+            cwd: dir.path().to_path_buf(),
+            model: "test-model".to_string(),
+        },
+    )
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn hook_subprocesses_are_bounded_across_events_and_runner_clones() {
+    let dir = tempfile::TempDir::new().unwrap();
+    for name in [".hook-active", ".hook-max", ".hook-completed"] {
+        std::fs::write(dir.path().join(name), "0").unwrap();
+    }
+    let runner = bounded_hook_runner(&dir);
+    let cloned_runner = runner.clone();
+
+    let results = futures::future::join_all((0..36).map(|index| {
+        let runner = if index % 2 == 0 {
+            runner.clone()
+        } else {
+            cloned_runner.clone()
+        };
+        async move {
+            match index % 3 {
+                0 => runner
+                    .pre_tool_use(
+                        "Bash",
+                        &format!("pre-{index}"),
+                        r#"{"command":"true"}"#,
+                        false,
+                    )
+                    .await
+                    .map(|_| ()),
+                1 => runner
+                    .post_tool_use(
+                        "Bash",
+                        &format!("success-{index}"),
+                        r#"{"command":"true"}"#,
+                        &Ok("ok".to_string()),
+                        false,
+                    )
+                    .await
+                    .map(|_| ()),
+                _ => runner
+                    .post_tool_use(
+                        "Bash",
+                        &format!("failure-{index}"),
+                        r#"{"command":"true"}"#,
+                        &Err("failed".to_string()),
+                        false,
+                    )
+                    .await
+                    .map(|_| ()),
+            }
+        }
+    }))
+    .await;
+    assert!(results.iter().all(Result::is_ok));
+
+    let maximum: usize = std::fs::read_to_string(dir.path().join(".hook-max"))
+        .unwrap()
+        .parse()
+        .unwrap();
+    let completed: usize = std::fs::read_to_string(dir.path().join(".hook-completed"))
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(maximum <= 8, "hook concurrency was {maximum}");
+    assert_eq!(
+        completed, 36,
+        "every hook invocation should run exactly once"
+    );
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn hook_aggregation_retains_load_order_after_unordered_completion() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let hooks = (0..12)
+        .map(|index| HookCommand {
+            command: format!(
+                "sleep {}; printf '{{\"additional_context\":\"context-{index}\"}}'",
+                if index == 0 { "0.1" } else { "0" }
+            ),
+            timeout: Duration::from_secs(2),
+            fail_closed: false,
+            status_message: None,
+            source_path: dir.path().join(format!("hooks-{index}.json")),
+        })
+        .collect();
+    let runner = HookRunner::new(
+        LoadedHooks {
+            groups: vec![HookGroup {
+                event: HookEvent::PreToolUse,
+                matcher: HookMatcher::All,
+                hooks,
+            }],
+        },
+        HookContext {
+            session_id: uuid::Uuid::new_v4(),
+            task_id: uuid::Uuid::new_v4(),
+            transcript_path: None,
+            hook_event_sink: None,
+            cwd: dir.path().to_path_buf(),
+            model: "test-model".to_string(),
+        },
+    );
+
+    let plan = runner
+        .pre_tool_use("Bash", "call-1", r#"{"command":"true"}"#, false)
+        .await
+        .unwrap();
+    let ToolHookPlan::Execute {
+        additional_context, ..
+    } = plan
+    else {
+        panic!("expected hooks to allow the tool");
+    };
+    assert_eq!(
+        additional_context,
+        (0..12)
+            .map(|index| format!("context-{index}"))
+            .collect::<Vec<_>>()
+    );
+}
+
 #[tokio::test]
 #[cfg(unix)]
 async fn command_hook_receives_stdin_json() {

@@ -45,7 +45,7 @@ The CLI owns argument validation, configuration resolution, session selection, a
 
 The registry pairs provider-facing schemas with executors. Tools own argument and path validation plus their side effects. The agent owns hooks, concurrency, timeouts, result ordering, persistence, and feeding results back to the model.
 
-Built-in Edit and Write calls targeting the same canonical path execute sequentially in issue order. Other calls may execute concurrently, including Bash and toolbox commands that happen to mutate the same path; results remain attributable to their original calls.
+Built-in Edit and Write calls targeting the same canonical path execute sequentially in issue order. Other calls may execute concurrently, including Bash and toolbox commands that happen to mutate the same path; results remain attributable to their original calls. Independent scheduling groups, pre-tool planning operations, and hook subprocesses are each bounded to eight active operations. This fixed defense-in-depth bound does not change the model-visible scheduling or result-ordering contract.
 
 ### Host and model-generated commands
 

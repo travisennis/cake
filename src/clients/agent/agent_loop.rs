@@ -2,6 +2,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use futures::StreamExt;
+
 use crate::clients::agent::{Agent, TurnResult, record_turn_usage};
 use crate::clients::backend::FinalOutputConstraint;
 use crate::clients::retry::{RequestOverrides, RetryReason, RetryStatus};
@@ -9,6 +11,7 @@ use crate::clients::tools::{
     ScheduledToolCall, Tool, ToolError, ToolRegistry, ToolResult, argument_compensation_events,
     read_extract_path, schedule_tool_calls,
 };
+use crate::concurrency::MAX_CONCURRENT_AGENT_OPERATIONS;
 use crate::config::output_schema::{OutputSchema, OutputSchemaError};
 use crate::hooks::{HookRunner, ToolHookPlan};
 use crate::session_telemetry::{
@@ -426,31 +429,39 @@ impl Agent {
         function_calls: Vec<FunctionCall>,
     ) -> anyhow::Result<Vec<(String, String, ToolHookPlan)>> {
         let hook_runner = self.hook_runner.clone();
-        let pre_futures = function_calls
-            .into_iter()
-            .map(|(call_id, name, arguments)| {
-                let hook_runner = hook_runner.clone();
-                // The registry entry declares whether the executor repairs
-                // arguments, so the hook sees exactly what will run (#277).
-                let repairs_arguments = self.tools.repairs_arguments(&name);
-                async move {
-                    let plan = if let Some(runner) = hook_runner {
-                        runner
-                            .pre_tool_use(&name, &call_id, &arguments, repairs_arguments)
-                            .await?
-                    } else {
-                        ToolHookPlan::Execute {
-                            arguments,
-                            prefix_notice: None,
-                            additional_context: Vec::new(),
-                        }
-                    };
-                    anyhow::Ok((call_id, name, plan))
-                }
-            });
-        let pre_results = futures::future::join_all(pre_futures).await;
+        let pre_futures =
+            function_calls
+                .into_iter()
+                .enumerate()
+                .map(|(index, (call_id, name, arguments))| {
+                    let hook_runner = hook_runner.clone();
+                    // The registry entry declares whether the executor repairs
+                    // arguments, so the hook sees exactly what will run (#277).
+                    let repairs_arguments = self.tools.repairs_arguments(&name);
+                    async move {
+                        let result = if let Some(runner) = hook_runner {
+                            runner
+                                .pre_tool_use(&name, &call_id, &arguments, repairs_arguments)
+                                .await
+                        } else {
+                            Ok(ToolHookPlan::Execute {
+                                arguments,
+                                prefix_notice: None,
+                                additional_context: Vec::new(),
+                            })
+                        };
+                        (index, result.map(|plan| (call_id, name, plan)))
+                    }
+                });
+        let mut pre_results = futures::stream::iter(pre_futures)
+            .buffer_unordered(MAX_CONCURRENT_AGENT_OPERATIONS)
+            .collect::<Vec<_>>()
+            .await;
+        // Planning may complete out of order, but the first error and every
+        // successful plan must retain the model's issue order.
+        pre_results.sort_unstable_by_key(|(index, _)| *index);
         let mut tool_plans = Vec::with_capacity(pre_results.len());
-        for result in pre_results {
+        for (_, result) in pre_results {
             tool_plans.push(result?);
         }
         Ok(tool_plans)
@@ -477,10 +488,11 @@ impl Agent {
     ) -> Vec<ToolRunResult> {
         let expected_results = tool_plans.len();
         let groups = schedule_tool_calls(&self.tools, self.tool_context.as_ref(), tool_plans);
-        let group_futures = groups.into_iter().map(|group| self.run_group(group));
         let mut results = Vec::with_capacity(expected_results);
         results.extend(
-            futures::future::join_all(group_futures)
+            futures::stream::iter(groups.into_iter().map(|group| self.run_group(group)))
+                .buffer_unordered(MAX_CONCURRENT_AGENT_OPERATIONS)
+                .collect::<Vec<_>>()
                 .await
                 .into_iter()
                 .flatten(),

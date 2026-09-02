@@ -977,6 +977,29 @@ mod error_tests {
         })
     }
 
+    fn toolbox_batch_response(count: usize) -> serde_json::Value {
+        let output = (0..count)
+            .map(|index| {
+                serde_json::json!({
+                    "type": "function_call",
+                    "id": format!("fc-{index}"),
+                    "call_id": format!("call-{index}"),
+                    "name": "tb__concurrency",
+                    "arguments": serde_json::json!({ "index": index }).to_string()
+                })
+            })
+            .collect::<Vec<_>>();
+        serde_json::json!({
+            "id": "resp-tool-batch",
+            "output": output,
+            "usage": {
+                "input_tokens": 1,
+                "output_tokens": 1,
+                "total_tokens": 2
+            }
+        })
+    }
+
     /// Tool-call response whose reported usage models the growth recurrence:
     /// the next turn's input equals this turn's input plus this turn's output.
     fn turn_usage_tool_call_response(read_arguments: &str) -> serde_json::Value {
@@ -1554,6 +1577,140 @@ mod error_tests {
         assert_eq!(result, "done");
         assert_eq!(agent.turn_count, 2);
         assert_eq!(agent.tool_call_count, 1);
+    }
+
+    #[cfg(unix)]
+    fn bounded_tool_script(dir: &tempfile::TempDir) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let script = dir.path().join("tool.sh");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+payload=$(cat)
+index=$(printf '%s' "$payload" | sed -n 's/.*"index":\([0-9][0-9]*\).*/\1/p')
+while ! mkdir .tool-lock 2>/dev/null; do sleep 0.001; done
+active=$(cat .tool-active)
+next=$((active + 1))
+printf '%s' "$next" > .tool-active
+max=$(cat .tool-max)
+if [ "$next" -gt "$max" ]; then printf '%s' "$next" > .tool-max; fi
+rmdir .tool-lock
+sleep 0.03
+while ! mkdir .tool-lock 2>/dev/null; do sleep 0.001; done
+active=$(cat .tool-active)
+printf '%s' "$((active - 1))" > .tool-active
+completed=$(cat .tool-completed)
+printf '%s' "$((completed + 1))" > .tool-completed
+printf '%s\n' "$index" >> .tool-calls
+rmdir .tool-lock
+printf 'completed:%s' "$index"
+"#,
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&script, permissions).unwrap();
+        script
+    }
+
+    #[cfg(unix)]
+    fn bounded_tool(script: std::path::PathBuf) -> crate::config::toolbox::ToolboxTool {
+        crate::config::toolbox::ToolboxTool {
+            registered_name: "tb__concurrency".to_string(),
+            original_name: "concurrency".to_string(),
+            path: script,
+            description: "Exercise bounded concurrency.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": { "index": { "type": "integer" } }
+            }),
+            format: crate::config::toolbox::ToolboxFormat::Json,
+            timeout_secs: 5,
+        }
+    }
+
+    #[cfg(unix)]
+    fn assert_bounded_tool_results(agent: &Agent, dir: &tempfile::TempDir, batch_size: usize) {
+        let outputs: Vec<(String, String)> = agent
+            .history()
+            .iter()
+            .filter_map(|item| match item {
+                ConversationItem::FunctionCallOutput {
+                    call_id, output, ..
+                } => Some((call_id.clone(), output.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(outputs.len(), batch_size);
+        for (index, (call_id, output)) in outputs.iter().enumerate() {
+            assert_eq!(call_id, &format!("call-{index}"));
+            assert_eq!(output, &format!("completed:{index}"));
+        }
+
+        let mut completed_indices: Vec<usize> =
+            std::fs::read_to_string(dir.path().join(".tool-calls"))
+                .unwrap()
+                .lines()
+                .map(|line| line.parse().unwrap())
+                .collect();
+        completed_indices.sort_unstable();
+        assert_eq!(completed_indices, (0..batch_size).collect::<Vec<_>>());
+        let maximum: usize = std::fs::read_to_string(dir.path().join(".tool-max"))
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(
+            maximum > 1,
+            "fixture should exercise concurrent tool execution"
+        );
+        assert!(maximum <= 8, "tool concurrency was {maximum}");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(".tool-active")).unwrap(),
+            "0"
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn independent_tool_batch_is_bounded_and_results_keep_issue_order() {
+        let mock_server = MockServer::start().await;
+        let dir = tempfile::TempDir::new().unwrap();
+        for name in [".tool-active", ".tool-max", ".tool-completed"] {
+            std::fs::write(dir.path().join(name), "0").unwrap();
+        }
+        let script = bounded_tool_script(&dir);
+        let batch_size = 12;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(toolbox_batch_response(batch_size)),
+            )
+            .up_to_n_times(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(loop_final_response()))
+            .mount(&mock_server)
+            .await;
+
+        let context = ToolContext::with_temp_dirs(
+            dir.path().canonicalize().unwrap(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let mut agent = test_agent_with_url(&mock_server.uri())
+            .with_tool_context(Arc::new(context))
+            .with_toolbox_tools(vec![bounded_tool(script)]);
+
+        assert_eq!(
+            agent.send("run the batch".to_string()).await.unwrap(),
+            "done"
+        );
+        assert_bounded_tool_results(&agent, &dir, batch_size);
     }
 
     #[tokio::test]
