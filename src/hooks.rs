@@ -427,18 +427,28 @@ impl HookRunner {
         payload: Value,
         tool_metadata: Option<ToolHookMetadata>,
     ) -> anyhow::Result<AggregatedHookResult> {
-        let matched = self.loaded.matching_groups(event, source);
-        if matched.is_empty() {
+        let commands = self.matching_commands(event, source);
+        if commands.is_empty() {
             return Ok(AggregatedHookResult::default());
         }
 
-        let mut commands = Vec::new();
-        for group in matched {
-            for hook in &group.hooks {
-                commands.push(hook.clone());
-            }
-        }
+        let outcomes = self.run_hook_commands(commands, payload).await?;
+        self.aggregate_hook_outcomes(event, source, tool_metadata.as_ref(), outcomes)
+    }
 
+    fn matching_commands(&self, event: HookEvent, source: &HookSource) -> Vec<HookCommand> {
+        self.loaded
+            .matching_groups(event, source)
+            .into_iter()
+            .flat_map(|group| group.hooks.iter().cloned())
+            .collect()
+    }
+
+    async fn run_hook_commands(
+        &self,
+        commands: Vec<HookCommand>,
+        payload: Value,
+    ) -> anyhow::Result<Vec<InvocationOutcome>> {
         let semaphore = Arc::clone(&self.hook_semaphore);
         let futures = commands.into_iter().enumerate().map(|(index, command)| {
             let payload = payload.clone();
@@ -463,10 +473,19 @@ impl HookRunner {
             .into_iter()
             .collect::<anyhow::Result<Vec<_>>>()?;
         outcomes.sort_unstable_by_key(|(index, _)| *index);
+        Ok(outcomes.into_iter().map(|(_, outcome)| outcome).collect())
+    }
 
+    fn aggregate_hook_outcomes(
+        &self,
+        event: HookEvent,
+        source: &HookSource,
+        tool_metadata: Option<&ToolHookMetadata>,
+        outcomes: Vec<InvocationOutcome>,
+    ) -> anyhow::Result<AggregatedHookResult> {
         let mut aggregated = AggregatedHookResult::default();
-        for (_, outcome) in outcomes {
-            self.record_outcome(event, source, tool_metadata.as_ref(), &outcome);
+        for outcome in outcomes {
+            self.record_outcome(event, source, tool_metadata, &outcome);
 
             match &outcome.status {
                 InvocationStatus::Failed(error) => {
@@ -478,7 +497,6 @@ impl HookRunner {
                 },
             }
         }
-
         Ok(aggregated)
     }
 
