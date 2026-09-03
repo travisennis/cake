@@ -64,6 +64,13 @@ pub struct SessionTelemetrySettings {
     pub max_output_tokens: Option<u32>,
     pub reasoning_effort: Option<ReasoningEffort>,
     pub reasoning_max_tokens: Option<u32>,
+    /// The `[[models]]` entry name the invocation resolved to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_config: Option<String>,
+    /// The provider endpoint the invocation targets (non-secret).
+    /// Distinguishes same-ID entries on different backends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

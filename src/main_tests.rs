@@ -345,8 +345,9 @@ fn test_resolve_model_config_default_model() {
         },
     );
 
-    let config = args.resolve_model_config(&models, Some("zen")).unwrap();
+    let (config, name) = args.resolve_model_config(&models, Some("zen")).unwrap();
     assert_eq!(config.model, "glm-5.1");
+    assert_eq!(name, "zen");
 }
 
 #[test]
@@ -399,8 +400,9 @@ fn test_resolve_model_config_from_settings() {
         },
     );
 
-    let config = args.resolve_model_config(&models, None).unwrap();
+    let (config, name) = args.resolve_model_config(&models, None).unwrap();
     assert_eq!(config.model, "anthropic/claude-3-sonnet");
+    assert_eq!(name, "claude");
     assert_eq!(config.api_type, ApiType::Responses);
     assert_eq!(config.temperature, Some(0.7));
     assert_eq!(config.top_p, Some(0.9));
@@ -452,8 +454,9 @@ fn test_resolve_model_config_model_flag_overrides_default_model() {
         },
     );
 
-    let config = args.resolve_model_config(&models, Some("zen")).unwrap();
+    let (config, name) = args.resolve_model_config(&models, Some("zen")).unwrap();
     assert_eq!(config.model, "anthropic/claude-3-sonnet");
+    assert_eq!(name, "claude");
 }
 
 #[test]
@@ -531,6 +534,7 @@ fn forked_session_seeds_skills_from_structured_records() {
     let run_session = CodingAssistant::forked_client_and_session(
         &restored,
         test_resolved_model_config(),
+        "test".to_string(),
         PathBuf::from("/work"),
         &[(Role::System, "system".to_string())],
         HashMap::new(),
@@ -849,25 +853,48 @@ fn output_sink_no_session_suppresses_session_file() {
     });
 }
 
-#[test]
-fn test_resolve_model_for_session_by_model_field() {
-    // Session stores the API model identifier, not the config name.
-    // This test verifies that --continue works when the session model
-    // matches a definition's `model` field even if the `name` differs.
-    temp_env::with_var("CAKE_TEST_VALID_KEY", Some("sk-test-123"), || {
-        let args = CodingAssistant::parse_from(["cake", "test prompt"]);
+fn session_test_models() -> HashMap<String, ModelDefinition> {
+    let mut models = HashMap::new();
+    models.insert(
+        "my-alias".to_string(),
+        ModelDefinition {
+            name: "my-alias".to_string(),
+            model: "deepseek-v4-pro".to_string(),
+            base_url: "https://api.example.com".to_string(),
+            api_key_env: "CAKE_TEST_VALID_KEY".to_string(),
+            provider: None,
+            provider_headers: None,
+            api_type: ApiType::ChatCompletions,
+            temperature: None,
+            top_p: None,
+            max_output_tokens: None,
+            context_window: None,
+            reasoning_effort: None,
+            reasoning_summary: None,
+            reasoning_max_tokens: None,
+            providers: vec![],
+        },
+    );
+    models
+}
 
-        let mut models = HashMap::new();
+fn duplicate_id_test_models() -> HashMap<String, ModelDefinition> {
+    let mut models = HashMap::new();
+    for (name, base_url) in [
+        ("codex-luna-low", "https://chatgpt.com/backend-api/codex"),
+        ("codex-luna-xhigh", "https://chatgpt.com/backend-api/codex"),
+        ("luna-low", "https://opencode.ai/zen/go/v1/"),
+    ] {
         models.insert(
-            "my-alias".to_string(),
+            name.to_string(),
             ModelDefinition {
-                name: "my-alias".to_string(),
-                model: "deepseek-v4-pro".to_string(),
-                base_url: "https://api.example.com".to_string(),
+                name: name.to_string(),
+                model: "gpt-5.6-luna".to_string(),
+                base_url: base_url.to_string(),
                 api_key_env: "CAKE_TEST_VALID_KEY".to_string(),
                 provider: None,
                 provider_headers: None,
-                api_type: ApiType::ChatCompletions,
+                api_type: ApiType::Responses,
                 temperature: None,
                 top_p: None,
                 max_output_tokens: None,
@@ -878,11 +905,126 @@ fn test_resolve_model_for_session_by_model_field() {
                 providers: vec![],
             },
         );
+    }
+    models
+}
 
-        let resolved = args
-            .resolve_model_for_session(&models, None, Some("deepseek-v4-pro"))
+#[test]
+fn test_resolve_model_for_session_by_model_field() {
+    // Legacy sessions store only the API model identifier. A unique ID
+    // still resolves, and reports the matched entry name.
+    temp_env::with_var("CAKE_TEST_VALID_KEY", Some("sk-test-123"), || {
+        let args = CodingAssistant::parse_from(["cake", "test prompt"]);
+        let models = session_test_models();
+
+        let (resolved, name) = args
+            .resolve_model_for_session(&models, None, Some("deepseek-v4-pro"), None)
             .unwrap();
         assert_eq!(resolved.model_config.model, "deepseek-v4-pro");
+        assert_eq!(name, "my-alias");
+    });
+}
+
+#[test]
+fn test_resolve_model_for_session_prefers_stored_config_name() {
+    // New sessions persist the entry name; bare resume uses it directly
+    // even when several entries share the provider model ID.
+    temp_env::with_var("CAKE_TEST_VALID_KEY", Some("sk-test-123"), || {
+        let args = CodingAssistant::parse_from(["cake", "test prompt"]);
+        let models = duplicate_id_test_models();
+
+        let (resolved, name) = args
+            .resolve_model_for_session(&models, None, Some("gpt-5.6-luna"), Some("luna-low"))
+            .unwrap();
+        assert_eq!(name, "luna-low");
+        assert_eq!(
+            resolved.model_config.base_url,
+            "https://opencode.ai/zen/go/v1/"
+        );
+    });
+}
+
+#[test]
+fn test_resolve_model_for_session_ambiguous_legacy_id_errors() {
+    // Legacy sessions with only an ID shared by several entries must not
+    // resolve nondeterministically: bare resume errors with candidates.
+    temp_env::with_var("CAKE_TEST_VALID_KEY", Some("sk-test-123"), || {
+        let args = CodingAssistant::parse_from(["cake", "test prompt"]);
+        let models = duplicate_id_test_models();
+
+        let err = args
+            .resolve_model_for_session(&models, None, Some("gpt-5.6-luna"), None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("is ambiguous"), "unexpected error: {err}");
+        assert!(err.contains("codex-luna-low"), "unexpected error: {err}");
+        assert!(err.contains("codex-luna-xhigh"), "unexpected error: {err}");
+        assert!(err.contains("luna-low"), "unexpected error: {err}");
+    });
+}
+
+#[test]
+fn test_resolve_model_for_session_exact_name_does_not_hide_legacy_ambiguity() {
+    // A legacy `model` value is a provider ID, even when it also happens to
+    // equal one entry name. Every same-ID entry must participate in ambiguity
+    // detection so Cake cannot silently choose that exact-name entry.
+    temp_env::with_var("CAKE_TEST_VALID_KEY", Some("sk-test-123"), || {
+        let args = CodingAssistant::parse_from(["cake", "test prompt"]);
+        let mut models = session_test_models();
+        let mut exact_name = models["my-alias"].clone();
+        exact_name.name = "deepseek-v4-pro".to_string();
+        models.insert(exact_name.name.clone(), exact_name);
+
+        let err = args
+            .resolve_model_for_session(&models, None, Some("deepseek-v4-pro"), None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("is ambiguous"), "unexpected error: {err}");
+        assert!(err.contains("deepseek-v4-pro"), "unexpected error: {err}");
+        assert!(err.contains("my-alias"), "unexpected error: {err}");
+    });
+}
+
+#[test]
+fn test_resolve_model_for_session_explicit_switch_same_id_errors() {
+    // `--model` naming a different entry with the same provider ID is a
+    // silent effort/backend flip; it must error instead.
+    temp_env::with_var("CAKE_TEST_VALID_KEY", Some("sk-test-123"), || {
+        let args =
+            CodingAssistant::parse_from(["cake", "--model", "codex-luna-low", "test prompt"]);
+        let models = duplicate_id_test_models();
+
+        let err = args
+            .resolve_model_for_session(
+                &models,
+                None,
+                Some("gpt-5.6-luna"),
+                Some("codex-luna-xhigh"),
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("Session model mismatch"),
+            "unexpected error: {err}"
+        );
+        assert!(err.contains("codex-luna-xhigh"), "unexpected error: {err}");
+    });
+}
+
+#[test]
+fn test_resolve_model_for_session_unknown_stored_config_errors() {
+    temp_env::with_var("CAKE_TEST_VALID_KEY", Some("sk-test-123"), || {
+        let args = CodingAssistant::parse_from(["cake", "test prompt"]);
+        let models = session_test_models();
+
+        let err = args
+            .resolve_model_for_session(&models, None, Some("deepseek-v4-pro"), Some("gone"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("is not configured in settings.toml"),
+            "unexpected error: {err}"
+        );
     });
 }
 

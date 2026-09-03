@@ -83,6 +83,8 @@ Set the selected model explicitly with `--model`, through a selected `--profile`
 
 All model references --- `default_model`, `--model`, profiles, and `[tools.bash.judge] model` --- use a `[[models]]` entry's `name` as the index into that entry's full configuration (provider, base URL, API key, temperature, reasoning, and other fields). The `model` field inside a `[[models]]` entry is the raw provider model identifier and is not used to reference a model elsewhere.
 
+Resumed sessions (`--continue`, `--resume`, `--fork`) are pinned to the `[[models]]` entry name they were created with, which is persisted in the session alongside the provider model ID. A bare resume reuses that entry deterministically. Passing `--model` for a different entry --- even one sharing the same provider model ID with a different backend or reasoning effort --- fails with a session-model mismatch instead of silently switching. Sessions written before the entry name was persisted carry only the provider ID: a bare resume still works when the ID matches exactly one entry, and otherwise fails listing the matching entry names so the run can be retried with an explicit `--model <name>`.
+
 Relative `system_prompt`, `skills.path`, `directories`, and `[sandbox]` values resolve from the invocation working directory, including the created worktree when `--worktree` is active. Use absolute paths for global settings that must work from every project. Invalid files and unknown selected models fail before the provider request.
 
 ## Limits

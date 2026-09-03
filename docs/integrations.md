@@ -78,7 +78,7 @@ Live `function_call` and `function_call_output` records may carry an optional `r
 
 ### Record semantics
 
-- `session_meta`: version, session identity, creation context, tools, optional model/system prompt, and Git state.
+- `session_meta`: version, session identity, creation context, tools, optional model/system prompt, optional model-config entry name, and Git state. `model` is the provider model ID; `model_config` is the `[[models]]` entry name the session was created with and is the preferred resume identity when several entries share one ID.
 - `task_start`: task identity and timestamp for one CLI invocation.
 - `prompt_context`: mutable developer context used by that invocation.
 - `message`: typed user, assistant, or tool text.
@@ -102,6 +102,8 @@ record retains `provider_request_id` and a bounded `responses_failed` object (`t
 Each `judge_attempt` identifies the resolved model, API type, request controls, effective deadline, zero-tool/tool-choice state, prompt byte counts, attempt/retry ordinal, retry reason and backoff wait, terminal class, optional request identity digests (one-way SHA-256 of the provider request and originating tool call identifiers), usage, and termination. Timings separate construction, request through headers, response parsing, verdict parsing, and total time. Timeout and transport attempts retain elapsed time; absent usage is `null`. The record supplements the verdict or fail-closed compensation. One `judge_attempt` is emitted per provider call: one per evaluation, or two after a recovery.
 
 Main-provider `api_attempt.usage.input_tokens_details` may additionally contain provider-reported `cached_tokens` and `cache_write_tokens`; these optional usage details support the read-only cache-break analysis in `scripts/session-metrics/cache_breaks.py`. The same optional `cache_write_tokens` detail may appear in serialized `Usage` values in `turn_usage`, `task_complete`, and `session_summary` records.
+
+`telemetry_init` carries the invocation's `model` (provider ID) plus optional `settings.model_config` (the resolved `[[models]]` entry name) and `settings.base_url` (the provider endpoint, non-secret), so cache analysis can distinguish same-ID entries on different backends.
 
 A `compensation` carries its `kind`, optional `detail`, judge-verdict `latency_ms`, and allowlist `overridden` flag. Kinds are `json_repair`, `judge_verdict`, `judge_fail_closed`, `judge_bypass`, `same_path_serialization`, `output_truncation`, `context_overflow_retry`, and `edit_invalid_arguments`. Judge details are `block:<code>`, `warn:<code>`, or `allow`; fail-closed details name the failure class.
 

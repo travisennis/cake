@@ -349,6 +349,7 @@ async fn post_tool_use_persists_hook_record_while_session_locked() {
         timestamp: chrono::Utc::now(),
         working_directory: dir.path().to_path_buf(),
         model: Some("test-model".to_string()),
+        model_config: Some("test".to_string()),
         tools: Vec::new(),
         cake_version: Some("test".to_string()),
         system_prompt: None,
