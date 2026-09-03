@@ -739,7 +739,7 @@ mod tests {
     /// Persist a minimal restorable session for `working_dir`.
     fn saved_session(data_dir: &DataDir, working_dir: &Path) -> Session {
         let mut session = Session::new(uuid::Uuid::new_v4(), working_dir.to_path_buf());
-        session.model = Some("test".to_string());
+        session.model = Some("glm-5.1".to_string());
         data_dir
             .save_session(&session)
             .expect("session fixture should save");
@@ -905,7 +905,7 @@ mod tests {
             let working_dir = tempfile::tempdir().expect("temp working dir");
             let mut saved = session_with_activated_skill(uuid::Uuid::new_v4());
             saved.working_dir = working_dir.path().to_path_buf();
-            saved.model = Some("test".to_string());
+            saved.model = Some("glm-5.1".to_string());
             data_dir
                 .save_session(&saved)
                 .expect("session fixture should save");

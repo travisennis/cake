@@ -65,7 +65,8 @@ fn session_meta(env: &TestEnv) -> serde_json::Value {
         "session_id": SESSION_ID,
         "timestamp": "2026-07-27T12:00:00Z",
         "working_directory": env.workspace_dir,
-        "model": "test",
+        "model": "glm-5.1",
+        "model_config": "test",
         "tools": ["Bash", "Edit", "Read", "Write"],
     })
 }

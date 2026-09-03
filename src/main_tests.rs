@@ -964,6 +964,28 @@ fn test_resolve_model_for_session_ambiguous_legacy_id_errors() {
 }
 
 #[test]
+fn test_resolve_model_for_session_exact_name_does_not_hide_legacy_ambiguity() {
+    // A legacy `model` value is a provider ID, even when it also happens to
+    // equal one entry name. Every same-ID entry must participate in ambiguity
+    // detection so Cake cannot silently choose that exact-name entry.
+    temp_env::with_var("CAKE_TEST_VALID_KEY", Some("sk-test-123"), || {
+        let args = CodingAssistant::parse_from(["cake", "test prompt"]);
+        let mut models = session_test_models();
+        let mut exact_name = models["my-alias"].clone();
+        exact_name.name = "deepseek-v4-pro".to_string();
+        models.insert(exact_name.name.clone(), exact_name);
+
+        let err = args
+            .resolve_model_for_session(&models, None, Some("deepseek-v4-pro"), None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("is ambiguous"), "unexpected error: {err}");
+        assert!(err.contains("deepseek-v4-pro"), "unexpected error: {err}");
+        assert!(err.contains("my-alias"), "unexpected error: {err}");
+    });
+}
+
+#[test]
 fn test_resolve_model_for_session_explicit_switch_same_id_errors() {
     // `--model` naming a different entry with the same provider ID is a
     // silent effort/backend flip; it must error instead.

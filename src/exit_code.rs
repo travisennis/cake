@@ -204,7 +204,6 @@ const INPUT_ERROR_PATTERNS: &[&str] = &[
     "Invalid session UUID",
     "Invalid session reference",
     "No previous session found",
-    "is ambiguous",
     "Failed to open session file",
     "Failed to read judge rubric file",
     "Working directory mismatch",
@@ -217,6 +216,7 @@ const COMPOUND_INPUT_ERROR_PATTERNS: &[&[&str]] = &[
     &["Environment variable", "is not set", "API key"],
     &["Environment variable", "is set but empty"],
     &["Session", "not found"],
+    &["Session model", "is ambiguous"],
     &["Failed to parse", "session file"],
     &["error:", "USAGE"],
 ];
@@ -607,6 +607,12 @@ mod tests {
     #[test]
     fn classify_generic_error_as_agent_error() {
         let err = anyhow::anyhow!("Something unexpected went wrong");
+        assert_eq!(classify_to_u8(&err), code::AGENT_ERROR);
+    }
+
+    #[test]
+    fn classify_unrelated_ambiguous_error_as_agent_error() {
+        let err = anyhow::anyhow!("Provider response is ambiguous");
         assert_eq!(classify_to_u8(&err), code::AGENT_ERROR);
     }
 

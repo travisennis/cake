@@ -406,16 +406,11 @@ impl CodingAssistant {
         models: &HashMap<String, ModelDefinition>,
         model_id: &str,
     ) -> anyhow::Result<(ResolvedModelConfig, String)> {
-        if let Some(def) = models.get(model_id) {
-            let resolved = ResolvedModelConfig::resolve(def.to_model_config())?;
-            return Ok((self.apply_cli_overrides(resolved), def.name.clone()));
-        }
-        let mut candidates: Vec<&str> = models
+        let mut candidates: Vec<&ModelDefinition> = models
             .values()
             .filter(|def| def.model == model_id)
-            .map(|def| def.name.as_str())
             .collect();
-        candidates.sort_unstable();
+        candidates.sort_unstable_by(|left, right| left.name.cmp(&right.name));
         match candidates.as_slice() {
             [] => {
                 anyhow::bail!(
@@ -425,23 +420,21 @@ impl CodingAssistant {
                 );
             },
             [only] => {
-                let Some(def) = models.get(*only) else {
-                    anyhow::bail!(
-                        "Session model '{model_id}' is not configured in settings.toml. \
-                         Add a [[models]] entry for '{model_id}' to continue this session, \
-                         or start a new session."
-                    );
-                };
-                let resolved = ResolvedModelConfig::resolve(def.to_model_config())?;
-                Ok((self.apply_cli_overrides(resolved), def.name.clone()))
+                let resolved = ResolvedModelConfig::resolve(only.to_model_config())?;
+                Ok((self.apply_cli_overrides(resolved), only.name.clone()))
             },
             _ => {
+                let candidate_names = candidates
+                    .iter()
+                    .map(|def| def.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 anyhow::bail!(
                     "Session model '{model_id}' is ambiguous: matches {} model configs [{}]. \
                      Re-run with explicit --model <name> to continue this session, \
                      or start a new session.",
                     candidates.len(),
-                    candidates.join(", ")
+                    candidate_names
                 );
             },
         }
