@@ -276,6 +276,7 @@ mod tests {
             timestamp: chrono::Utc::now(),
             working_directory: std::path::PathBuf::from("/work"),
             model: Some("test-model".to_string()),
+            model_config: Some("test".to_string()),
             tools: vec!["bash".to_string(), "read".to_string()],
             cake_version: None,
             system_prompt: None,

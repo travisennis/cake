@@ -342,6 +342,7 @@ fn session_meta_record(session: &Session, tools: Vec<String>) -> SessionRecord {
         timestamp: chrono::Utc::now(),
         working_directory: session.working_dir.clone(),
         model: session.model.clone(),
+        model_config: session.model_config.clone(),
         tools,
         cake_version: Some(env!("CARGO_PKG_VERSION").to_string()),
         system_prompt: session.system_prompt.clone(),

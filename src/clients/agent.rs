@@ -295,9 +295,10 @@ impl Agent {
         &self.config.model_config.model
     }
 
-    pub const fn session_telemetry_settings(
+    pub fn session_telemetry_settings(
         &self,
         output_format: OutputFormat,
+        model_config: Option<String>,
     ) -> SessionTelemetrySettings {
         SessionTelemetrySettings {
             api_type: self.config.model_config.api_type,
@@ -305,6 +306,8 @@ impl Agent {
             max_output_tokens: self.config.model_config.max_output_tokens,
             reasoning_effort: self.config.model_config.reasoning_effort,
             reasoning_max_tokens: self.config.model_config.reasoning_max_tokens,
+            model_config,
+            base_url: Some(self.config.model_config.base_url.clone()),
         }
     }
 

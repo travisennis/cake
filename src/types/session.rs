@@ -507,6 +507,11 @@ pub enum SessionRecord {
         working_directory: PathBuf,
         #[serde(skip_serializing_if = "Option::is_none")]
         model: Option<String>,
+        /// The `[[models]]` entry name the session was created with.
+        /// The provider model ID in `model` is not unique when several
+        /// entries share one ID with different backends or efforts.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model_config: Option<String>,
         tools: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cake_version: Option<String>,
@@ -591,6 +596,9 @@ pub enum StreamRecord {
         working_directory: PathBuf,
         #[serde(skip_serializing_if = "Option::is_none")]
         model: Option<String>,
+        /// The `[[models]]` entry name the session was created with.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model_config: Option<String>,
         tools: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cake_version: Option<String>,
@@ -655,6 +663,7 @@ impl From<StreamRecord> for SessionRecord {
                 timestamp,
                 working_directory,
                 model,
+                model_config,
                 tools,
                 cake_version,
                 system_prompt,
@@ -665,6 +674,7 @@ impl From<StreamRecord> for SessionRecord {
                 timestamp,
                 working_directory,
                 model,
+                model_config,
                 tools,
                 cake_version,
                 system_prompt,
@@ -721,6 +731,7 @@ impl From<SessionRecord> for StreamRecord {
                 timestamp,
                 working_directory,
                 model,
+                model_config,
                 tools,
                 cake_version,
                 system_prompt,
@@ -731,6 +742,7 @@ impl From<SessionRecord> for StreamRecord {
                 timestamp,
                 working_directory,
                 model,
+                model_config,
                 tools,
                 cake_version,
                 system_prompt,

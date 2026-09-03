@@ -68,6 +68,7 @@ impl crate::CodingAssistant {
     pub(crate) fn restored_client_and_session(
         restored: Session,
         resolved: ResolvedModelConfig,
+        model_config_name: String,
         initial_messages: &[(crate::types::Role, String)],
         skill_locations: &HashMap<PathBuf, Skill>,
         tool_context: Arc<ToolContext>,
@@ -95,6 +96,7 @@ impl crate::CodingAssistant {
             .with_activated_skills(activated_skills);
         let mut session = Session::new(restored.id, restored.working_dir);
         session.model = Some(resolved.model_config.model);
+        session.model_config = Some(model_config_name);
         Ok(RunSession {
             agent,
             session,
@@ -109,6 +111,7 @@ impl crate::CodingAssistant {
     )]
     pub(crate) fn new_client_and_session(
         resolved: ResolvedModelConfig,
+        model_config_name: String,
         current_dir: PathBuf,
         initial_messages: &[(crate::types::Role, String)],
         skill_locations: HashMap<PathBuf, Skill>,
@@ -128,6 +131,7 @@ impl crate::CodingAssistant {
         info!(target: "cake", "New session: {new_id}");
         let mut session = Session::new(new_id, current_dir);
         session.model = Some(resolved.model_config.model);
+        session.model_config = Some(model_config_name);
         session.system_prompt = initial_messages.first().map(|(_, content)| content.clone());
         RunSession {
             agent,
@@ -144,6 +148,7 @@ impl crate::CodingAssistant {
     pub(crate) fn forked_client_and_session(
         restored: &Session,
         resolved: ResolvedModelConfig,
+        model_config_name: String,
         current_dir: PathBuf,
         initial_messages: &[(crate::types::Role, String)],
         skill_locations: HashMap<PathBuf, Skill>,
@@ -190,6 +195,7 @@ impl crate::CodingAssistant {
         info!(target: "cake", "New forked session: {new_id}");
         let mut session = Session::new(new_id, current_dir);
         session.model = Some(resolved.model_config.model);
+        session.model_config = Some(model_config_name);
         session.system_prompt = initial_messages.first().map(|(_, content)| content.clone());
         Ok(RunSession {
             agent,
@@ -283,16 +289,18 @@ impl crate::CodingAssistant {
         restored: Session,
         inputs: &RunInputs<'_>,
     ) -> anyhow::Result<RunSession> {
-        let resolved = self.resolve_model_for_session(
+        let (resolved, model_config_name) = self.resolve_model_for_session(
             inputs.models,
             inputs.default_model,
             restored.model.as_deref(),
+            restored.model_config.as_deref(),
         )?;
         let tool_context =
             attach_judge(inputs.tool_context, &resolved, inputs.judge, inputs.models);
         Self::restored_client_and_session(
             restored,
             resolved,
+            model_config_name,
             &inputs.initial_messages,
             &inputs.skill_locations,
             tool_context,
@@ -326,16 +334,18 @@ impl crate::CodingAssistant {
         info!(target: "cake", "Forking session");
         let restored = fork_source(run_mode, data_dir, &inputs.current_dir)?;
         info!(target: "cake", "Forking from session: {}", restored.id);
-        let resolved = self.resolve_model_for_session(
+        let (resolved, model_config_name) = self.resolve_model_for_session(
             inputs.models,
             inputs.default_model,
             restored.model.as_deref(),
+            restored.model_config.as_deref(),
         )?;
         let tool_context =
             attach_judge(inputs.tool_context, &resolved, inputs.judge, inputs.models);
         Self::forked_client_and_session(
             &restored,
             resolved,
+            model_config_name,
             inputs.current_dir.clone(),
             &inputs.initial_messages,
             inputs.skill_locations.clone(),
@@ -352,11 +362,12 @@ impl crate::CodingAssistant {
         inputs: &RunInputs<'_>,
         persistence: Option<SessionPersistencePlan>,
     ) -> anyhow::Result<RunSession> {
-        let resolved = ResolvedModelConfig::resolve(
-            self.resolve_model_config(inputs.models, inputs.default_model)?,
-        )?;
+        let (config, model_config_name) =
+            self.resolve_model_config(inputs.models, inputs.default_model)?;
+        let resolved = ResolvedModelConfig::resolve(config)?;
         Ok(Self::new_client_and_session(
             resolved.clone(),
+            model_config_name,
             inputs.current_dir.clone(),
             &inputs.initial_messages,
             inputs.skill_locations.clone(),
@@ -622,6 +633,7 @@ mod tests {
         let run = crate::CodingAssistant::restored_client_and_session(
             restored,
             resolved,
+            "test".to_string(),
             &[(crate::types::Role::System, "test".to_string())],
             &HashMap::new(),
             tool_context,
@@ -647,6 +659,7 @@ mod tests {
         let run = crate::CodingAssistant::restored_client_and_session(
             restored,
             test_resolved_model_config(),
+            "test".to_string(),
             &[(crate::types::Role::System, "test".to_string())],
             &HashMap::new(),
             test_tool_context(),
@@ -671,6 +684,7 @@ mod tests {
         let run = crate::CodingAssistant::forked_client_and_session(
             &restored,
             test_resolved_model_config(),
+            "test".to_string(),
             PathBuf::from("/work"),
             &[(crate::types::Role::System, "test".to_string())],
             HashMap::new(),

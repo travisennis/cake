@@ -69,8 +69,12 @@ pub struct Session {
     pub id: uuid::Uuid,
     /// Working directory where session was created
     pub working_dir: PathBuf,
-    /// Model used for the session
+    /// Provider model ID used for the session (e.g. `gpt-5.6-luna`).
     pub model: Option<String>,
+    /// The `[[models]]` entry name the session was created with
+    /// (e.g. `codex-luna-xhigh`). Preferred resume identity: the model
+    /// ID alone is ambiguous when entries share one ID.
+    pub model_config: Option<String>,
     /// Full system prompt used when the session was created.
     pub system_prompt: Option<String>,
     /// Git repository state captured when the session was created.
@@ -94,6 +98,7 @@ impl Session {
             id,
             working_dir,
             model: None,
+            model_config: None,
             system_prompt: None,
             git: None,
             records: Vec::new(),
@@ -150,6 +155,7 @@ impl Session {
             id: header.id,
             working_dir: header.working_dir,
             model: header.model,
+            model_config: header.model_config,
             system_prompt: header.system_prompt,
             git: header.git,
             records,
@@ -212,6 +218,7 @@ struct SessionHeader {
     id: uuid::Uuid,
     working_dir: PathBuf,
     model: Option<String>,
+    model_config: Option<String>,
     system_prompt: Option<String>,
     git: Option<GitState>,
     timestamp: chrono::DateTime<chrono::Utc>,
@@ -250,6 +257,7 @@ fn read_session_header<R: std::io::BufRead>(
             timestamp,
             working_directory,
             model,
+            model_config,
             system_prompt,
             git,
             ..
@@ -267,6 +275,7 @@ fn read_session_header<R: std::io::BufRead>(
                     .with_context(|| format!("Invalid session UUID '{session_id}'"))?,
                 working_dir: working_directory.clone(),
                 model: model.clone(),
+                model_config: model_config.clone(),
                 system_prompt: system_prompt.clone(),
                 git: Some(git.clone()),
                 timestamp: *timestamp,
@@ -380,6 +389,7 @@ mod tests {
         let id = uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
         let mut session = Session::new(id, PathBuf::from("/work"));
         session.model = Some("test-model".to_string());
+        session.model_config = Some("test-config".to_string());
         session
     }
 
@@ -390,6 +400,7 @@ mod tests {
             timestamp: chrono::Utc::now(),
             working_directory: session.working_dir.clone(),
             model: session.model.clone(),
+            model_config: session.model_config.clone(),
             tools: vec!["bash".to_string(), "read".to_string()],
             cake_version: Some("test".to_string()),
             system_prompt: Some("test system prompt".to_string()),
@@ -594,6 +605,7 @@ mod tests {
         assert_eq!(loaded.id, session.id);
         assert_eq!(loaded.working_dir, session.working_dir);
         assert_eq!(loaded.model, session.model);
+        assert_eq!(loaded.model_config, session.model_config);
         assert_eq!(loaded.records.len(), 5);
         assert_eq!(loaded.messages().len(), 2);
     }
@@ -627,6 +639,7 @@ mod tests {
         assert_eq!(init["session_id"], "550e8400-e29b-41d4-a716-446655440000");
         assert_eq!(init["working_directory"], "/work");
         assert_eq!(init["model"], "test-model");
+        assert_eq!(init["model_config"], "test-config");
         assert!(init["tools"].is_array());
 
         // Second line is the message
@@ -718,6 +731,26 @@ mod tests {
             loaded.activated_skills(),
             HashSet::from(["real-skill".to_string()])
         );
+    }
+
+    #[test]
+    fn test_session_load_legacy_meta_without_model_config() {
+        // Sessions written before the config-name field persist only the
+        // provider model ID; they must still load with `model_config` unset.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("legacy.jsonl");
+        fs::write(
+            &path,
+            concat!(
+                r#"{"type":"session_meta","format_version":4,"session_id":"550e8400-e29b-41d4-a716-446655440000","timestamp":"2026-04-04T15:51:54Z","working_directory":"/tmp/test","model":"gpt-5.6-luna","tools":[],"git":{"repository_url":null,"branch":null,"commit_hash":null}}"#,
+                "\n"
+            ),
+        )
+        .unwrap();
+
+        let loaded = Session::load(&path).unwrap();
+        assert_eq!(loaded.model.as_deref(), Some("gpt-5.6-luna"));
+        assert_eq!(loaded.model_config, None);
     }
 
     #[test]

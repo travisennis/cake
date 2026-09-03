@@ -11,6 +11,7 @@ expression: "serde_json::to_value(record).unwrap()"
     "repository_url": "https://example.com/cake.git"
   },
   "model": "gpt-5.4",
+  "model_config": "test",
   "session_id": "550e8400-e29b-41d4-a716-446655440000",
   "system_prompt": "You are cake.",
   "timestamp": "2026-05-10T12:34:56Z",

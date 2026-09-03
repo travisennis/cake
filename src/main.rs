@@ -235,11 +235,15 @@ impl CodingAssistant {
     }
 
     /// Resolve the effective `ModelConfig`, applying CLI overrides.
+    ///
+    /// Returns the config plus the selected `[[models]]` entry name so
+    /// callers can persist the exact entry (not just the provider model
+    /// ID, which several entries may share).
     fn resolve_model_config(
         &self,
         models: &HashMap<String, ModelDefinition>,
         default_model: Option<&str>,
-    ) -> anyhow::Result<ModelConfig> {
+    ) -> anyhow::Result<(ModelConfig, String)> {
         let model_name = match self.model.as_deref() {
             Some(name) => name,
             None => match default_model {
@@ -293,69 +297,150 @@ impl CodingAssistant {
             config.reasoning_max_tokens = Some(budget);
         }
 
-        Ok(config)
+        Ok((config, model_name.to_string()))
     }
 
     /// Resolve the model for a session restore (--continue, --resume, --fork).
     ///
-    /// Policy (per the plan):
-    /// - If `--model` is explicitly provided and the session has a stored model that
-    ///   differs from it, error out with a clear message.
-    /// - If `--model` is explicitly provided and matches the session model (or session
-    ///   has no model), use the explicitly provided model.
-    /// - If `--model` is not provided and the session has a stored model, use the
-    ///   session model.
-    /// - If `--model` is not provided and the session has no stored model, fall back
-    ///   to default model resolution.
+    /// Returns the resolved config plus the selected `[[models]]` entry name.
+    /// Sessions persist both the provider model ID and the entry name; the
+    /// name is the preferred identity because the ID alone is ambiguous when
+    /// several entries share one ID with different backends or efforts.
+    ///
+    /// Policy:
+    /// - Explicit `--model` naming a different stored entry errors, even when
+    ///   both entries share one provider model ID.
+    /// - Without `--model`, a stored entry name resolves deterministically.
+    /// - Legacy sessions with only a model ID resolve it when it matches
+    ///   exactly one entry and error with candidates when it is ambiguous.
+    /// - With neither, fall back to default model resolution.
     fn resolve_model_for_session(
         &self,
         models: &HashMap<String, ModelDefinition>,
         default_model: Option<&str>,
         session_model: Option<&str>,
-    ) -> anyhow::Result<ResolvedModelConfig> {
-        let cli_model_explicit = self.model.is_some();
-
-        if cli_model_explicit {
-            // User explicitly passed --model. Resolve it and check against session.
-            let config = self.resolve_model_config(models, default_model)?;
-            let resolved = ResolvedModelConfig::resolve(config)?;
-            let resolved_model = &resolved.model_config.model;
-
-            if let Some(sm) = session_model
-                && sm != resolved_model
-            {
-                anyhow::bail!(
-                    "Session model mismatch: session uses '{sm}' but --model resolves to '{resolved_model}'. \
-                     Use --model {sm} to continue with the session's model, or start a new session."
-                );
-            }
-
-            Ok(resolved)
-        } else if let Some(sm) = session_model {
-            // No --model, but session has a stored model. Use it.
-            // Look up the model name in settings to get provider config.
-            // Try by name first (for sessions that store the config name),
-            // then by model identifier (for backward compatibility with older
-            // sessions that stored the API model string).
-            let def = models
-                .get(sm)
-                .or_else(|| models.values().find(|d| d.model == sm));
-            if let Some(def) = def {
-                let resolved = ResolvedModelConfig::resolve(def.to_model_config())?;
-                let resolved = self.apply_cli_overrides(resolved);
-                Ok(resolved)
-            } else {
-                anyhow::bail!(
-                    "Session model '{sm}' is not configured in settings.toml. \
-                     Add a [[models]] entry for '{sm}' to continue this session, \
-                     or start a new session."
-                );
-            }
+        session_config: Option<&str>,
+    ) -> anyhow::Result<(ResolvedModelConfig, String)> {
+        if self.model.is_some() {
+            self.resolve_explicit_session_model(
+                models,
+                default_model,
+                session_model,
+                session_config,
+            )
+        } else if let Some(stored_config) = session_config {
+            self.resolve_stored_config_model(models, stored_config)
+        } else if let Some(model_id) = session_model {
+            self.resolve_legacy_session_model(models, model_id)
         } else {
             // No --model, no session model. Fall back to default.
-            let config = self.resolve_model_config(models, default_model)?;
+            let (config, config_name) = self.resolve_model_config(models, default_model)?;
             let resolved = ResolvedModelConfig::resolve(config)?;
-            Ok(resolved)
+            Ok((resolved, config_name))
+        }
+    }
+
+    /// Resolve a restore when `--model` names an entry explicitly.
+    ///
+    /// A stored entry name that differs from the requested one errors, even
+    /// when both entries share one provider model ID: silently switching
+    /// would flip the backend or reasoning effort mid-session.
+    fn resolve_explicit_session_model(
+        &self,
+        models: &HashMap<String, ModelDefinition>,
+        default_model: Option<&str>,
+        session_model: Option<&str>,
+        session_config: Option<&str>,
+    ) -> anyhow::Result<(ResolvedModelConfig, String)> {
+        let (config, config_name) = self.resolve_model_config(models, default_model)?;
+        let resolved = ResolvedModelConfig::resolve(config)?;
+        if let Some(stored_config) = session_config
+            && stored_config != config_name
+        {
+            anyhow::bail!(
+                "Session model mismatch: session uses config '{stored_config}' but --model '{config_name}' was given. \
+                 Use --model {stored_config} to continue with the session's model, or start a new session."
+            );
+        }
+        if session_config.is_none()
+            && let Some(stored_id) = session_model
+            && stored_id != resolved.model_config.model
+        {
+            anyhow::bail!(
+                "Session model mismatch: session uses '{stored_id}' but --model resolves to '{}'. \
+                 Use --model {stored_id} to continue with the session's model, or start a new session.",
+                resolved.model_config.model
+            );
+        }
+        Ok((resolved, config_name))
+    }
+
+    /// Resolve a restore when the session names its `[[models]]` entry.
+    ///
+    /// Deterministic by construction: the name indexes one entry.
+    fn resolve_stored_config_model(
+        &self,
+        models: &HashMap<String, ModelDefinition>,
+        stored_config: &str,
+    ) -> anyhow::Result<(ResolvedModelConfig, String)> {
+        let Some(def) = models.get(stored_config) else {
+            anyhow::bail!(
+                "Session model config '{stored_config}' is not configured in settings.toml. \
+                 Add a [[models]] entry with name = \"{stored_config}\" to continue this session, \
+                 or start a new session."
+            );
+        };
+        let resolved = ResolvedModelConfig::resolve(def.to_model_config())?;
+        Ok((self.apply_cli_overrides(resolved), def.name.clone()))
+    }
+
+    /// Resolve a legacy restore carrying only a provider model ID.
+    ///
+    /// A unique ID resolves to its entry; a shared ID errors with the
+    /// sorted candidate entry names instead of picking nondeterministically.
+    fn resolve_legacy_session_model(
+        &self,
+        models: &HashMap<String, ModelDefinition>,
+        model_id: &str,
+    ) -> anyhow::Result<(ResolvedModelConfig, String)> {
+        if let Some(def) = models.get(model_id) {
+            let resolved = ResolvedModelConfig::resolve(def.to_model_config())?;
+            return Ok((self.apply_cli_overrides(resolved), def.name.clone()));
+        }
+        let mut candidates: Vec<&str> = models
+            .values()
+            .filter(|def| def.model == model_id)
+            .map(|def| def.name.as_str())
+            .collect();
+        candidates.sort_unstable();
+        match candidates.as_slice() {
+            [] => {
+                anyhow::bail!(
+                    "Session model '{model_id}' is not configured in settings.toml. \
+                     Add a [[models]] entry for '{model_id}' to continue this session, \
+                     or start a new session."
+                );
+            },
+            [only] => {
+                let Some(def) = models.get(*only) else {
+                    anyhow::bail!(
+                        "Session model '{model_id}' is not configured in settings.toml. \
+                         Add a [[models]] entry for '{model_id}' to continue this session, \
+                         or start a new session."
+                    );
+                };
+                let resolved = ResolvedModelConfig::resolve(def.to_model_config())?;
+                Ok((self.apply_cli_overrides(resolved), def.name.clone()))
+            },
+            _ => {
+                anyhow::bail!(
+                    "Session model '{model_id}' is ambiguous: matches {} model configs [{}]. \
+                     Re-run with explicit --model <name> to continue this session, \
+                     or start a new session.",
+                    candidates.len(),
+                    candidates.join(", ")
+                );
+            },
         }
     }
 
@@ -740,7 +825,8 @@ impl CodingAssistant {
         };
 
         let invocation_id = uuid::Uuid::new_v4();
-        let settings = client.session_telemetry_settings(output_format);
+        let settings =
+            client.session_telemetry_settings(output_format, session.model_config.clone());
         let record = SessionTelemetryRecord::TelemetryInit {
             session_id: session.id.to_string(),
             invocation_id: invocation_id.to_string(),

@@ -204,6 +204,7 @@ const INPUT_ERROR_PATTERNS: &[&str] = &[
     "Invalid session UUID",
     "Invalid session reference",
     "No previous session found",
+    "is ambiguous",
     "Failed to open session file",
     "Failed to read judge rubric file",
     "Working directory mismatch",
@@ -305,6 +306,10 @@ mod tests {
             ("invalid session file", "Failed to parse session file"),
             ("working directory mismatch", "Working directory mismatch"),
             ("session model mismatch", "Session model mismatch"),
+            (
+                "ambiguous session model",
+                "Session model 'gpt-5.6-luna' is ambiguous: matches 3 model configs",
+            ),
             ("clap error", "error: invalid option\nUSAGE: cake"),
             ("invalid worktree", "Failed to cd into worktree"),
             (
