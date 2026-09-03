@@ -353,7 +353,9 @@ impl CodingAssistant {
         session_config: Option<&str>,
     ) -> anyhow::Result<(ResolvedModelConfig, String)> {
         let (config, config_name) = self.resolve_model_config(models, default_model)?;
-        let resolved = ResolvedModelConfig::resolve(config)?;
+        // Check the stored entry before resolving credentials: resolving a
+        // Codex-backend entry reads the local auth file, which must not mask
+        // a mismatch (or be required to report one).
         if let Some(stored_config) = session_config
             && stored_config != config_name
         {
@@ -362,6 +364,7 @@ impl CodingAssistant {
                  Use --model {stored_config} to continue with the session's model, or start a new session."
             );
         }
+        let resolved = ResolvedModelConfig::resolve(config)?;
         if session_config.is_none()
             && let Some(stored_id) = session_model
             && stored_id != resolved.model_config.model
