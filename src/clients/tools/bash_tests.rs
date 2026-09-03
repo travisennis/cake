@@ -1399,17 +1399,21 @@ fn minimal_sandbox_config(cwd: &std::path::Path) -> crate::clients::tools::sandb
     )
 }
 
-/// A directory guaranteed to fall outside the sandbox's allowed dirs (the
-/// workspace's parent), mirroring the integration-test fixture.
+/// Create a path-analysis fixture outside the minimal sandbox config.
+///
+/// The process workspace may itself be sandboxed, so its parent is not
+/// necessarily writable. `/tmp` is writable in the outer workspace sandbox,
+/// while `minimal_sandbox_config` intentionally omits temp-directory grants.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-fn outside_test_root() -> std::path::PathBuf {
-    path_outside_cwd_for_sandbox_test().expect("should find a parent directory outside cwd")
+fn denied_path_test_dir() -> tempfile::TempDir {
+    tempfile::TempDir::new_in("/tmp")
+        .expect("should create denied-path fixture in the system temp directory")
 }
 
 #[test]
 fn denied_paths_in_command_names_a_file_outside_allowed_dirs() {
     let cwd = tempfile::TempDir::new().unwrap();
-    let outside = tempfile::TempDir::new_in(outside_test_root()).unwrap();
+    let outside = denied_path_test_dir();
     let secret = outside.path().join("secret.json");
     std::fs::write(&secret, "{}").unwrap();
 
@@ -1425,7 +1429,7 @@ fn denied_paths_in_command_names_a_file_outside_allowed_dirs() {
 #[test]
 fn denied_paths_in_command_names_an_executable_outside_allowed_dirs() {
     let cwd = tempfile::TempDir::new().unwrap();
-    let outside = tempfile::TempDir::new_in(outside_test_root()).unwrap();
+    let outside = denied_path_test_dir();
     let bin = outside.path().join("tool");
     std::fs::write(&bin, "#!/bin/sh\necho hi\n").unwrap();
     #[cfg(unix)]
@@ -1477,7 +1481,7 @@ fn bare_command_word_resolves_via_path_and_reports_execute() {
     // is only reachable through `PATH` and sits outside the allowed dirs is
     // reported as an execute denial.
     let cwd = tempfile::TempDir::new().unwrap();
-    let outside = tempfile::TempDir::new_in(outside_test_root()).unwrap();
+    let outside = denied_path_test_dir();
     let tool = outside.path().join("ztool-cake-path-probe");
     std::fs::write(&tool, "#!/bin/sh\necho hi\n").unwrap();
     #[cfg(unix)]
@@ -1506,7 +1510,7 @@ fn bare_word_arguments_resolve_from_cwd_not_path() {
     // the allowed dirs. Treating it as the denied command would be a false
     // positive.
     let cwd = tempfile::TempDir::new().unwrap();
-    let outside = tempfile::TempDir::new_in(outside_test_root()).unwrap();
+    let outside = denied_path_test_dir();
     std::fs::write(cwd.path().join("weird"), "data").unwrap();
     let stray_bin = outside.path().join("weird");
     std::fs::write(&stray_bin, "#!/bin/sh\necho hi\n").unwrap();
