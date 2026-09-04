@@ -96,10 +96,15 @@ impl Backend {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a provider turn threads identity, history, tools, and overrides"
+    )]
     pub(super) async fn send_request<'a>(
         self,
         client: &reqwest::Client,
         config: &ResolvedModelConfig,
+        session_id: uuid::Uuid,
         history: &'a [ConversationItem],
         tools: &'a [Tool],
         overrides: &RequestOverrides,
@@ -107,11 +112,14 @@ impl Backend {
     ) -> anyhow::Result<reqwest::Response> {
         match self {
             Self::Responses => {
-                responses::send_request(client, config, history, tools, overrides, constraint).await
+                responses::send_request(
+                    client, config, session_id, history, tools, overrides, constraint,
+                )
+                .await
             },
             Self::ChatCompletions => {
                 chat_completions::send_request(
-                    client, config, history, tools, overrides, constraint,
+                    client, config, session_id, history, tools, overrides, constraint,
                 )
                 .await
             },
@@ -142,12 +150,15 @@ impl Backend {
         self,
         client: &reqwest::Client,
         config: &ResolvedModelConfig,
+        session_id: uuid::Uuid,
         request: Vec<u8>,
     ) -> anyhow::Result<reqwest::Response> {
         match self {
-            Self::Responses => responses::send_request_json(client, config, request).await,
+            Self::Responses => {
+                responses::send_request_json(client, config, session_id, request).await
+            },
             Self::ChatCompletions => {
-                chat_completions::send_request_json(client, config, request).await
+                chat_completions::send_request_json(client, config, session_id, request).await
             },
         }
     }

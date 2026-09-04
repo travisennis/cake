@@ -2010,3 +2010,69 @@ async fn unobserved_facade_recovers_once_and_leaks_no_diagnostics() {
     .await;
     assert!(with_diagnostic.diagnostic.is_some());
 }
+
+#[tokio::test]
+async fn judge_sends_fresh_unique_opencode_session_per_call() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(chat_response(
+            r#"{"verdict":"allow","message":"Safe","confidence":0.9}"#,
+        )))
+        .mount(&mock_server)
+        .await;
+
+    let mut config = test_config(mock_server.uri());
+    config.model_config.provider = Some(crate::config::model::ModelProvider::OpenCode);
+    let client = JudgeClient::new(config, Duration::from_secs(5), Duration::ZERO);
+
+    client
+        .judge(request("git status", None))
+        .await
+        .expect("first judge call should succeed");
+    client
+        .judge(request("git status", None))
+        .await
+        .expect("second judge call should succeed");
+
+    let requests = mock_server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 2);
+    let first = requests[0]
+        .headers
+        .get("x-opencode-session")
+        .and_then(|value| value.to_str().ok())
+        .expect("first judge call must send x-opencode-session");
+    let second = requests[1]
+        .headers
+        .get("x-opencode-session")
+        .and_then(|value| value.to_str().ok())
+        .expect("second judge call must send x-opencode-session");
+    uuid::Uuid::parse_str(first).expect("judge session ID must be a UUID");
+    uuid::Uuid::parse_str(second).expect("judge session ID must be a UUID");
+    assert_ne!(
+        first, second,
+        "each judge call must mint its own fresh session ID"
+    );
+}
+
+#[tokio::test]
+async fn judge_sends_no_opencode_session_for_generic_provider() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(chat_response(
+            r#"{"verdict":"allow","message":"Safe","confidence":0.9}"#,
+        )))
+        .mount(&mock_server)
+        .await;
+
+    judge_client(&mock_server)
+        .judge(request("git status", None))
+        .await
+        .expect("judge call should succeed");
+
+    let requests = mock_server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(
+        requests[0].headers.get("x-opencode-session").is_none(),
+        "generic providers must not receive x-opencode-session"
+    );
+}

@@ -111,6 +111,9 @@ pub(super) async fn judge_observed(
     let operation_start = Instant::now();
     let deadline = client.timeout + client.retry_budget;
     let deadline_ms = duration_ms(deadline);
+    // The judge carries no session identity, so each logical evaluation mints
+    // its own fresh ID (shared across its at-most-one retry).
+    let judge_session_id = uuid::Uuid::new_v4();
 
     let first_params = AttemptParams {
         budget: client.timeout,
@@ -124,6 +127,7 @@ pub(super) async fn judge_observed(
         include_raw_diagnostic,
         &first_params,
         deadline_ms,
+        judge_session_id,
     )
     .await;
 
@@ -156,6 +160,7 @@ pub(super) async fn judge_observed(
         include_raw_diagnostic,
         &second_params,
         deadline_ms,
+        judge_session_id,
     )
     .await;
 
@@ -173,6 +178,7 @@ async fn run_attempt(
     include_raw_diagnostic: bool,
     params: &AttemptParams,
     effective_deadline_ms: u64,
+    session_id: uuid::Uuid,
 ) -> AttemptCall {
     let observed = match ObservedJudgeCall::start(
         client,
@@ -180,6 +186,7 @@ async fn run_attempt(
         include_raw_diagnostic,
         params,
         effective_deadline_ms,
+        session_id,
     ) {
         Ok(observed) => observed,
         Err(call) => return *call,
@@ -309,6 +316,7 @@ struct ObservedJudgeCall {
     diagnostic: Option<JudgeDiagnostic>,
     /// The resolved API key, applied to the config-controlled model identifier.
     api_key: String,
+    session_id: uuid::Uuid,
 }
 
 impl ObservedJudgeCall {
@@ -318,6 +326,7 @@ impl ObservedJudgeCall {
         include_raw_diagnostic: bool,
         params: &AttemptParams,
         effective_deadline_ms: u64,
+        session_id: uuid::Uuid,
     ) -> Result<Self, Box<AttemptCall>> {
         let total_start = Instant::now();
         let build_start = Instant::now();
@@ -346,6 +355,7 @@ impl ObservedJudgeCall {
             attempt,
             diagnostic,
             api_key: client.config.api_key.clone(),
+            session_id,
         })
     }
 
@@ -368,6 +378,7 @@ impl ObservedJudgeCall {
             self.backend.send_request_json(
                 &http,
                 &client.config,
+                self.session_id,
                 std::mem::take(&mut self.request_json),
             ),
         )

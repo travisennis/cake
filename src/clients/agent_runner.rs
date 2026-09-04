@@ -267,6 +267,7 @@ impl AgentRunner {
                 .send_request(
                     &client,
                     config,
+                    session_id,
                     history,
                     tools,
                     &request_overrides,

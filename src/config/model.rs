@@ -9,6 +9,9 @@ pub enum ModelProvider {
     /// OpenRouter-compatible endpoint behavior.
     #[serde(rename = "openrouter")]
     OpenRouter,
+    /// `OpenCode` Zen endpoint behavior (`x-opencode-session` header).
+    #[serde(rename = "opencode")]
+    OpenCode,
 }
 
 /// Structured provider-specific HTTP headers.
@@ -244,6 +247,12 @@ mod tests {
 
         let provider: ModelProvider = serde_json::from_str(r#""openrouter""#).unwrap();
         assert_eq!(provider, ModelProvider::OpenRouter);
+
+        let json = serde_json::to_string(&ModelProvider::OpenCode).unwrap();
+        assert_eq!(json, r#""opencode""#);
+
+        let provider: ModelProvider = serde_json::from_str(r#""opencode""#).unwrap();
+        assert_eq!(provider, ModelProvider::OpenCode);
     }
 
     #[test]

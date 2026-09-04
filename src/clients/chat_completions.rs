@@ -30,13 +30,14 @@ use crate::types::{
 pub(super) async fn send_request<'a>(
     client: &reqwest::Client,
     config: &ResolvedModelConfig,
+    session_id: uuid::Uuid,
     history: &'a [ConversationItem],
     tools: &'a [Tool],
     overrides: &RequestOverrides,
     constraint: Option<FinalOutputConstraint<'a>>,
 ) -> anyhow::Result<reqwest::Response> {
     let request = build_request_json(config, history, tools, overrides, constraint)?;
-    send_request_json(client, config, request).await
+    send_request_json(client, config, session_id, request).await
 }
 
 /// Build the exact provider-transformed JSON body sent to Chat Completions.
@@ -99,9 +100,10 @@ pub(super) fn build_request_json<'a>(
 pub(super) async fn send_request_json(
     client: &reqwest::Client,
     config: &ResolvedModelConfig,
+    session_id: uuid::Uuid,
     request: Vec<u8>,
 ) -> anyhow::Result<reqwest::Response> {
-    let request = build_chat_request(client, config, request)?;
+    let request = build_chat_request(client, config, session_id, request)?;
     Ok(request.send().await?)
 }
 
@@ -109,6 +111,7 @@ pub(super) async fn send_request_json(
 fn build_chat_request(
     client: &reqwest::Client,
     config: &ResolvedModelConfig,
+    session_id: uuid::Uuid,
     request: Vec<u8>,
 ) -> anyhow::Result<reqwest::RequestBuilder> {
     let strategy = ProviderStrategy::from_config(config);
@@ -128,6 +131,7 @@ fn build_chat_request(
             .post(&url)
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(request),
+        session_id,
     );
     crate::auth::apply_request_auth(request, config)
 }
