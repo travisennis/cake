@@ -36,13 +36,22 @@ impl<'a> ProviderStrategy<'a> {
         session_id: uuid::Uuid,
     ) -> reqwest::RequestBuilder {
         match self.provider {
-            Some(ModelProvider::OpenRouter) => {
+            Some(provider) => self.apply_provider_headers(request, provider, session_id),
+            None => request,
+        }
+    }
+
+    fn apply_provider_headers(
+        &self,
+        request: reqwest::RequestBuilder,
+        provider: ModelProvider,
+        session_id: uuid::Uuid,
+    ) -> reqwest::RequestBuilder {
+        match provider {
+            ModelProvider::OpenRouter => {
                 apply_openrouter_headers(request, self.openrouter_headers())
             },
-            Some(ModelProvider::OpenCode) => {
-                request.header("x-opencode-session", session_id.to_string())
-            },
-            None => request,
+            ModelProvider::OpenCode => request.header("x-opencode-session", session_id.to_string()),
         }
     }
 
@@ -83,6 +92,13 @@ impl<'a> ProviderStrategy<'a> {
     }
 }
 
+/// (domain, provider) pairs for base-URL inference when `provider` is unset.
+/// A table keeps inference branch-free as providers are added.
+const INFERRED_PROVIDERS: &[(&str, ModelProvider)] = &[
+    ("openrouter.ai", ModelProvider::OpenRouter),
+    ("opencode.ai", ModelProvider::OpenCode),
+];
+
 fn infer_provider(base_url: &str) -> Option<ModelProvider> {
     let Ok(url) = reqwest::Url::parse(base_url) else {
         return None;
@@ -90,13 +106,18 @@ fn infer_provider(base_url: &str) -> Option<ModelProvider> {
 
     let host = url.host_str()?;
 
-    if host == "openrouter.ai" || host.ends_with(".openrouter.ai") {
-        return Some(ModelProvider::OpenRouter);
-    }
-    if host == "opencode.ai" || host.ends_with(".opencode.ai") {
-        return Some(ModelProvider::OpenCode);
-    }
-    None
+    INFERRED_PROVIDERS
+        .iter()
+        .find(|(domain, _)| host_matches_domain(host, domain))
+        .map(|(_, provider)| *provider)
+}
+
+/// Whether `host` is `domain` itself or a dot-subdomain of it.
+fn host_matches_domain(host: &str, domain: &str) -> bool {
+    host == domain
+        || host
+            .strip_suffix(domain)
+            .is_some_and(|rest| rest.ends_with('.'))
 }
 
 fn default_openrouter_headers() -> ProviderHeaders {
