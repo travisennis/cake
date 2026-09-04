@@ -33,12 +33,25 @@ impl<'a> ProviderStrategy<'a> {
     pub(super) fn apply_headers(
         &self,
         request: reqwest::RequestBuilder,
+        session_id: uuid::Uuid,
     ) -> reqwest::RequestBuilder {
         match self.provider {
-            Some(ModelProvider::OpenRouter) => {
+            Some(provider) => self.apply_provider_headers(request, provider, session_id),
+            None => request,
+        }
+    }
+
+    fn apply_provider_headers(
+        &self,
+        request: reqwest::RequestBuilder,
+        provider: ModelProvider,
+        session_id: uuid::Uuid,
+    ) -> reqwest::RequestBuilder {
+        match provider {
+            ModelProvider::OpenRouter => {
                 apply_openrouter_headers(request, self.openrouter_headers())
             },
-            None => request,
+            ModelProvider::OpenCode => request.header("x-opencode-session", session_id.to_string()),
         }
     }
 
@@ -79,6 +92,13 @@ impl<'a> ProviderStrategy<'a> {
     }
 }
 
+/// (domain, provider) pairs for base-URL inference when `provider` is unset.
+/// A table keeps inference branch-free as providers are added.
+const INFERRED_PROVIDERS: &[(&str, ModelProvider)] = &[
+    ("openrouter.ai", ModelProvider::OpenRouter),
+    ("opencode.ai", ModelProvider::OpenCode),
+];
+
 fn infer_provider(base_url: &str) -> Option<ModelProvider> {
     let Ok(url) = reqwest::Url::parse(base_url) else {
         return None;
@@ -86,8 +106,18 @@ fn infer_provider(base_url: &str) -> Option<ModelProvider> {
 
     let host = url.host_str()?;
 
-    (host == "openrouter.ai" || host.ends_with(".openrouter.ai"))
-        .then_some(ModelProvider::OpenRouter)
+    INFERRED_PROVIDERS
+        .iter()
+        .find(|(domain, _)| host_matches_domain(host, domain))
+        .map(|(_, provider)| *provider)
+}
+
+/// Whether `host` is `domain` itself or a dot-subdomain of it.
+fn host_matches_domain(host: &str, domain: &str) -> bool {
+    host == domain
+        || host
+            .strip_suffix(domain)
+            .is_some_and(|rest| rest.ends_with('.'))
 }
 
 fn default_openrouter_headers() -> ProviderHeaders {
@@ -189,7 +219,10 @@ mod tests {
         let client = reqwest::Client::new();
         let generic_config = test_config("https://api.example.com/v1", "openai/gpt-4.1", []);
         let generic_request = ProviderStrategy::from_config(&generic_config)
-            .apply_headers(client.post("https://api.example.com/v1/chat/completions"))
+            .apply_headers(
+                client.post("https://api.example.com/v1/chat/completions"),
+                uuid::Uuid::nil(),
+            )
             .build()
             .unwrap();
         assert!(generic_request.headers().get("HTTP-Referer").is_none());
@@ -197,7 +230,10 @@ mod tests {
 
         let openrouter_config = test_config("https://openrouter.ai/api/v1", "openai/gpt-4.1", []);
         let openrouter_request = ProviderStrategy::from_config(&openrouter_config)
-            .apply_headers(client.post("https://openrouter.ai/api/v1/chat/completions"))
+            .apply_headers(
+                client.post("https://openrouter.ai/api/v1/chat/completions"),
+                uuid::Uuid::nil(),
+            )
             .build()
             .unwrap();
         assert_eq!(
@@ -230,6 +266,222 @@ mod tests {
     }
 
     #[test]
+    fn opencode_detection_prefers_explicit_provider_over_url() {
+        let mut config = test_config("https://api.example.com/v1", "glm-5.1", []);
+        config.model_config.provider = Some(ModelProvider::OpenCode);
+        assert_eq!(
+            ProviderStrategy::from_config(&config).provider(),
+            Some(ModelProvider::OpenCode)
+        );
+
+        assert_eq!(
+            infer_provider("https://opencode.ai/zen"),
+            Some(ModelProvider::OpenCode)
+        );
+        assert_eq!(
+            infer_provider("https://opencode.ai/zen/go/v1/"),
+            Some(ModelProvider::OpenCode)
+        );
+        assert_eq!(
+            infer_provider("https://gateway.opencode.ai/api/v1"),
+            Some(ModelProvider::OpenCode)
+        );
+        assert_eq!(
+            infer_provider("https://not-opencode.example.com/api/v1"),
+            None
+        );
+        assert_eq!(infer_provider("not a url"), None);
+    }
+
+    #[test]
+    fn explicit_provider_wins_over_url_inference() {
+        let client = reqwest::Client::new();
+        let session_id = uuid::Uuid::new_v4();
+
+        // Explicit OpenRouter on an OpenCode URL stays OpenRouter: attribution
+        // headers apply, no session header.
+        let mut config = test_config("https://opencode.ai/zen", "openai/gpt-4.1", []);
+        config.model_config.provider = Some(ModelProvider::OpenRouter);
+        assert_eq!(
+            ProviderStrategy::from_config(&config).provider(),
+            Some(ModelProvider::OpenRouter)
+        );
+        let request = ProviderStrategy::from_config(&config)
+            .apply_headers(
+                client.post("https://opencode.ai/zen/chat/completions"),
+                session_id,
+            )
+            .build()
+            .unwrap();
+        assert!(request.headers().get("HTTP-Referer").is_some());
+        assert!(request.headers().get("x-opencode-session").is_none());
+
+        // Explicit OpenCode on an OpenRouter URL stays OpenCode: session
+        // header applies, no attribution headers.
+        let mut config = test_config("https://openrouter.ai/api/v1", "glm-5.1", []);
+        config.model_config.provider = Some(ModelProvider::OpenCode);
+        assert_eq!(
+            ProviderStrategy::from_config(&config).provider(),
+            Some(ModelProvider::OpenCode)
+        );
+        let request = ProviderStrategy::from_config(&config)
+            .apply_headers(
+                client.post("https://openrouter.ai/api/v1/chat/completions"),
+                session_id,
+            )
+            .build()
+            .unwrap();
+        assert_eq!(
+            request
+                .headers()
+                .get("x-opencode-session")
+                .and_then(|value| value.to_str().ok()),
+            Some(session_id.to_string()).as_deref()
+        );
+        assert!(request.headers().get("HTTP-Referer").is_none());
+        assert!(request.headers().get("X-Title").is_none());
+    }
+
+    #[test]
+    fn opencode_header_carries_session_uuid() {
+        let client = reqwest::Client::new();
+        let session_id = uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+
+        let mut explicit = test_config("https://api.example.com/v1", "glm-5.1", []);
+        explicit.model_config.provider = Some(ModelProvider::OpenCode);
+        let request = ProviderStrategy::from_config(&explicit)
+            .apply_headers(
+                client.post("https://api.example.com/v1/chat/completions"),
+                session_id,
+            )
+            .build()
+            .unwrap();
+        assert_eq!(
+            request
+                .headers()
+                .get("x-opencode-session")
+                .and_then(|value| value.to_str().ok()),
+            Some("550e8400-e29b-41d4-a716-446655440000")
+        );
+        assert!(request.headers().get("HTTP-Referer").is_none());
+        assert!(request.headers().get("X-Title").is_none());
+
+        let inferred = test_config("https://opencode.ai/zen/go/v1/", "glm-5.1", []);
+        let request = ProviderStrategy::from_config(&inferred)
+            .apply_headers(
+                client.post("https://opencode.ai/zen/go/v1/chat/completions"),
+                session_id,
+            )
+            .build()
+            .unwrap();
+        assert_eq!(
+            request
+                .headers()
+                .get("x-opencode-session")
+                .and_then(|value| value.to_str().ok()),
+            Some("550e8400-e29b-41d4-a716-446655440000")
+        );
+    }
+
+    #[test]
+    fn generic_provider_sends_no_opencode_session_header() {
+        let client = reqwest::Client::new();
+        let session_id = uuid::Uuid::new_v4();
+        let generic = test_config("https://api.example.com/v1", "openai/gpt-4.1", []);
+        let request = ProviderStrategy::from_config(&generic)
+            .apply_headers(
+                client.post("https://api.example.com/v1/chat/completions"),
+                session_id,
+            )
+            .build()
+            .unwrap();
+        assert!(request.headers().get("x-opencode-session").is_none());
+    }
+
+    #[tokio::test]
+    async fn opencode_session_header_reaches_both_backends() {
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let session_id = uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        let expected = "550e8400-e29b-41d4-a716-446655440000";
+
+        for backend in [
+            crate::clients::backend::Backend::ChatCompletions,
+            crate::clients::backend::Backend::Responses,
+        ] {
+            let mock_server = MockServer::start().await;
+            let endpoint = match backend {
+                crate::clients::backend::Backend::ChatCompletions => "/chat/completions",
+                crate::clients::backend::Backend::Responses => "/responses",
+            };
+            Mock::given(method("POST"))
+                .and(path(endpoint))
+                .and(header("x-opencode-session", expected))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+                .expect(1)
+                .mount(&mock_server)
+                .await;
+
+            let mut config = test_config(mock_server.uri().as_str(), "glm-5.1", []);
+            config.model_config.provider = Some(ModelProvider::OpenCode);
+            let client = reqwest::Client::new();
+            let body = serde_json::json!({"model": "glm-5.1"})
+                .to_string()
+                .into_bytes();
+            let response = backend
+                .send_request_json(&client, &config, session_id, body)
+                .await
+                .expect("mocked backend send should succeed");
+            assert!(response.status().is_success());
+            mock_server.verify().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn generic_backend_sends_no_opencode_session_header() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let config = test_config(mock_server.uri().as_str(), "openai/gpt-4.1", []);
+        let client = reqwest::Client::new();
+        let body = serde_json::json!({"model": "openai/gpt-4.1"})
+            .to_string()
+            .into_bytes();
+        crate::clients::backend::Backend::ChatCompletions
+            .send_request_json(&client, &config, uuid::Uuid::new_v4(), body)
+            .await
+            .expect("mocked backend send should succeed");
+
+        let requests = mock_server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].headers.get("x-opencode-session").is_none());
+    }
+
+    #[test]
+    fn openrouter_provider_sends_no_opencode_session_header() {
+        let client = reqwest::Client::new();
+        let config = test_config("https://openrouter.ai/api/v1", "openai/gpt-4.1", []);
+        let request = ProviderStrategy::from_config(&config)
+            .apply_headers(
+                client.post("https://openrouter.ai/api/v1/chat/completions"),
+                uuid::Uuid::new_v4(),
+            )
+            .build()
+            .unwrap();
+        assert!(request.headers().get("x-opencode-session").is_none());
+        assert!(request.headers().get("HTTP-Referer").is_some());
+    }
+
+    #[test]
     fn explicit_openrouter_provider_applies_configured_headers() {
         let client = reqwest::Client::new();
         let mut config = test_config("https://api.example.com/v1", "openai/gpt-4.1", []);
@@ -240,7 +492,10 @@ mod tests {
         });
 
         let request = ProviderStrategy::from_config(&config)
-            .apply_headers(client.post("https://api.example.com/v1/chat/completions"))
+            .apply_headers(
+                client.post("https://api.example.com/v1/chat/completions"),
+                uuid::Uuid::nil(),
+            )
             .build()
             .unwrap();
 
@@ -267,7 +522,10 @@ mod tests {
         config.model_config.provider_headers = Some(ProviderHeaders::default());
 
         let request = ProviderStrategy::from_config(&config)
-            .apply_headers(client.post("https://openrouter.ai/api/v1/chat/completions"))
+            .apply_headers(
+                client.post("https://openrouter.ai/api/v1/chat/completions"),
+                uuid::Uuid::nil(),
+            )
             .build()
             .unwrap();
 
