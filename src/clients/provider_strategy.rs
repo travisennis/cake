@@ -9,6 +9,7 @@ use crate::config::model::{ModelProvider, ProviderHeaders, ResolvedModelConfig};
 const OPENROUTER_REFERER: &str = "https://github.com/travisennis/cake";
 const OPENROUTER_TITLE: &str = "cake";
 const REASONING_CONTENT_PLACEHOLDER: &str = " ";
+const CAKE_USER_AGENT: &str = concat!("cake/", env!("CARGO_PKG_VERSION"));
 
 pub(super) struct ProviderStrategy<'a> {
     config: &'a ResolvedModelConfig,
@@ -34,6 +35,7 @@ impl<'a> ProviderStrategy<'a> {
         &self,
         request: reqwest::RequestBuilder,
     ) -> reqwest::RequestBuilder {
+        let request = request.header(reqwest::header::USER_AGENT, CAKE_USER_AGENT);
         match self.provider {
             Some(ModelProvider::OpenRouter) => {
                 apply_openrouter_headers(request, self.openrouter_headers())
@@ -200,6 +202,53 @@ mod tests {
             .apply_headers(client.post("https://openrouter.ai/api/v1/chat/completions"))
             .build()
             .unwrap();
+        assert_eq!(
+            openrouter_request
+                .headers()
+                .get("HTTP-Referer")
+                .and_then(|value| value.to_str().ok()),
+            Some(OPENROUTER_REFERER)
+        );
+        assert_eq!(
+            openrouter_request
+                .headers()
+                .get("X-Title")
+                .and_then(|value| value.to_str().ok()),
+            Some(OPENROUTER_TITLE)
+        );
+    }
+
+    #[test]
+    fn user_agent_applies_to_all_providers() {
+        let client = reqwest::Client::new();
+        let expected = format!("cake/{}", env!("CARGO_PKG_VERSION"));
+
+        let generic_config = test_config("https://api.example.com/v1", "openai/gpt-4.1", []);
+        let generic_request = ProviderStrategy::from_config(&generic_config)
+            .apply_headers(client.post("https://api.example.com/v1/chat/completions"))
+            .build()
+            .unwrap();
+        assert_eq!(
+            generic_request
+                .headers()
+                .get(reqwest::header::USER_AGENT)
+                .and_then(|value| value.to_str().ok()),
+            Some(expected.as_str())
+        );
+
+        let openrouter_config = test_config("https://openrouter.ai/api/v1", "openai/gpt-4.1", []);
+        let openrouter_request = ProviderStrategy::from_config(&openrouter_config)
+            .apply_headers(client.post("https://openrouter.ai/api/v1/chat/completions"))
+            .build()
+            .unwrap();
+        assert_eq!(
+            openrouter_request
+                .headers()
+                .get(reqwest::header::USER_AGENT)
+                .and_then(|value| value.to_str().ok()),
+            Some(expected.as_str())
+        );
+        // OpenRouter attribution headers ride alongside the user agent.
         assert_eq!(
             openrouter_request
                 .headers()
