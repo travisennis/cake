@@ -294,6 +294,55 @@ mod tests {
     }
 
     #[test]
+    fn explicit_provider_wins_over_url_inference() {
+        let client = reqwest::Client::new();
+        let session_id = uuid::Uuid::new_v4();
+
+        // Explicit OpenRouter on an OpenCode URL stays OpenRouter: attribution
+        // headers apply, no session header.
+        let mut config = test_config("https://opencode.ai/zen", "openai/gpt-4.1", []);
+        config.model_config.provider = Some(ModelProvider::OpenRouter);
+        assert_eq!(
+            ProviderStrategy::from_config(&config).provider(),
+            Some(ModelProvider::OpenRouter)
+        );
+        let request = ProviderStrategy::from_config(&config)
+            .apply_headers(
+                client.post("https://opencode.ai/zen/chat/completions"),
+                session_id,
+            )
+            .build()
+            .unwrap();
+        assert!(request.headers().get("HTTP-Referer").is_some());
+        assert!(request.headers().get("x-opencode-session").is_none());
+
+        // Explicit OpenCode on an OpenRouter URL stays OpenCode: session
+        // header applies, no attribution headers.
+        let mut config = test_config("https://openrouter.ai/api/v1", "glm-5.1", []);
+        config.model_config.provider = Some(ModelProvider::OpenCode);
+        assert_eq!(
+            ProviderStrategy::from_config(&config).provider(),
+            Some(ModelProvider::OpenCode)
+        );
+        let request = ProviderStrategy::from_config(&config)
+            .apply_headers(
+                client.post("https://openrouter.ai/api/v1/chat/completions"),
+                session_id,
+            )
+            .build()
+            .unwrap();
+        assert_eq!(
+            request
+                .headers()
+                .get("x-opencode-session")
+                .and_then(|value| value.to_str().ok()),
+            Some(session_id.to_string()).as_deref()
+        );
+        assert!(request.headers().get("HTTP-Referer").is_none());
+        assert!(request.headers().get("X-Title").is_none());
+    }
+
+    #[test]
     fn opencode_header_carries_session_uuid() {
         let client = reqwest::Client::new();
         let session_id = uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
