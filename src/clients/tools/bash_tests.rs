@@ -69,10 +69,20 @@ fn skip_if_sandbox_unavailable() -> bool {
     false
 }
 
+/// Return a writable parent outside the workspace and the sandbox's broad
+/// temporary-directory grants.
+///
+/// `cargo-mutants` runs tests from a copied checkout under `TMPDIR`. Using the
+/// current directory's parent as the denied path in that environment places the
+/// fixture beneath `/var/folders` or `TMPDIR`, which Cake intentionally grants
+/// to Bash. A temporary directory directly under `HOME` is writable by the test
+/// setup but is not one of the built-in grants (only selected children of HOME
+/// are granted), so the sandbox assertions continue to exercise a denied path.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn path_outside_cwd_for_sandbox_test() -> Option<std::path::PathBuf> {
     let cwd = std::env::current_dir().ok()?;
-    cwd.parent().map(std::path::Path::to_path_buf)
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from)?;
+    (!home.starts_with(&cwd)).then_some(home)
 }
 
 #[test]
@@ -1058,13 +1068,11 @@ async fn test_sandbox_linked_worktree_git_operations() {
         return;
     }
 
-    let process_cwd = std::env::current_dir().expect("current directory must be available");
-    let fixture_parent = process_cwd
-        .parent()
-        .expect("repository must have a parent directory");
+    let fixture_parent =
+        path_outside_cwd_for_sandbox_test().expect("should find a parent outside the workspace");
     let fixture = tempfile::Builder::new()
         .prefix("cake-linked-worktree-")
-        .tempdir_in(fixture_parent)
+        .tempdir_in(&fixture_parent)
         .expect("should create fixture outside the workspace");
     let main_repo = fixture.path().join("main");
     let wt_path = fixture.path().join("linked-worktree");
