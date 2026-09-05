@@ -4,13 +4,7 @@ Analyze the cake release binary to understand size contributors and identify opt
 
 ## Prerequisites
 
-Install the repository development tools with `just setup`, then install the audit-specific `cargo-bloat` utility for the crate and function reports:
-
-```bash
-cargo install cargo-bloat
-```
-
-The committed baseline does not require either size-analysis tool. `cargo bsize` is an optional, installed subcommand that produces a broader report; record its version and warnings when using it.
+The audit is read-only by default. Use already-installed tools when possible. If a required tool is missing, report the skipped analysis and the command that would enable it; do not install tools or run setup unless the user explicitly requests that follow-up. The committed baseline does not require either size-analysis tool.
 
 ## Workflow
 
@@ -70,9 +64,11 @@ The typical size breakdown for this project:
 - **Symbols stripped?** The release profile should have `strip = true`. If not, that's \~1.3 MB of free savings with no performance cost (only downside: raw addresses in panic backtraces instead of function names).
 - **Panic strategy set?** The release profile currently uses `panic = "abort"` for smaller binaries.
 - **Tokio features minimal?** The project currently uses `features = ["full"]`. If auditing for size regressions, check whether narrower features can support the current async, process, IO, signal, and macro usage before changing this.
-- **Unused dependencies?** Run `cargo machete` to detect unused deps (install with `cargo install cargo-machete`).
+- **Unused dependencies?** If `cargo machete` is already installed, run it to detect unused deps. Do not install it during a read-only audit; report the command as an optional follow-up instead.
 
-### 6. Commit release baseline
+### 6. Optional follow-up: Update the release baseline
+
+Do not run this section during a read-only audit. Run it only when the user explicitly requests a baseline update as a separate repository change.
 
 `ci/binary-size-baseline.json` records the exact byte size of the normal release artifact, along with its target and toolchain. Regenerate it with:
 

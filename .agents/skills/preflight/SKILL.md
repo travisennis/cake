@@ -13,7 +13,7 @@ Leave the smallest clear diff that still solves the issue. Run focused review pa
 
 ## Scale the review to the change size
 
-Pick an effort level from the diff before reading anything else:
+Pick an effort level from the diff before reading anything else. If there are no tracked changes and no untracked files, preflight is not applicable: report that no changed work was available to preflight and do not create a branch, edit files, or run validation solely to manufacture a preflight target.
 
 ```bash
 git diff --stat
@@ -97,7 +97,9 @@ After running the passes for the chosen scale, synthesize into one balanced repo
 
 ## What to fix automatically
 
-In an unattended implementation flow, apply worthwhile feedback before commit. Prioritize:
+Apply worthwhile feedback automatically only when this is an authorized implementation flow and the repository branch/edit rules have been satisfied. For review, audit, advisory, or approval-gated work, report the feedback but do not apply it.
+
+If edit authority is unclear, stop before the first edit and ask whether the feedback should be applied. Prioritize:
 
 - type drift, unnecessary cloning/string conversion, duplicated type defs
 - violations of documented repo boundaries or durable contracts
