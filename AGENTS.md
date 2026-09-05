@@ -14,7 +14,7 @@ Users depend on CLI shape and exit behavior, machine-readable output, tool and s
 4. Keep the diff narrow: no mixing behavior changes, dependency updates, formatting, snapshot regeneration, or unrelated cleanup. Churn hides the change a reviewer needs to see.
 5. Run checks proportionate to the risk, per [CONTRIBUTING.md](CONTRIBUTING.md), and preflight before handoff.
 6. Track managed work in a GitHub issue and follow the lifecycle in [docs/workflow/tasks.md](docs/workflow/tasks.md).
-7. Open the pull request when the work is ready for review, then stop and hand off per the [Final Handoff Instructions](#final-handoff-instructions). Do not merge or enable auto-merge without explicit user approval.
+7. Open the pull request when the work is ready for review, then stop and hand off. Do not merge, auto-merge, close the PR or issue, or delete the remote branch without explicit user approval.
 
 Large or cross-cutting work requires an ExecPlan per [docs/workflow/exec-plans.md](docs/workflow/exec-plans.md).
 
