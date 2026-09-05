@@ -13,8 +13,8 @@ Users depend on CLI shape and exit behavior, machine-readable output, tool and s
 3. Read the smallest relevant code and tests. [ARCHITECTURE.md](ARCHITECTURE.md) names the code authority for each surface.
 4. Keep the diff narrow: no mixing behavior changes, dependency updates, formatting, snapshot regeneration, or unrelated cleanup. Churn hides the change a reviewer needs to see.
 5. Run checks proportionate to the risk, per [CONTRIBUTING.md](CONTRIBUTING.md), and preflight before handoff.
-6. Track implementation or requested managed records in a GitHub issue using [docs/workflow/tasks.md](docs/workflow/tasks.md). Read-only reports stay in the response unless the user requests a persistent artifact or issue.
-7. Open a pull request when repository edits are complete and the task calls for one; then hand off per the [Final Handoff Instructions](#final-handoff-instructions).
+6. Track implementation or requested managed records in a GitHub issue per [docs/workflow/tasks.md](docs/workflow/tasks.md). Read-only reports stay in the response unless persistence is requested.
+7. Open a pull request when edits are complete and the task calls for one; then stop and hand off. Do not merge, auto-merge, close the PR or issue, or delete the remote branch without explicit user approval.
 
 Implementation work follows the ExecPlan thresholds in [docs/workflow/tasks.md](docs/workflow/tasks.md); read-only audits, recommendations, and small documentation or skill edits do not require one unless requested.
 
@@ -105,7 +105,7 @@ Complexity targets, CRAP scores, coverage, and the coverage-first refactoring wo
 
 ## Repository rules
 
-- Commit and push freely on a feature branch for authorized implementation work; commit often. Stage specific paths, never `git add -A`. Open a pull request when implementation is complete and the task calls for one. Ask before force-pushing.
+- Commit and push freely on a feature branch for authorized implementation work; commit often. Stage specific paths, never `git add -A`. Ask before force-pushing.
 - One branch holds one task, cut from an up-to-date `master`.
 - Preserve unrelated user changes; never clean or revert them.
 - Never resolve a merge conflict in `ci/cargo-crap-baseline.json` by hand. Take `master`'s copy, then regenerate it with `just change-risk-baseline`.
