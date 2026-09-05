@@ -13,14 +13,18 @@ Leave the smallest clear diff that still solves the issue. Run focused review pa
 
 ## Scale the review to the change size
 
-Pick an effort level from the diff before reading anything else:
+Resolve the review target before choosing an effort level: use the requested commit or PR diff when specified; otherwise include staged, unstaged, and untracked work plus committed branch changes since the merge base with the default branch. A clean worktree alone does not mean there is nothing to preflight.
 
 ```bash
-git diff --stat
+git diff HEAD --stat
 git status --short
+# For branch changes, replace <default-branch> with the resolved default branch:
+git diff <default-branch>...HEAD --stat
 ```
 
-Include untracked new files from `git status --short` (or `git ls-files --others --exclude-standard`) when choosing the scale. A split into new files can look deceptively small in `git diff --stat` until those files are staged.
+Pick an effort level from that target. Only if the resolved target is empty is preflight not applicable: report that no changed work was available to preflight and do not create a branch, edit files, or run validation solely to manufacture a preflight target.
+
+Include untracked new files from `git status --short` (or `git ls-files --others --exclude-standard`) when they are part of the target. A split into new files can look deceptively small in diff statistics until those files are staged.
 
   | Change size                                                                                                           | Required context                                                           | Review passes     | Compliance note |
   | --------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- | ----------------- | --------------- |
@@ -97,7 +101,9 @@ After running the passes for the chosen scale, synthesize into one balanced repo
 
 ## What to fix automatically
 
-In an unattended implementation flow, apply worthwhile feedback before commit. Prioritize:
+Apply worthwhile feedback automatically only when this is an authorized implementation flow and the repository branch/edit rules have been satisfied. For review, audit, advisory, or approval-gated work, report the feedback but do not apply it.
+
+If edit authority is unclear, stop before the first edit and ask whether the feedback should be applied. Prioritize:
 
 - type drift, unnecessary cloning/string conversion, duplicated type defs
 - violations of documented repo boundaries or durable contracts
@@ -140,7 +146,7 @@ Do not write blanket "no durable docs to check" claims unless you actually looke
 
 ## Steps
 
-1. Run `git diff --stat` and `git status --short`. Pick a scale from the table, counting untracked new files.
+1. Resolve the review target as described above. Pick a scale from its diff, counting untracked new files when they are in scope.
 2. Read only the required-context items for that scale.
 3. Run the review passes for that scale, with a narrow evidence check between them.
 4. Synthesize findings into the balanced report.

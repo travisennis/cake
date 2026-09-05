@@ -74,12 +74,14 @@ GitHub issue search does not index Projects v2 Status fields, so query the proje
 
 ### 3. Fix what you can directly
 
+An explicit request to groom authorizes mechanical corrections to documented issue invariants, such as stale labels, effort fields, invalid paths, and dependency references. It does not authorize choosing unresolved product, design, or architecture alternatives, creating issues, or recording a decision that is not already established. Do not close an issue without explicit user approval. If the user requested an audit or report rather than grooming updates, make no GitHub mutations.
+
 - Set the Projects v2 `Status` field to move issues between `Backlog`, `Ready`, and `Blocked` (`gh project item-edit` or the web UI).
 - Update priority, effort, and labels with `gh issue edit`.
 - Edit the `## Depends on` section in the issue body with `gh issue edit`.
 - Record decisions in the issue body (add a `## Decision` section when recording a resolved choice).
 - Remove stale `TODO` placeholders from acceptance criteria when the question has been answered.
-- If an issue is superseded, obsolete, or no longer relevant, close it with `gh issue close <n> --reason "not planned"` plus a comment explaining why.
+- If an issue is superseded, obsolete, or no longer relevant, report the proposed closure and wait for explicit user approval before using `gh issue close <n> --reason "not planned"`. Include a comment explaining why when approved.
 
 ### 4. Flag what needs human input
 
@@ -96,6 +98,8 @@ When an issue needs a product, design, or architecture decision that an agent ca
 3. Do not leave the issue `Ready` with undocumented open questions.
 
 ### 5. Verify
+
+For every issue in the requested queues, record one outcome: `Ready`, `Blocked`, or `Backlog` with a documented next action. Report any issue that was skipped, inaccessible, or unchanged and why. The grooming pass is complete only after the requested queues have been exhausted or the remaining items are explicitly listed as unresolved.
 
 No index regeneration is needed. Confirm the board reflects the changes:
 

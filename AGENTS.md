@@ -9,14 +9,14 @@ Users depend on CLI shape and exit behavior, machine-readable output, tool and s
 ## Operating loop
 
 1. Classify the change, pick the route below, and load only that route's documents.
-2. Decide whether the task will edit repository files. For read-only work such as backlog grooming, research, audits, or recommendations, stay on the current branch; do not create a branch or worktree. If edits become necessary, create the branch immediately before the first edit: `just branch <type>/<slug>`, or `just worktree <type>/<slug>` beside another agent.
+2. Decide whether the task edits repository files. Read-only audits, research, recommendations, and backlog inspection stay on the current branch with no branch, commit, GitHub, or pull-request side effects unless requested. If edits are needed, create the branch immediately before the first edit: `just branch <type>/<slug>`, or `just worktree <type>/<slug>` beside another agent.
 3. Read the smallest relevant code and tests. [ARCHITECTURE.md](ARCHITECTURE.md) names the code authority for each surface.
 4. Keep the diff narrow: no mixing behavior changes, dependency updates, formatting, snapshot regeneration, or unrelated cleanup. Churn hides the change a reviewer needs to see.
 5. Run checks proportionate to the risk, per [CONTRIBUTING.md](CONTRIBUTING.md), and preflight before handoff.
-6. Track managed work in a GitHub issue and follow the lifecycle in [docs/workflow/tasks.md](docs/workflow/tasks.md).
-7. Open the pull request when the work is ready for review, then stop and hand off. Do not merge, auto-merge, close the PR or issue, or delete the remote branch without explicit user approval.
+6. Track implementation or requested managed records in a GitHub issue per [docs/workflow/tasks.md](docs/workflow/tasks.md). Read-only reports stay in the response unless persistence is requested.
+7. Open a pull request when edits are complete and the task calls for one; then stop and hand off. Do not merge, auto-merge, close the PR or issue, or delete the remote branch without explicit user approval.
 
-Large or cross-cutting work requires an ExecPlan per [docs/workflow/exec-plans.md](docs/workflow/exec-plans.md).
+Implementation work follows the ExecPlan thresholds in [docs/workflow/tasks.md](docs/workflow/tasks.md); read-only audits, recommendations, and small documentation or skill edits do not require one unless requested.
 
 ## Workflow routing
 
@@ -105,7 +105,7 @@ Complexity targets, CRAP scores, coverage, and the coverage-first refactoring wo
 
 ## Repository rules
 
-- Commit and push freely on a feature branch; commit often. Stage specific paths, never `git add -A`. Open a pull request when the task is complete and the work is ready for review. Ask before force-pushing.
+- Commit and push freely on a feature branch for authorized implementation work; commit often. Stage specific paths, never `git add -A`. Ask before force-pushing.
 - One branch holds one task, cut from an up-to-date `master`.
 - Preserve unrelated user changes; never clean or revert them.
 - Never resolve a merge conflict in `ci/cargo-crap-baseline.json` by hand. Take `master`'s copy, then regenerate it with `just change-risk-baseline`.
@@ -118,7 +118,7 @@ State the change class and its compatibility impact. If it touches a compatibili
 
 Label with exactly one `type:*` and at least one `area:*` from `.github/labels.yml`; never invent or rename labels. Add a `risk:*` label when the change breaks a compatibility surface, depends on external service behavior, or touches a security boundary; those labels route review, so omitting one silently skips it.
 
-Record which checks ran and which did not; a skipped check belongs in the pull request with its reason. Opening a PR is the default handoff; merge only with explicit user approval.
+Record which checks ran and which did not; a skipped check belongs in the pull request with its reason.
 
 ## Final Handoff Instructions
 
