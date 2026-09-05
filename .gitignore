@@ -18,3 +18,6 @@ scripts/evals/results/
 
 # Judge SLO benchmark generated output (per-trial records, run reports)
 scripts/judge-bench/results/
+
+# cargo-mutants generated reports
+mutants.out/
