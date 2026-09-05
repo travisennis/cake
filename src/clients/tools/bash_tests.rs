@@ -69,10 +69,41 @@ fn skip_if_sandbox_unavailable() -> bool {
     false
 }
 
+/// Return a writable parent outside the workspace and the sandbox's broad
+/// temporary-directory grants.
+///
+/// `cargo-mutants` runs tests from a copied checkout under `TMPDIR`. Using the
+/// current directory's parent as the denied path in that environment places the
+/// fixture beneath `/var/folders` or `TMPDIR`, which Cake intentionally grants
+/// to Bash. A temporary directory directly under the OS account home is
+/// writable by the test setup but is not one of the built-in grants (only
+/// selected children of HOME are granted), so the sandbox assertions continue
+/// to exercise a denied path.
+///
+/// Read the OS account home with `HOME` temporarily unset and under `temp-env`'s
+/// lock. Other tests replace HOME with synthetic paths, so reading the ambient
+/// variable directly here can race with those tests.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn path_outside_cwd_for_sandbox_test() -> Option<std::path::PathBuf> {
     let cwd = std::env::current_dir().ok()?;
-    cwd.parent().map(std::path::Path::to_path_buf)
+    let home = temp_env::with_var("HOME", None::<&str>, dirs::home_dir)?;
+    (!home.starts_with(&cwd)).then_some(home)
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn sandbox_fixture_parent_ignores_overridden_home() {
+    let account_home = temp_env::with_var("HOME", None::<&str>, dirs::home_dir)
+        .expect("OS account home must be available");
+    let synthetic_home = tempfile::tempdir().expect("synthetic HOME fixture must be created");
+
+    temp_env::with_var("HOME", Some(synthetic_home.path()), || {
+        assert_eq!(
+            path_outside_cwd_for_sandbox_test(),
+            Some(account_home.clone()),
+            "fixture parent must not read a concurrently overridden HOME"
+        );
+    });
 }
 
 #[test]
@@ -706,9 +737,10 @@ async fn test_sandbox_blocks_write_outside_cwd() {
 
     let outside =
         path_outside_cwd_for_sandbox_test().expect("should find a parent directory outside cwd");
-    let target = outside.join(format!("cake_sandbox_test_{}", uuid::Uuid::new_v4()));
-    let target = target.display();
-    let args = format!(r#"{{"command": "touch {target}"}}"#);
+    let fixture = tempfile::TempDir::new_in(&outside).expect("should create test fixture");
+    let target = fixture.path().join("denied-write");
+    let target_display = shell_quote(&target.display().to_string());
+    let args = format!(r#"{{"command": "touch {target_display}"}}"#);
     let result = Box::pin(execute_bash(&sandbox_context(), &args))
         .await
         .unwrap();
@@ -717,6 +749,10 @@ async fn test_sandbox_blocks_write_outside_cwd() {
             || result.output.contains("Permission denied"),
         "Expected sandbox to block write outside cwd, got: {}",
         result.output
+    );
+    assert!(
+        !target.exists(),
+        "sandbox denial fixture must not be written outside the workspace"
     );
 }
 
@@ -978,8 +1014,9 @@ async fn test_sandbox_danger_full_access_allows_write_outside_cwd() {
 
     let outside =
         path_outside_cwd_for_sandbox_test().expect("should find a parent directory outside cwd");
-    let target = outside.join(format!("cake_dfa_probe_{}", uuid::Uuid::new_v4()));
-    let target_display = target.display();
+    let fixture = tempfile::TempDir::new_in(&outside).expect("should create test fixture");
+    let target = fixture.path().join("danger-full-access-write");
+    let target_display = shell_quote(&target.display().to_string());
     let args = format!(r#"{{"command": "touch {target_display} && rm -f {target_display}"}}"#);
     let result = Box::pin(execute_bash(
         &context_with_policy(SandboxPolicy::DangerFullAccess),
@@ -992,6 +1029,10 @@ async fn test_sandbox_danger_full_access_allows_write_outside_cwd() {
         result.output.contains("[exit:0 |"),
         "danger-full-access policy should skip the sandbox and allow writes outside cwd, got: {}",
         result.output
+    );
+    assert!(
+        !target.exists(),
+        "danger-full-access fixture must be cleaned up by the command"
     );
 }
 
@@ -1058,13 +1099,11 @@ async fn test_sandbox_linked_worktree_git_operations() {
         return;
     }
 
-    let process_cwd = std::env::current_dir().expect("current directory must be available");
-    let fixture_parent = process_cwd
-        .parent()
-        .expect("repository must have a parent directory");
+    let fixture_parent =
+        path_outside_cwd_for_sandbox_test().expect("should find a parent outside the workspace");
     let fixture = tempfile::Builder::new()
         .prefix("cake-linked-worktree-")
-        .tempdir_in(fixture_parent)
+        .tempdir_in(&fixture_parent)
         .expect("should create fixture outside the workspace");
     let main_repo = fixture.path().join("main");
     let wt_path = fixture.path().join("linked-worktree");
