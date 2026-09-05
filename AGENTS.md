@@ -14,7 +14,7 @@ Users depend on CLI shape and exit behavior, machine-readable output, tool and s
 4. Keep the diff narrow: no mixing behavior changes, dependency updates, formatting, snapshot regeneration, or unrelated cleanup. Churn hides the change a reviewer needs to see.
 5. Run checks proportionate to the risk, per [CONTRIBUTING.md](CONTRIBUTING.md), and preflight before handoff.
 6. Track managed work in a GitHub issue and follow the lifecycle in [docs/workflow/tasks.md](docs/workflow/tasks.md).
-7. Open the pull request when the work is ready for review, then hand off per the [Final Handoff Instructions](#final-handoff-instructions) at the end of this file.
+7. Open the pull request when the work is ready for review, then stop and hand off per the [Final Handoff Instructions](#final-handoff-instructions). Do not merge or enable auto-merge without explicit user approval.
 
 Large or cross-cutting work requires an ExecPlan per [docs/workflow/exec-plans.md](docs/workflow/exec-plans.md).
 
@@ -118,7 +118,7 @@ State the change class and its compatibility impact. If it touches a compatibili
 
 Label with exactly one `type:*` and at least one `area:*` from `.github/labels.yml`; never invent or rename labels. Add a `risk:*` label when the change breaks a compatibility surface, depends on external service behavior, or touches a security boundary; those labels route review, so omitting one silently skips it.
 
-Record which checks ran and which did not; a skipped check belongs in the pull request with its reason.
+Record which checks ran and which did not; a skipped check belongs in the pull request with its reason. Opening a PR is the default handoff; merge only with explicit user approval.
 
 ## Final Handoff Instructions
 

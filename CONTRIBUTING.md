@@ -35,7 +35,7 @@ Follow the [Auditing Binary Size runbook](docs/runbooks/auditing-binary-size.md)
 5. Run a focused test or check while iterating.
 6. Format changed code and run the applicable final gate.
 7. Review the diff for compatibility, security, and unnecessary complexity.
-8. Push the branch and open a pull request with `just pr`. Pass `labels="type:...,area:..."`, `body=<file>`, `title=<text>` (default: HEAD commit subject), and `issue=<number>` to apply labels, use a body file, set the title, and comment the PR URL back on the managed issue; without a body the recipe fills from commits.
+8. Push the branch and open a pull request with `just pr`. Pass `labels="type:...,area:..."`, `body=<file>`, `title=<text>` (default: HEAD commit subject), and `issue=<number>` to apply labels, use a body file, set the title, and comment the PR URL back on the managed issue; without a body the recipe fills from commits. Opening the pull request is the default handoff; wait for explicit user approval before merging or enabling auto-merge.
 
 The crate has no library target. Do not use `cargo test --lib`.
 
@@ -124,4 +124,4 @@ The vocabulary names the architecture domain that owns the change; the file or t
 
 ## Pull requests
 
-Explain the user-visible or maintainer-visible outcome, notable design choices, compatibility or security impact, and exact verification. Link the managed task or ADR when one exists. Open the pull request only when the change is ready to merge: acceptance notes, verification, documentation assessment, and any ExecPlan archival must already be complete. Use `Closes #<number>` for the managed issue; GitHub closes it when the pull request reaches `master`, after which the issue may receive its final delivered/verified summary. Update documentation only when its authority is affected.
+Explain the user-visible or maintainer-visible outcome, notable design choices, compatibility or security impact, and exact verification. Link the managed task or ADR when one exists. Open the pull request only when the change is ready to merge: acceptance notes, verification, documentation assessment, and any ExecPlan archival must already be complete. The pull request is then handed off for review; do not merge or enable auto-merge without explicit user approval. Use `Closes #<number>` for the managed issue; GitHub closes it when the pull request reaches `master`, after which the issue may receive its final delivered/verified summary. Update documentation only when its authority is affected.

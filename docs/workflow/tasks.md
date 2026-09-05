@@ -83,7 +83,7 @@ Follow this procedure for every implementation issue, whether or not it has an E
 
 7. If the issue has an ExecPlan, complete its repository records before opening the pull request: update the ExecPlan Outcomes & Retrospective and move it to the completed plan bucket with `git mv`. If the issue body links to the plan, update that link after the pull request merges so the completed path is present on `master`.
 
-8. Open the pull request only after steps 5-7 are complete. Reference the issue with `Closes #<number>` in the pull request body. The issue stays open during review and closes automatically when the pull request reaches `master`; after merge, add the delivered/verified summary and reconcile the issue's completed-plan link if needed.
+8. Open the pull request only after steps 5-7 are complete. Reference the issue with `Closes #<number>` in the pull request body. The issue stays open during review. Opening the pull request is the handoff point, not merge authorization; stop and wait for explicit user approval before merging or enabling auto-merge. After an authorized merge, add the delivered/verified summary and reconcile the issue's completed-plan link if needed.
 
 For an issue without an ExecPlan, skip step 7. The inspection, start, implementation, verification, documentation assessment, and handoff steps remain the same.
 
@@ -91,8 +91,8 @@ For an issue without an ExecPlan, skip step 7. The inspection, start, implementa
 
 This section is the single source of truth for the issue lifecycle. [AGENTS.md](../../AGENTS.md), [CONTRIBUTING.md](../../CONTRIBUTING.md), and [docs/workflow/exec-plans.md](exec-plans.md) reference it instead of restating the rule. The lifecycle has two checkpoints and one post-merge record update:
 
-- **Pull request opened (ready-to-merge checkpoint)** --- all implementation work, routed verification, acceptance notes, documentation assessment, and ExecPlan repository records are complete. The issue stays open during review. Include `Closes #<number>` in the pull request body so the issue is linked for automatic closure.
-- **Pull request merged to the default branch (`master`)** --- GitHub closes the linked issue automatically. This is the definition of done for the issue because the implementation is now in `master`.
+- **Pull request opened (ready-for-review checkpoint)** --- all implementation work, routed verification, acceptance notes, documentation assessment, and ExecPlan repository records are complete. The issue stays open during review. Include `Closes #<number>` in the pull request body so the issue is linked for automatic closure. This is the default agent handoff; it does not authorize merging.
+- **Pull request merged to the default branch (`master`)** --- GitHub closes the linked issue automatically. This is the repository's definition of done because the implementation is now in `master`; it is not permission for an agent to merge. Merge only after explicit user approval.
 - **After merge** --- add the delivered/verified summary to the closed issue, update its link to the completed ExecPlan path if that link was not updated earlier, and set the issue's Projects v2 Status field to `Done`. A normal merged pull request does not need a separate `gh issue close` command. The Cake Backlog board's Projects v2 "Item closed" automation sets Status to `Done` automatically when an issue closes; the agent-side step is the backstop for closes the automation does not cover.
 
 A pushed branch without an open pull request is not a lifecycle checkpoint. If a pull request is closed without merging, leave the issue open and either continue the work in a new pull request or close it separately as not planned.
