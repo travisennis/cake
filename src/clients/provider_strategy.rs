@@ -261,7 +261,10 @@ mod tests {
 
         let generic_config = test_config("https://api.example.com/v1", "openai/gpt-4.1", []);
         let generic_request = ProviderStrategy::from_config(&generic_config)
-            .apply_headers(client.post("https://api.example.com/v1/chat/completions"))
+            .apply_headers(
+                client.post("https://api.example.com/v1/chat/completions"),
+                uuid::Uuid::nil(),
+            )
             .build()
             .unwrap();
         assert_eq!(
@@ -274,7 +277,10 @@ mod tests {
 
         let openrouter_config = test_config("https://openrouter.ai/api/v1", "openai/gpt-4.1", []);
         let openrouter_request = ProviderStrategy::from_config(&openrouter_config)
-            .apply_headers(client.post("https://openrouter.ai/api/v1/chat/completions"))
+            .apply_headers(
+                client.post("https://openrouter.ai/api/v1/chat/completions"),
+                uuid::Uuid::nil(),
+            )
             .build()
             .unwrap();
         assert_eq!(
