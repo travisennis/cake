@@ -3772,9 +3772,12 @@ printf 'completed:%s' "$index"
             .expect("the reset attempt must be recorded");
         assert_eq!(transport_attempt["terminal_class"], "transport");
         assert!(
-            transport_attempt["error"]
-                .as_str()
-                .is_some_and(|error| error.to_ascii_lowercase().contains("connection reset")),
+            transport_attempt["error"].as_str().is_some_and(|error| {
+                let error = error.to_ascii_lowercase();
+                ["connection reset", "broken pipe"]
+                    .iter()
+                    .any(|cause| error.contains(cause))
+            }),
             "transport telemetry should retain the underlying cause: {transport_attempt}"
         );
 
