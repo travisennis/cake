@@ -800,20 +800,48 @@ impl ToolRegistry {
     /// for the whole agent, not just shell commands.
     pub(super) fn retain_read_safe_tools(&mut self) {
         self.entries.retain(|entry| entry.capabilities.read_safe);
-        self.definitions = self.entries.iter().map(|e| e.definition.clone()).collect();
+        self.refresh_definitions();
     }
 
     /// Retain only the exact registered names in `enabled`.
     pub(super) fn retain_enabled_tools(&mut self, enabled: &[String]) {
         self.entries
             .retain(|entry| enabled.iter().any(|name| name == &entry.definition.name));
-        self.definitions = self.entries.iter().map(|e| e.definition.clone()).collect();
+        self.refresh_definitions();
+    }
+
+    /// Rebuild the model-facing definitions after the registry changes.
+    ///
+    /// Built-in descriptions can recommend another built-in tool. Keep those
+    /// recommendations in the definition only when that tool is also
+    /// available to the model; otherwise a restricted tool selection would
+    /// tell the model to call a tool it cannot use. Toolbox descriptions are
+    /// user-provided and are left unchanged.
+    fn refresh_definitions(&mut self) {
+        let available_names: Vec<String> = self
+            .entries
+            .iter()
+            .map(|entry| entry.definition.name.clone())
+            .collect();
+        self.definitions = self
+            .entries
+            .iter()
+            .map(|entry| {
+                let mut definition = entry.definition.clone();
+                definition.description = filter_builtin_description(
+                    &definition.name,
+                    &definition.description,
+                    &available_names,
+                );
+                definition
+            })
+            .collect();
     }
 
     /// Append a tool entry and refresh the cached definitions.
     pub(super) fn push_entry(&mut self, entry: ToolEntry) {
-        self.definitions.push(entry.definition.clone());
         self.entries.push(entry);
+        self.refresh_definitions();
     }
 
     /// Return the enabled tool names.
@@ -1304,6 +1332,34 @@ fn append_tool_availability_footer(s: &mut String, has_tools: bool) {
     }
 }
 
+const BUILTIN_TOOL_NAMES: &[&str] = &["Bash", "Read", "Edit", "Write"];
+
+fn filter_builtin_description(
+    tool_name: &str,
+    description: &str,
+    available_names: &[String],
+) -> String {
+    if !BUILTIN_TOOL_NAMES.contains(&tool_name) {
+        return description.to_string();
+    }
+
+    let unavailable_names: Vec<&str> = BUILTIN_TOOL_NAMES
+        .iter()
+        .copied()
+        .filter(|name| {
+            *name != tool_name && !available_names.iter().any(|available| available == name)
+        })
+        .collect();
+    if unavailable_names.is_empty() {
+        return description.to_string();
+    }
+
+    description
+        .split_inclusive('\n')
+        .filter(|line| !unavailable_names.iter().any(|name| line.contains(name)))
+        .collect()
+}
+
 fn apply_enabled_tool_selection(registry: &mut ToolRegistry, enabled_tools: Option<&[String]>) {
     if let Some(enabled_tools) = enabled_tools {
         registry.retain_enabled_tools(enabled_tools);
@@ -1572,6 +1628,29 @@ mod tests {
         assert!(!result.contains("- **Read**:"));
         assert!(!result.contains("tb__run_tests"));
         assert!(result.contains("No tools are available."));
+    }
+
+    #[test]
+    fn selected_tool_descriptions_omit_disabled_builtin_references() {
+        let mut registry = default_tool_registry();
+        registry.retain_enabled_tools(&["Bash".to_string()]);
+
+        let description = &registry.definitions()[0].description;
+        assert!(description.contains("Content search: Use rg"));
+        assert!(!description.contains("Read"));
+        assert!(!description.contains("Edit"));
+        assert!(!description.contains("Write"));
+    }
+
+    #[test]
+    fn selected_tool_descriptions_keep_enabled_builtin_references() {
+        let mut registry = default_tool_registry();
+        registry.retain_enabled_tools(&["Bash".to_string(), "Read".to_string()]);
+
+        let description = &registry.definitions()[0].description;
+        assert!(description.contains("Read files: Use Read tool"));
+        assert!(!description.contains("Edit"));
+        assert!(!description.contains("Write"));
     }
 
     #[test]

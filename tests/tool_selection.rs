@@ -156,3 +156,61 @@ enabled = []
     assert!(request.get("tools").is_none());
     assert!(request.get("tool_choice").is_none());
 }
+
+#[tokio::test]
+async fn selected_tool_description_omits_disabled_tools() {
+    let env = TestEnv::new("cake-tool-description-selection-test");
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(success_response()))
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    env.write_project_settings(&format!(
+        r#"
+default_model = "test"
+
+[[models]]
+name = "test"
+model = "test-model"
+base_url = "{}"
+api_key_env = "{}"
+api_type = "responses"
+
+[tools]
+enabled = ["Bash"]
+"#,
+        mock_server.uri(),
+        TEST_KEY
+    ));
+
+    let output = env
+        .command()
+        .args(["inspect the Bash tool description"])
+        .env(TEST_KEY, "test-token")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute cake");
+    assert!(
+        output.status.success(),
+        "cake should succeed. stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let requests = mock_server
+        .received_requests()
+        .await
+        .expect("recorded requests");
+    let request: serde_json::Value =
+        serde_json::from_slice(&requests[0].body).expect("request JSON");
+    let description = request["tools"][0]["description"]
+        .as_str()
+        .expect("Bash description");
+    assert!(description.contains("Content search: Use rg"));
+    assert!(!description.contains("Read"));
+    assert!(!description.contains("Edit"));
+    assert!(!description.contains("Write"));
+}
