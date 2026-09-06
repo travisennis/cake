@@ -968,6 +968,104 @@ fn build_request_disables_storage_for_codex_backend() {
     assert!(wire.get("max_output_tokens").is_none());
 }
 
+const STREAM_MALFORMED_OUTPUT_ITEM_MISSING_FIXTURE: &str = concat!(
+    "data: {\"type\":\"response.output_item.done\",\"output_index\":0}\n\n",
+    "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-malformed\",\"status\":\"completed\",\"usage\":{\"input_tokens\":11,\"output_tokens\":7,\"total_tokens\":18}}}\n\n",
+);
+
+const STREAM_MALFORMED_OUTPUT_ITEM_DECODE_FIXTURE: &str = concat!(
+    "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"message\",\"content\":\"not-an-array\"}}\n\n",
+    "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-malformed\",\"status\":\"completed\"}}\n\n",
+);
+
+const STREAM_UNKNOWN_MIXED_OUTPUT_FIXTURE: &str = concat!(
+    "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"future_output\",\"id\":\"unknown-1\"}}\n\n",
+    "data: {\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"id\":\"fc-1\",\"call_id\":\"call-1\",\"name\":\"Read\",\"arguments\":\"{\\\"path\\\":\\\"README.md\\\"}\"}}\n\n",
+    "data: {\"type\":\"response.output_item.done\",\"output_index\":2,\"item\":{\"type\":\"message\",\"id\":\"msg-1\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"answer\"}]}}\n\n",
+    "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-mixed\",\"status\":\"completed\"}}\n\n",
+);
+
+const STREAM_VALID_MIXED_OUTPUT_FIXTURE: &str = concat!(
+    "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"reasoning-1\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"thinking\"}]}}\n\n",
+    "data: {\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"id\":\"fc-1\",\"call_id\":\"call-1\",\"name\":\"Read\",\"arguments\":\"{}\"}}\n\n",
+    "data: {\"type\":\"response.output_item.done\",\"output_index\":2,\"item\":{\"type\":\"message\",\"id\":\"msg-1\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"answer\"}]}}\n\n",
+    "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-valid\",\"status\":\"completed\"}}\n\n",
+);
+
+#[test]
+fn parse_streaming_response_fails_on_missing_output_item_at_finalization() {
+    let error = parse_streaming_response(STREAM_MALFORMED_OUTPUT_ITEM_MISSING_FIXTURE).unwrap_err();
+    let message = error.to_string();
+
+    assert!(message.contains("malformed Responses API streamed output item"));
+    assert!(message.contains("output[0]"));
+    assert!(message.contains("resp-malformed"));
+    let parse_error = error
+        .downcast_ref::<ResponseParseError>()
+        .expect("malformed streamed output should retain its parse error type");
+    assert_eq!(parse_error.usage().unwrap().total_tokens, 18);
+}
+
+#[test]
+fn parse_streaming_response_fails_on_output_item_decode_error_at_finalization() {
+    let error = parse_streaming_response(STREAM_MALFORMED_OUTPUT_ITEM_DECODE_FIXTURE).unwrap_err();
+    let message = error.to_string();
+
+    assert!(message.contains("malformed Responses API streamed output item"));
+    assert!(message.contains("invalid type"));
+    assert!(error.downcast_ref::<ResponseParseError>().is_some());
+}
+
+#[test]
+fn parse_streaming_response_bounds_output_item_decode_diagnostics() {
+    let oversized_text = "x".repeat(STREAM_OUTPUT_ITEM_DIAGNOSTIC_LIMIT + 1_000);
+    let body = format!(
+        "data: {{\"type\":\"response.output_item.done\",\"item\":{{\"type\":\"message\",\"content\":\"{oversized_text}\"}}}}\n\n"
+    ) + "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-bounded\",\"status\":\"completed\"}}\n\n";
+    let message = parse_streaming_response(&body).unwrap_err().to_string();
+
+    assert!(message.contains("first 400 bytes"));
+    assert!(!message.contains(&"x".repeat(STREAM_OUTPUT_ITEM_DIAGNOSTIC_LIMIT + 1)));
+}
+
+#[test]
+fn parse_streaming_response_ignores_unknown_mixed_output_and_preserves_order() {
+    let result = parse_streaming_response(STREAM_UNKNOWN_MIXED_OUTPUT_FIXTURE).unwrap();
+
+    assert_eq!(result.items.len(), 2);
+    assert!(matches!(
+        &result.items[0],
+        ConversationItem::FunctionCall { call_id, .. } if call_id == "call-1"
+    ));
+    assert!(matches!(
+        &result.items[1],
+        ConversationItem::Message { content, .. } if content == "answer"
+    ));
+    assert_eq!(result.provider_request_id.as_deref(), Some("resp-mixed"));
+}
+
+#[test]
+fn parse_streaming_response_preserves_valid_mixed_output_order_and_terminal() {
+    let result = parse_streaming_response(STREAM_VALID_MIXED_OUTPUT_FIXTURE).unwrap();
+
+    assert!(matches!(
+        &result.items[..],
+        [
+            ConversationItem::Reasoning { .. },
+            ConversationItem::FunctionCall { .. },
+            ConversationItem::Message { .. },
+        ]
+    ));
+    assert_eq!(result.provider_request_id.as_deref(), Some("resp-valid"));
+    assert!(matches!(
+        result.termination,
+        Some(ProviderTermination {
+            classification: TerminationClassification::Completed,
+            ..
+        })
+    ));
+}
+
 #[test]
 fn parses_streamed_text_events() {
     let body = concat!(

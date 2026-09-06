@@ -284,6 +284,28 @@ impl StreamTerminal {
     }
 }
 
+const STREAM_OUTPUT_ITEM_DIAGNOSTIC_LIMIT: usize = 400;
+
+#[derive(Debug)]
+struct StreamOutputItemDecodeFailure {
+    output_index: usize,
+    reason: String,
+    preview_len: usize,
+    preview: String,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "malformed Responses API streamed output item at output[{output_index}] in response {response_id}: {reason}; first {preview_len} bytes: {preview:?}"
+)]
+struct MalformedStreamOutputItemError {
+    response_id: String,
+    output_index: usize,
+    reason: String,
+    preview_len: usize,
+    preview: String,
+}
+
 /// Mutable state accumulated while decoding a streaming Responses API body.
 #[derive(Default)]
 struct StreamAccumulator {
@@ -294,6 +316,43 @@ struct StreamAccumulator {
     output: Vec<OutputMessage>,
     output_text: String,
     terminal: StreamTerminal,
+    output_item_count: usize,
+    output_item_decode_failure: Option<StreamOutputItemDecodeFailure>,
+}
+
+fn bounded_diagnostic_text(value: &str) -> (usize, String) {
+    let preview_len = value.len().min(STREAM_OUTPUT_ITEM_DIAGNOSTIC_LIMIT);
+    (
+        preview_len,
+        String::from_utf8_lossy(&value.as_bytes()[..preview_len]).into_owned(),
+    )
+}
+
+fn bounded_json_preview(value: &serde_json::Value) -> (usize, String) {
+    serde_json::to_string(value).map_or_else(
+        |_| bounded_diagnostic_text("<unserializable item>"),
+        |value| bounded_diagnostic_text(&value),
+    )
+}
+
+fn record_output_item_decode_failure(
+    accumulator: &mut StreamAccumulator,
+    output_index: usize,
+    reason: &str,
+    item: Option<&serde_json::Value>,
+) {
+    if accumulator.output_item_decode_failure.is_some() {
+        return;
+    }
+
+    let (preview_len, preview) = item.map_or((0, String::new()), bounded_json_preview);
+    let (_, reason) = bounded_diagnostic_text(reason);
+    accumulator.output_item_decode_failure = Some(StreamOutputItemDecodeFailure {
+        output_index,
+        reason,
+        preview_len,
+        preview,
+    });
 }
 
 fn parse_streaming_response(body: &str) -> anyhow::Result<TurnResult> {
@@ -352,10 +411,26 @@ fn apply_output_text_delta(accumulator: &mut StreamAccumulator, event: &serde_js
 }
 
 fn apply_output_item_done(accumulator: &mut StreamAccumulator, event: &serde_json::Value) {
-    if let Some(item) = event.get("item")
-        && let Ok(item) = serde_json::from_value::<OutputMessage>(item.clone())
-    {
-        accumulator.output.push(item);
+    let output_index = event
+        .get("output_index")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|index| usize::try_from(index).ok())
+        .unwrap_or(accumulator.output_item_count);
+    accumulator.output_item_count = accumulator.output_item_count.saturating_add(1);
+
+    let Some(item) = event.get("item") else {
+        record_output_item_decode_failure(accumulator, output_index, "missing 'item' field", None);
+        return;
+    };
+
+    match serde_json::from_value::<OutputMessage>(item.clone()) {
+        Ok(item) => accumulator.output.push(item),
+        Err(error) => record_output_item_decode_failure(
+            accumulator,
+            output_index,
+            &error.to_string(),
+            Some(item),
+        ),
     }
 }
 
@@ -537,6 +612,24 @@ fn ensure_stream_terminal(accumulator: &StreamAccumulator) -> anyhow::Result<()>
     }
 }
 
+fn malformed_stream_output_item_error(
+    failure: StreamOutputItemDecodeFailure,
+    response_id: &str,
+    usage: Option<Usage>,
+) -> anyhow::Error {
+    let (_, response_id) = bounded_diagnostic_text(response_id);
+    anyhow::Error::new(ResponseParseError::new(
+        anyhow::Error::new(MalformedStreamOutputItemError {
+            response_id,
+            output_index: failure.output_index,
+            reason: failure.reason,
+            preview_len: failure.preview_len,
+            preview: failure.preview,
+        }),
+        usage,
+    ))
+}
+
 /// Assembles the final `TurnResult` from the accumulated stream state.
 ///
 /// # Errors
@@ -590,8 +683,19 @@ fn finalize_stream(mut accumulator: StreamAccumulator) -> anyhow::Result<TurnRes
         .usage
         .as_ref()
         .map(|usage| map_usage(usage, response_id));
-    let items = parse_output_items(&api_response)
-        .map_err(|error| anyhow::Error::new(ResponseParseError::new(error, usage)))?;
+    let items = accumulator.output_item_decode_failure.map_or_else(
+        || {
+            parse_output_items(&api_response)
+                .map_err(|error| anyhow::Error::new(ResponseParseError::new(error, usage)))
+        },
+        |failure| {
+            Err(malformed_stream_output_item_error(
+                failure,
+                response_id,
+                usage,
+            ))
+        },
+    )?;
 
     Ok(TurnResult {
         items,
