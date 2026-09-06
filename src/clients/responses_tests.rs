@@ -1095,6 +1095,25 @@ fn parse_streaming_response_incomplete_with_output_preserves_text() {
 }
 
 #[test]
+fn parse_streaming_response_incomplete_event_implies_incomplete_termination() {
+    let body = "data: {\"type\":\"response.incomplete\",\"response\":{\"id\":\"resp-optional\",\"output\":[{\"type\":\"message\",\"id\":\"msg-optional\",\"content\":[{\"type\":\"output_text\",\"text\":\"partial answer\"}]}]}}\n\n";
+
+    let result = parse_streaming_response(body).unwrap();
+    assert!(matches!(
+        result.termination,
+        Some(ProviderTermination {
+            classification: TerminationClassification::Incomplete,
+            provider_status: Some(ref status),
+            provider_reason: None,
+        }) if status == "incomplete"
+    ));
+    let ConversationItem::Message { content, .. } = &result.items[0] else {
+        panic!("expected a message item");
+    };
+    assert_eq!(content, "partial answer");
+}
+
+#[test]
 fn parse_streaming_response_incomplete_without_output_or_usage_preserves_reason() {
     let body = "data: {\"type\":\"response.incomplete\",\"response\":{\"id\":\"resp-filtered\",\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"content_filter\"}}}\n\n";
 
@@ -1118,21 +1137,42 @@ fn parse_streaming_response_rejects_duplicate_or_contradictory_terminal_events()
         (
             "response.completed",
             "response.completed",
-            "emitted response.completed after response.completed",
+            r#"{"id":"resp-1"}"#,
         ),
         (
             "response.completed",
             "response.incomplete",
-            "emitted response.incomplete after response.completed",
+            r#"{"id":"resp-1"}"#,
+        ),
+        (
+            "response.completed",
+            "response.failed",
+            r#"{"id":"resp-1","error":{"message":"late failure"}}"#,
+        ),
+        (
+            "response.incomplete",
+            "response.completed",
+            r#"{"id":"resp-1"}"#,
+        ),
+        (
+            "response.incomplete",
+            "response.incomplete",
+            r#"{"id":"resp-1"}"#,
+        ),
+        (
+            "response.incomplete",
+            "response.failed",
+            r#"{"id":"resp-1","error":{"message":"late failure"}}"#,
         ),
     ];
 
-    for (first, second, expected) in cases {
+    for (first, second, second_response) in cases {
         let body = format!(
-            "data: {{\"type\":\"{first}\",\"response\":{{\"id\":\"resp-1\"}}}}\n\ndata: {{\"type\":\"{second}\",\"response\":{{\"id\":\"resp-1\"}}}}\n\n"
+            "data: {{\"type\":\"{first}\",\"response\":{{\"id\":\"resp-1\"}}}}\n\ndata: {{\"type\":\"{second}\",\"response\":{second_response}}}\n\n"
         );
         let error = parse_streaming_response(&body).unwrap_err();
-        assert!(error.to_string().contains(expected), "{error}");
+        let expected = format!("emitted {second} after {first}");
+        assert!(error.to_string().contains(&expected), "{error}");
         assert!(error.downcast_ref::<ResponseParseError>().is_some());
     }
 }
