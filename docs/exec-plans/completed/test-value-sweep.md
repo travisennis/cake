@@ -66,7 +66,7 @@ Independent review corrected the original duplicate row (which summed to 26 and 
 
 ### Verification
 
-After the four restorations, `just check-full` passed end to end: formatting, strict Clippy in both feature modes, all-feature tests (1,387 unit tests passed, 2 ignored, plus 93 integration tests), Linux compatibility, fixtures, coverage at 94.53%, CRAP regression, cyclomatic complexity, dependency checks, rustdoc, Markdown checks, and release build. The restored tests covered `seconds_tenths_handles_max_milliseconds_without_overflowing`, `resolve_assistant_message_from_past_end_is_none`, `emit_task_complete_record_no_callback`, and `test_is_binary_data_allows_empty`; `git diff --check` passed. The original PR head's nine hosted CI checks were all successful when inspected; the review commit requires its own hosted run.
+After the four restorations, `just check-full` passed end to end: formatting, strict Clippy in both feature modes, all-feature tests (1,387 unit tests passed, 2 ignored, plus 93 integration tests), Linux compatibility, fixtures, coverage at 94.53%, CRAP regression, cyclomatic complexity, dependency checks, rustdoc, Markdown checks, and release build. The restored tests covered `seconds_tenths_handles_max_milliseconds_without_overflowing`, `resolve_assistant_message_from_past_end_is_none`, `emit_task_complete_record_no_callback`, and `test_is_binary_data_allows_empty`; `git diff --check` passed. All nine hosted checks on the review-fix PR head also passed.
 
 The initial coverage failure was resolved by supported artifact cleanup rather than by adding low-value tests. Independent review verified the removed names against the Git diff and retained the private fixture cleanup; no production seam cleanup was justified.
 
