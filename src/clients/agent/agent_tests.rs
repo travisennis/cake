@@ -356,6 +356,14 @@ fn emit_task_complete_record_success() {
 }
 
 #[test]
+fn emit_task_complete_record_no_callback() {
+    let mut agent = test_agent();
+    agent
+        .emit_task_complete_record(TaskOutcome::Success { result: None }, 1000)
+        .unwrap();
+}
+
+#[test]
 fn emit_task_complete_record_error() {
     let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let captured_clone = captured.clone();

@@ -1331,6 +1331,12 @@ fn test_is_binary_data_allows_few_null_bytes() {
 }
 
 #[test]
+fn test_is_binary_data_allows_empty() {
+    // Empty data should not be detected as binary.
+    assert!(!is_binary_data(b""));
+}
+
+#[test]
 fn sandbox_initialization_failure_requires_applied_sandbox() {
     let output = "sandbox-exec: sandbox_apply: Operation not permitted";
     assert!(is_sandbox_initialization_failure(true, output));

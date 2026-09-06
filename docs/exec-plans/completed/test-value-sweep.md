@@ -11,7 +11,7 @@ Cake's tests should protect behavior that users, providers, extensions, and main
 - [x] (2026-09-05) Confirmed a clean `master` synchronized with `origin/master` at `3bebb6e`.
 - [x] (2026-09-05) Created and claimed GitHub issue #502; added this plan as the implementation record.
 - [x] (2026-09-05) Inventoried the Rust test modules and classified candidates against CLI, wire, persistence, security, hook/toolbox, concurrency, and configuration contracts.
-- [x] (2026-09-05) Removed 58 confirmed low-value tests across 19 files after independent review restored two non-subsumed boundary tests; exact category and file accounting appears below.
+- [x] (2026-09-05) Removed 56 confirmed low-value tests across 19 files after independent review restored four non-subsumed cases; the initial candidate set was 58 and exact final category/file accounting appears below.
 - [x] (2026-09-05) Reviewed production seams after deletion; no production simplification was justified because every remaining test-only seam still has retained behavioral consumers or production call sites. Removed only the deleted tests' private helpers (`test_hook_runner` and `REGISTRY_MAPPING`).
 - [x] (2026-09-05) Ran focused/full Rust checks, `just check`, coverage/change-risk/CC gates, dependency advisories, rustdoc, Markdown checks, fixtures, and a release build. Independent review resolved the initial coverage failure with supported workspace artifact cleanup.
 - [x] (2026-09-05) Updated issue #502 acceptance notes and linked this completed plan; pushed the branch and opened the pull request.
@@ -30,19 +30,43 @@ Cake's tests should protect behavior that users, providers, extensions, and main
 
 ## Outcomes & Retrospective
 
-The sweep removed 58 tests from 19 files. The categories are intentionally non-overlapping:
+The sweep removed 56 tests from 19 files. The categories are intentionally non-overlapping:
 
 - **24 duplicate behavioral checks**, retained behavior in stronger snapshots or neighboring cases: `src/cli/debug.rs` (2), `src/cli/replay.rs` (1), `src/clients/chat_completions_tests.rs` (1), `src/clients/responses_tests.rs` (2), `src/clients/tools/read.rs` (1), `src/config/session.rs` (2), `src/main_tests.rs` (9), and `src/prompts/mod.rs` (6).
-- **21 trivial, derived, no-op, or pass-through checks**: `src/cli/output.rs` (1), `src/cli/sessions.rs` (2), `src/clients/agent/agent_tests.rs` (4), `src/clients/agent_state.rs` (2), `src/clients/tools/bash_tests.rs` (2), `src/clients/tools/mod.rs` (4), `src/clients/tools/toolbox_tests.rs` (2), `src/config/data_dir.rs` (2), `src/config/session.rs` (1), and `src/types/usage.rs` (1).
+- **19 trivial, derived, no-op, or pass-through checks**: `src/cli/output.rs` (1), `src/cli/sessions.rs` (2), `src/clients/agent/agent_tests.rs` (3), `src/clients/agent_state.rs` (2), `src/clients/tools/bash_tests.rs` (1), `src/clients/tools/mod.rs` (4), `src/clients/tools/toolbox_tests.rs` (2), `src/config/data_dir.rs` (2), `src/config/session.rs` (1), and `src/types/usage.rs` (1).
 - **13 implementation-coupled or reimplemented checks**: `src/clients/chat_completions_tests.rs` (3), `src/clients/judge_rubric_tests.rs` (1), `src/clients/responses_tests.rs` (1), `src/clients/tools/mod.rs` (4), and `src/types/conversation.rs` (4).
 
-Independent review corrected the original duplicate row (which summed to 26 and counted two agent tests again) and restored `seconds_tenths_handles_max_milliseconds_without_overflowing` and `resolve_assistant_message_from_past_end_is_none`. The former detects overflow at `u128::MAX`, unlike ordinary rounding cases; the latter detects out-of-range slicing, unlike the retained exact-end case. Neither restoration is for coverage inflation.
+### Removed-test ledger
 
-The complete names are preserved in the issue and PR accounting. No production code changed: the only non-production cleanup was removing the deleted tests' private `test_hook_runner` and `REGISTRY_MAPPING` fixtures. Retained tests still cover the documented CLI, exit, provider wire, session JSONL, prompt/configuration, tool/sandbox, hook/toolbox, scheduling, concurrency, and error/security contracts. No documentation or ADR update was needed because no user-visible or durable contract changed.
+D = duplicate behavioral check; T = trivial/derived/no-op/pass-through check; I = implementation-coupled or locally reimplemented check. Each removed test appears once.
+
+- `src/cli/debug.rs` (2 D): `format_models_handles_optional_fields_unset`, `render_models_json_false_returns_table`.
+- `src/cli/output.rs` (1 T): `stream_json_swallows_success`.
+- `src/cli/replay.rs` (1 D): `load_records_returns_all_lines_in_order`.
+- `src/cli/sessions.rs` (2 T): `truncate_prompt_short`, `truncate_prompt_empty`.
+- `src/clients/agent/agent_tests.rs` (3 T): `accumulate_usage_none_is_noop`, `builder_with_session_id`, `builder_with_history`.
+- `src/clients/agent_state.rs` (2 T): `resolve_assistant_message_no_output_items`, `resolve_assistant_message_items_but_no_message_or_reasoning`.
+- `src/clients/chat_completions_tests.rs` (1 D): `build_messages_empty_history`; (3 I): `parse_choices_with_usage`, `parse_response_extracts_cached_tokens`, `parse_response_defaults_cached_tokens_when_missing`.
+- `src/clients/judge_rubric_tests.rs` (1 I): `vocabulary_covers_every_registry_check`.
+- `src/clients/responses_tests.rs` (2 D): `extract_instructions_empty_history`, `build_input_empty_history`; (1 I): `provider_config_with_all_returns_none`.
+- `src/clients/tools/bash_tests.rs` (1 T): `require_sandbox_tests_defaults_to_false_when_unset`.
+- `src/clients/tools/mod.rs` (4 T): `hint_no_line_column`, `escape_context_passes_normal_chars`, `empty_registry_returns_empty_slice`, `read_tool_registry_definitions_match`; (4 I): `tool_context_with_temp_dirs_preserves_inputs`, `tool_context_construction_is_repeatable_with_explicit_temp_dirs`, `definitions_returns_same_slice_on_repeated_calls`, `definitions_are_stable_across_clone`.
+- `src/clients/tools/read.rs` (1 D): `start_line_one_without_end_line_matches_default`.
+- `src/clients/tools/toolbox_tests.rs` (2 T): `truncate_output_passes_small_output_through`, `tool_that_ignores_stdin_still_succeeds`.
+- `src/config/data_dir.rs` (2 T): `sessions_dir_structure`, `session_telemetry_path_lives_under_cache_directory`.
+- `src/config/session.rs` (1 T): `test_session_new_defaults`; (2 D): `test_session_loads_trailing_task_start`, `test_session_create_writes_v4`.
+- `src/main_tests.rs` (9 D): `test_cli_parsing_no_session_defaults_false`, `test_cli_parsing_add_dir_none`, `test_cli_parsing_skills_defaults`, `test_build_content_prompt_with_empty_stdin`, `test_build_content_multiline_prompt`, `test_build_content_multiline_stdin`, `test_build_content_multiline_both`, `handle_agent_turn_success_with_hooks`, `handle_agent_turn_error_with_hooks`.
+- `src/prompts/mod.rs` (6 D): `resolve_uses_builtin_when_no_override`, `resolve_builtin_is_trimmed`, `empty_agents_files`, `with_agents_files`, `with_skill_catalog`, `with_agents_and_skills`.
+- `src/types/conversation.rs` (4 I): `role_deserialization_case_insensitive`, `role_equality`, `role_clone`, `role_debug_format`.
+- `src/types/usage.rs` (1 T): `usage_default_values`.
+
+Independent review restored `emit_task_complete_record_no_callback` and `test_is_binary_data_allows_empty` because they cover distinct no-observer and empty-output branches. The two restored tests are intentionally absent from this ledger.
+
+Independent review corrected the original duplicate row (which summed to 26 and counted two agent tests again) and restored the two distinct boundary tests `seconds_tenths_handles_max_milliseconds_without_overflowing` and `resolve_assistant_message_from_past_end_is_none`. The former detects overflow at `u128::MAX`, unlike ordinary rounding cases; the latter detects out-of-range slicing, unlike the retained exact-end case. None of these restorations is for coverage inflation.
 
 ### Verification
 
-After the two boundary restorations, `just check-full` passed end to end: formatting, strict Clippy in both feature modes, all-feature tests (1,385 unit tests passed, 2 ignored, plus 93 integration tests), Linux compatibility, fixtures, coverage at 94.53%, CRAP regression, cyclomatic complexity, dependency checks, rustdoc, Markdown checks, and release build. Both restored tests also passed individually via `cargo test seconds_tenths_handles_max_milliseconds_without_overflowing --quiet` and `cargo test resolve_assistant_message_from_past_end_is_none --quiet`. `git diff --check` passed. The original PR head's nine hosted CI checks were all successful when inspected; the review commit requires its own hosted run.
+After the four restorations, `just check-full` passed end to end: formatting, strict Clippy in both feature modes, all-feature tests (1,387 unit tests passed, 2 ignored, plus 93 integration tests), Linux compatibility, fixtures, coverage at 94.53%, CRAP regression, cyclomatic complexity, dependency checks, rustdoc, Markdown checks, and release build. The restored tests covered `seconds_tenths_handles_max_milliseconds_without_overflowing`, `resolve_assistant_message_from_past_end_is_none`, `emit_task_complete_record_no_callback`, and `test_is_binary_data_allows_empty`; `git diff --check` passed. The original PR head's nine hosted CI checks were all successful when inspected; the review commit requires its own hosted run.
 
 The initial coverage failure was resolved by supported artifact cleanup rather than by adding low-value tests. Independent review verified the removed names against the Git diff and retained the private fixture cleanup; no production seam cleanup was justified.
 
@@ -97,4 +121,4 @@ The sweep relies on Rust's existing test harness, `cargo test`, `cargo insta` sn
 ## Revision note
 
 - (2026-09-05) Filled the initial outcomes ledger and archived the plan before opening PR #503.
-- (2026-09-05) Independent review corrected double-counted agent tests, restored two distinct boundary cases, reconciled the final 58-test ledger, and resolved stale coverage artifacts with `cargo llvm-cov clean --workspace`.
+- (2026-09-05) Independent review corrected double-counted agent tests, restored four distinct cases, reconciled the final 56-test ledger, and resolved stale coverage artifacts with `cargo llvm-cov clean --workspace`.
