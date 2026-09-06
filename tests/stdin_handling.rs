@@ -246,6 +246,100 @@ fn test_worktree_early_failure_cleans_up() {
     );
 }
 
+#[test]
+fn test_worktree_closed_output_runs_guard_cleanup() {
+    let env = cake_env();
+    init_git_repo(&env.workspace_dir);
+
+    let rename = git(&env.workspace_dir)
+        .args(["branch", "-M", "master"])
+        .output()
+        .expect("failed to name fixture branch");
+    assert!(rename.status.success(), "fixture branch should be master");
+
+    env.write_project_settings(
+        r#"
+ default_model = "test"
+
+ [[models]]
+ name = "test"
+ model = "test-model"
+ base_url = "http://127.0.0.1:1"
+ api_key_env = "CLOSED_OUTPUT_TEST_KEY"
+ api_type = "responses"
+ "#,
+    );
+    let add_settings = git(&env.workspace_dir)
+        .args(["add", ".cake/settings.toml"])
+        .output()
+        .expect("failed to stage project settings");
+    assert!(add_settings.status.success());
+    let commit_settings = git(&env.workspace_dir)
+        .args(["commit", "-m", "settings"])
+        .output()
+        .expect("failed to commit project settings");
+    assert!(commit_settings.status.success());
+
+    let remote = env
+        .workspace_dir
+        .parent()
+        .expect("workspace should have a parent")
+        .join("remote.git");
+    let init_remote = git(&env.workspace_dir)
+        .args(["init", "--bare", &remote.to_string_lossy()])
+        .output()
+        .expect("failed to init fixture remote");
+    assert!(init_remote.status.success());
+    let add_remote = git(&env.workspace_dir)
+        .args(["remote", "add", "origin", &remote.to_string_lossy()])
+        .output()
+        .expect("failed to add fixture remote");
+    assert!(add_remote.status.success());
+    let push = git(&env.workspace_dir)
+        .args(["push", "--set-upstream", "origin", "master"])
+        .output()
+        .expect("failed to push fixture branch");
+    assert!(
+        push.status.success(),
+        "fixture branch should have an upstream"
+    );
+
+    let before = count_worktrees(&env.workspace_dir);
+    let mut child = env
+        .command()
+        .args([
+            "--output-format",
+            "stream-json",
+            "--worktree=closed-output",
+            "hello",
+        ])
+        .env("CLOSED_OUTPUT_TEST_KEY", "test-token")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn cake");
+    drop(child.stdout.take());
+
+    let output = child.wait_with_output().expect("failed to wait for cake");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "closed stream should exit successfully: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("Broken pipe"),
+        "unexpected broken pipe: {stderr}"
+    );
+    assert!(!stderr.contains("panicked"), "unexpected panic: {stderr}");
+    assert_eq!(
+        count_worktrees(&env.workspace_dir),
+        before,
+        "closed output should drop the guard and remove the unchanged worktree"
+    );
+}
+
 /// Init a minimal git repo with an initial commit at `dir`.
 fn init_git_repo(dir: &std::path::Path) {
     let init = git(dir)

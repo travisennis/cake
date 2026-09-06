@@ -875,7 +875,7 @@ impl CodingAssistant {
     fn hook_event_sink(
         session_writer: Option<crate::config::SessionWriter>,
         output_format: OutputFormat,
-    ) -> Option<Arc<dyn Fn(StreamRecord) + Send + Sync>> {
+    ) -> Option<Arc<dyn Fn(StreamRecord) -> anyhow::Result<()> + Send + Sync>> {
         if session_writer.is_none() && output_format != OutputFormat::StreamJson {
             return None;
         }
@@ -894,10 +894,11 @@ impl CodingAssistant {
 
             if output_format == OutputFormat::StreamJson {
                 match serde_json::to_string(&record) {
-                    Ok(json) => CliOutputSink::write_stream_record(&json),
+                    Ok(json) => CliOutputSink::write_stream_record(&json)?,
                     Err(error) => tracing::warn!("Stream serialization failed: {error}"),
                 }
             }
+            Ok(())
         }))
     }
 
@@ -1453,6 +1454,9 @@ async fn main() -> std::process::ExitCode {
     };
     match args.run(&data_dir, &options).await {
         Ok(()) => std::process::ExitCode::from(exit_code::code::SUCCESS),
+        Err(e) if CliOutputSink::is_closed_output(&e) => {
+            std::process::ExitCode::from(exit_code::code::SUCCESS)
+        },
         Err(e) => {
             if e.is::<Interrupted>() {
                 return std::process::ExitCode::from(exit_code::code::INTERRUPTED);

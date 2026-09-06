@@ -37,7 +37,7 @@ pub struct HookContext {
     /// Sole owner of hook-event emission. The CLI builds it so one closure
     /// fans each record out to session persistence and, for stream-json runs,
     /// to stdout. `None` disables recording.
-    pub hook_event_sink: Option<Arc<dyn Fn(StreamRecord) + Send + Sync>>,
+    pub hook_event_sink: Option<Arc<dyn Fn(StreamRecord) -> anyhow::Result<()> + Send + Sync>>,
     pub cwd: PathBuf,
     pub model: String,
 }
@@ -485,7 +485,7 @@ impl HookRunner {
     ) -> anyhow::Result<AggregatedHookResult> {
         let mut aggregated = AggregatedHookResult::default();
         for outcome in outcomes {
-            self.record_outcome(event, source, tool_metadata, &outcome);
+            self.record_outcome(event, source, tool_metadata, &outcome)?;
 
             match &outcome.status {
                 InvocationStatus::Failed(error) => {
@@ -531,7 +531,7 @@ impl HookRunner {
         source: &HookSource,
         tool_metadata: Option<&ToolHookMetadata>,
         outcome: &InvocationOutcome,
-    ) {
+    ) -> anyhow::Result<()> {
         let stderr_bytes = outcome.stderr.len();
         let stdout_bytes = outcome.stdout.len();
         let failed = matches!(outcome.status, InvocationStatus::Failed(_));
@@ -609,8 +609,9 @@ impl HookRunner {
         };
 
         if let Some(sink) = &self.context.hook_event_sink {
-            sink(StreamRecord::HookEvent(record));
+            sink(StreamRecord::HookEvent(record))?;
         }
+        Ok(())
     }
 }
 

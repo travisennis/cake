@@ -1,6 +1,6 @@
 use crate::types::{ConversationItem, ReplaySafety, SessionRecord, StreamRecord};
 
-type StreamingCallback = Box<dyn Fn(&str) + Send + Sync>;
+type StreamingCallback = Box<dyn Fn(&str) -> anyhow::Result<()> + Send + Sync>;
 type PersistCallback = Box<dyn FnMut(&SessionRecord) -> anyhow::Result<()> + Send + Sync>;
 type ProgressCallback = Box<dyn Fn(&str) + Send + Sync>;
 
@@ -12,7 +12,18 @@ pub(super) struct AgentObserver {
 }
 
 impl AgentObserver {
+    #[cfg(test)]
     pub(super) fn set_streaming_json(&mut self, callback: impl Fn(&str) + Send + Sync + 'static) {
+        self.streaming = Some(Box::new(move |json| {
+            callback(json);
+            Ok(())
+        }));
+    }
+
+    pub(super) fn set_fallible_streaming_json(
+        &mut self,
+        callback: impl Fn(&str) -> anyhow::Result<()> + Send + Sync + 'static,
+    ) {
         self.streaming = Some(Box::new(callback));
     }
 
@@ -46,7 +57,7 @@ impl AgentObserver {
         if let Some(ref callback) = self.streaming
             && let Some(json) = stream_json
         {
-            callback(&json);
+            callback(&json)?;
         }
         Ok(())
     }

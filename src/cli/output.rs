@@ -11,6 +11,11 @@ use crate::OutputFormat;
 use crate::clients::Agent;
 use crate::config::{DataDir, Session};
 
+/// Signal that stdout's consumer has closed the output stream.
+#[derive(Debug, thiserror::Error)]
+#[error("stdout closed")]
+struct ClosedOutput;
+
 /// Outcome of a single agent turn, bundling the result with its elapsed time.
 pub struct TurnResult {
     pub(crate) result: anyhow::Result<String>,
@@ -32,10 +37,12 @@ impl CliOutputSink {
     }
 
     pub(crate) fn attach_callbacks(self, mut client: Agent) -> Agent {
-        if self.format == OutputFormat::StreamJson {
-            client = client.with_streaming_json(Self::write_stream_record);
-        } else if self.format == OutputFormat::Text {
+        if self.format == OutputFormat::Text {
             client = client.with_progress_callback(Self::write_progress);
+        }
+
+        if self.format == OutputFormat::StreamJson {
+            client = client.with_fallible_streaming_json(Self::write_stream_record);
         }
 
         client
@@ -85,6 +92,7 @@ impl CliOutputSink {
     /// of output format).
     fn stream_json_exit_result(result: anyhow::Result<String>) -> anyhow::Result<()> {
         match result {
+            Err(error) if Self::is_closed_output(&error) => Err(error),
             Err(error)
                 if matches!(
                     error.downcast_ref::<crate::config::OutputSchemaError>(),
@@ -99,8 +107,7 @@ impl CliOutputSink {
 
     fn render_text_result(result: anyhow::Result<String>) -> anyhow::Result<()> {
         let response_text = result?;
-        Self::write_text_response(&response_text);
-        Ok(())
+        Self::write_text_response(&response_text)
     }
 
     pub(crate) fn turn_result_json(
@@ -161,25 +168,43 @@ impl CliOutputSink {
         json
     }
 
+    /// Return whether an error represents normal cancellation by a closed stdout
+    /// consumer. The CLI handles this after all run-local guards leave scope.
+    pub(crate) fn is_closed_output(error: &anyhow::Error) -> bool {
+        error.downcast_ref::<ClosedOutput>().is_some()
+    }
+
     /// Write one stream-json record and treat a closed consumer as a normal
     /// successful termination. A pipe reader such as `head` is allowed to stop
     /// after the records it needs; it must not turn that choice into a panic.
-    pub(crate) fn write_stream_record(json: &str) {
-        Self::handle_stream_write(json);
+    pub(crate) fn write_stream_record(json: &str) -> anyhow::Result<()> {
+        let mut stdout = io::stdout().lock();
+        Self::write_stream_record_to(&mut stdout, json)
     }
 
-    fn handle_stream_write(json: &str) {
-        let result = writeln!(io::stdout().lock(), "{json}");
-        if let Err(error) = result {
-            if error.kind() == io::ErrorKind::BrokenPipe {
-                std::process::exit(crate::exit_code::code::SUCCESS.into());
-            }
-            panic!("failed to write stream-json output: {error}");
+    fn write_stream_record_to<W: Write>(writer: &mut W, json: &str) -> anyhow::Result<()> {
+        Self::write_line(writer, json)
+    }
+
+    fn write_line<W: Write>(writer: &mut W, content: &str) -> anyhow::Result<()> {
+        writeln!(writer, "{content}").map_err(Self::map_output_error)
+    }
+
+    fn map_output_error(error: io::Error) -> anyhow::Error {
+        if error.kind() == io::ErrorKind::BrokenPipe {
+            ClosedOutput.into()
+        } else {
+            anyhow::Error::new(error).context("failed to write stdout")
         }
     }
 
-    fn write_text_response(content: &str) {
-        println!("{content}");
+    fn write_text_response(content: &str) -> anyhow::Result<()> {
+        let mut stdout = io::stdout().lock();
+        Self::write_text_response_to(&mut stdout, content)
+    }
+
+    fn write_text_response_to<W: Write>(writer: &mut W, content: &str) -> anyhow::Result<()> {
+        Self::write_line(writer, content)
     }
 
     fn write_progress(message: &str) {
@@ -187,8 +212,16 @@ impl CliOutputSink {
     }
 
     pub(crate) fn write_json_value(value: &serde_json::Value) -> anyhow::Result<()> {
-        println!("{}", serde_json::to_string(value)?);
-        Ok(())
+        let mut stdout = io::stdout().lock();
+        Self::write_json_value_to(&mut stdout, value)
+    }
+
+    fn write_json_value_to<W: Write>(
+        writer: &mut W,
+        value: &serde_json::Value,
+    ) -> anyhow::Result<()> {
+        let content = serde_json::to_string(value)?;
+        Self::write_line(writer, &content)
     }
 
     pub(crate) fn write_error(error: &anyhow::Error) {
@@ -200,6 +233,51 @@ impl CliOutputSink {
 mod tests {
     use super::*;
     use crate::config::OutputSchemaError;
+
+    struct BrokenPipeWriter;
+
+    impl Write for BrokenPipeWriter {
+        fn write(&mut self, _buffer: &[u8]) -> io::Result<usize> {
+            Err(io::Error::new(io::ErrorKind::BrokenPipe, "closed"))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn assert_closed_output(result: anyhow::Result<()>) {
+        let error = result.expect_err("closed writer should return an error");
+        assert!(CliOutputSink::is_closed_output(&error));
+    }
+
+    #[test]
+    fn output_modes_return_typed_closed_output() {
+        let mut stream_writer = BrokenPipeWriter;
+        assert_closed_output(CliOutputSink::write_stream_record_to(
+            &mut stream_writer,
+            "{\"type\":\"message\"}",
+        ));
+
+        let mut text_writer = BrokenPipeWriter;
+        assert_closed_output(CliOutputSink::write_text_response_to(
+            &mut text_writer,
+            "answer",
+        ));
+
+        let mut json_writer = BrokenPipeWriter;
+        assert_closed_output(CliOutputSink::write_json_value_to(
+            &mut json_writer,
+            &serde_json::json!({"result": "answer"}),
+        ));
+    }
+
+    #[test]
+    fn stream_json_propagates_closed_output() {
+        let result: anyhow::Result<String> = Err(ClosedOutput.into());
+        let error = CliOutputSink::stream_json_exit_result(result).unwrap_err();
+        assert!(CliOutputSink::is_closed_output(&error));
+    }
 
     #[test]
     fn stream_json_swallows_generic_errors() {

@@ -122,7 +122,7 @@ impl CmdRunner for ReplayCommand {
             .into_iter()
             .filter(|record| !matches!(record, SessionRecord::TurnUsage(_)))
         {
-            emit(&StreamRecord::from(record));
+            emit(&StreamRecord::from(record))?;
         }
         Ok(())
     }
@@ -137,15 +137,20 @@ fn fail(error: ReplayError) -> anyhow::Error {
         error: error.to_string(),
         exit_code: error.exit_code(),
     };
-    emit(&record);
-    error.into()
+    match emit(&record) {
+        Ok(()) => error.into(),
+        Err(output_error) => output_error,
+    }
 }
 
 /// Print one stream record as a JSON line on stdout.
-fn emit(record: &StreamRecord) {
+fn emit(record: &StreamRecord) -> anyhow::Result<()> {
     match serde_json::to_string(record) {
         Ok(json) => CliOutputSink::write_stream_record(&json),
-        Err(error) => tracing::warn!("Replay serialization failed: {error}"),
+        Err(error) => {
+            tracing::warn!("Replay serialization failed: {error}");
+            Ok(())
+        },
     }
 }
 

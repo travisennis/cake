@@ -508,12 +508,25 @@ impl Agent {
         self.conversation.append_developer_context(vec![message]);
     }
 
+    #[cfg(test)]
     /// Enables streaming JSON output for each message.
     ///
     /// The callback receives a JSON string for each message, tool call, and result.
     /// This is useful for integrating with other tools or TUIs.
     pub fn with_streaming_json(mut self, callback: impl Fn(&str) + Send + Sync + 'static) -> Self {
         self.observer.set_streaming_json(callback);
+        self
+    }
+
+    /// Enables streaming JSON output with a callback that can stop the run.
+    ///
+    /// Unlike [`Self::with_streaming_json`], errors from the callback propagate
+    /// through the agent loop so the CLI can leave scope normally.
+    pub(crate) fn with_fallible_streaming_json(
+        mut self,
+        callback: impl Fn(&str) -> anyhow::Result<()> + Send + Sync + 'static,
+    ) -> Self {
+        self.observer.set_fallible_streaming_json(callback);
         self
     }
 

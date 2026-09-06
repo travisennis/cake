@@ -450,6 +450,7 @@ async fn post_tool_use_emits_hook_record_to_sink_without_session_writer() {
             transcript_path: None,
             hook_event_sink: Some(Arc::new(move |record| {
                 captured_clone.lock().unwrap().push(record);
+                Ok(())
             })),
             cwd: dir.path().to_path_buf(),
             model: "test-model".to_string(),
