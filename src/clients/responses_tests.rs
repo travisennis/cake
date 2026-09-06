@@ -1049,11 +1049,42 @@ fn parse_streaming_response_completed_output_overrides_item_events() {
 fn parse_streaming_response_records_incomplete_reason() {
     let body = concat!(
         "data: {\"type\":\"response.incomplete\",\"response\":{\"id\":\"resp-1\",\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"},\"usage\":{\"input_tokens\":12,\"output_tokens\":7,\"total_tokens\":19}}}\n\n",
-        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\"}}\n\n",
+        "data: [DONE]\n\n",
     );
 
     let result = parse_streaming_response(body).unwrap();
     assert_eq!(result.items.len(), 0);
+    assert_eq!(result.provider_request_id.as_deref(), Some("resp-1"));
+    assert!(matches!(
+        result.termination,
+        Some(ProviderTermination {
+            classification: TerminationClassification::TokenLimit,
+            provider_status: Some(ref status),
+            provider_reason: Some(ref reason),
+        }) if status == "incomplete" && reason == "max_output_tokens"
+    ));
+    assert_eq!(result.usage.unwrap().total_tokens, 19);
+}
+
+#[test]
+fn parse_streaming_response_incomplete_with_output_preserves_text() {
+    let body = "data: {\"type\":\"response.incomplete\",\"response\":{\"id\":\"resp-partial\",\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"},\"output\":[{\"type\":\"message\",\"id\":\"msg-partial\",\"status\":\"incomplete\",\"content\":[{\"type\":\"output_text\",\"text\":\"partial answer\"}]}]}}\n\n";
+
+    let result = parse_streaming_response(body).unwrap();
+    let ConversationItem::Message {
+        content,
+        id,
+        status,
+        ..
+    } = &result.items[0]
+    else {
+        panic!("expected a message item");
+    };
+    assert_eq!(content, "partial answer");
+    assert_eq!(id.as_deref(), Some("msg-partial"));
+    assert_eq!(status.as_deref(), Some("incomplete"));
+    assert_eq!(result.provider_request_id.as_deref(), Some("resp-partial"));
+    assert!(result.usage.is_none());
     assert!(matches!(
         result.termination,
         Some(ProviderTermination {
@@ -1061,7 +1092,49 @@ fn parse_streaming_response_records_incomplete_reason() {
             ..
         })
     ));
-    assert_eq!(result.usage.unwrap().total_tokens, 19);
+}
+
+#[test]
+fn parse_streaming_response_incomplete_without_output_or_usage_preserves_reason() {
+    let body = "data: {\"type\":\"response.incomplete\",\"response\":{\"id\":\"resp-filtered\",\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"content_filter\"}}}\n\n";
+
+    let result = parse_streaming_response(body).unwrap();
+    assert!(result.items.is_empty());
+    assert!(result.usage.is_none());
+    assert_eq!(result.provider_request_id.as_deref(), Some("resp-filtered"));
+    assert!(matches!(
+        result.termination,
+        Some(ProviderTermination {
+            classification: TerminationClassification::ContentFilter,
+            provider_reason: Some(ref reason),
+            ..
+        }) if reason == "content_filter"
+    ));
+}
+
+#[test]
+fn parse_streaming_response_rejects_duplicate_or_contradictory_terminal_events() {
+    let cases = [
+        (
+            "response.completed",
+            "response.completed",
+            "emitted response.completed after response.completed",
+        ),
+        (
+            "response.completed",
+            "response.incomplete",
+            "emitted response.incomplete after response.completed",
+        ),
+    ];
+
+    for (first, second, expected) in cases {
+        let body = format!(
+            "data: {{\"type\":\"{first}\",\"response\":{{\"id\":\"resp-1\"}}}}\n\ndata: {{\"type\":\"{second}\",\"response\":{{\"id\":\"resp-1\"}}}}\n\n"
+        );
+        let error = parse_streaming_response(&body).unwrap_err();
+        assert!(error.to_string().contains(expected), "{error}");
+        assert!(error.downcast_ref::<ResponseParseError>().is_some());
+    }
 }
 
 #[test]
@@ -1071,16 +1144,8 @@ fn parse_streaming_response_incomplete_usage_is_preserved_when_stream_ends() {
         "data: [DONE]\n\n",
     );
 
-    let error = parse_streaming_response(body).unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("ended before response.completed")
-    );
-    let parse_error = error
-        .downcast_ref::<ResponseParseError>()
-        .expect("incomplete stream should preserve a typed parse error");
-    assert_eq!(parse_error.usage().unwrap().total_tokens, 19);
+    let result = parse_streaming_response(body).unwrap();
+    assert_eq!(result.usage.unwrap().total_tokens, 19);
 }
 
 #[test]
@@ -1155,20 +1220,30 @@ fn parse_streaming_response_failed_malformed_error_object() {
 }
 
 #[test]
-fn parse_streaming_response_requires_completed_event() {
+fn parse_streaming_response_requires_terminal_event() {
     let body = concat!(
         "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}\n\n",
         "data: [DONE]\n\n",
     );
 
     let error = parse_streaming_response(body).unwrap_err().to_string();
-    assert!(error.contains("ended before response.completed"), "{error}");
+    assert!(
+        error.contains(
+            "ended before a terminal response event (response.completed or response.incomplete)"
+        ),
+        "{error}"
+    );
 }
 
 #[test]
 fn parse_streaming_response_empty_body_errors() {
     let error = parse_streaming_response("").unwrap_err().to_string();
-    assert!(error.contains("ended before response.completed"), "{error}");
+    assert!(
+        error.contains(
+            "ended before a terminal response event (response.completed or response.incomplete)"
+        ),
+        "{error}"
+    );
 }
 
 #[test]
