@@ -430,6 +430,49 @@ fn parse_output_items_message() {
 }
 
 #[test]
+fn parse_json_response_preserves_all_output_text_blocks() {
+    let body = serde_json::to_vec(&serde_json::json!({
+        "id": "resp-1",
+        "status": "completed",
+        "output": [{
+            "type": "message",
+            "id": "msg-1",
+            "status": "completed",
+            "content": [
+                {"type": "output_text", "text": "first "},
+                {"type": "refusal", "refusal": "not allowed"},
+                {"type": "output_text", "text": null},
+                {"type": "output_text", "text": ""},
+                {"type": "output_text", "text": "second"}
+            ]
+        }]
+    }))
+    .unwrap();
+
+    let result = parse_json_response(&body).unwrap();
+    assert_eq!(result.items.len(), 1);
+    let ConversationItem::Message {
+        content,
+        id,
+        status,
+        ..
+    } = &result.items[0]
+    else {
+        panic!("expected an assistant message");
+    };
+    assert_eq!(content, "first second");
+    assert_eq!(id.as_deref(), Some("msg-1"));
+    assert_eq!(status.as_deref(), Some("completed"));
+    assert!(matches!(
+        result.termination,
+        Some(ProviderTermination {
+            classification: TerminationClassification::Failed,
+            ..
+        })
+    ));
+}
+
+#[test]
 fn parse_output_items_function_call() {
     let response = ApiResponse {
         id: None,
@@ -990,7 +1033,7 @@ fn parse_streaming_response_merges_output_text_deltas() {
 #[test]
 fn parse_streaming_response_builds_items_from_output_item_done_events() {
     let body = concat!(
-        "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"id\":\"msg-1\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"item text\"}]}}\n\n",
+        "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"id\":\"msg-1\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"item \"},{\"type\":\"output_text\",\"text\":\"text\"}]}}\n\n",
         "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"status\":\"completed\"}}\n\n",
     );
 
@@ -1007,7 +1050,7 @@ fn parse_streaming_response_builds_items_from_output_item_done_events() {
 fn parse_streaming_response_completed_output_overrides_item_events() {
     let body = concat!(
         "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"id\":\"msg-incremental\",\"content\":[{\"type\":\"output_text\",\"text\":\"incremental\"}]}}\n\n",
-        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"id\":\"msg-final\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"final\"}]}]}}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"id\":\"msg-final\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"final \"},{\"type\":\"output_text\",\"text\":\"text\"}]}]}}\n\n",
     );
 
     let result = parse_streaming_response(body).unwrap();
@@ -1015,7 +1058,7 @@ fn parse_streaming_response_completed_output_overrides_item_events() {
     let ConversationItem::Message { content, id, .. } = &result.items[0] else {
         panic!("expected a message item");
     };
-    assert_eq!(content, "final");
+    assert_eq!(content, "final text");
     assert_eq!(id.as_deref(), Some("msg-final"));
 }
 

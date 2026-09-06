@@ -934,21 +934,7 @@ fn parse_output_items(api_response: &ApiResponse) -> anyhow::Result<Vec<Conversa
                 items.push(parse_function_call_output(api_response, output, index)?);
             },
             "message" => {
-                let text = output
-                    .content
-                    .as_ref()
-                    .and_then(|c| c.iter().find(|item| item.content_type == "output_text"))
-                    .and_then(|item| item.text.clone())
-                    .unwrap_or_else(|| {
-                        warn!(
-                            target: "cake",
-                            response_id = response_id,
-                            output_index = index,
-                            output_id = output.id.as_deref(),
-                            "Responses API message output has no 'output_text' content block; returning empty text"
-                        );
-                        String::new()
-                    });
+                let text = parse_message_output_text(output, response_id, index);
 
                 let timestamp = chrono::Utc::now();
                 items.push(ConversationItem::Message {
@@ -980,6 +966,35 @@ fn parse_output_items(api_response: &ApiResponse) -> anyhow::Result<Vec<Conversa
     }
 
     Ok(items)
+}
+
+/// Combine all text blocks in a Responses API message in wire order.
+///
+/// Empty and null `text` fields contribute no characters. Other content types,
+/// including refusal blocks, remain available to the response-level termination
+/// logic and are not included in the assistant message text.
+fn parse_message_output_text(output: &OutputMessage, response_id: &str, index: usize) -> String {
+    let content = output.content.as_deref().unwrap_or(&[]);
+    let has_output_text = content
+        .iter()
+        .any(|item| item.content_type == "output_text");
+    let text = content
+        .iter()
+        .filter(|item| item.content_type == "output_text")
+        .filter_map(|item| item.text.as_deref())
+        .collect::<String>();
+
+    if !has_output_text {
+        warn!(
+            target: "cake",
+            response_id = response_id,
+            output_index = index,
+            output_id = output.id.as_deref(),
+            "Responses API message output has no 'output_text' content block; returning empty text"
+        );
+    }
+
+    text
 }
 
 fn unknown_output_type_error(
