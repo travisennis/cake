@@ -674,7 +674,7 @@ pub(super) trait SandboxStrategy: Send + Sync {
 /// The exception is a macOS process already constrained by Seatbelt, where
 /// applying a nested profile is not permitted and the inherited sandbox remains
 /// the enforcement boundary.
-// Linux detection is infallible, but macOS detection can fail closed.
+// Linux detection is infallible, but macOS and unsupported platforms can fail closed.
 #[cfg_attr(
     target_os = "linux",
     expect(
@@ -700,11 +700,11 @@ pub(super) fn detect_platform() -> Result<Option<Box<dyn SandboxStrategy>>, Stri
 
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
-        tracing::warn!(
-            "No sandbox available for this platform ({}); bash commands will run unsandboxed",
+        Err(format!(
+            "sandbox unavailable: no supported OS sandbox is available for platform '{}'. \
+             Set CAKE_SANDBOX=off to run Bash commands without filesystem sandboxing.",
             std::env::consts::OS
-        );
-        Ok(None)
+        ))
     }
 }
 
@@ -1233,6 +1233,19 @@ mod tests {
         let strategy = super::detect_macos_platform(true, true, None).unwrap();
 
         assert!(strategy.is_some());
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[test]
+    fn unsupported_platform_detection_fails_closed() {
+        let Err(error) = super::detect_platform() else {
+            panic!("unsupported platform must fail closed");
+        };
+
+        assert!(error.contains("sandbox unavailable"));
+        assert!(error.contains("no supported OS sandbox"));
+        assert!(error.contains(std::env::consts::OS));
+        assert!(error.contains("CAKE_SANDBOX=off"));
     }
 
     /// Smoke test that every major toolchain category from the safehouse

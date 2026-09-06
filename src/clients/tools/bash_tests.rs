@@ -1,7 +1,5 @@
 use super::*;
-#[cfg(any(target_os = "macos", target_os = "linux"))]
 use crate::clients::tools::ToolContext;
-#[cfg(any(target_os = "macos", target_os = "linux"))]
 use crate::clients::tools::sandbox::SandboxPolicy;
 use sha2::{Digest, Sha256};
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -674,6 +672,36 @@ async fn grep_no_match_output_is_disambiguated() {
 // ===========================================================================
 // Sandbox Tests
 // ===========================================================================
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[tokio::test]
+async fn unsupported_platform_default_sandbox_fails_closed() {
+    let mut context =
+        ToolContext::from_current_process().with_judge(Some(bypassed_judge_context()));
+    context.sandbox_policy = SandboxPolicy::WorkspaceWrite;
+
+    let error = execute_bash(&context, r#"{"command": "echo should-not-run"}"#)
+        .await
+        .expect_err("default sandbox must fail closed on unsupported platforms");
+
+    assert!(error.message.contains("sandbox unavailable"));
+    assert!(error.message.contains("no supported OS sandbox"));
+    assert!(error.message.contains("CAKE_SANDBOX=off"));
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[tokio::test]
+async fn unsupported_platform_danger_full_access_still_runs_bash() {
+    let mut context =
+        ToolContext::from_current_process().with_judge(Some(bypassed_judge_context()));
+    context.sandbox_policy = SandboxPolicy::DangerFullAccess;
+
+    let result = execute_bash(&context, r#"{"command": "printf danger-full-access"}"#)
+        .await
+        .expect("explicit danger-full-access must bypass unavailable sandbox detection");
+
+    assert!(result.output.contains("danger-full-access"));
+}
 
 #[cfg(target_os = "macos")]
 #[tokio::test]
