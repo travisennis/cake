@@ -1,5 +1,7 @@
 Edit text in files using literal search-and-replace. All non-no-op edits in a single call succeed atomically or none are applied. Edits with identical old_text and new_text are skipped.
 
+The configured `read_max_output_bytes` limit also caps the input file size Edit will read (100,000 bytes by default); `"unlimited"` disables that cap.
+
 Guidance:
 - Always Read the file first before editing.
 - old_text must match exactly once in the file. Include 3+ surrounding lines for uniqueness.

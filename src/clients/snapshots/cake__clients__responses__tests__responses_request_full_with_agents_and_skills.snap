@@ -76,7 +76,7 @@ expression: value
       "type": "function"
     },
     {
-      "description": "Edit text in files using literal search-and-replace. All non-no-op edits in a single call succeed atomically or none are applied. Edits with identical old_text and new_text are skipped.\n\nGuidance:\n- Always Read the file first before editing.\n- old_text must match exactly once in the file. Include 3+ surrounding lines for uniqueness.\n- For multi-line matches, preserve exact whitespace and indentation.\n- Special characters in JSON (backticks, quotes, backslashes) must be escaped.\n- Each successful edit invalidates any earlier read of that file. Re-read before editing the same file again.\n- The parameters are named old_text and new_text (not old_string/new_string).\n",
+      "description": "Edit text in files using literal search-and-replace. All non-no-op edits in a single call succeed atomically or none are applied. Edits with identical old_text and new_text are skipped.\n\nThe configured `read_max_output_bytes` limit also caps the input file size Edit will read (100,000 bytes by default); `\"unlimited\"` disables that cap.\n\nGuidance:\n- Always Read the file first before editing.\n- old_text must match exactly once in the file. Include 3+ surrounding lines for uniqueness.\n- For multi-line matches, preserve exact whitespace and indentation.\n- Special characters in JSON (backticks, quotes, backslashes) must be escaped.\n- Each successful edit invalidates any earlier read of that file. Re-read before editing the same file again.\n- The parameters are named old_text and new_text (not old_string/new_string).\n",
       "name": "Edit",
       "parameters": {
         "additionalProperties": false,

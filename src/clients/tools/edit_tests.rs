@@ -2,6 +2,8 @@ use super::*;
 use std::fs;
 use tempfile::TempDir;
 
+use crate::config::settings::DEFAULT_READ_MAX_OUTPUT_BYTES;
+
 // =========================================================================
 // Multiple Edits Tests
 // =========================================================================
@@ -776,6 +778,65 @@ fn delete_text_with_empty_new_text() {
 }
 
 #[test]
+fn edit_rejects_file_larger_than_read_limit_before_mutation() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("large.txt");
+    let max_bytes = DEFAULT_READ_MAX_OUTPUT_BYTES as usize;
+    let original = format!("target{}", "x".repeat(max_bytes));
+    fs::write(&file_path, &original).unwrap();
+
+    let args = serde_json::json!({
+        "path": file_path.to_str().unwrap(),
+        "edits": [
+            { "old_text": "target", "new_text": "changed" }
+        ]
+    })
+    .to_string();
+
+    let err = execute_edit(&ToolContext::from_current_process(), &args).unwrap_err();
+    assert!(
+        err.contains("exceeding the configured Edit read limit"),
+        "Error should explain the size limit: {err}"
+    );
+    assert!(
+        err.contains(&format!("{max_bytes} bytes")),
+        "Error should include the configured limit: {err}"
+    );
+    assert!(
+        err.contains("Increase [limits].read_max_output_bytes"),
+        "Error should provide a recovery path: {err}"
+    );
+    assert_eq!(fs::read_to_string(&file_path).unwrap(), original);
+}
+
+#[test]
+fn edit_accepts_file_at_read_limit() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("boundary.txt");
+    let max_bytes = 64;
+    let original = format!("target{}", "x".repeat(max_bytes - "target".len()));
+    assert_eq!(original.len(), max_bytes);
+    fs::write(&file_path, &original).unwrap();
+
+    let args = serde_json::json!({
+        "path": file_path.to_str().unwrap(),
+        "edits": [
+            { "old_text": "target", "new_text": "changed" }
+        ]
+    })
+    .to_string();
+    let mut limits = crate::config::settings::ToolLimits::defaults();
+    limits.read_max_output_bytes = Some(max_bytes);
+    let context = ToolContext::from_current_process().with_limits(limits);
+
+    execute_edit(&context, &args).expect("a file exactly at the limit should be editable");
+    assert_eq!(
+        fs::read_to_string(&file_path).unwrap(),
+        format!("changed{}", "x".repeat(max_bytes - "target".len()))
+    );
+}
+
+#[test]
 fn error_on_binary_file() {
     let temp_dir = TempDir::new().unwrap();
     let file_path = temp_dir.path().join("test.bin");
@@ -789,7 +850,10 @@ fn error_on_binary_file() {
     })
     .to_string();
 
-    let result = execute_edit(&ToolContext::from_current_process(), &args);
+    let mut limits = crate::config::settings::ToolLimits::defaults();
+    limits.read_max_output_bytes = Some(7);
+    let context = ToolContext::from_current_process().with_limits(limits);
+    let result = execute_edit(&context, &args);
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("binary file"));
 }
@@ -823,7 +887,8 @@ fn error_on_null_byte_after_initial_8k() {
 fn error_on_invalid_utf8_file() {
     let temp_dir = TempDir::new().unwrap();
     let file_path = temp_dir.path().join("test.txt");
-    fs::write(&file_path, b"valid text \xFF more text").unwrap();
+    let invalid = b"valid text \xFF more text";
+    fs::write(&file_path, invalid).unwrap();
 
     let args = serde_json::json!({
         "path": file_path.to_str().unwrap(),
@@ -833,7 +898,10 @@ fn error_on_invalid_utf8_file() {
     })
     .to_string();
 
-    let result = execute_edit(&ToolContext::from_current_process(), &args);
+    let mut limits = crate::config::settings::ToolLimits::defaults();
+    limits.read_max_output_bytes = Some(invalid.len());
+    let context = ToolContext::from_current_process().with_limits(limits);
+    let result = execute_edit(&context, &args);
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert!(

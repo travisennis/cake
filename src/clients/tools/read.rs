@@ -3,7 +3,7 @@ use std::fmt::Write as _;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
-use crate::clients::tools::{ToolContext, validate_path_in_cwd};
+use crate::clients::tools::{ToolContext, contains_null_byte, decode_utf8, validate_path_in_cwd};
 use crate::config::settings::ToolLimits;
 use crate::session_telemetry::{CompensationEventTelemetry, CompensationKind};
 
@@ -327,7 +327,7 @@ fn read_line_bounded<'a, R: BufRead>(
     let text = if truncated {
         truncate_to_valid_utf8(content, cap)
     } else {
-        std::str::from_utf8(content).map_err(|_err| {
+        decode_utf8(content).map_err(|_err| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "stream did not contain valid UTF-8",
@@ -354,18 +354,18 @@ fn scan_line<R: BufRead>(
     buf: &mut Vec<u8>,
     budget: usize,
 ) -> Result<(bool, bool, usize), std::io::Error> {
-    let mut contains_null_byte = false;
+    let mut has_null_byte = false;
     let mut bytes_consumed = 0usize;
     loop {
         let available = reader.fill_buf()?;
         if available.is_empty() {
-            return Ok((false, contains_null_byte, bytes_consumed)); // EOF
+            return Ok((false, has_null_byte, bytes_consumed)); // EOF
         }
         let (take, done) = available
             .iter()
             .position(|&b| b == b'\n')
             .map_or_else(|| (available.len(), false), |pos| (pos + 1, true));
-        contains_null_byte |= available[..take].contains(&0);
+        has_null_byte |= contains_null_byte(&available[..take]);
         bytes_consumed = bytes_consumed.saturating_add(take);
         if buf.len() < budget {
             let room = budget - buf.len();
@@ -373,7 +373,7 @@ fn scan_line<R: BufRead>(
         }
         reader.consume(take);
         if done {
-            return Ok((true, contains_null_byte, bytes_consumed));
+            return Ok((true, has_null_byte, bytes_consumed));
         }
     }
 }
@@ -397,7 +397,7 @@ fn strip_line_ending(raw: &[u8]) -> &[u8] {
 /// over-long line never needs to be decoded past the cap.
 fn truncate_to_valid_utf8(bytes: &[u8], max: usize) -> &str {
     let max = max.min(bytes.len());
-    match std::str::from_utf8(&bytes[..max]) {
+    match decode_utf8(&bytes[..max]) {
         Ok(s) => s,
         Err(e) => {
             let valid = e.valid_up_to();
@@ -405,8 +405,7 @@ fn truncate_to_valid_utf8(bytes: &[u8], max: usize) -> &str {
                 clippy::expect_used,
                 reason = "valid_up_to guarantees the prefix is valid UTF-8"
             )]
-            std::str::from_utf8(&bytes[..valid])
-                .expect("valid_up_to always yields a valid UTF-8 prefix")
+            decode_utf8(&bytes[..valid]).expect("valid_up_to always yields a valid UTF-8 prefix")
         },
     }
 }

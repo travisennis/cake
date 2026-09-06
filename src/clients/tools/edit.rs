@@ -1,9 +1,11 @@
 use serde::Deserialize;
 use std::fmt::Write as _;
+use std::io::{BufReader, Read as _};
 use std::path::Path;
 
 use crate::clients::tools::{
-    ToolContext, repair_json_args, resolve_path_for_write_scheduling, validate_path_for_write,
+    ToolContext, contains_null_byte, decode_utf8, repair_json_args,
+    resolve_path_for_write_scheduling, validate_path_for_write,
 };
 
 // =============================================================================
@@ -174,7 +176,7 @@ pub(super) fn execute_edit(
 
     // Validate and canonicalize the path (ensures it's not read-only)
     let path = validate_path_for_write(tool_context, &args.path)?;
-    let content = read_edit_file(&path)?;
+    let content = read_edit_file(&path, &tool_context.limits)?;
 
     // Detect and strip BOM
     let (bom, content) = strip_bom(&content);
@@ -254,26 +256,67 @@ fn validate_edit_count(edits: &[Edit]) -> Result<(), String> {
     Ok(())
 }
 
-fn read_edit_file(path: &Path) -> Result<String, String> {
-    // Check if file exists and is a file.
+fn read_edit_file(
+    path: &Path,
+    limits: &crate::config::settings::ToolLimits,
+) -> Result<String, String> {
+    // Check if file exists and is a regular file before opening a bounded reader.
     let metadata = std::fs::metadata(path)
         .map_err(|e| format!("Failed to access file '{}': {e}", path.display()))?;
     if !metadata.is_file() {
         return Err(format!("Path is not a file: {}", path.display()));
     }
 
-    // Refuse binary files before treating the bytes as editable UTF-8 text.
-    let file_bytes = std::fs::read(path)
+    let max_bytes = limits.read_max_output_bytes;
+    if let Some(max_bytes) = max_bytes
+        && metadata.len() > max_bytes as u64
+    {
+        return Err(oversized_file_error(path, metadata.len(), max_bytes));
+    }
+
+    // The metadata check avoids opening a known oversized file. The bounded
+    // reader is still required because the file can grow after that check.
+    let file = std::fs::File::open(path)
         .map_err(|e| format!("Failed to read file '{}': {e}", path.display()))?;
-    if file_bytes.contains(&0) {
+    let mut reader = BufReader::new(file);
+    let mut file_bytes = Vec::new();
+    if let Some(max_bytes) = max_bytes {
+        reader
+            .by_ref()
+            .take(max_bytes.saturating_add(1) as u64)
+            .read_to_end(&mut file_bytes)
+            .map_err(|e| format!("Failed to read file '{}': {e}", path.display()))?;
+        if file_bytes.len() > max_bytes {
+            return Err(oversized_file_error(
+                path,
+                file_bytes.len() as u64,
+                max_bytes,
+            ));
+        }
+    } else {
+        reader
+            .read_to_end(&mut file_bytes)
+            .map_err(|e| format!("Failed to read file '{}': {e}", path.display()))?;
+    }
+
+    // Refuse binary files before treating the bytes as editable UTF-8 text.
+    if contains_null_byte(&file_bytes) {
         return Err(format!(
             "Cannot edit binary file: {} (detected null bytes)",
             path.display()
         ));
     }
 
-    String::from_utf8(file_bytes)
+    decode_utf8(&file_bytes)
+        .map(str::to_owned)
         .map_err(|_e| format!("File contains invalid UTF-8: {}", path.display()))
+}
+
+fn oversized_file_error(path: &Path, size: u64, max_bytes: usize) -> String {
+    format!(
+        "Cannot edit file '{}': file is {size} bytes, exceeding the configured Edit read limit of {max_bytes} bytes. Increase [limits].read_max_output_bytes or edit a smaller file.",
+        path.display()
+    )
 }
 
 /// Expected JSON shape for the Edit tool arguments.

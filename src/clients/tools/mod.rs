@@ -593,6 +593,22 @@ pub struct Tool {
     pub(super) parameters: serde_json::Value,
 }
 
+/// Return whether raw file bytes contain a NUL byte.
+///
+/// Read and Edit use the same conservative binary-file signal while keeping
+/// their tool-specific error messages and bounded reader behavior separate.
+pub(super) fn contains_null_byte(bytes: &[u8]) -> bool {
+    bytes.contains(&0)
+}
+
+/// Decode bytes as UTF-8 without lossy replacement.
+///
+/// Read uses this for delivered line content and Edit uses it for the complete
+/// bounded file, so both tools share the same validation primitive.
+pub(super) const fn decode_utf8(bytes: &[u8]) -> Result<&str, std::str::Utf8Error> {
+    std::str::from_utf8(bytes)
+}
+
 /// Result of executing a tool.
 ///
 /// Contains the output string from tool execution, which may be stdout/stderr

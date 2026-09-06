@@ -413,8 +413,8 @@ pub struct LimitsSettingsOverlay {
     #[serde(default)]
     pub read_default_end_line: Option<Limit>,
     /// Maximum bytes of Read output before it is truncated at a UTF-8
-    /// boundary. Absent uses the compiled default of 100,000; `"unlimited"`
-    /// disables truncation.
+    /// boundary, and maximum bytes of input Edit will read. Absent uses the
+    /// compiled default of 100,000; `"unlimited"` disables both caps.
     #[serde(default)]
     pub read_max_output_bytes: Option<Limit>,
     /// Maximum bytes of one Read line delivered before it is truncated.
@@ -460,7 +460,8 @@ pub struct ToolLimits {
     pub bash_read_cap: Option<usize>,
     /// Default Read window in lines (default 200).
     pub read_default_end_line: Option<usize>,
-    /// Maximum bytes of Read output before truncation (default 100,000).
+    /// Maximum bytes of Read output before truncation and of an input file
+    /// Edit will read (default 100,000).
     pub read_max_output_bytes: Option<usize>,
     /// Maximum bytes delivered for a single Read line (default 10,000).
     pub read_max_line_bytes: Option<usize>,
