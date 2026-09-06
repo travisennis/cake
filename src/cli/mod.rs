@@ -29,6 +29,26 @@ pub use sessions::SessionsCommand;
 
 pub use run_mode::{RunMode, SessionPersistencePlan};
 
+/// A root agent-run option was supplied alongside a subcommand.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "invalid usage: {options} cannot be used with subcommand '{command}'; these are agent-run options and require no subcommand"
+)]
+pub struct InvalidSubcommandOptions {
+    command: &'static str,
+    options: String,
+}
+
+impl InvalidSubcommandOptions {
+    /// Build an input error with the rejected options in CLI order.
+    pub(crate) fn new(command: &'static str, options: &[&'static str]) -> Self {
+        Self {
+            command,
+            options: options.join(", "),
+        }
+    }
+}
+
 /// Top-level CLI subcommands.
 #[derive(Clone, Debug, clap::Subcommand)]
 pub enum Commands {
@@ -55,6 +75,17 @@ impl CmdRunner for Commands {
 }
 
 impl Commands {
+    /// Return the command name used in user-facing validation errors.
+    pub(crate) const fn name(&self) -> &'static str {
+        match self {
+            Self::Debug(_) => "debug",
+            Self::Sessions(_) => "sessions",
+            Self::Bash(_) => "bash",
+            Self::Init(_) => "init",
+            Self::Replay(_) => "replay",
+        }
+    }
+
     /// Dispatch to the selected subcommand's [`CmdRunner`].
     ///
     /// Extracted so [`CmdRunner::run`] stays at baseline complexity as

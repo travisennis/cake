@@ -78,6 +78,83 @@ fn test_cli_parsing_no_prompt() {
 }
 
 #[test]
+fn test_cli_parsing_prompt_before_subcommand() {
+    let args = CodingAssistant::parse_from(["cake", "ignored prompt", "sessions", "list"]);
+
+    assert_eq!(args.prompt.as_deref(), Some("ignored prompt"));
+    assert!(matches!(args.command, Some(Commands::Sessions(_))));
+}
+
+#[test]
+fn test_cli_rejects_run_only_options_with_subcommand() {
+    let args = CodingAssistant::parse_from([
+        "cake",
+        "--max-tokens",
+        "100",
+        "--output-schema",
+        "result.json",
+        "--no-session",
+        "ignored prompt",
+        "replay",
+        "550e8400-e29b-41d4-a716-446655440000",
+    ]);
+
+    let error = args
+        .validate_subcommand_options()
+        .expect_err("run-only options must be rejected with a subcommand");
+    let message = error.to_string();
+    assert!(message.contains("invalid usage"));
+    assert!(message.contains("--max-tokens"));
+    assert!(message.contains("--output-schema"));
+    assert!(message.contains("--no-session"));
+    assert!(message.contains("prompt"));
+    assert!(message.contains("replay"));
+}
+
+#[test]
+fn test_cli_preserves_options_shared_with_subcommands() {
+    let args = CodingAssistant::parse_from([
+        "cake",
+        "--model",
+        "judge",
+        "--profile",
+        "review",
+        "bash",
+        "check",
+        "echo hi",
+    ]);
+    assert!(args.validate_subcommand_options().is_ok());
+
+    let args = CodingAssistant::parse_from([
+        "cake",
+        "--output-format",
+        "stream-json",
+        "replay",
+        "550e8400-e29b-41d4-a716-446655440000",
+    ]);
+    assert!(args.validate_subcommand_options().is_ok());
+}
+
+#[tokio::test]
+async fn test_run_rejects_run_only_options_before_subcommand_dispatch() {
+    let args = CodingAssistant::parse_from(["cake", "ignored prompt", "sessions", "list"]);
+    let temp = tempfile::tempdir().expect("temporary data directory");
+    let data_dir = DataDir::new_in_dir(temp.path());
+
+    let error = args
+        .run(&data_dir, &CommandRunOptions::default())
+        .await
+        .expect_err("run-only prompt must fail before dispatch");
+
+    assert!(
+        error
+            .downcast_ref::<crate::cli::InvalidSubcommandOptions>()
+            .is_some()
+    );
+    assert!(error.to_string().contains("sessions"));
+}
+
+#[test]
 fn test_cli_parsing_model_flag() {
     let args = CodingAssistant::parse_from(["cake", "--model", "claude", "test prompt"]);
     assert_eq!(args.model, Some("claude".to_string()));

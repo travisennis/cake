@@ -901,6 +901,43 @@ impl CodingAssistant {
         }))
     }
 
+    /// Reject options that belong only to the root agent run when a
+    /// subcommand is selected. Model, profile, and output format are omitted
+    /// because command runners receive those through `CommandRunOptions`.
+    fn validate_subcommand_options(&self) -> anyhow::Result<()> {
+        let Some(command) = self.command.as_ref() else {
+            return Ok(());
+        };
+
+        let invalid = [
+            (self.prompt.is_some(), "prompt"),
+            (self.max_tokens.is_some(), "--max-tokens"),
+            (self.output_schema.is_some(), "--output-schema"),
+            (self.continue_session, "--continue"),
+            (self.resume.is_some(), "--resume"),
+            (self.fork.is_some(), "--fork"),
+            (self.no_session, "--no-session"),
+            (self.worktree.is_some(), "--worktree"),
+            (self.reasoning_effort.is_some(), "--reasoning-effort"),
+            (self.reasoning_budget.is_some(), "--reasoning-budget"),
+            (!self.add_dir.is_empty(), "--add-dir"),
+            (!self.toolbox.is_empty(), "--toolbox"),
+            (self.sandbox.is_some(), "--sandbox"),
+            (self.no_skills, "--no-skills"),
+            (self.skills.is_some(), "--skills"),
+            (self.system_prompt.is_some(), "--system-prompt"),
+        ]
+        .into_iter()
+        .filter_map(|(present, option)| present.then_some(option))
+        .collect::<Vec<_>>();
+
+        if invalid.is_empty() {
+            return Ok(());
+        }
+
+        Err(crate::cli::InvalidSubcommandOptions::new(command.name(), &invalid).into())
+    }
+
     const fn output_sink(&self) -> CliOutputSink {
         CliOutputSink::new(self.output_format)
     }
@@ -1104,8 +1141,8 @@ impl CmdRunner for CodingAssistant {
         reason = "top-level run orchestration wires every session resource together"
     )]
     async fn run(&self, data_dir: &DataDir, options: &CommandRunOptions<'_>) -> anyhow::Result<()> {
-        if let Some(command) = &self.command {
-            return command.run(data_dir, options).await;
+        if self.command.is_some() {
+            return self.run_subcommand(data_dir, options).await;
         }
 
         let prepared = self.prepare_run()?;
@@ -1245,6 +1282,18 @@ impl CmdRunner for CodingAssistant {
 }
 
 impl CodingAssistant {
+    async fn run_subcommand(
+        &self,
+        data_dir: &DataDir,
+        options: &CommandRunOptions<'_>,
+    ) -> anyhow::Result<()> {
+        self.validate_subcommand_options()?;
+        let Some(command) = self.command.as_ref() else {
+            return Ok(());
+        };
+        command.run(data_dir, options).await
+    }
+
     /// Wait for an interruption signal.
     ///
     /// Resolves on Ctrl-C (SIGINT) and, on Unix, also on SIGTERM, so

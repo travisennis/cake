@@ -13,6 +13,8 @@ This document describes Cake's stable shell-facing and machine-facing contracts.
 
 Human diagnostics go to stderr. Machine-readable stdout must contain only its declared JSON format.
 
+Root agent-run inputs, including a prompt and run-only flags such as `--output-schema`, cannot be combined with a selected subcommand. Cake reports that invalid usage on stderr and exits `3` before dispatching the subcommand. Options explicitly shared with a command, such as `--output-format stream-json replay <uuid>`, remain valid.
+
 `cake init` creates `.cake/settings.toml` (and, with `--hooks`, an inert `.cake/hooks.json.example`) and prints created files to stdout. An existing target is reported on stderr and exits `3` without writing anything.
 
 For `stream-json`, validation failures before a task stream starts still use the codes above. Once streaming begins, ordinary agent, provider, and tool failures are represented by the final `task_complete` record and the process exits `0`. An unsatisfied output schema remains nonzero, and interruption exits `130`. A hit `max_turns` or `max_tool_calls` limit is an in-stream outcome: stream-json exits `0`, text and JSON modes exit `1`. If a stream consumer closes stdout early (for example, `head -1`), Cake treats the resulting broken pipe as normal consumer cancellation, emits no stderr diagnostic, and exits `0`.

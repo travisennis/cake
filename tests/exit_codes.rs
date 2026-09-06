@@ -53,6 +53,60 @@ fn test_version_exits_zero() {
 // --- Exit code 3: input error ---
 
 #[test]
+fn test_prompt_with_subcommand_exits_three() {
+    let env = cake_env();
+    let output = env
+        .command()
+        .args(["ignored prompt", "sessions", "list"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("Failed to execute command");
+
+    let code = output.status.code().unwrap_or(-1);
+    assert_eq!(
+        code, 3,
+        "Prompt with a subcommand should exit 3, got {code}"
+    );
+    assert!(output.stdout.is_empty(), "rejected input must not dispatch");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("invalid usage"), "Stderr: {stderr}");
+    assert!(stderr.contains("prompt"), "Stderr: {stderr}");
+    assert!(stderr.contains("sessions"), "Stderr: {stderr}");
+}
+
+#[test]
+fn test_run_only_option_with_subcommand_exits_three() {
+    let env = cake_env();
+    let output = env
+        .command()
+        .args([
+            "--output-format",
+            "stream-json",
+            "--output-schema",
+            "result.schema.json",
+            "replay",
+            "550e8400-e29b-41d4-a716-446655440000",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("Failed to execute command");
+
+    let code = output.status.code().unwrap_or(-1);
+    assert_eq!(
+        code, 3,
+        "Run-only option with a subcommand should exit 3, got {code}"
+    );
+    assert!(output.stdout.is_empty(), "rejected input must not dispatch");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--output-schema"), "Stderr: {stderr}");
+    assert!(stderr.contains("replay"), "Stderr: {stderr}");
+}
+
+#[test]
 fn test_no_prompt_exits_three() {
     let env = cake_env();
     let output = env

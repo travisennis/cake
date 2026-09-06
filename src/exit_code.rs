@@ -86,11 +86,9 @@ fn classify_typed_error(err: &anyhow::Error) -> Option<u8> {
         return Some(classify_judge_error(judge_err));
     }
 
-    // `cake init` refusal on an existing target is a configuration-state
-    // conflict: the caller must resolve the target before initialization can
-    // proceed, so it is an input error rather than an agent error. Write
-    // failures fall through to the default agent-error classification.
-    if let Some(crate::cli::InitError::Conflict(_)) = err.downcast_ref::<crate::cli::InitError>() {
+    // Configuration-state conflicts and root agent-run options combined with a
+    // subcommand are input errors rather than agent errors.
+    if is_cli_input_error(err) {
         return Some(code::INPUT_ERROR);
     }
 
@@ -102,6 +100,15 @@ fn classify_typed_error(err: &anyhow::Error) -> Option<u8> {
     }
 
     None
+}
+
+fn is_cli_input_error(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<crate::cli::InvalidSubcommandOptions>()
+        .is_some()
+        || matches!(
+            err.downcast_ref::<crate::cli::InitError>(),
+            Some(crate::cli::InitError::Conflict(_))
+        )
 }
 
 /// Classify a structured [`ApiError`]'s HTTP status.
