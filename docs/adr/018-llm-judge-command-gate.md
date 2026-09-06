@@ -61,7 +61,7 @@ Default-on requires the evaluation prerequisites first: #84 (a controlled model-
 - Bad, because the judge adds latency and token cost to the hottest tool, and a judge outage or backend change blocks commands instead of degrading gracefully.
 - Bad, because a user on a weak local model gets a safety layer worse than the regexes it replaced.
 - Bad, because prompt injection can manipulate the judge in a correlated way: the judge is weakest exactly where it is needed most, and the same-family default widens that correlation.
-- Bad, because the sandbox bounds filesystem paths only; in-project destruction, remote Git effects, and ambient `GIT_DIR` redirects in linked worktrees sit outside sandbox protection and remain residual risk.
+- Bad, because the sandbox bounds filesystem paths only; in-project destruction and remote Git effects remain residual risks outside the filesystem boundary. Bash separately removes ambient Git repository redirects before spawning the child, but explicit command environment changes remain outside that protection.
 
 ## More Information
 

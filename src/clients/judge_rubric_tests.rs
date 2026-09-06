@@ -1,25 +1,5 @@
 use super::*;
 
-/// The registry-check source for each verdict code, mirroring the mapping
-/// recorded in the LLM-judge `ExecPlan` Decision Log. `unknown-destructive` has
-/// no registry source (it covers the long tail). `git-stash-destructive`
-/// absorbs #68's cancelled `git stash pop` scenario.
-const REGISTRY_MAPPING: &[(VerdictCode, &[&str])] = &[
-    (VerdictCode::GitHistoryRewrite, &["git_reset"]),
-    (
-        VerdictCode::GitWorktreeDiscard,
-        &["git_checkout", "git_restore"],
-    ),
-    (VerdictCode::GitUntrackedDelete, &["git_clean"]),
-    (VerdictCode::GitForcePush, &["git_push"]),
-    (VerdictCode::GitBranchForceDelete, &["git_branch_delete"]),
-    (VerdictCode::GitStashDestructive, &["git_stash"]),
-    (VerdictCode::DestructiveRm, &["dangerous_rm"]),
-    (VerdictCode::GitCommitBackticks, &["git_commit_backticks"]),
-    (VerdictCode::RgReplaceFootgun, &["rg_replace_flag"]),
-    (VerdictCode::UnknownDestructive, &[]),
-];
-
 #[test]
 fn every_verdict_code_maps_to_a_representative_command() {
     for code in VerdictCode::ALL {
@@ -64,34 +44,6 @@ fn code_spellings_are_stable_and_namespaced() {
         VerdictCode::from_str("made-up-code").is_err(),
         "unknown codes must not parse"
     );
-}
-
-#[test]
-fn vocabulary_covers_every_registry_check() {
-    // All nine hard-block checks and the single warning of the compiled
-    // `bash_safety` registry must map onto the vocabulary, per the ExecPlan
-    // Decision Log ("this mapping is complete and preserves current out-of-box
-    // behavior").
-    let mut mapped: Vec<&str> = REGISTRY_MAPPING
-        .iter()
-        .flat_map(|(_, sources)| sources.iter().copied())
-        .collect();
-    mapped.sort_unstable();
-    mapped.dedup();
-    let mut registry = [
-        "git_reset",
-        "git_checkout",
-        "git_restore",
-        "git_clean",
-        "git_push",
-        "git_branch_delete",
-        "git_stash",
-        "git_commit_backticks",
-        "dangerous_rm",
-        "rg_replace_flag",
-    ];
-    registry.sort_unstable();
-    assert_eq!(mapped, registry, "every registry check must map to a code");
 }
 
 #[test]

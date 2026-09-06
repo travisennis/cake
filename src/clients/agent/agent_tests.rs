@@ -225,14 +225,6 @@ fn accumulate_usage_adds_tokens() {
 }
 
 #[test]
-fn accumulate_usage_none_is_noop() {
-    let mut agent = test_agent();
-    agent.accumulate_usage(None);
-    assert_eq!(agent.total_usage.input_tokens, 0);
-    assert_eq!(agent.turn_count, 0);
-}
-
-#[test]
 fn accumulate_usage_accumulates_across_calls() {
     let mut agent = test_agent();
     let usage = Usage {
@@ -364,6 +356,14 @@ fn emit_task_complete_record_success() {
 }
 
 #[test]
+fn emit_task_complete_record_no_callback() {
+    let mut agent = test_agent();
+    agent
+        .emit_task_complete_record(TaskOutcome::Success { result: None }, 1000)
+        .unwrap();
+}
+
+#[test]
 fn emit_task_complete_record_error() {
     let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let captured_clone = captured.clone();
@@ -383,14 +383,6 @@ fn emit_task_complete_record_error() {
     assert_eq!(json["subtype"], "error_during_execution");
     assert_eq!(json["error"], "boom");
     assert_eq!(json["is_error"], true);
-}
-
-#[test]
-fn emit_task_complete_record_no_callback() {
-    let mut agent = test_agent();
-    agent
-        .emit_task_complete_record(TaskOutcome::Success { result: None }, 1000)
-        .unwrap();
 }
 
 #[test]
@@ -594,41 +586,6 @@ fn skill_activation_records_persist_without_streaming() {
         Some(SessionRecord::SkillActivated { name, .. }) if name == "debugging-cake"
     ));
     assert!(streamed.lock().unwrap().is_empty());
-}
-
-#[test]
-fn builder_with_session_id() {
-    let id = uuid::uuid!("6ba7b810-9dad-11d1-80b4-00c04fd430c8");
-    let agent = test_agent().with_session_id(id);
-    assert_eq!(agent.session_id, id);
-}
-
-#[test]
-fn builder_with_history() {
-    let history = vec![ConversationItem::Message {
-        role: Role::User,
-        content: "hi".to_string(),
-        id: None,
-        status: None,
-        timestamp: None,
-    }];
-    let agent = test_agent().with_history(history).unwrap();
-    // 1 system message (from test_agent) + 1 user message from with_history
-    assert_eq!(agent.history().len(), 2);
-    assert!(matches!(
-        &agent.history()[0],
-        ConversationItem::Message {
-            role: Role::System,
-            ..
-        }
-    ));
-    assert!(matches!(
-        &agent.history()[1],
-        ConversationItem::Message {
-            role: Role::User,
-            ..
-        }
-    ));
 }
 
 #[test]

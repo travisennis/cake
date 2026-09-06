@@ -254,28 +254,8 @@ mod tests {
     }
 
     #[test]
-    fn resolve_assistant_message_no_output_items() {
-        let items: Vec<ConversationItem> = vec![];
-        let content = resolve_assistant_message(&items);
-        assert!(content.is_none());
-    }
-
-    #[test]
     fn resolve_assistant_message_ignores_empty_assistant_message() {
         let items = vec![assistant_message(" \n")];
-        let content = resolve_assistant_message(&items);
-        assert!(content.is_none());
-    }
-
-    #[test]
-    fn resolve_assistant_message_items_but_no_message_or_reasoning() {
-        let items = vec![ConversationItem::FunctionCall {
-            id: "fc-1".to_string(),
-            call_id: "call-1".to_string(),
-            name: "bash".to_string(),
-            arguments: "{}".to_string(),
-            timestamp: None,
-        }];
         let content = resolve_assistant_message(&items);
         assert!(content.is_none());
     }

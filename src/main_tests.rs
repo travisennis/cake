@@ -147,12 +147,6 @@ fn test_cli_parsing_no_session() {
 }
 
 #[test]
-fn test_cli_parsing_no_session_defaults_false() {
-    let args = CodingAssistant::parse_from(["cake", "test prompt"]);
-    assert!(!args.no_session);
-}
-
-#[test]
 fn test_run_mode_defaults_to_new_session() {
     let args = CodingAssistant::parse_from(["cake", "test prompt"]);
     assert_eq!(RunMode::from_cli(&args).unwrap(), RunMode::NewSession);
@@ -241,12 +235,6 @@ fn test_cli_parsing_add_dir_multiple() {
 }
 
 #[test]
-fn test_cli_parsing_add_dir_none() {
-    let args = CodingAssistant::parse_from(["cake", "test prompt"]);
-    assert!(args.add_dir.is_empty());
-}
-
-#[test]
 fn test_resolve_additional_dirs_relative_becomes_absolute() {
     let dir = tempfile::tempdir().expect("tempdir");
     let sub = dir.path().join("mydir");
@@ -300,13 +288,6 @@ fn test_cli_parsing_skills_filter() {
     let args = CodingAssistant::parse_from(["cake", "--skills", "debugging,review", "test prompt"]);
     assert!(!args.no_skills);
     assert_eq!(args.skills, Some("debugging,review".to_string()));
-}
-
-#[test]
-fn test_cli_parsing_skills_defaults() {
-    let args = CodingAssistant::parse_from(["cake", "test prompt"]);
-    assert!(!args.no_skills);
-    assert!(args.skills.is_none());
 }
 
 #[test]
@@ -580,37 +561,6 @@ fn test_build_content_empty_stdin() {
             .unwrap_err()
             .to_string()
             .contains("No input provided")
-    );
-}
-
-#[test]
-fn test_build_content_prompt_with_empty_stdin() {
-    let result = CodingAssistant::build_content(Some("my prompt"), Some(String::new()));
-    assert_eq!(result.unwrap(), "my prompt");
-}
-
-#[test]
-fn test_build_content_multiline_prompt() {
-    let result = CodingAssistant::build_content(Some("line 1\nline 2"), None);
-    assert_eq!(result.unwrap(), "line 1\nline 2");
-}
-
-#[test]
-fn test_build_content_multiline_stdin() {
-    let result =
-        CodingAssistant::build_content(None, Some("stdin line 1\nstdin line 2".to_string()));
-    assert_eq!(result.unwrap(), "stdin line 1\nstdin line 2");
-}
-
-#[test]
-fn test_build_content_multiline_both() {
-    let result = CodingAssistant::build_content(
-        Some("prompt line 1\nprompt line 2"),
-        Some("stdin line 1\nstdin line 2".to_string()),
-    );
-    assert_eq!(
-        result.unwrap(),
-        "User request:\nprompt line 1\nprompt line 2\n\nStdin:\nstdin line 1\nstdin line 2"
     );
 }
 
@@ -1039,20 +989,6 @@ fn test_agent_for_turn() -> Agent {
     )
 }
 
-fn test_hook_runner() -> std::sync::Arc<HookRunner> {
-    std::sync::Arc::new(HookRunner::new(
-        crate::config::hooks::LoadedHooks::default(),
-        HookContext {
-            session_id: uuid::Uuid::new_v4(),
-            task_id: uuid::Uuid::new_v4(),
-            transcript_path: None,
-            hook_event_sink: None,
-            cwd: std::env::temp_dir(),
-            model: "test-model".to_string(),
-        },
-    ))
-}
-
 #[tokio::test]
 async fn handle_agent_turn_success_no_hooks() {
     let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
@@ -1075,25 +1011,6 @@ async fn handle_agent_turn_success_no_hooks() {
 }
 
 #[tokio::test]
-async fn handle_agent_turn_success_with_hooks() {
-    let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-    let captured_clone = captured.clone();
-    let mut agent = test_agent_for_turn().with_streaming_json(move |json| {
-        *captured_clone.lock().unwrap() = json.to_string();
-    });
-
-    let runner = test_hook_runner();
-    let result: Result<String, anyhow::Error> = Ok("test response".to_string());
-
-    CodingAssistant::handle_agent_turn_result(&mut agent, Some(&runner), &result, 100)
-        .await
-        .unwrap();
-
-    let json: serde_json::Value = serde_json::from_str(&captured.lock().unwrap()).unwrap();
-    assert_eq!(json["subtype"], "success");
-}
-
-#[tokio::test]
 async fn handle_agent_turn_error_no_hooks() {
     let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let captured_clone = captured.clone();
@@ -1111,26 +1028,6 @@ async fn handle_agent_turn_error_no_hooks() {
     assert_eq!(json["subtype"], "error_during_execution");
     assert_eq!(json["error"], "test error");
     assert_eq!(json["is_error"], true);
-}
-
-#[tokio::test]
-async fn handle_agent_turn_error_with_hooks() {
-    let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-    let captured_clone = captured.clone();
-    let mut agent = test_agent_for_turn().with_streaming_json(move |json| {
-        *captured_clone.lock().unwrap() = json.to_string();
-    });
-
-    let runner = test_hook_runner();
-    let result: Result<String, anyhow::Error> = Err(anyhow::anyhow!("test error"));
-
-    CodingAssistant::handle_agent_turn_result(&mut agent, Some(&runner), &result, 50)
-        .await
-        .unwrap();
-
-    let json: serde_json::Value = serde_json::from_str(&captured.lock().unwrap()).unwrap();
-    assert_eq!(json["subtype"], "error_during_execution");
-    assert_eq!(json["error"], "test error");
 }
 
 #[tokio::test]

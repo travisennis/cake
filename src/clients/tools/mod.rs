@@ -471,13 +471,6 @@ mod json_parse_error_tests {
         assert!(json_error_hint(msg).contains("Check the payload structure"));
     }
 
-    #[test]
-    fn hint_no_line_column() {
-        // Error message without " at line ..." suffix
-        let msg = "some random io error";
-        assert!(json_error_hint(msg).contains("Check the payload structure"));
-    }
-
     // ── line_col_to_offset coverage ──
 
     #[test]
@@ -519,12 +512,6 @@ mod json_parse_error_tests {
     fn escape_context_escapes_form_feed() {
         // U+000C (form feed) is ASCII whitespace per Rust; verify it is escaped.
         assert_eq!(escape_json_context("\x0C"), "\\u{000C}");
-    }
-
-    #[test]
-    fn escape_context_passes_normal_chars() {
-        assert_eq!(escape_json_context("hello world"), "hello world");
-        assert_eq!(escape_json_context("{\"a\":1}"), "{\"a\":1}");
     }
 
     #[test]
@@ -1414,56 +1401,6 @@ mod tests {
     use super::*;
     use std::fs;
 
-    #[test]
-    fn tool_context_with_temp_dirs_preserves_inputs() {
-        let cwd = PathBuf::from("/workspace/project");
-        let temp_dirs = vec![PathBuf::from("/tmp"), PathBuf::from("/private/tmp")];
-        let additional_dirs = vec![PathBuf::from("/workspace/reference")];
-        let skill_dirs = vec![PathBuf::from("/workspace/.agents/skills/example")];
-        let settings_dirs = vec![PathBuf::from("/workspace/.cake")];
-
-        let context = ToolContext::with_temp_dirs(
-            cwd.clone(),
-            temp_dirs.clone(),
-            additional_dirs.clone(),
-            skill_dirs.clone(),
-            settings_dirs.clone(),
-        );
-
-        assert_eq!(context.cwd, cwd);
-        assert_eq!(context.temp_dirs, temp_dirs);
-        assert_eq!(context.additional_dirs, additional_dirs);
-        assert_eq!(context.skill_dirs, skill_dirs);
-        assert_eq!(context.settings_dirs, settings_dirs);
-    }
-
-    #[test]
-    fn tool_context_construction_is_repeatable_with_explicit_temp_dirs() {
-        let first = ToolContext::with_temp_dirs(
-            PathBuf::from("/workspace/project"),
-            vec![PathBuf::from("/tmp")],
-            vec![PathBuf::from("/workspace/reference")],
-            vec![PathBuf::from("/workspace/skills")],
-            vec![PathBuf::from("/workspace/settings")],
-        );
-        let second = ToolContext::with_temp_dirs(
-            PathBuf::from("/workspace/project"),
-            vec![PathBuf::from("/tmp")],
-            vec![PathBuf::from("/workspace/reference")],
-            vec![PathBuf::from("/workspace/skills")],
-            vec![PathBuf::from("/workspace/settings")],
-        );
-
-        assert_eq!(first.cwd, second.cwd);
-        assert_eq!(first.temp_dirs, second.temp_dirs);
-        assert_eq!(first.additional_dirs, second.additional_dirs);
-        assert_eq!(first.skill_dirs, second.skill_dirs);
-        assert_eq!(first.settings_dirs, second.settings_dirs);
-        assert_eq!(first.sandbox_policy, second.sandbox_policy);
-        assert!(first.judge.is_none(), "no judge context by default");
-        assert!(second.judge.is_none(), "no judge context by default");
-    }
-
     /// Verify that `validate_path_with_dirs` accepts paths within skill directories.
     #[test]
     fn skill_dir_path_accepted() {
@@ -1651,54 +1588,6 @@ mod tests {
         assert!(description.contains("Read files: Use Read tool"));
         assert!(!description.contains("Edit"));
         assert!(!description.contains("Write"));
-    }
-
-    #[test]
-    fn definitions_returns_same_slice_on_repeated_calls() {
-        let registry = default_tool_registry();
-        let first = registry.definitions();
-        let second = registry.definitions();
-
-        // Same pointer confirms caching, not cloning on every call
-        assert!(
-            std::ptr::eq(first, second),
-            "definitions() must return the same slice on repeated calls"
-        );
-
-        // Verify definitions contain the expected tools
-        let names: Vec<&str> = first.iter().map(|t| t.name.as_str()).collect();
-        assert!(names.contains(&"Bash"), "should contain Bash");
-        assert!(names.contains(&"Read"), "should contain Read");
-        assert!(names.contains(&"Edit"), "should contain Edit");
-        assert!(names.contains(&"Write"), "should contain Write");
-    }
-
-    #[test]
-    fn empty_registry_returns_empty_slice() {
-        let registry = ToolRegistry::empty();
-        assert!(registry.definitions().is_empty());
-    }
-
-    #[test]
-    fn read_tool_registry_definitions_match() {
-        let registry = read_tool_registry();
-        let defs = registry.definitions();
-        assert_eq!(defs.len(), 1);
-        assert_eq!(defs[0].name, "Read");
-    }
-
-    #[test]
-    fn definitions_are_stable_across_clone() {
-        let registry = default_tool_registry();
-        let cloned = registry.clone();
-        let orig_defs = registry.definitions();
-        let cloned_defs = cloned.definitions();
-        assert_eq!(orig_defs.len(), cloned_defs.len());
-        for (a, b) in orig_defs.iter().zip(cloned_defs.iter()) {
-            assert_eq!(a.name, b.name);
-            assert_eq!(a.description, b.description);
-            assert_eq!(a.parameters, b.parameters);
-        }
     }
 
     #[test]

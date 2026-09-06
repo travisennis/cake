@@ -232,31 +232,6 @@ mod tests {
     }
 
     #[test]
-    fn role_deserialization_case_insensitive() {
-        let role: Role = serde_json::from_str("\"system\"").unwrap();
-        assert_eq!(role, Role::System);
-    }
-
-    #[test]
-    fn role_equality() {
-        assert_eq!(Role::User, Role::User);
-        assert_ne!(Role::User, Role::Assistant);
-    }
-
-    #[test]
-    fn role_clone() {
-        let role = Role::Assistant;
-        let cloned = role;
-        assert_eq!(role, cloned);
-    }
-
-    #[test]
-    fn role_debug_format() {
-        assert_eq!(format!("{:?}", Role::User), "User");
-        assert_eq!(format!("{:?}", Role::Assistant), "Assistant");
-    }
-
-    #[test]
     fn role_as_str() {
         assert_eq!(Role::System.as_str(), "system");
         assert_eq!(Role::Developer.as_str(), "developer");

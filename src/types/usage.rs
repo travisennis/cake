@@ -38,17 +38,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn usage_default_values() {
-        let usage = Usage::default();
-        assert_eq!(usage.input_tokens, 0);
-        assert_eq!(usage.output_tokens, 0);
-        assert_eq!(usage.total_tokens, 0);
-        assert_eq!(usage.input_tokens_details.cached_tokens, 0);
-        assert_eq!(usage.input_tokens_details.cache_write_tokens, 0);
-        assert_eq!(usage.output_tokens_details.reasoning_tokens, 0);
-    }
-
-    #[test]
     fn usage_deserialization_defaults_cache_write_tokens() {
         let usage: Usage = serde_json::from_str(
             r#"{

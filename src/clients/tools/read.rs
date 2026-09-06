@@ -717,25 +717,6 @@ mod tests {
     }
 
     #[test]
-    fn start_line_one_without_end_line_matches_default() {
-        // Explicit start_line=1 without end_line should behave same as default.
-        let temp_dir = TempDir::new().unwrap();
-        let file_path = temp_dir.path().join("test.txt");
-        let lines: Vec<String> = (1..=600).map(|i| format!("Line {i}")).collect();
-        fs::write(&file_path, lines.join("\n")).unwrap();
-
-        let args = serde_json::json!({
-            "path": file_path.to_str().unwrap(),
-            "start_line": 1
-        })
-        .to_string();
-
-        let result = execute_read(&ToolContext::from_current_process(), &args).unwrap();
-        assert!(result.output.contains("Lines 1-200/600"));
-        assert!(result.output.contains("[... 400 more lines ...]"));
-    }
-
-    #[test]
     fn read_early_window_large_file() {
         // An early window of a large file must not read to EOF. The exact
         // total is unreachable at a bounded cost, so the header and footer

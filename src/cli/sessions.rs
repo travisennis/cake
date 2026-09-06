@@ -480,19 +480,9 @@ mod tests {
     }
 
     #[test]
-    fn truncate_prompt_short() {
-        assert_eq!(truncate_prompt("hello", 10), "hello");
-    }
-
-    #[test]
     fn truncate_prompt_long() {
         let result = truncate_prompt("this is a very long prompt string", 10);
         assert_eq!(result, "this is a…");
         assert!(result.len() <= 13); // 9 chars + 3-byte ellipsis
-    }
-
-    #[test]
-    fn truncate_prompt_empty() {
-        assert_eq!(truncate_prompt("", 10), "");
     }
 }

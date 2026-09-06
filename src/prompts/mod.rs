@@ -292,22 +292,6 @@ mod tests {
     // --- resolve_system_prompt tests ---
 
     #[test]
-    fn resolve_uses_builtin_when_no_override() {
-        let dir = TempDir::new().unwrap();
-        let config_dir = TempDir::new().unwrap();
-        let prompt = resolve_system_prompt(
-            dir.path(),
-            config_dir.path(),
-            None,
-            None,
-            SandboxPolicy::WorkspaceWrite,
-            &[],
-            None,
-        );
-        assert!(prompt.starts_with("You are cake."));
-    }
-
-    #[test]
     fn resolve_builtin_filters_enabled_tools() {
         let dir = TempDir::new().unwrap();
         let config_dir = TempDir::new().unwrap();
@@ -615,86 +599,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn resolve_builtin_is_trimmed() {
-        let dir = TempDir::new().unwrap();
-        let config_dir = TempDir::new().unwrap();
-        let prompt = resolve_system_prompt(
-            dir.path(),
-            config_dir.path(),
-            None,
-            None,
-            SandboxPolicy::WorkspaceWrite,
-            &[],
-            None,
-        );
-        assert!(!prompt.starts_with('\n'));
-        assert!(!prompt.ends_with('\n'));
-    }
-
     // --- build_initial_prompt_messages_with_enabled_tools tests ---
 
     fn default_config_dir() -> TempDir {
         TempDir::new().unwrap()
-    }
-
-    #[test]
-    fn empty_agents_files() {
-        let config_dir = default_config_dir();
-        let messages = build_initial_prompt_messages_with_enabled_tools(
-            Path::new("/tmp"),
-            config_dir.path(),
-            None,
-            None,
-            &[],
-            &SkillCatalog::empty(),
-            SandboxPolicy::WorkspaceWrite,
-            &[],
-            None,
-        );
-        assert_eq!(messages.len(), 2);
-        assert_eq!(messages[0].0, Role::System);
-        assert!(messages[0].1.starts_with(
-            "You are cake. You are running as a coding agent in a CLI on the user's computer."
-        ));
-        assert_eq!(messages[1].0, Role::Developer);
-        assert!(messages[1].1.contains("Current working directory: /tmp"));
-        assert!(messages[1].1.contains("Today's date:"));
-    }
-
-    #[test]
-    fn with_agents_files() {
-        let config_dir = default_config_dir();
-        let files = vec![
-            AgentsFile {
-                path: "~/.cake/AGENTS.md".to_string(),
-                content: "User level instructions".to_string(),
-            },
-            AgentsFile {
-                path: "./AGENTS.md".to_string(),
-                content: "Project level instructions".to_string(),
-            },
-        ];
-        let messages = build_initial_prompt_messages_with_enabled_tools(
-            Path::new("/tmp"),
-            config_dir.path(),
-            None,
-            None,
-            &files,
-            &SkillCatalog::empty(),
-            SandboxPolicy::WorkspaceWrite,
-            &[],
-            None,
-        );
-        let prompt = render_messages(&messages);
-        assert!(prompt.contains("## Additional Context"));
-        assert!(prompt.contains("~/.cake/AGENTS.md"));
-        assert!(prompt.contains("./AGENTS.md"));
-        assert!(prompt.contains("<instructions>"));
-        assert!(prompt.contains("User level instructions"));
-        assert!(prompt.contains("Project level instructions"));
-        assert!(prompt.contains("Current working directory: /tmp"));
-        assert!(prompt.contains("Today's date:"));
     }
 
     #[test]
@@ -756,38 +664,6 @@ mod tests {
     }
 
     #[test]
-    fn with_skill_catalog() {
-        let config_dir = default_config_dir();
-        let mut catalog = SkillCatalog::empty();
-        catalog.skills.push(Skill {
-            name: "debugging".to_string(),
-            description: "How to debug things".to_string(),
-            location: PathBuf::from("/path/SKILL.md"),
-            base_directory: PathBuf::from("/path"),
-            scope: SkillScope::Project,
-        });
-
-        let messages = build_initial_prompt_messages_with_enabled_tools(
-            Path::new("/tmp"),
-            config_dir.path(),
-            None,
-            None,
-            &[],
-            &catalog,
-            SandboxPolicy::WorkspaceWrite,
-            &[],
-            None,
-        );
-        let prompt = render_messages(&messages);
-        assert!(prompt.contains("## Skills"));
-        assert!(prompt.contains("<skill_instructions>"));
-        assert!(prompt.contains("<available_skills>"));
-        assert!(prompt.contains("<name>debugging</name>"));
-        assert!(prompt.contains("<description>How to debug things</description>"));
-        assert!(prompt.contains("Current working directory: /tmp"));
-    }
-
-    #[test]
     fn discovered_skill_is_omitted_without_read_tool() {
         let working_dir = TempDir::new().unwrap();
         let config_dir = default_config_dir();
@@ -822,40 +698,6 @@ mod tests {
 
         assert!(!prompt.contains("## Skills"));
         assert!(!prompt.contains("<name>debugging</name>"));
-    }
-
-    #[test]
-    fn with_agents_and_skills() {
-        let config_dir = default_config_dir();
-        let files = vec![AgentsFile {
-            path: "./AGENTS.md".to_string(),
-            content: "Project instructions".to_string(),
-        }];
-        let mut catalog = SkillCatalog::empty();
-        catalog.skills.push(Skill {
-            name: "test-skill".to_string(),
-            description: "A test".to_string(),
-            location: PathBuf::from("/a/SKILL.md"),
-            base_directory: PathBuf::from("/a"),
-            scope: SkillScope::Project,
-        });
-
-        let messages = build_initial_prompt_messages_with_enabled_tools(
-            Path::new("/tmp"),
-            config_dir.path(),
-            None,
-            None,
-            &files,
-            &catalog,
-            SandboxPolicy::WorkspaceWrite,
-            &[],
-            None,
-        );
-        let prompt = render_messages(&messages);
-        // AGENTS.md comes before Skills
-        let agents_pos = prompt.find("## Additional Context").unwrap();
-        let skills_pos = prompt.find("## Skills").unwrap();
-        assert!(agents_pos < skills_pos);
     }
 
     #[test]

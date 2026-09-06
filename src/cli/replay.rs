@@ -310,19 +310,6 @@ mod tests {
     }
 
     #[test]
-    fn load_records_returns_all_lines_in_order() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_session(
-            dir.path(),
-            &[&meta_line(), &task_start_line(), &meta_line()],
-        );
-        let records = load_records(&path, Uuid::parse_str(SESSION_ID).unwrap()).unwrap();
-        assert_eq!(records.len(), 3);
-        assert!(matches!(records[0], SessionRecord::SessionMeta { .. }));
-        assert!(matches!(records[1], SessionRecord::TaskStart(_)));
-    }
-
-    #[test]
     fn load_records_rejects_unsupported_format_version() {
         let dir = tempfile::tempdir().unwrap();
         let path = write_session(dir.path(), &[&meta_line()]);

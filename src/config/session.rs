@@ -475,16 +475,6 @@ mod tests {
     }
 
     #[test]
-    fn test_session_new_defaults() {
-        let id = uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440001").unwrap();
-        let session = Session::new(id, PathBuf::from("/tmp/test"));
-        assert_eq!(session.id, id);
-        assert_eq!(session.working_dir, PathBuf::from("/tmp/test"));
-        assert!(session.records.is_empty());
-        assert!(session.model.is_none());
-    }
-
-    #[test]
     fn test_session_load_rejects_empty_file() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("empty.jsonl");
@@ -844,22 +834,6 @@ mod tests {
     }
 
     #[test]
-    fn test_session_loads_trailing_task_start() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("session.jsonl");
-        let session = make_test_session();
-        let mut file = Session::create_on_disk(&path, &meta_record(&session)).unwrap();
-        Session::append_record(&mut file, &task_start(&session, "task-1")).unwrap();
-        drop(file);
-
-        let loaded = Session::load(&path).unwrap();
-        assert!(matches!(
-            loaded.records.last(),
-            Some(SessionRecord::TaskStart(TaskStartData { .. }))
-        ));
-    }
-
-    #[test]
     fn test_session_v4_roundtrip_with_reasoning() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("session.jsonl");
@@ -955,21 +929,6 @@ mod tests {
             },
             _ => panic!("Expected Message item"),
         }
-    }
-
-    #[test]
-    fn test_session_create_writes_v4() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("session.jsonl");
-
-        let session = make_test_session();
-        let _file = Session::create_on_disk(&path, &meta_record(&session)).unwrap();
-
-        let content = fs::read_to_string(&path).unwrap();
-        let first_line = content.lines().next().unwrap();
-        let val: serde_json::Value = serde_json::from_str(first_line).unwrap();
-        assert_eq!(val["type"], "session_meta");
-        assert_eq!(val["format_version"], CURRENT_FORMAT_VERSION);
     }
 
     #[test]

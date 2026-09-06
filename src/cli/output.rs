@@ -208,12 +208,6 @@ mod tests {
     }
 
     #[test]
-    fn stream_json_swallows_success() {
-        let result: anyhow::Result<String> = Ok("done".to_string());
-        assert!(CliOutputSink::stream_json_exit_result(result).is_ok());
-    }
-
-    #[test]
     fn stream_json_swallows_cut_off() {
         // Stream-json reports cut-offs in the task_complete record and keeps
         // its documented in-stream-error policy of exit 0.

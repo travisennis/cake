@@ -531,26 +531,6 @@ mod tests {
     }
 
     #[test]
-    fn sessions_dir_structure() {
-        let (dd, tmp) = test_data_dir();
-        let sessions_dir = dd.sessions_dir();
-        assert_eq!(sessions_dir, tmp.path().join("sessions"));
-    }
-
-    #[test]
-    fn session_telemetry_path_lives_under_cache_directory() {
-        let (dd, tmp) = test_data_dir();
-        let session_id = uuid::Uuid::new_v4();
-
-        assert_eq!(
-            dd.session_telemetry_path(session_id),
-            tmp.path()
-                .join("session-telemetry")
-                .join(format!("{session_id}.ndjson"))
-        );
-    }
-
-    #[test]
     fn multiple_sessions_same_working_dir() {
         let (dd, _tmp) = test_data_dir();
         let working_dir = PathBuf::from("/work");

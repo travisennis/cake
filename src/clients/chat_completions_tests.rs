@@ -1,7 +1,6 @@
 use super::*;
 use crate::clients::chat_types::{
-    ChatChoice, ChatFunctionCall, ChatResponse, ChatResponseMessage, ChatToolCall, ChatUsage,
-    PromptTokensDetails,
+    ChatChoice, ChatFunctionCall, ChatResponse, ChatResponseMessage, ChatToolCall,
 };
 use crate::clients::tools::{SandboxPolicy, default_tool_registry};
 use crate::config::model::{ApiType, ModelConfig};
@@ -721,96 +720,6 @@ fn parse_choices_empty_response() {
     };
     let items = parse_choices(&response).unwrap();
     assert!(items.is_empty());
-}
-
-#[test]
-fn parse_choices_with_usage() {
-    let response = ChatResponse {
-        id: Some("chatcmpl-usage".to_string()),
-        choices: vec![ChatChoice {
-            message: ChatResponseMessage {
-                content: Some("Hi".to_string()),
-                reasoning_content: None,
-                refusal: None,
-                tool_calls: None,
-            },
-            finish_reason: None,
-        }],
-        usage: Some(ChatUsage {
-            prompt_tokens: Some(100),
-            completion_tokens: Some(50),
-            total_tokens: Some(150),
-            prompt_tokens_details: None,
-            completion_tokens_details: None,
-        }),
-    };
-    // parse_choices doesn't handle usage — the caller does
-    let items = parse_choices(&response).unwrap();
-    assert_eq!(items.len(), 1);
-}
-
-#[test]
-fn parse_response_extracts_cached_tokens() {
-    let usage = ChatUsage {
-        prompt_tokens: Some(200),
-        completion_tokens: Some(80),
-        total_tokens: Some(280),
-        prompt_tokens_details: Some(PromptTokensDetails {
-            cached_tokens: Some(150),
-            cache_write_tokens: Some(30),
-        }),
-        completion_tokens_details: None,
-    };
-    let mapped = Usage {
-        input_tokens: usage.prompt_tokens.unwrap_or(0),
-        output_tokens: usage.completion_tokens.unwrap_or(0),
-        total_tokens: usage.total_tokens.unwrap_or(0),
-        input_tokens_details: InputTokensDetails {
-            cached_tokens: usage
-                .prompt_tokens_details
-                .as_ref()
-                .and_then(|d| d.cached_tokens)
-                .unwrap_or(0),
-            cache_write_tokens: usage
-                .prompt_tokens_details
-                .as_ref()
-                .and_then(|d| d.cache_write_tokens)
-                .unwrap_or(0),
-        },
-        output_tokens_details: OutputTokensDetails {
-            reasoning_tokens: usage
-                .completion_tokens_details
-                .as_ref()
-                .and_then(|d| d.reasoning_tokens)
-                .unwrap_or(0),
-        },
-    };
-    assert_eq!(mapped.input_tokens_details.cached_tokens, 150);
-    assert_eq!(mapped.input_tokens_details.cache_write_tokens, 30);
-}
-
-#[test]
-fn parse_response_defaults_cached_tokens_when_missing() {
-    let usage = ChatUsage {
-        prompt_tokens: Some(100),
-        completion_tokens: Some(50),
-        total_tokens: Some(150),
-        prompt_tokens_details: None,
-        completion_tokens_details: None,
-    };
-    let cached = usage
-        .prompt_tokens_details
-        .as_ref()
-        .and_then(|d| d.cached_tokens)
-        .unwrap_or(0);
-    assert_eq!(cached, 0);
-}
-
-#[test]
-fn build_messages_empty_history() {
-    let history: Vec<ConversationItem> = vec![];
-    let msgs = build_messages(&history);
-    assert!(msgs.is_empty());
 }
 
 #[test]

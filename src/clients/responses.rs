@@ -256,6 +256,34 @@ fn parse_json_response(body: &[u8]) -> anyhow::Result<TurnResult> {
     })
 }
 
+/// Terminal event observed while decoding a streaming Responses API body.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum StreamTerminal {
+    #[default]
+    None,
+    Completed,
+    Incomplete,
+    Failed,
+}
+
+impl StreamTerminal {
+    const fn event_name(self) -> &'static str {
+        match self {
+            Self::None => "no terminal event",
+            Self::Completed => "response.completed",
+            Self::Incomplete => "response.incomplete",
+            Self::Failed => "response.failed",
+        }
+    }
+
+    const fn status_fallback(self) -> Option<&'static str> {
+        match self {
+            Self::Incomplete => Some("incomplete"),
+            Self::None | Self::Completed | Self::Failed => None,
+        }
+    }
+}
+
 /// Mutable state accumulated while decoding a streaming Responses API body.
 #[derive(Default)]
 struct StreamAccumulator {
@@ -265,7 +293,7 @@ struct StreamAccumulator {
     usage: Option<ApiUsage>,
     output: Vec<OutputMessage>,
     output_text: String,
-    completed: bool,
+    terminal: StreamTerminal,
 }
 
 fn parse_streaming_response(body: &str) -> anyhow::Result<TurnResult> {
@@ -278,7 +306,7 @@ fn parse_streaming_response(body: &str) -> anyhow::Result<TurnResult> {
         apply_stream_data(&mut accumulator, &data)?;
     }
 
-    ensure_stream_completed(&accumulator)?;
+    ensure_stream_terminal(&accumulator)?;
     finalize_stream(accumulator)
 }
 
@@ -310,15 +338,9 @@ fn apply_stream_event(
             apply_output_item_done(accumulator, event);
             Ok(())
         },
-        Some("response.completed") => {
-            apply_response_completed(accumulator, event);
-            Ok(())
-        },
-        Some("response.incomplete") => {
-            apply_response_incomplete(accumulator, event);
-            Ok(())
-        },
-        Some("response.failed") => apply_response_failed(event),
+        Some("response.completed") => apply_response_completed(accumulator, event),
+        Some("response.incomplete") => apply_response_incomplete(accumulator, event),
+        Some("response.failed") => apply_response_failed_event(accumulator, event),
         _ => Ok(()),
     }
 }
@@ -337,10 +359,26 @@ fn apply_output_item_done(accumulator: &mut StreamAccumulator, event: &serde_jso
     }
 }
 
-fn apply_response_completed(accumulator: &mut StreamAccumulator, event: &serde_json::Value) {
-    let response = event.get("response").cloned().unwrap_or_default();
-    apply_response_metadata(accumulator, &response);
-    accumulator.completed = true;
+fn apply_response_completed(
+    accumulator: &mut StreamAccumulator,
+    event: &serde_json::Value,
+) -> anyhow::Result<()> {
+    apply_response_terminal(accumulator, StreamTerminal::Completed, event)
+}
+
+fn record_terminal(
+    accumulator: &mut StreamAccumulator,
+    terminal: StreamTerminal,
+) -> anyhow::Result<()> {
+    if accumulator.terminal != StreamTerminal::None {
+        return Err(anyhow::anyhow!(
+            "Responses API stream emitted {} after {}",
+            terminal.event_name(),
+            accumulator.terminal.event_name()
+        ));
+    }
+    accumulator.terminal = terminal;
+    Ok(())
 }
 
 fn apply_response_metadata(accumulator: &mut StreamAccumulator, response: &serde_json::Value) {
@@ -367,14 +405,37 @@ fn apply_response_metadata(accumulator: &mut StreamAccumulator, response: &serde
     }
 }
 
-fn apply_response_incomplete(accumulator: &mut StreamAccumulator, event: &serde_json::Value) {
+fn apply_response_terminal(
+    accumulator: &mut StreamAccumulator,
+    terminal: StreamTerminal,
+    event: &serde_json::Value,
+) -> anyhow::Result<()> {
+    record_terminal(accumulator, terminal)?;
     let response = event.get("response").cloned().unwrap_or_default();
     apply_response_metadata(accumulator, &response);
-    accumulator.incomplete_reason = response
-        .get("incomplete_details")
-        .and_then(|details| details.get("reason"))
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_string);
+    if terminal == StreamTerminal::Incomplete {
+        accumulator.incomplete_reason = response
+            .get("incomplete_details")
+            .and_then(|details| details.get("reason"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+    }
+    Ok(())
+}
+
+fn apply_response_incomplete(
+    accumulator: &mut StreamAccumulator,
+    event: &serde_json::Value,
+) -> anyhow::Result<()> {
+    apply_response_terminal(accumulator, StreamTerminal::Incomplete, event)
+}
+
+fn apply_response_failed_event(
+    accumulator: &mut StreamAccumulator,
+    event: &serde_json::Value,
+) -> anyhow::Result<()> {
+    record_terminal(accumulator, StreamTerminal::Failed)?;
+    apply_response_failed(event)
 }
 
 fn apply_response_failed(event: &serde_json::Value) -> anyhow::Result<()> {
@@ -463,14 +524,16 @@ impl std::fmt::Display for ResponsesStreamFailed {
     }
 }
 
-fn ensure_stream_completed(accumulator: &StreamAccumulator) -> anyhow::Result<()> {
-    if accumulator.completed {
-        Ok(())
-    } else {
+fn ensure_stream_terminal(accumulator: &StreamAccumulator) -> anyhow::Result<()> {
+    if accumulator.terminal == StreamTerminal::None {
         Err(stream_parse_error(
-            anyhow::anyhow!("Responses API stream ended before response.completed"),
+            anyhow::anyhow!(
+                "Responses API stream ended before a terminal response event (response.completed or response.incomplete)"
+            ),
             accumulator,
         ))
+    } else {
+        Ok(())
     }
 }
 
@@ -478,8 +541,9 @@ fn ensure_stream_completed(accumulator: &StreamAccumulator) -> anyhow::Result<()
 ///
 /// # Errors
 ///
-/// Returns an error when the stream ended before `response.completed`, or when
-/// the accumulated output items cannot be parsed into conversation items.
+/// Returns an error when the stream ended before `response.completed` or
+/// `response.incomplete`, or when the accumulated output items cannot be parsed
+/// into conversation items.
 fn finalize_stream(mut accumulator: StreamAccumulator) -> anyhow::Result<TurnResult> {
     if !accumulator.output_text.is_empty()
         && !accumulator
@@ -508,8 +572,12 @@ fn finalize_stream(mut accumulator: StreamAccumulator) -> anyhow::Result<TurnRes
         output: accumulator.output,
         usage: accumulator.usage,
     };
+    let status = accumulator
+        .status
+        .as_deref()
+        .or_else(|| accumulator.terminal.status_fallback());
     let termination = responses_termination(
-        accumulator.status.as_deref(),
+        status,
         api_response
             .output
             .iter()

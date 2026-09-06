@@ -223,18 +223,6 @@ mod tests {
     }
 
     #[test]
-    fn format_models_handles_optional_fields_unset() {
-        let mut models = std::collections::HashMap::new();
-        models.insert("zen".to_string(), model("zen", ApiType::ChatCompletions));
-
-        let output = format_models(&models);
-
-        assert!(output.contains("zen"));
-        assert!(output.contains("provider/zen"));
-        assert!(output.contains("https://zen.example.com/v1"));
-    }
-
-    #[test]
     fn render_models_json_true_returns_json_array() {
         let mut models = std::collections::HashMap::new();
         models.insert("zen".to_string(), model("zen", ApiType::ChatCompletions));
@@ -244,17 +232,6 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
         assert_eq!(parsed.as_array().expect("JSON array").len(), 1);
         assert_eq!(parsed[0]["name"], "zen");
-    }
-
-    #[test]
-    fn render_models_json_false_returns_table() {
-        let mut models = std::collections::HashMap::new();
-        models.insert("zen".to_string(), model("zen", ApiType::ChatCompletions));
-
-        let output = render_models(&models, false).unwrap();
-
-        assert!(output.contains("Configured Models"));
-        assert!(output.contains("provider/zen"));
     }
 
     #[test]

@@ -592,6 +592,15 @@ struct PreparedBashCommand {
     _sandbox_guard: Option<super::sandbox::SandboxGuard>,
 }
 
+/// Remove inherited Git variables that can redirect commands away from their
+/// working directory. The caller must run this after sandbox application because
+/// macOS replaces the command with a `sandbox-exec` wrapper.
+fn scrub_ambient_git_environment(command: &mut Command) {
+    for var in crate::config::git::AMBIENT_ENV_VARS {
+        command.env_remove(var);
+    }
+}
+
 /// Build the bash child command and apply the sandbox strategy required by
 /// the policy. Sandbox-setup failures carry the preflight's telemetry events,
 /// so an allow/warn verdict stays observable even when the command never runs.
@@ -632,6 +641,12 @@ fn prepare_bash_command(
         tracing::debug!("Sandbox disabled; running without filesystem restrictions");
         None
     };
+
+    // Sandbox application may replace the Command (macOS wraps it with
+    // sandbox-exec), so scrub after application. These variables can redirect
+    // Git away from the Bash working directory and must not escape into the
+    // child, regardless of the selected sandbox policy.
+    scrub_ambient_git_environment(&mut command);
 
     Ok(PreparedBashCommand {
         command,

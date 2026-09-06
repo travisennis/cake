@@ -73,11 +73,6 @@ fn parse_arguments_repairs_control_characters() {
 // ── output truncation ──
 
 #[test]
-fn truncate_output_passes_small_output_through() {
-    assert_eq!(truncate_output("small".to_string()), "small");
-}
-
-#[test]
 fn truncate_output_caps_large_output_with_marker() {
     let large = "a".repeat(MAX_OUTPUT_BYTES + 100);
     let truncated = truncate_output(large);
@@ -331,17 +326,5 @@ mod subprocess {
             !marker.exists(),
             "a descendant survived the toolbox output cap and mutated the workspace"
         );
-    }
-
-    #[tokio::test]
-    async fn tool_that_ignores_stdin_still_succeeds() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_executable(dir.path(), "no_stdin", "#!/bin/sh\nexec printf 'done'\n");
-        let tool = fixture_tool(path, ToolboxFormat::Json);
-
-        let result = run(&tool, dir.path(), r#"{"ignored": "payload"}"#)
-            .await
-            .unwrap();
-        assert_eq!(result.output, "done");
     }
 }

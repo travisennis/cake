@@ -27,6 +27,8 @@ A parseable `Retry-After` value takes precedence over exponential backoff, but i
 
 Cake also makes one zero-delay semantic continuation turn when a successful provider response has partial output but no final assistant message, unless the provider identifies non-retryable termination such as content filtering, failure, or refusal. The continuation stays in the same session and task, preserves usage and counters, asks only for the missing final answer, and offers no tools so completed tool work is not repeated. Text mode reports the `semantic_incomplete` retry on stderr; JSON and stream-JSON suppress it. If that turn is also incomplete, Cake emits the cut-off outcome once and includes an explicit `cake --resume <UUID> "try again"` command.
 
+For streamed Responses API calls, either `response.completed` or the terminal `response.incomplete` event finalizes the provider turn. Cake preserves the incomplete response's status, reason, usage, output, and provider response ID, so token-limit responses use the same typed termination and semantic-recovery behavior as non-streaming responses. A stream without either terminal event, or with a second terminal event, remains a typed body-parse error.
+
 The agent loop is uncapped by default; a user-configured `[limits]` section (see [Configuration](configuration.md)) may bound it. `max_turns` stops the loop before starting a turn that would exceed the cap; `max_tool_calls` stops it before executing a tool batch that would exceed the cap. Streamed conversation records and completed tool work are never discarded.
 
 ## Completion JSON
