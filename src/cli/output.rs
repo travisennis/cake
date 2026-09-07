@@ -92,17 +92,17 @@ impl CliOutputSink {
     /// of output format).
     fn stream_json_exit_result(result: anyhow::Result<String>) -> anyhow::Result<()> {
         match result {
-            Err(error) if Self::is_closed_output(&error) => Err(error),
-            Err(error)
-                if matches!(
-                    error.downcast_ref::<crate::config::OutputSchemaError>(),
-                    Some(crate::config::OutputSchemaError::Unsatisfied { .. })
-                ) =>
-            {
-                Err(error)
-            },
+            Err(error) if Self::should_propagate_stream_error(&error) => Err(error),
             _ => Ok(()),
         }
+    }
+
+    fn should_propagate_stream_error(error: &anyhow::Error) -> bool {
+        Self::is_closed_output(error)
+            || matches!(
+                error.downcast_ref::<crate::config::OutputSchemaError>(),
+                Some(crate::config::OutputSchemaError::Unsatisfied { .. })
+            )
     }
 
     fn render_text_result(result: anyhow::Result<String>) -> anyhow::Result<()> {

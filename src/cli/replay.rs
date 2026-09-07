@@ -115,17 +115,21 @@ impl CmdRunner for ReplayCommand {
         // permission failures via `File::open`'s error kind.
         let path = data_dir.session_path(uuid);
         let records = load_records(&path, uuid).map_err(fail)?;
-        // `turn_usage` is a session-only audit record with no stream-json
-        // counterpart; replay mirrors the live stream vocabulary, so it is
-        // filtered out here rather than converted.
-        for record in records
-            .into_iter()
-            .filter(|record| !matches!(record, SessionRecord::TurnUsage(_)))
-        {
-            emit(&StreamRecord::from(record))?;
-        }
-        Ok(())
+        emit_records(records)
     }
+}
+
+fn emit_records(records: Vec<SessionRecord>) -> anyhow::Result<()> {
+    // `turn_usage` is a session-only audit record with no stream-json
+    // counterpart; replay mirrors the live stream vocabulary, so it is
+    // filtered out here rather than converted.
+    for record in records {
+        if matches!(record, SessionRecord::TurnUsage(_)) {
+            continue;
+        }
+        emit(&StreamRecord::from(record))?;
+    }
+    Ok(())
 }
 
 /// Emit a `replay_error` stream record, then convert the failure into the
@@ -137,10 +141,7 @@ fn fail(error: ReplayError) -> anyhow::Error {
         error: error.to_string(),
         exit_code: error.exit_code(),
     };
-    match emit(&record) {
-        Ok(()) => error.into(),
-        Err(output_error) => output_error,
-    }
+    emit(&record).err().unwrap_or_else(|| error.into())
 }
 
 /// Print one stream record as a JSON line on stdout.

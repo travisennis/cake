@@ -54,6 +54,10 @@ impl AgentObserver {
         if let Some(ref mut callback) = self.persist {
             callback(&session_record)?;
         }
+        self.emit_stream_record(stream_json)
+    }
+
+    fn emit_stream_record(&self, stream_json: Option<String>) -> anyhow::Result<()> {
         if let Some(ref callback) = self.streaming
             && let Some(json) = stream_json
         {

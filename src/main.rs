@@ -1412,6 +1412,22 @@ impl Drop for WorktreeGuard {
     }
 }
 
+fn finish_run(result: anyhow::Result<()>) -> std::process::ExitCode {
+    match result {
+        Ok(()) => std::process::ExitCode::from(exit_code::code::SUCCESS),
+        Err(error) if CliOutputSink::is_closed_output(&error) => {
+            std::process::ExitCode::from(exit_code::code::SUCCESS)
+        },
+        Err(error) if error.is::<Interrupted>() => {
+            std::process::ExitCode::from(exit_code::code::INTERRUPTED)
+        },
+        Err(error) => {
+            CliOutputSink::write_error(&error);
+            exit_code::classify(&error)
+        },
+    }
+}
+
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
     let args = match CodingAssistant::try_parse() {
@@ -1452,19 +1468,7 @@ async fn main() -> std::process::ExitCode {
         profile: args.profile.as_deref(),
         output_format: args.output_format,
     };
-    match args.run(&data_dir, &options).await {
-        Ok(()) => std::process::ExitCode::from(exit_code::code::SUCCESS),
-        Err(e) if CliOutputSink::is_closed_output(&e) => {
-            std::process::ExitCode::from(exit_code::code::SUCCESS)
-        },
-        Err(e) => {
-            if e.is::<Interrupted>() {
-                return std::process::ExitCode::from(exit_code::code::INTERRUPTED);
-            }
-            CliOutputSink::write_error(&e);
-            exit_code::classify(&e)
-        },
-    }
+    finish_run(args.run(&data_dir, &options).await)
 }
 
 #[cfg(test)]
