@@ -260,54 +260,70 @@ fn read_edit_file(
     path: &Path,
     limits: &crate::config::settings::ToolLimits,
 ) -> Result<String, String> {
-    // Check if file exists and is a regular file before opening a bounded reader.
     let metadata = std::fs::metadata(path)
         .map_err(|e| format!("Failed to access file '{}': {e}", path.display()))?;
+    validate_edit_metadata(path, &metadata, limits.read_max_output_bytes)?;
+    let file_bytes = read_edit_bytes(path, limits.read_max_output_bytes)?;
+    validate_edit_bytes(path, &file_bytes)
+}
+
+fn validate_edit_metadata(
+    path: &Path,
+    metadata: &std::fs::Metadata,
+    max_bytes: Option<usize>,
+) -> Result<(), String> {
     if !metadata.is_file() {
         return Err(format!("Path is not a file: {}", path.display()));
     }
-
-    let max_bytes = limits.read_max_output_bytes;
     if let Some(max_bytes) = max_bytes
         && metadata.len() > max_bytes as u64
     {
         return Err(oversized_file_error(path, metadata.len(), max_bytes));
     }
+    Ok(())
+}
 
+fn read_edit_bytes(path: &Path, max_bytes: Option<usize>) -> Result<Vec<u8>, String> {
     // The metadata check avoids opening a known oversized file. The bounded
     // reader is still required because the file can grow after that check.
     let file = std::fs::File::open(path)
         .map_err(|e| format!("Failed to read file '{}': {e}", path.display()))?;
     let mut reader = BufReader::new(file);
     let mut file_bytes = Vec::new();
-    if let Some(max_bytes) = max_bytes {
-        reader
-            .by_ref()
-            .take(max_bytes.saturating_add(1) as u64)
-            .read_to_end(&mut file_bytes)
-            .map_err(|e| format!("Failed to read file '{}': {e}", path.display()))?;
-        if file_bytes.len() > max_bytes {
-            return Err(oversized_file_error(
-                path,
-                file_bytes.len() as u64,
-                max_bytes,
-            ));
-        }
-    } else {
-        reader
-            .read_to_end(&mut file_bytes)
-            .map_err(|e| format!("Failed to read file '{}': {e}", path.display()))?;
+    match max_bytes {
+        Some(max_bytes) => {
+            reader
+                .by_ref()
+                .take(max_bytes.saturating_add(1) as u64)
+                .read_to_end(&mut file_bytes)
+                .map_err(|e| format!("Failed to read file '{}': {e}", path.display()))?;
+            if file_bytes.len() > max_bytes {
+                return Err(oversized_file_error(
+                    path,
+                    file_bytes.len() as u64,
+                    max_bytes,
+                ));
+            }
+        },
+        None => {
+            reader
+                .read_to_end(&mut file_bytes)
+                .map_err(|e| format!("Failed to read file '{}': {e}", path.display()))?;
+        },
     }
+    Ok(file_bytes)
+}
 
+fn validate_edit_bytes(path: &Path, file_bytes: &[u8]) -> Result<String, String> {
     // Refuse binary files before treating the bytes as editable UTF-8 text.
-    if contains_null_byte(&file_bytes) {
+    if contains_null_byte(file_bytes) {
         return Err(format!(
             "Cannot edit binary file: {} (detected null bytes)",
             path.display()
         ));
     }
 
-    decode_utf8(&file_bytes)
+    decode_utf8(file_bytes)
         .map(str::to_owned)
         .map_err(|_e| format!("File contains invalid UTF-8: {}", path.display()))
 }
