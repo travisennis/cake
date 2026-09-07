@@ -146,13 +146,10 @@ fn fail(error: ReplayError) -> anyhow::Error {
 
 /// Print one stream record as a JSON line on stdout.
 fn emit(record: &StreamRecord) -> anyhow::Result<()> {
-    match serde_json::to_string(record) {
-        Ok(json) => CliOutputSink::write_stream_record(&json),
-        Err(error) => {
-            tracing::warn!("Replay serialization failed: {error}");
-            Ok(())
-        },
-    }
+    serde_json::to_string(record)
+        .inspect_err(|error| tracing::warn!("Replay serialization failed: {error}"))
+        .ok()
+        .map_or(Ok(()), |json| CliOutputSink::write_stream_record(&json))
 }
 
 /// Read a session file read-only and return its records, mapping every
