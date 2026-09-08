@@ -38,8 +38,9 @@ Chosen option: **Option A**, because it satisfies all decision drivers in one us
 - Good, because the read-only policy denies writes to the workspace and toolchain caches while keeping temp directories read-write so commands can still produce intermediate output (pipes, mktemp, overflow temp files). This is the strictest mode cake has offered.
 - Amended (2026-07-09, task 252): the OS sandbox only wraps Bash, so the read-only policy must also remove the Edit and Write tools from the agent's registry --- they mutate files in-process and would otherwise bypass the policy entirely. Under `read-only` the agent is offered only Bash (sandboxed) and Read; the system prompt tool list, session header, and stream-json `tools` field reflect the reduced set. Removing the tools (rather than registering them and returning a policy error) keeps the advertised tool list truthful and avoids wasted model turns.
 - Amended (2026-07-09, tasks 253/254): read-only enforcement fixes --- Landlock now grants Execute on read-only paths so read-only sessions can still run workspace/toolchain binaries on Linux (matching macOS Seatbelt semantics), and the macOS keychain file rule is gated to `file-read*` under read-only like the SCM CLI rules.
+- Amended (2026-09-08, issue 477): the macOS user Keychain file rule is now `file-read*` under `workspace-write` as well. `danger-full-access` remains an explicit unsandboxed escape hatch, while Keychain service operations continue through Mach IPC.
 - Good, because `CAKE_SANDBOX=off` continues to work for backward compatibility, mapped to `danger-full-access` when no `--sandbox` flag is passed.
-- Good, because the default (`workspace-write`) reproduces the historical sandbox behavior byte-for-byte; no existing user sees a change.
+- Good, because the default (`workspace-write`) retains historical writes to the workspace, toolchains, and CLI state while no longer granting direct writes to Keychain database files.
 - Neutral: The macOS Seatbelt profile helper for SCM CLI dirs (`~/.config/gh`, `~/.cache/gh`, the glab dirs, etc.) must check the policy and emit `file-read*` instead of `file-read* file-write*` when read-only, because those rules would otherwise re-grant writes that the partitioned `SandboxConfig` removed.
 - Bad, because two new code branches (the read-only partition and the SCM CLI read-only gating) add a small amount of complexity. Tests cover both branches, and the `cargo-crap` baseline was recaptured to reflect the intentional change.
 
@@ -49,4 +50,4 @@ Chosen option: **Option A**, because it satisfies all decision drivers in one us
 - ExecPlan: `docs/exec-plans/completed/sandbox-policy-flag.md` (see the Decision Log for the `Option<SandboxPolicy>` vs `default_value` rationale and the temp-dir-retention rationale).
 - `docs/security.md` (Sandbox policies).
 - `src/clients/tools/sandbox/mod.rs` --- `SandboxPolicy`, `resolve_sandbox_policy`, `SandboxConfig::build_with_policy`, `SandboxConfig::partition_read_only`.
-- `src/clients/tools/sandbox/macos.rs` --- `append_scm_cli_rules` read-only gating.
+- `src/clients/tools/sandbox/macos.rs` --- `append_scm_cli_rules` and `append_keychain_rules` policy-specific filesystem rules.

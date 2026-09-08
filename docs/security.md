@@ -13,7 +13,7 @@ Cake does not attempt to make an untrusted model safe to run with arbitrary cred
 `--sandbox` selects:
 
 - `read-only`: the workspace, configured directories, and built-in toolchain paths are read-only. Cake-managed temporary paths remain writable so commands can produce intermediate output. Mutating built-in tools and toolbox tools are not offered to the model.
-- `workspace-write`: the default. The working directory, linked-worktree Git directories, Cake-managed temporary paths, configured writable directories, and built-in toolchain and integration paths may be modified. Built-in grants cover common package managers, runtime managers, language caches, and CLI state such as `~/.cargo`, `~/.npm`, and `~/.config/gh`; the sandbox implementation is the exact list.
+- `workspace-write`: the default. The working directory, linked-worktree Git directories, Cake-managed temporary paths, configured writable directories, and built-in toolchain and integration paths may be modified. Built-in grants cover common package managers, runtime managers, language caches, and CLI state such as `~/.cargo`, `~/.npm`, and `~/.config/gh`; the supplementary `~/Library/Keychains` file grant remains read-only.
 - `danger-full-access`: Cake does not apply its filesystem sandbox to Bash.
 
 An explicit CLI policy takes precedence over `CAKE_SANDBOX`. For compatibility, `CAKE_SANDBOX=off` selects danger-full-access when no flag is present.
@@ -24,7 +24,7 @@ An explicit CLI policy takes precedence over `CAKE_SANDBOX`. For compatibility, 
 
 The `[sandbox]` and `directories` path lists feed both the in-process Read/Edit/Write/Grep validation and the OS sandbox, so the two enforcement layers cannot diverge. A `read_only` entry naming a single executable grants exactly that file (plus read access to its ancestor directories), so sibling files in the same directory remain denied.
 
-The OS sandbox represents ordinary filesystem grants with two effective path classes: read + write + execute, and read + execute without write. Built-in system and configuration paths, user read-only grants, skill paths, and paths demoted by the `read-only` policy share the second class. Platform-only capabilities such as macOS device, SSH agent, Keychain, Mach, process, and network rules stay separate because they are not ordinary filesystem path grants.
+The OS sandbox represents ordinary filesystem grants with two effective path classes: read + write + execute, and read + execute without write. Built-in system and configuration paths, user read-only grants, skill paths, paths demoted by the `read-only` policy, and the supplementary `~/Library/Keychains` file grant share the second class. Platform-only capabilities such as macOS device, SSH agent, Keychain service access, Mach, process, and network rules stay separate because they are not ordinary filesystem path grants; Keychain service access remains mediated by Mach.
 
 Project-level `.cake/settings.toml` is fully trusted by design, the same trust model as the rest of project `.cake/` configuration. There is no deny-list and no trust prompt: any path a project declares in `[sandbox]` becomes accessible to model-generated commands. Treat a cloned repository's `.cake/settings.toml` the way you treat its hooks.
 

@@ -189,21 +189,22 @@ impl MacOsSandbox {
     /// SSH passphrase retrieval) is mediated by Security.framework over Mach
     /// IPC, which is covered by the `(allow mach-lookup)` rule above. The
     /// file-level rules here allow tools that read keychain database files
-    /// directly (rare, but harmless to permit).
-    ///
-    /// When `read_only` is true, emit read-only rules so the read-only
-    /// sandbox policy cannot write to user keychain database files.
-    fn append_keychain_rules(profile: &mut SeatbeltProfileBuilder, read_only: bool) {
+    /// directly (rare). They are read-only under every applied sandbox policy;
+    /// Keychain service operations remain mediated by Security.framework.
+    fn append_keychain_rules(profile: &mut SeatbeltProfileBuilder, policy: SandboxPolicy) {
         profile.comment(
             "macOS Keychain file access (supplementary; primary access is via mach-lookup)",
         );
         profile.allow_subpath("file-read*", "/Library/Keychains");
         profile.allow_subpath("file-read*", "/System/Library/Keychains");
         if let Some(home) = home_dir() {
-            let access = if read_only {
-                "file-read*"
-            } else {
+            // DangerFullAccess never applies a profile. Keep its generated-profile
+            // representation writable so this helper retains explicit policy semantics
+            // if it is inspected independently of the Bash execution path.
+            let access = if policy == SandboxPolicy::DangerFullAccess {
                 "file-read* file-write*"
+            } else {
+                "file-read*"
             };
             profile.allow_subpath(access, home.join("Library/Keychains"));
         }
@@ -299,7 +300,7 @@ impl MacOsSandbox {
 
         Self::append_git_rules(&mut profile);
         Self::append_ssh_agent_rules(&mut profile);
-        Self::append_keychain_rules(&mut profile, config.policy == SandboxPolicy::ReadOnly);
+        Self::append_keychain_rules(&mut profile, config.policy);
         Self::append_device_rules(&mut profile);
 
         // Allow file-ioctl scoped to terminal devices
@@ -843,6 +844,9 @@ mod tests {
                     "(allow file-read* file-write* (subpath \"{escaped_home}/.config/gh\"))"
                 )));
                 assert!(profile.contains(&format!(
+                    "(allow file-read* (subpath \"{escaped_home}/Library/Keychains\"))"
+                )));
+                assert!(!profile.contains(&format!(
                     "(allow file-read* file-write* (subpath \"{escaped_home}/Library/Keychains\"))"
                 )));
                 assert!(
@@ -896,6 +900,67 @@ mod tests {
                 ),
                 "read-only profile must not grant writes to user keychains"
             );
+        });
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn workspace_write_profile_denies_keychain_database_writes() {
+        if !MacOsSandbox::can_apply_profile() {
+            let required = matches!(
+                std::env::var("CAKE_REQUIRE_SANDBOX_TESTS").as_deref(),
+                Ok("1" | "true" | "yes" | "on")
+            );
+            assert!(
+                !required,
+                concat!(
+                    "sandbox enforcement is required via CAKE_REQUIRE_SANDBOX_TESTS=1, but sandbox-exec ",
+                    "cannot apply profiles in this process context"
+                )
+            );
+            eprintln!(concat!(
+                "skipping macOS Keychain enforcement test: sandbox-exec cannot apply profiles ",
+                "in this process context"
+            ));
+            return;
+        }
+
+        let fixture = tempfile::tempdir().unwrap();
+        let home = fixture.path().join("home");
+        let keychains = home.join("Library/Keychains");
+        std::fs::create_dir_all(&keychains).unwrap();
+        let database = keychains.join("fixture.keychain-db");
+        std::fs::write(&database, b"before").unwrap();
+        let home = home.to_str().unwrap().to_owned();
+
+        temp_env::with_var("HOME", Some(home.as_str()), || {
+            let config = SandboxConfig::build_with_policy(
+                SandboxPolicy::WorkspaceWrite,
+                Path::new("/workspace"),
+                &[],
+                &[],
+                &[],
+                &[],
+            );
+            let profile = MacOsSandbox::generate_profile(&config);
+            let profile_file = MacOsSandbox::write_profile_to_temp(&profile).unwrap();
+            let output = std::process::Command::new("/usr/bin/sandbox-exec")
+                .arg("-f")
+                .arg(profile_file.path())
+                .arg("/bin/sh")
+                .arg("-c")
+                .arg("cat \\\"$TARGET\\\"; printf after > \\\"$TARGET\\\"")
+                .env("TARGET", &database)
+                .output()
+                .unwrap();
+
+            assert!(
+                !output.status.success(),
+                "WorkspaceWrite must deny direct Keychain database writes; stderr: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(output.stdout, b"before");
+            assert_eq!(std::fs::read(&database).unwrap(), b"before");
         });
     }
 
