@@ -1465,7 +1465,7 @@ fn sandbox_initialization_failure_requires_applied_sandbox() {
     let output = "sandbox-exec: sandbox_apply: Operation not permitted";
     assert!(is_sandbox_initialization_failure(true, output));
     assert!(!is_sandbox_initialization_failure(false, output));
-    assert!(!is_sandbox_violation(true, false, output));
+    assert!(!is_sandbox_violation(true, false, output, output));
 }
 
 #[test]
@@ -1482,6 +1482,30 @@ fn sandbox_initialization_failure_checks_stderr_only() {
         true,
         "sandbox-exec: sandbox_apply: Operation not permitted"
     ));
+}
+
+#[test]
+fn sandbox_violation_uses_stderr_for_initialization_exclusion() {
+    let output = "sandbox-exec: sandbox_apply: Operation not permitted\nOperation not permitted";
+    let denial_stderr = "Operation not permitted";
+    let initialization_stderr = "sandbox-exec: sandbox_apply: Operation not permitted";
+
+    assert!(is_sandbox_violation(true, false, output, denial_stderr));
+    assert!(!is_sandbox_violation(
+        true,
+        false,
+        output,
+        initialization_stderr
+    ));
+}
+
+#[test]
+fn sandbox_initialization_precedes_binary_classification() {
+    let binary_output = [0_u8; 16];
+    let initialization_stderr = "sandbox-exec: sandbox_apply: Operation not permitted";
+
+    assert!(is_binary_data(&binary_output));
+    assert!(sandbox_initialization_output(true, initialization_stderr, &binary_output).is_some());
 }
 
 /// Regression test: a command that prints `sandbox-exec: sandbox_apply`
@@ -1508,9 +1532,9 @@ async fn command_stdout_containing_sandbox_apply_pattern_is_not_false_positive()
 fn sandbox_violation_requires_sandboxed_failed_command() {
     let output = "Operation not permitted";
 
-    assert!(is_sandbox_violation(true, false, output));
-    assert!(!is_sandbox_violation(true, true, output));
-    assert!(!is_sandbox_violation(false, false, output));
+    assert!(is_sandbox_violation(true, false, output, ""));
+    assert!(!is_sandbox_violation(true, true, output, ""));
+    assert!(!is_sandbox_violation(false, false, output, ""));
 }
 
 #[tokio::test]
@@ -1697,6 +1721,7 @@ fn bare_word_arguments_resolve_from_cwd_not_path() {
 fn compose_text_output_includes_named_denials() {
     let output = compose_text_output(
         "Operation not permitted",
+        "",
         false,
         None,
         false,
@@ -1712,7 +1737,7 @@ fn compose_text_output_includes_named_denials() {
 
 #[test]
 fn compose_text_output_without_denials_keeps_original_guidance() {
-    let output = compose_text_output("Operation not permitted", false, None, false, true, &[]);
+    let output = compose_text_output("Operation not permitted", "", false, None, false, true, &[]);
     assert!(output.contains("[Sandbox restriction]"));
     assert!(output.contains("Do NOT retry"));
     assert!(!output.contains("outside the allowed directories"));
