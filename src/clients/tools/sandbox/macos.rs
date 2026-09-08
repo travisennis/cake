@@ -201,6 +201,10 @@ impl MacOsSandbox {
             // DangerFullAccess never applies a profile. Keep its generated-profile
             // representation writable so this helper retains explicit policy semantics
             // if it is inspected independently of the Bash execution path.
+            // Known-path access still needs read permission on the two parent
+            // directories so tools can traverse HOME/Library/Keychains.
+            profile.allow_literal("file-read*", &home);
+            profile.allow_literal("file-read*", home.join("Library"));
             let access = if policy == SandboxPolicy::DangerFullAccess {
                 "file-read* file-write*"
             } else {
