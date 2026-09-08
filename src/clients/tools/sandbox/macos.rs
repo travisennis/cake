@@ -981,7 +981,13 @@ mod tests {
                 "WorkspaceWrite must deny direct Keychain database writes; stderr: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
-            assert_eq!(output.stdout, b"before");
+            assert_eq!(
+                output.stdout,
+                b"before",
+                "Keychain reads must remain allowed; status={:?}, stderr={:?}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            );
             assert_eq!(std::fs::read(&database).unwrap(), b"before");
         });
     }
