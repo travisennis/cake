@@ -934,6 +934,8 @@ mod tests {
         // Keep the fixture under the real home path rather than /var/folders,
         // whose /var -> /private/var symlink can hide the path from Seatbelt.
         let fixture = tempfile::tempdir_in(&account_home).unwrap();
+        let workspace = fixture.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
         let home = fixture.path().join("home");
         let keychains = home.join("Library/Keychains");
         std::fs::create_dir_all(&keychains).unwrap();
@@ -944,7 +946,7 @@ mod tests {
         temp_env::with_var("HOME", Some(home.as_str()), || {
             let config = SandboxConfig::build_with_policy(
                 SandboxPolicy::WorkspaceWrite,
-                Path::new("/workspace"),
+                &workspace,
                 &[],
                 &[],
                 &[],
@@ -973,6 +975,7 @@ mod tests {
                 .arg("-c")
                 .arg("cat \\\"$TARGET\\\"; printf after > \\\"$TARGET\\\"")
                 .env("TARGET", &database)
+                .current_dir(&workspace)
                 .output()
                 .unwrap();
 
