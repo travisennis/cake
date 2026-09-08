@@ -925,7 +925,11 @@ mod tests {
             return;
         }
 
-        let fixture = tempfile::tempdir().unwrap();
+        let account_home = temp_env::with_var("HOME", None::<&str>, dirs::home_dir)
+            .expect("OS account home must be available");
+        // Keep the fixture under the real home path rather than /var/folders,
+        // whose /var -> /private/var symlink can hide the path from Seatbelt.
+        let fixture = tempfile::tempdir_in(&account_home).unwrap();
         let home = fixture.path().join("home");
         let keychains = home.join("Library/Keychains");
         std::fs::create_dir_all(&keychains).unwrap();
