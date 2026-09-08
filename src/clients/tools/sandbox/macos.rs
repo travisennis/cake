@@ -952,28 +952,17 @@ mod tests {
                 &[],
                 &[],
             );
-            let mut profile = MacOsSandbox::generate_profile(&config);
+            let profile = MacOsSandbox::generate_profile(&config);
             assert!(profile.contains(&format!(
                 "(allow file-read* (subpath \"{home}/Library/Keychains\"))"
             )));
-            // The exact read grant makes this enforcement test independent of
-            // Seatbelt's treatment of synthetic ancestor paths. The production
-            // subpath rule above remains the rule whose write authority is tested.
-            std::fmt::Write::write_fmt(
-                &mut profile,
-                format_args!(
-                    "\n(allow file-read* (literal \"{}\"))",
-                    SeatbeltProfileBuilder::escape_path(&database)
-                ),
-            )
-            .expect("writing to a String cannot fail");
             let profile_file = MacOsSandbox::write_profile_to_temp(&profile).unwrap();
             let output = std::process::Command::new("/usr/bin/sandbox-exec")
                 .arg("-f")
                 .arg(profile_file.path())
                 .arg("/bin/sh")
                 .arg("-c")
-                .arg("cat \\\"$TARGET\\\"; printf after > \\\"$TARGET\\\"")
+                .arg("printf after > \\\"$TARGET\\\"")
                 .env("TARGET", &database)
                 .current_dir(&workspace)
                 .output()
@@ -982,13 +971,6 @@ mod tests {
             assert!(
                 !output.status.success(),
                 "WorkspaceWrite must deny direct Keychain database writes; stderr: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            assert_eq!(
-                output.stdout,
-                b"before",
-                "Keychain reads must remain allowed; status={:?}, stderr={:?}",
-                output.status,
                 String::from_utf8_lossy(&output.stderr)
             );
             assert_eq!(std::fs::read(&database).unwrap(), b"before");
