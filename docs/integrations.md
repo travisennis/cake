@@ -21,6 +21,10 @@ For `stream-json`, validation failures before a task stream starts still use the
 
 Interruption follows one graceful path for both Ctrl-C (SIGINT) and, on Unix, SIGTERM --- the signal process supervisors use to cancel a run. The active task closes with an interrupted `task_complete` record and the telemetry summary is flushed before the process exits `130`.
 
+## Provider tool schemas
+
+For Responses requests to `api.openai.com` and the ChatGPT Codex backend, Cake sends function tools with explicit `strict: false`. This opts out of automatic strict-schema normalization and preserves the original parameter schemas and optional fields. Tool calling remains best-effort; executors still validate arguments. Other Responses providers and Chat Completions keep their existing tool serialization. This setting does not change strict final-output constraints from `--output-schema`.
+
 ## Provider retries
 
 Retries are bounded. Cake retries transport failures and HTTP `408`, `409`, `429`, `500`, `502`, `503`, `504`, and provider-overload signals such as `529` or a structured `overloaded_error`. An `x-should-retry: false` response header prevents a retry; `x-should-retry: true` additionally permits otherwise borderline `5xx` responses. Ordinary `400`, `401`, `403`, and `404` responses are not retried.

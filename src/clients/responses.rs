@@ -7,8 +7,8 @@ use crate::clients::backend::{FinalOutputConstraint, ResponseDecodeError, Respon
 use crate::clients::provider_strategy::ProviderStrategy;
 use crate::clients::responses_types::{
     ApiResponse, ApiResponseEnvelope, ApiUsage, OutputContent, OutputMessage, ReasoningConfig,
-    Request, ResponsesApiInputItem, ResponsesMessageContent, ResponsesReasoningSummary, TextConfig,
-    TextFormat,
+    Request, ResponsesApiInputItem, ResponsesMessageContent, ResponsesReasoningSummary,
+    ResponsesTool, TextConfig, TextFormat,
 };
 use crate::clients::retry::RequestOverrides;
 use crate::clients::tools::Tool;
@@ -96,7 +96,7 @@ pub(super) fn build_request_json<'a>(
             .then_some(config.model_config.top_p)
             .flatten(),
         max_output_tokens: (!is_codex_backend).then_some(max_output_tokens).flatten(),
-        tools: if tools.is_empty() { None } else { Some(tools) },
+        tools: convert_tools(tools, strategy.responses_tool_strict()),
         tool_choice: if tools.is_empty() {
             None
         } else {
@@ -115,6 +115,18 @@ pub(super) fn build_request_json<'a>(
     };
 
     serde_json::to_vec(&prompt).map_err(Into::into)
+}
+
+fn convert_tools(tools: &[Tool], strict: Option<bool>) -> Option<Vec<ResponsesTool<'_>>> {
+    if tools.is_empty() {
+        return None;
+    }
+    Some(
+        tools
+            .iter()
+            .map(|tool| ResponsesTool { tool, strict })
+            .collect(),
+    )
 }
 
 /// Send one already-built Responses API JSON request.

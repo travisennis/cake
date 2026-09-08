@@ -827,7 +827,7 @@ fn snapshot_responses_request_with_tools_provider_and_reasoning() {
         temperature: Some(0.3),
         top_p: Some(0.95),
         max_output_tokens: Some(2048),
-        tools: Some(&tools),
+        tools: convert_tools(&tools, None),
         tool_choice: Some("auto".to_string()),
         provider: Some(ProviderConfig {
             only: vec!["OpenAI".to_string(), "Anthropic".to_string()],
@@ -907,7 +907,7 @@ fn snapshot_responses_request_full_with_agents_and_skills() {
         temperature: Some(0.2),
         top_p: Some(0.9),
         max_output_tokens: None,
-        tools: Some(registry.definitions()),
+        tools: convert_tools(registry.definitions(), None),
         tool_choice: Some("auto".to_string()),
         provider: None,
         reasoning: None,
@@ -966,6 +966,88 @@ fn build_request_disables_storage_for_codex_backend() {
     assert!(wire.get("temperature").is_none());
     assert!(wire.get("top_p").is_none());
     assert!(wire.get("max_output_tokens").is_none());
+}
+
+#[test]
+fn build_request_preserves_optional_tools_with_explicit_openai_strictness() {
+    let parameters = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "prompt": {"type": "string"},
+            "session_id": {"type": "string", "minLength": 1},
+            "options": {
+                "type": "object",
+                "properties": {"timeout": {"type": "integer"}},
+                "required": []
+            }
+        },
+        "required": ["prompt"],
+        "additionalProperties": false
+    });
+    let mut tools = default_tool_registry().definitions().to_vec();
+    tools.push(Tool {
+        type_: "function".to_string(),
+        name: "tb__subagent".to_string(),
+        description: "Delegate a task".to_string(),
+        parameters,
+    });
+    let output_schema = serde_json::json!({
+        "type": "object", "properties": {"summary": {"type": "string"}},
+        "required": ["summary"], "additionalProperties": false
+    });
+    for (base_url, strict) in [
+        ("https://api.openai.com/v1", Some(false)),
+        ("https://chatgpt.com/backend-api/codex", Some(false)),
+        ("https://chatgpt.com/backend-api/codex/", Some(false)),
+        ("https://openrouter.ai/api/v1", None),
+        ("https://opencode.ai/zen/v1", None),
+        ("http://localhost:8080/v1", None),
+        ("https://api.openai.com.example.org/v1", None),
+        ("https://chatgpt.com/other", None),
+        ("not a URL", None),
+    ] {
+        let config = ResolvedModelConfig {
+            model_config: ModelConfig {
+                model: "test-model".to_string(),
+                api_type: ApiType::Responses,
+                base_url: base_url.to_string(),
+                api_key_env: "UNUSED".to_string(),
+                provider: None,
+                provider_headers: None,
+                temperature: None,
+                top_p: None,
+                max_output_tokens: None,
+                context_window: None,
+                reasoning_effort: None,
+                reasoning_summary: None,
+                reasoning_max_tokens: None,
+                providers: vec![],
+            },
+            api_key: "test-token".to_string(),
+        };
+        let bytes = build_request_json(
+            &config,
+            &[],
+            &tools,
+            &RequestOverrides::default(),
+            Some(FinalOutputConstraint {
+                name: "result",
+                schema: &output_schema,
+            }),
+        )
+        .unwrap();
+        let wire: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(wire["tools"].as_array().unwrap().len(), tools.len());
+        for (actual, original) in wire["tools"].as_array().unwrap().iter().zip(&tools) {
+            let mut expected = serde_json::to_value(original).unwrap();
+            if let Some(strict) = strict {
+                expected["strict"] = strict.into();
+            }
+            assert_eq!(*actual, expected, "{base_url}");
+        }
+        assert_eq!(wire["text"]["format"]["strict"], true);
+        assert_eq!(wire["text"]["format"]["schema"], output_schema);
+    }
 }
 
 const STREAM_MALFORMED_OUTPUT_ITEM_MISSING_FIXTURE: &str = concat!(

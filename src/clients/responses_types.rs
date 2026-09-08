@@ -114,6 +114,14 @@ pub(super) struct ReasoningConfig {
 }
 
 #[derive(Serialize)]
+pub(super) struct ResponsesTool<'a> {
+    #[serde(flatten)]
+    pub(super) tool: &'a crate::clients::tools::Tool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) strict: Option<bool>,
+}
+
+#[derive(Serialize)]
 pub(super) struct Request<'a> {
     pub(super) model: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -130,7 +138,7 @@ pub(super) struct Request<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) max_output_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) tools: Option<&'a [super::tools::Tool]>,
+    pub(super) tools: Option<Vec<ResponsesTool<'a>>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) tool_choice: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
