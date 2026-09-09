@@ -132,12 +132,15 @@ pub(super) fn bash_tool() -> super::Tool {
 // =============================================================================
 
 /// Detect if a failed sandboxed command looks like a sandbox-related permission failure.
-fn is_sandbox_violation(sandbox_applied: bool, success: bool, output: &str) -> bool {
+///
+/// `output` is the combined model-visible stream; `stderr` is kept separate so
+/// the sandbox-initialization marker cannot be confused with command stdout.
+fn is_sandbox_violation(sandbox_applied: bool, success: bool, output: &str, stderr: &str) -> bool {
     if !sandbox_applied || success {
         return false;
     }
 
-    if is_sandbox_initialization_failure(sandbox_applied, output) {
+    if is_sandbox_initialization_failure(sandbox_applied, stderr) {
         return false;
     }
 
@@ -387,6 +390,37 @@ fn is_binary_data(data: &[u8]) -> bool {
 
     // If more than 30% of the data is non-printable, it's likely binary
     non_printable_count * 100 > data.len() * BINARY_RATIO_THRESHOLD_PERCENT
+}
+
+/// Return the captured output for a sandbox initialization failure, if any.
+///
+/// The caller checks this before binary output so a fail-closed setup error
+/// cannot be turned into an ordinary binary artifact response.
+fn sandbox_initialization_output<'a>(
+    sandbox_applied: bool,
+    stderr: &str,
+    data: &'a [u8],
+) -> Option<std::borrow::Cow<'a, str>> {
+    is_sandbox_initialization_failure(sandbox_applied, stderr)
+        .then(|| String::from_utf8_lossy(data))
+}
+
+fn sandbox_initialization_tool_error(
+    output: &str,
+    judge_events: Vec<CompensationEventTelemetry>,
+) -> super::ToolError {
+    judge_tool_error(
+        judge_events,
+        format!(
+            "{}\n\n\
+            macOS sandbox unavailable: sandbox-exec could not apply a sandbox profile, \
+            so the requested command did not run. This commonly happens when cake is \
+            itself running inside another Seatbelt sandbox. Run cake with \
+            --sandbox danger-full-access (or set CAKE_SANDBOX=off) to run Bash \
+            commands without filesystem sandboxing.",
+            output.trim_end()
+        ),
+    )
 }
 
 /// Format bytes as KiB with one decimal place using integer rounding.
@@ -914,8 +948,9 @@ fn sandbox_denials(
     sandbox_applied: bool,
     success: bool,
     output: &str,
+    stderr: &str,
 ) -> Vec<String> {
-    if !is_sandbox_violation(sandbox_applied, success, output) {
+    if !is_sandbox_violation(sandbox_applied, success, output, stderr) {
         return Vec::new();
     }
     let config = super::sandbox::SandboxConfig::build(context);
@@ -927,6 +962,7 @@ fn sandbox_denials(
 /// sandboxed run that looks like a denial gets the sandbox-restriction notice.
 fn compose_text_output(
     output: &str,
+    stderr: &str,
     hit_cap: bool,
     read_cap: Option<usize>,
     success: bool,
@@ -941,7 +977,7 @@ fn compose_text_output(
         format!("{output}\n[... output truncated at {cap} bytes ...]")
     } else if success {
         output.to_owned()
-    } else if is_sandbox_violation(sandbox_applied, success, output) {
+    } else if is_sandbox_violation(sandbox_applied, success, output, stderr) {
         format!(
             "{output}\n\n\
             [Sandbox restriction]: This command was blocked by the filesystem sandbox. \
@@ -1034,11 +1070,13 @@ async fn execute_bash_with_args(
         .is_some_and(std::process::ExitStatus::success);
     let exit_code = status.and_then(|s| s.code()).unwrap_or(-1);
     let warn_exit_zero_stderr = should_warn_exit_zero_stderr(success, &stderr_str);
-
-    // Check for binary data before converting to string. Judge warnings still
-    // prepend here: a `warn` verdict ran the command, so its guidance must
-    // reach the model even when the output is binary.
+    if let Some(output_str) = sandbox_initialization_output(sandbox_applied, &stderr_str, &buf) {
+        return Err(sandbox_initialization_tool_error(&output_str, judge_events));
+    }
     if is_binary_data(&buf) {
+        // Judge warnings still prepend here: a `warn` verdict ran the
+        // command, so its guidance must reach the model even when the
+        // output is binary.
         let mut compensation_events = judge_events;
         let spilled = output_max.is_some_and(|max| buf.len() > max);
         push_truncation_event_if(&mut compensation_events, "Bash", hit_cap, spilled);
@@ -1048,24 +1086,7 @@ async fn execute_bash_with_args(
             compensation_events,
         });
     }
-
     let output_str = String::from_utf8_lossy(&buf);
-
-    if is_sandbox_initialization_failure(sandbox_applied, &stderr_str) {
-        return Err(judge_tool_error(
-            judge_events,
-            format!(
-                "{}\n\n\
-                macOS sandbox unavailable: sandbox-exec could not apply a sandbox profile, \
-                so the requested command did not run. This commonly happens when cake is \
-                itself running inside another Seatbelt sandbox. Run cake with \
-                --sandbox danger-full-access (or set CAKE_SANDBOX=off) to run Bash \
-                commands without filesystem sandboxing.",
-                output_str.trim_end()
-            ),
-        ));
-    }
-
     let denials = sandbox_denials(
         context,
         &args.command,
@@ -1073,9 +1094,11 @@ async fn execute_bash_with_args(
         sandbox_applied,
         success,
         &output_str,
+        &stderr_str,
     );
     let result = compose_text_output(
         &output_str,
+        &stderr_str,
         hit_cap,
         read_cap,
         success,
