@@ -869,65 +869,101 @@ impl SettingsLoader {
         project_dir: Option<&Path>,
         profile: Option<&str>,
     ) -> Result<LoadedSettings, SettingsError> {
-        let mut acc = SettingsAccumulator::default();
-
-        // Load global settings first, then project settings (they override).
-        let global_path = crate::config::config_dir()
-            .join("cake")
-            .join("settings.toml");
-        if let Some((settings, warnings)) = Self::load_file(&global_path)? {
-            Self::validate_profiles(&settings.profiles)?;
-            Self::merge_settings(settings, &mut acc)?;
-            acc.warnings.extend(warnings);
-        }
-        if let Some(project_dir) = project_dir {
-            let project_path = project_dir.join(".cake").join("settings.toml");
-            if let Some((settings, warnings)) = Self::load_file(&project_path)? {
-                Self::validate_profiles(&settings.profiles)?;
-                Self::merge_settings(settings, &mut acc)?;
-                acc.warnings.extend(warnings);
-            }
-        }
-
-        if let Some(name) = profile {
-            if let Err(e) = ModelDefinition::validate_name(name) {
-                return Err(SettingsError::InvalidProfileName {
-                    name: name.to_string(),
-                    reason: e.to_string(),
-                });
-            }
-
-            let Some(overlays) = acc.profiles.get(name) else {
-                let mut available: Vec<_> = acc.profiles.keys().cloned().collect();
-                available.sort();
-                let available = if available.is_empty() {
-                    String::new()
-                } else {
-                    format!(". Available profiles: {}", available.join(", "))
-                };
-                return Err(SettingsError::UnknownProfile {
-                    name: name.to_string(),
-                    available,
-                });
-            };
-
-            for overlay in overlays.clone() {
-                acc.apply_profile_overlay(&overlay);
-            }
-        }
-
-        // Validate that default_model (if set) refers to an existing model.
-        if let Some(ref name) = acc.default_model
-            && !acc.models.contains_key(name.as_str())
-        {
-            return Err(SettingsError::DefaultModelNotFound { name: name.clone() });
-        }
+        let mut acc = Self::load_sources(project_dir)?;
+        Self::apply_profile(profile, &mut acc)?;
+        Self::validate_default_model(&acc)?;
 
         // Validate that the judge model (if set) refers to an existing model,
         // mirroring default_model (see [`Self::validate_judge_model`]).
         Self::validate_judge_model(&acc)?;
 
         Ok(acc.into_loaded())
+    }
+
+    /// Load settings in precedence order so each source uses the same merge
+    /// pipeline. The global source is visited first and the optional project
+    /// source second, allowing project settings to override global scalars.
+    fn load_sources(project_dir: Option<&Path>) -> Result<SettingsAccumulator, SettingsError> {
+        let mut acc = SettingsAccumulator::default();
+        for path in Self::settings_paths(project_dir) {
+            Self::merge_settings_file(&path, &mut acc)?;
+        }
+        Ok(acc)
+    }
+
+    fn settings_paths(project_dir: Option<&Path>) -> Vec<PathBuf> {
+        let mut paths = vec![
+            crate::config::config_dir()
+                .join("cake")
+                .join("settings.toml"),
+        ];
+        if let Some(project_dir) = project_dir {
+            paths.push(project_dir.join(".cake").join("settings.toml"));
+        }
+        paths
+    }
+
+    fn merge_settings_file(
+        path: &Path,
+        acc: &mut SettingsAccumulator,
+    ) -> Result<(), SettingsError> {
+        let Some((settings, warnings)) = Self::load_file(path)? else {
+            return Ok(());
+        };
+        Self::validate_profiles(&settings.profiles)?;
+        Self::merge_settings(settings, acc)?;
+        acc.warnings.extend(warnings);
+        Ok(())
+    }
+
+    fn apply_profile(
+        profile: Option<&str>,
+        acc: &mut SettingsAccumulator,
+    ) -> Result<(), SettingsError> {
+        let Some(name) = profile else {
+            return Ok(());
+        };
+        Self::validate_profile_name(name)?;
+        let overlays = Self::profile_overlays(name, acc)?;
+        for overlay in overlays {
+            acc.apply_profile_overlay(&overlay);
+        }
+        Ok(())
+    }
+
+    fn validate_profile_name(name: &str) -> Result<(), SettingsError> {
+        ModelDefinition::validate_name(name).map_err(|e| SettingsError::InvalidProfileName {
+            name: name.to_string(),
+            reason: e.to_string(),
+        })
+    }
+
+    fn profile_overlays(
+        name: &str,
+        acc: &SettingsAccumulator,
+    ) -> Result<Vec<ProfileSettings>, SettingsError> {
+        acc.profiles.get(name).cloned().ok_or_else(|| {
+            let mut available: Vec<_> = acc.profiles.keys().cloned().collect();
+            available.sort();
+            let available = if available.is_empty() {
+                String::new()
+            } else {
+                format!(". Available profiles: {}", available.join(", "))
+            };
+            SettingsError::UnknownProfile {
+                name: name.to_string(),
+                available,
+            }
+        })
+    }
+
+    fn validate_default_model(acc: &SettingsAccumulator) -> Result<(), SettingsError> {
+        if let Some(ref name) = acc.default_model
+            && !acc.models.contains_key(name.as_str())
+        {
+            return Err(SettingsError::DefaultModelNotFound { name: name.clone() });
+        }
+        Ok(())
     }
 
     /// Validate that the judge model (if set) refers to an existing model,
