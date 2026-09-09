@@ -1,10 +1,9 @@
 //! Conservative repair of recoverable invalid JSON from LLM tool-call arguments.
 //!
 //! Repairs run only after strict `serde_json` parsing fails. Each repair is
-//! deterministic and lossless — if a repair produces the "wrong" string content,
-//! the tool's own preflight validation (e.g., exact-match checking in Edit)
-//! still catches it. Quote-desynchronization or any repair that requires
-//! guessing intent is deliberately out of scope.
+//! deterministic and lossless: escaping raw control characters preserves the
+//! decoded string content. Truncating trailing data, quote-desynchronization,
+//! and any repair that requires guessing intent are deliberately out of scope.
 
 /// Attempt to repair common recoverable JSON issues from LLM tool-call
 /// arguments.
@@ -15,34 +14,21 @@
 /// - No repair produced valid JSON (unrepairable — caller gets the original
 ///   error path).
 ///
-/// Current repairs (applied sequentially):
-///
-/// 1. **Raw control characters inside string literals** — Literal tab, newline,
-///    carriage return, and other U+0000–U+001F characters found *inside* JSON
-///    string values are replaced with their JSON escape sequences (`\t`, `\n`,
-///    `\r`, `\u00XX`). Characters outside strings are never touched.
-///
-/// 2. **Trailing garbage after a balanced top-level object** — If the payload
-///    contains a complete JSON value followed by extra data (e.g., a doubled
-///    `}` or provider markup), the first complete value is kept and the
-///    remainder discarded.
+/// Raw control characters inside string literals (U+0000–U+001F) are replaced
+/// with their JSON escape sequences (`\t`, `\n`, `\r`, `\u00XX`). Characters
+/// outside strings are never touched. Trailing data is never discarded: the
+/// complete repaired payload must parse, otherwise callers receive the original
+/// payload and their normal parse error.
 pub fn repair_json_args(payload: &str) -> String {
     // Fast path: if already valid, return as-is
     if serde_json::from_str::<serde_json::Value>(payload).is_ok() {
         return payload.to_string();
     }
 
-    // Step 1: Escape raw control characters inside string literals
+    // Escape raw control characters inside string literals
     let control_fixed = escape_control_chars_in_strings(payload);
     if serde_json::from_str::<serde_json::Value>(&control_fixed).is_ok() {
         return control_fixed;
-    }
-
-    // Step 2: Try trailing-data recovery (first complete value)
-    if let Some(truncated) = try_first_complete_value(&control_fixed)
-        && serde_json::from_str::<serde_json::Value>(&truncated).is_ok()
-    {
-        return truncated;
     }
 
     // Unrepairable — return original so caller gets the same error
@@ -98,27 +84,6 @@ fn escape_control_chars_in_strings(payload: &str) -> String {
     }
 
     result
-}
-
-/// Try to extract the first complete top-level JSON value from a payload that
-/// might have trailing garbage.
-///
-/// Returns `None` if no complete value can be parsed, or if the payload ends
-/// exactly at the end of the first value (no trailing data).
-fn try_first_complete_value(payload: &str) -> Option<String> {
-    use serde_json::Value;
-    let mut stream = serde_json::Deserializer::from_str(payload).into_iter::<Value>();
-    match stream.next()? {
-        Ok(_) => {
-            let end = stream.byte_offset();
-            if end < payload.len() {
-                payload.get(..end).map(str::to_string)
-            } else {
-                None
-            }
-        },
-        Err(_) => None,
-    }
 }
 
 #[cfg(test)]
@@ -219,31 +184,37 @@ mod tests {
         assert!(repaired.contains("\\u0000"));
     }
 
-    // ── Trailing-data repair ──
+    // ── Trailing data must remain an error ──
 
     #[test]
-    fn trailing_curly_brace_is_removed() {
-        let payload = r#"{"path":"f","edits":[{"old_text":"a","new_text":"b"}]}}"#;
-        let repaired = repair_json_args(payload);
-        assert!(serde_json::from_str::<serde_json::Value>(&repaired).is_ok());
-        let parsed: serde_json::Value = serde_json::from_str(&repaired).unwrap();
-        assert_eq!(parsed["path"], "f");
+    fn trailing_data_is_preserved_and_rejected() {
+        let object = r#"{"path":"f","edits":[{"old_text":"a","new_text":"b"}]}"#;
+        for suffix in [r#"{"path":"other"}"#, "}", "</tool_call>", " some text"] {
+            let payload = format!("{object}{suffix}");
+            let repaired = repair_json_args(&payload);
+            assert_eq!(repaired, payload);
+            let error = serde_json::from_str::<serde_json::Value>(&repaired).unwrap_err();
+            assert!(error.to_string().contains("trailing characters"), "{error}");
+        }
     }
 
     #[test]
-    fn trailing_markup_is_removed() {
-        let payload = r#"{"path":"f","edits":[{"old_text":"a","new_text":"b"}]} some text"#;
-        let repaired = repair_json_args(payload);
-        assert!(serde_json::from_str::<serde_json::Value>(&repaired).is_ok());
-    }
-
-    // ── Combined repairs ──
-
-    #[test]
-    fn control_chars_and_trailing_data_both_fixed() {
+    fn control_chars_with_trailing_data_are_not_repaired() {
         let payload = "{\"path\":\"f\",\"edits\":[{\"old_text\":\"\t\",\"new_text\":\"b\"}]}xxx";
         let repaired = repair_json_args(payload);
-        assert!(serde_json::from_str::<serde_json::Value>(&repaired).is_ok());
+        assert_eq!(repaired, payload);
+        assert!(serde_json::from_str::<serde_json::Value>(&repaired).is_err());
+    }
+
+    #[test]
+    fn control_char_repair_preserves_decoded_content_and_whitespace() {
+        let content: String = ('\0'..='\u{001f}').collect();
+        let payload = format!(" \n{{\"content\":\"{content}\"}}\t ");
+        let repaired = repair_json_args(&payload);
+        let parsed: serde_json::Value = serde_json::from_str(&repaired).unwrap();
+        assert_eq!(parsed["content"], content);
+        assert!(repaired.starts_with(" \n"));
+        assert!(repaired.ends_with("\t "));
     }
 
     // ── Unrepairable payloads ──
@@ -263,21 +234,5 @@ mod tests {
         let repaired = repair_json_args(payload);
         assert_eq!(repaired, payload);
         assert!(serde_json::from_str::<serde_json::Value>(&repaired).is_err());
-    }
-
-    // ── Trailing data applied to already-repaired control chars ──
-
-    #[test]
-    fn trailing_after_control_char_repair() {
-        // Control chars need fixing, AND there's trailing data
-        let payload = "{\"path\":\"f\",\"edits\":[{\"old_text\":\"\t\",\"new_text\":\"b\"}]}xxx";
-        let repaired = repair_json_args(payload);
-        assert!(serde_json::from_str::<serde_json::Value>(&repaired).is_ok());
-        let parsed: serde_json::Value = serde_json::from_str(&repaired).unwrap();
-        assert_eq!(parsed["path"], "f");
-        assert_eq!(
-            parsed["edits"][0]["old_text"], "\t",
-            "old_text should contain tab character after deserialization"
-        );
     }
 }

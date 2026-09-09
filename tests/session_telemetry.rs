@@ -686,16 +686,16 @@ async fn session_telemetry_records_compensation_events() {
     write_responses_settings(&env, &mock_server.uri());
 
     let file = env.workspace_dir.join("notes.txt");
-    fs::write(&file, "hello").expect("fixture file should be writable");
+    fs::write(&file, "hello\n").expect("fixture file should be writable");
 
-    // Turn 1: two Edit calls on the same file. The first carries trailing
-    // garbage after its balanced object, which the repair pass removes; the
-    // second is plain valid JSON. Both mutate the same path, so the scheduler
-    // serializes them (one reordering).
+    // Turn 1: two Edit calls on the same file. The first carries a raw newline
+    // in old_text, which the repair pass escapes without changing its content;
+    // the second is plain valid JSON. Both mutate the same path, so the
+    // scheduler serializes them (one reordering).
     let clean_arguments =
-        serde_json::json!({ "path": &file, "edits": [{ "old_text": "hello", "new_text": "hi" }] })
+        serde_json::json!({ "path": &file, "edits": [{ "old_text": "hello\n", "new_text": "hi" }] })
             .to_string();
-    let repaired_arguments = format!("{clean_arguments}}}extra");
+    let repaired_arguments = clean_arguments.replace("\\n", "\n");
     let second_arguments =
         serde_json::json!({ "path": &file, "edits": [{ "old_text": "hi", "new_text": "hey" }] })
             .to_string();
@@ -752,6 +752,7 @@ async fn session_telemetry_records_compensation_events() {
         String::from_utf8_lossy(&output.stderr)
     );
 
+    assert_eq!(fs::read_to_string(&file).unwrap(), "hey");
     let records = telemetry_records(&env);
     let compensations = records
         .iter()

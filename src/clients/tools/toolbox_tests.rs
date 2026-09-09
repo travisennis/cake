@@ -70,6 +70,16 @@ fn parse_arguments_repairs_control_characters() {
     assert_eq!(value["a"], "line1\nline2");
 }
 
+#[test]
+fn parse_arguments_rejects_trailing_data() {
+    for suffix in ["{}", "}", "</tool_call>"] {
+        let payload = format!(r#"{{"a":"value"}}{suffix}"#);
+        let error = parse_arguments("tb__t", &payload).unwrap_err();
+        assert!(error.contains("Invalid tb__t arguments"), "{error}");
+        assert!(error.contains("trailing characters"), "{error}");
+    }
+}
+
 // ── output truncation ──
 
 #[test]

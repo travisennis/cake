@@ -363,28 +363,43 @@ mod tests {
 
     #[test]
     fn write_invalid_json_trailing_chars() {
-        // Payload that fails even after repair: trailing data.
-        // Use serde_json::from_str::<WriteArgs> on a payload with extra data.
-        let payload = r#"{"path":"x","content":"hello"}extra"#;
-        // Repair strips trailing data, so this would actually succeed.
-        // Test via `mutating_target` or directly with format_json_parse_error.
-        let err = serde_json::from_str::<WriteArgs>(payload).unwrap_err();
-        let msg = crate::clients::tools::format_json_parse_error(
-            payload,
-            &err,
-            "write",
-            r#"{"path":"file.txt","content":"..."}"#,
-        );
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("unchanged.txt");
+        fs::write(&file_path, "original content").unwrap();
+        let arguments = serde_json::json!({
+            "path": file_path,
+            "content": "replacement content"
+        })
+        .to_string();
+        for suffix in [
+            "extra",
+            r#"{"content":"other intent"}"#,
+            "}",
+            "</tool_call>",
+        ] {
+            let payload = format!("{arguments}{suffix}");
+            let context = ToolContext::from_current_process();
+            let msg = execute_write(&context, &payload).unwrap_err();
 
-        assert!(
-            msg.contains("trailing characters") || msg.contains("trailing data"),
-            "Error should mention trailing content: {msg}"
-        );
-        assert!(msg.contains("Hint:"), "Error should include a hint: {msg}");
-        assert!(
-            msg.contains("Context:"),
-            "Error should include context: {msg}"
-        );
+            assert!(msg.contains("Invalid write arguments"), "{msg}");
+            assert!(msg.contains("trailing characters"), "{msg}");
+            assert!(msg.contains("Hint:"), "{msg}");
+            assert!(msg.contains("Context:"), "{msg}");
+            assert!(msg.contains("Expected shape"), "{msg}");
+            assert_eq!(mutating_target(&context, &payload).unwrap_err(), msg);
+            assert_eq!(fs::read_to_string(&file_path).unwrap(), "original content");
+        }
+    }
+
+    #[test]
+    fn write_repairs_raw_control_characters_without_changing_content() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("repaired.txt");
+        let content = "hello\n\t\r\u{0001}world";
+        let path_json = serde_json::to_string(&file_path).unwrap();
+        let payload = format!("{{\"path\":{path_json},\"content\":\"{content}\"}}");
+        execute_write(&ToolContext::from_current_process(), &payload).unwrap();
+        assert_eq!(fs::read_to_string(file_path).unwrap(), content);
     }
 
     #[test]

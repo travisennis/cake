@@ -1273,8 +1273,8 @@ fn multiple_edits_with_different_lengths() {
 // JSON Argument Repair Tests
 //
 // These tests verify that recoverable invalid JSON in tool-call arguments is
-// repaired before parsing, so common LLM output errors (raw control chars in
-// strings, trailing garbage) do not cause spurious failures.
+// repaired before parsing without changing content. Trailing data remains
+// invalid rather than being discarded.
 // =========================================================================
 
 #[test]
@@ -1313,7 +1313,7 @@ fn raw_newline_in_old_text_is_repaired() {
 }
 
 #[test]
-fn trailing_curly_brace_is_ignored() {
+fn trailing_curly_brace_is_rejected() {
     let temp_dir = TempDir::new().unwrap();
     let file_path = temp_dir.path().join("test.txt");
     fs::write(&file_path, "Hello world\n").unwrap();
@@ -1328,10 +1328,11 @@ fn trailing_curly_brace_is_ignored() {
     .to_string()
         + "}";
 
-    let result = execute_edit(&ToolContext::from_current_process(), &args).unwrap();
-    assert!(result.output.contains("Applied 1 edit"));
+    let error = execute_edit(&ToolContext::from_current_process(), &args).unwrap_err();
+    assert!(error.contains("Invalid edit arguments"), "{error}");
+    assert!(error.contains("trailing characters"), "{error}");
     let content = fs::read_to_string(&file_path).unwrap();
-    assert_eq!(content, "Hi world\n");
+    assert_eq!(content, "Hello world\n");
 }
 
 #[test]
