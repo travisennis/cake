@@ -1717,3 +1717,128 @@ fn parse_output_items_reasoning_content_fallback_to_summary() {
         panic!("Expected Reasoning item");
     }
 }
+
+// ── Final authenticated request composition (issue #453) ──────
+// Production requests are `apply_headers` composed with `apply_request_auth`
+// inside the `build_*_request` functions; these tests assert the User-Agent
+// survives that composition on the final request.
+
+fn request_config(base_url: &str, api_type: ApiType) -> ResolvedModelConfig {
+    ResolvedModelConfig {
+        model_config: ModelConfig {
+            model: "test-model".to_string(),
+            api_type,
+            base_url: base_url.to_string(),
+            api_key_env: "TEST_API_KEY".to_string(),
+            provider: None,
+            provider_headers: None,
+            temperature: None,
+            top_p: None,
+            max_output_tokens: None,
+            context_window: None,
+            reasoning_effort: None,
+            reasoning_summary: None,
+            reasoning_max_tokens: None,
+            providers: vec![],
+        },
+        api_key: "test-key".to_string(),
+    }
+}
+
+fn final_user_agent(request: &reqwest::Request) -> Option<&str> {
+    request
+        .headers()
+        .get(reqwest::header::USER_AGENT)
+        .and_then(|value| value.to_str().ok())
+}
+
+fn bearer_authorization(request: &reqwest::Request) -> Option<&str> {
+    request
+        .headers()
+        .get(reqwest::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+}
+
+#[test]
+fn build_response_request_composes_user_agent_and_auth() {
+    let client = reqwest::Client::new();
+    let config = request_config("https://api.example.com/v1", ApiType::Responses);
+
+    let request = super::build_response_request(
+        &client,
+        &config,
+        uuid::Uuid::nil(),
+        serde_json::json!({"model": "test-model"})
+            .to_string()
+            .into_bytes(),
+    )
+    .expect("build responses request")
+    .build()
+    .expect("finalize responses request");
+
+    assert_eq!(
+        request.url().as_str(),
+        "https://api.example.com/v1/responses"
+    );
+    assert_eq!(
+        final_user_agent(&request),
+        Some(concat!("cake/", env!("CARGO_PKG_VERSION"))),
+        "User-Agent must survive auth composition on the Responses path"
+    );
+    assert_eq!(bearer_authorization(&request), Some("Bearer test-key"));
+}
+
+#[test]
+fn build_response_request_composes_user_agent_with_codex_auth() {
+    // The Codex subscription path replaces the bearer credential and adds
+    // ChatGPT headers; the User-Agent must survive that composition too.
+    // Codex models in this repo are Responses-API models, so one backend
+    // path covers the shared `apply_request_auth` branch.
+    let auth_dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        auth_dir.path().join("auth.json"),
+        r#"{"tokens":{"access_token":"access-123","account_id":"account-123"}}"#,
+    )
+    .expect("write codex auth fixture");
+
+    let request = temp_env::with_var("CODEX_HOME", Some(auth_dir.path()), || {
+        let client = reqwest::Client::new();
+        let config = request_config("https://chatgpt.com/backend-api/codex", ApiType::Responses);
+        super::build_response_request(
+            &client,
+            &config,
+            uuid::Uuid::nil(),
+            serde_json::json!({"model": "test-model"})
+                .to_string()
+                .into_bytes(),
+        )
+        .expect("build responses request")
+        .build()
+        .expect("finalize responses request")
+    });
+
+    assert_eq!(
+        request.url().as_str(),
+        "https://chatgpt.com/backend-api/codex/responses"
+    );
+    assert_eq!(
+        final_user_agent(&request),
+        Some(concat!("cake/", env!("CARGO_PKG_VERSION"))),
+        "User-Agent must survive Codex auth composition"
+    );
+    assert_eq!(bearer_authorization(&request), Some("Bearer access-123"));
+    assert_eq!(
+        request
+            .headers()
+            .get("ChatGPT-Account-ID")
+            .and_then(|value| value.to_str().ok()),
+        Some("account-123")
+    );
+    assert_eq!(
+        request
+            .headers()
+            .get("originator")
+            .and_then(|value| value.to_str().ok()),
+        Some("cake_cli_rs")
+    );
+}

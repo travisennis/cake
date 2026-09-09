@@ -1703,3 +1703,103 @@ fn build_request_json_preserves_f32_sampling_fields_on_the_wire() {
         "wire must not contain the f64-promoted sampling value, got: {wire}"
     );
 }
+
+// ── Final authenticated request composition (issue #453) ──────
+// Production requests are `apply_headers` composed with `apply_request_auth`
+// inside the `build_*_request` functions; these tests assert the User-Agent
+// survives that composition on the final request.
+
+fn request_config(base_url: &str, api_type: ApiType) -> ResolvedModelConfig {
+    ResolvedModelConfig {
+        model_config: ModelConfig {
+            model: "test-model".to_string(),
+            api_type,
+            base_url: base_url.to_string(),
+            api_key_env: "TEST_API_KEY".to_string(),
+            provider: None,
+            provider_headers: None,
+            temperature: None,
+            top_p: None,
+            max_output_tokens: None,
+            context_window: None,
+            reasoning_effort: None,
+            reasoning_summary: None,
+            reasoning_max_tokens: None,
+            providers: vec![],
+        },
+        api_key: "test-key".to_string(),
+    }
+}
+
+fn final_user_agent(request: &reqwest::Request) -> Option<&str> {
+    request
+        .headers()
+        .get(reqwest::header::USER_AGENT)
+        .and_then(|value| value.to_str().ok())
+}
+
+fn bearer_authorization(request: &reqwest::Request) -> Option<&str> {
+    request
+        .headers()
+        .get(reqwest::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+}
+
+#[test]
+fn build_chat_request_composes_user_agent_and_auth() {
+    let client = reqwest::Client::new();
+    let config = request_config("https://api.example.com/v1", ApiType::ChatCompletions);
+
+    let request = super::build_chat_request(
+        &client,
+        &config,
+        uuid::Uuid::nil(),
+        serde_json::json!({"model": "test-model"})
+            .to_string()
+            .into_bytes(),
+    )
+    .expect("build chat request")
+    .build()
+    .expect("finalize chat request");
+
+    assert_eq!(
+        request.url().as_str(),
+        "https://api.example.com/v1/chat/completions"
+    );
+    assert_eq!(
+        final_user_agent(&request),
+        Some(concat!("cake/", env!("CARGO_PKG_VERSION"))),
+        "User-Agent must survive auth composition on the Chat Completions path"
+    );
+    assert_eq!(bearer_authorization(&request), Some("Bearer test-key"));
+}
+
+#[test]
+fn build_chat_request_composes_user_agent_with_openrouter_attribution() {
+    // No explicit provider: the openrouter.ai base URL infers it. Attribution
+    // headers must ride beside the User-Agent on the final authenticated
+    // request, not only at the `apply_headers` level.
+    let client = reqwest::Client::new();
+    let config = request_config("https://openrouter.ai/api/v1", ApiType::ChatCompletions);
+
+    let request = super::build_chat_request(
+        &client,
+        &config,
+        uuid::Uuid::nil(),
+        serde_json::json!({"model": "openai/gpt-4.1"})
+            .to_string()
+            .into_bytes(),
+    )
+    .expect("build chat request")
+    .build()
+    .expect("finalize chat request");
+
+    assert_eq!(
+        final_user_agent(&request),
+        Some(concat!("cake/", env!("CARGO_PKG_VERSION"))),
+        "User-Agent must survive auth composition on the OpenRouter path"
+    );
+    assert!(request.headers().get("HTTP-Referer").is_some());
+    assert!(request.headers().get("X-Title").is_some());
+    assert_eq!(bearer_authorization(&request), Some("Bearer test-key"));
+}
