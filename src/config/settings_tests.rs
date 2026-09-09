@@ -975,6 +975,21 @@ api_key_env = "KEY"
 }
 
 #[test]
+fn test_unknown_profile_errors_without_available_names() {
+    let home = create_home_dir();
+
+    let result = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load_with_profile(None, Some("missing"))
+    });
+
+    assert!(matches!(
+        result,
+        Err(SettingsError::UnknownProfile { name, available })
+            if name == "missing" && available.is_empty()
+    ));
+}
+
+#[test]
 fn test_profile_default_model_not_found_errors() {
     let home = create_home_dir();
     write_global_settings(
