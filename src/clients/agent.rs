@@ -520,8 +520,9 @@ impl Agent {
 
     /// Enables streaming JSON output with a callback that can stop the run.
     ///
-    /// Unlike [`Self::with_streaming_json`], errors from the callback propagate
-    /// through the agent loop so the CLI can leave scope normally.
+    /// Unlike the test-only `with_streaming_json` builder, errors from the
+    /// callback propagate through the agent loop so the CLI can leave scope
+    /// normally.
     pub(crate) fn with_fallible_streaming_json(
         mut self,
         callback: impl Fn(&str) -> anyhow::Result<()> + Send + Sync + 'static,
