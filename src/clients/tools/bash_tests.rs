@@ -928,15 +928,24 @@ async fn test_sandbox_read_only_file_grant_runs_file_but_denies_sibling() {
 // Sandbox Policy Tests (task 195)
 // ===========================================================================
 
-/// Build a `ToolContext` with a resolved sandbox policy for the current
-/// process. `execute_bash` reads `context.sandbox_policy` to override the
+/// Build a `ToolContext` with a resolved sandbox policy for the supplied
+/// workspace. `execute_bash` reads `context.sandbox_policy` to override the
 /// args-level default.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-fn context_with_policy(policy: SandboxPolicy) -> Arc<ToolContext> {
+fn context_with_policy_at(cwd: std::path::PathBuf, policy: SandboxPolicy) -> Arc<ToolContext> {
     let mut context =
         ToolContext::from_current_process().with_judge(Some(bypassed_judge_context()));
+    context.cwd = cwd;
     context.sandbox_policy = policy;
     Arc::new(context)
+}
+
+/// Build a `ToolContext` with a resolved sandbox policy for the current
+/// process.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn context_with_policy(policy: SandboxPolicy) -> Arc<ToolContext> {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    context_with_policy_at(cwd, policy)
 }
 
 /// A sandbox-test context with the judge bypassed. These tests exercise
@@ -955,10 +964,13 @@ async fn test_sandbox_read_only_blocks_write_in_cwd() {
         return;
     }
 
+    let outside =
+        path_outside_cwd_for_sandbox_test().expect("should find a parent outside the workspace");
+    let workspace = tempfile::TempDir::new_in(&outside).expect("should create test workspace");
     let target = format!("cake_ro_probe_{}", uuid::Uuid::new_v4());
     let args = format!(r#"{{"command": "touch {target}"}}"#);
     let result = Box::pin(execute_bash(
-        &context_with_policy(SandboxPolicy::ReadOnly),
+        &context_with_policy_at(workspace.path().to_path_buf(), SandboxPolicy::ReadOnly),
         &args,
     ))
     .await
@@ -970,7 +982,7 @@ async fn test_sandbox_read_only_blocks_write_in_cwd() {
         result.output
     );
     // Clean up just in case the sandbox did not block it.
-    _ = std::fs::remove_file(&target);
+    _ = std::fs::remove_file(workspace.path().join(&target));
 }
 
 /// Workspace-write policy allows writes to the project directory.
