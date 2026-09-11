@@ -837,6 +837,38 @@ impl SettingsLoader {
         SkillConfig::All
     }
 
+    /// Resolve tool selection from CLI flags and settings.
+    ///
+    /// Precedence (highest to lowest):
+    /// 1. `--no-tools` CLI flag
+    /// 2. `--tools name1,name2` CLI flag
+    /// 3. `tools.enabled` in resolved settings (profile over top-level)
+    /// 4. Default: no restriction, exposing all available tools
+    ///
+    /// `None` means no CLI override, so the resolved settings value is kept;
+    /// `Some(vec![])` means no tools. CLI values replace lower-precedence
+    /// settings rather than unioning with them.
+    pub fn resolve_tools_config(
+        no_tools: bool,
+        tools_flag: Option<&str>,
+        settings: Option<&[String]>,
+    ) -> Option<Vec<String>> {
+        if no_tools {
+            return Some(Vec::new());
+        }
+
+        if let Some(names) = tools_flag {
+            let tool_names: Vec<String> = names
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            return Some(tool_names);
+        }
+
+        settings.map(<[String]>::to_vec)
+    }
+
     /// Loads and merges settings from global and project locations.
     ///
     /// Settings are loaded from:

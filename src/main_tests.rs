@@ -112,6 +112,29 @@ fn test_cli_rejects_run_only_options_with_subcommand() {
 }
 
 #[test]
+fn test_cli_rejects_tool_selection_flags_with_subcommand() {
+    let args = CodingAssistant::parse_from([
+        "cake",
+        "--tools",
+        "Edit",
+        "ignored prompt",
+        "sessions",
+        "list",
+    ]);
+    let error = args
+        .validate_subcommand_options()
+        .expect_err("--tools must be rejected with a subcommand");
+    assert!(error.to_string().contains("--tools"));
+
+    let args =
+        CodingAssistant::parse_from(["cake", "--no-tools", "ignored prompt", "sessions", "list"]);
+    let error = args
+        .validate_subcommand_options()
+        .expect_err("--no-tools must be rejected with a subcommand");
+    assert!(error.to_string().contains("--no-tools"));
+}
+
+#[test]
 fn test_cli_preserves_options_shared_with_subcommands() {
     let args = CodingAssistant::parse_from([
         "cake",
@@ -365,6 +388,20 @@ fn test_cli_parsing_skills_filter() {
     let args = CodingAssistant::parse_from(["cake", "--skills", "debugging,review", "test prompt"]);
     assert!(!args.no_skills);
     assert_eq!(args.skills, Some("debugging,review".to_string()));
+}
+
+#[test]
+fn test_cli_parsing_tools_filter() {
+    let args = CodingAssistant::parse_from(["cake", "--tools", "Read,Edit", "test prompt"]);
+    assert!(!args.no_tools);
+    assert_eq!(args.tools, Some("Read,Edit".to_string()));
+}
+
+#[test]
+fn test_cli_parsing_no_tools() {
+    let args = CodingAssistant::parse_from(["cake", "--no-tools", "test prompt"]);
+    assert!(args.no_tools);
+    assert!(args.tools.is_none());
 }
 
 #[test]

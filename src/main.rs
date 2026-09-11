@@ -63,6 +63,10 @@ pub enum OutputFormat {
         .args(["continue_session", "resume", "fork", "no_session"])
         .multiple(false)
 ))]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "clap-derived CLI struct; the boolean flags are independent"
+)]
 pub(crate) struct CodingAssistant {
     /// The prompt to send to the AI (use `-` to read from stdin)
     #[arg(value_name = "PROMPT")]
@@ -139,6 +143,15 @@ pub(crate) struct CodingAssistant {
     #[arg(short, long, value_enum, value_name = "POLICY")]
     pub sandbox: Option<SandboxPolicy>,
 
+    /// Only expose specific tools for this session (comma-separated list of
+    /// registered names). Replaces `[tools].enabled` and profile selections.
+    #[arg(long, value_name = "NAMES")]
+    pub tools: Option<String>,
+
+    /// Expose no tools for this session
+    #[arg(long)]
+    pub no_tools: bool,
+
     /// Disable all skills for this session
     #[arg(long)]
     pub no_skills: bool,
@@ -175,6 +188,7 @@ struct RunResources {
     skill_catalog: SkillCatalog,
     tool_context: Arc<ToolContext>,
     toolbox_tools: Vec<crate::config::toolbox::ToolboxTool>,
+    tools_enabled: Option<Vec<String>>,
 }
 
 impl CodingAssistant {
@@ -578,6 +592,15 @@ impl CodingAssistant {
             &loaded.skills,
         );
 
+        // CLI tool selection replaces the settings chain, so resolve it once
+        // and carry the effective list on `RunResources`; both the session
+        // builder and the unavailable-name warning read the same value.
+        let tools_enabled = SettingsLoader::resolve_tools_config(
+            self.no_tools,
+            self.tools.as_deref(),
+            loaded.tools_enabled.as_deref(),
+        );
+
         let configured_skill_dirs = loaded
             .skills
             .path
@@ -651,6 +674,7 @@ impl CodingAssistant {
             skill_catalog,
             tool_context: Arc::new(tool_context),
             toolbox_tools,
+            tools_enabled,
         })
     }
 
@@ -924,6 +948,8 @@ impl CodingAssistant {
             (!self.add_dir.is_empty(), "--add-dir"),
             (!self.toolbox.is_empty(), "--toolbox"),
             (self.sandbox.is_some(), "--sandbox"),
+            (self.no_tools, "--no-tools"),
+            (self.tools.is_some(), "--tools"),
             (self.no_skills, "--no-skills"),
             (self.skills.is_some(), "--skills"),
             (self.system_prompt.is_some(), "--system-prompt"),
@@ -1168,14 +1194,14 @@ impl CmdRunner for CodingAssistant {
             &resources.skill_catalog,
             &resources.tool_context,
             &resources.toolbox_tools,
-            resources.loaded.tools_enabled.as_deref(),
+            resources.tools_enabled.as_deref(),
             task_id,
             resources.loaded.system_prompt.as_deref(),
             &resources.loaded.judge,
         )?;
 
         Self::warn_unavailable_tools(
-            resources.loaded.tools_enabled.as_deref(),
+            resources.tools_enabled.as_deref(),
             &run_session.agent.tool_names(),
         );
 
