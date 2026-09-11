@@ -30,9 +30,12 @@ Chosen option: treat an undecodable 2xx body as a retryable transient failure in
 
 The fail-closed detail now renders the full error chain (the serde cause behind reqwest's opaque message), and both backend parse paths (`responses.rs`, `chat_completions.rs`) read the body once and attach a bounded 400-byte preview on decode failure, so an empty body, an HTML proxy page, or a wrong envelope is identifiable in the error text.
 
+Amended by issue #287: a transport failure raised while reading the 2xx body --- a connection reset, broken pipe, or truncated body, which reaches the parse phase rather than request-send time and which reqwest reports with the same `error decoding response body` message as a decode failure --- is classified by `retry::classify_transport_error` and takes the same at-most-one bounded recovery on a fresh client. Before this amendment only a typed body-decode error was retried, so a reset body read still failed closed on the first attempt even though ADR-020 lists a connection reset as a retryable transport failure. Semantic failures remain terminal: a decoded envelope with unusable content, a refusal, and a provider `response.failed` event are never retried.
+
 ### Consequences
 
 - Good, because a transient empty or non-JSON 2xx from a proxy recovers within the bounded deadline instead of blocking commands until the session restarts.
+- Good, because a transient connection reset while the body is read recovers the same way, instead of stranding the session on an infrastructure failure the agent loop already retries.
 - Good, because decode failures are diagnosable from the fail-closed detail (serde cause plus body preview) without a raw diagnostic surface.
 - Bad, because a provider that deterministically returns an undecodable body for a given request now costs a backoff wait plus a second request before failing closed.
 - Bad, because this is client resilience rather than an upstream root-cause fix. Correlated invalid responses can still exhaust both attempts; the new detail is needed to determine whether the provider returned an empty body, non-JSON body, or incompatible envelope before pursuing a provider-specific correction.
@@ -41,4 +44,5 @@ The fail-closed detail now renders the full error chain (the serde cause behind 
 
 - Partially supersedes [ADR-020](./020-bounded-llm-judge-recovery.md), `Bounded LLM-Judge Recovery`: undecodable response bodies are removed from its terminal response-parse class; semantic backend parse failures remain terminal, recovery still never enters with a verdict in hand, and ADR-020 remains accepted for the timeout/transport/HTTP recovery.
 - Builds on ADR-018 (`LLM Judge Command Gate`) and ADR-020: the fail-closed judge gate and its bounded recovery are unchanged in every other respect.
+- Amended by issue #287 (`Classify and mitigate invalid Luna judge response bodies`) after re-classifying the observed Luna failures: the dominant class is a response body that never arrived, not an envelope incompatibility. The amendment widens the retryable parse-phase set to include a transport failure during the body read; no other recovery, deadline, or fail-closed behavior changes.
 - Current durable authorities remain `docs/security.md`, `docs/configuration.md`, `docs/integrations.md`, and `ARCHITECTURE.md`.
