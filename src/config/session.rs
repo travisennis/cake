@@ -1,7 +1,7 @@
 use std::{
     collections::HashSet,
     fs::{self, File, OpenOptions},
-    io::{BufReader, BufWriter, Write},
+    io::{BufReader, BufWriter, Read, Seek, Write},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     thread,
@@ -51,6 +51,10 @@ impl SessionWriter {
 pub const CURRENT_FORMAT_VERSION: u32 = 4;
 const SESSION_LOCK_RETRY_COUNT: usize = 2;
 const SESSION_LOCK_RETRY_DELAY: Duration = Duration::from_millis(10);
+
+/// Initial window, in bytes, of the backwards scan that finds the last record
+/// boundary of a session file. It doubles until a newline or the file start.
+const SESSION_TAIL_WINDOW_BYTES: u64 = 64 * 1024;
 
 /// In-memory session state reconstructed from a JSONL file.
 ///
@@ -185,6 +189,10 @@ impl Session {
     }
 
     /// Open an existing session file for append and acquire an advisory lock.
+    ///
+    /// An incomplete final record left by an interrupted writer is repaired
+    /// under the lock before the handle is returned, so the next append starts
+    /// at a record boundary. See [`repair_partial_tail`].
     pub fn open_for_append(path: &Path) -> anyhow::Result<File> {
         let file = OpenOptions::new()
             .read(true)
@@ -192,6 +200,7 @@ impl Session {
             .open(path)
             .with_context(|| format!("Failed to open session file: {}", path.display()))?;
         lock_session_file(&file, path)?;
+        repair_partial_tail(&file, path)?;
         Ok(file)
     }
 
@@ -211,6 +220,95 @@ impl Session {
             Self::append_record(file, record)?;
         }
         Ok(())
+    }
+}
+
+/// Restore a record boundary in a session file whose last write was interrupted.
+///
+/// [`Session::load`] tolerates an incomplete final record, but the file itself
+/// stays unframed: the next append would concatenate its record onto the
+/// partial bytes and leave a malformed interior line that no later load can
+/// read. This runs under the writer lock, before the append handle is used, and
+/// it touches only the unterminated final line:
+///
+/// - A final line that is already a complete JSON object lost only its
+///   terminating newline, so the newline is appended and the record is kept.
+/// - Any other unterminated tail is an incomplete fragment and is truncated.
+///
+/// Complete records are never modified, and a file that already ends at a
+/// record boundary is left byte-for-byte unchanged. A malformed line that is
+/// terminated by a newline, wherever it appears, is never treated as a
+/// recoverable tail: the repair cannot tell where the writer meant to stop, so
+/// loading reports it instead.
+fn repair_partial_tail(file: &File, path: &Path) -> anyhow::Result<()> {
+    let len = file
+        .metadata()
+        .with_context(|| format!("Failed to inspect session file: {}", path.display()))?
+        .len();
+    let Some(tail) = read_unterminated_tail(file, len)
+        .with_context(|| format!("Failed to read session file: {}", path.display()))?
+    else {
+        return Ok(());
+    };
+
+    let tail_len = tail.len() as u64;
+    let is_complete_record =
+        serde_json::from_slice::<serde_json::Value>(&tail).is_ok_and(|value| value.is_object());
+
+    let mut handle = file;
+    if is_complete_record {
+        tracing::warn!(
+            "Session file {} ends with a complete record missing its trailing newline; terminating the record",
+            path.display()
+        );
+        return handle
+            .write_all(b"\n")
+            .with_context(|| format!("Failed to repair session file: {}", path.display()));
+    }
+
+    if tail_len == len {
+        anyhow::bail!(
+            "Session file {} has no complete record to recover; the first record was never written",
+            path.display()
+        );
+    }
+
+    tracing::warn!(
+        "Truncating {tail_len} incomplete byte(s) from the final record of session file {}",
+        path.display()
+    );
+    handle
+        .set_len(len - tail_len)
+        .with_context(|| format!("Failed to repair session file: {}", path.display()))
+}
+
+/// Read the bytes after the last newline of a file, or `None` when the file is
+/// empty or already ends at a record boundary.
+///
+/// The scan reads backwards in windows, doubling the window until it reaches a
+/// newline or the start of the file, so it does not hold a whole large session
+/// in memory to inspect its last record.
+fn read_unterminated_tail(file: &File, len: u64) -> std::io::Result<Option<Vec<u8>>> {
+    if len == 0 {
+        return Ok(None);
+    }
+
+    let mut window = len.min(SESSION_TAIL_WINDOW_BYTES);
+    loop {
+        let start = len - window;
+        let mut buffer = vec![0; usize::try_from(window).unwrap_or(usize::MAX)];
+        let mut handle = file;
+        handle.seek(std::io::SeekFrom::Start(start))?;
+        handle.read_exact(&mut buffer)?;
+
+        if let Some(last_newline) = buffer.iter().rposition(|byte| *byte == b'\n') {
+            buffer.drain(..=last_newline);
+            return Ok((!buffer.is_empty()).then_some(buffer));
+        }
+        if start == 0 {
+            return Ok(Some(buffer));
+        }
+        window = window.saturating_mul(2).min(len);
     }
 }
 
@@ -527,6 +625,229 @@ mod tests {
             loaded.records[0],
             SessionRecord::SessionMeta { .. }
         ));
+    }
+
+    /// Write a session holding `session_meta` and one complete task, then
+    /// append `tail` byte-for-byte after the last record boundary.
+    fn write_session_with_raw_tail(dir: &TempDir, name: &str, tail: &str) -> (Session, PathBuf) {
+        let path = dir.path().join(name);
+        let session = make_test_session();
+        let mut file = Session::create_on_disk(&path, &meta_record(&session)).unwrap();
+        Session::append_records(
+            &mut file,
+            &[
+                task_start(&session, "task-1"),
+                task_complete(&session, "task-1"),
+            ],
+        )
+        .unwrap();
+        drop(file);
+
+        let mut content = fs::read_to_string(&path).unwrap();
+        content.push_str(tail);
+        fs::write(&path, content).unwrap();
+        (session, path)
+    }
+
+    /// Assert the file ends at a record boundary and every line is one record.
+    fn assert_frameable_records(path: &Path) {
+        let content = fs::read_to_string(path).unwrap();
+        assert!(
+            content.ends_with('\n'),
+            "file must end at a record boundary"
+        );
+        for line in content.lines() {
+            serde_json::from_str::<serde_json::Value>(line)
+                .expect("every line must be an independent JSON record");
+        }
+    }
+
+    #[test]
+    fn open_for_append_repairs_a_partial_final_record_at_several_byte_prefixes() {
+        let dir = TempDir::new().unwrap();
+        let fragment = serde_json::to_string(&SessionRecord::Message(MessageData {
+            role: Role::User,
+            content: "interrupted".to_string(),
+            id: Some("msg-interrupted".to_string()),
+            status: None,
+            timestamp: None,
+        }))
+        .unwrap();
+        for prefix_len in [1, 2, fragment.len() / 2, fragment.len() - 1] {
+            let prefix = fragment.get(..prefix_len).unwrap();
+            let (session, path) =
+                write_session_with_raw_tail(&dir, &format!("prefix-{prefix_len}.jsonl"), prefix);
+
+            drop(Session::open_for_append(&path).unwrap());
+            let repaired = fs::read(&path).unwrap();
+            let mut file = Session::open_for_append(&path).unwrap();
+            assert_eq!(
+                fs::read(&path).unwrap(),
+                repaired,
+                "prefix {prefix_len}: reopening a repaired session must not change it again"
+            );
+            Session::append_record(&mut file, &task_start(&session, "task-2")).unwrap();
+            drop(file);
+
+            assert_frameable_records(&path);
+            let loaded = Session::load(&path).unwrap();
+            assert_eq!(
+                loaded.records.len(),
+                4,
+                "prefix {prefix_len}: complete records must survive repair"
+            );
+            assert_eq!(
+                loaded.messages().len(),
+                0,
+                "prefix {prefix_len}: the incomplete fragment must not load as a record"
+            );
+            assert!(
+                matches!(
+                    loaded.records.last(),
+                    Some(SessionRecord::TaskStart(TaskStartData { task_id, .. }))
+                        if task_id == "task-2"
+                ),
+                "prefix {prefix_len}: the appended record must be independent"
+            );
+        }
+    }
+
+    #[test]
+    fn open_for_append_terminates_a_complete_record_missing_its_newline() {
+        let dir = TempDir::new().unwrap();
+        let fragment = serde_json::to_string(&SessionRecord::Message(MessageData {
+            role: Role::User,
+            content: "last write".to_string(),
+            id: None,
+            status: None,
+            timestamp: None,
+        }))
+        .unwrap();
+        let (session, path) = write_session_with_raw_tail(&dir, "unterminated.jsonl", &fragment);
+
+        let mut file = Session::open_for_append(&path).unwrap();
+        Session::append_record(&mut file, &task_start(&session, "task-2")).unwrap();
+        drop(file);
+
+        assert_frameable_records(&path);
+        assert!(
+            fs::read_to_string(&path).unwrap().contains(&fragment),
+            "a fully written record must survive repair"
+        );
+        let loaded = Session::load(&path).unwrap();
+        assert_eq!(loaded.records.len(), 5);
+        assert!(matches!(loaded.records[3], SessionRecord::Message(_)));
+    }
+
+    #[test]
+    fn open_for_append_repairs_a_tail_larger_than_the_scan_window() {
+        // The backwards scan starts at 64 KiB and doubles; a record larger than
+        // that must still be truncated back to the last boundary.
+        let dir = TempDir::new().unwrap();
+        let mut fragment = String::from(r#"{"type":"message","role":"user","content":"#);
+        fragment.push_str(&"x".repeat(200_000));
+        let (session, path) = write_session_with_raw_tail(&dir, "large-tail.jsonl", &fragment);
+
+        let mut file = Session::open_for_append(&path).unwrap();
+        Session::append_record(&mut file, &task_start(&session, "task-2")).unwrap();
+        drop(file);
+
+        assert_frameable_records(&path);
+        let loaded = Session::load(&path).unwrap();
+        assert_eq!(loaded.records.len(), 4);
+        assert_eq!(loaded.messages().len(), 0);
+    }
+
+    #[test]
+    fn open_for_append_leaves_a_file_at_a_record_boundary_unchanged() {
+        let dir = TempDir::new().unwrap();
+
+        for (name, tail) in [
+            ("clean.jsonl", ""),
+            ("blank-line.jsonl", "\n"),
+            ("blank-lines.jsonl", "\n\n"),
+        ] {
+            let (_, path) = write_session_with_raw_tail(&dir, name, tail);
+            let before = fs::read(&path).unwrap();
+
+            drop(Session::open_for_append(&path).unwrap());
+
+            assert_eq!(
+                fs::read(&path).unwrap(),
+                before,
+                "{name} should be untouched"
+            );
+        }
+    }
+
+    #[test]
+    fn open_for_append_truncates_a_whitespace_only_tail() {
+        let dir = TempDir::new().unwrap();
+        let (session, path) = write_session_with_raw_tail(&dir, "whitespace.jsonl", "   ");
+
+        let mut file = Session::open_for_append(&path).unwrap();
+        Session::append_record(&mut file, &task_start(&session, "task-2")).unwrap();
+        drop(file);
+
+        assert_frameable_records(&path);
+        let loaded = Session::load(&path).unwrap();
+        assert_eq!(loaded.records.len(), 4);
+    }
+
+    #[test]
+    fn open_for_append_rejects_a_file_without_a_complete_record() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("headerless.jsonl");
+        fs::write(&path, r#"{"type":"session_meta","format_version":4"#).unwrap();
+        let before = fs::read(&path).unwrap();
+
+        let error = Session::open_for_append(&path).unwrap_err().to_string();
+
+        assert!(error.contains("no complete record to recover"), "{error}");
+        assert_eq!(fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn a_joined_malformed_record_is_reported_not_repaired() {
+        // The damage #411 fixes in the writer: an unterminated tail that a
+        // previous cake version already joined to a later record. Its boundary
+        // is a guess, so append must leave it for the loader to report.
+        let dir = TempDir::new().unwrap();
+        let session = make_test_session();
+        let path = dir.path().join("joined.jsonl");
+        let header = serde_json::to_string(&meta_record(&session)).unwrap();
+        let record = serde_json::to_string(&task_start(&session, "task-1")).unwrap();
+        let mut joined = format!("{header}\n");
+        joined.push_str(r#"{"type":"message""#);
+        joined.push_str(&record);
+        joined.push('\n');
+        fs::write(&path, joined).unwrap();
+        let before = fs::read(&path).unwrap();
+
+        drop(Session::open_for_append(&path).unwrap());
+
+        assert_eq!(fs::read(&path).unwrap(), before);
+        let error = Session::load(&path).unwrap_err().to_string();
+        assert!(
+            error.contains("Failed to parse line 2 of session file"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn test_session_load_rejects_malformed_interior_record() {
+        let dir = TempDir::new().unwrap();
+        let session = make_test_session();
+        let path = dir.path().join("malformed-interior.jsonl");
+        let header = serde_json::to_string(&meta_record(&session)).unwrap();
+        let record = serde_json::to_string(&task_start(&session, "task-1")).unwrap();
+        fs::write(&path, format!("{header}\n{{\n{record}\n")).unwrap();
+
+        let error = Session::load(&path).unwrap_err().to_string();
+        assert!(
+            error.contains("Failed to parse line 2 of session file"),
+            "{error}"
+        );
     }
 
     #[test]
