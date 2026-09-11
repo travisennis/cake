@@ -62,7 +62,8 @@ struct AttemptCall {
 enum AttemptFailure {
     /// The attempt exceeded its allowance.
     Timeout,
-    /// The provider request failed at the transport layer.
+    /// The provider request failed at the transport layer: while sending the
+    /// request, or while reading the response body.
     Transport(anyhow::Error),
     /// The provider returned a non-success HTTP response.
     Http(HttpFailure),
@@ -307,6 +308,26 @@ fn http_retry_inputs(
     }
 }
 
+/// Classify a response-parse-phase failure into the recovery classes.
+///
+/// A typed body-decode failure --- the 2xx body arrived but is not the expected
+/// envelope --- is the transient class ADR-022 added; a transport failure while
+/// the body was still being read (a reset or truncated body, which reaches the
+/// parse phase rather than request-send time) is the transport class ADR-020
+/// already retries. Both get one bounded recovery; the retry driver still
+/// decides whether the transport error is retryable. Every other parse-phase
+/// failure --- a decoded envelope whose content is unusable, or a provider
+/// `response.failed` event --- stays terminal.
+fn classify_parse_failure(error: anyhow::Error) -> Option<AttemptFailure> {
+    if error.downcast_ref::<ResponseDecodeError>().is_some() {
+        return Some(AttemptFailure::UndecodableResponse);
+    }
+    let transport = error
+        .chain()
+        .any(|cause| cause.downcast_ref::<reqwest::Error>().is_some());
+    transport.then_some(AttemptFailure::Transport(error))
+}
+
 struct ObservedJudgeCall {
     backend: Backend,
     total_start: Instant,
@@ -440,10 +461,7 @@ impl ObservedJudgeCall {
                 // `{:#}` renders the anyhow cause chain, so a typed body-decode
                 // failure retains its serde cause in the fail-closed detail.
                 let detail = format!("{error:#}");
-                let failure = error
-                    .downcast_ref::<ResponseDecodeError>()
-                    .is_some()
-                    .then_some(AttemptFailure::UndecodableResponse);
+                let failure = classify_parse_failure(error);
                 self.finish(
                     Err(JudgeError::Transport {
                         status: None,
