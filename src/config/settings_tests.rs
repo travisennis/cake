@@ -1355,6 +1355,54 @@ enabled = ["Read"]
 }
 
 #[test]
+fn test_resolve_tools_config_no_cli_flags_keeps_settings() {
+    let settings = vec!["Bash".to_string(), "Read".to_string()];
+    assert_eq!(
+        SettingsLoader::resolve_tools_config(false, None, Some(&settings)),
+        Some(settings)
+    );
+    assert_eq!(
+        SettingsLoader::resolve_tools_config(false, None, None),
+        None
+    );
+}
+
+#[test]
+fn test_resolve_tools_config_flag_replaces_settings() {
+    let settings = vec!["Bash".to_string()];
+    assert_eq!(
+        SettingsLoader::resolve_tools_config(false, Some(" Read , Edit "), Some(&settings)),
+        Some(vec!["Read".to_string(), "Edit".to_string()])
+    );
+}
+
+#[test]
+fn test_resolve_tools_config_separators_only_selects_no_tools() {
+    let settings = vec!["Bash".to_string()];
+    assert_eq!(
+        SettingsLoader::resolve_tools_config(false, Some(" , "), Some(&settings)),
+        Some(Vec::new())
+    );
+    assert_eq!(
+        SettingsLoader::resolve_tools_config(false, Some(""), Some(&settings)),
+        Some(Vec::new())
+    );
+}
+
+#[test]
+fn test_resolve_tools_config_no_tools_wins_over_flag_and_settings() {
+    let settings = vec!["Bash".to_string()];
+    assert_eq!(
+        SettingsLoader::resolve_tools_config(true, Some("Read"), Some(&settings)),
+        Some(Vec::new())
+    );
+    assert_eq!(
+        SettingsLoader::resolve_tools_config(true, None, Some(&settings)),
+        Some(Vec::new())
+    );
+}
+
+#[test]
 fn test_judge_settings_allowlist_and_enabled_merge() {
     let home = create_home_dir();
     write_global_settings(
