@@ -127,6 +127,22 @@ fn run_resume(env: &TestEnv) -> std::process::Output {
         .expect("failed to execute cake")
 }
 
+/// Append raw bytes to the session file, as an interrupted writer would.
+fn append_raw(env: &TestEnv, bytes: &str) {
+    use std::io::Write as _;
+
+    let path = env
+        .data_dir
+        .join("sessions")
+        .join(format!("{SESSION_ID}.jsonl"));
+    let mut file = fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .expect("session file should open for append");
+    file.write_all(bytes.as_bytes())
+        .expect("session tail should be writable");
+}
+
 #[tokio::test]
 async fn resume_repairs_incomplete_tool_call_and_preserves_prior_bytes() {
     let env = TestEnv::new("cake-resume-repair-test");
@@ -200,6 +216,60 @@ async fn resume_repairs_incomplete_tool_call_and_preserves_prior_bytes() {
     assert_eq!(input[call_index]["call_id"], "call-1");
     assert_eq!(input[output_index]["call_id"], "call-1");
     assert_eq!(output_index, call_index + 1);
+}
+
+#[tokio::test]
+async fn resume_repairs_a_partial_final_record_before_appending() {
+    let env = TestEnv::new("cake-resume-partial-tail-test");
+    let mock_server = MockServer::start().await;
+    write_responses_settings(&env, &mock_server.uri());
+    let prefix = write_session_fixture(&env, &interrupted_records(&env));
+
+    // A process that died mid-record leaves an unterminated JSON fragment.
+    let fragment = r#"{"type":"assistant","content":"interrup"#;
+    append_raw(&env, fragment);
+
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(success_response()))
+        .expect(2)
+        .mount(&mock_server)
+        .await;
+
+    let output = run_resume(&env);
+    assert!(
+        output.status.success(),
+        "cake should succeed. stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // The complete records survive and the fragment is not joined to the next
+    // record, so every line of the file is still one independent record.
+    let contents = read_session_file(&env);
+    assert!(
+        contents.starts_with(&prefix),
+        "resume must preserve prior session bytes"
+    );
+    assert!(
+        !contents.contains("interrup"),
+        "the incomplete fragment must be removed, not joined: {contents}"
+    );
+    assert!(
+        contents.ends_with('\n'),
+        "the append must end at a boundary"
+    );
+    assert!(
+        session_lines(&env).len() > interrupted_records(&env).len(),
+        "resume should append records after the recovered boundary"
+    );
+
+    // A later resume must still be able to load the session.
+    let output = run_resume(&env);
+    assert!(
+        output.status.success(),
+        "a second resume must load the recovered session. stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[tokio::test]
