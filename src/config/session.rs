@@ -200,8 +200,7 @@ impl Session {
             .open(path)
             .with_context(|| format!("Failed to open session file: {}", path.display()))?;
         lock_session_file(&file, path)?;
-        repair_partial_tail(&file, path)?;
-        Ok(file)
+        repair_partial_tail(&file, path).map(|()| file)
     }
 
     /// Append one JSONL session record and flush it to disk.
