@@ -44,12 +44,6 @@ Analyze persisted session records, with supporting references loaded only when n
 
 Triage a recent failed, interrupted, empty, or truncated cake run.
 
-### Integrating Herdr
-
-[Integrating Herdr with Cake Hooks](herdr-integration.md)
-
-Report Cake lifecycle state to Herdr (or another host) from Cake hooks, with a worked reporter script and `hooks.json` example.
-
 ### CI Runner Images and Required Checks
 
 [CI Runner Images and Required Checks](ci-runner-images-and-required-checks.md)
