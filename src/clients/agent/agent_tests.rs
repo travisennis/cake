@@ -3744,6 +3744,424 @@ printf 'completed:%s' "$index"
         server.join.abort();
     }
 
+    // =========================================================================
+    // Accepted body-read transport recovery (issue #518)
+    //
+    // A provider that accepts the request by sending headers and then resets,
+    // truncates, or otherwise fails while the 2xx body is read raises a
+    // transport failure in the parse phase, not a body-parse failure. It takes
+    // the same bounded retry as a request-phase transport failure, and the
+    // recovery must not execute a provider tool call twice.
+    // =========================================================================
+
+    /// Serve a 200 whose headers promise more body than is sent, then force an
+    /// RST while that body is still unread, so the client's accepted-body read
+    /// fails instead of decoding.
+    async fn reset_after_partial_body(stream: TcpStream, body: &[u8]) {
+        let mut stream = stream;
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+            body.len() + 512
+        );
+        let _ = stream.write_all(head.as_bytes()).await.ok();
+        let _ = stream.write_all(&body[..body.len() / 2]).await.ok();
+        let _ = stream.flush().await.ok();
+        force_rst(stream);
+    }
+
+    /// Serve one response per connection with `Connection: close`, so requests
+    /// map to connection ordinals deterministically even for a pooled client.
+    async fn serve_http_close(stream: &mut TcpStream, status: &str, body: &[u8]) {
+        let head = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+             Connection: close\r\n\r\n",
+            body.len()
+        );
+        let _ = stream.write_all(head.as_bytes()).await.ok();
+        let _ = stream.write_all(body).await.ok();
+        let _ = stream.flush().await.ok();
+    }
+
+    struct BodyReadResetServer {
+        addr: std::net::SocketAddr,
+        join: tokio::task::JoinHandle<()>,
+    }
+
+    /// Serve a scripted provider that resets the accepted body read on the
+    /// first `resets` connections, then answers with `responses` in order.
+    fn spawn_body_read_reset_server(
+        resets: usize,
+        reset_body: serde_json::Value,
+        responses: Vec<serde_json::Value>,
+    ) -> BodyReadResetServer {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let listener = TcpListener::from_std(listener).unwrap();
+
+        let join = tokio::spawn(async move {
+            let mut connection = 0_usize;
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    return;
+                };
+                if read_http_request(&mut stream).await.is_none() {
+                    continue;
+                }
+                if connection < resets {
+                    let body = serde_json::to_vec(&reset_body).unwrap();
+                    reset_after_partial_body(stream, &body).await;
+                } else {
+                    let Some(body) = responses.get(connection - resets) else {
+                        return;
+                    };
+                    let body = serde_json::to_vec(body).unwrap();
+                    serve_http_close(&mut stream, "200 OK", &body).await;
+                }
+                connection += 1;
+            }
+        });
+
+        BodyReadResetServer { addr, join }
+    }
+
+    fn sidecar_records(path: &std::path::Path) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
+    fn push_user_message(agent: &mut Agent) {
+        agent.history_mut().push(ConversationItem::Message {
+            role: Role::User,
+            content: "test".to_string(),
+            id: None,
+            status: None,
+            timestamp: None,
+        });
+    }
+
+    /// Whether an attempt error retains the transport cause, whichever variant
+    /// the platform's TCP stack reports for a reset mid-body.
+    fn assert_transport_cause(error: &str) {
+        let error = error.to_ascii_lowercase();
+        assert!(
+            [
+                "connection reset",
+                "broken pipe",
+                "unexpected eof",
+                "end of file"
+            ]
+            .iter()
+            .any(|cause| error.contains(cause)),
+            "accepted-body transport telemetry should retain its cause: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn body_read_transport_failure_recovers_on_a_fresh_connection() {
+        // Generic across backends: the failure is classified from the error
+        // cause chain, not from either backend's envelope.
+        for api_type in [ApiType::Responses, ApiType::ChatCompletions] {
+            let success = match api_type {
+                ApiType::Responses => success_response(),
+                ApiType::ChatCompletions => success_chat_response(),
+            };
+            let server = spawn_body_read_reset_server(1, success.clone(), vec![success]);
+
+            let telemetry_dir = tempfile::TempDir::new().unwrap();
+            let telemetry_path = telemetry_dir.path().join("sidecar.ndjson");
+            let settled = Arc::new(Mutex::new(Vec::new()));
+            let settled_sink = Arc::clone(&settled);
+            let mut agent = test_agent_for(api_type, &format!("http://{}", server.addr))
+                .with_session_telemetry(
+                    SessionTelemetryWriter::open(&telemetry_path).unwrap(),
+                    uuid::Uuid::new_v4(),
+                )
+                .with_persist_callback(move |record| {
+                    settled_sink
+                        .lock()
+                        .unwrap()
+                        .push(serde_json::to_value(record).unwrap());
+                    Ok(())
+                });
+            push_user_message(&mut agent);
+
+            let result = agent.complete_turn(false).await;
+            assert!(
+                result.is_ok(),
+                "{api_type:?}: a reset accepted body should recover, got: {result:?}"
+            );
+            assert_eq!(agent.total_usage.total_tokens, 15);
+
+            let records = sidecar_records(&telemetry_path);
+            let attempts = records
+                .iter()
+                .filter(|record| record["type"] == "api_attempt")
+                .collect::<Vec<_>>();
+            assert_eq!(
+                attempts.len(),
+                2,
+                "{api_type:?}: one failed attempt plus one bounded retry"
+            );
+            // The failed attempt is a response-phase transport failure: the
+            // headers were accepted, so the phase, status, and terminal class
+            // are all recorded against the body read.
+            assert_eq!(attempts[0]["attempt"], 1);
+            assert_eq!(attempts[0]["phase"], "reading_body");
+            assert_eq!(attempts[0]["status_code"], 200);
+            assert_eq!(attempts[0]["terminal_class"], "transport");
+            assert!(
+                attempts[0]["usage"].is_null(),
+                "an unread body reports no usage and must not infer one"
+            );
+            assert_transport_cause(attempts[0]["error"].as_str().unwrap());
+            assert_eq!(attempts[1]["attempt"], 2);
+            assert_eq!(attempts[1]["terminal_class"], "completed");
+
+            let retries = records
+                .iter()
+                .filter(|record| record["type"] == "retry_scheduled")
+                .collect::<Vec<_>>();
+            assert_eq!(retries.len(), 1);
+            assert_eq!(retries[0]["attempt"], 2);
+            assert_eq!(retries[0]["reason"], "network");
+
+            // Settlement stays per attempt: only the successful retry reports
+            // usage, so the failed attempt is not double counted.
+            let turn_usage = settled
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|record| record["type"] == "turn_usage")
+                .cloned()
+                .collect::<Vec<_>>();
+            assert_eq!(turn_usage.len(), 1);
+            assert_eq!(turn_usage[0]["attempt"], 2);
+            assert_eq!(turn_usage[0]["terminal_class"], "completed");
+            assert_eq!(turn_usage[0]["usage"]["total_tokens"], 15);
+
+            server.join.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn body_read_transport_failure_stops_at_the_retry_cap() {
+        // Every accepted body read resets: recovery is bounded by the existing
+        // retry cap, and the final attempt surfaces the nested transport cause.
+        let server = spawn_body_read_reset_server(usize::MAX, success_response(), Vec::new());
+
+        let telemetry_dir = tempfile::TempDir::new().unwrap();
+        let telemetry_path = telemetry_dir.path().join("sidecar.ndjson");
+        let mut agent = test_agent_with_url(&format!("http://{}", server.addr))
+            .with_session_telemetry(
+                SessionTelemetryWriter::open(&telemetry_path).unwrap(),
+                uuid::Uuid::new_v4(),
+            );
+        push_user_message(&mut agent);
+
+        let error = agent
+            .complete_turn(false)
+            .await
+            .expect_err("exhausted recovery must fail");
+        assert_transport_cause(&format!("{error:#}"));
+
+        let records = sidecar_records(&telemetry_path);
+        let attempts = records
+            .iter()
+            .filter(|record| record["type"] == "api_attempt")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            attempts.len(),
+            5,
+            "the default policy caps retries at 5 attempts"
+        );
+        for attempt in &attempts {
+            assert_eq!(attempt["terminal_class"], "transport");
+            assert_eq!(attempt["phase"], "reading_body");
+            assert_eq!(attempt["status_code"], 200);
+            assert!(attempt["usage"].is_null());
+        }
+
+        let retries = records
+            .iter()
+            .filter(|record| record["type"] == "retry_scheduled")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            retries.len(),
+            4,
+            "the capped final attempt must not schedule another retry"
+        );
+        assert_eq!(retries[3]["attempt"], 5);
+
+        server.join.abort();
+    }
+
+    #[cfg(unix)]
+    fn execution_counter_tool(
+        dir: &tempfile::TempDir,
+    ) -> (crate::config::toolbox::ToolboxTool, std::path::PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let script = dir.path().join("count.sh");
+        let executions = dir.path().join("executions");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nprintf 'run\\n' >> '{}'\nprintf 'ran'\n",
+                executions.display()
+            ),
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&script, permissions).unwrap();
+
+        let tool = crate::config::toolbox::ToolboxTool {
+            registered_name: "tb__count".to_string(),
+            original_name: "count".to_string(),
+            path: script,
+            description: "Record each execution.".to_string(),
+            parameters: serde_json::json!({ "type": "object", "properties": {} }),
+            format: crate::config::toolbox::ToolboxFormat::Json,
+            timeout_secs: 5,
+            replay: crate::types::ReplaySafety::Never,
+        };
+        (tool, executions)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn retried_body_failure_does_not_execute_a_tool_call_twice() {
+        // The reset body is a tool-call response in progress. Because the
+        // accepted body is buffered before the turn returns, the failed
+        // attempt cannot have run the tool, and the retry runs it once.
+        let dir = tempfile::TempDir::new().unwrap();
+        let (tool, executions) = execution_counter_tool(&dir);
+        let tool_call = serde_json::json!({
+            "id": "resp-tool",
+            "output": [
+                {
+                    "type": "function_call",
+                    "id": "fc-1",
+                    "call_id": "call-1",
+                    "name": "tb__count",
+                    "arguments": "{}"
+                }
+            ],
+            "usage": { "input_tokens": 3, "output_tokens": 2, "total_tokens": 5 }
+        });
+        let server = spawn_body_read_reset_server(
+            1,
+            tool_call.clone(),
+            vec![tool_call, loop_final_response()],
+        );
+
+        let context = ToolContext::with_temp_dirs(
+            dir.path().canonicalize().unwrap(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let mut agent = test_agent_with_url(&format!("http://{}", server.addr))
+            .with_tool_context(Arc::new(context))
+            .with_toolbox_tools(vec![tool]);
+
+        assert_eq!(agent.send("count once".to_string()).await.unwrap(), "done");
+        assert_eq!(agent.tool_call_count, 1);
+        assert_eq!(
+            std::fs::read_to_string(&executions)
+                .unwrap()
+                .lines()
+                .count(),
+            1,
+            "a retried accepted-body failure must not execute the tool call twice"
+        );
+
+        server.join.abort();
+    }
+
+    /// Complete but undecodable, unterminated, and semantically unusable 2xx
+    /// bodies stay on the body-parse path: exactly one attempt, no transport
+    /// retry.
+    async fn assert_body_parse_terminal(response: ResponseTemplate) {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(response)
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let telemetry_dir = tempfile::TempDir::new().unwrap();
+        let telemetry_path = telemetry_dir.path().join("sidecar.ndjson");
+        let mut agent = test_agent_with_url(&mock_server.uri()).with_session_telemetry(
+            SessionTelemetryWriter::open(&telemetry_path).unwrap(),
+            uuid::Uuid::new_v4(),
+        );
+        push_user_message(&mut agent);
+
+        assert!(agent.complete_turn(false).await.is_err());
+
+        let records = sidecar_records(&telemetry_path);
+        let attempts = records
+            .iter()
+            .filter(|record| record["type"] == "api_attempt")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            attempts.len(),
+            1,
+            "a body-parse failure must not take a transport retry"
+        );
+        assert_eq!(attempts[0]["phase"], "reading_body");
+        assert_eq!(attempts[0]["status_code"], 200);
+        assert_eq!(attempts[0]["terminal_class"], "body_parse");
+    }
+
+    #[tokio::test]
+    async fn complete_malformed_body_is_not_retried_as_transport() {
+        assert_body_parse_terminal(
+            ResponseTemplate::new(200).set_body_string("<html>gateway error</html>"),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn stream_without_terminal_event_is_not_retried_as_transport() {
+        assert_body_parse_terminal(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Type", "text/event-stream")
+                .set_body_string(
+                    "event: response.output_text.delta\n\
+                     data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n",
+                ),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn semantic_parse_failure_is_not_retried_as_transport() {
+        // A decodable envelope whose function call omits a required field is a
+        // semantic parse failure, not a transport failure.
+        assert_body_parse_terminal(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": "resp-broken",
+            "output": [
+                {
+                    "type": "function_call",
+                    "id": "fc-1",
+                    "call_id": "",
+                    "name": "Read",
+                    "arguments": "{}"
+                }
+            ],
+            "usage": { "input_tokens": 1, "output_tokens": 1, "total_tokens": 2 }
+        })))
+        .await;
+    }
+
     #[tokio::test]
     async fn test_chat_completions_400_bad_request_returns_error() {
         let mock_server = MockServer::start().await;
