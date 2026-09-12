@@ -2,6 +2,8 @@
 
 Use this integration guide to report Cake's lifecycle to [Herdr](https://herdr.dev) so a Cake pane shows `working` while a turn runs and settles when the process finishes. The integration is configuration only: a reporter script plus `hooks.json` entries. No Cake code changes are required. The same pattern works for any host that reports agent state from lifecycle hooks.
 
+This guide targets Unix-like systems (macOS and Linux). Cake does not currently support Windows as a built or tested target, so this guide intentionally provides no Windows configuration.
+
 ## When to Use It
 
 - You run Cake inside a Herdr pane and want the pane's agent state to reflect Cake activity.
@@ -15,20 +17,20 @@ The [Herdr custom integration guide](https://herdr.dev/docs/integrations/#integr
 
 - A process in a Herdr pane inherits `HERDR_ENV`, `HERDR_PANE_ID`, `HERDR_BIN_PATH`, and `HERDR_SOCKET_PATH`.
 - The agent reports state with `herdr pane report-agent "$HERDR_PANE_ID" --source custom:<name> --agent <label> --state idle|working|blocked`.
-- Session identity can ride along with `--agent-session-id`/`--agent-session-path`, or be reported separately with `herdr pane report-agent-session`.
 - The integration guards on `HERDR_ENV=1` so it is inert outside Herdr.
-- If reports can arrive out of order, pass a strictly increasing `--seq`; Herdr ignores stale sequence numbers from the same source. A release must also carry a newer `--seq` or it is discarded.
 
-Cake supplies what the report needs. Hook commands inherit the pane environment, and Cake's hook payload already carries `session_id`, `transcript_path`, `hook_event_name`, and the `SessionStart` `source` (`startup`, `resume`, or `fork`).
+This example intentionally omits `--seq`: Cake invokes these lifecycle hooks serially for one process. Do not run multiple Cake processes in the same Herdr pane with this recipe unless you add a shared, strictly increasing sequence generator; Herdr ignores stale sequence numbers from the same source.
+
+Cake supplies what the report needs. Hook commands inherit the pane environment, and Cake's hook payload carries the lifecycle event fields described in [Integration contracts](../integrations.md). This state-only reporter does not need to parse that payload.
 
 ## Lifecycle Mapping
 
-  | Cake hook event    | Herdr action                                                           | Why                                                                        |
-  | ------------------ | ---------------------------------------------------------------------- | -------------------------------------------------------------------------- |
-  | `SessionStart`     | `report-agent-session` (identity), then `report-agent --state working` | The turn is starting; report the resumable session reference alongside it. |
-  | `UserPromptSubmit` | `report-agent --state working`                                         | The agent is processing the prompt.                                        |
-  | `Stop`             | `report-agent --state idle`                                            | A successful or cut-off turn finished; this is not an exit event.          |
-  | `ErrorOccurred`    | `report-agent --state idle`                                            | A provider/turn error occurred after send; early failures may skip it.     |
+  | Cake hook event    | Herdr action                   | Why                                                                    |
+  | ------------------ | ------------------------------ | ---------------------------------------------------------------------- |
+  | `SessionStart`     | `report-agent --state working` | The turn is starting.                                                  |
+  | `UserPromptSubmit` | `report-agent --state working` | The agent is processing the prompt.                                    |
+  | `Stop`             | `report-agent --state idle`    | A successful or cut-off turn finished; this is not an exit event.      |
+  | `ErrorOccurred`    | `report-agent --state idle`    | A provider/turn error occurred after send; early failures may skip it. |
 
 `PreToolUse`/`PostToolUse` are not needed because `working` already covers the whole turn. Cake never reports `blocked`: it has no interactive permission or ask flow ([Integration contracts](../integrations.md)), so it never pauses mid-turn for a user decision.
 
@@ -56,7 +58,7 @@ Save as `herdr-cake-report.sh` (or `.cake/hooks/herdr-cake-report.sh` for a proj
 # herdr-cake-report.sh - report Cake lifecycle state to Herdr.
 #
 # Wire from Cake hooks (see hooks.json):
-#   SessionStart     -> session  (report session identity, then working)
+#   SessionStart     -> working
 #   UserPromptSubmit -> working
 #   Stop             -> idle
 #   ErrorOccurred    -> idle
@@ -67,7 +69,7 @@ set -u
 
 action="${1:-}"
 case "$action" in
-  session|working|idle|blocked|release) ;;
+  working|idle) ;;
   *) exit 0 ;;
 esac
 
@@ -75,56 +77,18 @@ esac
 [ -n "${HERDR_BIN_PATH:-}" ] || exit 0
 [ -n "${HERDR_PANE_ID:-}" ] || exit 0
 
-payload="$(cat 2>/dev/null || true)"
-if command -v jq >/dev/null 2>&1; then
-  sid="$(printf '%s' "$payload" | jq -r '.session_id // empty' 2>/dev/null || true)"
-  tpath="$(printf '%s' "$payload" | jq -r '.transcript_path // empty' 2>/dev/null || true)"
-  ssource="$(printf '%s' "$payload" | jq -r '.source // empty' 2>/dev/null || true)"
-else
-  sid=""; tpath=""; ssource=""
-fi
-case "$ssource" in startup|resume|fork) ;; *) ssource="" ;; esac
-
 SOURCE="custom:cake"
 AGENT="cake"
-seq="$(python3 -c 'import time; print(time.time_ns())' 2>/dev/null || echo 0)"
 
 if [ -n "${HERDR_CAKE_LOG:-}" ]; then
-  printf '%s action=%s pane=%s sid=%s path=%s src=%s seq=%s\n' \
-    "$(date -u +%FT%TZ)" "$action" "${HERDR_PANE_ID:-}" "$sid" "$tpath" "$ssource" "$seq" \
+  printf '%s action=%s pane=%s state=%s\n' \
+    "$(date -u +%FT%TZ)" "$action" "${HERDR_PANE_ID}" "$action" \
     >>"$HERDR_CAKE_LOG" 2>/dev/null || true
 fi
 
 run() { "$HERDR_BIN_PATH" "$@" >/dev/null 2>&1 || true; }
-
-report_state() {
-  run pane report-agent "$HERDR_PANE_ID" --source "$SOURCE" --agent "$AGENT" \
-    --state "$1" --seq "$seq"
-}
-
-report_identity() {
-  if [ -n "$tpath" ]; then
-    if [ -n "$ssource" ]; then
-      run pane report-agent-session "$HERDR_PANE_ID" --source "$SOURCE" --agent "$AGENT" \
-        --agent-session-id "$sid" --agent-session-path "$tpath" \
-        --session-start-source "$ssource" --seq "$seq"
-    else
-      run pane report-agent-session "$HERDR_PANE_ID" --source "$SOURCE" --agent "$AGENT" \
-        --agent-session-id "$sid" --agent-session-path "$tpath" --seq "$seq"
-    fi
-  fi
-}
-
-case "$action" in
-  session)
-    [ -n "$sid" ] && report_identity
-    report_state working
-    ;;
-  working) report_state working ;;
-  idle)    report_state idle ;;
-  blocked) report_state blocked ;;
-  release) run pane release-agent "$HERDR_PANE_ID" --source "$SOURCE" --agent "$AGENT" --seq "$seq" ;;
-esac
+run pane report-agent "$HERDR_PANE_ID" --source "$SOURCE" --agent "$AGENT" \
+  --state "$action"
 
 exit 0
 ```
@@ -141,7 +105,7 @@ The script emits no stdout and always exits `0`, which matters because Cake pars
       {
         "matcher": "*",
         "hooks": [
-          { "type": "command", "command": "\"${XDG_CONFIG_HOME:-$HOME/.config}/cake/hooks/herdr-cake-report.sh\" session", "timeout": 10 }
+          { "type": "command", "command": "\"${XDG_CONFIG_HOME:-$HOME/.config}/cake/hooks/herdr-cake-report.sh\" working", "timeout": 10 }
         ]
       }
     ],
@@ -170,7 +134,7 @@ The script emits no stdout and always exits `0`, which matters because Cake pars
 }
 ```
 
-For a project install, replace the command with the path to the project copy, for example `"./.cake/hooks/herdr-cake-report.sh" session`. Command strings run through `sh -c` with the project root as the working directory.
+For a project install, replace the command with the path to the project copy, for example `"./.cake/hooks/herdr-cake-report.sh" working`. On supported Unix-like systems, command strings run through `sh -c` with the project root as the working directory.
 
 ## Verify
 
@@ -183,7 +147,7 @@ If no state appears, re-run with `HERDR_CAKE_LOG` set and confirm the pane expor
 ## Limitations
 
 - **No exit event.** Cake has no `SessionEnd` hook, so the reporter cannot call `herdr pane release-agent` on process exit (tracked in [#542](https://github.com/travisennis/cake/issues/542)). `Stop` and `ErrorOccurred` are best-effort turn-boundary hooks: a pre-request hook that fails or blocks before `client.send()` can skip both after the reporter has reported `working`, and an interrupt or crash can also bypass them. Herdr marks the pane `done` once the one-shot Cake process exits, but Cake cannot reliably release the lifecycle authority at that boundary.
-- **No automatic session restore.** Herdr accepts `report-agent-session` for an unrecognized agent but does not surface or resume the reference; adding a new agent needs a Herdr binary update. The reported identity is still readable through Herdr's pane and agent APIs.
+- **No native session identity.** Cake's `session_id` and transcript path are available in hook payloads, but current Herdr only retains session references for registered integrations; `custom:cake` is not one. This guide reports lifecycle state only.
 - **One-shot agent.** Cake runs one agent turn per process, so `idle` means the process is about to exit, not that it is waiting for the next prompt.
 - **`blocked` is unreachable.** Cake has no mid-turn user decision, so only `working` and `idle` are ever reported.
 
