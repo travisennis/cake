@@ -209,15 +209,19 @@ fn render_sessions_json(sessions: &[SessionInfo]) -> anyhow::Result<String> {
         .map_err(|e| anyhow::anyhow!("Failed to serialize sessions: {e}"))
 }
 
-/// Truncate a prompt string to fit within the given character limit,
-/// appending an ellipsis when truncated.
-fn truncate_prompt(prompt: &str, max_len: usize) -> String {
-    if prompt.len() <= max_len {
+/// Truncate a prompt string to fit within the given limit, appending an
+/// ellipsis when truncated.
+///
+/// `max_chars` counts Unicode scalar values, not bytes, so multi-byte
+/// prompts (emoji, CJK) are cut to the same number of characters as ASCII
+/// ones and the result is always valid UTF-8.
+fn truncate_prompt(prompt: &str, max_chars: usize) -> String {
+    if prompt.chars().count() <= max_chars {
         prompt.to_string()
     } else {
         let mut truncated = prompt
             .chars()
-            .take(max_len.saturating_sub(1))
+            .take(max_chars.saturating_sub(1))
             .collect::<String>();
         truncated.push('…');
         truncated
@@ -480,9 +484,84 @@ mod tests {
     }
 
     #[test]
-    fn truncate_prompt_long() {
+    fn truncate_prompt_long_ascii() {
         let result = truncate_prompt("this is a very long prompt string", 10);
         assert_eq!(result, "this is a…");
-        assert!(result.len() <= 13); // 9 chars + 3-byte ellipsis
+        assert_eq!(result.chars().count(), 10);
+    }
+
+    #[test]
+    fn truncate_prompt_short_prompt_is_unchanged() {
+        let result = truncate_prompt("short", 10);
+        assert_eq!(result, "short");
+        assert!(!result.contains('…'));
+    }
+
+    #[test]
+    fn truncate_prompt_at_exact_character_boundary_is_unchanged() {
+        // Exactly the limit in characters, but well over it in bytes: the
+        // character limit must not append an ellipsis here.
+        let prompt = "日本語のプロンプト";
+        assert_eq!(prompt.chars().count(), 9);
+        assert!(prompt.len() > 9);
+        let result = truncate_prompt(prompt, 9);
+        assert_eq!(result, prompt);
+        assert!(!result.contains('…'));
+    }
+
+    #[test]
+    fn truncate_prompt_multibyte_cjk_uses_character_limit() {
+        let prompt = "日本語のプロンプトです";
+        let result = truncate_prompt(prompt, 5);
+        assert_eq!(result, "日本語の…");
+        assert_eq!(result.chars().count(), 5);
+        // Truncation stops at a valid UTF-8 boundary.
+        assert!(std::str::from_utf8(result.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn truncate_prompt_multibyte_emoji_uses_character_limit() {
+        let prompt = "🦀🦀🦀🦀🦀🦀";
+        assert!(prompt.len() > 4);
+        let result = truncate_prompt(prompt, 4);
+        assert_eq!(result, "🦀🦀🦀…");
+        assert_eq!(result.chars().count(), 4);
+    }
+
+    #[test]
+    fn format_sessions_table_truncates_multibyte_prompt_without_breaking_alignment() {
+        let long_prompt = "日本語のとても長いプロンプト".repeat(10);
+        let sessions = vec![SessionInfo {
+            session_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_string(),
+            timestamp: DateTime::parse_from_rfc3339("2026-07-09T12:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            first_prompt: long_prompt,
+        }];
+        let output = format_sessions_table(&sessions);
+        let prompt_line = output
+            .lines()
+            .find(|line| line.starts_with("2026-07-09"))
+            .expect("timestamped prompt line");
+        let prompt_part = prompt_line
+            .strip_prefix("2026-07-09 12:00:00 UTC  ")
+            .expect("date prefix");
+        assert_eq!(prompt_part.chars().count(), 72);
+        assert!(prompt_part.ends_with('…'));
+    }
+
+    #[test]
+    fn render_sessions_json_keeps_full_multibyte_prompt() {
+        let prompt = "日本語のとても長いプロンプト".repeat(10);
+        let sessions = vec![SessionInfo {
+            session_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_string(),
+            timestamp: DateTime::parse_from_rfc3339("2026-07-09T12:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            first_prompt: prompt.clone(),
+        }];
+        let output = super::render_sessions_json(&sessions).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(parsed[0]["first_prompt"], prompt);
     }
 }
