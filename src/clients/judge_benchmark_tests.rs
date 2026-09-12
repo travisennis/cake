@@ -182,7 +182,10 @@ struct TrialRecord {
     /// Whether the verdict label matched the expected label; `None` when the
     /// judge produced no verdict (error or bypass).
     agreed: Option<bool>,
-    /// The attempt terminal class when the trial failed; `None` on a verdict.
+    /// The terminal class of the trial's last provider attempt: the failure the
+    /// evaluation ended with after any bounded recovery. `None` on a verdict,
+    /// including one produced by a recovery attempt; the first attempt's class
+    /// stays in `attempts`.
     failure_class: Option<&'static str>,
     attempt_count: usize,
     /// Total judge latency (first attempt) in milliseconds.
@@ -306,12 +309,17 @@ struct ModelReport {
     trials: usize,
     /// Trials that produced a verdict (successful evaluations).
     verdicts: usize,
-    /// Total provider attempts across trials (1 today; >1 after #204's retry).
+    /// Total provider attempts across trials; more than `trials` when the
+    /// bounded recovery ran.
     attempts: usize,
     timeouts: usize,
     failure_count: usize,
     failures_by_class: BTreeMap<String, usize>,
+    /// Share of trials whose evaluation ended without a verdict because it
+    /// timed out, after any bounded recovery.
     timeout_rate_percent: f64,
+    /// Share of trials whose evaluation ended without a verdict, after any
+    /// bounded recovery. A recovered trial counts as a verdict, not a failure.
     failure_rate_percent: f64,
     label_agreement_percent: f64,
     consistency_percent: Option<f64>,
@@ -427,6 +435,10 @@ fn case_classes(entry: &CorpusEntry) -> Vec<String> {
 }
 
 /// Build a trial record from a corpus entry and the observed judge evaluation.
+///
+/// The record's `failure_class` is the *last* attempt's terminal class, so a
+/// trial the bounded recovery rescued reports a verdict instead of the first
+/// attempt's transient failure; the per-attempt classes stay in `attempts`.
 fn trial_record(model: &str, entry: &CorpusEntry, evaluation: JudgeEvaluation) -> TrialRecord {
     let attempt = evaluation.attempts.first();
     let (verdict, code, agreed) = match &evaluation.outcome {
@@ -440,7 +452,10 @@ fn trial_record(model: &str, entry: &CorpusEntry, evaluation: JudgeEvaluation) -
         },
         Ok(JudgeOutcome::Bypassed) | Err(_) => (None, None, None),
     };
-    let failure_class = attempt.and_then(|attempt| failure_class_name(attempt.terminal_class));
+    let failure_class = evaluation
+        .attempts
+        .last()
+        .and_then(|attempt| failure_class_name(attempt.terminal_class));
     let tokens = evaluation
         .attempts
         .iter()
@@ -1061,7 +1076,7 @@ async fn judge_benchmark_live_slos() {
 #[cfg(test)]
 mod deterministic {
     use super::*;
-    use crate::clients::judge::JudgeDecision;
+    use crate::clients::judge::{JudgeDecision, JudgeError, JudgeVerdict};
     use crate::clients::judge_rubric::VerdictCode;
     use crate::config::model::{ApiType, ModelConfig};
     use crate::types::{InputTokensDetails, OutputTokensDetails, Usage};
@@ -1583,6 +1598,115 @@ mod deterministic {
         assert_eq!(model.tokens.total, 130);
         assert_eq!(model.tokens.cached, 20);
         assert_eq!(model.tokens.reasoning, 5);
+    }
+
+    /// A trial the bounded recovery rescued is a verdict, not a failure, and a
+    /// trial that stayed failed is counted once with its final class: the rate
+    /// the SLO gate reads must be the post-retry rate (issue #287).
+    #[test]
+    fn bench_recovered_trial_counts_as_a_verdict_not_a_failure() {
+        let entry = corpus_entry(
+            1,
+            "git status",
+            ExpectedDecision::Allowed,
+            None,
+            None,
+            vec![],
+        );
+        let recovered = trial_record(
+            "m1",
+            &entry,
+            scripted_evaluation(
+                Ok(JudgeOutcome::Verdict {
+                    verdict: JudgeVerdict {
+                        decision: JudgeDecision::Allow,
+                        code: None,
+                        message: "Safe".to_string(),
+                        confidence: None,
+                    },
+                    overridden: false,
+                }),
+                &[
+                    JudgeAttemptTerminalClass::Timeout,
+                    JudgeAttemptTerminalClass::Verdict,
+                ],
+            ),
+        );
+        assert_eq!(recovered.failure_class, None);
+        assert_eq!(recovered.verdict, Some("allow"));
+        assert_eq!(recovered.attempt_count, 2);
+
+        let exhausted = trial_record(
+            "m1",
+            &entry,
+            scripted_evaluation(
+                Err(JudgeError::Timeout(Duration::from_secs(30))),
+                &[
+                    JudgeAttemptTerminalClass::Timeout,
+                    JudgeAttemptTerminalClass::Timeout,
+                ],
+            ),
+        );
+        assert_eq!(exhausted.failure_class, Some("timeout"));
+
+        let config = config_with_models(&["m1"]);
+        let report = compute_report(&[recovered, exhausted], &config, "run-test");
+        let model = &report.models[0];
+        assert_eq!(model.trials, 2);
+        assert_eq!(model.verdicts, 1);
+        assert_eq!(model.attempts, 4);
+        assert_eq!(model.timeouts, 1);
+        assert_eq!(model.failure_count, 1);
+        assert_close(model.timeout_rate_percent, 50.0);
+        assert_close(model.failure_rate_percent, 50.0);
+    }
+
+    /// A synthesized evaluation with one attempt per supplied terminal class,
+    /// for report-computation tests that must not call a provider.
+    fn scripted_evaluation(
+        outcome: Result<JudgeOutcome, JudgeError>,
+        classes: &[JudgeAttemptTerminalClass],
+    ) -> JudgeEvaluation {
+        let attempts = classes
+            .iter()
+            .enumerate()
+            .map(|(index, class)| JudgeAttemptTelemetry {
+                attempt: u32::try_from(index + 1).expect("attempt index fits a u32"),
+                retry_ordinal: u32::try_from(index).expect("retry ordinal fits a u32"),
+                retry_reason: None,
+                retry_delay_ms: 0,
+                effective_deadline_ms: 45_000,
+                request_build_ms: 0,
+                request_ms: 1,
+                response_parse_ms: 1,
+                verdict_parse_ms: 0,
+                total_ms: 1_000,
+                history_items: 2,
+                system_prompt_bytes: 4_200,
+                user_prompt_bytes: 210,
+                model: "provider/m1".to_string(),
+                api_type: ApiType::ChatCompletions,
+                reasoning_effort: None,
+                temperature: Some(0.0),
+                top_p: None,
+                max_output_tokens: Some(128),
+                reasoning_max_tokens: None,
+                configured_timeout_ms: 30_000,
+                tool_count: 0,
+                tool_choice: None,
+                status_code: Some(200),
+                call_id: None,
+                provider_request_id: None,
+                terminal_class: *class,
+                usage: None,
+                termination: None,
+            })
+            .collect();
+        JudgeEvaluation {
+            outcome,
+            attempts,
+            diagnostic: None,
+        }
     }
 
     /// A serialized trial with full attempt telemetry, shared by the JSON

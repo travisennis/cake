@@ -1057,6 +1057,180 @@ async fn judge_transport_error_then_allow_recovers_on_fresh_connection() {
     );
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn judge_body_read_transport_failure_recovers_on_fresh_connection() {
+    // A provider that sends response headers and then resets the connection
+    // while the body is still unread: the observed invalid-body class. The body
+    // never arrives, so the attempt records no verdict, usage, or provider
+    // request ID. The second connection answers normally, so recovery on a
+    // fresh client produces the verdict.
+    let addr = spawn_body_read_server(1);
+
+    let client = JudgeClient::new(
+        test_config(format!("http://{addr}")),
+        Duration::from_secs(5),
+        Duration::from_secs(2),
+    );
+    let call = client
+        .judge_observed(request("git status", None), false)
+        .await;
+
+    let verdict = call.result.unwrap();
+    assert_eq!(verdict.decision, JudgeDecision::Allow);
+    assert_eq!(call.attempts.len(), 2);
+    assert_eq!(
+        call.attempts[0].terminal_class,
+        crate::session_telemetry::JudgeAttemptTerminalClass::ResponseParse
+    );
+    assert_eq!(
+        call.attempts[1].retry_reason,
+        Some(crate::session_telemetry::RetryReasonSnapshot::Network)
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn judge_body_read_transport_failure_twice_fails_closed() {
+    // Recovery is bounded: a provider that resets every body read still fails
+    // closed after one recovery attempt, inside the documented deadline.
+    let addr = spawn_body_read_server(usize::MAX);
+
+    let client = JudgeClient::new(
+        test_config(format!("http://{addr}")),
+        Duration::from_secs(5),
+        Duration::from_secs(2),
+    );
+    let started = std::time::Instant::now();
+    let call = client
+        .judge_observed(request("git status", None), false)
+        .await;
+
+    assert!(matches!(
+        call.result,
+        Err(JudgeError::Transport { status: None, .. })
+    ));
+    assert_eq!(call.attempts.len(), 2);
+    assert!(
+        started.elapsed() <= Duration::from_secs(7),
+        "exhausted recovery must stay inside the deadline plus tolerance"
+    );
+}
+
+/// Spawn a scripted provider that resets the connection while the response
+/// body is still unread for the first `reset_connections` connections, then
+/// answers with an allow verdict. Returns the listening address.
+///
+/// The thread is detached: a test whose client stops after the resets has no
+/// second connection to serve, so it must not be joined.
+#[cfg(unix)]
+fn spawn_body_read_server(reset_connections: usize) -> std::net::SocketAddr {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        for (index, stream) in listener.incoming().enumerate() {
+            let mut stream = stream.unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            read_request(&mut stream);
+            if index < reset_connections {
+                reset_with_body_unread(&mut stream);
+                continue;
+            }
+            write_allow_response(&mut stream);
+            return;
+        }
+    });
+    addr
+}
+
+/// Write 200 response headers promising more bytes than are sent, then reset
+/// the connection so the client's body read fails instead of decoding.
+#[cfg(unix)]
+fn reset_with_body_unread(stream: &mut std::net::TcpStream) {
+    use std::io::Write;
+    use std::os::unix::io::AsRawFd;
+
+    let body = chat_response(r#"{"verdict":"allow","message":"Safe"}"#).to_string();
+    let headers = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+        body.len() + 512
+    );
+    let _ = stream.write_all(headers.as_bytes()).ok();
+    let _ = stream.write_all(&body.as_bytes()[..body.len() / 2]).ok();
+    let _ = stream.flush().ok();
+    // SAFETY: `setsockopt` mutates a plain `libc::linger` value on a freshly
+    // accepted socket; the pointers are valid for the call and the length
+    // matches the type.
+    unsafe {
+        let linger = libc::linger {
+            l_onoff: 1,
+            l_linger: 0,
+        };
+        libc::setsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_LINGER,
+            (&raw const linger).cast::<libc::c_void>(),
+            libc::socklen_t::try_from(std::mem::size_of::<libc::linger>())
+                .expect("linger size fits a socklen_t"),
+        );
+    }
+}
+
+#[cfg(unix)]
+fn write_allow_response(stream: &mut std::net::TcpStream) {
+    use std::io::Write;
+
+    let body = chat_response(r#"{"verdict":"allow","message":"Safe"}"#).to_string();
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    let _ = stream.write_all(response.as_bytes()).ok();
+}
+
+/// Read one complete HTTP request (headers plus any declared body) so the
+/// scripted server never resets the connection while the client is still
+/// writing its request body.
+#[cfg(unix)]
+fn read_request(stream: &mut std::net::TcpStream) {
+    use std::io::Read;
+
+    let mut buffer = Vec::new();
+    let mut chunk = [0_u8; 4096];
+    loop {
+        match stream.read(&mut chunk) {
+            Ok(0) | Err(_) => return,
+            Ok(read) => {
+                buffer.extend_from_slice(&chunk[..read]);
+                let Some(headers_end) = find_headers_end(&buffer) else {
+                    continue;
+                };
+                let headers = String::from_utf8_lossy(&buffer[..headers_end]).to_lowercase();
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length:"))
+                    .and_then(|value| value.trim().parse::<usize>().ok())
+                    .unwrap_or(0);
+                if buffer.len() >= headers_end + content_length {
+                    return;
+                }
+            },
+        }
+    }
+}
+
+#[cfg(unix)]
+fn find_headers_end(buffer: &[u8]) -> Option<usize> {
+    buffer
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|start| start + 4)
+}
+
 #[tokio::test]
 async fn judge_non_retryable_http_failure_does_not_recover() {
     // Auth, client, and config errors are terminal: retrying them would mask
