@@ -428,7 +428,9 @@ pub enum ApiAttemptTerminalClass {
     Timeout,
     /// The provider attempt future was cancelled before it completed.
     Cancelled,
-    /// The request phase failed (connect or stale connection).
+    /// The request failed at the transport layer: while it was sent (a
+    /// connect or stale connection), or while an accepted 2xx response body
+    /// was read (a reset, broken pipe, or truncation).
     Transport,
     /// The provider returned a non-2xx HTTP response.
     Http,

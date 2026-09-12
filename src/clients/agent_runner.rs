@@ -286,7 +286,9 @@ impl AgentRunner {
                             session_id,
                             turn_index,
                             &mut in_flight,
-                            &request_overrides,
+                            &mut client,
+                            &mut disable_connection_reuse,
+                            &mut request_overrides,
                             &mut settle_usage,
                         )
                         .await
@@ -335,14 +337,21 @@ impl AgentRunner {
 
     /// Parse an accepted 2xx provider body, record per-attempt telemetry, and
     /// either return the completed turn, schedule a retry for a transient
-    /// `response.failed`, or surface the terminal parse error.
+    /// transport failure or `response.failed`, or surface the terminal parse
+    /// error.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the accepted-body phase threads identity, timing, attempt, and telemetry"
+    )]
     async fn handle_success_response<F>(
         &self,
         response: reqwest::Response,
         session_id: uuid::Uuid,
         turn_index: u32,
         in_flight: &mut InFlightAttempt<'_, F>,
-        request_overrides: &RequestOverrides,
+        client: &mut reqwest::Client,
+        disable_connection_reuse: &mut bool,
+        request_overrides: &mut RequestOverrides,
         settle_usage: &mut impl FnMut(TurnUsageSettlement),
     ) -> AttemptResult
     where
@@ -356,15 +365,10 @@ impl AgentRunner {
             .as_ref()
             .err()
             .and_then(|error| error.downcast_ref::<ResponsesStreamFailed>());
-        let terminal_class = if parse_result.as_ref().err().is_some_and(error_is_timeout) {
-            ApiAttemptTerminalClass::Timeout
-        } else {
-            match (parse_result.is_ok(), failed.is_some()) {
-                (true, _) => ApiAttemptTerminalClass::Completed,
-                (false, true) => ApiAttemptTerminalClass::ResponseFailed,
-                (false, false) => ApiAttemptTerminalClass::BodyParse,
-            }
-        };
+        let terminal_class = accepted_body_terminal_class(&parse_result);
+        // The recorded class selects the recovery path, so telemetry and
+        // behavior can never disagree about the failure's nature.
+        let body_read_transport = terminal_class == ApiAttemptTerminalClass::Transport;
         let provider_request_id = parse_result
             .as_ref()
             .ok()
@@ -400,7 +404,7 @@ impl AgentRunner {
             provider_request_id,
             responses_failed,
             phase,
-            request_overrides: RequestOverridesSnapshot::from(request_overrides),
+            request_overrides: RequestOverridesSnapshot::from(&*request_overrides),
         });
 
         if let Some(usage) = usage {
@@ -414,6 +418,22 @@ impl AgentRunner {
 
         match parse_result {
             Ok(turn) => AttemptResult::Completed(turn),
+            // A reset, broken pipe, or truncated body read after the headers
+            // were accepted is the same transient transport class the request
+            // phase already recovers from, so it takes the same bounded
+            // retry rather than the body-parse terminal path.
+            Err(parse_error) if body_read_transport => {
+                self.schedule_transport_retry(
+                    parse_error,
+                    session_id,
+                    turn_index,
+                    in_flight,
+                    client,
+                    disable_connection_reuse,
+                    request_overrides,
+                )
+                .await
+            },
             Err(parse_error) => match self
                 .recover_response_failed(
                     parse_error,
@@ -629,7 +649,50 @@ impl AgentRunner {
             request_overrides: RequestOverridesSnapshot::from(&*request_overrides),
         });
 
-        match retry::classify_transport_error(&self.retry_policy, &error, attempt, session_id) {
+        self.schedule_transport_retry(
+            error,
+            session_id,
+            turn_index,
+            in_flight,
+            client,
+            disable_connection_reuse,
+            request_overrides,
+        )
+        .await
+    }
+
+    /// Schedule the bounded retry for a transient transport failure, or
+    /// return it terminal.
+    ///
+    /// Shared by the request phase (before any HTTP response) and the accepted
+    /// body-read phase, so both use the same classifier, retry cap, backoff,
+    /// and stale-connection no-reuse policy. Only one of the two phases can
+    /// fail for a given attempt, so a body-read failure cannot be retried
+    /// twice, and no tool call has run when this is reached because the
+    /// accepted body is fully buffered before the turn returns.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the transport-retry phase threads identity, timing, attempt, and telemetry"
+    )]
+    async fn schedule_transport_retry<F>(
+        &self,
+        error: anyhow::Error,
+        session_id: uuid::Uuid,
+        turn_index: u32,
+        in_flight: &mut InFlightAttempt<'_, F>,
+        client: &mut reqwest::Client,
+        disable_connection_reuse: &mut bool,
+        request_overrides: &mut RequestOverrides,
+    ) -> AttemptResult
+    where
+        F: FnMut(AgentRunnerTelemetryEvent),
+    {
+        match retry::classify_transport_error(
+            &self.retry_policy,
+            &error,
+            in_flight.attempt,
+            session_id,
+        ) {
             retry::RetryDecision::Retry { status } => {
                 if retry::should_disable_connection_reuse(&error) && !*disable_connection_reuse {
                     // Only this turn's remaining attempts use the no-reuse
@@ -642,7 +705,7 @@ impl AgentRunner {
                         &status,
                         turn_index,
                         false,
-                        &*request_overrides,
+                        request_overrides,
                     ),
                 ));
                 wait_for_retry(&status).await;
@@ -682,6 +745,52 @@ fn reported_usage_from_result(result: &Result<TurnResult, anyhow::Error>) -> Opt
                         .and_then(ResponseDecodeError::usage)
                 })
         })
+}
+
+/// Classify how an accepted 2xx provider attempt ended, for telemetry.
+///
+/// The failure classes are ordered so the most specific cause wins: the HTTP
+/// deadline (`timeout`), the provider's own terminal `response.failed` event,
+/// a transport failure raised while the accepted body was read, and finally a
+/// body-decode or semantic parse failure.
+fn accepted_body_terminal_class(
+    parse_result: &Result<TurnResult, anyhow::Error>,
+) -> ApiAttemptTerminalClass {
+    let Err(error) = parse_result else {
+        return ApiAttemptTerminalClass::Completed;
+    };
+
+    if error_is_timeout(error) {
+        ApiAttemptTerminalClass::Timeout
+    } else if error.downcast_ref::<ResponsesStreamFailed>().is_some() {
+        ApiAttemptTerminalClass::ResponseFailed
+    } else if is_body_read_transport_error(error) {
+        ApiAttemptTerminalClass::Transport
+    } else {
+        ApiAttemptTerminalClass::BodyParse
+    }
+}
+
+/// Whether a failure raised while the accepted 2xx body was read is a
+/// transport failure rather than a body decode or semantic parse failure.
+///
+/// A reset, broken pipe, or truncated body reaches the parse phase as a
+/// `reqwest::Error` in the cause chain, because the backend reads the accepted
+/// body with `text()`/`bytes()` and propagates that error unchanged. A typed
+/// [`ResponseDecodeError`] (the 2xx body arrived but is not the expected
+/// envelope), a semantic parse failure, and a provider `response.failed`
+/// event carry no reqwest cause and stay terminal. A timeout is excluded: the
+/// accepted body is already bounded by the HTTP deadline, and whole-turn retry
+/// budgeting is tracked separately (issue #109).
+fn is_body_read_transport_error(error: &anyhow::Error) -> bool {
+    if error.downcast_ref::<ResponseDecodeError>().is_some() {
+        return false;
+    }
+
+    !error_is_timeout(error)
+        && error
+            .chain()
+            .any(|cause| cause.downcast_ref::<reqwest::Error>().is_some())
 }
 
 fn error_is_timeout(error: &anyhow::Error) -> bool {
