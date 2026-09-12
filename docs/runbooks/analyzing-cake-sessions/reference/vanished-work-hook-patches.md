@@ -34,18 +34,18 @@ Keep the two apart in the report. This failure mode is easy to assert and hard t
 - **Direct evidence.** A patch file in a runner cache whose diff contains the missing content (a distinctive line, a path, or text the session itself printed) and whose timestamp is consistent with the disappearance window. Only this supports naming the hook runner as the cause.
 - **Inference.** A hook runner is installed and a command it gates ran in the window, but no patch matches; or a patch exists at the right time with unrelated content; or the cache is unreadable or was pruned. Report this as a candidate, not a finding.
 
-A missing patch weakens the hook hypothesis without disproving it, since runners remove patches on success and may prune their cache. When the evidence is only circumstantial, name the alternatives the evidence does not exclude --- an agent-initiated `git checkout`, `git restore`, or `git stash` in the session; another worktree or another Cake session; a turn-boundary restore performed by a hosting harness; an editor or other process holding the files --- and say what would discriminate between them.
+A missing patch weakens the hook hypothesis without disproving it: neither `prek` nor current `pre-commit` deletes its saved patch after a successful restore, so patches accumulate, but a cache can still be cleaned or pruned and the runner may live on another machine. When the evidence is only circumstantial, name the alternatives the evidence does not exclude --- an agent-initiated `git checkout`, `git restore`, or `git stash` in the session; another worktree or another Cake session; a turn-boundary restore performed by a hosting harness; an editor or other process holding the files --- and say what would discriminate between them.
 
 ## Step 1: Pin the loss to a moment and a command
 
-Establish when the files were present and when they were gone, then find the command in between. Start with the Bash results that report a timeout, since an interrupted hook is usually killed by Cake's own limit:
+Establish when the files were present and when they were gone, then find the command in between. The call that invoked the runner is usually a `git push`, `git commit`, or `git commit --amend`; read its end time and output. An interrupted hook often, but not always, leaves a timeout result, so treat the query below as a first filter rather than the only trace:
 
 ```bash
 jq -s -r '
   (map(select(.type == "function_call" and (.name | ascii_downcase) == "bash")) | INDEX(.call_id)) as $calls
   | .[]
   | select(.type == "function_call_output")
-  | select(.output | test("^Error: Command timed out after [0-9]+ seconds\\s*$"; "i"))
+  | select(.output | test("Error: Command timed out after [0-9]+ seconds(\\s|$)"; "i"))
   | [$calls[.call_id].timestamp, .call_id,
      ($calls[.call_id].arguments | fromjson | .command)] | @tsv
 ' "$SESSION"
@@ -64,7 +64,7 @@ jq -r --arg from "2026-08-10T03:29:00Z" --arg to "2026-08-10T03:31:00Z" '
 ' "$SESSION"
 ```
 
-Both recipes are also in [jq-recipes.md](jq-recipes.md). Cake serializes Bash failures as `Error: Command timed out after N seconds`; the anchored match avoids treating ordinary command output that merely mentions that phrase as a timeout. Note that `function_call` and `function_call_output` carry `timestamp` values, so a patch timestamp can be compared with the calls around it directly.
+Both recipes are also in [jq-recipes.md](jq-recipes.md). Cake serializes Bash failures as `Error: Command timed out after N seconds`; matching that tool-error prefix avoids treating ordinary command output that merely mentions the phrase as a timeout, while the loose suffix tolerates a hook notice prepended or hook context appended around it. Note that `function_call` and `function_call_output` carry `timestamp` values, so a patch timestamp can be compared with the calls around it directly.
 
 ## Step 2: Identify the runner Git invoked
 
@@ -97,7 +97,7 @@ esac
 printf '%s\n' "$RUNNER_CACHE"
 ```
 
-Do not guess a layout for a runner you have not identified. `prek` writes patches to `<cache>/patches`, but the directory name is a runner-specific detail; find files by their content (Step 3) rather than assuming a name.
+Do not guess a layout for a runner you have not identified. The two runners here keep patches differently: `prek` writes `<cache>/patches/<epoch-ms>-<pid>.patch`, while `pre-commit` writes `patch<epoch-seconds>-<pid>` at the root of its store directory. Both are ordinary diff files, so find them by content (Step 3) rather than by name.
 
 ## Step 3: Locate candidate patches by time and by content
 
@@ -112,12 +112,12 @@ find "$RUNNER_CACHE" -type f -size -10M -print0 2>/dev/null \
   | xargs -0 grep -l -m1 -E '^(diff --git |Index: |--- a/)' 2>/dev/null | head -20
 ```
 
-The second command is the robust one: it finds the snapshot even when the runner names it `patch`, `patch<pid>`, or `<epoch-ms>-<pid>.patch`. Content search is also what ties a patch to the lost work.
+The second command is the robust one: it finds the snapshot even when the runner names it `patch<epoch-seconds>-<pid>` (pre-commit) or `<epoch-ms>-<pid>.patch` (prek). Content search is also what ties a patch to the lost work.
 
 `prek` names patches `<epoch-milliseconds>-<pid>.patch`, so its filename carries the snapshot time. Decode it to UTC to compare against session records:
 
 ```bash
-PATCH="$RUNNER_CACHE/patches/1755000000000-12345.patch"
+PATCH="$RUNNER_CACHE/patches/1786332581000-12345.patch"
 base="$(basename "$PATCH" .patch)"
 ms="${base%%-*}"
 # macOS
@@ -173,7 +173,7 @@ Step 1 finds the last Bash call before the disappearance:
 and its output:
 
 ```text
-Command timed out after 60 seconds
+Error: Command timed out after 60 seconds
 ```
 
 Step 2 finds a runner installed as the repository's `pre-push` hook, configured in `prek.toml`.
@@ -181,7 +181,7 @@ Step 2 finds a runner installed as the repository's `pre-push` hook, configured 
 Step 3 finds one patch written in that window:
 
 ```text
-.../patches/1755000000000-12345.patch
+.../patches/1786332581000-12345.patch
 ```
 
 Step 4 lists its contents and finds the two missing paths and the exact line the agent had written:

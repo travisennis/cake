@@ -144,7 +144,7 @@ jq -s -r '
   (map(select(.type == "function_call" and (.name | ascii_downcase) == "bash")) | INDEX(.call_id)) as $calls
   | .[]
   | select(.type == "function_call_output")
-  | select(.output | test("^Error: Command timed out after [0-9]+ seconds\\s*$"; "i"))
+  | select(.output | test("Error: Command timed out after [0-9]+ seconds(\\s|$)"; "i"))
   | select($calls[.call_id])
   | [$calls[.call_id].timestamp, .call_id,
      ($calls[.call_id].arguments | fromjson | .command)] | @tsv
@@ -159,7 +159,7 @@ jq -r --arg from "2026-08-10T03:29:00Z" --arg to "2026-08-10T03:31:00Z" '
 ' "$SESSION"
 ```
 
-Cake serializes Bash failures as `Error: Command timed out after N seconds`; the anchored match avoids treating ordinary command output that merely mentions that phrase as a timeout. Session timestamps are RFC3339 UTC with optional sub-second precision, so the window recipe trims the fraction before comparing; convert a runner's patch timestamp to the same form first. `function_call` and `function_call_output` both carry `timestamp`, so a patch can be lined up against the command that triggered the runner.
+Cake serializes Bash failures as `Error: Command timed out after N seconds`; matching that tool-error prefix avoids treating ordinary command output that merely mentions the phrase as a timeout, while the loose suffix tolerates a hook notice prepended or hook context appended around it. Session timestamps are RFC3339 UTC with optional sub-second precision, so the window recipe trims the fraction before comparing; convert a runner's patch timestamp to the same form first. `function_call` and `function_call_output` both carry `timestamp`, so a patch can be lined up against the command that triggered the runner.
 
 `hook_event` records describe Cake's own hook protocol. A runner that Git invoked, such as `prek` or `pre-commit`, produces no `hook_event` record, so an empty result from the hook-event query above does not rule out a hook-runner worktree snapshot.
 
