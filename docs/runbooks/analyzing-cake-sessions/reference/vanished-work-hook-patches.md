@@ -8,7 +8,7 @@ Load this from Phase 4 of the [runbook](../index.md). The session-side queries i
 
 ## Why a clean reflog and an empty stash list prove less than they appear
 
-A hook runner such as `prek` or `pre-commit` installs itself as a Git hook shim (`.git/hooks/pre-commit`, `.git/hooks/pre-push`). Git, not Cake, invokes it. Some runners snapshot changes it must not disturb --- most often the unstaged diff, so hooks see a clean tree --- with this sequence:
+A hook runner such as `prek` or `pre-commit` installs itself as a Git hook shim (normally under the path returned by `git rev-parse --git-path hooks`). Git, not Cake, invokes it. Some runners snapshot changes it must not disturb --- most often the unstaged diff, so hooks see a clean tree --- with this sequence:
 
 1. Write the current diff of the affected tracked files to a patch file in the runner's cache.
 2. Revert those paths in the working tree.
@@ -42,10 +42,10 @@ Establish when the files were present and when they were gone, then find the com
 
 ```bash
 jq -s -r '
-  (map(select(.type == "function_call")) | INDEX(.call_id)) as $calls
+  (map(select(.type == "function_call" and (.name | ascii_downcase) == "bash")) | INDEX(.call_id)) as $calls
   | .[]
   | select(.type == "function_call_output")
-  | select(.output | test("Command timed out"; "i"))
+  | select(.output | test("^Error: Command timed out after [0-9]+ seconds\\s*$"; "i"))
   | [$calls[.call_id].timestamp, .call_id,
      ($calls[.call_id].arguments | fromjson | .command)] | @tsv
 ' "$SESSION"
@@ -64,23 +64,36 @@ jq -r --arg from "2026-08-10T03:29:00Z" --arg to "2026-08-10T03:31:00Z" '
 ' "$SESSION"
 ```
 
-Both recipes are also in [jq-recipes.md](jq-recipes.md). Note that `function_call` and `function_call_output` carry `timestamp` values, so a patch timestamp can be compared with the calls around it directly.
+Both recipes are also in [jq-recipes.md](jq-recipes.md). Cake serializes Bash failures as `Error: Command timed out after N seconds`; the anchored match avoids treating ordinary command output that merely mentions that phrase as a timeout. Note that `function_call` and `function_call_output` carry `timestamp` values, so a patch timestamp can be compared with the calls around it directly.
 
 ## Step 2: Identify the runner Git invoked
 
 Read the shims, which name the runner, and the configuration next to them, which names its hooks:
 
 ```bash
-ls -l .git/hooks
-sed -n '1,20p' .git/hooks/pre-commit .git/hooks/pre-push 2>/dev/null
+HOOK_DIR="$(git rev-parse --git-path hooks)"
+ls -l "$HOOK_DIR"
+sed -n '1,20p' "$HOOK_DIR/pre-commit" "$HOOK_DIR/pre-push" 2>/dev/null
 ```
 
-Check the repositories' hook configuration for the runner's identity and stages: `prek.toml`, `.pre-commit-config.yaml`, `lefthook.yml`, or a `husky` directory. The `stages` or hook type tells you which Git command triggers it.
+Using Git's resolved hook path handles linked worktrees and `core.hooksPath`. Check the repositories' hook configuration for the runner's identity and stages: `prek.toml`, `.pre-commit-config.yaml`, `lefthook.yml`, or a `husky` directory. The `stages` or hook type tells you which Git command triggers it.
 
-Resolve the runner's cache root from the runner itself when it offers a command for it, and from its documented environment variable otherwise:
+Resolve the runner's cache root only after identifying the runner from the shim. Set `RUNNER` to the executable named by that shim:
 
 ```bash
-RUNNER_CACHE="$(prek cache dir 2>/dev/null || printf '%s' "${PREK_HOME:-${PRE_COMMIT_HOME:-$HOME/.cache/prek}}")"
+RUNNER=prek  # or: pre-commit
+case "$RUNNER" in
+  prek)
+    RUNNER_CACHE="$(prek cache dir 2>/dev/null || printf '%s' "${PREK_HOME:-$HOME/.cache/prek}")"
+    ;;
+  pre-commit)
+    RUNNER_CACHE="${PRE_COMMIT_HOME:-$HOME/.cache/pre-commit}"
+    ;;
+  *)
+    printf 'Resolve the cache layout for %s from its documentation; do not guess.\n' "$RUNNER" >&2
+    exit 1
+    ;;
+esac
 printf '%s\n' "$RUNNER_CACHE"
 ```
 
