@@ -188,6 +188,16 @@ If the session has extensive or repeated Edit tool failures, load the [Edit Tool
 - High reasoning tokens, many turns for simple tasks, repeated high-token tool outputs, large context growth, retry loops, truncation, timeout risks.
 - Correlate session id and timestamps with logs at `~/.cache/cake/cake.YYYY-MM-DD.log` (or `$CAKE_DATA_DIR/cake.YYYY-MM-DD.log`).
 
+### Vanished Uncommitted Work
+
+Use this branch when a session reports that uncommitted files disappeared, or when a worktree is clean in a way the session cannot explain --- an agent looking for edits it made, or a restoration an agent attributed to a harness or another session.
+
+A clean reflog and an empty `git stash list` do **not** exclude a hook-runner worktree snapshot. A runner installed as a Git hook shim, such as `prek` or `pre-commit`, can write the dirty tracked files to a patch in its own cache, revert them so the hook sees a clean tree, and re-apply the patch afterward. That sequence leaves no commit, stash entry, reflog entry, or branch move. If the hook is killed first --- a Bash timeout, a cancelled turn, a crash --- the files stay gone and the runner's patch is the only record; it lives outside the repository, so `git status` cannot see it. Cake's `hook_event` records cover Cake's own hook protocol, not a runner Git invoked, and Cake may see the killed hook only as an `Error: Command timed out after N seconds` output.
+
+Keep the procedure read-only, and separate direct evidence from inference: a patch whose contents match the missing work at a consistent timestamp is direct evidence, while "a hook could have done this" is not. State the runner as the cause only with a matching patch; otherwise name the alternatives the evidence does not exclude.
+
+Follow the [Vanished Work: Hook-Runner Worktree Patches reference](reference/vanished-work-hook-patches.md) for the read-only procedure and [`jq-recipes.md`](reference/jq-recipes.md) for the timestamp correlation.
+
 ## Phase 5: Produce the Report
 
 ### Issue Categories
@@ -291,6 +301,7 @@ Issue identification:
 - [ ] Missing context or prompt gaps
 - [ ] Reasoning flaws or stuck patterns
 - [ ] Performance / token / turn anomalies
+- [ ] Uncommitted work that vanished while Git state stayed clean
 - [ ] Session integrity
 
 Report:
