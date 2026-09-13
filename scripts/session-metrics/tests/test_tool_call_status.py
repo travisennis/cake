@@ -72,6 +72,21 @@ class ToolCallOkTest(unittest.TestCase):
         calls = cakelib.pair_tool_calls(records_for(["fd .\n./src\n"]))
         self.assertTrue(calls[0].ok)
 
+    def test_synthetic_not_executed_outputs_are_not_failures(self):
+        """Boundary: the two synthetic `not executed:` shapes stay successes.
+
+        History repair (`agent_state.rs`) and a correction turn
+        (`agent_loop.rs`) append these without `Error:` or a hook prefix, so
+        the gate passes them; the README caveat records the exclusion. Flipping
+        it is a deliberate change to the taxonomy numbers, not a bug fix.
+        """
+        calls = cakelib.pair_tool_calls(records_for([
+            "not executed: the previous cake process ended before Bash(call-1) "
+            "recorded a result",
+            "not executed: correction turn offers no tools for Bash(call-2)",
+        ]))
+        self.assertTrue(all(c.ok for c in calls), [c.output for c in calls])
+
 
 class HookDenialTaxonomyTest(unittest.TestCase):
     def test_taxonomy_reports_hook_blocked(self):

@@ -483,16 +483,24 @@ def load_telemetry(
 # Pairing and classification
 # ---------------------------------------------------------------------------
 
+# Transcript failure shapes, shared by the `ok` gate and the taxonomy so the
+# two cannot drift apart. `agent_loop.rs` prefixes every tool error with
+# `Error: `, but stores PreToolUse hook denials verbatim as
+# `Hook blocked tool execution: {reason}`; the prefix test alone counted every
+# hook denial as a success (issue #338).
+ERROR_PREFIX = "Error"
+HOOK_BLOCKED_PREFIX = "Hook blocked tool execution"
+
+
 def is_tool_failure(output: str) -> bool:
     """True when a stored tool output reports a failure the model saw.
 
-    Most failures carry an `Error: ` prefix, but hook denials are stored
-    unprefixed: `agent_loop.rs` writes `Hook blocked tool execution: {reason}`
-    verbatim, so the prefix test alone counts every hook denial as a success
-    (issue #338). Detection is on the first line, matching recording.
+    Detection is on the first line, matching how `agent_loop.rs` records both
+    shapes. Synthetic `not executed:` outputs (history repair, correction
+    turns) are deliberately not failures here; see the session-metrics README.
     """
     first = output.splitlines()[0] if output else ""
-    return first.startswith("Error") or first.startswith("Hook blocked tool execution")
+    return first.startswith(ERROR_PREFIX) or first.startswith(HOOK_BLOCKED_PREFIX)
 
 
 def pair_tool_calls(records: list[dict]) -> list[ToolCall]:
@@ -529,7 +537,7 @@ def classify_tool_error(name: str, output: str) -> str:
     # Cross-tool categories
     if "Rejected this" in first and "already issued" in output:
         return "duplicate-mutation guard"
-    if "Hook blocked tool execution" in first:
+    if HOOK_BLOCKED_PREFIX in first:
         return "hook-blocked"
     if "BLOCKED" in first:
         # Only the Bash command-safety judge emits a bare BLOCKED first line:
