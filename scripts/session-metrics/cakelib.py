@@ -483,6 +483,18 @@ def load_telemetry(
 # Pairing and classification
 # ---------------------------------------------------------------------------
 
+def is_tool_failure(output: str) -> bool:
+    """True when a stored tool output reports a failure the model saw.
+
+    Most failures carry an `Error: ` prefix, but hook denials are stored
+    unprefixed: `agent_loop.rs` writes `Hook blocked tool execution: {reason}`
+    verbatim, so the prefix test alone counts every hook denial as a success
+    (issue #338). Detection is on the first line, matching recording.
+    """
+    first = output.splitlines()[0] if output else ""
+    return first.startswith("Error") or first.startswith("Hook blocked tool execution")
+
+
 def pair_tool_calls(records: list[dict]) -> list[ToolCall]:
     """Pair function_call records with their function_call_output by call_id."""
     pending: dict[str, dict] = {}
@@ -503,7 +515,7 @@ def pair_tool_calls(records: list[dict]) -> list[ToolCall]:
                 call_id=call.get("call_id", ""),
                 arguments=call.get("arguments", ""),
                 output=output,
-                ok=not output.startswith("Error"),
+                ok=not is_tool_failure(output),
                 timestamp=call.get("timestamp"),
             ))
             seq += 1
