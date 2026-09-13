@@ -548,6 +548,70 @@ async fn test_streaming_timeout_kills_descendants() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn timeout_runs_sigterm_cleanup_handler_before_force_kill() {
+    // A command that traps SIGTERM and records that its handler ran must be
+    // given the grace period to clean up before the forceful SIGKILL. The
+    // marker can only be written from the handler, so its presence proves the
+    // cooperative phase happened.
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("cleanup-ran");
+    // The trap runs in the tracked shell itself: the command is passed inline
+    // to `bash -c`, so there is no separate script process to confuse the
+    // direct-child status with.
+    let command = format!(
+        "trap 'touch \"{}\"' TERM; while true; do sleep 0.1; done",
+        marker.display()
+    );
+    let args = serde_json::json!({ "command": command, "timeout": 1 }).to_string();
+    let result = Box::pin(execute_bash_unsandboxed(&args)).await;
+    assert!(
+        result.is_err(),
+        "expected timeout error but got: {result:?}"
+    );
+    assert!(
+        result.unwrap_err().message.contains("timed out"),
+        "expected 'timed out' in error"
+    );
+    assert!(
+        marker.exists(),
+        "the SIGTERM cleanup handler did not run before the force-kill"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn timeout_force_kills_child_that_ignores_sigterm() {
+    // A command that ignores SIGTERM cannot exit during the cooperative
+    // phase, so the grace period must expire and SIGKILL must still reap it.
+    // The lower bound shows the child was granted the grace period rather
+    // than killed immediately; the upper bound shows the wait is bounded.
+    // Inline `trap '' TERM` runs in the tracked shell, so the direct child
+    // itself ignores SIGTERM and only SIGKILL ends it.
+    let command = "trap '' TERM; while true; do sleep 0.1; done";
+    let args = serde_json::json!({ "command": command, "timeout": 1 }).to_string();
+    let started = std::time::Instant::now();
+    let result = Box::pin(execute_bash_unsandboxed(&args)).await;
+    let elapsed = started.elapsed();
+    assert!(
+        result.is_err(),
+        "expected timeout error but got: {result:?}"
+    );
+    assert!(
+        result.unwrap_err().message.contains("timed out"),
+        "expected 'timed out' in error"
+    );
+    assert!(
+        elapsed >= TERMINATE_GRACE_PERIOD,
+        "SIGTERM-ignoring child was not given the grace period: {elapsed:?}"
+    );
+    assert!(
+        elapsed < TERMINATE_GRACE_PERIOD + std::time::Duration::from_secs(5),
+        "force-kill did not bound total termination time: {elapsed:?}"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn dropping_bash_future_kills_descendants() {
     let dir = tempfile::tempdir().unwrap();
     let marker = dir.path().join("descendant-survived");

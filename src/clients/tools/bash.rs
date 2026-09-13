@@ -56,6 +56,13 @@ const BASH_TIMEOUT_MIN_SECS: u64 = 1;
 /// capped so a runaway command cannot pin the process for an unbounded time.
 const BASH_TIMEOUT_MAX_SECS: u64 = 600;
 
+/// Bounded grace period granted to a Bash child after `SIGTERM` before the
+/// process group is force-killed on timeout. Long enough for a well-behaved
+/// child to run a cleanup handler (temp files, sockets, locks), short enough
+/// that total termination time stays bounded by the configured timeout plus
+/// this grace.
+const TERMINATE_GRACE_PERIOD: Duration = Duration::from_secs(3);
+
 /// Maximum characters of judge-provided message text allowed into the agent
 /// loop, so a verbose or compromised judge cannot flood the model-visible
 /// tool error or output.
@@ -578,21 +585,62 @@ fn command_starts_with_search(command: &str) -> bool {
     matches!(command_name, "rg" | "ripgrep" | "grep" | "egrep" | "fgrep")
 }
 
+/// Send `signal` to every process in the child's process group (Unix).
+///
+/// The child is spawned with `process_group(0)`, so its process group ID
+/// equals its PID and a negative PID targets the whole group.
 #[cfg(unix)]
-fn terminate_process_group(child: &Child) {
+fn signal_process_group(child: &Child, signal: libc::c_int) {
     if let Some(pid) = child.id() {
         // SAFETY: the PID belongs to the live child, whose process group ID
         // equals its PID because `process_group(0)` is set before spawning.
         // A negative PID in `kill(2)` targets every process in that group.
         unsafe {
-            libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
+            libc::kill(-(pid as libc::pid_t), signal);
         }
     }
+}
+
+/// Immediately force-kill the child's process group, rejecting the
+/// cooperative phase. Used by the read-cap path, where the goal is to stop a
+/// runaway producer as fast as possible.
+#[cfg(unix)]
+fn terminate_process_group(child: &Child) {
+    signal_process_group(child, libc::SIGKILL);
 }
 
 #[cfg(not(unix))]
 fn terminate_process_group(child: &mut Child) {
     let _ = child.start_kill();
+}
+
+/// Terminate the child's process group cooperatively, then forcefully.
+///
+/// `SIGTERM` is sent to the whole group so a well-behaved child can run its
+/// cleanup handler. After waiting up to `grace` for the direct child to exit,
+/// `SIGKILL` is sent to the group --- reaching any descendant that ignored
+/// the cooperative signal --- and the child is reaped. Both phases are
+/// bounded, so total termination time cannot exceed `grace` plus reaping.
+#[cfg(unix)]
+async fn terminate_process_group_gracefully(child: &mut Child, grace: Duration) {
+    signal_process_group(child, libc::SIGTERM);
+    // Cooperative phase: a bounded window for the child to exit on its own.
+    // The status is discarded here whether the child exited or the window
+    // lapsed; a survivor is force-killed below.
+    drop(timeout(grace, child.wait()).await);
+    // Forceful phase: kill the group even when the direct child exited, so a
+    // descendant that ignored SIGTERM does not survive.
+    signal_process_group(child, libc::SIGKILL);
+    // Reap the child. Its status is intentionally discarded: the timed-out
+    // run reports the timeout error, not an exit code.
+    drop(child.wait().await);
+}
+
+#[cfg(not(unix))]
+async fn terminate_process_group_gracefully(child: &mut Child, _grace: Duration) {
+    // Non-Unix has no cooperative signal: force-kill the direct child now.
+    drop(child.start_kill());
+    drop(child.wait().await);
 }
 
 /// Execute a bash command. Tests use this convenience wrapper; the tool
@@ -761,14 +809,10 @@ async fn run_bash_child(
         Ok(Ok(tuple)) => tuple,
         Ok(Err(e)) => return Err(e),
         Err(_) => {
-            // Timed out: terminate the process group and reap with a
-            // short grace period so the OS has time to deliver SIGKILL.
-            #[cfg(unix)]
-            terminate_process_group(&child);
-            #[cfg(not(unix))]
-            terminate_process_group(&mut child);
-            // Grace period: give the OS time to deliver SIGKILL.
-            let _grace = timeout(Duration::from_secs(5), child.wait()).await;
+            // Timed out: terminate the process group cooperatively, then
+            // forcefully after the bounded grace period, so a well-behaved
+            // child can run its cleanup handler before being killed.
+            terminate_process_group_gracefully(&mut child, TERMINATE_GRACE_PERIOD).await;
             return Err(format!("Command timed out after {timeout_secs} seconds"));
         },
     };
