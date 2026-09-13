@@ -158,6 +158,8 @@ Decision JSON may use:
 
 Pre-request failures may abort the invocation. Post-result hooks are best-effort so they cannot replace an existing model or tool outcome. Hook stdout and stderr stored in events are bounded.
 
+The [Herdr integration guide](integrations/herdr.md) is a worked example of driving an external lifecycle reporter from these hooks.
+
 ## Toolbox protocol
 
 A toolbox tool is one executable implementing two actions selected with the `TOOLBOX_ACTION` environment variable.
