@@ -34,6 +34,9 @@ use crate::config::model::ResolvedModelConfig;
 use crate::config::settings::{JUDGE_BYPASS_ENV, JudgeSettings, LoadedSettings};
 use crate::session_telemetry::{JudgeAttemptTelemetry, JudgeAttemptTerminalClass};
 
+#[path = "judge_independent_tests.rs"]
+mod independent;
+
 const SCHEMA_VERSION: u32 = 1;
 
 const MODELS_ENV: &str = "CAKE_JUDGE_BENCH_MODELS";
@@ -139,7 +142,11 @@ impl BenchmarkConfig {
                 "{MODELS_ENV} is required: one or more comma-separated [[models]] names ({error})"
             )
         })?;
-        let models = parse_comma_list(&raw);
+        Self::with_models(&raw)
+    }
+
+    fn with_models(raw: &str) -> Result<Self, String> {
+        let models = parse_comma_list(raw);
         if models.is_empty() {
             return Err(format!(
                 "{MODELS_ENV} must list at least one [[models]] name"
@@ -1022,6 +1029,11 @@ fn select_cases<'a>(
 #[tokio::test]
 #[ignore = "calls configured judge providers and incurs external cost; run with `just judge-bench`"]
 async fn judge_benchmark_live_slos() {
+    match std::env::var("CAKE_JUDGE_BENCH_CORPUS").as_deref() {
+        Ok("independent") => return independent::run().await,
+        Ok("legacy") | Err(_) => {},
+        Ok(other) => panic!("unknown CAKE_JUDGE_BENCH_CORPUS {other:?}"),
+    }
     let config = BenchmarkConfig::from_env().unwrap_or_else(|error| panic!("{error}"));
     let cwd = std::env::current_dir().expect("current directory should be available");
     let loaded = SettingsLoader::load_with_profile(Some(&cwd), config.profile.as_deref())
@@ -1084,7 +1096,7 @@ mod deterministic {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     /// Build a `JudgeClient` pointed at a wiremock server with a short timeout.
-    fn bench_client(base_url: String, timeout: Duration) -> JudgeClient {
+    pub(super) fn bench_client(base_url: String, timeout: Duration) -> JudgeClient {
         let model_config = ModelConfig {
             model: "bench/model".to_string(),
             api_type: ApiType::ChatCompletions,
@@ -1113,7 +1125,7 @@ mod deterministic {
         )
     }
 
-    fn chat_response(content: &str) -> serde_json::Value {
+    pub(super) fn chat_response(content: &str) -> serde_json::Value {
         serde_json::json!({
             "id": "chatcmpl-bench",
             "choices": [{
