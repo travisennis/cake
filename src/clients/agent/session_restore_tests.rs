@@ -14,6 +14,14 @@
 //! The agent's accumulated `total_usage` is deliberately not part of the
 //! check: restore starts it at zero and it totals only the current
 //! invocation's provider attempts, so it is not recomputed from the file.
+//!
+//! One exception is asserted rather than hidden. A `--fork` seeds its
+//! last-usage basis from the source session, but its own file copies no
+//! `TurnUsage` (and no source reference), so the fork file is not a fixed
+//! point of that seed: a fork that ends before recording its first `TurnUsage`
+//! leaves a file a later `--resume <fork-id>` cannot seed from. The test pins
+//! that current behavior; the divergence is tracked in a follow-up issue (see
+//! the pull request).
 
 use std::fs;
 use std::path::Path;
@@ -22,8 +30,8 @@ use chrono::{DateTime, Utc};
 
 use super::*;
 use crate::clients::agent_state::ConversationState;
-use crate::config::Session;
 use crate::config::session::CURRENT_FORMAT_VERSION;
+use crate::config::{DataDir, Session};
 use crate::types::session::{FunctionCallData, FunctionCallOutputData, MessageData};
 use crate::types::{GitState, TaskCompleteData, TaskOutcome, TaskStartData, TurnUsageData, Usage};
 
@@ -160,8 +168,11 @@ fn serialize_records(records: &[SessionRecord]) -> Vec<String> {
 
 /// The call ids left without an output by an interrupted writer.
 ///
-/// Deliberately independent of the repair implementation so the comparison is
-/// a real fixed point rather than the same code checked against itself.
+/// Re-derived here rather than calling the repair code, so writer/reader drift
+/// shows up as a mismatch instead of both sides moving together. It mirrors
+/// `repair_items_for_incomplete_calls`'s pairing rule but tolerates the shapes
+/// that function rejects (a duplicate open `call_id`, or an output with no
+/// preceding call); the fixtures used here contain neither.
 fn unmatched_call_ids(items: &[ConversationItem]) -> Vec<String> {
     let mut open: Vec<String> = Vec::new();
     for item in items {
@@ -296,24 +307,6 @@ fn restored_agent(session: Session) -> Agent {
         uuid::Uuid::nil(),
     )
     .expect("restore should succeed")
-    .agent
-}
-
-/// The agent `--fork` builds, via its own constructor.
-fn forked_agent(session: &Session) -> Agent {
-    crate::CodingAssistant::forked_client_and_session(
-        session,
-        session_restore_model_config(),
-        "test".to_string(),
-        PathBuf::from("/work"),
-        &[(Role::System, "sys".to_string())],
-        HashMap::new(),
-        session_restore_tool_context(),
-        Vec::new(),
-        None,
-        uuid::Uuid::nil(),
-    )
-    .expect("fork should succeed")
     .agent
 }
 
@@ -486,14 +479,53 @@ fn restore_recomputation_from_the_file_matches_loaded_state() {
     );
     assert_repair_matches_file(&restored_run, &expected_repairs, "restore");
 
-    // `--fork` seeds the same derived state from the source session.
-    let forked_run = forked_agent(&restored);
+    // `--fork` seeds its last-usage basis and repairs from the source session,
+    // but it starts a new file from filtered seed records.
+    let mut forked_run = crate::CodingAssistant::forked_client_and_session(
+        &restored,
+        session_restore_model_config(),
+        "test".to_string(),
+        PathBuf::from("/work"),
+        &[(Role::System, "sys".to_string())],
+        HashMap::new(),
+        session_restore_tool_context(),
+        Vec::new(),
+        None,
+        uuid::Uuid::nil(),
+    )
+    .expect("fork should succeed");
     assert_usage_seed(
-        forked_run.last_usage(),
+        forked_run.agent.last_usage(),
         expected_seed,
         "fork must seed the last-usage basis from the source file",
     );
-    assert_repair_matches_file(&forked_run, &expected_repairs, "fork");
+    assert_repair_matches_file(&forked_run.agent, &expected_repairs, "fork");
+
+    // The seed is in-memory only. Materialize the fork's own file through the
+    // real persistence plan: its seed records copy conversation items and
+    // `SkillActivated` but no `TurnUsage` (and carry no source reference), so
+    // the file is not a fixed point of the seed the agent was given. A fork
+    // whose first provider attempt fails thus leaves a file a later
+    // `--resume <fork-id>` cannot seed from. Assert the current behavior so a
+    // fix (persisting the seed) or a regression is caught here deliberately;
+    // the divergence is tracked in a follow-up issue (see the pull request).
+    let data_dir = DataDir::new_in_dir(dir.path());
+    let fork_file = crate::cli::execute_persistence_plan(
+        forked_run.persistence.take(),
+        &data_dir,
+        &forked_run.session,
+        Vec::new(),
+    )
+    .expect("persist fork seed file")
+    .expect("fork must create a session file");
+    drop(fork_file);
+    let fork_session =
+        Session::load(&data_dir.session_path(forked_run.session.id)).expect("load fork seed file");
+    assert!(
+        fork_session.last_turn_usage().is_none(),
+        "fork seed records must carry no TurnUsage for this gap to be real; \
+         update this assertion if the fork starts persisting its seed"
+    );
 
     // Persist the repairs the way a resumed run does, then restore again:
     // through the real constructor the repair is a fixed point.
