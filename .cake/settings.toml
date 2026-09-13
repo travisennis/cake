@@ -1,3 +1,6 @@
 [sandbox]
 read_only = ["~/bin"]
 writable = ["~/.cake", "~/.cache/cake", "~/.local/share/cake", "~/.config/cake"]
+
+[tools.bash.judge]
+rubric_file = ".cake/judge-rubric.md"
