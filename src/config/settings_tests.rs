@@ -24,6 +24,37 @@ fn create_project_settings(content: &str) -> TempDir {
     dir
 }
 
+fn create_ordered_grant_settings() -> (TempDir, TempDir) {
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"
+directories = ["/zeta", "/alpha"]
+
+[sandbox]
+read_only = ["/z-read", "/a-read"]
+writable = ["/z-write", "/a-write"]
+"#,
+    );
+    let project_dir = create_project_settings(
+        r#"
+directories = ["/mu", "/alpha"]
+
+[sandbox]
+read_only = ["/m-read", "/a-read"]
+writable = ["/m-write", "/a-write"]
+"#,
+    );
+    (home, project_dir)
+}
+
+fn grant_summary(loaded: &LoadedSettings) -> String {
+    format!(
+        "directories = {:?}\nsandbox.read_only = {:?}\nsandbox.writable = {:?}",
+        loaded.directories, loaded.sandbox.read_only, loaded.sandbox.writable
+    )
+}
+
 #[test]
 fn test_load_single_file() {
     let dir = create_project_settings(
@@ -1098,39 +1129,18 @@ writable = ["/project/state"]
     })
     .unwrap();
 
-    // Both keys merge as a union without duplicates.
-    assert_eq!(loaded.sandbox.read_only.len(), 3);
-    assert!(
-        loaded
-            .sandbox
-            .read_only
-            .contains(&"/global/bin".to_string())
+    // Both keys merge as a sorted union without duplicates.
+    assert_eq!(
+        loaded.sandbox.read_only,
+        vec![
+            "/global/bin".to_string(),
+            "/project/bin".to_string(),
+            "/shared/bin".to_string(),
+        ]
     );
-    assert!(
-        loaded
-            .sandbox
-            .read_only
-            .contains(&"/shared/bin".to_string())
-    );
-    assert!(
-        loaded
-            .sandbox
-            .read_only
-            .contains(&"/project/bin".to_string())
-    );
-
-    assert_eq!(loaded.sandbox.writable.len(), 2);
-    assert!(
-        loaded
-            .sandbox
-            .writable
-            .contains(&"/global/state".to_string())
-    );
-    assert!(
-        loaded
-            .sandbox
-            .writable
-            .contains(&"/project/state".to_string())
+    assert_eq!(
+        loaded.sandbox.writable,
+        vec!["/global/state".to_string(), "/project/state".to_string()]
     );
 }
 
@@ -1163,33 +1173,43 @@ writable = ["/profile/state"]
     })
     .unwrap();
 
-    assert_eq!(loaded.sandbox.read_only.len(), 2);
-    assert!(
-        loaded
-            .sandbox
-            .read_only
-            .contains(&"/global/bin".to_string())
+    assert_eq!(
+        loaded.sandbox.read_only,
+        vec!["/global/bin".to_string(), "/profile/bin".to_string()]
     );
-    assert!(
-        loaded
-            .sandbox
-            .read_only
-            .contains(&"/profile/bin".to_string())
+    assert_eq!(
+        loaded.sandbox.writable,
+        vec!["/global/state".to_string(), "/profile/state".to_string()]
+    );
+}
+
+#[test]
+fn test_resolved_grant_order_is_deterministic_across_repeated_loads() {
+    let (home, project_dir) = create_ordered_grant_settings();
+    let expected = concat!(
+        "directories = [\"/alpha\", \"/mu\", \"/zeta\"]\n",
+        "sandbox.read_only = [\"/a-read\", \"/m-read\", \"/z-read\"]\n",
+        "sandbox.writable = [\"/a-write\", \"/m-write\", \"/z-write\"]",
     );
 
-    assert_eq!(loaded.sandbox.writable.len(), 2);
-    assert!(
-        loaded
-            .sandbox
-            .writable
-            .contains(&"/global/state".to_string())
-    );
-    assert!(
-        loaded
-            .sandbox
-            .writable
-            .contains(&"/profile/state".to_string())
-    );
+    for _ in 0..32 {
+        let loaded = with_var("HOME", Some(home.path()), || {
+            SettingsLoader::load(Some(project_dir.path()))
+        })
+        .unwrap();
+        assert_eq!(grant_summary(&loaded), expected);
+    }
+}
+
+#[test]
+fn test_resolved_grant_order_snapshot() {
+    let (home, project_dir) = create_ordered_grant_settings();
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load(Some(project_dir.path()))
+    })
+    .unwrap();
+
+    insta::assert_snapshot!("resolved_grant_order", grant_summary(&loaded));
 }
 
 #[test]

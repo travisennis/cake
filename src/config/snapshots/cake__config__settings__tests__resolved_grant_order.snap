@@ -1,0 +1,8 @@
+---
+source: src/config/settings_tests.rs
+assertion_line: 1212
+expression: grant_summary(&loaded)
+---
+directories = ["/alpha", "/mu", "/zeta"]
+sandbox.read_only = ["/a-read", "/m-read", "/z-read"]
+sandbox.writable = ["/a-write", "/m-write", "/z-write"]

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -1227,9 +1227,10 @@ impl SettingsLoader {
 struct SettingsAccumulator {
     models: HashMap<String, ModelDefinition>,
     default_model: Option<String>,
-    directories: HashSet<String>,
-    sandbox_read_only: HashSet<String>,
-    sandbox_writable: HashSet<String>,
+    // Ordered sets preserve deduplication while making resolved grants stable.
+    directories: BTreeSet<String>,
+    sandbox_read_only: BTreeSet<String>,
+    sandbox_writable: BTreeSet<String>,
     skills: SkillSettings,
     tools_enabled: Option<Vec<String>>,
     profiles: HashMap<String, Vec<ProfileSettings>>,
