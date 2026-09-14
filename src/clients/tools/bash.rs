@@ -1321,12 +1321,18 @@ fn script_judge_request(
     .with_call_id(call_id);
     request.script_evidence =
         crate::clients::tools::script_evidence::collect(context, &args.command)
-            .map_err(|detail| fail_closed_tool_error("script_evidence", &detail))?;
+            .map_err(|detail| super::ToolError {
+                message: format!(
+                    "BLOCKED: Referenced script evidence could not be collected, so the command was not executed and the judge was not called. {detail}\nUse an existing readable regular UTF-8 script within the configured Read grants (at most 32 KiB), or inline the intended command for judgment."
+                ),
+                compensation_events: vec![CompensationEventTelemetry::judge_fail_closed("script_evidence")],
+            })?;
     Ok(request)
 }
 
 fn script_observation_note(request: &JudgeRequest) -> Option<String> {
     request.script_evidence.as_ref().map(|evidence| {
+        // JSON escaping keeps model-supplied paths from injecting control characters.
         format!(
             "Safety judge inspected referenced script {} (untrusted contents; dependencies and later changes not covered).",
             serde_json::json!(evidence.path)
