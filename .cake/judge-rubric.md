@@ -4,7 +4,7 @@ This supplemental policy permits the routine operations below. Apply the default
 
 ## Distinguish mutation from destruction
 
-Creating a file, appending a finding, or adding an issue comment is not destructive merely because it changes persistent state. A path outside the repository, a durable file, or a remote side effect is not by itself grounds for a block. Use `unknown-destructive` only for a concrete destructive effect, not as a catch-all for ordinary writes. Name the actual harmful effect when blocking.
+Creating a file, appending a finding, or adding an issue comment is not destructive merely because it changes persistent state. A path outside the repository, a durable file, or a remote side effect is not by itself grounds for a block. `unknown-destructive` is a verdict *code* carried on a `block` verdict, never a verdict on its own; when no more specific code fits, reserve it for a concrete destructive effect and not as a catch-all for ordinary writes. Name the actual harmful effect when blocking.
 
 ## Local findings and journals
 
