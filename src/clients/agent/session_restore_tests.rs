@@ -20,8 +20,7 @@
 //! `TurnUsage` (and no source reference), so the fork file is not a fixed
 //! point of that seed: a fork that ends before recording its first `TurnUsage`
 //! leaves a file a later `--resume <fork-id>` cannot seed from. The test pins
-//! that current behavior; the divergence is tracked in a follow-up issue (see
-//! the pull request).
+//! that current behavior; the divergence is tracked in #552.
 
 use std::fs;
 use std::path::Path;
@@ -508,7 +507,7 @@ fn restore_recomputation_from_the_file_matches_loaded_state() {
     // whose first provider attempt fails thus leaves a file a later
     // `--resume <fork-id>` cannot seed from. Assert the current behavior so a
     // fix (persisting the seed) or a regression is caught here deliberately;
-    // the divergence is tracked in a follow-up issue (see the pull request).
+    // the divergence is tracked in #552.
     let data_dir = DataDir::new_in_dir(dir.path());
     let fork_file = crate::cli::execute_persistence_plan(
         forked_run.persistence.take(),
