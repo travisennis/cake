@@ -1,4 +1,7 @@
-exclude = []
+# `panache format/lint .` walks the tree, and git never reports `.git` as
+# ignored, so a stray markdown file there breaks `just docs-check`. Name the
+# directory explicitly; a `**/.git/**` glob still descends into it.
+exclude = [".git"]
 
 [format]
 line-width = 1000
