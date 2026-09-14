@@ -49,7 +49,7 @@ Built-in Edit and Write calls targeting the same canonical path execute sequenti
 
 ### Host and model-generated commands
 
-Read, Edit, and Write enforce allowed paths in-process. Bash adds an LLM-judge command-safety preflight (ADR-018) and an operating-system filesystem sandbox: Seatbelt on macOS and Landlock on Linux. Every non-empty command is judged before spawn; the judge is default-on and fail-closed with no deterministic rule floor, and it replaced the compiled `bash_safety` guard. Hooks and toolbox executables are trusted control-plane extensions outside that sandbox. [Security](docs/security.md) defines the guarantees and limitations.
+Read, Edit, and Write enforce allowed paths in-process. Bash observes supported literal script references through in-process Read grants (ADR-029), then applies an LLM-judge command-safety preflight (ADR-018) and an operating-system filesystem sandbox: Seatbelt on macOS and Landlock on Linux. Every non-empty command is judged before spawn; the judge is default-on and fail-closed with no deterministic rule floor, and it replaced the compiled `bash_safety` guard. Hooks and toolbox executables are trusted control-plane extensions outside that sandbox. [Security](docs/security.md) defines the guarantees and limitations.
 
 ### Persistence and integrations
 

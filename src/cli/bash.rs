@@ -1,7 +1,7 @@
 //! `cake bash` subcommands: judge introspection without executing anything.
 //!
 //! `cake bash check -- <command>` runs the same judge path and prompt the
-//! Bash preflight will use (Milestone 5 of the LLM-judge `ExecPlan`), prints the
+//! Bash preflight will use, without collecting referenced host files, prints the
 //! verdict, code, message, confidence, and latency, and never executes the
 //! command. A judge error exits nonzero; a verdict is successful inspection
 //! output. Follows the ADR-009 introspection pattern (load merged settings,

@@ -1270,31 +1270,74 @@ async fn bash_judge_preflight(
         });
     }
 
+    judge_enabled_preflight(context, args, call_id, judge, bypass_env.as_deref()).await
+}
+
+async fn judge_enabled_preflight(
+    context: &super::ToolContext,
+    args: &BashExecutionArgs,
+    call_id: Option<String>,
+    judge: &crate::clients::judge::JudgeContext,
+    bypass_env: Option<&str>,
+) -> Result<JudgePreflight, super::ToolError> {
+    let request = script_judge_request(context, args, call_id)?;
+    let observation_note = script_observation_note(&request);
     let client = judge
         .judge_client()
         .map_err(|e| fail_closed_tool_error(e.class, &e.message))?;
-    let request = JudgeRequest::new(
-        args.command.clone(),
-        context.cwd.clone(),
-        args.reason.clone(),
-    )
-    .with_repo_digest(repo_state_digest(&context.cwd))
-    .with_call_id(call_id);
 
-    let evaluation = evaluate_command_observed(
-        client,
-        &judge.settings,
-        request,
-        bypass_env.as_deref(),
-        false,
-    )
-    .await;
+    let evaluation =
+        evaluate_command_observed(client, &judge.settings, request, bypass_env, false).await;
     // Persist finalized attempts as soon as judging completes: an interrupted
     // command (for example Ctrl-C on a hung Bash call) cancels the agent
     // future before the tool result and its compensation events are recorded,
     // so waiting for that path would drop the attempts.
     record_judge_attempts(judge, &evaluation.attempts);
     observed_evaluation_to_preflight(evaluation)
+        .map_err(|mut error| {
+            if let Some(note) = &observation_note {
+                error.message.push_str("\n\n");
+                error.message.push_str(note);
+            }
+            error
+        })
+        .map(|mut preflight| {
+            preflight.warnings.extend(observation_note);
+            preflight
+        })
+}
+
+fn script_judge_request(
+    context: &super::ToolContext,
+    args: &BashExecutionArgs,
+    call_id: Option<String>,
+) -> Result<JudgeRequest, super::ToolError> {
+    let mut request = JudgeRequest::new(
+        args.command.clone(),
+        context.cwd.clone(),
+        args.reason.clone(),
+    )
+    .with_repo_digest(repo_state_digest(&context.cwd))
+    .with_call_id(call_id);
+    request.script_evidence =
+        crate::clients::tools::script_evidence::collect(context, &args.command)
+            .map_err(|detail| super::ToolError {
+                message: format!(
+                    "BLOCKED\n\nReferenced script evidence could not be collected, so the command was not executed and the judge was not called. {detail}\nUse an existing readable regular UTF-8 script within the configured Read grants (at most 32 KiB), or inline the intended command for judgment."
+                ),
+                compensation_events: vec![CompensationEventTelemetry::judge_fail_closed("script_evidence")],
+            })?;
+    Ok(request)
+}
+
+fn script_observation_note(request: &JudgeRequest) -> Option<String> {
+    request.script_evidence.as_ref().map(|evidence| {
+        // JSON escaping keeps model-supplied paths from injecting control characters.
+        format!(
+            "Safety judge inspected referenced script {} (untrusted contents; dependencies and later changes not covered).",
+            serde_json::json!(evidence.path)
+        )
+    })
 }
 
 /// Persist finalized judge attempts through the run's telemetry sink, if any.
