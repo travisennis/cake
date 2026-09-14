@@ -17,7 +17,7 @@ Persisted sessions get an append-only newline-delimited JSON telemetry sidecar a
 
 Every telemetry record includes `session_id`, `invocation_id`, and `timestamp`. The sidecar records operational events such as `telemetry_init`, `api_attempt`, `retry_scheduled`, `tool_call`, and `session_summary`. It stores durations, retry classifications, request override summaries, token usage, output byte counts, and success or failure status. It does not store prompt text, assistant text, or raw tool output bodies.
 
-Telemetry sidecars are never resumable session files. `--continue`, `--resume`, `--fork`, and latest-session discovery continue to read only transcript files from `sessions/{session_id}.jsonl`. `--no-session` skips both the transcript and telemetry sidecar.
+Telemetry sidecars are never resumable session files. `--resume`, `--fork`, and session listing continue to read only transcript files from `sessions/{session_id}.jsonl`; `--no-session` skips both the transcript and telemetry sidecar.
 
 ## Rationale
 
@@ -30,7 +30,7 @@ Telemetry sidecars are never resumable session files. `--continue`, `--resume`, 
 ## Consequences
 
 - **Positive**: Developers can inspect a session timeline with `jq` and see slow API attempts, retry reasons, tool durations, and final usage.
-- **Positive**: Continue and resume invocations append to the same session sidecar while `invocation_id` separates individual CLI runs.
+- **Positive**: Resume invocations append to the existing session sidecar while `invocation_id` separates individual CLI runs; forks create a separate session and sidecar.
 - **Positive**: Telemetry write failures degrade to one warning and then disable telemetry for that invocation.
 - **Negative**: The cache directory now contains another artifact family that future cleanup tooling may need to understand.
 - **Negative**: The sidecar intentionally cannot answer content questions; readers must use the transcript for conversation semantics.

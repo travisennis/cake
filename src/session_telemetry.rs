@@ -52,7 +52,6 @@ pub struct ProviderTermination {
 #[serde(rename_all = "snake_case")]
 pub enum SessionTelemetryRunMode {
     New,
-    Continue,
     Resume,
     Fork,
 }

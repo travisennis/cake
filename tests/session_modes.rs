@@ -1,6 +1,6 @@
 //! End-to-end coverage for the session modes that restore or fork a prior
-//! session (`--continue`, `--fork <UUID>`): the run resolves the restored
-//! session's model and reaches the provider, exercising the `ContinueLatest`
+//! session (`--resume <UUID>`, `--fork <UUID>`): the run resolves the
+//! restored session's model and reaches the provider, exercising the `Resume`
 //! and `Fork` arms of `build_client_and_session`. The command-safety judge
 //! context those arms attach is unit-tested in `session_factory` (these e2e
 //! tests never invoke Bash, so they cannot observe the wiring themselves).
@@ -129,16 +129,16 @@ async fn run_mode(env: &TestEnv, mock_server: &MockServer, args: &[&str]) -> std
 }
 
 #[tokio::test]
-async fn continue_restores_latest_session_and_reaches_provider() {
-    let env = TestEnv::new("cake-continue-test");
+async fn resume_restores_named_session_and_reaches_provider() {
+    let env = TestEnv::new("cake-resume-test");
     let mock_server = MockServer::start().await;
     write_responses_settings(&env, &mock_server.uri());
     write_session_fixture(&env, &minimal_records(&env));
 
-    let output = run_mode(&env, &mock_server, &["--continue", "carry on"]).await;
+    let output = run_mode(&env, &mock_server, &["--resume", SESSION_ID, "carry on"]).await;
     assert!(
         output.status.success(),
-        "continue should succeed. stderr: {}",
+        "resume should succeed. stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
 

@@ -1,7 +1,7 @@
 //! Session run-mode and persistence-plan abstractions.
 //!
-//! Defines [`RunMode`], which translates the CLI flags (`--continue`, `--resume`,
-//! `--fork`, `--no-session`) into an enum controlling session lifecycle, and
+//! Defines [`RunMode`], which translates the CLI flags (`--resume`, `--fork`,
+//! `--no-session`) into an enum controlling session lifecycle, and
 //! [`SessionPersistencePlan`] for creating or appending a session file.
 
 use crate::session_telemetry::SessionTelemetryRunMode;
@@ -14,8 +14,6 @@ pub enum RunMode {
     NewSession,
     /// Run without persisting a session (`--no-session`).
     Ephemeral,
-    /// Continue the most recent session for the current directory (`--continue`).
-    ContinueLatest,
     /// Resume a specific session by UUID (`--resume <UUID>`).
     Resume { session_id: uuid::Uuid },
     /// Fork the most recent session (`--fork` without a value).
@@ -29,9 +27,6 @@ impl RunMode {
     pub(crate) fn from_cli(args: &crate::CodingAssistant) -> anyhow::Result<Self> {
         if args.no_session {
             return Ok(Self::Ephemeral);
-        }
-        if args.continue_session {
-            return Ok(Self::ContinueLatest);
         }
         if let Some(session_id) = args.resume.as_deref() {
             let id = uuid::Uuid::parse_str(session_id).map_err(|_e| {
@@ -65,7 +60,7 @@ impl RunMode {
     pub(crate) const fn session_start_source(&self) -> &'static str {
         match self {
             Self::ForkLatest | Self::Fork { .. } => "fork",
-            Self::ContinueLatest | Self::Resume { .. } => "resume",
+            Self::Resume { .. } => "resume",
             Self::NewSession | Self::Ephemeral => "startup",
         }
     }
@@ -74,10 +69,33 @@ impl RunMode {
     pub(crate) const fn telemetry_mode(&self) -> SessionTelemetryRunMode {
         match self {
             Self::NewSession | Self::Ephemeral => SessionTelemetryRunMode::New,
-            Self::ContinueLatest => SessionTelemetryRunMode::Continue,
             Self::Resume { .. } => SessionTelemetryRunMode::Resume,
             Self::ForkLatest | Self::Fork { .. } => SessionTelemetryRunMode::Fork,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn telemetry_labels_cover_the_remaining_run_modes() {
+        let resume = RunMode::Resume {
+            session_id: uuid::Uuid::nil(),
+        };
+        assert_eq!(
+            serde_json::to_string(&resume.telemetry_mode()).unwrap_or_default(),
+            "\"resume\""
+        );
+        assert_eq!(
+            serde_json::to_string(&RunMode::NewSession.telemetry_mode()).unwrap_or_default(),
+            "\"new\""
+        );
+        assert_eq!(
+            serde_json::to_string(&RunMode::ForkLatest.telemetry_mode()).unwrap_or_default(),
+            "\"fork\""
+        );
     }
 }
 

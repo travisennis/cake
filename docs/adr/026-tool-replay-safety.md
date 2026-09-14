@@ -29,7 +29,7 @@ An interrupted Cake task can persist a model `function_call` without its `functi
 
 Each registered tool carries a typed replay declaration with the values `safe` or `never`. The default for new entries and unknown names is `never`. The built-in Read tool declares `safe`; Bash, Edit, and Write declare `never`. A toolbox describe manifest may use `replay: "safe"` or `replay: "never"` in JSON, or the corresponding `replay: safe`/`replay: never` line in text; omission means `never`.
 
-Cake adds an optional `replay` field to the persisted and stream-visible function-call and function-call-output records. The field is the registry snapshot used while handling the call and is omitted from historical records and synthetic recovery outputs. A future automatic replay must require both the persisted snapshot and the current registry declaration to be `safe`. Current continue, resume, and fork repair remains append-only and continues to write synthetic `not executed` outputs.
+Cake adds an optional `replay` field to the persisted and stream-visible function-call and function-call-output records. The field is the registry snapshot used while handling the call and is omitted from historical records and synthetic recovery outputs. A future automatic replay must require both the persisted snapshot and the current registry declaration to be `safe`. Current resume and fork repair remains append-only and continues to write synthetic `not executed` outputs.
 
 ### Consequences
 

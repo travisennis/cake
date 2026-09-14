@@ -60,13 +60,9 @@ pub enum OutputFormat {
 #[command(author, version, about, long_about = None)]
 #[command(group(
     ArgGroup::new("session_mode")
-        .args(["continue_session", "resume", "fork", "no_session"])
+        .args(["resume", "fork", "no_session"])
         .multiple(false)
 ))]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "clap-derived CLI struct; the boolean flags are independent"
-)]
 pub(crate) struct CodingAssistant {
     /// The prompt to send to the AI (use `-` to read from stdin)
     #[arg(value_name = "PROMPT")]
@@ -85,10 +81,6 @@ pub(crate) struct CodingAssistant {
     /// is constrained; tool use and intermediate output are unchanged.
     #[arg(long, value_name = "PATH")]
     pub output_schema: Option<String>,
-
-    /// Continue the most recent session for this directory
-    #[arg(long = "continue")]
-    pub continue_session: bool,
 
     /// Resume a specific session by UUID.
     #[arg(long, value_name = "UUID")]
@@ -314,7 +306,7 @@ impl CodingAssistant {
         Ok((config, model_name.to_string()))
     }
 
-    /// Resolve the model for a session restore (--continue, --resume, --fork).
+    /// Resolve the model for a session restore (--resume or --fork).
     ///
     /// Returns the resolved config plus the selected `[[models]]` entry name.
     /// Sessions persist both the provider model ID and the entry name; the
@@ -938,7 +930,6 @@ impl CodingAssistant {
             (self.prompt.is_some(), "prompt"),
             (self.max_tokens.is_some(), "--max-tokens"),
             (self.output_schema.is_some(), "--output-schema"),
-            (self.continue_session, "--continue"),
             (self.resume.is_some(), "--resume"),
             (self.fork.is_some(), "--fork"),
             (self.no_session, "--no-session"),

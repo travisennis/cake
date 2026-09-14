@@ -63,8 +63,8 @@ Runs are persisted by default:
 
 ```bash
 cake "Start the refactor"
-cake --continue "Finish it"
-cake --resume <UUID> "Try another approach"
+cake sessions list
+cake --resume <UUID> "Finish it or try another approach"
 cake --fork <UUID> "Explore this without changing the original session"
 ```
 
