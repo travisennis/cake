@@ -249,7 +249,6 @@ impl crate::CodingAssistant {
             judge,
         };
         match run_mode {
-            RunMode::ContinueLatest => self.continue_latest_run(data_dir, &inputs),
             RunMode::Resume { session_id } => self.resume_run(*session_id, data_dir, &inputs),
             RunMode::ForkLatest | RunMode::Fork { .. } => {
                 self.forked_run(run_mode, data_dir, &inputs)
@@ -263,24 +262,6 @@ impl crate::CodingAssistant {
                     }),
             ),
         }
-    }
-
-    /// `--continue`: restore the latest session recorded for this directory.
-    fn continue_latest_run(
-        &self,
-        data_dir: &DataDir,
-        inputs: &RunInputs<'_>,
-    ) -> anyhow::Result<RunSession> {
-        info!(
-            target: "cake",
-            "Continuing latest session for directory: {}",
-            inputs.current_dir.display()
-        );
-        let Some(restored) = data_dir.load_latest_session(&inputs.current_dir)? else {
-            return Err(missing_continue_target(data_dir, &inputs.current_dir)?);
-        };
-        info!(target: "cake", "Continuing session: {}", restored.id);
-        self.restored_run(restored, inputs)
     }
 
     /// Resolve a restored session's model, attach the judge, rebuild the pair.
@@ -409,27 +390,6 @@ fn fork_source(
             .ok_or_else(|| anyhow::anyhow!("Session {session_id} not found")),
         _ => unreachable!("fork arm only handles fork modes"),
     }
-}
-
-/// Explain why `--continue` has nothing to restore.
-///
-/// Names the directory that owns the most recent session when one exists;
-/// lookup failures propagate rather than being masked by this error.
-fn missing_continue_target(
-    data_dir: &DataDir,
-    current_dir: &Path,
-) -> anyhow::Result<anyhow::Error> {
-    let Some(latest) = data_dir.load_latest_session_any_directory()? else {
-        return Ok(anyhow::anyhow!(
-            "No previous session found for this directory"
-        ));
-    };
-    Ok(anyhow::anyhow!(
-        "Cannot continue: latest session was created in '{}' but current directory is '{}'. \
-         Run from the original directory or start a new session.",
-        latest.working_dir.display(),
-        current_dir.display()
-    ))
 }
 
 /// Attach the LLM-judge context to the tool context shared by the Bash
@@ -779,73 +739,6 @@ mod tests {
             None,
             &JudgeSettings::default(),
         )
-    }
-
-    #[test]
-    fn continue_restores_latest_directory_session() {
-        temp_env::with_var("SESSION_FACTORY_TEST_KEY", Some("test-key"), || {
-            let cli = crate::CodingAssistant::parse_from(["cake"]);
-            let data_dir_dir = tempfile::tempdir().expect("temp data dir");
-            let data_dir = DataDir::new_in_dir(data_dir_dir.path());
-            let working_dir = tempfile::tempdir().expect("temp working dir");
-            let saved = saved_session(&data_dir, working_dir.path());
-
-            let run = build_for_mode(
-                &cli,
-                &RunMode::ContinueLatest,
-                &data_dir,
-                working_dir.path(),
-            )
-            .expect("continue should succeed");
-
-            assert_eq!(run.agent.session_id(), saved.id);
-            assert!(matches!(
-                run.persistence,
-                Some(SessionPersistencePlan::Append)
-            ));
-        });
-    }
-
-    #[test]
-    fn continue_without_any_sessions_reports_missing_session() {
-        let cli = crate::CodingAssistant::parse_from(["cake"]);
-        let data_dir_dir = tempfile::tempdir().expect("temp data dir");
-        let data_dir = DataDir::new_in_dir(data_dir_dir.path());
-        let working_dir = tempfile::tempdir().expect("temp working dir");
-
-        let error = build_for_mode(
-            &cli,
-            &RunMode::ContinueLatest,
-            &data_dir,
-            working_dir.path(),
-        )
-        .err()
-        .expect("continue without sessions should fail");
-
-        assert!(error.to_string().contains("No previous session found"));
-    }
-
-    #[test]
-    fn continue_in_other_directory_names_the_original_directory() {
-        let cli = crate::CodingAssistant::parse_from(["cake"]);
-        let data_dir_dir = tempfile::tempdir().expect("temp data dir");
-        let data_dir = DataDir::new_in_dir(data_dir_dir.path());
-        let working_dir = tempfile::tempdir().expect("temp working dir");
-        let other_dir = tempfile::tempdir().expect("temp other dir");
-        saved_session(&data_dir, other_dir.path());
-
-        let error = build_for_mode(
-            &cli,
-            &RunMode::ContinueLatest,
-            &data_dir,
-            working_dir.path(),
-        )
-        .err()
-        .expect("continue from another directory should fail");
-
-        let message = error.to_string();
-        assert!(message.contains("Cannot continue"));
-        assert!(message.contains(&other_dir.path().display().to_string()));
     }
 
     #[test]

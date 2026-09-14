@@ -73,7 +73,7 @@ Subtype mapping is:
 
 ### 3. Session loading
 
-- `--continue` continues the most recent session for the current working directory (current behavior, unchanged).
+- `cake sessions list` displays session UUIDs, which `--resume <uuid>` uses to restore an explicit session.
 - `--resume` is modified to accept either a session UUID or a file path. If the argument looks like a UUID, load from the sessions directory. Otherwise, treat it as a file path.
 - `--fork` is modified to accept either a session UUID or a file path, matching `--resume`. `--fork` without an argument still forks the latest session for the current working directory.
 - For file-based `--resume` and `--fork`, the loaded session keeps its original `Init.working_directory`. If the current process working directory does not match that stored directory, exit early with a clear warning/error about the mismatch instead of silently rebasing the session onto the new directory.
@@ -115,7 +115,7 @@ When resuming or forking from an existing file, do not keep old terminal `Result
 
 - Persist it in the schema.
 - Parse it on load.
-- Do not enforce tool-list equality on `--continue`, `--resume`, or `--fork`.
+- Do not enforce tool-list equality on `--resume` or `--fork`.
 - On save, rewrite `Init.tools` to the current runtime tool list.
 - If useful during implementation, log a debug or warn-level message when stored tools differ from the current runtime tool list, but do not fail.
 
@@ -257,7 +257,7 @@ pub enum ResultSubtype {
 
 - Update `--fork` argument parsing to accept either a UUID or a file path.
 
-- When loading a session for resume/continue, check the model:
+- When loading a session for resume, check the model:
   - If `--model` is not provided, use the session's model.
   - If `--model` is provided and differs from the session's resolved model, error out.
   - If the loaded session has no model, use the existing default model resolution behavior.
@@ -298,7 +298,7 @@ pub enum ResultSubtype {
 - [ ] `cake --output-format stream-json` produces a valid v3 JSONL stream.
 - [ ] Redirecting stream-json to a file and running `cake --resume <file>` reconstructs the conversation.
 - [ ] Reasoning sessions roundtrip correctly (encrypted_content preserved).
-- [ ] `--continue` still loads the most recent session by working directory.
+- [ ] `cake sessions list` exposes the UUID needed by `--resume <uuid>`.
 - [ ] `--resume <uuid>` loads from the sessions directory.
 - [ ] `--resume <path>` loads from an arbitrary file path.
 - [ ] `--fork <uuid>` loads from the sessions directory.

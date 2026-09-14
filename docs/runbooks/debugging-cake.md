@@ -160,14 +160,14 @@ grep "$SESSION_ID" "$LOG_DIR"/cake.*.log
 
 When this happens, the session file ends without a `task_complete` record (or `task_complete` is present with `is_error: true`).
 
-## Continuing or Resuming
+## Resuming a Session
 
 ```bash
-# Continue the latest session in the current directory
-./target/release/cake --continue "Try again"
+# List sessions and choose the UUID to restore
+./target/release/cake sessions list
 
 # Resume a specific session by UUID (not file path)
-./target/release/cake --resume {uuid} "Continue"
+./target/release/cake --resume {uuid} "Try again"
 ```
 
 ## Worked Example: Diagnosing a "None" Output
@@ -207,7 +207,7 @@ $ grep -iE "error|timeout|truncat" "$LOG_DIR"/cake.$(date +%Y-%m-%d).log | tail 
 
 **Diagnosis**: Streaming connection dropped during the model's response.
 
-**Next step for the user**: `cake --continue "Continue where you left off"` will reload the partial session and let the model finish.
+**Next step for the user**: run `cake sessions list`, then use `cake --resume {uuid} "Continue where you left off"` to reload the partial session and let the model finish.
 
 ## File Locations
 

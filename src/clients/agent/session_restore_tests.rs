@@ -292,7 +292,7 @@ fn session_restore_tool_context() -> Arc<ToolContext> {
     ))
 }
 
-/// The agent `--continue` and `--resume` build, via their shared constructor.
+/// The agent `--resume` and `--fork` paths build via shared constructors.
 fn restored_agent(session: Session) -> Agent {
     crate::CodingAssistant::restored_client_and_session(
         session,
@@ -469,7 +469,7 @@ fn restore_recomputation_from_the_file_matches_loaded_state() {
         "loaded pairing must equal the file's pairing"
     );
 
-    // `--continue` and `--resume` share this constructor.
+    // `--resume` and `--fork` share this constructor.
     let restored_run = restored_agent(restored.clone());
     assert_usage_seed(
         restored_run.last_usage(),

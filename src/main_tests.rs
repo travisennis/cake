@@ -262,9 +262,6 @@ fn test_run_mode_no_session_is_ephemeral() {
 #[test]
 fn test_run_mode_restore_flags() {
     let resume_id = uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
-    let args = CodingAssistant::parse_from(["cake", "--continue", "test prompt"]);
-    assert_eq!(RunMode::from_cli(&args).unwrap(), RunMode::ContinueLatest);
-
     let args = CodingAssistant::parse_from([
         "cake",
         "--resume",
@@ -292,6 +289,18 @@ fn test_run_mode_restore_flags() {
         RunMode::Fork {
             session_id: resume_id
         }
+    );
+}
+
+#[test]
+fn test_cli_rejects_removed_continue_flag() {
+    let Err(error) = CodingAssistant::try_parse_from(["cake", "--continue", "test prompt"]) else {
+        panic!("the removed --continue flag must be rejected");
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("unexpected argument '--continue'")
     );
 }
 

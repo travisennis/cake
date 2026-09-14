@@ -8,7 +8,7 @@ This plan follows [docs/workflow/exec-plans.md](../../workflow/exec-plans.md). A
 
 Cake session files should become append-only logs again. A session file should be easy to reason about: it starts once with durable session metadata, then each user task appends a start event, conversation records, and a completion event. Continuing, resuming, and forking should no longer rewrite or normalize the whole file.
 
-After this change, a user can run `cake "first task"` and then `cake --continue "second task"` and inspect `~/.local/share/cake/sessions/{uuid}.jsonl`. The first line will be one `session_meta` record. Each invocation will append one `task_start` record and one `task_complete` record around the records produced by that task. `--output-format stream-json` will output live task events beginning with `task_start`; it will not output `session_meta`, and its output is allowed to be a subset of the persisted session file. `--resume` and `--fork` will accept only session UUIDs, not arbitrary file paths.
+After this change, a user can run `cake "first task"`, use `cake sessions list` to discover its UUID, and then run `cake --resume <UUID> "second task"` while inspecting `~/.local/share/cake/sessions/{uuid}.jsonl`. The first line will be one `session_meta` record. Each invocation will append one `task_start` record and one `task_complete` record around the records produced by that task. `--output-format stream-json` will output live task events beginning with `task_start`; it will not output `session_meta`, and its output is allowed to be a subset of the persisted session file. `--resume` and `--fork` will accept only session UUIDs, not arbitrary file paths.
 
 Cake is pre-release software with a single user. This refactor is a clean break: legacy v2 and old-v3 (`init`/`result`) session files will no longer load, and the persisted JSONL schema bumps to `format_version: 4`. Stream-json consumers must adapt to the new event names.
 
@@ -16,7 +16,7 @@ Cake is pre-release software with a single user. This refactor is a clean break:
 
 - [x] (2026-05-03T15:44Z) Captured the initial user requirements and inspected the current session implementation in `src/clients/types.rs`, `src/clients/agent.rs`, `src/config/session.rs`, `src/config/data_dir.rs`, `src/main.rs`, and `docs/design-docs/session-management.md`.
 - [x] (2026-05-03T15:44Z) Created this initial ExecPlan with concrete design decisions, affected files, milestones, and validation strategy.
-- [x] (2026-05-03T18:30Z) Revised the plan after review: added separate `StreamRecord` type, removed all backward-compatibility scope, pinned `task_id` ownership, decided on advisory file locking, slimmed `task_start`, made directory-mismatch fatal for `--continue`, switched validation to mocked tests, and noted snapshot updates.
+- [x] (2026-05-03T18:30Z) Revised the plan after review: added separate `StreamRecord` type, removed all backward-compatibility scope, pinned `task_id` ownership, decided on advisory file locking, retained UUID-only restoration, switched validation to mocked tests, and noted snapshot updates.
 - [x] (2026-05-03T19:15Z) Second review pass: fork copies parent records into a new file, live-append from agent through a persist sink, switched lock crate to `fs4`, renamed `ResultSubtype` to `TaskCompleteSubtype`, standardized emitter method suffix to `_record`, added `#[serde(default)]` to `cake_version`, specified `format_version` mismatch error, and clarified that stream-callback type becomes `StreamRecord`.
 - [x] (2026-05-03T22:05Z) Defined `SessionRecord` (persisted) and `StreamRecord` (streamed) schemas with `format_version: 4`.
 - [x] (2026-05-03T22:05Z) Implemented append-only session creation and saving with advisory file lock via `fs4`.
@@ -39,7 +39,7 @@ Cake is pre-release software with a single user. This refactor is a clean break:
 
 - Observation: Existing snapshot tests embed the JSON tags `init` and `result` and the v2/legacy-v3 fixture files; they will need refreshed snapshots and deletions when the schema changes. Evidence: `src/config/session.rs` contains `test_session_v2_backward_compat`, `test_session_v2_duplicate_timestamp_compat`, `test_session_result_record_stripped_on_load`, and `test_session_save_writes_v3` which all assert legacy behavior.
 
-- Observation: The current code only enforces the working-directory match for path-based resume/fork (`ensure_session_directory_matches`); UUID-based `--resume` and `--fork` deliberately skip the check, and `--continue` is implicitly directory-scoped because `load_latest_session` filters by working directory. Evidence: `src/main.rs` calls `ensure_session_directory_matches` only inside the non-UUID branches of `--resume` and `--fork`.
+- Observation: The current code only enforces the working-directory match for path-based resume/fork (`ensure_session_directory_matches`); UUID-based `--resume` and `--fork` deliberately skip the check. Evidence: `src/main.rs` calls `ensure_session_directory_matches` only inside the non-UUID branches of `--resume` and `--fork`.
 
 - Observation: The first `cargo test session --quiet` after adding `fs4` failed inside the sandbox because Cargo needed crates.io index access for the new dependency. Rerunning with approved network access resolved dependencies and surfaced compile errors normally. Evidence: Cargo reported `Couldn't resolve host: index.crates.io` before escalation.
 
@@ -57,17 +57,17 @@ Cake is pre-release software with a single user. This refactor is a clean break:
 
 - Decision: Remove support for `--resume <path>` and `--fork <path>`; only UUID-based restore is supported. Rationale: Redirected stream-json is no longer intended to be a complete resumable session file. Removing path loading simplifies session invariants and avoids ambiguous current-directory validation. Date/Author: 2026-05-03 / Codex
 
-- Decision: Keep `--continue` directory-scoped via `load_latest_session`. Make a working-directory mismatch fatal for `--continue` rather than silently producing "no session found": when the user passes `--continue` and the latest session for any directory is the one they intend, but its `working_directory` no longer matches `current_dir`, return a clear error explaining the mismatch. Rationale: The user wants `--continue` to refuse, not silently succeed or silently start a new session. Existing UUID-based `--resume` and `--fork` deliberately skip the directory check; the user signaled the existing guards are sufficient there, so this refactor does not change UUID-resume/fork directory behavior. Date/Author: 2026-05-03 / Codex (revised after review)
+- Decision: Restrict restoration to explicit UUIDs for `--resume` and `--fork`, while retaining latest-session selection only for `--fork` without a value. Rationale: UUID-based restoration avoids ambiguous directory-scoped selection and keeps the user in control of which conversation is reopened. Date/Author: 2026-09-14 / Cake (supersedes the earlier latest-session decision)
 
 - Decision: Make a clean break with no backward compatibility for v2 or old-v3 (`init`/`result`) session files. Rationale: Cake is pre-release with a single user. Maintaining migration code adds complexity that benefits no one. Bump `format_version` to `4`. Loading any file whose first record is not `session_meta` returns a clear error. Delete `load_format_v2`, the v2/legacy-v3 fixtures, and `test_session_result_record_stripped_on_load`. Date/Author: 2026-05-03 / Codex (added after review)
 
 - Decision: Generate `task_id` (UUIDv4) once in `src/main.rs::run` at the start of each invocation. Thread it explicitly into `Agent` (stored on `Agent` for the lifetime of the run) and into the save layer. Conversation records (`Message`, `FunctionCall`, `FunctionCallOutput`, `Reasoning`) do **not** carry `task_id`; only `TaskStart` and `TaskComplete` do. Consumers correlate records to a task by position between matching `task_start`/`task_complete` pairs. Rationale: Single source of truth keeps the agent stateless about session identity beyond the current task and prevents drift. Bloating every conversation record with `task_id` is unnecessary because file order already correlates them. Date/Author: 2026-05-03 / Codex (added after review)
 
-- Decision: `session_meta` carries durable session-wide context (`format_version`, `session_id`, `timestamp`, `working_directory`, `model`, `tools`, optional `cake_version`). `task_start` carries only per-task context (`session_id`, `task_id`, `timestamp`). Working directory, model, and tools are not duplicated on `task_start`; if any of these change between tasks, the change is reflected only by writing a new `session_meta` (which is not done in this refactor; the value is fixed for the life of a session). Rationale: Avoids the "which record wins" ambiguity. A session is a single (working_dir, model) tuple; if the user changes directory or model materially, that is a new session, enforced by the `--continue` directory check. Date/Author: 2026-05-03 / Codex (added after review)
+- Decision: `session_meta` carries durable session-wide context (`format_version`, `session_id`, `timestamp`, `working_directory`, `model`, `tools`, optional `cake_version`). `task_start` carries only per-task context (`session_id`, `task_id`, `timestamp`). Working directory, model, and tools are not duplicated on `task_start`; if any of these change between tasks, the change is reflected only by writing a new `session_meta` (which is not done in this refactor; the value is fixed for the life of a session). Rationale: Avoids the "which record wins" ambiguity. A session is a single (working_dir, model) tuple; materially changing directory or model starts a new session. Date/Author: 2026-05-03 / Codex (added after review)
 
 - Decision: Use advisory exclusive file locking around session-file appends via the `fs4` crate (the maintained successor to the abandoned `fs2`). Acquire `try_lock_exclusive` on the open session file at the start of an invocation; on failure return a clear error: `Another cake invocation is currently writing to session <id>. Wait for it to finish or run in a different directory.` Rationale: With append-only files, concurrent invocations on the same session file would interleave records past `PIPE_BUF` boundaries on long writes. Cost is one small dependency and one syscall per invocation. Lock is automatically released on file close. `fs2` is unmaintained and pulls in a stale `libc`; `fs4` provides the same API with active maintenance. Date/Author: 2026-05-03 / Codex (added after review)
 
-- Decision: When `--continue`, `--resume`, and `--fork` are combined with `--output-format stream-json`, do not replay prior tasks to stdout. The stream begins with `task_start` for the *current* invocation, includes only the current task's records, and ends with `task_complete`. Rationale: Stream-json is a live progress feed for the current invocation, not a session-file dump. Prior task replay would surprise consumers and dilute the meaning of "stream." Date/Author: 2026-05-03 / Codex (added after review)
+- Decision: When `--resume` and `--fork` are combined with `--output-format stream-json`, do not replay prior tasks to stdout. The stream begins with `task_start` for the *current* invocation, includes only the current task's records, and ends with `task_complete`. Rationale: Stream-json is a live progress feed for the current invocation, not a session-file dump. Prior task replay would surprise consumers and dilute the meaning of "stream." Date/Author: 2026-05-03 / Codex (added after review)
 
 - Decision: Validation strategy splits along automation boundaries. Unit and integration tests use mock model clients (no network). The CLI command examples in this plan that invoke a real model are manual smoke tests for the implementer; CI relies solely on `just ci`. The directory-mismatch error and the path-rejection errors are validated as **unit tests** against the underlying helper functions, not via subprocess CLI tests, to avoid adding test-only mock-injection plumbing to `main.rs`. Rationale: Keeps CI fast, deterministic, and offline. The user explicitly rejected adding mock-client complexity to the CLI itself. Date/Author: 2026-05-03 / Codex (added after review; refined 2026-05-03 second pass)
 
@@ -83,7 +83,7 @@ Cake is pre-release software with a single user. This refactor is a clean break:
 
 ## Outcomes & Retrospective
 
-- Implemented the v4 append-only session log model end to end. New sessions write one `session_meta`; each invocation emits `task_start`, live conversation records, and `task_complete`; continue/resume append to existing files; fork creates a new file and seeds only parent conversation records.
+- Implemented the v4 append-only session log model end to end. New sessions write one `session_meta`; each invocation emits `task_start`, live conversation records, and `task_complete`; resume appends to existing files; fork creates a new file and seeds only parent conversation records.
 - Split persisted `SessionRecord` from streamed `StreamRecord`, so `session_meta` cannot be emitted to stream-json. Removed the agent's stream buffer and replaced it with live fan-out to persistence and optional stdout streaming.
 - Removed path-based resume/fork loading and legacy v2/old-v3 load paths. `--resume` and `--fork` now reject non-UUID arguments with input errors.
 - Validation: `cargo test types --quiet`, `cargo test config::session --quiet`, `cargo test --test exit_codes --quiet`, `cargo clippy --all-targets --all-features -- -D warnings`, escalated `cargo test --quiet`, and final escalated `just ci` all pass. `cargo insta test` could not run because `cargo-insta` is not installed; snapshot-backed tests still pass under normal cargo test.
@@ -98,7 +98,7 @@ The current save path is snapshot-based. `src/main.rs::run` builds an `Agent` an
 
 The desired implementation is log-based. A new session file is created with one `session_meta` record at the top. Each CLI invocation appends a `task_start` record, appends conversation records as the agent runs, and appends a `task_complete` record. Restored sessions keep all prior task boundary records in the file, but only conversation records are converted back into model conversation history.
 
-`stream-json` is machine-readable stdout produced when the user passes `--output-format stream-json`. Under the new design, stream-json is a live task stream, not a session-file dump. It includes `task_start`, conversation records, and `task_complete` for the current invocation only. It does not include `session_meta`, and it does not replay prior tasks under `--continue`/`--resume`/`--fork`.
+`stream-json` is machine-readable stdout produced when the user passes `--output-format stream-json`. Under the new design, stream-json is a live task stream, not a session-file dump. It includes `task_start`, conversation records, and `task_complete` for the current invocation only. It does not include `session_meta`, and it does not replay prior tasks under `--resume`/`--fork`.
 
 The main code locations are:
 
@@ -106,7 +106,7 @@ The main code locations are:
 - `src/clients/agent.rs`: holds the in-memory stream buffer and emits init/result records today; will hold a `task_id` and emit task-scoped stream records.
 - `src/config/session.rs`: loads and saves session files; will gain append-only semantics and lose v2/legacy-v3 support.
 - `src/config/data_dir.rs`: chooses session paths, loads latest sessions, loads by UUID, and currently exposes path-based loading; the latter will be removed.
-- `src/main.rs`: parses CLI flags and orchestrates new, continue, resume, fork, send, stream, and save behavior; will generate `task_id` and reject path-based resume/fork.
+- `src/main.rs`: parses CLI flags and orchestrates new, resume, fork, send, stream, and save behavior; will generate `task_id` and reject path-based resume/fork.
 - `docs/design-docs/session-management.md`: describes session behavior and must be rewritten to match this design.
 - `docs/design-docs/streaming-json-output.md`: describes stream-json output and must be rewritten to remove the old "same schema as session history" claim.
 
@@ -128,7 +128,7 @@ Milestone 2 changes session files to append-only with a file lock. Replace `Sess
 - Remove `Session::save`'s temp-file-and-rename path entirely. If the existing `Session::save` becomes unused after the orchestrator switches to live-append, delete it; otherwise keep only what callers still need.
 - Add `fs4` (current stable version) to `Cargo.toml`.
 
-The orchestrator in `src/main.rs::run` opens the file once at the start of an invocation. For a brand-new session it calls `create_on_disk` with the freshly built `session_meta`. For continue/resume it calls `open_for_append` on the existing file. For fork it creates a new file with `create_on_disk(new_meta)`, then calls `append_records(parent_conversation_records)` to seed the parent history. In all cases it then writes `task_start` via `append_record`, hands the locked file handle to the agent as a "persist sink" (a `Box<dyn FnMut(&SessionRecord) -> anyhow::Result<()>>` that wraps `append_record`), runs the agent loop (each emitted record is appended live), then writes `task_complete` through the same sink, and finally drops the file handle to release the lock.
+The orchestrator in `src/main.rs::run` opens the file once at the start of an invocation. For a brand-new session it calls `create_on_disk` with the freshly built `session_meta`. For resume it calls `open_for_append` on the existing file. For fork it creates a new file with `create_on_disk(new_meta)`, then calls `append_records(parent_conversation_records)` to seed the parent history. In all cases it then writes `task_start` via `append_record`, hands the locked file handle to the agent as a "persist sink" (a `Box<dyn FnMut(&SessionRecord) -> anyhow::Result<()>>` that wraps `append_record`), runs the agent loop (each emitted record is appended live), then writes `task_complete` through the same sink, and finally drops the file handle to release the lock.
 
 Milestone 3 separates task events from session metadata in the agent and stream-json path. In `src/clients/agent.rs`:
 
@@ -144,7 +144,6 @@ Milestone 4 removes path-based resume/fork. In `src/main.rs`:
 - Audit `looks_like_uuid` in `src/config/data_dir.rs` before making it the sole gatekeeper. Confirm it accepts standard v4 UUIDs in any case (lowercase and uppercase) and only rejects values that are clearly not UUIDs. If the audit reveals the function is too strict, prefer `uuid::Uuid::parse_str` directly.
 - Change `--resume` handling so the argument must parse as a UUID via `looks_like_uuid`. On non-UUID input, return `Invalid session reference '<value>': resume by file path is no longer supported. Provide a session UUID.`
 - In `--fork`, keep `--fork` with no value for latest-session fork and `--fork <uuid>` for a specific session. Reject non-UUID non-empty values with the equivalent message.
-- Make `--continue` fail loudly when `load_latest_session` returns `None` because the latest existing session has a different `working_directory` than `current_dir`. Implement this by adding a sibling `load_latest_session_any_directory` (or a richer return type) that distinguishes "no session at all" from "newest session is for another directory" and emit `Cannot continue: latest session was created in '<other_dir>' but current directory is '<current_dir>'. Run from the original directory or start a new session.`
 - Remove `load_session_from_path` from `src/config/data_dir.rs` and its re-export in `src/config/mod.rs`.
 - Remove `ensure_session_directory_matches` from `src/main.rs` after path loading is gone (no UUID branch needs it; UUID resume/fork keeps current behavior of skipping the directory check, per Decision Log).
 - Run `rg -n load_session_from_path src tests` after the change to confirm no references remain.
@@ -162,14 +161,14 @@ Milestone 6 updates tests. All new tests use mocks; none requires network access
 - `src/config/session.rs`: add tests proving (a) a new file starts with one `session_meta`; (b) appending a second task does not add another `session_meta` and does append a new `task_start`/`task_complete` pair; (c) loading a file with two complete tasks returns conversation history from both tasks while skipping `task_start`/`task_complete` for model context; (d) loading a file with a trailing `task_start` and no `task_complete` succeeds and returns the partial-task records; (e) loading a file whose first record is not `session_meta` returns a clear error; (f) loading a file whose `session_meta.format_version` is not `4` returns the explicit "Unsupported session format_version" error.
 - `src/clients/agent.rs`: add tests proving the persist sink and stream callback both receive `task_start` first and `task_complete` last for a single invocation, and that the stream callback's `StreamRecord` enum has no `SessionMeta` variant (compile-time check; one test that constructs a `StreamRecord` for each variant suffices). Use stub sinks that capture emitted records.
 - Fork-copy test: build an in-memory parent `Session` with a mix of `Message`, `FunctionCall`, `FunctionCallOutput`, `Reasoning`, `task_start`, and `task_complete` records, run the fork seeding routine into a new file, and assert the new file contains exactly: one `session_meta` (with the new session id), then the parent's conversation records in order, with no `task_start`/`task_complete` records copied from the parent.
-- Unit tests against the helper functions used by `--resume`, `--fork`, and `--continue` (no subprocess CLI tests): assert non-UUID `--resume` and `--fork` arguments produce the new "no longer supported" error, and assert the directory-mismatch helper produces the new error message.
+- Unit tests against the helper functions used by `--resume` and `--fork` (no subprocess CLI tests): assert non-UUID arguments produce the new "no longer supported" error.
 - File-lock test: open a session file, acquire the lock, then attempt to open it again from a second handle; the second `try_lock_exclusive` must fail, and the user-facing error message must be propagated.
 - **Insta snapshots**: many existing snapshot tests in `src/clients/types.rs` and elsewhere encode `init`/`result` JSON tags. After implementation, run `cargo insta test` then `cargo insta review` and accept the renamed snapshots. Verify in review that no accepted snapshot still contains `"type":"init"` or `"type":"result"`.
 
 Milestone 7 updates documentation.
 
-- Rewrite `docs/design-docs/session-management.md` to describe append-only files, `session_meta`, per-task events, UUID-only resume/fork, the directory-mismatch behavior of `--continue`, the file-lock behavior, and the fact that stream-json is no longer a complete session file.
-- Rewrite `docs/design-docs/streaming-json-output.md` so it specifies stream-json starts with `task_start`, ends with `task_complete`, includes live conversation records, never includes `session_meta`, does not replay prior tasks on `--continue`/`--resume`/`--fork`, and is not resumable by path.
+- Rewrite `docs/design-docs/session-management.md` to describe append-only files, `session_meta`, per-task events, UUID-only resume/fork, the file-lock behavior, and the fact that stream-json is no longer a complete session file.
+- Rewrite `docs/design-docs/streaming-json-output.md` so it specifies stream-json starts with `task_start`, ends with `task_complete`, includes live conversation records, never includes `session_meta`, does not replay prior tasks on `--resume`/`--fork`, and is not resumable by path.
 - Update references in `docs/references/responses-api.md`, `docs/design-docs/cli.md`, and any other doc that still claims `init` or `result` are stream-json events.
 - Update `CHANGELOG.md` with a "Breaking changes" entry: schema bumped to v4, legacy session files no longer load, `--resume <path>` and `--fork <path>` removed, stream-json record names changed.
 
@@ -230,18 +229,19 @@ CAKE_DATA_DIR=/tmp/cake-session-test cake --no-color "Say hello"
 
 Inspect the single session file under `/tmp/cake-session-test/sessions`. Its first line must have `"type":"session_meta"`. It must contain exactly one `session_meta`. It must contain a `task_start` before the user message and a `task_complete` after the conversation records.
 
-For a continued session, run:
+List the session UUID, then resume it explicitly:
 
 ```
-CAKE_DATA_DIR=/tmp/cake-session-test cake --continue "Say hello again"
+CAKE_DATA_DIR=/tmp/cake-session-test cake sessions list
+CAKE_DATA_DIR=/tmp/cake-session-test cake --resume <UUID> "Say hello again"
 ```
 
 Inspect the same session file. It must still contain exactly one `session_meta`. It must now contain two `task_start` records and two `task_complete` records. The file should have grown by appending lines; the first task's lines should remain in their original order and should not be duplicated.
 
-For stream-json under `--continue`, run:
+For stream-json under `--resume`, run:
 
 ```
-CAKE_DATA_DIR=/tmp/cake-session-test cake --continue --output-format stream-json "Say hello once more" > /tmp/cake-stream.jsonl
+CAKE_DATA_DIR=/tmp/cake-session-test cake --resume <UUID> --output-format stream-json "Say hello once more" > /tmp/cake-stream.jsonl
 ```
 
 Inspect `/tmp/cake-stream.jsonl`. The first streamed line must have `"type":"task_start"`. No line may have `"type":"session_meta"`. The final streamed line must have `"type":"task_complete"`. The file must contain only the current task's records, not any prior task's records.
@@ -260,19 +260,11 @@ cake --fork /tmp/cake-stream.jsonl "branch"
 
 must fail with a clear message that file-path fork is no longer supported.
 
-For the directory-mismatch case, from a *different* directory:
-
-```
-cd /tmp && CAKE_DATA_DIR=/tmp/cake-session-test cake --continue "should fail"
-```
-
-The command must fail with the directory-mismatch error.
-
 For the concurrent-write lock case:
 
 ```
-CAKE_DATA_DIR=/tmp/cake-session-test cake --continue "long task" &
-CAKE_DATA_DIR=/tmp/cake-session-test cake --continue "second task"
+CAKE_DATA_DIR=/tmp/cake-session-test cake --resume <UUID> "long task" &
+CAKE_DATA_DIR=/tmp/cake-session-test cake --resume <UUID> "second task"
 ```
 
 The second invocation must fail immediately with the file-lock error message.
@@ -375,7 +367,7 @@ At the end of the refactor, `src/config/data_dir.rs` should provide UUID-based s
 
 Plan revision note, 2026-05-03 (initial): Initial plan created from the user's requirements to restore append-only session files, split session files from stream-json output, rename `init`/`result` to `session_meta`/`task_complete`, add `task_start`, and remove file-path resume/fork.
 
-Plan revision note, 2026-05-03 (first post-review): Added separate `StreamRecord` type. Removed all backward-compatibility scope (v2 and legacy-v3 readers, fixtures, and tests are deleted; `format_version` bumps to 4). Pinned `task_id` ownership to `src/main.rs::run` and excluded it from conversation records. Adopted advisory file locking. Slimmed `task_start` to per-task fields only; `working_directory`/`model`/`tools` live solely on `session_meta`. Made `--continue` directory-mismatch fatal with a clear error. Switched validation to mocked unit/integration tests with the CLI examples relegated to manual smoke tests. Added explicit `cargo insta review` step in Milestone 6. Specified that stream-json under `--continue`/`--resume`/`--fork` does not replay prior tasks. Added `cake_version` to `session_meta` for forensics. Anchored the audit `rg` pattern to avoid noise.
+Plan revision note, 2026-05-03 (first post-review): Added separate `StreamRecord` type. Removed all backward-compatibility scope (v2 and legacy-v3 readers, fixtures, and tests are deleted; `format_version` bumps to 4). Pinned `task_id` ownership to `src/main.rs::run` and excluded it from conversation records. Adopted advisory file locking. Slimmed `task_start` to per-task fields only; `working_directory`/`model`/`tools` live solely on `session_meta`. Switched validation to mocked unit/integration tests with the CLI examples relegated to manual smoke tests. Added explicit `cargo insta review` step in Milestone 6. Specified that stream-json under `--resume`/`--fork` does not replay prior tasks. Added `cake_version` to `session_meta` for forensics. Anchored the audit `rg` pattern to avoid noise.
 
 Plan revision note, 2026-05-03 (second post-review): Switched lock crate from `fs2` to `fs4` (active fork). Pinned fork semantics: a fork creates a new file with a fresh `session_meta` and copies the parent's conversation records (excluding `task_start`/`task_complete` boundaries) before any new task records. Adopted live-append from agent through a "persist sink" closure, so conversation records land on disk as they are produced; the agent gains a persist-sink field and `with_stream_records` is deleted entirely (no end-of-task drain). Renamed `ResultSubtype` to `TaskCompleteSubtype` and standardized emitter method suffix on `_record`. Added `#[serde(default)]` to `cake_version`. Added explicit `format_version` mismatch error and a test for it. Added `looks_like_uuid` strictness audit step in Milestone 4. Restricted CLI-related tests to unit tests against helpers (no subprocess CLI tests), per the user's preference to avoid test-only mock-injection in `main.rs`. Added a fork-copy unit
 test to Milestone 6. Clarified that the stream-callback type changes from `Fn(SessionRecord)` to `Fn(StreamRecord)`, making `session_meta` streaming impossible at compile time.

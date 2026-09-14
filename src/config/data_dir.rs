@@ -240,32 +240,6 @@ impl DataDir {
         Ok(result)
     }
 
-    /// Loads the most recently created session regardless of working directory.
-    pub fn load_latest_session_any_directory(&self) -> anyhow::Result<Option<Session>> {
-        let session_dir = self.sessions_dir();
-        if !session_dir.exists() {
-            return Ok(None);
-        }
-
-        fs::read_dir(&session_dir)
-            .with_context(|| {
-                format!(
-                    "Failed to read session directory: {}",
-                    session_dir.display()
-                )
-            })?
-            .filter_map(Result::ok)
-            .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "jsonl"))
-            .filter_map(|entry| {
-                let path = entry.path();
-                let header = read_session_header(&path).ok()?;
-                Some((path, header.timestamp))
-            })
-            .max_by_key(|(_, timestamp)| *timestamp)
-            .map(|(path, _)| Session::load(&path))
-            .transpose()
-    }
-
     /// Loads a specific session by UUID.
     ///
     /// Returns the session with the given ID, or `None` if no such session exists.

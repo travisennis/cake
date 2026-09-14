@@ -21,7 +21,7 @@ Terminal clients such as `cake-repl` want to reopen a session with visible histo
 
 ## Considered Options
 
-- **`--replay <uuid>` flag on `CodingAssistant`.** Rejected: the flag would be parsed alongside prompt-related flags and would need validation against conflicting combinations (`--continue`, `--fork`, a `PROMPT` argument).
+- **`--replay <uuid>` flag on `CodingAssistant`.** Rejected: the flag would be parsed alongside prompt-related flags and would need validation against conflicting combinations (`--resume`, `--fork`, a `PROMPT` argument).
 - **`cake debug replay <uuid>`.** Rejected: replay is a primary client operation, not a diagnostic, and `cake replay <uuid>` is self-documenting.
 - **Replay-only wrapper event types.** Rejected: a single typed event vocabulary is easier for stream-json clients to consume than replay-only wrappers, and additive `StreamRecord` variants preserve existing producers and records.
 - **Top-level `cake replay <uuid>` subcommand (chosen).** Clean argument validation, no conflict with the coding-assistant flags, and the use case is primary rather than diagnostic.

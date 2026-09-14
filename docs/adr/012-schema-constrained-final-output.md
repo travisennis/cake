@@ -35,7 +35,7 @@ Chosen option: local validation plus native constraint on finalizer turns, becau
 
 The concrete behavior:
 
-- A new `--output-schema <path>` flag applies to any cake run (cake is a one-shot non-interactive CLI) and composes with every `--output-format` value and with `--continue`, `--resume`, and `--fork`.
+- A new `--output-schema <path>` flag applies to any cake run (cake is a one-shot non-interactive CLI) and composes with every `--output-format` value and with `--resume` and `--fork`.
 - Before the run starts, cake reads, parses, and compiles the schema. The supported dialect is JSON Schema draft 2020-12 as implemented by the `jsonschema` crate, with remote/file `$ref` resolution disabled --- schemas must be self-contained. Unreadable or invalid schema files fail with exit code 3 (input error) before any `task_start` is emitted.
 - The agent loop runs unchanged. The schema requirement is injected as developer context so the model aims for conforming output on its own.
 - When the model produces a final message (no tool calls), cake validates it locally against the compiled schema. If it validates, the run succeeds and `result` is exactly the JSON document --- no fences, no prose.

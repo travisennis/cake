@@ -116,7 +116,7 @@ On Linux, replace the two macOS `stat` commands with `TZ=UTC stat -c 'JSONL mtim
 
 Distinguish records restored into model history (which consume LLM context) from purely diagnostic metadata. This is critical for any recommendation about "session bloat" or "context growth".
 
-**LLM-visible records** (restored into model history via `--continue` / `--resume`):
+**LLM-visible records** (restored into model history via `--resume <UUID>` or `--fork [UUID]`):
 
   | Type                   | Purpose                                         |
   | ---------------------- | ----------------------------------------------- |

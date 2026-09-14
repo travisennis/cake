@@ -40,7 +40,7 @@ The feature matters because cake currently preserves the semantic transcript in 
 
 - Decision: Append telemetry records incrementally during the run and flush after each record. Rationale: A sidecar is most valuable when the run fails, retries repeatedly, or is interrupted. End-of-session buffering would lose the exact cases this feature is meant to debug. Date/Author: 2026-05-02 / Amp
 
-- Decision: Include a fresh `invocation_id` on every telemetry record in addition to `session_id`. Rationale: cake reuses the same session identifier across `--continue` and `--resume`, so a true per-session file can span multiple CLI invocations. `invocation_id` is the clean way to separate those runs without creating another file naming scheme. Date/Author: 2026-05-02 / Amp
+- Decision: Include a fresh `invocation_id` on every telemetry record in addition to `session_id`. Rationale: cake reuses the same session identifier across repeated `--resume` invocations, so a true per-session file can span multiple CLI invocations. `invocation_id` is the clean way to separate those runs without creating another file naming scheme. Date/Author: 2026-05-02 / Amp
 
 - Decision: Do not store prompt text, assistant text, or raw tool output bodies in telemetry records. Rationale: The session transcript already holds semantic content. The telemetry sidecar should stay compact, low-sensitivity, and performance-oriented. It should store counts, durations, status, and short classifications instead. Date/Author: 2026-05-02 / Amp
 
@@ -66,7 +66,7 @@ The missing piece is a telemetry sidecar. In this plan, "telemetry" means struct
 
 The files and modules that matter most are:
 
-`src/main.rs` owns the end-to-end session lifecycle, including when a session starts, when the final duration is known, and whether `--no-session`, `--continue`, `--resume`, or `--fork` is active.
+`src/main.rs` owns the end-to-end session lifecycle, including when a session starts, when the final duration is known, and whether `--no-session`, `--resume`, or `--fork` is active.
 
 `src/clients/agent.rs` owns the inner loop, including API attempts, retry waits, tool execution, usage accumulation, and the transition from model output to function-call execution.
 
@@ -82,7 +82,7 @@ One important non-goal must stay explicit: this feature should not attempt to re
 
 ### Milestone 1: Define and persist a structured telemetry sidecar
 
-Start by introducing a new module at `src/session_telemetry.rs`. That module should define the telemetry record schema and an append-only writer that emits one JSON object per line to `session-telemetry/{session_id}.ndjson` under the cache tree. The writer should open the file in create-and-append mode, write a newline after every record, and flush immediately so the file remains useful even if cake exits unexpectedly. This module should also define the small metadata types used by the records, including the run mode (`new`, `continue`, `resume`, or `fork`) and the optional invocation-scoped settings that influence performance such as `api_type`, `output_format`, `max_output_tokens`, `reasoning_effort`, and `reasoning_max_tokens`.
+Start by introducing a new module at `src/session_telemetry.rs`. That module should define the telemetry record schema and an append-only writer that emits one JSON object per line to `session-telemetry/{session_id}.ndjson` under the cache tree. The writer should open the file in create-and-append mode, write a newline after every record, and flush immediately so the file remains useful even if cake exits unexpectedly. This module should also define the small metadata types used by the records, including the run mode (`new`, `resume`, or `fork`) and the optional invocation-scoped settings that influence performance such as `api_type`, `output_format`, `max_output_tokens`, `reasoning_effort`, and `reasoning_max_tokens`.
 
 At the same time, add a helper to `src/config/data_dir.rs` that derives the sidecar path from a `session_id`. The helper must return a path under `get_cache_dir().join("session-telemetry")` and ensure that parent directory can be created before the writer opens the file. The new helper should be used everywhere the telemetry writer is initialized so path decisions remain centralized.
 
@@ -156,11 +156,11 @@ The retry acceptance case is important enough to be explicit. When a provider ca
 
 The `--no-session` acceptance case is equally important. When the user opts out of session persistence, cake must not create either the transcript or the telemetry sidecar.
 
-The transcript acceptance case must remain unchanged. `--resume` and `--continue` must still operate on `.jsonl` transcript files exactly as before. Telemetry files must never participate in latest-session discovery, explicit session loading, or stream-json resume behavior because they live outside the sessions directory and use their own extension.
+The transcript acceptance case must remain unchanged. `--resume` must still operate on `.jsonl` transcript files exactly as before. Telemetry files must never participate in session listing, explicit session loading, or stream-json resume behavior because they live outside the sessions directory and use their own extension.
 
 ## Idempotence and Recovery
 
-The implementation steps are safe to repeat. The writer uses append mode, so repeated continues and resumes for the same session will add another invocation's telemetry to the same sidecar instead of overwriting previous runs. That is intentional, and the `invocation_id` field is what keeps those runs separable.
+The implementation steps are safe to repeat. The writer uses append mode, so repeated resumes for the same session will add another invocation's telemetry to the same sidecar instead of overwriting previous runs. That is intentional, and the `invocation_id` field is what keeps those runs separable.
 
 Because the sidecar lives under the cache tree, the implementation should not promise indefinite retention. A future cleanup command or retention policy can safely target `session-telemetry/` without touching resumable transcripts.
 

@@ -34,7 +34,7 @@ The agent skills feature is implemented and documented. Skills can be discovered
 
 ## Project Context
 
-**cake** is a Rust CLI AI coding assistant that: - Integrates with LLMs via OpenRouter API (Responses API and Chat Completions API) - Executes tools (Bash, Read, Edit, Write) in a sandboxed environment - Manages conversation sessions with continue/resume/fork capabilities - Uses OS-level sandboxing (macOS Seatbelt, Linux Landlock)
+**cake** is a Rust CLI AI coding assistant that: - Integrates with LLMs via OpenRouter API (Responses API and Chat Completions API) - Executes tools (Bash, Read, Edit, Write) in a sandboxed environment - Manages conversation sessions with resume/fork capabilities - Uses OS-level sandboxing (macOS Seatbelt, Linux Landlock)
 
 ### Relevant Architecture
 
@@ -595,7 +595,7 @@ This should be discovered and included in the catalog once implemented.
 - [ ] Skill catalog appears in system prompt
 - [ ] Model can activate skills via Read tool
 - [ ] Skills are not re-loaded when already activated in the same session
-- [ ] Activated skills persist across session resume/continue (no re-reading)
+- [ ] Activated skills persist across session resume (no re-reading)
 - [ ] `--no-skills` flag disables all skills
 - [ ] `--skills name1,name2` flag filters to named skills
 - [ ] Settings.toml `skills.disabled` disables skills by default

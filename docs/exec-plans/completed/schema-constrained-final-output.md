@@ -12,7 +12,7 @@ cake --output-schema review.schema.json --output-format stream-json "Review this
 
 and the final `task_complete` record's `result` field is guaranteed to be a single JSON document that validates against the schema in `review.schema.json` --- no Markdown fences, no surrounding prose. If cake cannot produce a conforming document, the run fails loudly: the `task_complete` record carries a new `error_output_schema` subtype and the process exits nonzero. A caller can therefore apply cake's output mechanically without parsing prose. The motivating consumer is ahm's delegation commands (`ahm task groom`, `ahm audit`), which hand a procedure prompt to cake and machine-apply the structured result.
 
-Everything else about a run is unchanged: the agent still uses tools, streams intermediate messages, persists sessions, and honors `--continue`/`--resume`/`--fork`. Only the final assistant response is constrained. Runs without `--output-schema` are byte-for-byte unaffected.
+Everything else about a run is unchanged: the agent still uses tools, streams intermediate messages, persists sessions, and honors `--resume`/`--fork`. Only the final assistant response is constrained. Runs without `--output-schema` are byte-for-byte unaffected.
 
 ## Orientation
 
@@ -30,7 +30,7 @@ Terms used in this plan:
 
 ## The Contract
 
-- `--output-schema <path>`: path to a JSON Schema file (draft 2020-12) describing the shape of the final response. Applies to any run; composes with all `--output-format` values and with `--continue`, `--resume`, `--fork`.
+- `--output-schema <path>`: path to a JSON Schema file (draft 2020-12) describing the shape of the final response. Applies to any run; composes with all `--output-format` values and with `--resume` and `--fork`.
 - Success: the final response is exactly the schema-valid JSON document. In `stream-json` mode it is the `result` of the `task_complete` record; in `json` mode the top-level `result` field remains a JSON *string* containing the document (no shape change); in `text` mode stdout is exactly the document.
 - Unreadable or syntactically/semantically invalid schema file: fail before the run starts (before `task_start` is emitted, before any worktree is created) with a clear human-readable error on stderr and exit code 3.
 - Final output that cannot be made schema-valid (refusal, truncation, correction exhaustion): `task_complete` with `subtype: "error_output_schema"`, `is_error: true`, validation detail in `error`, `result` omitted; exit code 1.
