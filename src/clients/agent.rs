@@ -739,3 +739,6 @@ impl Agent {
 #[cfg(test)]
 #[path = "agent/agent_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod session_restore_tests;
