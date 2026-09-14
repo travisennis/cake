@@ -2153,103 +2153,145 @@ async fn mount_judge_verdict(mock_server: &MockServer, verdict_json: &str) {
         .await;
 }
 
-#[tokio::test]
-async fn script_evidence_reaches_judge_before_execution() {
-    let server = MockServer::start().await;
-    mount_judge_verdict(&server, r#"{"verdict":"allow","message":"Safe"}"#).await;
-    let dir = tempfile::tempdir().unwrap();
-    let contents = "printf observed-script-output";
-    std::fs::write(dir.path().join("job.sh"), contents).unwrap();
-    let output = execute_bash_with_judge_in(
-        r#"{"command":"bash job.sh"}"#,
-        Some(judge_context(&server)),
-        dir.path(),
-    )
-    .await
-    .unwrap();
-    assert!(output.output.contains("observed-script-output"));
-    assert!(
-        output
-            .output
-            .contains("Safety judge inspected referenced script")
-    );
-    let requests = server.received_requests().await.unwrap();
-    let body: serde_json::Value = requests[0].body_json().unwrap();
-    let prompt = body["messages"][1]["content"].as_str().unwrap();
-    let value: serde_json::Value =
-        serde_json::from_str(prompt.split_once('\n').unwrap().1).unwrap();
-    assert_eq!(value["script_evidence"]["contents"], contents);
-    assert_eq!(value["command"], "bash job.sh");
+/// Run judge-enabled async tests with the emergency bypass explicitly disabled.
+///
+/// The production path intentionally gives `CAKE_JUDGE=off` precedence over a
+/// configured context, so these tests must not inherit the developer's shell.
+fn run_with_judge_enabled<F>(future: F) -> F::Output
+where
+    F: std::future::Future,
+{
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    temp_env::with_var("CAKE_JUDGE", Some("on"), || runtime.block_on(future))
 }
 
-#[tokio::test]
-async fn script_evidence_failure_prevents_provider_call_and_allowlist_override() {
-    let server = MockServer::start().await;
-    let dir = tempfile::tempdir().unwrap();
-    for shell in [
-        "bash", "sh", "zsh", "dash", "ksh", "ksh93", "ash", "mksh", "pdksh",
-    ] {
-        let command = format!("{shell} missing.sh");
+#[test]
+fn script_evidence_reaches_judge_before_execution() {
+    run_with_judge_enabled(async {
+        let server = MockServer::start().await;
+        mount_judge_verdict(&server, r#"{"verdict":"allow","message":"Safe"}"#).await;
+        let dir = tempfile::tempdir().unwrap();
+        let contents = "printf observed-script-output";
+        std::fs::write(dir.path().join("job.sh"), contents).unwrap();
+        let output = execute_bash_with_judge_in(
+            r#"{"command":"bash job.sh"}"#,
+            Some(judge_context(&server)),
+            dir.path(),
+        )
+        .await
+        .unwrap();
+        assert!(output.output.contains("observed-script-output"));
+        assert!(
+            output
+                .output
+                .contains("Safety judge inspected referenced script")
+        );
+        let requests = server.received_requests().await.unwrap();
+        let body: serde_json::Value = requests[0].body_json().unwrap();
+        let prompt = body["messages"][1]["content"].as_str().unwrap();
+        let value: serde_json::Value =
+            serde_json::from_str(prompt.split_once('\n').unwrap().1).unwrap();
+        assert_eq!(value["script_evidence"]["contents"], contents);
+        assert_eq!(value["command"], "bash job.sh");
+    });
+}
+
+#[test]
+fn script_evidence_failure_prevents_provider_call_and_allowlist_override() {
+    run_with_judge_enabled(async {
+        let server = MockServer::start().await;
+        let dir = tempfile::tempdir().unwrap();
+        for shell in [
+            "bash", "sh", "zsh", "dash", "ksh", "ksh93", "ash", "mksh", "pdksh",
+        ] {
+            let command = format!("{shell} missing.sh");
+            let mut judge = (*judge_context(&server)).clone();
+            judge.settings.allowlist = vec![command.clone()];
+            let error = execute_bash_with_judge_in(
+                &serde_json::json!({"command": command}).to_string(),
+                Some(std::sync::Arc::new(judge)),
+                dir.path(),
+            )
+            .await
+            .unwrap_err();
+            assert!(error.message.starts_with("BLOCKED\n\n"));
+            assert!(error.message.contains("missing.sh"));
+            assert!(error.message.contains("judge was not called"));
+            assert!(error.message.contains("32 KiB"));
+            assert!(!error.message.contains("Safety judge inspected"));
+            assert!(!error.message.contains("judge was unavailable"));
+            assert_eq!(
+                error.compensation_events[0].detail.as_deref(),
+                Some("script_evidence")
+            );
+            assert!(server.received_requests().await.unwrap().is_empty());
+        }
+    });
+}
+
+#[test]
+fn script_collection_precedes_judge_configuration() {
+    run_with_judge_enabled(async {
+        let server = MockServer::start().await;
+        let dir = tempfile::tempdir().unwrap();
         let mut judge = (*judge_context(&server)).clone();
-        judge.settings.allowlist = vec![command.clone()];
+        judge.settings.model = Some("missing-model".to_string());
         let error = execute_bash_with_judge_in(
-            &serde_json::json!({"command": command}).to_string(),
+            r#"{"command":"bash missing.sh"}"#,
             Some(std::sync::Arc::new(judge)),
             dir.path(),
         )
         .await
         .unwrap_err();
-        assert!(error.message.starts_with("BLOCKED\n\n"));
         assert!(error.message.contains("missing.sh"));
         assert!(error.message.contains("judge was not called"));
-        assert!(error.message.contains("32 KiB"));
-        assert!(!error.message.contains("Safety judge inspected"));
-        assert!(!error.message.contains("judge was unavailable"));
-        assert_eq!(
-            error.compensation_events[0].detail.as_deref(),
-            Some("script_evidence")
-        );
+        assert!(!error.message.contains("Unknown judge model"));
         assert!(server.received_requests().await.unwrap().is_empty());
-    }
+    });
 }
 
-#[tokio::test]
-async fn script_evidence_block_prevents_script_execution() {
-    let server = MockServer::start().await;
-    mount_judge_verdict(
-        &server,
-        r#"{"verdict":"block","code":"unknown-destructive","message":"Denied"}"#,
-    )
-    .await;
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("job.sh"), "touch must-not-exist").unwrap();
-    for shell in [
-        "bash", "sh", "zsh", "dash", "ksh", "ksh93", "ash", "mksh", "pdksh",
-    ] {
-        let command = format!("{shell} job.sh");
-        let error = execute_bash_with_judge_in(
-            &serde_json::json!({"command": command}).to_string(),
-            Some(judge_context(&server)),
-            dir.path(),
+#[test]
+fn script_evidence_block_prevents_script_execution() {
+    run_with_judge_enabled(async {
+        let server = MockServer::start().await;
+        mount_judge_verdict(
+            &server,
+            r#"{"verdict":"block","code":"unknown-destructive","message":"Denied"}"#,
         )
-        .await
-        .unwrap_err();
-        assert!(
-            error
-                .message
-                .contains("Safety judge inspected referenced script")
-        );
-        assert!(!dir.path().join("must-not-exist").exists());
-    }
-    let requests = server.received_requests().await.unwrap();
-    assert_eq!(requests.len(), 9);
-    for request in requests {
-        let body: serde_json::Value = request.body_json().unwrap();
-        let prompt = body["messages"][1]["content"].as_str().unwrap();
-        let value: serde_json::Value =
-            serde_json::from_str(prompt.split_once('\n').unwrap().1).unwrap();
-        assert_eq!(value["script_evidence"]["contents"], "touch must-not-exist");
-    }
+        .await;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("job.sh"), "touch must-not-exist").unwrap();
+        for shell in [
+            "bash", "sh", "zsh", "dash", "ksh", "ksh93", "ash", "mksh", "pdksh",
+        ] {
+            let command = format!("{shell} job.sh");
+            let error = execute_bash_with_judge_in(
+                &serde_json::json!({"command": command}).to_string(),
+                Some(judge_context(&server)),
+                dir.path(),
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                error
+                    .message
+                    .contains("Safety judge inspected referenced script")
+            );
+            assert!(!dir.path().join("must-not-exist").exists());
+        }
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 9);
+        for request in requests {
+            let body: serde_json::Value = request.body_json().unwrap();
+            let prompt = body["messages"][1]["content"].as_str().unwrap();
+            let value: serde_json::Value =
+                serde_json::from_str(prompt.split_once('\n').unwrap().1).unwrap();
+            assert_eq!(value["script_evidence"]["contents"], "touch must-not-exist");
+        }
+    });
 }
 
 #[tokio::test]

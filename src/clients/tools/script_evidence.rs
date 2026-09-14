@@ -27,10 +27,16 @@ pub(super) fn collect(
     let candidate = candidate.to_str().ok_or("script path is not UTF-8")?;
     let path = validate_path_in_cwd(context, candidate)?;
     // A UTF-8 symlink name can resolve to a non-UTF-8 canonical path.
-    path.to_str().ok_or("canonical script path is not UTF-8")?;
+    let path_text = path
+        .to_str()
+        .ok_or("canonical script path is not UTF-8")?
+        .to_owned();
     let contents = read_bounded(&path)
         .map_err(|detail| format!("script {}: {detail}", serde_json::json!(reference)))?;
-    Ok(Some(ScriptEvidence { path, contents }))
+    Ok(Some(ScriptEvidence {
+        path: path_text,
+        contents,
+    }))
 }
 
 fn read_bounded(path: &Path) -> Result<String, String> {

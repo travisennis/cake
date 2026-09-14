@@ -1280,11 +1280,11 @@ async fn judge_enabled_preflight(
     judge: &crate::clients::judge::JudgeContext,
     bypass_env: Option<&str>,
 ) -> Result<JudgePreflight, super::ToolError> {
+    let request = script_judge_request(context, args, call_id)?;
+    let observation_note = script_observation_note(&request);
     let client = judge
         .judge_client()
         .map_err(|e| fail_closed_tool_error(e.class, &e.message))?;
-    let request = script_judge_request(context, args, call_id)?;
-    let observation_note = script_observation_note(&request);
 
     let evaluation =
         evaluate_command_observed(client, &judge.settings, request, bypass_env, false).await;
