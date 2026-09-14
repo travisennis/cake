@@ -1296,7 +1296,8 @@ async fn judge_enabled_preflight(
     observed_evaluation_to_preflight(evaluation)
         .map_err(|mut error| {
             if let Some(note) = &observation_note {
-                error.message.push_str(&format!("\n\n{note}"));
+                error.message.push_str("\n\n");
+                error.message.push_str(note);
             }
             error
         })
