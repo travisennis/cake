@@ -548,6 +548,174 @@ async fn test_streaming_timeout_kills_descendants() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn timeout_runs_sigterm_cleanup_handler_before_force_kill() {
+    // A command that traps SIGTERM and records that its handler ran must be
+    // given the grace period to clean up before the forceful SIGKILL. The
+    // marker can only be written from the handler, so its presence proves the
+    // cooperative phase happened.
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("cleanup-ran");
+    // The trap runs in the tracked shell itself: the command is passed inline
+    // to `bash -c`, so there is no separate script process to confuse the
+    // direct-child status with.
+    let command = format!(
+        "trap 'touch \"{}\"' TERM; while true; do sleep 0.1; done",
+        marker.display()
+    );
+    let args = serde_json::json!({ "command": command, "timeout": 1 }).to_string();
+    let result = Box::pin(execute_bash_unsandboxed(&args)).await;
+    assert!(
+        result.is_err(),
+        "expected timeout error but got: {result:?}"
+    );
+    assert!(
+        result.unwrap_err().message.contains("timed out"),
+        "expected 'timed out' in error"
+    );
+    assert!(
+        marker.exists(),
+        "the SIGTERM cleanup handler did not run before the force-kill"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn timeout_force_kills_child_that_ignores_sigterm() {
+    // A command that ignores SIGTERM cannot exit during the cooperative
+    // phase, so the grace period must expire and SIGKILL must still reap it.
+    // The lower bound shows the child was granted the grace period rather
+    // than killed immediately; the upper bound shows the wait is bounded.
+    // Inline `trap '' TERM` runs in the tracked shell, so the direct child
+    // itself ignores SIGTERM and only SIGKILL ends it.
+    let command = "trap '' TERM; while true; do sleep 0.1; done";
+    let args = serde_json::json!({ "command": command, "timeout": 1 }).to_string();
+    let started = std::time::Instant::now();
+    let result = Box::pin(execute_bash_unsandboxed(&args)).await;
+    let elapsed = started.elapsed();
+    assert!(
+        result.is_err(),
+        "expected timeout error but got: {result:?}"
+    );
+    assert!(
+        result.unwrap_err().message.contains("timed out"),
+        "expected 'timed out' in error"
+    );
+    assert!(
+        elapsed >= TERMINATE_GRACE_PERIOD,
+        "SIGTERM-ignoring child was not given the grace period: {elapsed:?}"
+    );
+    assert!(
+        elapsed < TERMINATE_GRACE_PERIOD + std::time::Duration::from_secs(5),
+        "force-kill did not bound total termination time: {elapsed:?}"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn timeout_kills_descendant_that_outlives_the_direct_child() {
+    // The direct child exits as soon as it receives SIGTERM, while a
+    // descendant ignores it. Once the direct child is reaped its group can no
+    // longer be resolved from the child handle, so the forceful phase must
+    // signal the group id captured before the wait. Asserted against the
+    // termination helper directly: through the tool path the
+    // `ToolboxProcessGuard` drop-kill would mask whether the forceful phase
+    // ran at all.
+    let dir = tempfile::tempdir().unwrap();
+    let alive = dir.path().join("descendant-alive");
+    let saw_term = dir.path().join("descendant-saw-term");
+    let pidfile = dir.path().join("descendant-pid");
+    // The descendant records the SIGTERM it ignores, proving the cooperative
+    // signal reached it, and rewrites `alive` until it is force-killed. Its
+    // loop is bounded so a regression cannot leave a runaway process behind.
+    let script = format!(
+        r#"#!/bin/sh
+echo $$ > "{pidfile}"
+trap 'touch "{saw_term}"' TERM
+i=0
+while [ $i -lt 100 ]; do
+  touch "{alive}"
+  sleep 0.1
+  i=$((i+1))
+done
+"#,
+        pidfile = pidfile.display(),
+        saw_term = saw_term.display(),
+        alive = alive.display()
+    );
+    let script_path = dir.path().join("descendant.sh");
+    std::fs::write(&script_path, script.as_bytes()).unwrap();
+    std::fs::set_permissions(
+        &script_path,
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
+    let mut cmd = Command::new("bash");
+    cmd.arg("-c")
+        .arg(format!("{} & sleep 999", script_path.display()))
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    // Mirror the tool's spawn: the child owns a process group so the helper
+    // can signal the whole group through its negative PID.
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.as_std_mut().process_group(0);
+    }
+    let mut child = cmd.spawn().unwrap();
+
+    // Wait until the descendant installed its trap and started writing.
+    let ready_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !alive.exists() {
+        assert!(
+            std::time::Instant::now() < ready_deadline,
+            "the descendant never started writing its marker"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+
+    // Establish the precondition without touching the direct child: signal
+    // only the descendant, then confirm it recorded the signal and kept
+    // running. Both facts must hold before the forceful phase is meaningful.
+    let pid: i32 = std::fs::read_to_string(&pidfile)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    // SAFETY: the PID was written by the descendant this test spawned and no
+    // one else has reaped it.
+    unsafe {
+        libc::kill(pid, libc::SIGTERM);
+    }
+    let saw_term_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !saw_term.exists() {
+        assert!(
+            std::time::Instant::now() < saw_term_deadline,
+            "the descendant never ran its SIGTERM trap"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let before = marker_modified_time(&alive);
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    assert!(
+        marker_modified_time(&alive) != before,
+        "the descendant did not survive the SIGTERM it traps"
+    );
+
+    terminate_process_group_gracefully(&mut child, TERMINATE_GRACE_PERIOD).await;
+
+    // The descendant ignored SIGTERM, so only the forceful phase can stop it.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    assert_marker_updates_stop(&alive, deadline).await;
+
+    // No stray descendant survives a failed assertion above.
+    // SAFETY: the PID was written by the descendant this test spawned and no
+    // one else has reaped it.
+    unsafe {
+        libc::kill(pid, libc::SIGKILL);
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn dropping_bash_future_kills_descendants() {
     let dir = tempfile::tempdir().unwrap();
     let marker = dir.path().join("descendant-survived");
