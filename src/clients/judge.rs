@@ -184,7 +184,8 @@ pub struct JudgeRequest {
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ScriptEvidence {
-    pub path: std::path::PathBuf,
+    /// The canonical path rendered for the judge; this crosses the provider boundary as text.
+    pub path: String,
     pub contents: String,
 }
 

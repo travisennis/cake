@@ -1572,11 +1572,14 @@ async fn judge_enabled_preflight(
     bypass_env: Option<&str>,
 ) -> Result<JudgePreflight, super::ToolError> {
     let raw_call_id = call_id.as_deref();
+    // Collection runs before judge configuration resolution: a referenced
+    // script that cannot be collected is a fail-closed denial on its own, and
+    // an unusable judge configuration must not mask that explanation.
+    let request = script_judge_request(context, args, cwd, raw_call_id)?;
+    let observation_note = script_observation_note(&request);
     let client = judge
         .judge_client()
         .map_err(|e| fail_closed_tool_error(e.class, &e.message, raw_call_id))?;
-    let request = script_judge_request(context, args, cwd, raw_call_id)?;
-    let observation_note = script_observation_note(&request);
 
     let evaluation =
         evaluate_command_observed(client, &judge.settings, request, bypass_env, false).await;
