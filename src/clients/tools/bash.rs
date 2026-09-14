@@ -1554,12 +1554,29 @@ async fn bash_judge_preflight(
         return Ok(bypassed_preflight(raw_call_id));
     }
 
+    judge_enabled_preflight(context, args, cwd, call_id, judge, bypass_env).await
+}
+
+/// Run the judge once the configuration has passed the empty-command, missing
+/// context, and bypass checks.
+///
+/// Splitting this out of [`bash_judge_preflight`] keeps the fail-closed branch
+/// count in one function at the change-risk ratchet's allowed level; the script
+/// observation adds no decision point here.
+async fn judge_enabled_preflight(
+    context: &super::ToolContext,
+    args: &BashExecutionArgs,
+    cwd: &Path,
+    call_id: Option<String>,
+    judge: &crate::clients::judge::JudgeContext,
+    bypass_env: Option<&str>,
+) -> Result<JudgePreflight, super::ToolError> {
+    let raw_call_id = call_id.as_deref();
     let client = judge
         .judge_client()
         .map_err(|e| fail_closed_tool_error(e.class, &e.message, raw_call_id))?;
-    let request = JudgeRequest::new(args.command.clone(), cwd.to_path_buf(), args.reason.clone())
-        .with_repo_digest(repo_state_digest(cwd))
-        .with_call_id(raw_call_id.map(String::from));
+    let request = script_judge_request(context, args, cwd, raw_call_id)?;
+    let observation_note = script_observation_note(&request);
 
     let evaluation =
         evaluate_command_observed(client, &judge.settings, request, bypass_env, false).await;
@@ -1570,6 +1587,58 @@ async fn bash_judge_preflight(
     record_judge_attempts(judge, &evaluation.attempts);
     record_typesafe_shadow(judge, evaluation.shadow.as_ref(), raw_call_id);
     observed_evaluation_to_preflight(evaluation, raw_call_id)
+        .map_err(|mut error| {
+            if let Some(note) = &observation_note {
+                error.message.push_str("\n\n");
+                error.message.push_str(note);
+            }
+            error
+        })
+        .map(|mut preflight| {
+            preflight.warnings.extend(observation_note);
+            preflight
+        })
+}
+
+/// Build the judge request for one Bash call, collecting any directly
+/// referenced script as bounded untrusted evidence.
+fn script_judge_request(
+    context: &super::ToolContext,
+    args: &BashExecutionArgs,
+    cwd: &Path,
+    raw_call_id: Option<&str>,
+) -> Result<JudgeRequest, super::ToolError> {
+    let mut request = JudgeRequest::new(args.command.clone(), cwd.to_path_buf(), args.reason.clone())
+        .with_repo_digest(repo_state_digest(cwd))
+        .with_call_id(raw_call_id.map(String::from));
+    request.script_evidence =
+        crate::clients::tools::script_evidence::collect(context, &args.command).map_err(|detail| {
+            // The generic unavailable-judge helper would misdescribe this
+            // failure: collection happens before any provider call, so the
+            // block reuses the fail-closed prefix and keeps its own wording.
+            super::ToolError {
+                message: format!(
+                    "BLOCKED\n\nReferenced script evidence could not be collected, so the command was not executed and the judge was not called. {detail}\nUse an existing readable regular UTF-8 script within the configured Read grants (at most 32 KiB), or inline the intended command for judgment."
+                ),
+                compensation_events: vec![
+                    CompensationEventTelemetry::judge_fail_closed("script_evidence")
+                        .with_call_id(raw_call_id),
+                ],
+            }
+        })?;
+    Ok(request)
+}
+
+/// The notice a call reports when the judge saw a referenced script, naming the
+/// observed path without echoing contents.
+fn script_observation_note(request: &JudgeRequest) -> Option<String> {
+    request.script_evidence.as_ref().map(|evidence| {
+        // JSON escaping keeps model-supplied paths from injecting control characters.
+        format!(
+            "Safety judge inspected referenced script {} (untrusted contents; dependencies and later changes not covered).",
+            serde_json::json!(evidence.path)
+        )
+    })
 }
 
 /// Persist finalized judge attempts through the run's telemetry sink, if any.

@@ -2792,6 +2792,108 @@ async fn mount_judge_verdict(mock_server: &MockServer, verdict_json: &str) {
 }
 
 #[tokio::test]
+async fn script_evidence_reaches_judge_before_execution() {
+    let server = MockServer::start().await;
+    mount_judge_verdict(&server, r#"{"verdict":"allow","message":"Safe"}"#).await;
+    let dir = tempfile::tempdir().unwrap();
+    let contents = "printf observed-script-output";
+    std::fs::write(dir.path().join("job.sh"), contents).unwrap();
+    let output = execute_bash_with_judge_in(
+        r#"{"command":"bash job.sh"}"#,
+        Some(judge_context(&server)),
+        dir.path(),
+    )
+    .await
+    .unwrap();
+    assert!(output.output.contains("observed-script-output"));
+    assert!(
+        output
+            .output
+            .contains("Safety judge inspected referenced script")
+    );
+    let requests = server.received_requests().await.unwrap();
+    let body: serde_json::Value = requests[0].body_json().unwrap();
+    let prompt = body["messages"][1]["content"].as_str().unwrap();
+    let value: serde_json::Value =
+        serde_json::from_str(prompt.split_once('\n').unwrap().1).unwrap();
+    assert_eq!(value["script_evidence"]["contents"], contents);
+    assert_eq!(value["command"], "bash job.sh");
+}
+
+#[tokio::test]
+async fn script_evidence_failure_prevents_provider_call_and_allowlist_override() {
+    let server = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut judge = (*judge_context(&server)).clone();
+    judge.settings.allowlist = vec!["bash missing.sh".into()];
+    let error = execute_bash_with_judge_in(
+        r#"{"command":"bash missing.sh"}"#,
+        Some(std::sync::Arc::new(judge)),
+        dir.path(),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.message.contains("BLOCKED"));
+    assert_eq!(
+        error.compensation_events[0].detail.as_deref(),
+        Some("script_evidence")
+    );
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn script_evidence_block_prevents_script_execution() {
+    let server = MockServer::start().await;
+    mount_judge_verdict(
+        &server,
+        r#"{"verdict":"block","code":"unknown-destructive","message":"Denied"}"#,
+    )
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("job.sh"), "touch must-not-exist").unwrap();
+    let error = execute_bash_with_judge_in(
+        r#"{"command":"bash job.sh"}"#,
+        Some(judge_context(&server)),
+        dir.path(),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        error
+            .message
+            .contains("Safety judge inspected referenced script")
+    );
+    assert!(!dir.path().join("must-not-exist").exists());
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn script_evidence_bypass_skips_collection() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut context = super::super::ToolContext::with_temp_dirs(
+        dir.path().to_path_buf(),
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+    );
+    context.judge = Some(bypassed_judge_context());
+    let args = BashExecutionArgs::from_json(
+        r#"{"command":"bash missing.sh"}"#,
+        super::super::sandbox::SandboxPolicy::WorkspaceWrite,
+    )
+    .unwrap();
+    let preflight = bash_judge_preflight(&context, &args, dir.path(), None)
+        .await
+        .unwrap();
+    assert!(preflight.warnings.is_empty());
+    assert_eq!(
+        preflight.compensation_events[0].kind,
+        CompensationKind::JudgeBypass
+    );
+}
+
+#[tokio::test]
 async fn test_judge_warn_prepends_notice() {
     // A `warn` verdict runs the command and prepends the judge's message as a
     // NOTICE, mirroring the old soft-warning behavior without reclassification.

@@ -3,9 +3,11 @@
 //! `cake bash check -- <command>` runs the same judge path and prompt the
 //! Bash preflight will use (Milestone 5 of the LLM-judge `ExecPlan`), prints the
 //! verdict, code, message, confidence, latency, and the `TypeSafe` observation
-//! the decision rests on, and never executes the command. `--json` reports the
-//! same verdict as one diagnostic document; a judge error exits nonzero either
-//! way. A verdict is successful inspection output. Follows the ADR-009
+//! the decision rests on, and never executes the command. It reads no host
+//! files, so it collects no referenced script evidence and its request declares
+//! no observation (ADR-035). `--json` reports the same verdict as one diagnostic
+//! document; a judge error exits nonzero either way. A verdict is successful
+//! inspection output. Follows the ADR-009
 //! introspection pattern (load merged settings, print to stdout, exit before
 //! agent/session setup).
 
