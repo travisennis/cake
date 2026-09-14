@@ -26,6 +26,8 @@ pub(super) fn collect(
     let candidate = context.cwd.join(&reference);
     let candidate = candidate.to_str().ok_or("script path is not UTF-8")?;
     let path = validate_path_in_cwd(context, candidate)?;
+    // A UTF-8 symlink name can resolve to a non-UTF-8 canonical path.
+    path.to_str().ok_or("canonical script path is not UTF-8")?;
     let contents = read_bounded(&path)
         .map_err(|detail| format!("script {}: {detail}", serde_json::json!(reference)))?;
     Ok(Some(ScriptEvidence { path, contents }))
@@ -38,14 +40,18 @@ fn read_bounded(path: &Path) -> Result<String, String> {
         .metadata()
         .map_err(|error| format!("script metadata unavailable: {error}"))?;
     if !metadata.is_file() || metadata.len() > MAX_SCRIPT_BYTES {
-        return Err("script must be a regular file of at most 32768 bytes".into());
+        return Err(format!(
+            "script must be a regular file of at most {MAX_SCRIPT_BYTES} bytes"
+        ));
     }
     let mut bytes = Vec::new();
     file.take(MAX_SCRIPT_BYTES + 1)
         .read_to_end(&mut bytes)
         .map_err(|error| format!("script could not be read: {error}"))?;
     if bytes.len() as u64 > MAX_SCRIPT_BYTES || bytes.contains(&0) {
-        return Err("script exceeds 32768 bytes or contains binary data".into());
+        return Err(format!(
+            "script exceeds {MAX_SCRIPT_BYTES} bytes or contains binary data"
+        ));
     }
     String::from_utf8(bytes)
         .map_err(|error| format!("script must contain UTF-8 text: {}", error.utf8_error()))
@@ -92,15 +98,19 @@ fn open_without_symlinks(_path: &Path) -> std::io::Result<File> {
 fn script_reference(command: &str) -> Option<String> {
     let words = literal_words(command)?;
     let interpreter = words.first()?.as_str();
+    let interpreter = interpreter
+        .strip_prefix("/bin/")
+        .or_else(|| interpreter.strip_prefix("/usr/bin/"))
+        .unwrap_or(interpreter);
     if !matches!(
         interpreter,
-        "bash" | "sh" | "/bin/bash" | "/bin/sh" | "/usr/bin/bash" | "/usr/bin/sh"
+        "bash" | "sh" | "zsh" | "dash" | "ksh" | "ksh93" | "ash" | "mksh" | "pdksh"
     ) {
         return None;
     }
     let index = if words.get(1)? == "--" { 2 } else { 1 };
     let path = words.get(index)?;
-    if path.is_empty() || path.starts_with('-') {
+    if path.is_empty() || path.starts_with(['-', '+']) {
         return None;
     }
     Some(path.clone())

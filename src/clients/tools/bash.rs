@@ -1323,7 +1323,7 @@ fn script_judge_request(
         crate::clients::tools::script_evidence::collect(context, &args.command)
             .map_err(|detail| super::ToolError {
                 message: format!(
-                    "BLOCKED: Referenced script evidence could not be collected, so the command was not executed and the judge was not called. {detail}\nUse an existing readable regular UTF-8 script within the configured Read grants (at most 32 KiB), or inline the intended command for judgment."
+                    "BLOCKED\n\nReferenced script evidence could not be collected, so the command was not executed and the judge was not called. {detail}\nUse an existing readable regular UTF-8 script within the configured Read grants (at most 32 KiB), or inline the intended command for judgment."
                 ),
                 compensation_events: vec![CompensationEventTelemetry::judge_fail_closed("script_evidence")],
             })?;
