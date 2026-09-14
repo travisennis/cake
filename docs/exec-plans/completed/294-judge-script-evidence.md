@@ -9,12 +9,20 @@ For issue #294, make `bash path/to/script.sh` reviewable using the actual file c
 ## Progress
 
 - [x] (2026-09-14) Confirmed #314 closed, moved #294 to Ready and claimed it.
+
 - [x] Recorded the observation boundary in ADR-029 before implementation.
+
 - [x] Implement evidence collection and request serialization.
+
 - [x] Add focused tests and update security and tool documentation.
+
 - [x] Run focused tests, just check, just cc-check, and three-pass preflight.
+
 - [x] Complete implementation and review records for archival.
+
 - [x] Implementation committed for PR handoff; the issue record owns push and review status.
+
+- [x] (2026-09-14) Addressed the second review and expanded the Bourne-family interpreter set; focused tests, snapshots, the fast gate, and three-pass preflight completed.
 
 ## Surprises & Discoveries
 
@@ -24,6 +32,8 @@ The parent's entry-point prose and #294's Blocked status were stale. Local mock 
 
 Use the deliberately narrow observation boundary in ADR-029. Do not add a shell interpreter, recursive reads, or new dependencies. Unsupported commands remain model judged with explicitly uncollected evidence. Inspection-only callers do not acquire implicit host filesystem access.
 
+PR #553 follow-up (2026-09-14): address review findings 1--4 and the requested Bourne-family expansion on the existing PR branch. Check canonical path UTF-8 before reading, derive byte-bound errors from the constant, normalize the block prefix, and clarify the allowlist exception. Recognize bash, sh, zsh, dash, ksh, ksh93, ash, mksh, and pdksh with the existing interpreter path restrictions. Reject option operands beginning with either sign. Add Linux canonical-path and cross-shell collection/preflight regressions; update the proposed ADR, tool description, and current docs before final checks.
+
 ## Outcomes & Retrospective
 
 Literal script references now carry bounded untrusted contents to the judge. Eleven focused tests cover collection, encoding, denial, bypass, and actual request/execution behavior. The final `just check` gate passed with all eleven new tests, as did `just snapshots` and `just cc-check`. CC checks pass. Both affected provider request snapshots were reviewed with cargo insta review. No provider credentials or live model calls were used.
@@ -31,6 +41,8 @@ Literal script references now carry bounded untrusted contents to the judge. Ele
 Preflight completed three passes: rules/documentation conformance, correctness, and simplification. Kept findings led to directory-handle traversal to prevent ancestor symlink redirects, honest block-result observation notes, and smaller functions to satisfy complexity ratchets. Recursive parsing, a new dependency, and generalized action-packet work were rejected as outside #294. Root AGENTS.md, task #294, this plan, ARCHITECTURE.md, docs/security.md, CONTRIBUTING.md, complexity guardrails, and ADR-018/029 informed review; no nested AGENTS.md exists. Linux runtime validation remains with CI because only the macOS Rust target is installed. just check-full and live evaluation were not required or run.
 
 This change does not bind execution to observed bytes. Unsupported shell forms and nested dependencies remain explicitly unobserved, and inspection-only callers without tool context do not read host files.
+
+Second review outcome (2026-09-14): canonical non-UTF-8 paths now fail closed before reads and serialization, bound errors use MAX_SCRIPT_BYTES, collection failures use the standard BLOCKED prefix, and configuration explains the allowlist exception. Nine interpreter names share the bounded collection path. Twelve focused tests passed on macOS; the added Linux-only symlink regression runs in CI. Local invocation checks for bash, sh, zsh, dash, and ksh confirmed cwd script resolution with a PATH shadow, both with and without `--`; ksh93, ash, mksh, and pdksh are not installed locally. The two tool-description snapshots were regenerated and accepted with cargo insta review; just check and just cc-check passed. Three-pass preflight covered rules and docs, collection and provider failure behavior, and simplification. Initial localhost sandbox denials and pending snapshots were resolved. Live model effectiveness remains unmeasured and is tracked in #554.
 
 ## Context and Orientation
 

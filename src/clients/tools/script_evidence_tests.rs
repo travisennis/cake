@@ -33,6 +33,62 @@ fn script_evidence_recognizes_only_literal_invocations() {
 }
 
 #[test]
+fn script_evidence_collects_bourne_family_invocations() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a b.sh"), "echo observed").unwrap();
+    let ctx = context(dir.path());
+    for shell in [
+        "bash", "sh", "zsh", "dash", "ksh", "ksh93", "ash", "mksh", "pdksh",
+    ] {
+        for prefix in ["", "/bin/", "/usr/bin/"] {
+            for operand in ["'a b.sh'", "-- \"a b.sh\" arg"] {
+                let command = format!("{prefix}{shell} {operand}");
+                assert_eq!(
+                    collect(&ctx, &command).unwrap().unwrap().contents,
+                    "echo observed",
+                    "{command}"
+                );
+            }
+            let command = format!("{prefix}{shell} missing.sh");
+            assert!(collect(&ctx, &command).is_err(), "{command}");
+        }
+        for operand in ["-c 'a b.sh'", "+x 'a b.sh'", "-s", "", "--", "$SCRIPT"] {
+            let command = format!("{shell} {operand}");
+            assert!(script_reference(&command).is_none(), "{command}");
+        }
+    }
+    for command in [
+        "fish job.sh",
+        "csh job.sh",
+        "tcsh job.sh",
+        "python job.sh",
+        "env zsh job.sh",
+        "busybox ash job.sh",
+        "./zsh job.sh",
+        "/custom/zsh job.sh",
+        "/bin/../bin/zsh job.sh",
+        "/usr/bin/tools/zsh job.sh",
+    ] {
+        assert!(collect(&ctx, command).unwrap().is_none(), "{command}");
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn script_evidence_rejects_non_utf8_canonical_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let target_dir = dir.path().join(std::ffi::OsStr::from_bytes(b"bad\xffdir"));
+    std::fs::create_dir(&target_dir).unwrap();
+    let target = target_dir.join("job.sh");
+    std::fs::write(&target, "echo observed").unwrap();
+    std::os::unix::fs::symlink(&target, dir.path().join("link.sh")).unwrap();
+    assert_eq!(
+        collect(&context(dir.path()), "bash link.sh").unwrap_err(),
+        "canonical script path is not UTF-8"
+    );
+}
+
+#[test]
 fn script_evidence_reads_current_bytes_relative_to_tool_cwd() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("a b.sh");
