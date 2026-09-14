@@ -14,7 +14,7 @@ For issue #294, make `bash path/to/script.sh` reviewable using the actual file c
 - [x] Add focused tests and update security and tool documentation.
 - [x] Run focused tests, just check, just cc-check, and three-pass preflight.
 - [x] Complete implementation and review records for archival.
-- [ ] Commit, push, and open the handoff PR; its issue record owns delivery status.
+- [x] Implementation committed for PR handoff; the issue record owns push and review status.
 
 ## Surprises & Discoveries
 
@@ -26,7 +26,7 @@ Use the deliberately narrow observation boundary in ADR-029. Do not add a shell 
 
 ## Outcomes & Retrospective
 
-Literal script references now carry bounded untrusted contents to the judge. Eleven focused tests cover collection, encoding, denial, bypass, and actual request/execution behavior. The final Rust gate passed before the last block-result annotation test; the push gate will validate that final addition. CC checks pass. Both affected provider request snapshots were reviewed with cargo insta review. No provider credentials or live model calls were used.
+Literal script references now carry bounded untrusted contents to the judge. Eleven focused tests cover collection, encoding, denial, bypass, and actual request/execution behavior. The final `just check` gate passed with all eleven new tests, as did `just snapshots` and `just cc-check`. CC checks pass. Both affected provider request snapshots were reviewed with cargo insta review. No provider credentials or live model calls were used.
 
 Preflight completed three passes: rules/documentation conformance, correctness, and simplification. Kept findings led to directory-handle traversal to prevent ancestor symlink redirects, honest block-result observation notes, and smaller functions to satisfy complexity ratchets. Recursive parsing, a new dependency, and generalized action-packet work were rejected as outside #294. Root AGENTS.md, task #294, this plan, ARCHITECTURE.md, docs/security.md, CONTRIBUTING.md, complexity guardrails, and ADR-018/029 informed review; no nested AGENTS.md exists. Linux runtime validation remains with CI because only the macOS Rust target is installed. just check-full and live evaluation were not required or run.
 
