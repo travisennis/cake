@@ -2834,6 +2834,11 @@ async fn script_evidence_failure_prevents_provider_call_and_allowlist_override()
     .await
     .unwrap_err();
     assert!(error.message.contains("BLOCKED"));
+    assert!(error.message.contains("missing.sh"));
+    assert!(error.message.contains("judge was not called"));
+    assert!(error.message.contains("32 KiB"));
+    assert!(!error.message.contains("Safety judge inspected"));
+    assert!(!error.message.contains("judge was unavailable"));
     assert_eq!(
         error.compensation_events[0].detail.as_deref(),
         Some("script_evidence")

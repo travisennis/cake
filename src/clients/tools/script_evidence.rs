@@ -1,4 +1,5 @@
-//! Best-effort literal reference discovery, never shell interpretation or policy.
+//! Limited literal reference discovery, never shell interpretation.
+//! Recognized references must be collected successfully or Bash fails closed.
 
 use std::fs::File;
 use std::io::Read;
@@ -22,10 +23,11 @@ pub(super) fn collect(
     let Some(reference) = script_reference(command) else {
         return Ok(None);
     };
-    let candidate = context.cwd.join(reference);
+    let candidate = context.cwd.join(&reference);
     let candidate = candidate.to_str().ok_or("script path is not UTF-8")?;
     let path = validate_path_in_cwd(context, candidate)?;
-    let contents = read_bounded(&path)?;
+    let contents = read_bounded(&path)
+        .map_err(|detail| format!("script {}: {detail}", serde_json::json!(reference)))?;
     Ok(Some(ScriptEvidence { path, contents }))
 }
 

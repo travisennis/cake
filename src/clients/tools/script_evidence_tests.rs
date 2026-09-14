@@ -95,7 +95,7 @@ fn script_evidence_enforces_file_and_byte_bounds() {
         vec![0xff],
     ] {
         std::fs::write(&path, bytes).unwrap();
-        assert!(collect(&ctx, "bash job.sh").is_err());
+        assert!(collect(&ctx, "bash job.sh").unwrap_err().contains("job.sh"));
     }
     assert!(collect(&ctx, "bash .").is_err());
 }
