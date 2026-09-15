@@ -246,9 +246,11 @@ fn denied_path_refs_in_command(
     let mut refs: Vec<SandboxPathRef> = Vec::new();
     let mut seen = std::collections::HashSet::new();
     let mut state = SandboxScanState::new();
+    let tokens: Vec<&str> = command.split_whitespace().collect();
 
-    for raw in command.split_whitespace() {
-        let Some(resolved) = scan_sandbox_token(raw, &home, cwd, &mut state) else {
+    for (index, raw) in tokens.iter().copied().enumerate() {
+        let last_argument = is_last_command_argument(&tokens, index);
+        let Some(resolved) = scan_sandbox_token(raw, &home, cwd, &mut state, last_argument) else {
             continue;
         };
         if seen.insert((resolved.path.clone(), resolved.operation)) {
@@ -257,7 +259,12 @@ fn denied_path_refs_in_command(
     }
 
     refs.into_iter()
-        .filter(|r| !config.is_path_allowed(&r.path))
+        .filter(|r| match r.operation {
+            SandboxPathOperation::Write => !config.is_path_writable(&r.path),
+            SandboxPathOperation::Execute | SandboxPathOperation::Read => {
+                !config.is_path_allowed(&r.path)
+            },
+        })
         .collect()
 }
 
@@ -283,6 +290,7 @@ fn scan_sandbox_token<'a>(
     home: &Path,
     cwd: &Path,
     state: &mut SandboxScanState<'a>,
+    last_argument: bool,
 ) -> Option<SandboxPathRef> {
     let token = strip_shell_quotes(raw);
     if token.is_empty() {
@@ -304,7 +312,7 @@ fn scan_sandbox_token<'a>(
         if was_command {
             SandboxPathOperation::Execute
         } else {
-            command_argument_operation(state.current_command)
+            command_argument_operation(state.current_command, last_argument)
         }
     });
     let resolved = resolve_path_token(token, home, cwd, was_command, operation);
@@ -420,14 +428,45 @@ fn existing_ref(path: PathBuf, operation: SandboxPathOperation) -> Option<Sandbo
 /// Infer whether ordinary arguments to a command are likely read or write
 /// targets. This is diagnostic metadata only; the OS sandbox remains the
 /// enforcement boundary and this intentionally does not try to parse shell.
-fn command_argument_operation(command: &str) -> SandboxPathOperation {
+fn command_argument_operation(command: &str, last_argument: bool) -> SandboxPathOperation {
     match command {
-        "chmod" | "chown" | "chgrp" | "cp" | "install" | "ln" | "mkdir" | "mkfifo" | "mknod"
-        | "mv" | "rm" | "rmdir" | "shred" | "tee" | "touch" | "truncate" | "unlink" => {
-            SandboxPathOperation::Write
+        "cp" | "install" | "ln" | "mv" => {
+            if last_argument {
+                SandboxPathOperation::Write
+            } else {
+                SandboxPathOperation::Read
+            }
         },
+        "chmod" | "chown" | "chgrp" | "mkdir" | "mkfifo" | "mknod" | "rm" | "rmdir" | "shred"
+        | "tee" | "touch" | "truncate" | "unlink" => SandboxPathOperation::Write,
         _ => SandboxPathOperation::Read,
     }
+}
+
+/// Return whether no later token is an ordinary argument in this shell command.
+/// Redirection operators and their targets are skipped because they are handled
+/// separately as write references.
+fn is_last_command_argument(tokens: &[&str], index: usize) -> bool {
+    let mut skip_redirection_target = false;
+    for raw in tokens.iter().skip(index + 1) {
+        let token = strip_shell_quotes(raw);
+        if skip_redirection_target {
+            skip_redirection_target = false;
+            continue;
+        }
+        if let Some(target) = write_redirection_target(token) {
+            skip_redirection_target = target.is_empty();
+            continue;
+        }
+        if is_command_separator(token) {
+            return true;
+        }
+        if is_shell_noise(token) {
+            continue;
+        }
+        return false;
+    }
+    true
 }
 
 /// Return a write redirection's target when `token` is a standalone or

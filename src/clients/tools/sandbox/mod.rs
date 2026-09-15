@@ -554,7 +554,9 @@ impl SandboxConfig {
         paths.into_iter().filter(|p| p.exists()).collect()
     }
 
-    /// Whether `path` may be read, written, or executed under this config.
+    /// Whether `path` is inside any ordinary grant that permits reading or
+    /// execution under this config. Use [`Self::is_path_writable`] when the
+    /// operation being audited is a write.
     ///
     /// A path is allowed when it is inside a writable directory
     /// (read/write/execute) or a read-and-execute directory (read/execute).
@@ -573,6 +575,35 @@ impl SandboxConfig {
             .chain(self.read_execute.iter())
             .any(|allowed| path.starts_with(allowed) || canonical.starts_with(allowed))
     }
+
+    /// Whether `path` is inside a read-write grant. Read-only grants must not
+    /// suppress a write-denial audit label even though they allow reads and
+    /// execution. Standard device nodes are included because platform profiles
+    /// grant them separately from the ordinary path classes.
+    pub(super) fn is_path_writable(&self, path: &Path) -> bool {
+        if is_standard_writable_device(path) {
+            return true;
+        }
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        self.writable
+            .iter()
+            .any(|allowed| path.starts_with(allowed) || canonical.starts_with(allowed))
+    }
+}
+
+/// Device paths with explicit write access in the platform sandbox profiles.
+fn is_standard_writable_device(path: &Path) -> bool {
+    [
+        "/dev/null",
+        "/dev/tty",
+        "/dev/ptmx",
+        "/dev/dtracehelper",
+        "/dev/stdout",
+        "/dev/stderr",
+    ]
+    .iter()
+    .any(|candidate| path == Path::new(candidate))
+        || path.starts_with(Path::new("/dev/fd"))
 }
 
 /// Push each existing directory and its canonical form into the target vector.

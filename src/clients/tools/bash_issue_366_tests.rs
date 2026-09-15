@@ -44,6 +44,47 @@ fn denied_redirection_target_is_a_write_operation() {
 }
 
 #[test]
+fn read_only_workspace_write_is_still_a_denied_path() {
+    let cwd = tempfile::tempdir().expect("workspace fixture");
+    let target = cwd.path().join("read-only-output.txt");
+    let config =
+        SandboxConfig::build_with_policy(SandboxPolicy::ReadOnly, cwd.path(), &[], &[], &[], &[]);
+
+    let command = format!("touch {}", target.display());
+    let refs = denied_path_refs_in_command(&command, cwd.path(), &config);
+
+    assert_eq!(
+        refs.iter()
+            .map(SandboxPathRef::permission_label)
+            .collect::<Vec<_>>(),
+        vec![format!("sandbox: write {}", target.display())]
+    );
+}
+
+#[test]
+fn copy_sources_are_reads_and_destination_is_write() {
+    let cwd = tempfile::tempdir().expect("workspace fixture");
+    let outside = outside_tempdir();
+    let source = outside.path().join("source.txt");
+    let destination = outside.path().join("destination.txt");
+    std::fs::write(&source, "source").expect("source fixture");
+    let config = minimal_sandbox_config(cwd.path());
+
+    let command = format!("cp {} {}", source.display(), destination.display());
+    let refs = denied_path_refs_in_command(&command, cwd.path(), &config);
+
+    assert_eq!(
+        refs.iter()
+            .map(SandboxPathRef::permission_label)
+            .collect::<Vec<_>>(),
+        vec![
+            format!("sandbox: read {}", source.display()),
+            format!("sandbox: write {}", destination.display()),
+        ]
+    );
+}
+
+#[test]
 fn permission_label_keeps_sandbox_source_distinct() {
     let denial = SandboxPathRef {
         path: std::path::PathBuf::from("/outside/input.txt"),
