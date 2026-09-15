@@ -97,5 +97,117 @@ class ClassifyToolErrorTest(unittest.TestCase):
         )
 
 
+class SandboxNoticeScopingTest(unittest.TestCase):
+    """The `[Sandbox restriction]` marker is a notice only some tools emit (#561).
+
+    Every other tool can only quote the marker as file content or diff text, so
+    a marker anywhere in an output is not a sandbox denial.
+    """
+
+    NOTICE = (
+        "ls: /outside: Operation not permitted\n\n"
+        "[Sandbox restriction]: This command was blocked by the filesystem sandbox."
+    )
+
+    def test_bash_notice_is_sandbox_blocked(self):
+        self.assertEqual(classify_tool_error("Bash", self.NOTICE), "sandbox-blocked")
+
+    def test_subagent_relayed_notice_is_sandbox_blocked(self):
+        """A trusted toolbox relay can carry a subagent's denied call verbatim."""
+        self.assertEqual(
+            classify_tool_error("tb__subagent", self.NOTICE), "sandbox-blocked"
+        )
+
+    def test_tools_that_only_quote_the_notice_are_not_sandbox_blocked(self):
+        """Read and Edit prefix every line, so neither can emit a notice line."""
+        cases = [
+            # A Read failure whose body quotes the marker. Read numbers lines.
+            ("Read",
+             "Error: Failed to read file '/repo/src/clients/tools/bash.rs': invalid "
+             "UTF-8\n\n  1209: [Sandbox restriction]: This command was blocked by "
+             "the filesystem sandbox."),
+            # Edit's success output is a diff; a failing Edit can quote the same
+            # diff text. A diff line is prefixed `+`, `-`, or a space.
+            ("Edit",
+             "Error: Edit 1 of 1 failed in /repo/src/clients/tools/bash.rs: could not "
+             "find the exact text to replace.\n+            [Sandbox restriction]: This "
+             "command was blocked by the filesystem sandbox."),
+        ]
+        for name, output in cases:
+            with self.subTest(tool=name):
+                self.assertNotEqual(
+                    classify_tool_error(name, output), "sandbox-blocked"
+                )
+
+    def test_bash_grep_quoting_the_notice_is_not_sandbox_blocked(self):
+        """A Bash search that prints the marker mid-line is not a denial."""
+        self.assertEqual(
+            classify_tool_error(
+                "Bash",
+                "Error: rg exited 1\n\n"
+                "src/clients/tools/bash.rs:1209:            [Sandbox restriction]: This "
+                "command was blocked by the filesystem sandbox.",
+            ),
+            "other",
+        )
+
+
+class ReadOnlyPathScopingTest(unittest.TestCase):
+    """`read-only path` is a write-validation denial, not any `read-only` text (#561)."""
+
+    def test_edit_existing_path_denial(self):
+        """`validate_path_for_write` (`mod.rs`), reached by Edit and Write."""
+        self.assertEqual(
+            classify_tool_error(
+                "Edit",
+                "Error: Path '/etc/hosts' is read-only (added via --add-dir). "
+                "Write operations are not allowed.",
+            ),
+            "read-only path",
+        )
+
+    def test_write_new_file_denial(self):
+        """`resolve_path_for_write_scheduling` (`mod.rs`), the new-file branch."""
+        self.assertEqual(
+            classify_tool_error(
+                "Write",
+                "Error: Path '/Users/u/Library/LaunchAgents/x.plist' is in a "
+                "read-only directory (added via --add-dir). Write operations are "
+                "not allowed.",
+            ),
+            "read-only path",
+        )
+
+    def test_quoting_the_message_is_not_read_only_path(self):
+        """A search or read that prints the message keeps its own tool's bucket."""
+        cases = [
+            ("Bash",
+             "Error: rg exited 1\n\nsrc/clients/tools/mod.rs:1053: Path '{}' is "
+             "read-only (added via --add-dir). Write operations are not allowed.",
+             "other"),
+            ("Read",
+             "Error: Failed to read file '/repo/mod.rs': invalid UTF-8\n\n  1053: "
+             "Path '/x' is read-only (added via --add-dir). Write operations are "
+             "not allowed.",
+             "path/file access"),
+        ]
+        for name, output, expected in cases:
+            with self.subTest(tool=name):
+                self.assertEqual(classify_tool_error(name, output), expected)
+
+    def test_bare_read_only_word_is_not_read_only_path(self):
+        """Corpus shape: an Edit failure whose nearest-match context quotes `read-only`."""
+        self.assertEqual(
+            classify_tool_error(
+                "Edit",
+                "Error: Edit 1 of 1 failed in /repo/DESIRES.md: could not find the "
+                "exact text to replace. The old_text must match exactly, including "
+                "all whitespace and newlines.\nNearest matching context in "
+                "/repo/DESIRES.md: - Read-only mode skips toolbox discovery",
+            ),
+            "no-match (old_text not found)",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

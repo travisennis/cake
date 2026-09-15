@@ -494,19 +494,52 @@ ERROR_PREFIX = "Error"
 HOOK_BLOCKED_PREFIX = "Hook blocked tool execution"
 SANDBOX_BLOCKED_MARKER = "[Sandbox restriction]"
 
+# Only these tools' outputs can carry a `[Sandbox restriction]` notice: `Bash`
+# appends it after a filesystem denial, and a trusted toolbox relay
+# (`tb__subagent`) can carry a subagent's denied tool output verbatim, so a
+# strict `Bash`-only rule would lose those denials. Every other tool can only
+# *quote* the marker as file content or diff text (issue #561).
+SANDBOX_NOTICE_TOOLS = frozenset({"Bash", "tb__subagent"})
 
-def is_tool_failure(output: str) -> bool:
+# `validate_path_for_write` (`mod.rs`) is the only producer of these messages,
+# and it is reached by Edit and Write only. Anchoring on the message keeps an
+# unrelated failure that merely quotes the word `read-only` out of the bucket
+# (issue #561).
+READ_ONLY_TOOLS = frozenset({"Edit", "Write"})
+READ_ONLY_MESSAGES = (
+    "is read-only (added via --add-dir)",
+    "is in a read-only directory (added via --add-dir)",
+)
+
+
+def sandbox_notice(name: str, output: str) -> bool:
+    """True when a call to `name` carries `bash.rs`'s `[Sandbox restriction]` notice.
+
+    Only the tools that can emit the notice are matched, and it is a *line*
+    cake composes after the denied command's own output, so requiring the line
+    start is what stops a file or diff that merely quotes the marker from
+    reading as a denial: Read prefixes line numbers and Edit's diff prefixes
+    `+`/`-`/space, so quoted marker text never begins a line (issue #561).
+    """
+    if name not in SANDBOX_NOTICE_TOOLS:
+        return False
+    return any(line.startswith(SANDBOX_BLOCKED_MARKER) for line in output.splitlines())
+
+
+def is_tool_failure(name: str, output: str) -> bool:
     """True when a stored tool output reports a failure the model saw.
 
     Detection is on the first line, matching how `agent_loop.rs` records both
-    shapes. Synthetic `not executed:` outputs (history repair, correction
-    turns) are deliberately not failures here; see the session-metrics README.
+    prefixed shapes, except for the sandbox notice, which `bash.rs` appends and
+    which only counts for the tools that can emit it. Synthetic `not executed:`
+    outputs (history repair, correction turns) are deliberately not failures
+    here; see the session-metrics README.
     """
     first = output.splitlines()[0] if output else ""
     return (
         first.startswith(ERROR_PREFIX)
         or first.startswith(HOOK_BLOCKED_PREFIX)
-        or SANDBOX_BLOCKED_MARKER in output
+        or sandbox_notice(name, output)
     )
 
 
@@ -530,7 +563,7 @@ def pair_tool_calls(records: list[dict]) -> list[ToolCall]:
                 call_id=call.get("call_id", ""),
                 arguments=call.get("arguments", ""),
                 output=output,
-                ok=not is_tool_failure(output),
+                ok=not is_tool_failure(call.get("name", "unknown"), output),
                 timestamp=call.get("timestamp"),
             ))
             seq += 1
@@ -557,13 +590,15 @@ def classify_tool_error(name: str, output: str) -> str:
         return "duplicate-mutation guard"
     if HOOK_BLOCKED_PREFIX in first:
         return "hook-blocked"
+    if sandbox_notice(name, output):
+        return "sandbox-blocked"
     if "BLOCKED" in first:
         # Only the Bash command-safety judge emits a bare BLOCKED first line:
         # an active block carries "Reason:", judge unavailability is fail-closed.
         if "command-safety judge was unavailable" in output:
             return "judge-fail-closed"
         return "judge-blocked"
-    if "read-only" in output:
+    if name in READ_ONLY_TOOLS and any(msg in output for msg in READ_ONLY_MESSAGES):
         return "read-only path"
     if "Invalid" in first and "arguments" in first:
         return "invalid arguments/JSON"
@@ -580,8 +615,6 @@ def classify_tool_error(name: str, output: str) -> str:
         if "Failed to access file" in output or "not a file" in output:
             return "path/file access"
     elif name == "Bash":
-        if SANDBOX_BLOCKED_MARKER in output:
-            return "sandbox-blocked"
         if "timed out" in first:
             return "timeout"
         if "sandbox" in first.lower():
