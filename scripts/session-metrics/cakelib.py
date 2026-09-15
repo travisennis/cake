@@ -15,6 +15,7 @@ Data sources:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from collections import defaultdict
@@ -534,6 +535,17 @@ def pair_tool_calls(records: list[dict]) -> list[ToolCall]:
             ))
             seq += 1
     return calls
+
+
+def call_id_digest(raw_call_id: str) -> str:
+    """SHA-256 hex digest of a raw transcript tool-call id.
+
+    Judge telemetry persists an originating tool-call id only as this digest
+    (mirroring `digest_identifier` in `src/session_telemetry.rs`), so the digest
+    is what pairs a transcript Bash call with its judge outcome. The raw id
+    stays an in-memory join input and never reaches a report.
+    """
+    return hashlib.sha256(raw_call_id.encode("utf-8")).hexdigest()
 
 
 def classify_tool_error(name: str, output: str) -> str:
