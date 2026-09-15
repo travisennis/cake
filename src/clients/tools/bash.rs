@@ -1428,8 +1428,8 @@ async fn bash_judge_preflight(
 ) -> Result<JudgePreflight, super::ToolError> {
     // The transcript call id links this Bash call to the judge request, the
     // judge attempts, and the recorded events. Borrowed once here: the events
-    // digest it at construction, so the raw identifier never leaves this
-    // function.
+    // digest it at construction and the judge observer only ever holds the
+    // digest, so the raw identifier never reaches telemetry.
     let raw_call_id = call_id.as_deref();
 
     // Empty commands have nothing to judge; `bash -c ""` is harmless and the

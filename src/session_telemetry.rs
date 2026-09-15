@@ -226,8 +226,8 @@ pub struct JudgeAttemptTelemetry {
     /// attempt came from a tool execution: concurrent Bash calls record
     /// attempts in completion order, so consumers attribute an attempt to its
     /// tool call by hashing the session's raw call identifier with the same
-    /// function. The raw value is provider-controlled text and never enters
-    /// telemetry.
+    /// function. The raw value is provider-controlled text and enters neither
+    /// this attempt nor telemetry: it is digested when the attempt is built.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub call_id: Option<String>,
     /// One-way digest of the provider request identifier, when the provider
