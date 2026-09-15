@@ -397,11 +397,9 @@ impl AgentRunner {
         let status_code = in_flight.status_code;
         let phase = Some(in_flight.phase);
 
-        let settlement_identity = AttemptProviderIdentity {
-            model: in_flight.model.clone(),
-            provider_request_id: provider_request_id.clone(),
-            response_model: response_model.clone(),
-        };
+        let settled_model = in_flight.model.clone();
+        let settled_provider_request_id = provider_request_id.clone();
+        let settled_response_model = response_model.clone();
 
         in_flight.finish(ApiAttemptTelemetry {
             turn_index,
@@ -431,9 +429,9 @@ impl AgentRunner {
                 attempt,
                 terminal_class,
                 usage,
-                model: settlement_identity.model,
-                provider_request_id: settlement_identity.provider_request_id,
-                response_model: settlement_identity.response_model,
+                model: settled_model,
+                provider_request_id: settled_provider_request_id,
+                response_model: settled_response_model,
             });
         }
 
@@ -754,15 +752,6 @@ impl AgentRunner {
             retry::RetryDecision::DoNotRetry => AttemptResult::Terminal(error),
         }
     }
-}
-
-/// Bounded provider identity for one attempt, shared by the attempt telemetry
-/// record and the usage settlement so both name the same response.
-#[derive(Debug, Clone)]
-struct AttemptProviderIdentity {
-    model: String,
-    provider_request_id: Option<String>,
-    response_model: Option<String>,
 }
 
 /// Presence marker for an attempt record: the reported usage's own presence, or

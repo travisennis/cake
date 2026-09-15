@@ -69,5 +69,6 @@ An unreported or partial attempt contributes only what it actually reported to t
 
 - Extends the settlement contract in [ADR-025](025-provider-usage-settlement.md) without changing its aggregate meaning; ADR-025's rule that an unreported attempt produces no usage record still holds.
 - Complements [ADR-028](028-retry-accepted-body-transport-failures.md): a transport failure while the accepted body is read records `unreported` presence, because a partial body yields no usage that could be inferred.
+- Scoped to main-provider attempts and turns. A `judge_attempt` record keeps its existing `usage` field and its own model and API-type fields; the command-safety judge is a separate diagnostic surface and the issue that produced this decision did not cover it.
 - The provider-attempt versus agent-turn versus task-aggregate semantics and the presence policy are stated for consumers in [Integrations](../integrations.md).
 - Issue #354 owns the implementation; the ExecPlan in `docs/exec-plans/completed/provider-attempt-usage-semantics.md` records how it was delivered.

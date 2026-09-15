@@ -41,6 +41,8 @@ The agent loop is uncapped by default; a user-configured `[limits]` section (see
 
 `--output-format json` emits one JSON object after the invocation completes. It contains the final result or error plus session metadata, usage, working directory, turn count, and elapsed time.
 
+`usage` is the task aggregate (see [Persisted sessions](#persisted-sessions)); per-attempt usage and provider identity are not part of this document. Text and stream-JSON output likewise report the task, not the attempt: the per-attempt detail lives in the session file's `turn_usage` records and in the telemetry sidecar's `api_attempt` records so that the machine-readable completion document keeps its existing shape.
+
 Progress and retry rendering are suppressed so stdout remains parseable. The exact serialized shape is protected by CLI tests; consumers should tolerate additional optional fields.
 
 ## Stream JSON
