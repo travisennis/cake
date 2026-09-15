@@ -6,13 +6,19 @@ use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
 use serde::Serialize;
 
-use crate::cli::{CmdRunner, CommandRunOptions};
+use crate::cli::{
+    CHECK_SESSIONS_DIRECTORY, CmdRunner, CommandRunOptions, DiagnosticDocument, report_failure,
+};
 use crate::config::DataDir;
 use crate::config::session::CURRENT_FORMAT_VERSION;
 use crate::config::session_jsonl::SessionFramer;
 
 /// Session browsing commands.
 #[derive(Clone, Debug, Parser)]
+#[command(after_help = "\
+Examples:
+  cake sessions list --json | jq -r '.data.sessions[].session_id'
+  cake --resume \"$(cake sessions list --json | jq -r '.data.sessions[0].session_id')\" \"continue\"")]
 pub struct SessionsCommand {
     #[command(subcommand)]
     command: SessionsSubcommand,
@@ -21,8 +27,12 @@ pub struct SessionsCommand {
 #[derive(Clone, Debug, Subcommand)]
 enum SessionsSubcommand {
     /// List sessions for the current working directory
+    #[command(after_help = "\
+Examples:
+  cake sessions list
+  cake sessions list --json | jq -r '.data.sessions[].session_id'")]
     List {
-        /// Output session list as JSON
+        /// Output the session list as one diagnostic JSON document
         #[arg(long, default_value_t = false)]
         json: bool,
     },
@@ -37,15 +47,20 @@ impl CmdRunner for SessionsCommand {
         // CmdRunner is asynchronous, although this command has no async work.
         std::future::ready(()).await;
         match &self.command {
-            SessionsSubcommand::List { json } => {
-                let current_dir = std::env::current_dir()
-                    .map_err(|e| anyhow::anyhow!("Failed to get current directory: {e}"))?;
-                let sessions = list_sessions(data_dir, &current_dir)?;
-                print!("{}", render_sessions(&sessions, *json)?);
-                Ok(())
-            },
+            SessionsSubcommand::List { json } => list_sessions_command(data_dir, *json),
         }
     }
+}
+
+/// List the sessions for the current working directory as a table, or as one
+/// diagnostic document when the machine flag is set.
+fn list_sessions_command(data_dir: &DataDir, json: bool) -> anyhow::Result<()> {
+    let current_dir = std::env::current_dir()
+        .map_err(|e| anyhow::anyhow!("Failed to get current directory: {e}"))?;
+    let sessions = list_sessions(data_dir, &current_dir)
+        .map_err(|error| report_failure(json, "sessions list", CHECK_SESSIONS_DIRECTORY, error))?;
+    print!("{}", render_sessions(&sessions, json)?);
+    Ok(())
 }
 
 /// Lightweight session info extracted from a session file without loading
@@ -81,8 +96,14 @@ fn list_sessions(data_dir: &DataDir, working_dir: &Path) -> anyhow::Result<Vec<S
         }
     }
 
-    // Sort newest first
-    sessions.sort_by_key(|b| std::cmp::Reverse(b.timestamp));
+    // Sort newest first, with the session id as the tiebreaker so two sessions
+    // written in the same second always list in the same order.
+    sessions.sort_by(|left, right| {
+        right
+            .timestamp
+            .cmp(&left.timestamp)
+            .then_with(|| left.session_id.cmp(&right.session_id))
+    });
 
     Ok(sessions)
 }
@@ -174,7 +195,7 @@ fn find_first_user_prompt(reader: &mut std::io::BufReader<std::fs::File>) -> Opt
     None
 }
 
-/// Render the session list as a formatted table or JSON.
+/// Render the session list as a formatted table or one diagnostic document.
 fn render_sessions(sessions: &[SessionInfo], json: bool) -> anyhow::Result<String> {
     if json {
         render_sessions_json(sessions)
@@ -204,9 +225,18 @@ fn format_sessions_table(sessions: &[SessionInfo]) -> String {
     output
 }
 
+/// Render the session list as one diagnostic document.
+///
+/// The order is the listing order, so the document is stable for a given set of
+/// session files.
 fn render_sessions_json(sessions: &[SessionInfo]) -> anyhow::Result<String> {
-    serde_json::to_string_pretty(sessions)
-        .map_err(|e| anyhow::anyhow!("Failed to serialize sessions: {e}"))
+    DiagnosticDocument::new(
+        "sessions list",
+        serde_json::json!({ "count": sessions.len() }),
+        Vec::new(),
+        serde_json::json!({ "sessions": sessions }),
+    )
+    .render()
 }
 
 /// Truncate a prompt string to fit within the given limit, appending an
@@ -477,10 +507,47 @@ mod tests {
         }];
         let output = super::render_sessions_json(&sessions).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
-        let arr = parsed.as_array().unwrap();
-        assert_eq!(arr.len(), 1);
-        assert_eq!(arr[0]["session_id"], "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
-        assert_eq!(arr[0]["first_prompt"], "Test prompt");
+
+        assert_eq!(parsed["schema_version"], 1);
+        assert_eq!(parsed["command"], "sessions list");
+        assert_eq!(parsed["status"], "ok");
+        assert_eq!(parsed["summary"]["count"], 1);
+        assert_eq!(parsed["checks"], serde_json::json!([]));
+        let listed = parsed["data"]["sessions"].as_array().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(
+            listed[0]["session_id"],
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        );
+        assert_eq!(listed[0]["first_prompt"], "Test prompt");
+    }
+
+    #[test]
+    fn list_sessions_orders_equal_timestamps_by_session_id() {
+        // Directory iteration order is arbitrary, so two sessions written in
+        // the same second need a tiebreaker for a stable listing.
+        let (dd, tmp) = make_data_dir();
+        let sessions_dir = dd.sessions_dir();
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+
+        let ts = "2026-07-09T12:00:00Z";
+        for (id, prompt) in [
+            ("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "Second"),
+            ("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "First"),
+        ] {
+            write_session(&sessions_dir, id, tmp.path(), ts, Some(prompt));
+        }
+
+        let sessions = list_sessions(&dd, tmp.path()).unwrap();
+        assert_eq!(sessions.len(), 2);
+        assert_eq!(
+            sessions[0].session_id,
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        );
+        assert_eq!(
+            sessions[1].session_id,
+            "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        );
     }
 
     #[test]
@@ -562,6 +629,6 @@ mod tests {
         }];
         let output = super::render_sessions_json(&sessions).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
-        assert_eq!(parsed[0]["first_prompt"], prompt);
+        assert_eq!(parsed["data"]["sessions"][0]["first_prompt"], prompt);
     }
 }

@@ -135,6 +135,47 @@ fn cli_parses_bash_check_diagnostic_flag() {
 }
 
 #[test]
+fn cli_parses_bash_check_json_flag() {
+    let args = crate::CodingAssistant::parse_from([
+        "cake",
+        "bash",
+        "check",
+        "--json",
+        "--",
+        "git push --force",
+    ]);
+    match args.command {
+        Some(crate::cli::Commands::Bash(cmd)) => match cmd.command {
+            BashSubcommand::Check(check) => {
+                assert!(check.json);
+                assert!(!check.diagnostic);
+                assert_eq!(check.command, "git push --force");
+            },
+        },
+        other => panic!("expected bash check, got {other:?}"),
+    }
+}
+
+#[test]
+fn cli_rejects_json_with_diagnostic() {
+    // `--diagnostic` prints a raw sensitive report; `--json` prints a document.
+    // Asking for both is a usage error rather than a silent choice.
+    let Err(error) = crate::CodingAssistant::try_parse_from([
+        "cake",
+        "bash",
+        "check",
+        "--json",
+        "--diagnostic",
+        "--",
+        "git status",
+    ]) else {
+        panic!("both output modes must conflict");
+    };
+
+    assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+}
+
+#[test]
 fn bash_help_documents_check_without_executing() {
     let help = BashCommand::command().render_help().to_string();
     assert!(
@@ -395,7 +436,8 @@ async fn bash_check_renders_allow_verdict() {
         "git status",
     )
     .await
-    .unwrap();
+    .unwrap()
+    .render_text();
 
     assert!(output.contains("Verdict: allow"));
     assert!(output.contains("Confidence: 0.9"));
@@ -443,7 +485,8 @@ async fn bash_check_shares_judge_retry_semantics() {
         "git status",
     )
     .await
-    .unwrap();
+    .unwrap()
+    .render_text();
 
     assert!(
         output.contains("Verdict: allow"),
@@ -473,7 +516,8 @@ async fn bash_check_renders_block_verdict() {
         "git push --force",
     )
     .await
-    .unwrap();
+    .unwrap()
+    .render_text();
 
     assert!(output.contains("Verdict: block"));
     assert!(output.contains("Code: git-force-push"));
@@ -498,7 +542,8 @@ async fn bash_check_renders_warn_verdict() {
         "rg -rn foo",
     )
     .await
-    .unwrap();
+    .unwrap()
+    .render_text();
 
     assert!(output.contains("Verdict: warn"));
     assert!(output.contains("Code: rg-replace-footgun"));
@@ -553,7 +598,8 @@ async fn bash_check_allowlist_overrides_block_and_still_judges() {
         "git push --force",
     )
     .await
-    .unwrap();
+    .unwrap()
+    .render_text();
 
     // The original block verdict and the override flag are both visible.
     assert!(output.contains("Verdict: block"));
@@ -587,7 +633,8 @@ async fn bash_check_allowlisted_benign_verdict_is_unaffected() {
         "git status",
     )
     .await
-    .unwrap();
+    .unwrap()
+    .render_text();
 
     assert!(output.contains("Verdict: allow"));
     assert!(
@@ -618,7 +665,8 @@ async fn bash_check_block_without_allowlist_match_is_not_overridden() {
         "git push --force",
     )
     .await
-    .unwrap();
+    .unwrap()
+    .render_text();
 
     assert!(output.contains("Verdict: block"));
     assert!(
@@ -650,7 +698,8 @@ async fn bash_check_bypass_setting_skips_judge() {
         "git push --force",
     )
     .await
-    .unwrap();
+    .unwrap()
+    .render_text();
 
     assert!(
         output.contains("Verdict: bypassed"),
@@ -682,7 +731,8 @@ async fn bash_check_bypass_env_value_skips_judge() {
         "git push --force",
     )
     .await
-    .unwrap();
+    .unwrap()
+    .render_text();
 
     assert!(
         output.contains("Verdict: bypassed"),
@@ -731,7 +781,8 @@ async fn bash_check_bypass_short_circuits_broken_judge_config() {
 
     let output = run_bash_check(&settings, std::path::Path::new("/work"), "git status", None)
         .await
-        .unwrap();
+        .unwrap()
+        .render_text();
     assert!(
         output.contains("Verdict: bypassed"),
         "bypass must win over broken judge setup, got:\n{output}"
@@ -774,6 +825,98 @@ fn render_verdict_omits_optional_lines_for_allow() {
     assert_eq!(
         output, "Verdict: allow\nMessage: Safe\nLatency: 1.23s\n",
         "unexpected output shape:\n{output}"
+    );
+}
+
+#[test]
+fn render_json_reports_a_block_verdict_document() {
+    let outcome = CheckOutcome {
+        outcome: JudgeOutcome::Verdict {
+            verdict: JudgeVerdict {
+                decision: JudgeDecision::Block,
+                code: Some("git-force-push".to_string()),
+                message: "Prefer push --force-with-lease.".to_string(),
+                confidence: Some(0.93),
+            },
+            overridden: false,
+        },
+        latency: Duration::from_millis(1234),
+    };
+
+    let rendered = outcome.render_json(&[]).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+
+    assert_eq!(parsed["schema_version"], 1);
+    assert_eq!(parsed["command"], "bash check");
+    // The inspection completed, so a block verdict is not an error status.
+    assert_eq!(parsed["status"], "ok");
+    assert_eq!(parsed["summary"]["verdict"], "block");
+    assert_eq!(parsed["checks"], serde_json::json!([]));
+    assert_eq!(parsed["data"]["verdict"], "block");
+    assert_eq!(parsed["data"]["code"], "git-force-push");
+    assert_eq!(parsed["data"]["message"], "Prefer push --force-with-lease.");
+    assert_eq!(parsed["data"]["confidence"], 0.93);
+    assert_eq!(parsed["data"]["latency_ms"], 1234);
+    assert_eq!(parsed["data"]["overridden"], false);
+    assert_eq!(parsed["data"]["bypassed"], false);
+}
+
+#[test]
+fn render_json_marks_an_allowlist_override() {
+    let outcome = CheckOutcome {
+        outcome: JudgeOutcome::Verdict {
+            verdict: JudgeVerdict {
+                decision: JudgeDecision::Block,
+                code: Some("git-force-push".to_string()),
+                message: "Prefer push --force-with-lease.".to_string(),
+                confidence: None,
+            },
+            overridden: true,
+        },
+        latency: Duration::ZERO,
+    };
+
+    let rendered = outcome.render_json(&[]).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+
+    // The document keeps the original verdict alongside the override flag, the
+    // same way the text rendering does.
+    assert_eq!(parsed["data"]["verdict"], "block");
+    assert_eq!(parsed["data"]["overridden"], true);
+    assert_eq!(parsed["data"]["confidence"], serde_json::Value::Null);
+}
+
+#[test]
+fn render_json_reports_the_bypass_without_a_judge_call() {
+    let bypassed = CheckOutcome::bypassed();
+
+    let rendered = bypassed.render_json(&[]).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+
+    assert_eq!(parsed["status"], "ok");
+    assert_eq!(parsed["summary"]["verdict"], "bypassed");
+    assert_eq!(parsed["data"]["bypassed"], true);
+    assert_eq!(parsed["data"]["verdict"], serde_json::Value::Null);
+    assert_eq!(parsed["data"]["latency_ms"], 0);
+    // Both output modes state the same reason for making no call.
+    assert_eq!(parsed["data"]["message"], JUDGE_BYPASS_MESSAGE);
+    assert!(bypassed.render_text().contains(JUDGE_BYPASS_MESSAGE));
+}
+
+#[test]
+fn render_json_carries_settings_findings_in_checks() {
+    // A `--json` run reports an unrecognized settings key in the document rather
+    // than on stderr, so the finding survives the machine-mode stderr silence.
+    let checks = settings_warnings(&["unknown key 'tempurature' in settings.toml".to_string()]);
+
+    let rendered = CheckOutcome::bypassed().render_json(&checks).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+
+    assert_eq!(parsed["status"], "warning");
+    assert_eq!(parsed["checks"][0]["id"], "settings.unknown_key");
+    assert_eq!(
+        parsed["checks"][0]["message"],
+        "unknown key 'tempurature' in settings.toml"
     );
 }
 
