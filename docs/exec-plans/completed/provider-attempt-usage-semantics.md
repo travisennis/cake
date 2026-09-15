@@ -19,13 +19,17 @@ Existing aggregates do not change shape or meaning: `task_complete.usage` and th
 - [x] (2026-09-15) Add provider, model, response model, and usage presence to `api_attempt` telemetry and `turn_usage` session records.
 - [x] (2026-09-15) Update parser, telemetry, and session tests, including end-to-end coverage for success, HTTP failure, transport failure, and parse failure.
 - [x] (2026-09-15) Update `docs/integrations.md` with the three-layer semantics and the presence policy; check the other documents the change touches.
-- [x] (2026-09-15) Run the focused tests and the routed gates.
+- [x] (2026-09-15) Run the focused tests and the routed gates; record the pre-existing `check-deps` advisory separately.
 
 ## Surprises & Discoveries
 
 - The completed `api_attempt` record never carried the model at all; only the preceding `api_attempt_in_flight` record did. A reader that filters `api_attempt` records, as `scripts/session-metrics` does, therefore learned the model only by joining to the in-flight record or to `telemetry_init`.
 - The temporary-signature design of ADR-025 ("a first successful attempt omits `attempt` and `terminal_class`") cannot extend to the new identity fields: those fields are most valuable exactly on the first successful attempt, which is the common case and the shape the rule protects. The rule therefore keeps applying to `attempt`/`terminal_class` only, and the new fields are written whenever they are known.
 - `src/types/` may not import from `src/config/` (enforced by `just lint-deps`), so the session `turn_usage` record carries the model as a string and omits the resolved provider enum, which only `src/session_telemetry.rs` may serialize.
+- The cyclomatic-complexity ratchet (`just cc-check`) rejected the first version: computing presence inline pushed `map_usage` in both backends from CC 4 to 7 and `apply_response_metadata` from 5 to 6. Extracting `UsagePresence::from_required_counters` and assigning `accumulator.model` directly (rather than behind an `if let`) restored both to their baseline CC.
+- `cargo clippy -- -D warnings` rejected the widened `AgentRunnerTelemetryEvent` with `large_enum_variant` once `ApiAttemptTelemetry` grew past roughly 3x its sibling. Boxing the variant would add a heap allocation per HTTP attempt for a value built once and moved once, so the enum carries a documented `#[expect]` instead.
+- Session-compatibility check: when `attempt` and `terminal_class` were added to `turn_usage` on 2026-08-30 (commit `9675c93`), `CURRENT_FORMAT_VERSION` stayed at 4. Additive optional fields therefore do not bump the format version, and this change follows that precedent instead of bumping it to 5.
+- `just check-full` stops at `check-deps` on a pre-existing advisory: `RUSTSEC-2026-0285` against `rustls 0.23.41` in the committed `Cargo.lock` (needs `>= 0.23.45`). This branch does not touch `Cargo.lock`, so the failure is inherited from `master` and is left for a dependency change of its own.
 
 ## Decision Log
 
@@ -38,7 +42,11 @@ Existing aggregates do not change shape or meaning: `task_complete.usage` and th
 
 Delivered the contract in ADR-030. `UsagePresence` (`complete`, `partial`, `unreported`) and a `ReportedUsage` carrier exist in `src/types/usage.rs`; both backends compute presence from the raw usage object, capture the provider-reported `model`, and thread it through `TurnResult` and the parse-error types that already carried usage. `api_attempt` telemetry records now name the resolved provider, configured model, response-reported model, and usage presence, and `turn_usage` session records carry usage presence plus the provider response ID, configured model, and response-reported model.
 
-Verification: focused parser, agent, session-record, and session-telemetry suite runs, then the routed gates (`just check`, documentation checks). What remains: nothing functional; issue #429 still owns documenting `turn_usage` ordering separately, and #422 still owns `api_attempt_in_flight` lifecycle verification.
+What someone can now do that they could not before: read a sidecar or session file and tell a provider-reported zero from an unreported counter, name the provider response and the serving model behind any settled usage record, and treat a failed or partial report as unknown instead of measured.
+
+Verification actually run: `cargo test --all-features` (1505 unit tests plus every integration suite, all passing), `just check`, `just cc-check`, `just docs-check`, `just doc`, `just build`, and the focused parser, agent, session-record, and session-telemetry suites while iterating. The full local suite (`just check-full`) passes its coverage, CRAP, and complexity gates and then stops at `check-deps` on the pre-existing `rustls` advisory recorded above; that gate is unrelated to this change and was not worked around. Not checked here: Windows, and the Linux-only `cfg` paths (`just clippy-linux`), which this change does not touch.
+
+Lessons: the CC ratchet and strict Clippy both shaped the design more than expected, and both pushed toward the same answer --- keep the new data in small extracted helpers rather than inline branches. The additive-fields precedent (no format-version bump) was worth confirming in history rather than guessing.
 
 ## Context and Orientation
 
