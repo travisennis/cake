@@ -1396,6 +1396,18 @@ struct JudgePreflight {
     compensation_events: Vec<CompensationEventTelemetry>,
 }
 
+/// A preflight for a call the judge never evaluated because it is disabled.
+///
+/// The bypass event records the escape hatch so it cannot be used silently, and
+/// carries the originating call's linkage like every other judge event.
+fn bypassed_preflight(raw_call_id: Option<&str>) -> JudgePreflight {
+    let event = CompensationEventTelemetry::judge_bypass().with_call_id(raw_call_id);
+    JudgePreflight {
+        warnings: Vec::new(),
+        compensation_events: vec![event],
+    }
+}
+
 /// Run the LLM-judge command-safety preflight for one Bash call.
 ///
 /// The judge is the only non-sandbox command gate (`ExecPlan` Milestone 5):
@@ -1406,12 +1418,20 @@ struct JudgePreflight {
 /// Every judge decision and every fail-closed denial is recorded as a
 /// telemetry compensation event (verdict + code + latency, bypass, or failure
 /// class), including on the `Err` path, so the gate's behavior stays
-/// observable even when the tool call fails.
+/// observable even when the tool call fails. Each event also carries the
+/// one-way digest of the transcript call it judged, so session metrics can
+/// pair a call with its outcome by transcript call (#404).
 async fn bash_judge_preflight(
     context: &super::ToolContext,
     args: &BashExecutionArgs,
     call_id: Option<String>,
 ) -> Result<JudgePreflight, super::ToolError> {
+    // The transcript call id links this Bash call to the judge request, the
+    // judge attempts, and the recorded events. Borrowed once here: the events
+    // digest it at construction, so the raw identifier never leaves this
+    // function.
+    let raw_call_id = call_id.as_deref();
+
     // Empty commands have nothing to judge; `bash -c ""` is harmless and the
     // old guard skipped them too.
     if args.command.trim().is_empty() {
@@ -1425,6 +1445,7 @@ async fn bash_judge_preflight(
         return Err(fail_closed_tool_error(
             "missing_context",
             "the command-safety judge is not configured for this run",
+            raw_call_id,
         ));
     };
 
@@ -1434,22 +1455,19 @@ async fn bash_judge_preflight(
     // still recorded so the escape hatch cannot be used silently.
     let bypass_env = std::env::var(JUDGE_BYPASS_ENV).ok();
     if !judge_is_enabled(&judge.settings, bypass_env.as_deref()) {
-        return Ok(JudgePreflight {
-            warnings: Vec::new(),
-            compensation_events: vec![CompensationEventTelemetry::judge_bypass()],
-        });
+        return Ok(bypassed_preflight(raw_call_id));
     }
 
     let client = judge
         .judge_client()
-        .map_err(|e| fail_closed_tool_error(e.class, &e.message))?;
+        .map_err(|e| fail_closed_tool_error(e.class, &e.message, raw_call_id))?;
     let request = JudgeRequest::new(
         args.command.clone(),
         context.cwd.clone(),
         args.reason.clone(),
     )
     .with_repo_digest(repo_state_digest(&context.cwd))
-    .with_call_id(call_id);
+    .with_call_id(raw_call_id.map(String::from));
 
     let evaluation = evaluate_command_observed(
         client,
@@ -1464,7 +1482,7 @@ async fn bash_judge_preflight(
     // future before the tool result and its compensation events are recorded,
     // so waiting for that path would drop the attempts.
     record_judge_attempts(judge, &evaluation.attempts);
-    observed_evaluation_to_preflight(evaluation)
+    observed_evaluation_to_preflight(evaluation, raw_call_id)
 }
 
 /// Persist finalized judge attempts through the run's telemetry sink, if any.
@@ -1481,6 +1499,7 @@ fn record_judge_attempts(
 
 fn observed_evaluation_to_preflight(
     evaluation: crate::clients::judge::JudgeEvaluation,
+    raw_call_id: Option<&str>,
 ) -> Result<JudgePreflight, super::ToolError> {
     // Cumulative wall time across every attempt, including the backoff waits
     // between them, so the verdict/fail-closed latency reflects the whole
@@ -1490,10 +1509,10 @@ fn observed_evaluation_to_preflight(
             .saturating_add(attempt.retry_delay_ms)
     });
     match evaluation.outcome {
-        Ok(outcome) => judge_preflight_outcome(outcome, latency_ms),
+        Ok(outcome) => judge_preflight_outcome(outcome, latency_ms, raw_call_id),
         Err(error) => {
             let class = error.error_class();
-            Err(fail_closed_tool_error(class, error))
+            Err(fail_closed_tool_error(class, error, raw_call_id))
         },
     }
 }
@@ -1509,12 +1528,10 @@ fn observed_evaluation_to_preflight(
 fn judge_preflight_outcome(
     outcome: JudgeOutcome,
     latency_ms: u64,
+    raw_call_id: Option<&str>,
 ) -> Result<JudgePreflight, super::ToolError> {
     match outcome {
-        JudgeOutcome::Bypassed => Ok(JudgePreflight {
-            warnings: Vec::new(),
-            compensation_events: vec![CompensationEventTelemetry::judge_bypass()],
-        }),
+        JudgeOutcome::Bypassed => Ok(bypassed_preflight(raw_call_id)),
         JudgeOutcome::Verdict {
             verdict,
             overridden,
@@ -1524,7 +1541,8 @@ fn judge_preflight_outcome(
                 verdict.code.as_deref(),
                 latency_ms,
                 overridden,
-            );
+            )
+            .with_call_id(raw_call_id);
             match verdict.decision {
                 JudgeDecision::Block if !overridden => Err(super::ToolError {
                     message: format!(
@@ -1560,10 +1578,15 @@ fn fail_closed_message(error: impl std::fmt::Display) -> String {
 
 /// Build the tool error for a fail-closed denial, recording the failure class
 /// so the denial is observable in telemetry.
-fn fail_closed_tool_error(class: &'static str, error: impl std::fmt::Display) -> super::ToolError {
+fn fail_closed_tool_error(
+    class: &'static str,
+    error: impl std::fmt::Display,
+    raw_call_id: Option<&str>,
+) -> super::ToolError {
+    let event = CompensationEventTelemetry::judge_fail_closed(class).with_call_id(raw_call_id);
     super::ToolError {
         message: fail_closed_message(error),
-        compensation_events: vec![CompensationEventTelemetry::judge_fail_closed(class)],
+        compensation_events: vec![event],
     }
 }
 
@@ -1776,3 +1799,7 @@ mod tests;
 #[cfg(test)]
 #[path = "bash_issue_366_tests.rs"]
 mod issue_366_tests;
+
+#[cfg(test)]
+#[path = "bash_judge_linkage_tests.rs"]
+mod judge_linkage_tests;

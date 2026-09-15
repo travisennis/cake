@@ -2,7 +2,6 @@
 
 use std::time::{Duration, Instant};
 
-use sha2::{Digest, Sha256};
 use tokio::time::sleep;
 
 use crate::clients::agent_runner::build_http_client;
@@ -11,6 +10,7 @@ use crate::clients::retry::{self, HttpFailure, RequestOverrides, RetryReason};
 use crate::config::model::ApiType;
 use crate::session_telemetry::{
     JudgeAttemptTelemetry, JudgeAttemptTerminalClass, ProviderTermination, RetryReasonSnapshot,
+    digest_identifier,
 };
 use crate::types::{ConversationItem, Role};
 
@@ -792,12 +792,6 @@ fn digest_provider_identifier(id: &mut Option<String>) {
             *value = digest_identifier(value);
         }
     }
-}
-
-fn digest_identifier(value: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(value.as_bytes());
-    hex::encode(hasher.finalize())
 }
 
 fn elapsed_ms(started: Instant) -> u64 {

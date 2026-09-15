@@ -161,7 +161,7 @@ Main-provider `api_attempt.usage.input_tokens_details` may additionally contain 
 
 `telemetry_init` carries the invocation's `model` (provider ID) plus optional `settings.model_config` (the resolved `[[models]]` entry name) and `settings.base_url` (the provider endpoint, non-secret), so cache analysis can distinguish same-ID entries on different backends.
 
-A `compensation` carries its `kind`, optional `detail`, judge-verdict `latency_ms`, and allowlist `overridden` flag. Kinds are `json_repair`, `judge_verdict`, `judge_fail_closed`, `judge_bypass`, `same_path_serialization`, `output_truncation`, `context_overflow_retry`, and `edit_invalid_arguments`. Judge details are `block:<code>`, `warn:<code>`, or `allow`; fail-closed details name the failure class.
+A `compensation` carries its `kind`, optional `detail`, judge-verdict `latency_ms`, and allowlist `overridden` flag. Kinds are `json_repair`, `judge_verdict`, `judge_fail_closed`, `judge_bypass`, `same_path_serialization`, `output_truncation`, `context_overflow_retry`, and `edit_invalid_arguments`. Judge details are `block:<code>`, `warn:<code>`, or `allow`; fail-closed details name the failure class. A judge event also carries `call_id`, the one-way SHA-256 digest of the originating transcript tool-call identifier that `judge_attempt.call_id` records, so a consumer can pair a transcript call with its judge outcome without the raw identifier reaching telemetry; it is absent when the call has no provider-assigned identifier.
 
 Consumers must tolerate added enum values and optional fields; old sidecars remain valid. Sidecars never drive resume, fork, or session discovery.
 
