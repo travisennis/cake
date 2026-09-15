@@ -255,6 +255,7 @@ fn read_from_reader<R: BufRead>(
     Ok(super::ToolResult {
         output,
         compensation_events,
+        permission_denials: Vec::new(),
     })
 }
 
@@ -518,6 +519,7 @@ fn no_content_result(path: &Path, total_lines: usize) -> super::ToolResult {
             path.display()
         ),
         compensation_events: Vec::new(),
+        permission_denials: Vec::new(),
     }
 }
 

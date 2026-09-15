@@ -111,6 +111,7 @@ pub(super) fn execute_write(
     Ok(super::ToolResult {
         output: result,
         compensation_events: Vec::new(),
+        permission_denials: Vec::new(),
     })
 }
 

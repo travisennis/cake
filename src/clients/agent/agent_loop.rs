@@ -65,6 +65,7 @@ struct ToolRunResult {
     skill_activation: Option<SkillActivation>,
     telemetry: ToolCallTelemetry,
     compensation_events: Vec<CompensationEventTelemetry>,
+    permission_denials: Vec<String>,
 }
 
 /// Result of checking whether a Read tool call targeted a known skill path.
@@ -120,6 +121,7 @@ fn immediate_tool_error_result(
         output,
         skill_activation: None,
         compensation_events: Vec::new(),
+        permission_denials: Vec::new(),
     }
 }
 
@@ -562,18 +564,21 @@ impl Agent {
                 .await;
 
                 let was_error = result.is_err();
-                let mut compensation_events;
-                let mut output = match result {
-                    Ok(result) => {
-                        compensation_events = result.compensation_events;
-                        result.output
-                    },
+                let (mut compensation_events, permission_denials, mut output) = match result {
+                    Ok(result) => (
+                        result.compensation_events,
+                        result.permission_denials,
+                        result.output,
+                    ),
                     Err(error) => {
                         // Tool errors carry the events observed while the tool
                         // failed (e.g. a judge block verdict or fail-closed
                         // denial), so they still reach session telemetry.
-                        compensation_events = error.compensation_events;
-                        format!("Error: {}", error.message)
+                        (
+                            error.compensation_events,
+                            Vec::new(),
+                            format!("Error: {}", error.message),
+                        )
                     },
                 };
                 // Classify argument-driven compensations centrally: the
@@ -625,6 +630,7 @@ impl Agent {
                     output,
                     skill_activation,
                     compensation_events,
+                    permission_denials,
                 }
             },
         }
@@ -632,6 +638,11 @@ impl Agent {
 
     fn record_tool_results(&mut self, results: Vec<ToolRunResult>) -> anyhow::Result<()> {
         for result in results {
+            self.record_permission_denials(
+                &result.telemetry.name,
+                &result.call_id,
+                &result.permission_denials,
+            );
             self.record_judge_denials(
                 &result.telemetry.name,
                 &result.call_id,
@@ -662,6 +673,17 @@ impl Agent {
         for event in events {
             self.append_compensation_telemetry(event);
         }
+    }
+
+    /// Record policy-denial labels supplied by a tool after it ran. The tool
+    /// supplies only the stable source/operation/path label; this method adds
+    /// the same tool/call identity used by hook and judge denials.
+    fn record_permission_denials(&mut self, name: &str, call_id: &str, denials: &[String]) {
+        self.permission_denials.extend(
+            denials
+                .iter()
+                .map(|denial| format!("{name}({call_id}): {denial}")),
+        );
     }
 
     /// Record judge blocks and fail-closed denials into `permission_denials`
@@ -1408,6 +1430,7 @@ mod helper_tests {
         let result = ToolResult {
             output: "tool output".to_string(),
             compensation_events: Vec::new(),
+            permission_denials: Vec::new(),
         };
         let agent = test_agent().with_hook_runner(Arc::clone(&runner));
 
@@ -1475,6 +1498,7 @@ mod helper_tests {
                 was_error: false,
             },
             compensation_events,
+            permission_denials: Vec::new(),
         }
     }
 
@@ -1537,6 +1561,22 @@ mod helper_tests {
         let streamed_record: serde_json::Value = serde_json::from_str(&streamed[0]).unwrap();
         assert_eq!(streamed_record["replay"], "safe");
         drop(streamed);
+    }
+
+    #[test]
+    fn record_tool_results_persists_sandbox_permission_denials() {
+        let mut result = tool_result(None, Vec::new());
+        result.permission_denials = vec!["sandbox: write /outside/scratch.txt".to_string()];
+        let mut agent = test_agent();
+
+        agent
+            .record_tool_results(vec![result])
+            .expect("record tool result");
+
+        assert_eq!(
+            agent.permission_denials,
+            vec!["Read(call-1): sandbox: write /outside/scratch.txt"]
+        );
     }
 
     #[test]

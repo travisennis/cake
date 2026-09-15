@@ -486,10 +486,12 @@ def load_telemetry(
 # Transcript failure shapes, shared by the `ok` gate and the taxonomy so the
 # two cannot drift apart. `agent_loop.rs` prefixes every tool error with
 # `Error: `, but stores PreToolUse hook denials verbatim as
-# `Hook blocked tool execution: {reason}`; the prefix test alone counted every
-# hook denial as a success (issue #338).
+# `Hook blocked tool execution: {reason}`. Bash sandbox denials are successful
+# tool executions with a failed child, so they use the stable marker appended
+# by `bash.rs` instead of an `Error:` prefix (issue #366).
 ERROR_PREFIX = "Error"
 HOOK_BLOCKED_PREFIX = "Hook blocked tool execution"
+SANDBOX_BLOCKED_MARKER = "[Sandbox restriction]"
 
 
 def is_tool_failure(output: str) -> bool:
@@ -500,7 +502,11 @@ def is_tool_failure(output: str) -> bool:
     turns) are deliberately not failures here; see the session-metrics README.
     """
     first = output.splitlines()[0] if output else ""
-    return first.startswith(ERROR_PREFIX) or first.startswith(HOOK_BLOCKED_PREFIX)
+    return (
+        first.startswith(ERROR_PREFIX)
+        or first.startswith(HOOK_BLOCKED_PREFIX)
+        or SANDBOX_BLOCKED_MARKER in output
+    )
 
 
 def pair_tool_calls(records: list[dict]) -> list[ToolCall]:
@@ -562,6 +568,8 @@ def classify_tool_error(name: str, output: str) -> str:
         if "Failed to access file" in output or "not a file" in output:
             return "path/file access"
     elif name == "Bash":
+        if SANDBOX_BLOCKED_MARKER in output:
+            return "sandbox-blocked"
         if "timed out" in first:
             return "timeout"
         if "sandbox" in first.lower():

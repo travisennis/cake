@@ -72,6 +72,12 @@ class ToolCallOkTest(unittest.TestCase):
         calls = cakelib.pair_tool_calls(records_for(["fd .\n./src\n"]))
         self.assertTrue(calls[0].ok)
 
+    def test_sandbox_denial_is_failure(self):
+        calls = cakelib.pair_tool_calls(records_for([
+            "Operation not permitted\n\n[Sandbox restriction]: blocked by filesystem sandbox",
+        ]))
+        self.assertFalse(calls[0].ok)
+
     def test_synthetic_not_executed_outputs_are_not_failures(self):
         """Boundary: the two synthetic `not executed:` shapes stay successes.
 
@@ -103,6 +109,23 @@ class HookDenialTaxonomyTest(unittest.TestCase):
         output = buf.getvalue()
         taxonomy = output.split("Failure taxonomy:", 1)[1]
         self.assertIn("hook-blocked", taxonomy)
+
+    def test_taxonomy_reports_sandbox_blocked(self):
+        data = cakelib.Dataset(
+            sessions=[session([
+                "Operation not permitted\n\n[Sandbox restriction]: blocked by filesystem sandbox",
+            ])],
+            invocations=[],
+            sessions_dir=None,
+            telemetry_dir=None,
+            cutoff=None,
+        )
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            tools.run(data)
+        output = buf.getvalue()
+        taxonomy = output.split("Failure taxonomy:", 1)[1]
+        self.assertIn("sandbox-blocked", taxonomy)
 
 
 if __name__ == "__main__":

@@ -410,6 +410,9 @@ pub struct TaskCompleteData {
     pub session_id: String,
     pub task_id: String,
     pub usage: Usage,
+    /// Optional tool-call labels for policy denials observed during the task.
+    /// Sandbox labels use `sandbox: <operation> <path>` after the tool/call
+    /// prefix; other sources retain their existing judge and hook labels.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub permission_denials: Option<Vec<String>>,
 }

@@ -203,6 +203,7 @@ fn finish_toolbox_result(
     Ok(ToolResult {
         output: truncate_output(String::from_utf8_lossy(&streams.stdout).into_owned()),
         compensation_events,
+        permission_denials: Vec::new(),
     })
 }
 

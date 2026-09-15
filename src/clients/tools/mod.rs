@@ -614,11 +614,16 @@ pub(super) const fn decode_utf8(bytes: &[u8]) -> Result<&str, std::str::Utf8Erro
 /// Contains the output string from tool execution, which may be stdout/stderr
 /// for Bash or file contents for Read operations, plus any model-compensation
 /// events observed while running the tool (recorded to session telemetry by
-/// the agent loop).
+/// the agent loop). Permission denials are kept separate because they are
+/// task-completion audit data, not model-compensation telemetry.
 #[derive(Debug)]
 pub struct ToolResult {
     pub output: String,
     pub compensation_events: Vec<CompensationEventTelemetry>,
+    /// Stable labels for policy denials observed after a tool was allowed to run.
+    /// The agent prefixes each label with the tool and call identity before it
+    /// writes `task_complete.permission_denials`.
+    pub permission_denials: Vec<String>,
 }
 
 /// Error from executing a tool.
