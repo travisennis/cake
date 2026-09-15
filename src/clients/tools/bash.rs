@@ -167,76 +167,170 @@ fn is_sandbox_violation(sandbox_applied: bool, success: bool, output: &str, stde
 /// The filesystem operation a path token in a shell command needed, inferred
 /// from the command text. Executable command tokens (the leading command or a
 /// bare word resolved via `PATH`) are `Execute`; file and directory arguments
-/// are `Read`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// are `Read` or `Write`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum SandboxPathOperation {
     Execute,
     Read,
+    Write,
 }
 
-/// A path referenced by a shell command that exists on disk, with the
-/// operation the command likely needed for it.
+impl SandboxPathOperation {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Execute => "execute",
+            Self::Read => "read",
+            Self::Write => "write",
+        }
+    }
+}
+
+/// A path referenced by a shell command, with the operation the command likely
+/// needed for it. Write targets are allowed to be absent because commands such
+/// as `touch` and shell redirections commonly create them.
 #[derive(Debug)]
 struct SandboxPathRef {
     path: PathBuf,
     operation: SandboxPathOperation,
 }
 
-/// Scan a failed sandboxed command for path tokens that exist on disk but fall
-/// outside the sandbox's allowed directories. This names the missing grant
-/// instead of echoing the generic "Operation not permitted". Only existing
-/// paths are considered, avoiding false positives on shell words, flags, and
-/// operators. A bare word resolves via `PATH` as an executable only in command
-/// position (the leading word, or the word after a command separator); bare
-/// words in argument position resolve relative to `cwd` as a file read, so an
-/// argument that merely shares a name with a `PATH` executable is not mistaken
-/// for the denied command.
-fn denied_paths_in_command(
+impl SandboxPathRef {
+    fn permission_label(&self) -> String {
+        format!(
+            "sandbox: {} {}",
+            self.operation.as_str(),
+            self.path.display()
+        )
+    }
+}
+
+/// Scan a failed sandboxed command for path tokens that fall outside the
+/// sandbox's allowed directories. This names the missing grant instead of
+/// echoing the generic "Operation not permitted". Existing read/execute paths
+/// are considered, while write targets may be absent because the denied
+/// operation itself is often a create. Only path-like tokens are considered,
+/// avoiding false positives on shell words, flags, and operators. A bare word
+/// resolves via `PATH` as an executable only in command position (the leading
+/// word, or the word after a command separator); bare words in argument
+/// position resolve relative to `cwd` as a file path.
+struct SandboxScanState<'a> {
+    expect_command: bool,
+    current_command: &'a str,
+    pending_operation: Option<SandboxPathOperation>,
+}
+
+impl SandboxScanState<'_> {
+    const fn new() -> Self {
+        Self {
+            expect_command: true,
+            current_command: "",
+            pending_operation: None,
+        }
+    }
+
+    const fn reset_command(&mut self) {
+        self.expect_command = true;
+        self.current_command = "";
+        self.pending_operation = None;
+    }
+}
+
+fn denied_path_refs_in_command(
     command: &str,
     cwd: &Path,
     config: &super::sandbox::SandboxConfig,
-) -> Vec<String> {
+) -> Vec<SandboxPathRef> {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_default();
     let mut refs: Vec<SandboxPathRef> = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    let mut expect_command = true;
+    let mut state = SandboxScanState::new();
 
     for raw in command.split_whitespace() {
-        let token = strip_shell_quotes(raw);
-        if token.is_empty() {
-            continue;
-        }
-        if is_command_separator(token) {
-            expect_command = true;
-            continue;
-        }
-        if is_shell_noise(token) {
-            continue;
-        }
-        let Some(resolved) = resolve_path_token(token, &home, cwd, expect_command) else {
+        let Some(resolved) = scan_sandbox_token(raw, &home, cwd, &mut state) else {
             continue;
         };
-        expect_command = false;
-        if seen.insert(resolved.path.clone()) {
+        if seen.insert((resolved.path.clone(), resolved.operation)) {
             refs.push(resolved);
         }
     }
 
     refs.into_iter()
         .filter(|r| !config.is_path_allowed(&r.path))
-        .map(|r| format_path_ref(&r))
         .collect()
+}
+
+/// Preserve the existing model-facing path-detail helper while the Bash
+/// executor carries structured references for completion audit labels.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "retained for focused path-detail unit tests")
+)]
+pub(super) fn denied_paths_in_command(
+    command: &str,
+    cwd: &Path,
+    config: &super::sandbox::SandboxConfig,
+) -> Vec<String> {
+    denied_path_refs_in_command(command, cwd, config)
+        .iter()
+        .map(format_path_ref)
+        .collect()
+}
+
+fn scan_sandbox_token<'a>(
+    raw: &'a str,
+    home: &Path,
+    cwd: &Path,
+    state: &mut SandboxScanState<'a>,
+) -> Option<SandboxPathRef> {
+    let token = strip_shell_quotes(raw);
+    if token.is_empty() {
+        return None;
+    }
+    if let Some(target) = write_redirection_target(token) {
+        return scan_write_redirection(target, home, cwd, state);
+    }
+    if is_command_separator(token) {
+        state.reset_command();
+        return None;
+    }
+    if is_shell_noise(token) {
+        return None;
+    }
+
+    let was_command = state.expect_command;
+    let operation = state.pending_operation.take().unwrap_or_else(|| {
+        if was_command {
+            SandboxPathOperation::Execute
+        } else {
+            command_argument_operation(state.current_command)
+        }
+    });
+    let resolved = resolve_path_token(token, home, cwd, was_command, operation);
+    if was_command {
+        state.current_command = command_name(token);
+        state.expect_command = false;
+    }
+    resolved
+}
+
+fn scan_write_redirection<'a>(
+    target: &'a str,
+    home: &Path,
+    cwd: &Path,
+    state: &mut SandboxScanState<'a>,
+) -> Option<SandboxPathRef> {
+    if target.is_empty() {
+        state.pending_operation = Some(SandboxPathOperation::Write);
+        return None;
+    }
+    resolve_path_token(target, home, cwd, false, SandboxPathOperation::Write)
 }
 
 /// Format a denied path reference as a bullet line naming the operation.
 fn format_path_ref(r: &SandboxPathRef) -> String {
-    let op = match r.operation {
-        SandboxPathOperation::Execute => "execute",
-        SandboxPathOperation::Read => "read",
-    };
-    format!("  - {} ({op})", r.path.display())
+    format!("  - {} ({})", r.path.display(), r.operation.as_str())
 }
 
 /// Remove a surrounding layer of shell quotes from a token.
@@ -288,42 +382,72 @@ fn resolve_path_token(
     home: &Path,
     cwd: &Path,
     in_command_position: bool,
+    operation: SandboxPathOperation,
 ) -> Option<SandboxPathRef> {
     if let Some(rest) = token.strip_prefix("~/") {
-        return existing_ref(home.join(rest), SandboxPathOperation::Read);
+        return existing_ref(home.join(rest), operation);
     }
     if token == "~" {
-        return existing_ref(home.to_path_buf(), SandboxPathOperation::Read);
+        return existing_ref(home.to_path_buf(), operation);
     }
     if token.starts_with('/') {
-        return existing_ref(PathBuf::from(token), SandboxPathOperation::Read);
+        return existing_ref(PathBuf::from(token), operation);
     }
     if token.contains('/') {
-        return existing_ref(cwd.join(token), SandboxPathOperation::Read);
+        return existing_ref(cwd.join(token), operation);
     }
     // Bare word: a command name resolves via `PATH` as an executable; otherwise
-    // fall back to a path relative to the working directory.
+    // fall back to a path relative to the working directory as a file argument.
     if in_command_position && let Some(found) = lookup_executable_in_path(token) {
         return Some(SandboxPathRef {
             path: found,
             operation: SandboxPathOperation::Execute,
         });
     }
-    existing_ref(cwd.join(token), SandboxPathOperation::Read)
+    existing_ref(cwd.join(token), operation)
 }
 
-/// Wrap `path` as a reference only when it exists on disk, classifying an
-/// executable file as `Execute` and everything else as `Read`.
-fn existing_ref(path: PathBuf, op: SandboxPathOperation) -> Option<SandboxPathRef> {
-    if !path.exists() {
+/// Wrap `path` as a reference when it exists, or when it is a write target that
+/// may be created by the command. The operation is supplied by shell position
+/// and command semantics rather than by the target file's mode.
+fn existing_ref(path: PathBuf, operation: SandboxPathOperation) -> Option<SandboxPathRef> {
+    if !path.exists() && operation != SandboxPathOperation::Write {
         return None;
     }
-    let operation = if is_executable_file(&path) {
-        SandboxPathOperation::Execute
-    } else {
-        op
-    };
     Some(SandboxPathRef { path, operation })
+}
+
+/// Infer whether ordinary arguments to a command are likely read or write
+/// targets. This is diagnostic metadata only; the OS sandbox remains the
+/// enforcement boundary and this intentionally does not try to parse shell.
+fn command_argument_operation(command: &str) -> SandboxPathOperation {
+    match command {
+        "chmod" | "chown" | "chgrp" | "cp" | "install" | "ln" | "mkdir" | "mkfifo" | "mknod"
+        | "mv" | "rm" | "rmdir" | "shred" | "tee" | "touch" | "truncate" | "unlink" => {
+            SandboxPathOperation::Write
+        },
+        _ => SandboxPathOperation::Read,
+    }
+}
+
+/// Return a write redirection's target when `token` is a standalone or
+/// descriptor-prefixed redirection. A non-empty target is returned directly;
+/// an empty target means the next shell token is the target.
+fn write_redirection_target(token: &str) -> Option<&str> {
+    let index = token.find('>')?;
+    let prefix = token.get(..index)?;
+    if !(prefix.is_empty() || prefix == "&" || prefix.chars().all(|c| c.is_ascii_digit())) {
+        return None;
+    }
+    let rest = token.get(index + 1..)?;
+    let target = rest.strip_prefix('>').unwrap_or(rest);
+    (!target.starts_with('&')).then_some(target)
+}
+
+/// Return the executable-like name used for command-specific argument
+/// inference, without interpreting shell quoting or expansions.
+fn command_name(token: &str) -> &str {
+    token.rsplit('/').next().unwrap_or(token)
 }
 
 #[cfg(unix)]
@@ -999,11 +1123,11 @@ async fn drain_to_eof<R: tokio::io::AsyncRead + Unpin>(
     }
 }
 
-/// Collect the denied-path names to append to a `[Sandbox restriction]`
-/// notice. Only scans the command when the run looks like a sandbox denial;
-/// otherwise it returns an empty list. Kept off the hot path and out of
-/// `execute_bash_with_args` so that function's cyclomatic complexity stays
-/// within the gate.
+/// Collect the denied-path references to append to a `[Sandbox restriction]`
+/// notice and to `task_complete.permission_denials`. Only scans the command
+/// when the run looks like a sandbox denial; otherwise it returns an empty
+/// list. Kept off the hot path and out of `execute_bash_with_args` so that
+/// function's cyclomatic complexity stays within the gate.
 fn sandbox_denials(
     context: &super::ToolContext,
     command: &str,
@@ -1012,12 +1136,12 @@ fn sandbox_denials(
     success: bool,
     output: &str,
     stderr: &str,
-) -> Vec<String> {
+) -> Vec<SandboxPathRef> {
     if !is_sandbox_violation(sandbox_applied, success, output, stderr) {
         return Vec::new();
     }
     let config = super::sandbox::SandboxConfig::build(context);
-    denied_paths_in_command(command, cwd, &config)
+    denied_path_refs_in_command(command, cwd, &config)
 }
 
 /// Select the model-visible text form of a completed run's combined output:
@@ -1147,6 +1271,7 @@ async fn execute_bash_with_args(
         return Ok(super::ToolResult {
             output: prepend_safety_warnings(output, &judge_warnings),
             compensation_events,
+            permission_denials: Vec::new(),
         });
     }
     let output_str = String::from_utf8_lossy(&buf);
@@ -1159,6 +1284,7 @@ async fn execute_bash_with_args(
         &output_str,
         &stderr_str,
     );
+    let denial_details = denials.iter().map(format_path_ref).collect::<Vec<_>>();
     let result = compose_text_output(
         &output_str,
         &stderr_str,
@@ -1166,8 +1292,12 @@ async fn execute_bash_with_args(
         read_cap,
         success,
         sandbox_applied,
-        &denials,
+        &denial_details,
     );
+    let permission_denials = denials
+        .iter()
+        .map(SandboxPathRef::permission_label)
+        .collect();
 
     let result = annotate_empty_search_result(&args.command, result, exit_code, &stderr_str);
     let spilled = output_max.is_some_and(|max| result.len() > max);
@@ -1186,6 +1316,7 @@ async fn execute_bash_with_args(
     Ok(super::ToolResult {
         output,
         compensation_events,
+        permission_denials,
     })
 }
 
@@ -1602,3 +1733,7 @@ fn prepend_safety_warnings(output: String, warnings: &[String]) -> String {
 #[cfg(test)]
 #[path = "bash_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "bash_issue_366_tests.rs"]
+mod issue_366_tests;

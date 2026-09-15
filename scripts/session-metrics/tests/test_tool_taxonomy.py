@@ -87,6 +87,15 @@ class ClassifyToolErrorTest(unittest.TestCase):
             "read-only path",
         )
 
+    def test_sandbox_blocked(self):
+        self.assertEqual(
+            classify_tool_error(
+                "Bash",
+                "Operation not permitted\n\n[Sandbox restriction]: This command was blocked by the filesystem sandbox.",
+            ),
+            "sandbox-blocked",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
