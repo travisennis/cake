@@ -101,6 +101,9 @@ pub(super) struct ChatFunctionCallRef<'a> {
 #[derive(Deserialize, Debug)]
 pub(super) struct ChatResponse {
     pub(super) id: Option<String>,
+    /// The provider's own model identifier, which may differ from the
+    /// configured model when a gateway routes an alias.
+    pub(super) model: Option<String>,
     pub(super) choices: Vec<ChatChoice>,
     pub(super) usage: Option<ChatUsage>,
 }

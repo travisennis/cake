@@ -17,7 +17,7 @@ use crate::session_telemetry::{
 };
 use crate::types::{
     ConversationItem, InputTokensDetails, OutputTokensDetails, ReasoningContentKind,
-    ReasoningSummary, Role, Usage,
+    ReasoningSummary, ReportedUsage, Role, Usage, UsagePresence,
 };
 
 // =============================================================================
@@ -180,7 +180,7 @@ fn parse_response_envelope(bytes: &[u8]) -> anyhow::Result<ApiResponseEnvelope> 
     })
 }
 
-pub(super) fn reported_usage(body: &[u8]) -> Option<Usage> {
+pub(super) fn reported_usage(body: &[u8]) -> Option<ReportedUsage> {
     let value = serde_json::from_slice::<serde_json::Value>(body).ok()?;
     let response_id = value
         .get("id")
@@ -257,6 +257,7 @@ fn parse_json_response(body: &[u8]) -> anyhow::Result<TurnResult> {
         .usage
         .as_ref()
         .map(|usage| map_usage(usage, response_id));
+    let response_model = api_response.model.clone();
     let items = parse_output_items(&api_response)
         .map_err(|error| anyhow::Error::new(ResponseParseError::new(error, usage)))?;
 
@@ -265,6 +266,7 @@ fn parse_json_response(body: &[u8]) -> anyhow::Result<TurnResult> {
         usage,
         termination,
         provider_request_id: api_response.id,
+        response_model,
     })
 }
 
@@ -322,6 +324,8 @@ struct MalformedStreamOutputItemError {
 #[derive(Default)]
 struct StreamAccumulator {
     response_id: Option<String>,
+    /// The provider's own model identifier from the terminal response object.
+    model: Option<String>,
     status: Option<String>,
     incomplete_reason: Option<String>,
     usage: Option<ApiUsage>,
@@ -473,6 +477,10 @@ fn apply_response_metadata(accumulator: &mut StreamAccumulator, response: &serde
         .get("id")
         .and_then(serde_json::Value::as_str)
         .map(str::to_string);
+    accumulator.model = response
+        .get("model")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
     accumulator.status = response
         .get("status")
         .and_then(serde_json::Value::as_str)
@@ -588,7 +596,7 @@ fn stream_parse_error(error: anyhow::Error, accumulator: &StreamAccumulator) -> 
 #[derive(Debug, thiserror::Error)]
 pub(super) struct ResponsesStreamFailed {
     pub(super) metadata: ResponsesFailedMetadata,
-    pub(super) reported_usage: Option<Usage>,
+    pub(super) reported_usage: Option<ReportedUsage>,
 }
 
 impl ResponsesStreamFailed {
@@ -600,7 +608,7 @@ impl ResponsesStreamFailed {
         &self.metadata
     }
 
-    pub(super) const fn usage(&self) -> Option<Usage> {
+    pub(super) const fn usage(&self) -> Option<ReportedUsage> {
         self.reported_usage
     }
 }
@@ -627,7 +635,7 @@ fn ensure_stream_terminal(accumulator: &StreamAccumulator) -> anyhow::Result<()>
 fn malformed_stream_output_item_error(
     failure: StreamOutputItemDecodeFailure,
     response_id: &str,
-    usage: Option<Usage>,
+    usage: Option<ReportedUsage>,
 ) -> anyhow::Error {
     let (_, response_id) = bounded_diagnostic_text(response_id);
     anyhow::Error::new(ResponseParseError::new(
@@ -674,6 +682,7 @@ fn finalize_stream(mut accumulator: StreamAccumulator) -> anyhow::Result<TurnRes
 
     let api_response = ApiResponse {
         id: accumulator.response_id,
+        model: accumulator.model,
         output: accumulator.output,
         usage: accumulator.usage,
     };
@@ -714,6 +723,7 @@ fn finalize_stream(mut accumulator: StreamAccumulator) -> anyhow::Result<TurnRes
         usage,
         termination,
         provider_request_id: api_response.id,
+        response_model: api_response.model,
     })
 }
 
@@ -809,8 +819,13 @@ fn response_contains_refusal(api_response: &ApiResponse) -> bool {
     })
 }
 
-/// Map API-level usage to the canonical `Usage` type.
-fn map_usage(api_usage: &ApiUsage, response_id: &str) -> Usage {
+/// Map API-level usage to the canonical `Usage` type and its presence marker.
+///
+/// A missing required counter is normalized to zero and marks the result
+/// [`UsagePresence::Partial`], so a consumer can tell the zero apart from a
+/// provider-reported zero. The optional detail objects never affect presence,
+/// because providers legitimately omit them.
+fn map_usage(api_usage: &ApiUsage, response_id: &str) -> ReportedUsage {
     if api_usage.input_tokens.is_none() {
         warn!(
             target: "cake",
@@ -836,27 +851,36 @@ fn map_usage(api_usage: &ApiUsage, response_id: &str) -> Usage {
         );
     }
 
-    Usage {
-        input_tokens: api_usage.input_tokens.unwrap_or(0),
-        output_tokens: api_usage.output_tokens.unwrap_or(0),
-        total_tokens: api_usage.total_tokens.unwrap_or(0),
-        input_tokens_details: InputTokensDetails {
-            cached_tokens: api_usage
-                .input_tokens_details
-                .as_ref()
-                .map_or(0, |d| d.cached_tokens.unwrap_or(0)),
-            cache_write_tokens: api_usage
-                .input_tokens_details
-                .as_ref()
-                .map_or(0, |d| d.cache_write_tokens.unwrap_or(0)),
+    let presence = UsagePresence::from_required_counters(
+        api_usage.input_tokens,
+        api_usage.output_tokens,
+        api_usage.total_tokens,
+    );
+
+    ReportedUsage::new(
+        Usage {
+            input_tokens: api_usage.input_tokens.unwrap_or(0),
+            output_tokens: api_usage.output_tokens.unwrap_or(0),
+            total_tokens: api_usage.total_tokens.unwrap_or(0),
+            input_tokens_details: InputTokensDetails {
+                cached_tokens: api_usage
+                    .input_tokens_details
+                    .as_ref()
+                    .map_or(0, |d| d.cached_tokens.unwrap_or(0)),
+                cache_write_tokens: api_usage
+                    .input_tokens_details
+                    .as_ref()
+                    .map_or(0, |d| d.cache_write_tokens.unwrap_or(0)),
+            },
+            output_tokens_details: OutputTokensDetails {
+                reasoning_tokens: api_usage
+                    .output_tokens_details
+                    .as_ref()
+                    .map_or(0, |d| d.reasoning_tokens.unwrap_or(0)),
+            },
         },
-        output_tokens_details: OutputTokensDetails {
-            reasoning_tokens: api_usage
-                .output_tokens_details
-                .as_ref()
-                .map_or(0, |d| d.reasoning_tokens.unwrap_or(0)),
-        },
-    }
+        presence,
+    )
 }
 
 /// Extract the system prompt from the conversation history, returning it

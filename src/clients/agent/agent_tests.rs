@@ -766,6 +766,7 @@ mod error_tests {
     fn success_response() -> serde_json::Value {
         serde_json::json!({
             "id": "resp-123",
+            "model": "test-model",
             "output": [
                 {
                     "type": "message",
@@ -791,6 +792,7 @@ mod error_tests {
     fn success_chat_response() -> serde_json::Value {
         serde_json::json!({
             "id": "chatcmpl-123",
+            "model": "test-model",
             "choices": [
                 {
                     "index": 0,
@@ -3728,6 +3730,7 @@ printf 'completed:%s' "$index"
             .find(|record| record["type"] == "api_attempt")
             .expect("the reset attempt must be recorded");
         assert_eq!(transport_attempt["terminal_class"], "transport");
+        assert_eq!(transport_attempt["usage_presence"], "unreported");
         assert!(
             transport_attempt["error"].as_str().is_some_and(|error| {
                 let error = error.to_ascii_lowercase();
@@ -3869,6 +3872,10 @@ printf 'completed:%s' "$index"
                 ApiType::Responses => success_response(),
                 ApiType::ChatCompletions => success_chat_response(),
             };
+            let expected_response_id = match api_type {
+                ApiType::Responses => "resp-123",
+                ApiType::ChatCompletions => "chatcmpl-123",
+            };
             let server = spawn_body_read_reset_server(1, success.clone(), vec![success]);
 
             let telemetry_dir = tempfile::TempDir::new().unwrap();
@@ -3917,9 +3924,17 @@ printf 'completed:%s' "$index"
                 attempts[0]["usage"].is_null(),
                 "an unread body reports no usage and must not infer one"
             );
+            assert_eq!(
+                attempts[0]["usage_presence"], "unreported",
+                "an unread body must not report a presence"
+            );
+            assert_eq!(attempts[0]["model"], "test-model");
             assert_transport_cause(attempts[0]["error"].as_str().unwrap());
             assert_eq!(attempts[1]["attempt"], 2);
             assert_eq!(attempts[1]["terminal_class"], "completed");
+            assert_eq!(attempts[1]["usage_presence"], "complete");
+            assert_eq!(attempts[1]["model"], "test-model");
+            assert_eq!(attempts[1]["response_model"], "test-model");
 
             let retries = records
                 .iter()
@@ -3942,6 +3957,16 @@ printf 'completed:%s' "$index"
             assert_eq!(turn_usage[0]["attempt"], 2);
             assert_eq!(turn_usage[0]["terminal_class"], "completed");
             assert_eq!(turn_usage[0]["usage"]["total_tokens"], 15);
+            assert_eq!(
+                turn_usage[0]["usage_presence"], "complete",
+                "the settled record states whether the counters were reported"
+            );
+            assert_eq!(turn_usage[0]["model"], "test-model");
+            assert_eq!(turn_usage[0]["response_model"], "test-model");
+            assert_eq!(
+                turn_usage[0]["provider_request_id"], expected_response_id,
+                "usage must be tied to the provider response that produced it"
+            );
 
             server.join.abort();
         }
@@ -3983,6 +4008,12 @@ printf 'completed:%s' "$index"
             assert_eq!(attempt["phase"], "reading_body");
             assert_eq!(attempt["status_code"], 200);
             assert!(attempt["usage"].is_null());
+            assert_eq!(
+                attempt["usage_presence"], "unreported",
+                "a body that never arrived reports no usage"
+            );
+            assert_eq!(attempt["model"], "test-model");
+            assert!(attempt.get("response_model").is_none());
         }
 
         let retries = records
@@ -4119,6 +4150,18 @@ printf 'completed:%s' "$index"
         assert_eq!(attempts[0]["phase"], "reading_body");
         assert_eq!(attempts[0]["status_code"], 200);
         assert_eq!(attempts[0]["terminal_class"], "body_parse");
+        assert_eq!(attempts[0]["model"], "test-model");
+        // A semantic parse failure keeps the usage it did parse; a body that
+        // could not be decoded reports none. Either way the presence marker
+        // must agree with the recorded usage.
+        let presence = attempts[0]["usage_presence"]
+            .as_str()
+            .expect("every attempt record states usage presence");
+        assert_eq!(
+            presence == "unreported",
+            attempts[0]["usage"].is_null(),
+            "presence must agree with the recorded usage: {attempts:?}"
+        );
     }
 
     #[tokio::test]
@@ -4260,7 +4303,9 @@ printf 'completed:%s' "$index"
         ..
     } if content == "Hello!"));
         assert!(turn_result.usage.is_some());
-        let usage = turn_result.usage.unwrap();
+        let reported = turn_result.usage.unwrap();
+        assert_eq!(reported.presence, crate::types::UsagePresence::Complete);
+        let usage = reported.usage;
         assert_eq!(usage.input_tokens, 10);
         assert_eq!(usage.output_tokens, 5);
     }
@@ -4656,6 +4701,7 @@ mod output_schema_constraint_tests {
     fn responses_text_response(text: &str) -> serde_json::Value {
         serde_json::json!({
             "id": "resp-1",
+            "model": "test-model",
             "output": [
                 {
                     "type": "message",
@@ -4894,12 +4940,31 @@ mod output_schema_constraint_tests {
             .collect::<Vec<_>>();
         assert_eq!(usages.len(), 3);
         assert!(usages[0].get("attempt").is_none());
+        assert!(usages[0].get("terminal_class").is_none());
+        assert_eq!(
+            usages[0]["usage_presence"], "complete",
+            "a first successful attempt still names its provider identity"
+        );
+        assert_eq!(usages[0]["model"], "test-model");
+        assert_eq!(usages[0]["provider_request_id"], "resp-1");
         assert_eq!(usages[1]["turn"], 2);
         assert_eq!(usages[1]["attempt"], 1);
         assert_eq!(usages[1]["terminal_class"], "http");
         assert_eq!(usages[1]["usage"]["total_tokens"], 5);
+        assert_eq!(
+            usages[1]["usage_presence"], "complete",
+            "the error body reported every counter, so the zero is measured"
+        );
+        assert_eq!(
+            usages[1].get("provider_request_id"),
+            None,
+            "an HTTP error body supplies no provider response id"
+        );
+        assert_eq!(usages[1]["model"], "test-model");
+        assert!(usages[1].get("response_model").is_none());
         assert_eq!(usages[2]["turn"], 2);
         assert_eq!(usages[2]["attempt"], 2);
         assert_eq!(usages[2]["terminal_class"], "completed");
+        assert_eq!(usages[2]["response_model"], "test-model");
     }
 }

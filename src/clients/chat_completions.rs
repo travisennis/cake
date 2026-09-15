@@ -15,7 +15,8 @@ use crate::clients::retry::RequestOverrides;
 use crate::clients::tools::Tool;
 use crate::session_telemetry::{ProviderTermination, TerminationClassification};
 use crate::types::{
-    ConversationItem, InputTokensDetails, OutputTokensDetails, ReasoningContentKind, Role, Usage,
+    ConversationItem, InputTokensDetails, OutputTokensDetails, ReasoningContentKind, ReportedUsage,
+    Role, Usage, UsagePresence,
 };
 
 // =============================================================================
@@ -147,7 +148,7 @@ async fn read_chat_response(response: reqwest::Response) -> anyhow::Result<ChatR
     })
 }
 
-pub(super) fn reported_usage(body: &[u8]) -> Option<Usage> {
+pub(super) fn reported_usage(body: &[u8]) -> Option<ReportedUsage> {
     let value = serde_json::from_slice::<serde_json::Value>(body).ok()?;
     let response_id = value
         .get("id")
@@ -196,10 +197,17 @@ pub(super) async fn parse_response(response: reqwest::Response) -> anyhow::Resul
         usage,
         termination,
         provider_request_id: chat_response.id,
+        response_model: chat_response.model,
     })
 }
 
-fn map_usage(api_usage: &ChatUsage, response_id: &str) -> Usage {
+/// Map API-level usage to the canonical `Usage` type and its presence marker.
+///
+/// A missing required counter is normalized to zero and marks the result
+/// [`UsagePresence::Partial`], so a consumer can tell the zero apart from a
+/// provider-reported zero. The optional detail objects never affect presence,
+/// because providers legitimately omit them.
+fn map_usage(api_usage: &ChatUsage, response_id: &str) -> ReportedUsage {
     if api_usage.prompt_tokens.is_none() {
         warn!(
             target: "cake",
@@ -224,30 +232,39 @@ fn map_usage(api_usage: &ChatUsage, response_id: &str) -> Usage {
             "Chat Completions usage missing field, defaulting to 0"
         );
     }
-    Usage {
-        input_tokens: api_usage.prompt_tokens.unwrap_or(0),
-        output_tokens: api_usage.completion_tokens.unwrap_or(0),
-        total_tokens: api_usage.total_tokens.unwrap_or(0),
-        input_tokens_details: InputTokensDetails {
-            cached_tokens: api_usage
-                .prompt_tokens_details
-                .as_ref()
-                .and_then(|d| d.cached_tokens)
-                .unwrap_or(0),
-            cache_write_tokens: api_usage
-                .prompt_tokens_details
-                .as_ref()
-                .and_then(|d| d.cache_write_tokens)
-                .unwrap_or(0),
+    let presence = UsagePresence::from_required_counters(
+        api_usage.prompt_tokens,
+        api_usage.completion_tokens,
+        api_usage.total_tokens,
+    );
+
+    ReportedUsage::new(
+        Usage {
+            input_tokens: api_usage.prompt_tokens.unwrap_or(0),
+            output_tokens: api_usage.completion_tokens.unwrap_or(0),
+            total_tokens: api_usage.total_tokens.unwrap_or(0),
+            input_tokens_details: InputTokensDetails {
+                cached_tokens: api_usage
+                    .prompt_tokens_details
+                    .as_ref()
+                    .and_then(|d| d.cached_tokens)
+                    .unwrap_or(0),
+                cache_write_tokens: api_usage
+                    .prompt_tokens_details
+                    .as_ref()
+                    .and_then(|d| d.cache_write_tokens)
+                    .unwrap_or(0),
+            },
+            output_tokens_details: OutputTokensDetails {
+                reasoning_tokens: api_usage
+                    .completion_tokens_details
+                    .as_ref()
+                    .and_then(|d| d.reasoning_tokens)
+                    .unwrap_or(0),
+            },
         },
-        output_tokens_details: OutputTokensDetails {
-            reasoning_tokens: api_usage
-                .completion_tokens_details
-                .as_ref()
-                .and_then(|d| d.reasoning_tokens)
-                .unwrap_or(0),
-        },
-    }
+        presence,
+    )
 }
 
 fn chat_choice_termination(

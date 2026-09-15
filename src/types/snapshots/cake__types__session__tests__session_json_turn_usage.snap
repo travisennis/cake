@@ -4,6 +4,9 @@ expression: session_record_json(record)
 ---
 {
   "attempt": 2,
+  "model": "glm-5.1",
+  "provider_request_id": "resp-fail",
+  "response_model": "served-glm-5.1",
   "session_id": "550e8400-e29b-41d4-a716-446655440000",
   "task_id": "550e8400-e29b-41d4-a716-446655440001",
   "terminal_class": "response_failed",
@@ -21,5 +24,6 @@ expression: session_record_json(record)
       "reasoning_tokens": 40
     },
     "total_tokens": 1300
-  }
+  },
+  "usage_presence": "partial"
 }
