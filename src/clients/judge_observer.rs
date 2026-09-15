@@ -2,7 +2,6 @@
 
 use std::time::{Duration, Instant};
 
-use sha2::{Digest, Sha256};
 use tokio::time::sleep;
 
 use crate::clients::agent_runner::build_http_client;
@@ -11,6 +10,7 @@ use crate::clients::retry::{self, HttpFailure, RequestOverrides, RetryReason};
 use crate::config::model::ApiType;
 use crate::session_telemetry::{
     JudgeAttemptTelemetry, JudgeAttemptTerminalClass, ProviderTermination, RetryReasonSnapshot,
+    digest_identifier,
 };
 use crate::types::{ConversationItem, Role};
 
@@ -623,12 +623,25 @@ fn initial_attempt(
         tool_count: 0,
         tool_choice: None,
         status_code: None,
-        call_id: request.call_id.clone(),
+        call_id: digest_optional_identifier(request.call_id.as_deref()),
         provider_request_id: None,
         terminal_class: JudgeAttemptTerminalClass::Transport,
         usage: None,
         termination: None,
     }
+}
+
+/// The attempt-side linkage value: the originating tool call id, persisted only
+/// as its one-way digest.
+///
+/// The raw identifier is provider-controlled text and never enters the attempt,
+/// so every path out of the observer carries the digest by construction —
+/// including a request-build failure, which returns the attempt without passing
+/// through `finish`. An absent or empty id attaches nothing.
+fn digest_optional_identifier(value: Option<&str>) -> Option<String> {
+    value
+        .filter(|value| !value.is_empty())
+        .map(digest_identifier)
 }
 
 fn initial_diagnostic(
@@ -735,9 +748,13 @@ fn redact_termination(mut termination: ProviderTermination, secret: &str) -> Pro
 /// known provider vocabulary value. Anything else is omitted, so a provider
 /// echoing command, reason, cwd, digest, or rubric fragments cannot get them
 /// into telemetry.
+///
+/// The originating tool call id is deliberately absent here: it is digested
+/// when the attempt is built (`digest_optional_identifier`), so no exit path
+/// from the observer depends on reaching this function. Sanitizing it here
+/// would miss the request-build-failure path, which never reaches `finish`.
 fn sanitize_attempt_provider_fields(attempt: &mut JudgeAttemptTelemetry) {
     digest_provider_identifier(&mut attempt.provider_request_id);
-    digest_provider_identifier(&mut attempt.call_id);
     if let Some(termination) = &mut attempt.termination {
         if !termination
             .provider_status
@@ -794,16 +811,90 @@ fn digest_provider_identifier(id: &mut Option<String>) {
     }
 }
 
-fn digest_identifier(value: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(value.as_bytes());
-    hex::encode(hasher.finalize())
-}
-
 fn elapsed_ms(started: Instant) -> u64 {
     duration_ms(started.elapsed())
 }
 
 fn duration_ms(duration: Duration) -> u64 {
     duration.as_millis().try_into().unwrap_or(u64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sha2::{Digest, Sha256};
+
+    /// The linkage digest computed from the documented rule, independently of
+    /// the production helper, so the two cannot drift silently.
+    fn call_id_digest(raw_call_id: &str) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(raw_call_id.as_bytes());
+        hex::encode(hasher.finalize())
+    }
+
+    #[test]
+    fn attempt_linkage_is_born_as_a_digest() {
+        // The attempt holds the digest from construction, so a request-build
+        // failure --- which returns the attempt without reaching `finish` ---
+        // cannot persist the raw identifier either.
+        let linked = digest_optional_identifier(Some("call_abc")).expect("linked attempt");
+        assert_eq!(linked, call_id_digest("call_abc"));
+        assert!(!linked.contains("call_abc"));
+
+        // An absent or empty identifier attaches nothing rather than a digest
+        // of nothing, matching the compensation event's linkage rule.
+        assert_eq!(digest_optional_identifier(None), None);
+        assert_eq!(digest_optional_identifier(Some("")), None);
+    }
+
+    #[test]
+    fn provider_request_identifier_is_digested_at_the_attempt_boundary() {
+        // The provider request id is only known after the response arrives, so
+        // it is digested by the boundary rather than at construction.
+        let mut attempt = attempt_with_provider_request_id("req-opaque-123");
+        sanitize_attempt_provider_fields(&mut attempt);
+        assert_eq!(
+            attempt.provider_request_id.as_deref(),
+            Some(call_id_digest("req-opaque-123").as_str())
+        );
+
+        let mut empty = attempt_with_provider_request_id("");
+        sanitize_attempt_provider_fields(&mut empty);
+        assert_eq!(empty.provider_request_id, None);
+    }
+
+    /// A minimal attempt carrying only the provider request id under test.
+    fn attempt_with_provider_request_id(request_id: &str) -> JudgeAttemptTelemetry {
+        JudgeAttemptTelemetry {
+            attempt: 1,
+            retry_ordinal: 0,
+            retry_reason: None,
+            retry_delay_ms: 0,
+            effective_deadline_ms: 0,
+            request_build_ms: 0,
+            request_ms: 0,
+            response_parse_ms: 0,
+            verdict_parse_ms: 0,
+            total_ms: 0,
+            history_items: 0,
+            system_prompt_bytes: 0,
+            user_prompt_bytes: 0,
+            model: "judge/model".to_string(),
+            api_type: ApiType::ChatCompletions,
+            reasoning_effort: None,
+            temperature: None,
+            top_p: None,
+            max_output_tokens: None,
+            reasoning_max_tokens: None,
+            configured_timeout_ms: 0,
+            tool_count: 0,
+            tool_choice: None,
+            status_code: None,
+            call_id: None,
+            provider_request_id: Some(request_id.to_string()),
+            terminal_class: JudgeAttemptTerminalClass::Transport,
+            usage: None,
+            termination: None,
+        }
+    }
 }

@@ -7,6 +7,7 @@ use std::{
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 
 use crate::OutputFormat;
 use crate::clients::retry::{RequestOverrides, RetryReason, RetryStatus};
@@ -225,8 +226,8 @@ pub struct JudgeAttemptTelemetry {
     /// attempt came from a tool execution: concurrent Bash calls record
     /// attempts in completion order, so consumers attribute an attempt to its
     /// tool call by hashing the session's raw call identifier with the same
-    /// function. The raw value is provider-controlled text and never enters
-    /// telemetry.
+    /// function. The raw value is provider-controlled text and enters neither
+    /// this attempt nor telemetry: it is digested when the attempt is built.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub call_id: Option<String>,
     /// One-way digest of the provider request identifier, when the provider
@@ -335,6 +336,16 @@ pub struct CompensationEventTelemetry {
     /// Set on a judge verdict event when an allowlist entry overrode a block.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub overridden: Option<bool>,
+    /// One-way digest of the transcript tool call this event belongs to.
+    ///
+    /// The value is the SHA-256 hex digest of the raw `call_id` the transcript
+    /// records, never the raw identifier, so pairing a call with its judge
+    /// outcome cannot pull provider-controlled text into telemetry. A judge
+    /// event carries the same digest as the `judge_attempt.call_id` recorded
+    /// for the call, which is what makes the session-metrics join deterministic
+    /// (#404). Compensations that are not tied to one tool call leave it unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
 }
 
 impl CompensationEventTelemetry {
@@ -344,6 +355,7 @@ impl CompensationEventTelemetry {
             detail,
             latency_ms: None,
             overridden: None,
+            call_id: None,
         }
     }
 
@@ -363,6 +375,7 @@ impl CompensationEventTelemetry {
             detail: Some(detail),
             latency_ms: Some(latency_ms),
             overridden: overridden.then_some(true),
+            call_id: None,
         }
     }
 
@@ -374,6 +387,7 @@ impl CompensationEventTelemetry {
             detail: Some(error_class.to_string()),
             latency_ms: None,
             overridden: None,
+            call_id: None,
         }
     }
 
@@ -385,8 +399,39 @@ impl CompensationEventTelemetry {
             detail: None,
             latency_ms: None,
             overridden: None,
+            call_id: None,
         }
     }
+
+    /// Attach the transcript call this event belongs to.
+    ///
+    /// `raw_call_id` is the transcript's raw tool-call identifier; it reaches
+    /// telemetry only as the digest [`digest_identifier`] produces, so the raw
+    /// identifier is never persisted. An absent or empty identifier attaches
+    /// nothing, which is the case for a call with no provider-assigned id.
+    #[must_use]
+    pub fn with_call_id(mut self, raw_call_id: Option<&str>) -> Self {
+        self.call_id = match raw_call_id {
+            Some(call_id) if !call_id.is_empty() => Some(digest_identifier(call_id)),
+            _ => None,
+        };
+        self
+    }
+}
+
+/// Persist a telemetry identifier only as a one-way digest.
+///
+/// Provider- and tool-controlled identifiers (a provider request id, an
+/// originating tool-call id) reach the sidecar only through this function, so
+/// the raw value never enters telemetry; a consumer correlates a record with
+/// its source by hashing the known raw value the same way. The judge attempt
+/// and the judge compensation event for one Bash call therefore carry the same
+/// digest, which is what makes the session-metrics join deterministic (#404).
+#[must_use]
+pub fn digest_identifier(value: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(value.as_bytes());
+    hex::encode(hasher.finalize())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -1000,6 +1045,35 @@ mod tests {
         assert_eq!(value["kind"], "judge_bypass");
         assert!(value.get("detail").is_none());
         assert!(value.get("latency_ms").is_none());
+    }
+
+    #[test]
+    fn judge_event_linkage_is_a_digest_of_the_raw_call_id() {
+        // The metrics suite pairs a transcript Bash call with its judge outcome
+        // by hashing the transcript's raw call id (#404), so a judge event must
+        // carry exactly that digest and never the raw identifier.
+        let event = CompensationEventTelemetry::judge_verdict("block", Some("rm-rf"), 9, false)
+            .with_call_id(Some("call_abc"));
+        let value = serde_json::to_value(&event).unwrap();
+        assert_eq!(value["call_id"], digest_identifier("call_abc"));
+        assert!(!value.to_string().contains("call_abc"));
+
+        // An absent or empty identifier attaches nothing: the event is not tied
+        // to one tool call, so it must not invent a linkage.
+        let unlinked = CompensationEventTelemetry::judge_bypass().with_call_id(None);
+        assert!(
+            serde_json::to_value(unlinked)
+                .unwrap()
+                .get("call_id")
+                .is_none()
+        );
+        let empty = CompensationEventTelemetry::judge_bypass().with_call_id(Some(""));
+        assert!(
+            serde_json::to_value(empty)
+                .unwrap()
+                .get("call_id")
+                .is_none()
+        );
     }
 
     #[test]
