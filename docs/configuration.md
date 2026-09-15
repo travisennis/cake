@@ -187,7 +187,7 @@ allowlist = ["git status"]  # exact raw commands whose blocks are overridden
 
 ## Filesystem access
 
-Top-level and profile `directories` grant persistent read-write access to the listed directories under `workspace-write`. Global and project entries are merged. The `read-only` policy demotes these paths to read-only access.
+Top-level and profile `directories` grant persistent read-write access to the listed directories under `workspace-write`. Global and project entries are merged, deduplicated, and sorted, so the resolved list is stable across runs. The `read-only` policy demotes these paths to read-only access.
 
 The `[sandbox]` section grants the Bash sandbox and the Read/Edit/Write/Grep path checks extra filesystem access on top of the built-in toolchain paths, `--add-dir`, and `directories`:
 
@@ -197,7 +197,7 @@ read_only = ["~/.local/bin/claude"]   # read + execute
 writable = ["~/.claude", "~/.cache/claude"]  # read + write + execute
 ```
 
-`read_only` entries may be files or directories and grant read plus execute access (enough to run a single binary such as `~/.local/bin/claude` without opening its whole directory). `writable` entries grant read, write, and execute access. Both keys accept absolute paths, relative paths, and `~` expansion, and merge as a union across global settings, project settings, and the selected profile. Entries that do not exist are ignored with a warning in the log file. Under `--sandbox read-only`, `writable` entries are demoted to read-only, matching `directories`.
+`read_only` entries may be files or directories and grant read plus execute access (enough to run a single binary such as `~/.local/bin/claude` without opening its whole directory). `writable` entries grant read, write, and execute access. Both keys accept absolute paths, relative paths, and `~` expansion, and merge as a union across global settings, project settings, and the selected profile; the merged list is deduplicated and sorted, so resolved grants are stable across runs. Entries that do not exist are ignored with a warning in the log file. Under `--sandbox read-only`, `writable` entries are demoted to read-only, matching `directories`.
 
 `directories = ["~/shared"]` also expands `~` (historically the path was ignored).
 
