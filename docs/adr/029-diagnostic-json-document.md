@@ -59,7 +59,7 @@ Command behavior under the document:
 
 - `debug models --json` reports the configured models in name order and moves unrecognized-settings-key findings from stderr into `checks`.
 - `sessions list --json` reports the sessions for the working directory newest first, with the session id breaking equal-timestamp ties, which removes the dependency on directory-iteration order.
-- `bash check --json` reports the judge decision with `verdict`, `code`, `confidence`, `message`, `overridden`, `bypassed`, and `latency_ms`. It conflicts with `--diagnostic`, whose raw report stays text-only because it is deliberately sensitive.
+- `bash check --json` reports the judge decision with `verdict`, `code`, `confidence`, `message`, `overridden`, `bypassed`, and `latency_ms`, and carries unrecognized-settings-key findings in `checks` the same way `debug models --json` does, so a typo in `[tools.bash.judge]` reaches a machine consumer. It conflicts with `--diagnostic`, whose raw report stays text-only because it is deliberately sensitive. A failing judge keeps its documented exit classification and writes no document, so that path reports the findings on stderr instead.
 - The payload is serialized at each field's own width rather than through a generic value, so an `f32` judge confidence prints as the same number the text verdict shows.
 - A reportable failure renders an `error` document and still exits nonzero; a failure the command cannot render as a document writes only to stderr and leaves stdout empty.
 - Human-readable output is unchanged, including the settings warnings that still print to stderr without `--json`.
@@ -71,7 +71,7 @@ Command behavior under the document:
 - Good, because #308 and #432 can add `--json` without inventing a second convention, and existing commands keep their exit codes.
 - Bad, because `debug models --json` and `sessions list --json` change their machine-readable stdout from a bare array to the document. This is a compatibility change for consumers that parsed the array, documented in [Integrations](../integrations.md).
 - Bad, because the finding ids are now a contract: removing or renaming one, or changing a finding's severity, is a schema change rather than an implementation detail.
-- Bad, because machine mode suppresses stderr warnings for these commands, so a human piping output to a file no longer sees them; the document carries them instead.
+- Bad, because machine mode suppresses stderr warnings for these commands, so a human piping output to a file no longer sees them; the document carries them instead, except on a `bash check --json` judge error, which writes no document and keeps them on stderr.
 
 ## More Information
 

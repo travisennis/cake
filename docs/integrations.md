@@ -87,7 +87,7 @@ Each finding carries a stable machine-readable `id`, a `status` of `warning` or 
 
 Consumers switch on `id`, ignore unknown ids, and tolerate added fields and added findings.
 
-Machine stdout contains the document and nothing else: one pretty-printed object followed by a newline. A command that reports configuration findings in machine mode keeps them out of stderr, so a consumer reads the document for findings and never needs stderr. Human diagnostics, including a failure the command cannot report as a document, stay on stderr.
+Machine stdout contains the document and nothing else: one pretty-printed object followed by a newline. A command that reports configuration findings in machine mode keeps them out of stderr, so a consumer reads the document for findings and never needs stderr. Human diagnostics, including a failure the command cannot report as a document, stay on stderr. The one machine-mode path that writes no document --- a `bash check --json` judge error --- keeps its findings on stderr rather than dropping them.
 
 Exit behavior follows the codes above: `ok` and `warning` exit `0`; `error` reports a problem the command can carry in the document and exits nonzero with the same message on stderr. A failure the command cannot render as a document writes only to stderr, exits nonzero, and leaves stdout empty. `bash check --json` keeps its documented judge-failure classification (see [Bash tool and command-safety checks](#bash-tool-and-command-safety-checks)) and renders verdict outcomes as documents.
 
@@ -97,7 +97,7 @@ Exit behavior follows the codes above: `ok` and `warning` exit `0`; `error` repo
 
 `sessions list --json` reports the sessions for the current working directory: `summary.count` is the number of listed sessions and `data.sessions` holds each `session_id`, `timestamp`, and `first_prompt`, newest first, with the session id breaking ties between equal timestamps.
 
-`bash check --json` reports one judge decision: `summary.verdict` is `allow`, `warn`, `block`, or `bypassed` when the judge is disabled, and `data` carries `verdict` (`null` when bypassed), `code`, `confidence`, `message`, `overridden`, `bypassed`, and `latency_ms`. A verdict, allowlist override, or bypass exits `0`; `--json` reports a failing judge through the existing judge-failure exit codes and writes no document. `--json` and `--diagnostic` are mutually exclusive.
+`bash check --json` reports one judge decision: `summary.verdict` is `allow`, `warn`, `block`, or `bypassed` when the judge is disabled, and `data` carries `verdict` (`null` when bypassed), `code`, `confidence`, `message`, `overridden`, `bypassed`, and `latency_ms`. Unrecognized settings keys appear in `checks`, as they do for `debug models --json`, so a typo in `[tools.bash.judge]` is visible to a machine consumer. A verdict, allowlist override, or bypass exits `0`; `--json` reports a failing judge through the existing judge-failure exit codes and writes no document, keeping its findings on stderr. `--json` and `--diagnostic` are mutually exclusive.
 
 ## Session replay
 

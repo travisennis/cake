@@ -843,7 +843,7 @@ fn render_json_reports_a_block_verdict_document() {
         latency: Duration::from_millis(1234),
     };
 
-    let rendered = outcome.render_json().unwrap();
+    let rendered = outcome.render_json(&[]).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&rendered).unwrap();
 
     assert_eq!(parsed["schema_version"], 1);
@@ -876,7 +876,7 @@ fn render_json_marks_an_allowlist_override() {
         latency: Duration::ZERO,
     };
 
-    let rendered = outcome.render_json().unwrap();
+    let rendered = outcome.render_json(&[]).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&rendered).unwrap();
 
     // The document keeps the original verdict alongside the override flag, the
@@ -890,7 +890,7 @@ fn render_json_marks_an_allowlist_override() {
 fn render_json_reports_the_bypass_without_a_judge_call() {
     let bypassed = CheckOutcome::bypassed();
 
-    let rendered = bypassed.render_json().unwrap();
+    let rendered = bypassed.render_json(&[]).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&rendered).unwrap();
 
     assert_eq!(parsed["status"], "ok");
@@ -901,6 +901,23 @@ fn render_json_reports_the_bypass_without_a_judge_call() {
     // Both output modes state the same reason for making no call.
     assert_eq!(parsed["data"]["message"], JUDGE_BYPASS_MESSAGE);
     assert!(bypassed.render_text().contains(JUDGE_BYPASS_MESSAGE));
+}
+
+#[test]
+fn render_json_carries_settings_findings_in_checks() {
+    // A `--json` run reports an unrecognized settings key in the document rather
+    // than on stderr, so the finding survives the machine-mode stderr silence.
+    let checks = settings_warnings(&["unknown key 'tempurature' in settings.toml".to_string()]);
+
+    let rendered = CheckOutcome::bypassed().render_json(&checks).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+
+    assert_eq!(parsed["status"], "warning");
+    assert_eq!(parsed["checks"][0]["id"], "settings.unknown_key");
+    assert_eq!(
+        parsed["checks"][0]["message"],
+        "unknown key 'tempurature' in settings.toml"
+    );
 }
 
 // =============================================================================

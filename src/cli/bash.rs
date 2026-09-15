@@ -13,7 +13,9 @@ use std::time::{Duration, Instant};
 
 use clap::{Parser, Subcommand};
 
-use crate::cli::{CmdRunner, CommandRunOptions, DiagnosticDocument};
+use crate::cli::{
+    CmdRunner, CommandRunOptions, DiagnosticCheck, DiagnosticDocument, settings_warnings,
+};
 use crate::clients::judge::{
     JudgeClient, JudgeDecision, JudgeError, JudgeEvaluation, JudgeOutcome, JudgeRequest,
     JudgeVerdict, evaluate_command, evaluate_command_observed, judge_is_enabled, read_user_rubric,
@@ -111,9 +113,9 @@ async fn run_bash_check_report(
 /// Run `cake bash check`: print the verdict as text or as one diagnostic
 /// document.
 ///
-/// Machine mode keeps stderr quiet so a consumer reads one document and
-/// nothing else; the settings warnings are the text and `--diagnostic` modes'
-/// to report.
+/// Machine mode carries the settings findings inside the document, so stderr
+/// stays quiet and a consumer reads one document and nothing else; text mode
+/// prints them on stderr first, as the run path does.
 async fn run_bash_check_verdict(
     loaded: &LoadedSettings,
     cwd: &Path,
@@ -123,8 +125,24 @@ async fn run_bash_check_verdict(
     if !check.json {
         loaded.print_warnings();
     }
-    let outcome = run_bash_check(loaded, cwd, &check.command, options.model).await?;
-    print!("{}", outcome.render(check.json)?);
+    let outcome = run_bash_check(loaded, cwd, &check.command, options.model)
+        .await
+        .inspect_err(|_| {
+            // A judge error writes no document, so machine mode has no other
+            // channel for the findings; keep them on stderr instead of dropping
+            // them.
+            if check.json {
+                loaded.print_warnings();
+            }
+        })?;
+    if check.json {
+        print!(
+            "{}",
+            outcome.render_json(&settings_warnings(&loaded.warnings))?
+        );
+    } else {
+        print!("{}", outcome.render_text());
+    }
     Ok(())
 }
 
@@ -174,21 +192,12 @@ impl CheckOutcome {
         render_outcome(&self.outcome, self.latency)
     }
 
-    /// Render the outcome as the human-readable verdict or as one diagnostic
-    /// document, which is the only difference between the two output modes.
-    fn render(&self, json: bool) -> anyhow::Result<String> {
-        if json {
-            self.render_json()
-        } else {
-            Ok(self.render_text())
-        }
-    }
-
-    /// Render the outcome as one diagnostic document.
+    /// Render the outcome as one diagnostic document, carrying the findings the
+    /// invocation produced alongside the judge decision.
     ///
     /// The latency is reported in whole milliseconds, which is the same
     /// measurement the text verdict prints as seconds.
-    fn render_json(&self) -> anyhow::Result<String> {
+    fn render_json(&self, checks: &[DiagnosticCheck]) -> anyhow::Result<String> {
         let latency_ms = u64::try_from(self.latency.as_millis()).unwrap_or(u64::MAX);
         let (summary_verdict, data) = match &self.outcome {
             JudgeOutcome::Bypassed => (
@@ -222,7 +231,7 @@ impl CheckOutcome {
         DiagnosticDocument::new(
             "bash check",
             serde_json::json!({ "verdict": summary_verdict }),
-            Vec::new(),
+            checks.to_vec(),
             data,
         )
         .render()

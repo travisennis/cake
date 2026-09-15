@@ -393,6 +393,120 @@ const BASH_CHECK_BYPASS_GOLDEN: &str = r#"{
 "#;
 
 #[test]
+fn bash_check_json_reports_settings_findings_in_the_document() {
+    let env = cake_env();
+    env.write_project_settings(
+        r"
+[tools.bash.judge]
+not_a_real_key = 0.1
+",
+    );
+
+    // A disabled judge keeps the run offline; the settings finding is what is
+    // under test, and machine mode must carry it rather than write it to stderr.
+    let output = env
+        .command()
+        .args(["bash", "check", "--json", "--", "rm -rf build"])
+        .env("CAKE_JUDGE", "off")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute cake");
+
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    assert_eq!(
+        stderr(&output),
+        "",
+        "the finding belongs in the document, not on stderr"
+    );
+    let document: serde_json::Value =
+        serde_json::from_str(&stdout(&output)).expect("stdout must be one JSON document");
+    assert_eq!(document["status"], "warning");
+    assert_eq!(document["summary"]["verdict"], "bypassed");
+    let checks = document["checks"]
+        .as_array()
+        .expect("checks must be an array");
+    assert_eq!(checks.len(), 1);
+    assert_eq!(checks[0]["id"], "settings.unknown_key");
+    assert_eq!(checks[0]["status"], "warning");
+    assert!(
+        checks[0]["message"]
+            .as_str()
+            .expect("message must be a string")
+            .contains("unknown key 'not_a_real_key'"),
+        "the finding must name the key: {}",
+        checks[0]
+    );
+}
+
+#[test]
+fn bash_check_text_mode_keeps_settings_findings_on_stderr() {
+    let env = cake_env();
+    env.write_project_settings(
+        r"
+[tools.bash.judge]
+not_a_real_key = 0.1
+",
+    );
+
+    let output = env
+        .command()
+        .args(["bash", "check", "--", "git status"])
+        .env("CAKE_JUDGE", "off")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute cake");
+
+    // The two modes report the same finding on different channels.
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    assert!(stdout(&output).contains("Verdict: bypassed"));
+    assert!(
+        stderr(&output).contains("unknown key 'not_a_real_key'"),
+        "stderr must carry the finding: {}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn bash_check_json_keeps_settings_findings_on_stderr_when_no_document_is_written() {
+    let env = cake_env();
+    env.write_project_settings("[unauthenticated]\ntypo_key = true\n");
+
+    // An unconfigured judge model fails before any provider call and writes no
+    // document, so the finding has to fall back to stderr instead of vanishing.
+    // `CAKE_JUDGE=on` keeps an ambient bypass out of the judge-enabled path.
+    let output = env
+        .command()
+        .args([
+            "--model",
+            "not-a-configured-model",
+            "bash",
+            "check",
+            "--json",
+            "--",
+            "git status",
+        ])
+        .env("CAKE_JUDGE", "on")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute cake");
+
+    assert_eq!(output.status.code(), Some(3), "stderr: {}", stderr(&output));
+    assert_eq!(
+        stdout(&output),
+        "",
+        "a failure that writes no document leaves machine stdout empty"
+    );
+    assert!(
+        stderr(&output).contains("unknown key 'unauthenticated'"),
+        "the finding must still reach stderr: {}",
+        stderr(&output)
+    );
+}
+
+#[test]
 fn bash_check_json_and_diagnostic_are_mutually_exclusive() {
     let env = cake_env();
 

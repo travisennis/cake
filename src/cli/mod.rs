@@ -23,8 +23,8 @@ pub use bash::BashCommand;
 pub use cmd_runner::{CmdRunner, CommandRunOptions};
 pub use debug::DebugCommand;
 pub use diagnostic::{
-    CHECK_SESSIONS_DIRECTORY, CHECK_SETTINGS_LOAD_FAILED, DiagnosticDocument, report_failure,
-    settings_warnings,
+    CHECK_SESSIONS_DIRECTORY, CHECK_SETTINGS_LOAD_FAILED, DiagnosticCheck, DiagnosticDocument,
+    report_failure, settings_warnings,
 };
 pub use init::{InitCommand, InitError};
 pub use output::{CliOutputSink, TurnResult};
