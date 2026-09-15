@@ -347,6 +347,49 @@ fn sessions_list_json_reports_an_empty_list_without_findings() {
     assert_eq!(document["data"]["sessions"], serde_json::json!([]));
 }
 
+#[test]
+fn sessions_list_json_reports_an_unreadable_directory_as_a_document() {
+    let env = cake_env();
+    // A regular file where the sessions directory belongs makes `read_dir` fail,
+    // which is the one listing failure the command reports in its document.
+    fs::create_dir_all(&env.data_dir).expect("failed to create data dir");
+    fs::write(env.data_dir.join("sessions"), "").expect("failed to stage the sessions path");
+
+    let output = run(&env, &["sessions", "list", "--json"]);
+
+    assert!(
+        !output.status.success(),
+        "an unreported failure must still exit nonzero, stderr: {}",
+        stderr(&output)
+    );
+    let document: serde_json::Value =
+        serde_json::from_str(&stdout(&output)).expect("stdout must be one JSON document");
+    assert_eq!(document["schema_version"], 1);
+    assert_eq!(document["command"], "sessions list");
+    assert_eq!(document["status"], "error");
+    assert_eq!(document["data"], serde_json::json!({}));
+    let checks = document["checks"]
+        .as_array()
+        .expect("checks must be an array");
+    assert_eq!(checks.len(), 1);
+    assert_eq!(checks[0]["id"], "sessions.directory_unreadable");
+    assert_eq!(checks[0]["status"], "error");
+    let message = checks[0]["message"]
+        .as_str()
+        .expect("message must be a string");
+    // Both channels name the same problem, so a consumer that reads only one of
+    // them still learns what happened.
+    assert!(
+        message.contains("Failed to read sessions directory"),
+        "message must name the failure: {message}"
+    );
+    assert!(
+        stderr(&output).contains(message),
+        "stderr must carry the same diagnostic: {}",
+        stderr(&output)
+    );
+}
+
 // =============================================================================
 // `cake bash check --json`
 // =============================================================================
