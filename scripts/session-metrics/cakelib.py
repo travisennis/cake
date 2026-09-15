@@ -501,8 +501,9 @@ SANDBOX_BLOCKED_MARKER = "[Sandbox restriction]"
 # *quote* the marker as file content or diff text (issue #561).
 SANDBOX_NOTICE_TOOLS = frozenset({"Bash", "tb__subagent"})
 
-# `validate_path_for_write` (`mod.rs`) is the only producer of these messages,
-# and it is reached by Edit and Write only. Anchoring on the message keeps an
+# The write-validation messages `mod.rs` produces: `validate_path_for_write`
+# for an existing path, `resolve_path_for_write_scheduling` for a new file.
+# Only Edit and Write reach them, so anchoring on the message keeps an
 # unrelated failure that merely quotes the word `read-only` out of the bucket
 # (issue #561).
 READ_ONLY_TOOLS = frozenset({"Edit", "Write"})
