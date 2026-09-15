@@ -1,11 +1,19 @@
-use crate::cli::{CmdRunner, CommandRunOptions};
+use crate::cli::{
+    CHECK_SETTINGS_LOAD_FAILED, CmdRunner, CommandRunOptions, DiagnosticDocument, report_failure,
+    settings_warnings,
+};
 use crate::config::model::ApiType;
+use crate::config::settings::LoadedSettings;
 use crate::config::skills::{discover_skills_with_paths, parse_skill_path_list};
 use crate::config::{DataDir, ModelDefinition, SettingsLoader};
 use clap::{Parser, Subcommand};
 
 /// Debug and introspection commands.
 #[derive(Clone, Debug, Parser)]
+#[command(after_help = "\
+Examples:
+  cake debug skills --catalog-budget 4000
+  cake debug models --json | jq '.data.models[].name'")]
 pub struct DebugCommand {
     #[command(subcommand)]
     command: DebugSubcommand,
@@ -29,8 +37,12 @@ enum DebugSubcommand {
         skills: Option<String>,
     },
     /// Show configured models from settings.toml
+    #[command(after_help = "\
+Examples:
+  cake debug models
+  cake debug models --json | jq '.data.models[].name'")]
     Models {
-        /// Output model definitions as JSON
+        /// Output model definitions as one diagnostic JSON document
         #[arg(long, default_value_t = false)]
         json: bool,
     },
@@ -63,13 +75,34 @@ impl CmdRunner for DebugCommand {
 }
 
 /// Inspect configured models without setting up an agent session.
+///
+/// In machine mode the document carries the configured models and the settings
+/// findings, so stderr stays quiet; without `--json` the warnings keep their
+/// existing stderr behavior.
 fn run_models(json: bool) -> anyhow::Result<()> {
     let current_dir = std::env::current_dir()
         .map_err(|e| anyhow::anyhow!("Failed to get current directory: {e}"))?;
-    let loaded = SettingsLoader::load(Some(&current_dir))?;
-    loaded.print_warnings();
-    print!("{}", render_models(&loaded.models, json)?);
+    let loaded = SettingsLoader::load(Some(&current_dir)).map_err(|error| {
+        report_failure(
+            json,
+            "debug models",
+            CHECK_SETTINGS_LOAD_FAILED,
+            error.into(),
+        )
+    })?;
+    print!("{}", render_models(&loaded, json)?);
     Ok(())
+}
+
+/// Render the configured models as the formatted table, or as one diagnostic
+/// document when the machine flag is set.
+fn render_models(loaded: &LoadedSettings, json: bool) -> anyhow::Result<String> {
+    if json {
+        render_models_json(loaded)
+    } else {
+        loaded.print_warnings();
+        Ok(format_models(&loaded.models))
+    }
 }
 
 /// Inspect the selected skill catalog without setting up an agent session.
@@ -205,25 +238,26 @@ fn format_row(values: &[&str; 5], widths: &[usize; 5]) -> String {
     )
 }
 
-/// Render the configured models as either a JSON document or a formatted table.
-fn render_models(
-    models: &std::collections::HashMap<String, ModelDefinition>,
-    json: bool,
-) -> anyhow::Result<String> {
-    if json {
-        format_models_json(models)
-    } else {
-        Ok(format_models(models))
-    }
+/// Render the configured models and settings findings as one diagnostic
+/// document.
+fn render_models_json(loaded: &LoadedSettings) -> anyhow::Result<String> {
+    let models = sorted_models(&loaded.models);
+    DiagnosticDocument::new(
+        "debug models",
+        serde_json::json!({ "count": models.len() }),
+        settings_warnings(&loaded.warnings),
+        serde_json::json!({ "models": models }),
+    )
+    .render()
 }
 
-fn format_models_json(
+/// The configured models in name order, independent of map iteration order.
+fn sorted_models(
     models: &std::collections::HashMap<String, ModelDefinition>,
-) -> anyhow::Result<String> {
+) -> Vec<&ModelDefinition> {
     let mut defs: Vec<&ModelDefinition> = models.values().collect();
     defs.sort_by(|left, right| left.name.cmp(&right.name));
-    serde_json::to_string_pretty(&defs)
-        .map_err(|e| anyhow::anyhow!("Failed to serialize model definitions: {e}"))
+    defs
 }
 
 fn separator(widths: &[usize; 5]) -> String {
@@ -288,34 +322,47 @@ mod tests {
     }
 
     #[test]
-    fn render_models_json_true_returns_json_array() {
+    fn render_models_json_returns_a_diagnostic_document() {
         let mut models = std::collections::HashMap::new();
         models.insert("zen".to_string(), model("zen", ApiType::ChatCompletions));
+        let loaded = loaded_settings(models, Vec::new());
 
-        let output = render_models(&models, true).unwrap();
+        let output = render_models_json(&loaded).unwrap();
 
         let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
-        assert_eq!(parsed.as_array().expect("JSON array").len(), 1);
-        assert_eq!(parsed[0]["name"], "zen");
+        assert_eq!(parsed["schema_version"], 1);
+        assert_eq!(parsed["command"], "debug models");
+        assert_eq!(parsed["status"], "ok");
+        assert_eq!(parsed["summary"]["count"], 1);
+        assert_eq!(parsed["checks"], serde_json::json!([]));
+        assert_eq!(parsed["data"]["models"].as_array().unwrap().len(), 1);
+        assert_eq!(parsed["data"]["models"][0]["name"], "zen");
     }
 
     #[test]
-    fn format_models_json_empty() {
-        let output = format_models_json(&std::collections::HashMap::new()).unwrap();
-        assert_eq!(output, "[]");
+    fn render_models_json_empty() {
+        let output = render_models_json(&loaded_settings(
+            std::collections::HashMap::default(),
+            Vec::new(),
+        ))
+        .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(parsed["summary"]["count"], 0);
+        assert_eq!(parsed["data"]["models"], serde_json::json!([]));
     }
 
     #[test]
-    fn format_models_json_non_empty() {
+    fn render_models_json_non_empty() {
         let mut models = std::collections::HashMap::new();
         models.insert("zen".to_string(), model("zen", ApiType::ChatCompletions));
         models.insert("alpha".to_string(), model("alpha", ApiType::Responses));
 
-        let output = format_models_json(&models).unwrap();
+        let output = render_models_json(&loaded_settings(models, Vec::new())).unwrap();
 
-        // Parse and verify it's valid JSON
         let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
-        let arr = parsed.as_array().expect("output must be a JSON array");
+        let arr = parsed["data"]["models"]
+            .as_array()
+            .expect("models must be a JSON array");
         assert_eq!(arr.len(), 2);
 
         // Verify sorted order (alpha before zen)
@@ -334,5 +381,45 @@ mod tests {
         // Verify no leaked secrets — only env var names
         assert_eq!(arr[0]["api_key_env"], "ALPHA_API_KEY");
         assert_eq!(arr[1]["api_key_env"], "ZEN_API_KEY");
+    }
+
+    #[test]
+    fn render_models_json_reports_settings_findings_instead_of_stderr_text() {
+        let warnings = vec!["unknown key 'temparature' in .cake/settings.toml".to_string()];
+        let output = render_models_json(&loaded_settings(
+            std::collections::HashMap::default(),
+            warnings,
+        ))
+        .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(parsed["status"], "warning");
+        let checks = parsed["checks"].as_array().unwrap();
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0]["id"], "settings.unknown_key");
+        assert_eq!(checks[0]["status"], "warning");
+        assert_eq!(
+            checks[0]["message"],
+            "unknown key 'temparature' in .cake/settings.toml"
+        );
+    }
+
+    /// A loaded settings value with no models, for `--json` rendering tests.
+    fn loaded_settings(
+        models: std::collections::HashMap<String, ModelDefinition>,
+        warnings: Vec<String>,
+    ) -> LoadedSettings {
+        LoadedSettings {
+            models,
+            default_model: None,
+            directories: Vec::new(),
+            sandbox: crate::config::settings::SandboxSettings::default(),
+            skills: crate::config::settings::SkillSettings::default(),
+            tools_enabled: None,
+            system_prompt: None,
+            judge: crate::config::settings::JudgeSettings::default(),
+            limits: crate::config::settings::ResolvedLimits::default(),
+            warnings,
+        }
     }
 }

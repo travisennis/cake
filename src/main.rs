@@ -58,6 +58,15 @@ pub enum OutputFormat {
 /// AI coding assistant CLI
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
+#[command(after_help = "\
+Examples:
+  cake \"summarize the uncommitted changes\"
+  cake --output-format json \"list the failing tests\" | jq -r '.result'
+  cake --model zen --sandbox read-only \"explain src/main.rs\"
+  cake sessions list --json | jq -r '.data.sessions[0].session_id'
+  cake debug models --json | jq -r '.data.models[].name'
+
+`cake <COMMAND> --help` documents the diagnostic commands and their machine-readable output.")]
 #[command(group(
     ArgGroup::new("session_mode")
         .args(["resume", "fork", "no_session"])

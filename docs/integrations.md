@@ -53,6 +53,52 @@ Malformed model tool arguments remain visible on the `function_call` record and 
 
 An automatic semantic continuation is visible as the provider's partial conversation records followed by one Cake-authored user continuation message. The invocation still emits exactly one final `task_complete`; recovery does not create another task boundary.
 
+## Diagnostic JSON
+
+`debug models --json`, `sessions list --json`, and `bash check --json` emit one document with the same top-level fields, so a consumer parses one shape instead of one dialect per command. Arrays the document carries are ordered by the command that builds them, never by directory iteration or hash order, so two runs over the same state emit the same bytes.
+
+```json
+{
+  "schema_version": 1,
+  "command": "debug models",
+  "status": "ok",
+  "summary": { "count": 1 },
+  "checks": [],
+  "data": { "models": [] }
+}
+```
+
+  | Field            | Meaning                                                                                                                           |
+  | ---------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+  | `schema_version` | Document schema version. Consumers switch on it; a change to the top-level shape or to an existing field's meaning increments it. |
+  | `command`        | The invoked command path, such as `debug models`.                                                                                 |
+  | `status`         | `ok`, `warning`, or `error`, derived from the findings: the most severe finding wins.                                             |
+  | `summary`        | Command-specific scalars, such as the item `count` or the judge `verdict`.                                                        |
+  | `checks`         | Structured findings, in the order the command produced them; empty when there is nothing to report.                               |
+  | `data`           | The command's payload. Command-specific, and empty when the command could not produce one.                                        |
+
+`status` describes the invocation, not the subject it inspected: a `bash check` document that reports a `block` verdict is still `ok`, because the inspection itself completed.
+
+Each finding carries a stable machine-readable `id`, a `status` of `warning` or `error`, and a human-readable `message`:
+
+- `settings.unknown_key` --- one finding per unrecognized settings key, in loader order, with the source file and key in the message.
+- `settings.load_failed` --- settings could not be loaded or parsed. The message matches the stderr diagnostic.
+- `sessions.directory_unreadable` --- the sessions directory could not be read.
+
+Consumers switch on `id`, ignore unknown ids, and tolerate added fields and added findings.
+
+Machine stdout contains the document and nothing else: one pretty-printed object followed by a newline. A command that reports configuration findings in machine mode keeps them out of stderr, so a consumer reads the document for findings and never needs stderr. Human diagnostics, including a failure the command cannot report as a document, stay on stderr.
+
+Exit behavior follows the codes above: `ok` and `warning` exit `0`; `error` reports a problem the command can carry in the document and exits nonzero with the same message on stderr. A failure the command cannot render as a document writes only to stderr, exits nonzero, and leaves stdout empty. `bash check --json` keeps its documented judge-failure classification (see [Bash tool and command-safety checks](#bash-tool-and-command-safety-checks)) and renders verdict outcomes as documents.
+
+### Diagnostic payloads
+
+`debug models --json` reports the configured models: `summary.count` is the number of models, `data.models` holds the full model definitions in name order, and unrecognized settings keys appear in `checks` rather than on stderr.
+
+`sessions list --json` reports the sessions for the current working directory: `summary.count` is the number of listed sessions and `data.sessions` holds each `session_id`, `timestamp`, and `first_prompt`, newest first, with the session id breaking ties between equal timestamps.
+
+`bash check --json` reports one judge decision: `summary.verdict` is `allow`, `warn`, `block`, or `bypassed` when the judge is disabled, and `data` carries `verdict` (`null` when bypassed), `code`, `confidence`, `message`, `overridden`, `bypassed`, and `latency_ms`. A verdict, allowlist override, or bypass exits `0`; `--json` reports a failing judge through the existing judge-failure exit codes and writes no document. `--json` and `--diagnostic` are mutually exclusive.
+
 ## Session replay
 
 `cake --output-format stream-json replay <uuid>` re-emits an existing session transcript as stream-json without running a prompt, reading the file read-only (no lock, no append, no network) and preserving record order. Replay is the only stream-json mode that emits `session_meta`, `prompt_context`, and `skill_activated`; live invocations never do.
@@ -189,6 +235,8 @@ Toolbox executables are trusted and run outside the Bash sandbox. Their calls ma
 
 Changes to session versioning, record names or required fields, stream ordering, exit-code meaning, hook decisions, toolbox framing, or machine-readable stdout are compatibility changes. They require focused serialization or integration tests, migration analysis where applicable, and an update to this document's semantics.
 
+`debug models --json` and `sessions list --json` emitted a bare JSON array before the diagnostic document above; they now emit the document, and `bash check` gained `--json` ([ADR 029](adr/029-diagnostic-json-document.md)). Consumers that parsed the bare array read `data.models` or `data.sessions` instead. No default behavior changed: the affected flags are explicitly opt-in.
+
 ## Related decisions
 
 - [ADR 004](adr/004-append-only-session-task-events.md), append-only task events.
@@ -196,3 +244,4 @@ Changes to session versioning, record names or required fields, stream ordering,
 - [ADR 007](adr/007-per-session-telemetry-sidecar.md), the telemetry sidecar.
 - [ADR 017](adr/017-trusted-executable-toolbox-tools.md), trusted toolbox executables.
 - [ADR 021](adr/021-session-transcript-replay.md), session transcript replay.
+- [ADR 029](adr/029-diagnostic-json-document.md), the diagnostic JSON document.
