@@ -3,7 +3,7 @@
 
 The report pairs a transcript Bash call with its judge outcome by the SHA-256
 digest of the transcript's raw `call_id` (issue #404). These tests cover every
-outcome, retries, out-of-order and concurrent records, and the unmatched,
+outcome, retries, out-of-order and concurrent records, and the unlinked,
 ambiguous, and legacy shapes the join must report rather than guess at.
 
 Run with `just session-metrics-check` or:
@@ -18,6 +18,7 @@ import json
 import os
 import sys
 import unittest
+from collections import Counter
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -162,7 +163,56 @@ class PairingTest(unittest.TestCase):
         self.assertEqual(linkage["events"], 4)
         self.assertEqual(linkage["events_paired"], 4)
         self.assertEqual(linkage["events_ambiguous"], 0)
-        self.assertEqual(sum(linkage["events_unmatched"].values()), 0)
+        self.assertEqual(linkage["events_keyless"], Counter())
+        self.assertEqual(linkage["events_windowless"], Counter())
+
+    def test_calls_without_a_judge_outcome_are_split_by_cause(self):
+        # Three causes, one row each: a call with no provider-assigned id has
+        # nothing to join on, a call whose session has no telemetry records
+        # cannot be joined, and a call whose session has telemetry but no event
+        # for its digest is unjudged.
+        identified = session("s1", "alpha", [("call-1", None), ("", None)])
+        sidecar = invocation("s1", "alpha")
+        without_sidecar = session("s2", "beta", [("call-2", None)])
+
+        rows, linkage = tools.bash_judge_outcomes(
+            dataset([identified, without_sidecar], [sidecar])
+        )
+
+        self.assertEqual([row[:2] for row in rows[:2]], [
+            ["alpha", "without reason"],
+            ["beta", "without reason"],
+        ])
+        self.assertEqual(count(rows[0], "no call id"), 1)
+        self.assertEqual(count(rows[0], "no event"), 1)
+        self.assertEqual(count(rows[0], "no sidecar"), 0)
+        self.assertEqual(count(rows[1], "no sidecar"), 1)
+        self.assertEqual(count(rows[1], "no call id"), 0)
+        self.assertEqual(count(rows[1], "no event"), 0)
+        for row in rows:
+            self.assert_outcome_columns_sum_to_calls(row)
+
+        self.assertEqual(linkage["no_call_id"], 1)
+        self.assertEqual(linkage["no_event"], 1)
+        self.assertEqual(linkage["no_sidecar"], 1)
+        self.assertEqual(linkage["paired"], 0)
+
+    def test_judge_event_outcome_only_returns_columns_the_report_has(self):
+        # A verdict value or event kind outside the vocabulary must land in a
+        # column rather than being dropped or riding an existing one, and the
+        # join's own bookkeeping keys are never judge outcomes.
+        self.assertTrue(set(tools.JUDGE_VERDICTS) <= set(tools.JUDGE_OUTCOME_LABELS))
+        produced = {
+            tools.judge_event_outcome({"kind": "judge_verdict", "detail": detail})
+            for detail in ("allow", "warn:code", "block:code", "verdict-from-the-future", "")
+        } | {
+            tools.judge_event_outcome({"kind": kind})
+            for kind in ("judge_fail_closed", "judge_bypass", "judge_future_kind")
+        }
+        self.assertEqual(
+            produced, {"allow", "warn", "block", "fail_closed", "bypass", "other"}
+        )
+        self.assertTrue(produced <= set(tools.JUDGE_OUTCOME_LABELS))
 
     def test_outcomes_without_a_verdict_are_reported_separately(self):
         s = session(
@@ -286,10 +336,10 @@ class PairingTest(unittest.TestCase):
         self.assertEqual(linkage["events_ambiguous"], 2)
 
     def test_unmatched_and_legacy_records_are_accounted_for(self):
-        # A call with no provider-assigned id, a judge event with no digest
-        # (written before the linkage field existed), an event whose transcript
-        # call is outside the window, and an event from another session whose
-        # digest collides with a call in this one.
+        # A judge event with no digest (written before the linkage field
+        # existed), an event whose transcript call is outside the window, and
+        # an event from another session whose digest collides with a call in
+        # this one: none of them is dropped, and the report says which is which.
         s = session("s1", "alpha", [("call-1", None), ("", None)])
         inv = invocation("s1")
         inv.compensations = [
@@ -304,22 +354,25 @@ class PairingTest(unittest.TestCase):
 
         self.assertEqual(count(rows[0], "calls"), 2)
         self.assertEqual(count(rows[0], "allow"), 1)
-        self.assertEqual(count(rows[0], "unpaired"), 1)
+        # The call with no provider-assigned id is a cause the report names.
+        self.assertEqual(count(rows[0], "no call id"), 1)
         self.assert_outcome_columns_sum_to_calls(rows[0])
 
         self.assertEqual(linkage["events"], 4)
         self.assertEqual(linkage["events_paired"], 1)
         self.assertEqual(linkage["events_ambiguous"], 0)
-        # Nothing is dropped: every event is paired, ambiguous, or unmatched.
+        # Nothing is dropped: every event is paired, ambiguous, or unpaired.
         self.assertEqual(
             linkage["events_paired"]
             + linkage["events_ambiguous"]
-            + sum(linkage["events_unmatched"].values()),
+            + sum(linkage["events_keyless"].values())
+            + sum(linkage["events_windowless"].values()),
             linkage["events"],
         )
-        self.assertEqual(linkage["events_unmatched"]["bypass"], 1)
-        self.assertEqual(linkage["events_unmatched"]["block"], 1)
-        self.assertEqual(linkage["events_unmatched"]["warn"], 1)
+        self.assertEqual(linkage["events_keyless"], Counter({"bypass": 1}))
+        # The out-of-window event and the other session's event are both events
+        # whose transcript call this window cannot pair.
+        self.assertEqual(linkage["events_windowless"], Counter({"block": 1, "warn": 1}))
 
     def test_no_bash_calls_yields_no_rows(self):
         rows, linkage = tools.bash_judge_outcomes(dataset([], []))
@@ -347,6 +400,11 @@ class ReportTest(unittest.TestCase):
         )
         self.assertIn("the coverage total above", text)
         self.assertIn("retried", text)
+        # The report names each cause of a missing judge outcome rather than
+        # leaving one unpaired total to interpret.
+        self.assertIn("no judge outcome", text)
+        for cause in ("no call id", "no sidecar", "no event", "no linkage key"):
+            self.assertIn(cause, text)
 
     def test_report_never_leaks_commands_reasons_or_call_ids(self):
         command = "rm -rf /tmp/topsecret"

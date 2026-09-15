@@ -20,15 +20,30 @@ FILE_TOOLS = ("Edit", "Write")
 # later is reported as `other` instead of being dropped from the join.
 JUDGE_EVENT_KIND_PREFIX = "judge_"
 
-# The bounded verdict vocabulary, and the full outcome column order: the
-# verdicts, then judge outcomes without a verdict, then the join's own
-# bookkeeping (calls with no judge event, pairs that are not determinate, and
-# values outside the vocabulary).
+# The bounded verdict vocabulary, and the judged outcomes the rates divide by:
+# only a `judge_verdict` carries one.
 JUDGE_VERDICTS = ("allow", "warn", "block")
-JUDGE_OUTCOMES = (*JUDGE_VERDICTS, "fail_closed", "bypass", "unpaired", "ambiguous", "other")
-JUDGE_OUTCOME_HEADERS = (
-    "allow", "warn", "block", "fail-closed", "bypass", "unpaired", "ambiguous", "other",
+
+# The full outcome column order, as (stats key, column label): the verdicts, the
+# judge outcomes without a verdict, and the join's own bookkeeping (calls with
+# no judge outcome split by cause, pairs that are not determinate, and values
+# outside the vocabulary). The label lives next to the key it names, so an
+# outcome cannot ship a column in a different position from the value the row
+# puts under it.
+JUDGE_OUTCOMES = (
+    ("allow", "allow"),
+    ("warn", "warn"),
+    ("block", "block"),
+    ("fail_closed", "fail-closed"),
+    ("bypass", "bypass"),
+    ("no_call_id", "no call id"),
+    ("no_sidecar", "no sidecar"),
+    ("no_event", "no event"),
+    ("ambiguous", "ambiguous"),
+    ("other", "other"),
 )
+JUDGE_OUTCOME_LABELS = dict(JUDGE_OUTCOMES)
+JUDGE_OUTCOME_HEADERS = tuple(label for _key, label in JUDGE_OUTCOMES)
 
 
 def bash_reason_coverage(data: cakelib.Dataset) -> list[list]:
@@ -88,17 +103,23 @@ def bash_judge_outcomes(data: cakelib.Dataset) -> tuple[list[list], dict]:
     transcript's `function_call`/`function_call_output` Bash pair is hashed to
     the SHA-256 hex digest a judge compensation event carries in its `call_id`
     field (`cakelib.call_id_digest`), and the join is restricted to one session.
-    Timestamps and record order never participate, so concurrent and
-    out-of-order records pair the same way.
+    A transcript records no invocation id, so scoping the join to
+    (session, invocation) would mean pairing by timestamp or record position,
+    which this join refuses to do. Timestamps and record order never
+    participate, so concurrent and out-of-order records pair the same way.
 
     Per (model, reason presence) group the columns are the paired calls, the
     bounded verdicts (`allow`, `warn`, `block`), the judge outcomes without a
-    verdict (`fail-closed`, `bypass`), `unpaired` calls with no judge event (not
-    judged, no telemetry sidecar, legacy record, or an interrupted call),
-    `ambiguous` calls whose digest matches more than one call or more than one
-    judge event in the session (excluded rather than guessed at), and `other`
-    outcomes outside the vocabulary. Rates are the share of judged calls
-    (`allow` + `warn` + `block`); the outcome columns sum to `calls`.
+    verdict (`fail-closed`, `bypass`), the calls with no judge outcome split by
+    cause --- `no call id` (the call has no provider-assigned identifier, so
+    there is nothing to join on), `no sidecar` (the session has no telemetry
+    records in the window), `no event` (the session has telemetry, but no judge
+    event carries this call's digest: not judged, interrupted, or recorded
+    before judge telemetry existed) --- `ambiguous` calls whose digest matches
+    more than one call or more than one judge event in the session (excluded
+    rather than guessed at), and `other` outcomes outside the vocabulary. Rates
+    are the share of judged calls (`allow` + `warn` + `block`); the outcome
+    columns sum to `calls`.
 
     Metadata only: the raw command, the reason text, and the raw call id never
     enter a row, and a judge retry contributes one outcome, because a judge
@@ -125,11 +146,15 @@ def bash_judge_outcomes(data: cakelib.Dataset) -> tuple[list[list], dict]:
                 call_counts[key] += 1
             facts.append((group, key))
 
-    # Telemetry side: index judge events and judge attempts by the same key.
+    # Telemetry side: index judge events and judge attempts by the same key, and
+    # record which sessions have telemetry at all, so a call with no judge event
+    # can say whether its session has a sidecar.
     events: dict[tuple[str, str], list[str]] = defaultdict(list)
     attempts: Counter = Counter()
     unlinkable_events: Counter = Counter()
+    sidecar_sessions: set[str] = set()
     for inv in data.invocations:
+        sidecar_sessions.add(inv.session_id)
         for e in inv.compensations:
             if not str(e.get("kind") or "").startswith(JUDGE_EVENT_KIND_PREFIX):
                 continue
@@ -147,30 +172,35 @@ def bash_judge_outcomes(data: cakelib.Dataset) -> tuple[list[list], dict]:
                 attempts[(inv.session_id, digest)] += 1
 
     # One call and one judge event per digest is the only determinate pair; more
-    # of either is ambiguous and is counted, never guessed at.
+    # of either is ambiguous and is counted, never guessed at. A call with no
+    # judge event is attributed to the reason its session shows.
     paired = 0
     for group, key in facts:
         stats = groups[group]
         if key is None:
-            stats["unpaired"] += 1
+            stats["no_call_id"] += 1
             continue
         matched = events.get(key, [])
         if call_counts[key] > 1 or len(matched) > 1:
             stats["ambiguous"] += 1
-        elif not matched:
-            stats["unpaired"] += 1
-        else:
+        elif matched:
             stats[matched[0]] += 1
             paired += 1
+        elif key[0] in sidecar_sessions:
+            stats["no_event"] += 1
+        else:
+            stats["no_sidecar"] += 1
 
     # Event-side accounting: every judge event in the window is either paired to
     # exactly one transcript call (the same count as the paired calls), excluded
-    # as an ambiguous pair, or unmatched for want of a transcript call.
-    unmatched_events = Counter(unlinkable_events)
+    # as an ambiguous pair, or unmatched --- for want of a linkage key, or
+    # because its transcript call is not in the window.
+    keyless_events = Counter(unlinkable_events)
+    windowless_events = Counter()
     ambiguous_events = 0
     for key, outcomes in events.items():
         if key not in call_counts:
-            unmatched_events.update(outcomes)
+            windowless_events.update(outcomes)
         elif call_counts[key] > 1 or len(outcomes) > 1:
             ambiguous_events += len(outcomes)
 
@@ -195,13 +225,15 @@ def bash_judge_outcomes(data: cakelib.Dataset) -> tuple[list[list], dict]:
     linkage = {
         "calls": sum(stats["calls"] for stats in groups.values()),
         "paired": paired,
-        "unpaired": sum(stats["unpaired"] for stats in groups.values()),
+        "no_call_id": sum(stats["no_call_id"] for stats in groups.values()),
+        "no_sidecar": sum(stats["no_sidecar"] for stats in groups.values()),
+        "no_event": sum(stats["no_event"] for stats in groups.values()),
         "ambiguous": sum(stats["ambiguous"] for stats in groups.values()),
-        "other": sum(stats["other"] for stats in groups.values()),
-        "events": sum(len(v) for v in events.values()) + sum(unlinkable_events.values()),
+        "events": sum(len(v) for v in events.values()) + sum(keyless_events.values()),
         "events_paired": paired,
         "events_ambiguous": ambiguous_events,
-        "events_unmatched": unmatched_events,
+        "events_keyless": keyless_events,
+        "events_windowless": windowless_events,
         "attempts": sum(attempts.values()),
         "attempted_calls": len(attempts),
         "retried_calls": sum(1 for n in attempts.values() if n > 1),
@@ -215,7 +247,7 @@ def _judge_outcome_row(model: str, reason: str, stats: Counter) -> list[str]:
         model,
         reason,
         fmt_int(stats["calls"]),
-        *[fmt_int(stats[outcome]) for outcome in JUDGE_OUTCOMES],
+        *[fmt_int(stats[key]) for key, _label in JUDGE_OUTCOMES],
         fmt_pct(stats["block"], judged),
         fmt_pct(stats["warn"], judged),
     ]
@@ -223,26 +255,38 @@ def _judge_outcome_row(model: str, reason: str, stats: Counter) -> list[str]:
 
 def judge_linkage_notes(linkage: dict) -> list[str]:
     """Lines that keep the join's accounting and its rate denominator explicit."""
-    unmatched = linkage["events_unmatched"]
-    detail = ", ".join(f"{o} {fmt_int(n)}" for o, n in sorted(unmatched.items())) or "none"
+
+    def tally(counts: Counter) -> str:
+        """An outcome breakdown, or `none` when there is nothing to break down."""
+        return ", ".join(
+            f"{JUDGE_OUTCOME_LABELS.get(outcome, outcome)} {fmt_int(n)}"
+            for outcome, n in sorted(counts.items())
+        ) or "none"
+
+    unjudged = linkage["no_call_id"] + linkage["no_sidecar"] + linkage["no_event"]
+    keyless = linkage["events_keyless"]
+    windowless = linkage["events_windowless"]
     return [
         "Judge linkage (SHA-256 digest of the transcript call id, same session):",
         f"  Bash calls: {fmt_int(linkage['calls'])} (the coverage total above)"
         f" | paired: {fmt_int(linkage['paired'])}"
-        f" | no judge event: {fmt_int(linkage['unpaired'])}"
+        f" | no judge outcome: {fmt_int(unjudged)} (no call id: {fmt_int(linkage['no_call_id'])}"
+        f", no sidecar: {fmt_int(linkage['no_sidecar'])}"
+        f", no event: {fmt_int(linkage['no_event'])})"
         f" | ambiguous: {fmt_int(linkage['ambiguous'])}",
         f"  Judge events: {fmt_int(linkage['events'])}"
         f" | paired: {fmt_int(linkage['events_paired'])}"
         f" | ambiguous: {fmt_int(linkage['events_ambiguous'])}"
-        f" | without a transcript call: {fmt_int(sum(unmatched.values()))} ({detail})",
+        f" | no linkage key: {fmt_int(sum(keyless.values()))}"
+        f" | call outside the window: {fmt_int(sum(windowless.values()))}",
+        f"  Outcomes of the unpaired judge events: {tally(Counter(keyless) + Counter(windowless))}",
         f"  Judge attempts: {fmt_int(linkage['attempts'])} across"
         f" {fmt_int(linkage['attempted_calls'])} calls,"
         f" {fmt_int(linkage['retried_calls'])} retried",
         "  A retried call contributes one outcome; judge_attempt records carry their own digest, so they"
         " are counted even where a compensation event predates the linkage.",
-        "  Rates are the share of judged calls (allow + warn + block). An unpaired call was not"
-        " judged: no judge event recorded, no telemetry sidecar, a legacy record, or an"
-        " interrupted call.",
+        "  Rates are the share of judged calls (allow + warn + block), and the outcome columns sum to `calls`.",
+        "  A call with no judge outcome was not judged, or was judged without leaving a linked event.",
     ]
 
 
