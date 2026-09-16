@@ -138,6 +138,8 @@ Usage is reported at three layers, and each record states which one it describes
 
 A `partial` record still carries the counters the provider did send; an absent counter reads as zero and the marker is what says the value is unknown. The optional detail objects (`input_tokens_details`, `output_tokens_details`) never affect presence, because providers legitimately omit them. An attempt that reports no usage writes no `turn_usage` record and contributes nothing to the aggregate; Cake never infers a token count it was not given. These fields are optional on records written before they existed, and consumers should tolerate their absence.
 
+`unreported` occurs on `api_attempt` records only: a non-2xx body that carries a usage object reports `complete` or `partial`, and an attempt that reports none writes no `turn_usage` record, so a `turn_usage.usage_presence` is always `complete` or `partial`.
+
 Session consumers should ignore unknown optional fields. `terminal_class` uses the bounded values `completed`, `timeout`, `cancelled`, `transport`, `http`, `body_parse`, and `response_failed`; `transport` covers a failure while the request is sent and a transport failure while an accepted 2xx body is read, while `body_parse` covers a body that was received but could not be decoded or parsed into a provider response.
 
 `cake sessions list` displays session UUIDs. `--resume <UUID>` opens the selected session explicitly, while `--fork [UUID]` creates a new session identity seeded with conversation records and prior `skill_activated` metadata from the selected parent. It does not copy parent session, task, prompt-context, hook, or completion metadata.

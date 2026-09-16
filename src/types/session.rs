@@ -472,9 +472,11 @@ pub struct TurnUsageData {
     /// single-attempt shape for compatibility with existing records.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal_class: Option<ApiAttemptTerminalClass>,
-    /// Whether the provider reported every required counter. Absent on records
-    /// written before the field existed; `complete`, `partial`, and
-    /// `unreported` are the only values.
+    /// Whether the provider reported every required counter. `complete` and
+    /// `partial` are the values this record can carry, because a `turn_usage`
+    /// record is written only when a usage object was parsed; `unreported`
+    /// appears on `api_attempt` records, not here. Absent on records written
+    /// before the field existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage_presence: Option<UsagePresence>,
     /// The configured model ID for the attempt.

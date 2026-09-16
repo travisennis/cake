@@ -44,7 +44,7 @@ Chosen option: usage presence is explicit and bounded, and provider identity is 
 
 The contract has three layers, and each record states which one it is:
 
-- **Provider attempt.** `api_attempt` (telemetry, one record per HTTP request) and `turn_usage` (session, one record per attempt that reports usage) both carry the resolved provider, the configured model, the provider response ID, and --- when the wire format supplied it and the attempt succeeded --- the provider-reported model. `api_attempt` additionally carries the attempt's HTTP status, termination, and terminal class.
+- **Provider attempt.** `api_attempt` (telemetry, one record per HTTP request) and `turn_usage` (session, one record per attempt that reports usage) both carry the configured model, the provider response ID, and --- when the wire format supplied it and the attempt succeeded --- the provider-reported model. `api_attempt` additionally carries the resolved provider, the attempt's HTTP status, termination, and terminal class. The session record omits the resolved provider because `src/types/` may not import `src/config/` (enforced by `just lint-deps`), so its identity fields are plain strings; a reader that needs the provider takes it from the attempt's own telemetry record.
 - **Agent turn.** `turn_count`, conversation records, and the stream-json conversation events describe the logical turn. One turn may hold several attempts; no usage is invented for a turn whose attempts reported none.
 - **Task aggregate.** `task_complete.usage` and the completion JSON `usage` remain the sum of the `Usage` values of every attempt that reported one, unchanged in shape and meaning.
 
