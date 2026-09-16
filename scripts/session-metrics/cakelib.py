@@ -494,19 +494,57 @@ ERROR_PREFIX = "Error"
 HOOK_BLOCKED_PREFIX = "Hook blocked tool execution"
 SANDBOX_BLOCKED_MARKER = "[Sandbox restriction]"
 
+# The opening of the `[Sandbox restriction]` notice line `bash.rs`'s
+# `compose_text_output` appends after a filesystem denial: the marker plus the
+# first sentence that follows it. Matching the line's opening is what separates
+# a denial from text that merely quotes the marker; matching it for any tool is
+# what lets a toolbox relay's verbatim copy of a subagent's denied call count
+# without naming that relay (issue #561).
+SANDBOX_NOTICE_PREFIX = (
+    SANDBOX_BLOCKED_MARKER
+    + ": This command was blocked by the filesystem sandbox."
+)
+
+# The write-validation messages `mod.rs` produces: `validate_path_for_write`
+# for an existing path, `resolve_path_for_write_scheduling` for a new file.
+# Both are one-line messages stored as the failure's first line, and only Edit
+# and Write reach them, so anchoring on the message *and* that line keeps an
+# unrelated failure that quotes it — the word `read-only` in a nearest-match
+# hint, or the whole message in a diff or a grep — out of the bucket
+# (issue #561).
+READ_ONLY_TOOLS = frozenset({"Edit", "Write"})
+READ_ONLY_MESSAGES = (
+    "is read-only (added via --add-dir)",
+    "is in a read-only directory (added via --add-dir)",
+)
+
+
+def sandbox_notice(output: str) -> bool:
+    """True when `output` carries `bash.rs`'s `[Sandbox restriction]` notice.
+
+    The notice is a *line* cake composes after the denied command's own output,
+    so requiring the line start is what stops Read's numbered lines and Edit's
+    `+`/`-`/space-prefixed diff lines from reading as a denial. Requiring the
+    notice's own sentence, rather than the bare marker, also keeps a `cat`,
+    `sed`, or search result that prints the marker — or a truncated copy of the
+    notice — out of the denial buckets (issue #561).
+    """
+    return any(line.startswith(SANDBOX_NOTICE_PREFIX) for line in output.splitlines())
+
 
 def is_tool_failure(output: str) -> bool:
     """True when a stored tool output reports a failure the model saw.
 
     Detection is on the first line, matching how `agent_loop.rs` records both
-    shapes. Synthetic `not executed:` outputs (history repair, correction
+    prefixed shapes, except for the sandbox notice, which `bash.rs` appends as
+    its own line. Synthetic `not executed:` outputs (history repair, correction
     turns) are deliberately not failures here; see the session-metrics README.
     """
     first = output.splitlines()[0] if output else ""
     return (
         first.startswith(ERROR_PREFIX)
         or first.startswith(HOOK_BLOCKED_PREFIX)
-        or SANDBOX_BLOCKED_MARKER in output
+        or sandbox_notice(output)
     )
 
 
@@ -557,13 +595,18 @@ def classify_tool_error(name: str, output: str) -> str:
         return "duplicate-mutation guard"
     if HOOK_BLOCKED_PREFIX in first:
         return "hook-blocked"
+    if sandbox_notice(output):
+        return "sandbox-blocked"
     if "BLOCKED" in first:
         # Only the Bash command-safety judge emits a bare BLOCKED first line:
         # an active block carries "Reason:", judge unavailability is fail-closed.
         if "command-safety judge was unavailable" in output:
             return "judge-fail-closed"
         return "judge-blocked"
-    if "read-only" in output:
+    # A write-validation denial is a one-line message, so `first` is the shape
+    # cake stores; the same text further down is quoted context and keeps the
+    # quoting tool's own bucket.
+    if name in READ_ONLY_TOOLS and any(msg in first for msg in READ_ONLY_MESSAGES):
         return "read-only path"
     if "Invalid" in first and "arguments" in first:
         return "invalid arguments/JSON"
@@ -580,8 +623,6 @@ def classify_tool_error(name: str, output: str) -> str:
         if "Failed to access file" in output or "not a file" in output:
             return "path/file access"
     elif name == "Bash":
-        if SANDBOX_BLOCKED_MARKER in output:
-            return "sandbox-blocked"
         if "timed out" in first:
             return "timeout"
         if "sandbox" in first.lower():

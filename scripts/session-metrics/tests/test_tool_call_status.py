@@ -19,14 +19,22 @@ import cakelib
 import tools
 
 
-def records_for(outputs: list[str]) -> list[dict]:
+# cake's own notice first line (`bash.rs` `compose_text_output`). Fixtures must
+# use the emitted shape: `is_tool_failure` matches this line, not the bare
+# `[Sandbox restriction]` marker (issue #561).
+NOTICE_LINE = (
+    "[Sandbox restriction]: This command was blocked by the filesystem sandbox."
+)
+
+
+def records_for(outputs: list[str], name: str = "Bash") -> list[dict]:
     records: list[dict] = []
     for i, output in enumerate(outputs):
         call_id = f"call-{i}"
         records.append({
             "type": "function_call",
             "call_id": call_id,
-            "name": "Bash",
+            "name": name,
             "arguments": json.dumps({"command": "fd ."}),
         })
         records.append({
@@ -68,13 +76,34 @@ class ToolCallOkTest(unittest.TestCase):
         calls = cakelib.pair_tool_calls(records_for(["Error: no such file"]))
         self.assertFalse(calls[0].ok)
 
+    def test_write_validation_denials_are_failures(self):
+        """Both write-validation messages reach the model as `Error:` lines.
+
+        No message-specific rule is needed for the gate; the `read-only path`
+        category is a taxonomy concern, covered in `test_tool_taxonomy.py`.
+        These samples pin that a denial is recorded as an `Error:` first line
+        (issue #561).
+        """
+        calls = cakelib.pair_tool_calls(
+            records_for([
+                "Error: Path '/etc/hosts' is read-only (added via --add-dir). "
+                "Write operations are not allowed.",
+            ], name="Edit")
+            + records_for([
+                "Error: Path '/u/Library/LaunchAgents/x.plist' is in a read-only "
+                "directory (added via --add-dir). Write operations are not allowed.",
+            ], name="Write")
+        )
+        self.assertFalse(calls[0].ok)
+        self.assertFalse(calls[1].ok)
+
     def test_success_is_not_failure(self):
         calls = cakelib.pair_tool_calls(records_for(["fd .\n./src\n"]))
         self.assertTrue(calls[0].ok)
 
     def test_sandbox_denial_is_failure(self):
         calls = cakelib.pair_tool_calls(records_for([
-            "Operation not permitted\n\n[Sandbox restriction]: blocked by filesystem sandbox",
+            "Operation not permitted\n\n" + NOTICE_LINE,
         ]))
         self.assertFalse(calls[0].ok)
 
@@ -92,6 +121,78 @@ class ToolCallOkTest(unittest.TestCase):
             "not executed: correction turn offers no tools for Bash(call-2)",
         ]))
         self.assertTrue(all(c.ok for c in calls), [c.output for c in calls])
+
+
+class SandboxNoticeScopingTest(unittest.TestCase):
+    """The notice counts on its shape, not on the tool that carries it (#561).
+
+    Read prefixes line numbers and Edit embeds a unified diff, so a file that
+    quotes `[Sandbox restriction]` reaches the transcript as quoted text. A
+    failed call is still a failure on its own tool's terms.
+    """
+
+    def test_read_quoting_the_marker_is_not_a_failure(self):
+        calls = cakelib.pair_tool_calls(records_for([
+            "File: /repo/src/clients/tools/bash.rs\nLines 1209-1209/1400\n"
+            "  1209:             [Sandbox restriction]: This command was blocked by "
+            "the filesystem sandbox.\\\n"
+        ], name="Read"))
+        self.assertTrue(calls[0].ok)
+
+    def test_edit_diff_quoting_the_marker_is_not_a_failure(self):
+        calls = cakelib.pair_tool_calls(records_for([
+            "Edited /repo/src/clients/tools/bash.rs (1 replacement)\n"
+            "--- a/src/clients/tools/bash.rs\n+++ b/src/clients/tools/bash.rs\n"
+            "@@ -1208,3 +1208,3 @@\n"
+            "             [Sandbox restriction]: This command was blocked by the "
+            "filesystem sandbox.\\\n"
+            "+            [Sandbox restriction]: This command was blocked by the "
+            "filesystem sandbox.\\\n"
+        ], name="Edit"))
+        self.assertTrue(calls[0].ok)
+
+    def test_bash_quoting_the_marker_mid_line_is_not_a_failure(self):
+        """A search that prints the marker is not a denial: no line starts with it."""
+        calls = cakelib.pair_tool_calls(records_for([
+            "src/clients/tools/bash.rs:1209:            [Sandbox restriction]: This "
+            "command was blocked by the filesystem sandbox.\n"
+        ]))
+        self.assertTrue(calls[0].ok)
+
+    def test_relayed_denial_is_a_failure(self):
+        """A relay can carry a subagent's denied call verbatim, under any name."""
+        calls = cakelib.pair_tool_calls(records_for([
+            "Found one denial:\n\n"
+            "ls: /outside: Operation not permitted\n\n"
+            + NOTICE_LINE
+            + "\n"
+        ], name="tb__delegate"))
+        self.assertFalse(calls[0].ok)
+
+    def test_truncated_notice_copy_is_not_a_failure(self):
+        """A truncated copy of the notice is not the notice (corpus shape).
+
+        A probe dumped transcript text and cut each match at 72 characters, so
+        the marker began a line without the notice's sentence.
+        """
+        calls = cakelib.pair_tool_calls(records_for([
+            "=== 20ea1003-5a45-4267-a303-b8f50497ed32 ===\n0\n"
+            "--- tool errors/blocked in outputs ---\n"
+            "call_00_x :: bash: /outside/pr199.diff: Operation not permitted\n"
+            "[Sandbox restriction]: This command was blocked by the filesystem "
+            "sandbo\n"
+        ]))
+        self.assertTrue(calls[0].ok)
+
+    def test_relayed_report_quoting_the_marker_is_not_a_failure(self):
+        """Corpus shape: a subagent report that names the marker in prose."""
+        calls = cakelib.pair_tool_calls(records_for([
+            "- **Impact**: Denial UX corruption. A user command echoing "
+            "`sandbox-exec: sandbox_apply` on stdout suppresses a real "
+            "`[Sandbox restriction]: This command was blocked by the filesystem "
+            "sandbox.` notice\n"
+        ], name="tb__delegate"))
+        self.assertTrue(calls[0].ok)
 
 
 class HookDenialTaxonomyTest(unittest.TestCase):
@@ -113,7 +214,7 @@ class HookDenialTaxonomyTest(unittest.TestCase):
     def test_taxonomy_reports_sandbox_blocked(self):
         data = cakelib.Dataset(
             sessions=[session([
-                "Operation not permitted\n\n[Sandbox restriction]: blocked by filesystem sandbox",
+                "Operation not permitted\n\n" + NOTICE_LINE,
             ])],
             invocations=[],
             sessions_dir=None,
