@@ -98,10 +98,11 @@ class ClassifyToolErrorTest(unittest.TestCase):
 
 
 class SandboxNoticeScopingTest(unittest.TestCase):
-    """The `[Sandbox restriction]` marker is a notice only some tools emit (#561).
+    """The notice is a line shape, not a tool name (#561).
 
-    Every other tool can only quote the marker as file content or diff text, so
-    a marker anywhere in an output is not a sandbox denial.
+    `bash.rs` appends it as its own line; the bare marker also reaches the
+    transcript as file content, diff text, and search output, so neither the
+    marker anywhere in an output nor a truncated copy of the notice is a denial.
     """
 
     NOTICE = (
@@ -112,11 +113,13 @@ class SandboxNoticeScopingTest(unittest.TestCase):
     def test_bash_notice_is_sandbox_blocked(self):
         self.assertEqual(classify_tool_error("Bash", self.NOTICE), "sandbox-blocked")
 
-    def test_subagent_relayed_notice_is_sandbox_blocked(self):
-        """A trusted toolbox relay can carry a subagent's denied call verbatim."""
-        self.assertEqual(
-            classify_tool_error("tb__subagent", self.NOTICE), "sandbox-blocked"
-        )
+    def test_relayed_notice_is_sandbox_blocked(self):
+        """A relay can carry a subagent's denied call verbatim, under any name."""
+        for name in ("Bash", "tb__delegate"):
+            with self.subTest(tool=name):
+                self.assertEqual(
+                    classify_tool_error(name, self.NOTICE), "sandbox-blocked"
+                )
 
     def test_quoting_the_notice_keeps_the_tools_own_category(self):
         """Read and Edit prefix every line, so neither can emit a notice line."""
@@ -147,6 +150,24 @@ class SandboxNoticeScopingTest(unittest.TestCase):
                 "Error: rg exited 1\n\n"
                 "src/clients/tools/bash.rs:1209:            [Sandbox restriction]: This "
                 "command was blocked by the filesystem sandbox.",
+            ),
+            "other",
+        )
+
+    def test_truncated_copy_of_the_notice_is_not_sandbox_blocked(self):
+        """Corpus shape: a probe that prints the notice cut at 72 characters.
+
+        The line starts with the marker but not with the notice's sentence, and
+        the call dumped transcript text rather than hitting a denial.
+        """
+        self.assertEqual(
+            classify_tool_error(
+                "Bash",
+                "=== 20ea1003-5a45-4267-a303-b8f50497ed32 ===\n0\n"
+                "--- tool errors/blocked in outputs ---\n"
+                "call_00_x :: bash: /outside/pr199.diff: Operation not permitted\n"
+                "[Sandbox restriction]: This command was blocked by the filesystem "
+                "sandbo\n",
             ),
             "other",
         )

@@ -19,6 +19,14 @@ import cakelib
 import tools
 
 
+# cake's own notice first line (`bash.rs` `compose_text_output`). Fixtures must
+# use the emitted shape: `is_tool_failure` matches this line, not the bare
+# `[Sandbox restriction]` marker (issue #561).
+NOTICE_LINE = (
+    "[Sandbox restriction]: This command was blocked by the filesystem sandbox."
+)
+
+
 def records_for(outputs: list[str], name: str = "Bash") -> list[dict]:
     records: list[dict] = []
     for i, output in enumerate(outputs):
@@ -95,7 +103,7 @@ class ToolCallOkTest(unittest.TestCase):
 
     def test_sandbox_denial_is_failure(self):
         calls = cakelib.pair_tool_calls(records_for([
-            "Operation not permitted\n\n[Sandbox restriction]: blocked by filesystem sandbox",
+            "Operation not permitted\n\n" + NOTICE_LINE,
         ]))
         self.assertFalse(calls[0].ok)
 
@@ -116,7 +124,7 @@ class ToolCallOkTest(unittest.TestCase):
 
 
 class SandboxNoticeScopingTest(unittest.TestCase):
-    """The sandbox notice counts only for the tools that can emit it (issue #561).
+    """The notice counts on its shape, not on the tool that carries it (#561).
 
     Read prefixes line numbers and Edit embeds a unified diff, so a file that
     quotes `[Sandbox restriction]` reaches the transcript as quoted text. A
@@ -151,29 +159,41 @@ class SandboxNoticeScopingTest(unittest.TestCase):
         ]))
         self.assertTrue(calls[0].ok)
 
-    def test_subagent_relayed_denial_is_a_failure(self):
-        """A trusted toolbox relay can carry a subagent's denied call verbatim.
-
-        The rule keeps `tb__subagent` in scope for exactly this case, and the
-        README caveat records why.
-        """
+    def test_relayed_denial_is_a_failure(self):
+        """A relay can carry a subagent's denied call verbatim, under any name."""
         calls = cakelib.pair_tool_calls(records_for([
             "Found one denial:\n\n"
             "ls: /outside: Operation not permitted\n\n"
-            "[Sandbox restriction]: This command was blocked by the filesystem "
-            "sandbox.\n"
-        ], name="tb__subagent"))
+            + NOTICE_LINE
+            + "\n"
+        ], name="tb__delegate"))
         self.assertFalse(calls[0].ok)
 
-    def test_subagent_quoting_the_marker_is_not_a_failure(self):
+    def test_truncated_notice_copy_is_not_a_failure(self):
+        """A truncated copy of the notice is not the notice (corpus shape).
+
+        A probe dumped transcript text and cut each match at 72 characters, so
+        the marker began a line without the notice's sentence.
+        """
+        calls = cakelib.pair_tool_calls(records_for([
+            "=== 20ea1003-5a45-4267-a303-b8f50497ed32 ===\n0\n"
+            "--- tool errors/blocked in outputs ---\n"
+            "call_00_x :: bash: /outside/pr199.diff: Operation not permitted\n"
+            "[Sandbox restriction]: This command was blocked by the filesystem "
+            "sandbo\n"
+        ]))
+        self.assertTrue(calls[0].ok)
+
+    def test_relayed_report_quoting_the_marker_is_not_a_failure(self):
         """Corpus shape: a subagent report that names the marker in prose."""
         calls = cakelib.pair_tool_calls(records_for([
             "- **Impact**: Denial UX corruption. A user command echoing "
             "`sandbox-exec: sandbox_apply` on stdout suppresses a real "
             "`[Sandbox restriction]: This command was blocked by the filesystem "
             "sandbox.` notice\n"
-        ], name="tb__subagent"))
+        ], name="tb__delegate"))
         self.assertTrue(calls[0].ok)
+
 
 class HookDenialTaxonomyTest(unittest.TestCase):
     def test_taxonomy_reports_hook_blocked(self):
@@ -194,7 +214,7 @@ class HookDenialTaxonomyTest(unittest.TestCase):
     def test_taxonomy_reports_sandbox_blocked(self):
         data = cakelib.Dataset(
             sessions=[session([
-                "Operation not permitted\n\n[Sandbox restriction]: blocked by filesystem sandbox",
+                "Operation not permitted\n\n" + NOTICE_LINE,
             ])],
             invocations=[],
             sessions_dir=None,

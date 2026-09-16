@@ -494,12 +494,16 @@ ERROR_PREFIX = "Error"
 HOOK_BLOCKED_PREFIX = "Hook blocked tool execution"
 SANDBOX_BLOCKED_MARKER = "[Sandbox restriction]"
 
-# Only these tools' outputs can carry a `[Sandbox restriction]` notice: `Bash`
-# appends it after a filesystem denial, and a trusted toolbox relay
-# (`tb__subagent`) can carry a subagent's denied tool output verbatim, so a
-# strict `Bash`-only rule would lose those denials. Every other tool can only
-# *quote* the marker as file content or diff text (issue #561).
-SANDBOX_NOTICE_TOOLS = frozenset({"Bash", "tb__subagent"})
+# The opening of the `[Sandbox restriction]` notice line `bash.rs`'s
+# `compose_text_output` appends after a filesystem denial: the marker plus the
+# first sentence that follows it. Matching the line's opening is what separates
+# a denial from text that merely quotes the marker; matching it for any tool is
+# what lets a toolbox relay's verbatim copy of a subagent's denied call count
+# without naming that relay (issue #561).
+SANDBOX_NOTICE_PREFIX = (
+    SANDBOX_BLOCKED_MARKER
+    + ": This command was blocked by the filesystem sandbox."
+)
 
 # The write-validation messages `mod.rs` produces: `validate_path_for_write`
 # for an existing path, `resolve_path_for_write_scheduling` for a new file.
@@ -515,34 +519,32 @@ READ_ONLY_MESSAGES = (
 )
 
 
-def sandbox_notice(name: str, output: str) -> bool:
-    """True when a call to `name` carries `bash.rs`'s `[Sandbox restriction]` notice.
+def sandbox_notice(output: str) -> bool:
+    """True when `output` carries `bash.rs`'s `[Sandbox restriction]` notice.
 
-    Only the tools that can emit the notice are matched, and it is a *line*
-    cake composes after the denied command's own output, so requiring the line
-    start is what stops a file or diff that merely quotes the marker from
-    reading as a denial: Read prefixes line numbers and Edit's diff prefixes
-    `+`/`-`/space, so quoted marker text never begins a line (issue #561).
+    The notice is a *line* cake composes after the denied command's own output,
+    so requiring the line start is what stops Read's numbered lines and Edit's
+    `+`/`-`/space-prefixed diff lines from reading as a denial. Requiring the
+    notice's own sentence, rather than the bare marker, also keeps a `cat`,
+    `sed`, or search result that prints the marker — or a truncated copy of the
+    notice — out of the denial buckets (issue #561).
     """
-    if name not in SANDBOX_NOTICE_TOOLS:
-        return False
-    return any(line.startswith(SANDBOX_BLOCKED_MARKER) for line in output.splitlines())
+    return any(line.startswith(SANDBOX_NOTICE_PREFIX) for line in output.splitlines())
 
 
-def is_tool_failure(name: str, output: str) -> bool:
+def is_tool_failure(output: str) -> bool:
     """True when a stored tool output reports a failure the model saw.
 
     Detection is on the first line, matching how `agent_loop.rs` records both
-    prefixed shapes, except for the sandbox notice, which `bash.rs` appends and
-    which only counts for the tools that can emit it. Synthetic `not executed:`
-    outputs (history repair, correction turns) are deliberately not failures
-    here; see the session-metrics README.
+    prefixed shapes, except for the sandbox notice, which `bash.rs` appends as
+    its own line. Synthetic `not executed:` outputs (history repair, correction
+    turns) are deliberately not failures here; see the session-metrics README.
     """
     first = output.splitlines()[0] if output else ""
     return (
         first.startswith(ERROR_PREFIX)
         or first.startswith(HOOK_BLOCKED_PREFIX)
-        or sandbox_notice(name, output)
+        or sandbox_notice(output)
     )
 
 
@@ -566,7 +568,7 @@ def pair_tool_calls(records: list[dict]) -> list[ToolCall]:
                 call_id=call.get("call_id", ""),
                 arguments=call.get("arguments", ""),
                 output=output,
-                ok=not is_tool_failure(call.get("name", "unknown"), output),
+                ok=not is_tool_failure(output),
                 timestamp=call.get("timestamp"),
             ))
             seq += 1
@@ -593,7 +595,7 @@ def classify_tool_error(name: str, output: str) -> str:
         return "duplicate-mutation guard"
     if HOOK_BLOCKED_PREFIX in first:
         return "hook-blocked"
-    if sandbox_notice(name, output):
+    if sandbox_notice(output):
         return "sandbox-blocked"
     if "BLOCKED" in first:
         # Only the Bash command-safety judge emits a bare BLOCKED first line:
