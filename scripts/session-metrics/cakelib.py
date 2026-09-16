@@ -503,8 +503,10 @@ SANDBOX_NOTICE_TOOLS = frozenset({"Bash", "tb__subagent"})
 
 # The write-validation messages `mod.rs` produces: `validate_path_for_write`
 # for an existing path, `resolve_path_for_write_scheduling` for a new file.
-# Only Edit and Write reach them, so anchoring on the message keeps an
-# unrelated failure that merely quotes the word `read-only` out of the bucket
+# Both are one-line messages stored as the failure's first line, and only Edit
+# and Write reach them, so anchoring on the message *and* that line keeps an
+# unrelated failure that quotes it — the word `read-only` in a nearest-match
+# hint, or the whole message in a diff or a grep — out of the bucket
 # (issue #561).
 READ_ONLY_TOOLS = frozenset({"Edit", "Write"})
 READ_ONLY_MESSAGES = (
@@ -599,7 +601,10 @@ def classify_tool_error(name: str, output: str) -> str:
         if "command-safety judge was unavailable" in output:
             return "judge-fail-closed"
         return "judge-blocked"
-    if name in READ_ONLY_TOOLS and any(msg in output for msg in READ_ONLY_MESSAGES):
+    # A write-validation denial is a one-line message, so `first` is the shape
+    # cake stores; the same text further down is quoted context and keeps the
+    # quoting tool's own bucket.
+    if name in READ_ONLY_TOOLS and any(msg in first for msg in READ_ONLY_MESSAGES):
         return "read-only path"
     if "Invalid" in first and "arguments" in first:
         return "invalid arguments/JSON"

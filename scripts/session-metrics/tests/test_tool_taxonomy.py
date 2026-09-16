@@ -118,26 +118,26 @@ class SandboxNoticeScopingTest(unittest.TestCase):
             classify_tool_error("tb__subagent", self.NOTICE), "sandbox-blocked"
         )
 
-    def test_tools_that_only_quote_the_notice_are_not_sandbox_blocked(self):
+    def test_quoting_the_notice_keeps_the_tools_own_category(self):
         """Read and Edit prefix every line, so neither can emit a notice line."""
         cases = [
             # A Read failure whose body quotes the marker. Read numbers lines.
             ("Read",
              "Error: Failed to read file '/repo/src/clients/tools/bash.rs': invalid "
              "UTF-8\n\n  1209: [Sandbox restriction]: This command was blocked by "
-             "the filesystem sandbox."),
+             "the filesystem sandbox.",
+             "path/file access"),
             # Edit's success output is a diff; a failing Edit can quote the same
             # diff text. A diff line is prefixed `+`, `-`, or a space.
             ("Edit",
              "Error: Edit 1 of 1 failed in /repo/src/clients/tools/bash.rs: could not "
              "find the exact text to replace.\n+            [Sandbox restriction]: This "
-             "command was blocked by the filesystem sandbox."),
+             "command was blocked by the filesystem sandbox.",
+             "no-match (old_text not found)"),
         ]
-        for name, output in cases:
+        for name, output, expected in cases:
             with self.subTest(tool=name):
-                self.assertNotEqual(
-                    classify_tool_error(name, output), "sandbox-blocked"
-                )
+                self.assertEqual(classify_tool_error(name, output), expected)
 
     def test_bash_grep_quoting_the_notice_is_not_sandbox_blocked(self):
         """A Bash search that prints the marker mid-line is not a denial."""
@@ -179,7 +179,12 @@ class ReadOnlyPathScopingTest(unittest.TestCase):
         )
 
     def test_quoting_the_message_is_not_read_only_path(self):
-        """A search or read that prints the message keeps its own tool's bucket."""
+        """Text that quotes the message keeps its own tool's bucket.
+
+        Read and Bash print it mid-line; an Edit no-match failure embeds it in
+        the nearest-match hint, which `edit.rs` builds from raw file lines —
+        `mod.rs` itself now holds the message, so the hint can quote it.
+        """
         cases = [
             ("Bash",
              "Error: rg exited 1\n\nsrc/clients/tools/mod.rs:1053: Path '{}' is "
@@ -190,6 +195,14 @@ class ReadOnlyPathScopingTest(unittest.TestCase):
              "Path '/x' is read-only (added via --add-dir). Write operations are "
              "not allowed.",
              "path/file access"),
+            ("Edit",
+             "Error: Edit 1 of 1 failed in /repo/src/clients/tools/mod.rs: could "
+             "not find the exact text to replace. The old_text must match exactly, "
+             "including all whitespace and newlines.\nNearest matching context in "
+             "file:\n>  1053 |             \"Path '{}' is read-only (added via "
+             "--add-dir). Write operations are not allowed.\",\n    1054 | "
+             "            validated.canonical.display()\n",
+             "no-match (old_text not found)"),
         ]
         for name, output, expected in cases:
             with self.subTest(tool=name):

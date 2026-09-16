@@ -68,6 +68,27 @@ class ToolCallOkTest(unittest.TestCase):
         calls = cakelib.pair_tool_calls(records_for(["Error: no such file"]))
         self.assertFalse(calls[0].ok)
 
+    def test_write_validation_denials_are_failures(self):
+        """Both write-validation messages reach the model as `Error:` lines.
+
+        No message-specific rule is needed for the gate; the `read-only path`
+        category is a taxonomy concern, covered in `test_tool_taxonomy.py`.
+        These samples pin that a denial is recorded as an `Error:` first line
+        (issue #561).
+        """
+        calls = cakelib.pair_tool_calls(
+            records_for([
+                "Error: Path '/etc/hosts' is read-only (added via --add-dir). "
+                "Write operations are not allowed.",
+            ], name="Edit")
+            + records_for([
+                "Error: Path '/u/Library/LaunchAgents/x.plist' is in a read-only "
+                "directory (added via --add-dir). Write operations are not allowed.",
+            ], name="Write")
+        )
+        self.assertFalse(calls[0].ok)
+        self.assertFalse(calls[1].ok)
+
     def test_success_is_not_failure(self):
         calls = cakelib.pair_tool_calls(records_for(["fd .\n./src\n"]))
         self.assertTrue(calls[0].ok)
@@ -153,22 +174,6 @@ class SandboxNoticeScopingTest(unittest.TestCase):
             "sandbox.` notice\n"
         ], name="tb__subagent"))
         self.assertTrue(calls[0].ok)
-
-    def test_read_only_write_denials_are_failures(self):
-        """Both write-validation messages stay failures; the taxonomy scopes them."""
-        calls = cakelib.pair_tool_calls(
-            records_for([
-                "Error: Path '/etc/hosts' is read-only (added via --add-dir). "
-                "Write operations are not allowed.",
-            ], name="Edit")
-            + records_for([
-                "Error: Path '/u/Library/LaunchAgents/x.plist' is in a read-only "
-                "directory (added via --add-dir). Write operations are not allowed.",
-            ], name="Write")
-        )
-        self.assertFalse(calls[0].ok)
-        self.assertFalse(calls[1].ok)
-
 
 class HookDenialTaxonomyTest(unittest.TestCase):
     def test_taxonomy_reports_hook_blocked(self):
