@@ -1189,7 +1189,7 @@ fn parse_streaming_response_merges_output_text_deltas() {
     let body = concat!(
         "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}\n\n",
         "data: {\"type\":\"response.output_text.delta\",\"delta\":\" world\"}\n\n",
-        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"status\":\"completed\",\"usage\":{\"input_tokens\":12,\"output_tokens\":7,\"total_tokens\":19}}}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"model\":\"served-model\",\"status\":\"completed\",\"usage\":{\"input_tokens\":12,\"output_tokens\":7,\"total_tokens\":19}}}\n\n",
     );
 
     let result = parse_streaming_response(body).unwrap();
@@ -1207,6 +1207,11 @@ fn parse_streaming_response_merges_output_text_deltas() {
     assert_eq!(id.as_deref(), Some("resp-1"));
     assert_eq!(status.as_deref(), Some("completed"));
     assert_eq!(result.provider_request_id.as_deref(), Some("resp-1"));
+    assert_eq!(
+        result.response_model.as_deref(),
+        Some("served-model"),
+        "the terminal stream event's model must reach the parsed turn"
+    );
     let reported = result.usage.expect("streamed usage should be parsed");
     assert_eq!(reported.presence, UsagePresence::Complete);
     let usage = reported.usage;
