@@ -116,6 +116,10 @@ fn turn_usage(task_id: &str, turn: u32, input: u64, output: u64, offset: i64) ->
         timestamp: time(offset),
         attempt: None,
         terminal_class: None,
+        usage_presence: None,
+        model: None,
+        response_model: None,
+        provider_request_id: None,
     })
 }
 

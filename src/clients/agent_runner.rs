@@ -17,7 +17,7 @@ use crate::session_telemetry::{
     CompensationEventTelemetry, CompensationKind, RequestOverridesSnapshot,
     RetryScheduledTelemetry,
 };
-use crate::types::{ApiAttemptTerminalClass, ConversationItem, Usage};
+use crate::types::{ApiAttemptTerminalClass, ConversationItem, ReportedUsage, UsagePresence};
 
 pub(super) fn build_http_client(disable_connection_reuse: bool) -> reqwest::Client {
     build_http_client_with_timeout(disable_connection_reuse, Duration::from_mins(5))
@@ -198,6 +198,10 @@ impl<F: FnMut(AgentRunnerTelemetryEvent)> Drop for InFlightAttempt<'_, F> {
                 phase.as_str()
             )),
             usage: None,
+            usage_presence: UsagePresence::Unreported,
+            provider: self.provider,
+            model: self.model.clone(),
+            response_model: None,
             termination: None,
             terminal_class: Some(ApiAttemptTerminalClass::Cancelled),
             provider_request_id: None,
@@ -380,6 +384,10 @@ impl AgentRunner {
             .as_ref()
             .ok()
             .and_then(|turn| turn.termination.clone());
+        let response_model = parse_result
+            .as_ref()
+            .ok()
+            .and_then(|turn| turn.response_model.clone());
         let error = parse_result
             .as_ref()
             .err()
@@ -388,6 +396,10 @@ impl AgentRunner {
         let request_ms = in_flight.request_ms();
         let status_code = in_flight.status_code;
         let phase = Some(in_flight.phase);
+
+        let settled_model = in_flight.model.clone();
+        let settled_provider_request_id = provider_request_id.clone();
+        let settled_response_model = response_model.clone();
 
         in_flight.finish(ApiAttemptTelemetry {
             turn_index,
@@ -398,7 +410,11 @@ impl AgentRunner {
             history_items: in_flight.history_items,
             status_code,
             error,
-            usage,
+            usage: usage.map(|reported| reported.usage),
+            usage_presence: usage_presence(usage),
+            provider: in_flight.provider,
+            model: in_flight.model.clone(),
+            response_model,
             termination,
             terminal_class: Some(terminal_class),
             provider_request_id,
@@ -413,6 +429,9 @@ impl AgentRunner {
                 attempt,
                 terminal_class,
                 usage,
+                model: settled_model,
+                provider_request_id: settled_provider_request_id,
+                response_model: settled_response_model,
             });
         }
 
@@ -545,7 +564,11 @@ impl AgentRunner {
             history_items: in_flight.history_items,
             status_code: in_flight.status_code,
             error: Some(error),
-            usage,
+            usage: usage.map(|reported| reported.usage),
+            usage_presence: usage_presence(usage),
+            provider: in_flight.provider,
+            model: in_flight.model.clone(),
+            response_model: None,
             termination: None,
             terminal_class: Some(terminal_class),
             provider_request_id: None,
@@ -559,6 +582,9 @@ impl AgentRunner {
                 attempt,
                 terminal_class,
                 usage,
+                model: in_flight.model.clone(),
+                provider_request_id: None,
+                response_model: None,
             });
         }
 
@@ -641,6 +667,10 @@ impl AgentRunner {
             status_code: None,
             error: Some(error_detail),
             usage: None,
+            usage_presence: UsagePresence::Unreported,
+            provider: in_flight.provider,
+            model: in_flight.model.clone(),
+            response_model: None,
             termination: None,
             terminal_class: Some(terminal_class),
             provider_request_id: None,
@@ -724,7 +754,16 @@ impl AgentRunner {
     }
 }
 
-fn reported_usage_from_result(result: &Result<TurnResult, anyhow::Error>) -> Option<Usage> {
+/// Presence marker for an attempt record: the reported usage's own presence, or
+/// `unreported` when the attempt reported no usage at all.
+const fn usage_presence(usage: Option<ReportedUsage>) -> UsagePresence {
+    match usage {
+        Some(reported) => reported.presence,
+        None => UsagePresence::Unreported,
+    }
+}
+
+fn reported_usage_from_result(result: &Result<TurnResult, anyhow::Error>) -> Option<ReportedUsage> {
     result
         .as_ref()
         .ok()

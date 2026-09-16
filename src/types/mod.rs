@@ -20,4 +20,4 @@ pub use session::{
     TaskStartData, TurnUsageData,
 };
 #[doc(inline)]
-pub use usage::{InputTokensDetails, OutputTokensDetails, Usage};
+pub use usage::{InputTokensDetails, OutputTokensDetails, ReportedUsage, Usage, UsagePresence};

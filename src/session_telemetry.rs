@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 use crate::OutputFormat;
 use crate::clients::retry::{RequestOverrides, RetryReason, RetryStatus};
 use crate::config::model::{ApiType, ModelProvider, ReasoningEffort};
-use crate::types::{ApiAttemptTerminalClass, Usage};
+use crate::types::{ApiAttemptTerminalClass, Usage, UsagePresence};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -150,6 +150,21 @@ pub struct ApiAttemptTelemetry {
     pub status_code: Option<u16>,
     pub error: Option<String>,
     pub usage: Option<Usage>,
+    /// Whether the provider reported every required token counter for this
+    /// attempt. `partial` means the provider sent a usage object with at least
+    /// one counter absent, so a zero in `usage` is not a measured zero;
+    /// `unreported` means no usage object arrived (ADR-030).
+    pub usage_presence: UsagePresence,
+    /// The resolved provider for this attempt, when the endpoint matched a
+    /// known provider strategy.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<ModelProvider>,
+    /// The configured model ID for this attempt.
+    pub model: String,
+    /// The model the provider reported serving the response, when its wire
+    /// format supplied one and the attempt produced a parsed response.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub termination: Option<ProviderTermination>,
     /// How this attempt ended, so consumers can tell a transient provider
@@ -263,6 +278,12 @@ pub struct ToolCallTelemetry {
 }
 
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "the attempt variant is one completed provider-attempt record, built once per \
+              HTTP request and moved once, so boxing it would add a heap allocation to a \
+              network-bound path for no measurable benefit"
+)]
 pub enum AgentRunnerTelemetryEvent {
     ApiAttemptInFlight(ApiAttemptInFlightTelemetry),
     ApiAttempt(ApiAttemptTelemetry),
@@ -740,6 +761,10 @@ mod tests {
             status_code: Some(200),
             error: None,
             usage: None,
+            usage_presence: UsagePresence::Unreported,
+            provider: None,
+            model: "test-model".to_string(),
+            response_model: None,
             termination,
             terminal_class: None,
             provider_request_id: None,

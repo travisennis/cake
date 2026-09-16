@@ -11,7 +11,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::types::conversation::{ConversationItem, ReasoningContent, ReasoningSummary, Role};
-use crate::types::usage::Usage;
+use crate::types::usage::{Usage, UsagePresence};
 
 /// Snapshot of git repository state captured when a session file is created.
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
@@ -450,6 +450,12 @@ pub enum ApiAttemptTerminalClass {
 /// to stream-json output. Per-attempt usage lets a resumed session know the
 /// current context size before the next provider request and makes token cost
 /// reconstructible even when a response is retried or discarded.
+///
+/// The record also names the provider identity of the attempt, so the usage
+/// can be tied to the response that produced it, and states whether the
+/// provider reported every counter or only some of them (ADR-030). The
+/// aggregate records (`task_complete.usage`) keep summing only reported
+/// values.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct TurnUsageData {
     pub session_id: String,
@@ -466,6 +472,24 @@ pub struct TurnUsageData {
     /// single-attempt shape for compatibility with existing records.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal_class: Option<ApiAttemptTerminalClass>,
+    /// Whether the provider reported every required counter. `complete` and
+    /// `partial` are the values this record can carry, because a `turn_usage`
+    /// record is written only when a usage object was parsed; `unreported`
+    /// appears on `api_attempt` records, not here. Absent on records written
+    /// before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_presence: Option<UsagePresence>,
+    /// The configured model ID for the attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// The model the provider reported serving the response, when its wire
+    /// format supplied one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_model: Option<String>,
+    /// The provider's response ID for the attempt, when the provider supplied
+    /// one, so the usage can be correlated with provider logs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_request_id: Option<String>,
 }
 
 /// Shared data for `HookEvent` records in both `StreamRecord` and `SessionRecord`.

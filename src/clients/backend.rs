@@ -3,7 +3,7 @@ use crate::clients::retry::RequestOverrides;
 use crate::clients::tools::Tool;
 use crate::clients::{chat_completions, responses};
 use crate::config::model::{ApiType, ResolvedModelConfig};
-use crate::types::{ConversationItem, Usage};
+use crate::types::{ConversationItem, ReportedUsage};
 
 /// A successful provider response whose body does not match the backend's
 /// JSON envelope.
@@ -19,7 +19,7 @@ pub(super) struct ResponseDecodeError {
     backend: &'static str,
     preview_len: usize,
     preview: String,
-    reported_usage: Option<Usage>,
+    reported_usage: Option<ReportedUsage>,
     #[source]
     source: serde_json::Error,
 }
@@ -28,7 +28,7 @@ impl ResponseDecodeError {
     pub(super) fn new(
         backend: &'static str,
         body: &[u8],
-        reported_usage: Option<Usage>,
+        reported_usage: Option<ReportedUsage>,
         source: serde_json::Error,
     ) -> Self {
         let preview_len = body.len().min(400);
@@ -41,7 +41,7 @@ impl ResponseDecodeError {
         }
     }
 
-    pub(super) const fn usage(&self) -> Option<Usage> {
+    pub(super) const fn usage(&self) -> Option<ReportedUsage> {
         self.reported_usage
     }
 }
@@ -54,18 +54,18 @@ impl ResponseDecodeError {
 pub(super) struct ResponseParseError {
     #[source]
     source: anyhow::Error,
-    reported_usage: Option<Usage>,
+    reported_usage: Option<ReportedUsage>,
 }
 
 impl ResponseParseError {
-    pub(super) const fn new(source: anyhow::Error, reported_usage: Option<Usage>) -> Self {
+    pub(super) const fn new(source: anyhow::Error, reported_usage: Option<ReportedUsage>) -> Self {
         Self {
             source,
             reported_usage,
         }
     }
 
-    pub(super) const fn usage(&self) -> Option<Usage> {
+    pub(super) const fn usage(&self) -> Option<ReportedUsage> {
         self.reported_usage
     }
 }
@@ -163,7 +163,7 @@ impl Backend {
         }
     }
 
-    pub(super) fn reported_usage(self, body: &[u8]) -> Option<Usage> {
+    pub(super) fn reported_usage(self, body: &[u8]) -> Option<ReportedUsage> {
         match self {
             Self::Responses => responses::reported_usage(body),
             Self::ChatCompletions => chat_completions::reported_usage(body),
