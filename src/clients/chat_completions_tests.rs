@@ -7,7 +7,7 @@ use crate::config::model::{ApiType, ModelConfig};
 use crate::config::skills::{Skill, SkillScope};
 use crate::config::{AgentsFile, SkillCatalog};
 use crate::prompts::build_initial_prompt_messages_with_enabled_tools;
-use crate::types::{ReasoningContent, ReasoningContentKind, ReasoningSummary};
+use crate::types::{ReasoningContent, ReasoningContentKind, ReasoningSummary, UsagePresence};
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
@@ -631,6 +631,7 @@ fn convert_tools_wraps_under_function() {
 fn parse_choices_text_response() {
     let response = ChatResponse {
         id: Some("chatcmpl-123".to_string()),
+        model: None,
         choices: vec![ChatChoice {
             message: ChatResponseMessage {
                 content: Some("Hello!".to_string()),
@@ -655,6 +656,7 @@ fn parse_choices_text_response() {
 fn parse_choices_tool_calls() {
     let response = ChatResponse {
         id: Some("chatcmpl-456".to_string()),
+        model: None,
         choices: vec![ChatChoice {
             message: ChatResponseMessage {
                 content: None,
@@ -683,6 +685,7 @@ fn parse_choices_tool_calls() {
 fn parse_choices_preserves_reasoning_content_for_tool_calls() {
     let response = ChatResponse {
         id: Some("chatcmpl-456".to_string()),
+        model: None,
         choices: vec![ChatChoice {
             message: ChatResponseMessage {
                 content: None,
@@ -715,6 +718,7 @@ fn parse_choices_preserves_reasoning_content_for_tool_calls() {
 fn parse_choices_empty_response() {
     let response = ChatResponse {
         id: Some("chatcmpl-empty".to_string()),
+        model: None,
         choices: vec![],
         usage: None,
     };
@@ -1123,6 +1127,7 @@ fn snapshot_chat_request_full_with_agents_and_skills() {
 fn parse_choices_empty_message_content() {
     let response = ChatResponse {
         id: Some("chatcmpl-123".to_string()),
+        model: None,
         choices: vec![ChatChoice {
             message: ChatResponseMessage {
                 content: Some(String::new()), // Empty content
@@ -1149,6 +1154,7 @@ fn parse_choices_empty_message_content() {
 fn parse_choices_none_content_creates_empty_message() {
     let response = ChatResponse {
         id: Some("chatcmpl-123".to_string()),
+        model: None,
         choices: vec![ChatChoice {
             message: ChatResponseMessage {
                 content: None, // No content
@@ -1174,6 +1180,7 @@ fn parse_choices_none_content_creates_empty_message() {
 fn parse_choices_multiple_tool_calls() {
     let response = ChatResponse {
         id: Some("chatcmpl-456".to_string()),
+        model: None,
         choices: vec![ChatChoice {
             message: ChatResponseMessage {
                 content: None,
@@ -1215,6 +1222,7 @@ fn parse_choices_tool_calls_with_text_content() {
     // Some models return both tool calls and text content
     let response = ChatResponse {
         id: Some("chatcmpl-789".to_string()),
+        model: None,
         choices: vec![ChatChoice {
             message: ChatResponseMessage {
                 content: Some("Let me help you with that.".to_string()),
@@ -1248,6 +1256,7 @@ fn parse_choices_tool_calls_with_text_content() {
 fn parse_choices_missing_id_fails() {
     let response = ChatResponse {
         id: None, // Missing id
+        model: None,
         choices: vec![ChatChoice {
             message: ChatResponseMessage {
                 content: Some("Hello".to_string()),
@@ -1270,6 +1279,7 @@ fn parse_choices_missing_id_fails() {
 fn parse_choices_message_with_content_only() {
     let response = ChatResponse {
         id: Some("chatcmpl-123".to_string()),
+        model: None,
         choices: vec![ChatChoice {
             message: ChatResponseMessage {
                 content: Some("Hello".to_string()),
@@ -1464,6 +1474,7 @@ mod response_parsing_tests {
                 .unwrap()
                 .usage()
                 .unwrap()
+                .usage
                 .total_tokens,
             15
         );
@@ -1539,8 +1550,15 @@ mod response_parsing_tests {
         let result = parse_response(response).await;
         assert!(result.is_ok());
         let turn_result = result.unwrap();
-        assert!(turn_result.usage.is_some());
-        let usage = turn_result.usage.unwrap();
+        let reported = turn_result
+            .usage
+            .expect("complete usage should be reported");
+        assert_eq!(
+            reported.presence,
+            UsagePresence::Complete,
+            "every required counter was present"
+        );
+        let usage = reported.usage;
         assert_eq!(usage.input_tokens, 100);
         assert_eq!(usage.output_tokens, 50);
         assert_eq!(usage.total_tokens, 150);
@@ -1583,11 +1601,92 @@ mod response_parsing_tests {
         let result = parse_response(response).await;
         assert!(result.is_ok());
         let turn_result = result.unwrap();
-        let usage = turn_result.usage.unwrap();
-        // Should use defaults for missing fields
+        let reported = turn_result.usage.unwrap();
+        assert_eq!(
+            reported.presence,
+            UsagePresence::Partial,
+            "an absent counter must not read as a measured zero"
+        );
+        // Documented policy: an absent counter is normalized to zero and the
+        // presence marker records that the value is not known.
+        let usage = reported.usage;
         assert_eq!(usage.input_tokens, 100);
         assert_eq!(usage.output_tokens, 50);
-        assert_eq!(usage.total_tokens, 0); // Default
+        assert_eq!(usage.total_tokens, 0);
+    }
+
+    /// A provider that reports every counter as an explicit zero is reporting a
+    /// measured zero, which must stay distinguishable from an absent counter.
+    #[tokio::test]
+    async fn parse_response_explicit_zero_usage_is_complete() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "chatcmpl-123",
+                "choices": [{
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": "Hello!"
+                    },
+                    "finish_reason": "stop"
+                }],
+                "usage": {
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let response = client
+            .post(format!("{}/chat/completions", mock_server.uri()))
+            .send()
+            .await
+            .unwrap();
+
+        let turn_result = parse_response(response).await.unwrap();
+        let reported = turn_result.usage.unwrap();
+        assert_eq!(reported.presence, UsagePresence::Complete);
+        assert_eq!(reported.usage.total_tokens, 0);
+    }
+
+    /// A provider that sends no usage object at all reports nothing, which is
+    /// distinguishable from a usage object full of zeros.
+    #[tokio::test]
+    async fn parse_response_missing_usage_is_unreported() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "chatcmpl-123",
+                "choices": [{
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": "Hello!"
+                    },
+                    "finish_reason": "stop"
+                }]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let response = client
+            .post(format!("{}/chat/completions", mock_server.uri()))
+            .send()
+            .await
+            .unwrap();
+
+        let turn_result = parse_response(response).await.unwrap();
+        assert!(
+            turn_result.usage.is_none(),
+            "an absent usage object must not become a zero-valued report"
+        );
     }
 
     #[tokio::test]

@@ -560,6 +560,10 @@ mod tests {
                     timestamp: chrono::Utc::now(),
                     attempt: None,
                     terminal_class: None,
+                    usage_presence: None,
+                    model: None,
+                    response_model: None,
+                    provider_request_id: None,
                 },
             ));
 

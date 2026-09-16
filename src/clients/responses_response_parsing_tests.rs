@@ -1,7 +1,7 @@
 //! Tests for parsing raw HTTP responses.
 
 use super::*;
-use crate::types::ReasoningSummary;
+use crate::types::{ReasoningSummary, UsagePresence};
 use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -148,7 +148,7 @@ async fn parse_response_function_call_missing_required_fields_fails() {
     let parse_error = error
         .downcast_ref::<ResponseParseError>()
         .expect("discarded output should retain its parse error type");
-    assert_eq!(parse_error.usage().unwrap().total_tokens, 18);
+    assert_eq!(parse_error.usage().unwrap().usage.total_tokens, 18);
 }
 
 #[tokio::test]
@@ -157,6 +157,7 @@ async fn parse_response_with_usage() {
 
     Mock::given(method("POST"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "model": "served-model-v2",
             "output": [{
                 "type": "message",
                 "id": "msg-1",
@@ -192,14 +193,26 @@ async fn parse_response_with_usage() {
     let result = parse_response(response).await;
     assert!(result.is_ok());
     let turn_result = result.unwrap();
-    assert!(turn_result.usage.is_some());
-    let usage = turn_result.usage.unwrap();
+    let reported = turn_result
+        .usage
+        .expect("complete usage should be reported");
+    assert_eq!(
+        reported.presence,
+        UsagePresence::Complete,
+        "every required counter was present"
+    );
+    let usage = reported.usage;
     assert_eq!(usage.input_tokens, 100);
     assert_eq!(usage.output_tokens, 50);
     assert_eq!(usage.total_tokens, 150);
     assert_eq!(usage.input_tokens_details.cached_tokens, 20);
     assert_eq!(usage.input_tokens_details.cache_write_tokens, 10);
     assert_eq!(usage.output_tokens_details.reasoning_tokens, 10);
+    assert_eq!(
+        turn_result.response_model.as_deref(),
+        Some("served-model-v2"),
+        "the provider-reported model should survive parsing"
+    );
 }
 
 #[tokio::test]
@@ -236,14 +249,89 @@ async fn parse_response_partial_usage() {
     let result = parse_response(response).await;
     assert!(result.is_ok());
     let turn_result = result.unwrap();
-    let usage = turn_result.usage.unwrap();
-    // Should use defaults for missing fields
+    let reported = turn_result.usage.unwrap();
+    assert_eq!(
+        reported.presence,
+        UsagePresence::Partial,
+        "an absent counter must not read as a measured zero"
+    );
+    let usage = reported.usage;
+    // Documented policy: an absent counter is normalized to zero and the
+    // presence marker records that the value is not known.
     assert_eq!(usage.input_tokens, 100);
     assert_eq!(usage.output_tokens, 50);
-    assert_eq!(usage.total_tokens, 0); // Default
-    assert_eq!(usage.input_tokens_details.cached_tokens, 0); // Default
-    assert_eq!(usage.input_tokens_details.cache_write_tokens, 0); // Default
-    assert_eq!(usage.output_tokens_details.reasoning_tokens, 0); // Default
+    assert_eq!(usage.total_tokens, 0);
+    assert_eq!(usage.input_tokens_details.cached_tokens, 0);
+    assert_eq!(usage.input_tokens_details.cache_write_tokens, 0);
+    assert_eq!(usage.output_tokens_details.reasoning_tokens, 0);
+    assert_eq!(
+        turn_result.response_model, None,
+        "a response without a model member reports none"
+    );
+}
+
+/// A provider that reports every counter as an explicit zero is reporting a
+/// measured zero, which must stay distinguishable from an absent counter.
+#[tokio::test]
+async fn parse_response_explicit_zero_usage_is_complete() {
+    let mock_server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "output": [{
+                "type": "message",
+                "id": "msg-1",
+                "status": "completed",
+                "content": [{
+                    "type": "output_text",
+                    "text": "Hello!"
+                }]
+            }],
+            "usage": {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0
+            }
+        })))
+        .mount(&mock_server)
+        .await;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("{}/responses", mock_server.uri()))
+        .send()
+        .await
+        .unwrap();
+
+    let turn_result = parse_response(response).await.unwrap();
+    let reported = turn_result.usage.unwrap();
+    assert_eq!(reported.presence, UsagePresence::Complete);
+    assert_eq!(reported.usage.total_tokens, 0);
+}
+
+/// A provider that sends no usage object at all reports nothing, which is
+/// distinguishable from a usage object full of zeros.
+#[tokio::test]
+async fn parse_response_missing_usage_is_unreported() {
+    let mock_server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(minimal_valid_response()))
+        .mount(&mock_server)
+        .await;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("{}/responses", mock_server.uri()))
+        .send()
+        .await
+        .unwrap();
+
+    let turn_result = parse_response(response).await.unwrap();
+    assert!(
+        turn_result.usage.is_none(),
+        "an absent usage object must not become a zero-valued report"
+    );
 }
 
 #[test]

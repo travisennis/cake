@@ -479,7 +479,7 @@ impl ObservedJudgeCall {
         client: &JudgeClient,
         turn: &crate::clients::agent::TurnResult,
     ) -> AttemptCall {
-        self.attempt.usage = turn.usage;
+        self.attempt.usage = turn.usage.map(|reported| reported.usage);
         self.attempt.termination.clone_from(&turn.termination);
         if self.attempt.provider_request_id.is_none() {
             self.attempt
@@ -674,7 +674,7 @@ fn update_diagnostic(
         return;
     };
     raw.assistant_content = content.map(|content| redact_secret(content, &client.config.api_key));
-    raw.usage = turn.usage;
+    raw.usage = turn.usage.map(|reported| reported.usage);
     raw.termination = turn
         .termination
         .clone()

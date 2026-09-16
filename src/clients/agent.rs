@@ -24,27 +24,39 @@ use crate::session_telemetry::{
     SessionTelemetrySettings, SessionTelemetryWriter, SharedSessionTelemetryWriter,
 };
 use crate::types::{
-    ApiAttemptTerminalClass, ConversationItem, ReplaySafety, Role, SessionRecord, StreamRecord,
-    TaskCompleteData, TaskOutcome, TaskStartData, TurnUsageData, Usage,
+    ApiAttemptTerminalClass, ConversationItem, ReplaySafety, ReportedUsage, Role, SessionRecord,
+    StreamRecord, TaskCompleteData, TaskOutcome, TaskStartData, TurnUsageData, Usage,
 };
 
 /// Result of a single API turn (one request/response cycle).
 #[derive(Debug)]
 pub(super) struct TurnResult {
     pub(super) items: Vec<ConversationItem>,
-    pub(super) usage: Option<Usage>,
+    pub(super) usage: Option<ReportedUsage>,
     pub(super) termination: Option<ProviderTermination>,
     pub(super) provider_request_id: Option<String>,
+    /// The model the provider reported serving the response, when the wire
+    /// format supplied one. May differ from the configured model when a
+    /// gateway routes an alias.
+    pub(super) response_model: Option<String>,
 }
 
 /// One provider attempt whose reported usage must be settled into the
 /// session ledger before the runner classifies or retries the attempt.
-#[derive(Debug, Clone, Copy)]
+///
+/// Carries the bounded provider identity of that attempt — the configured
+/// model, the provider response ID, and the response-reported model when the
+/// provider supplied one — so a usage record can be tied to the provider
+/// response that produced it (ADR-030).
+#[derive(Debug, Clone)]
 pub(super) struct TurnUsageSettlement {
     pub(super) turn_index: u32,
     pub(super) attempt: u32,
     pub(super) terminal_class: ApiAttemptTerminalClass,
-    pub(super) usage: Usage,
+    pub(super) usage: ReportedUsage,
+    pub(super) model: String,
+    pub(super) provider_request_id: Option<String>,
+    pub(super) response_model: Option<String>,
 }
 
 pub(super) fn record_turn_usage(
@@ -60,19 +72,26 @@ pub(super) fn record_turn_usage(
         attempt,
         terminal_class,
         usage,
+        model,
+        provider_request_id,
+        response_model,
     } = settlement;
-    accumulate_usage(total_usage, Some(&usage));
-    *last_usage = Some(usage);
+    accumulate_usage(total_usage, Some(&usage.usage));
+    *last_usage = Some(usage.usage);
 
     let legacy_shape = attempt == 1 && terminal_class == ApiAttemptTerminalClass::Completed;
     let record = SessionRecord::TurnUsage(TurnUsageData {
         session_id: session_id.to_string(),
         task_id: task_id.to_string(),
         turn: turn_index,
-        usage,
+        usage: usage.usage,
         timestamp: chrono::Utc::now(),
         attempt: (!legacy_shape).then_some(attempt),
         terminal_class: (!legacy_shape).then_some(terminal_class),
+        usage_presence: Some(usage.presence),
+        model: Some(model),
+        response_model,
+        provider_request_id,
     });
     if let Err(error) = observer.persist_record(&record) {
         tracing::warn!(target: "cake", %error, "Failed to persist per-attempt usage");

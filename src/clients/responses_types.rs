@@ -152,6 +152,9 @@ pub(super) struct Request<'a> {
 #[derive(Deserialize, Debug)]
 pub(super) struct ApiResponse {
     pub(super) id: Option<String>,
+    /// The provider's own model identifier, which may differ from the
+    /// configured model when a gateway routes an alias.
+    pub(super) model: Option<String>,
     pub(super) output: Vec<OutputMessage>,
     pub(super) usage: Option<ApiUsage>,
 }

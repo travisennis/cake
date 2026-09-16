@@ -5,7 +5,7 @@ use crate::config::model::{ApiType, ModelConfig, ResolvedModelConfig};
 use crate::config::skills::{Skill, SkillScope};
 use crate::config::{AgentsFile, SkillCatalog};
 use crate::prompts::build_initial_prompt_messages_with_enabled_tools;
-use crate::types::ReasoningSummary;
+use crate::types::{ReasoningSummary, UsagePresence};
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
@@ -406,6 +406,7 @@ fn build_input_orders_repaired_tool_call_before_next_user_message() {
 fn parse_output_items_message() {
     let response = ApiResponse {
         id: None,
+        model: None,
         output: vec![OutputMessage {
             msg_type: "message".to_string(),
             id: Some("msg-1".to_string()),
@@ -476,6 +477,7 @@ fn parse_json_response_preserves_all_output_text_blocks() {
 fn parse_output_items_function_call() {
     let response = ApiResponse {
         id: None,
+        model: None,
         output: vec![OutputMessage {
             msg_type: "function_call".to_string(),
             id: Some("fc-1".to_string()),
@@ -500,6 +502,7 @@ fn parse_output_items_function_call() {
 fn parse_output_items_reasoning() {
     let response = ApiResponse {
         id: None,
+        model: None,
         output: vec![OutputMessage {
             msg_type: "reasoning".to_string(),
             id: Some("r-1".to_string()),
@@ -525,6 +528,7 @@ fn parse_output_items_reasoning() {
 fn parse_output_items_reasoning_with_encrypted_content() {
     let response = ApiResponse {
         id: None,
+        model: None,
         output: vec![OutputMessage {
             msg_type: "reasoning".to_string(),
             id: Some("r-1".to_string()),
@@ -562,6 +566,7 @@ fn parse_output_items_reasoning_with_encrypted_content() {
 fn parse_output_items_reasoning_preserves_content_for_roundtrip() {
     let response = ApiResponse {
         id: None,
+        model: None,
         output: vec![OutputMessage {
             msg_type: "reasoning".to_string(),
             id: Some("r-1".to_string()),
@@ -589,6 +594,7 @@ fn parse_output_items_reasoning_preserves_content_for_roundtrip() {
 fn parse_output_items_reasoning_preserves_unknown_content_kind() {
     let response = ApiResponse {
         id: None,
+        model: None,
         output: vec![OutputMessage {
             msg_type: "reasoning".to_string(),
             id: Some("r-1".to_string()),
@@ -620,6 +626,7 @@ fn parse_output_items_reasoning_preserves_unknown_content_kind() {
 fn parse_output_items_unknown_type_errors_when_no_items_are_recognized() {
     let response = ApiResponse {
         id: Some("resp-123".to_string()),
+        model: None,
         output: vec![OutputMessage {
             msg_type: "unknown_type".to_string(),
             id: Some("out-1".to_string()),
@@ -644,6 +651,7 @@ fn parse_output_items_unknown_type_errors_when_no_items_are_recognized() {
 fn parse_output_items_unknown_type_is_skipped_when_known_items_exist() {
     let response = ApiResponse {
         id: Some("resp-123".to_string()),
+        model: None,
         output: vec![
             OutputMessage {
                 msg_type: "unknown_type".to_string(),
@@ -684,6 +692,7 @@ fn parse_output_items_unknown_type_is_skipped_when_known_items_exist() {
 fn parse_output_items_multiple_items() {
     let response = ApiResponse {
         id: None,
+        model: None,
         output: vec![
             OutputMessage {
                 msg_type: "reasoning".to_string(),
@@ -724,6 +733,7 @@ fn parse_output_items_multiple_items() {
 fn parse_output_items_message_without_content() {
     let response = ApiResponse {
         id: None,
+        model: None,
         output: vec![OutputMessage {
             msg_type: "message".to_string(),
             id: Some("msg-1".to_string()),
@@ -1085,7 +1095,7 @@ fn parse_streaming_response_fails_on_missing_output_item_at_finalization() {
     let parse_error = error
         .downcast_ref::<ResponseParseError>()
         .expect("malformed streamed output should retain its parse error type");
-    assert_eq!(parse_error.usage().unwrap().total_tokens, 18);
+    assert_eq!(parse_error.usage().unwrap().usage.total_tokens, 18);
 }
 
 #[test]
@@ -1197,7 +1207,9 @@ fn parse_streaming_response_merges_output_text_deltas() {
     assert_eq!(id.as_deref(), Some("resp-1"));
     assert_eq!(status.as_deref(), Some("completed"));
     assert_eq!(result.provider_request_id.as_deref(), Some("resp-1"));
-    let usage = result.usage.expect("streamed usage should be parsed");
+    let reported = result.usage.expect("streamed usage should be parsed");
+    assert_eq!(reported.presence, UsagePresence::Complete);
+    let usage = reported.usage;
     assert_eq!(usage.input_tokens, 12);
     assert_eq!(usage.output_tokens, 7);
     assert_eq!(usage.total_tokens, 19);
@@ -1260,7 +1272,7 @@ fn parse_streaming_response_records_incomplete_reason() {
             provider_reason: Some(ref reason),
         }) if status == "incomplete" && reason == "max_output_tokens"
     ));
-    assert_eq!(result.usage.unwrap().total_tokens, 19);
+    assert_eq!(result.usage.unwrap().usage.total_tokens, 19);
 }
 
 #[test]
@@ -1382,7 +1394,7 @@ fn parse_streaming_response_incomplete_usage_is_preserved_when_stream_ends() {
     );
 
     let result = parse_streaming_response(body).unwrap();
-    assert_eq!(result.usage.unwrap().total_tokens, 19);
+    assert_eq!(result.usage.unwrap().usage.total_tokens, 19);
 }
 
 #[test]
@@ -1416,7 +1428,7 @@ fn parse_streaming_response_failed_carries_structured_metadata() {
     assert_eq!(metadata.error_code.as_deref(), Some("server_error"));
     assert_eq!(metadata.error_param, None);
     assert_eq!(metadata.message.as_deref(), Some("server exploded"));
-    assert_eq!(failed.usage().unwrap().total_tokens, 18);
+    assert_eq!(failed.usage().unwrap().usage.total_tokens, 18);
 }
 
 #[test]
@@ -1505,6 +1517,7 @@ fn parse_streaming_response_ignores_unknown_event_types() {
 fn parse_output_items_empty_output_array() {
     let response = ApiResponse {
         id: None,
+        model: None,
         output: vec![],
         usage: None,
     };
@@ -1517,6 +1530,7 @@ fn parse_output_items_missing_id_for_reasoning() {
     // Reasoning without an id should be skipped (id is required for reasoning)
     let response = ApiResponse {
         id: None,
+        model: None,
         output: vec![OutputMessage {
             msg_type: "reasoning".to_string(),
             id: None, // Missing required id
@@ -1542,6 +1556,7 @@ fn parse_output_items_missing_id_for_reasoning() {
 fn parse_output_items_function_call_missing_fields() {
     let response = ApiResponse {
         id: Some("resp-123".to_string()),
+        model: None,
         output: vec![OutputMessage {
             msg_type: "function_call".to_string(),
             id: None,
@@ -1572,6 +1587,7 @@ fn parse_output_items_function_call_blank_arguments() {
     for arguments in [None, Some(""), Some("   ")] {
         let response = ApiResponse {
             id: None,
+            model: None,
             output: vec![OutputMessage {
                 msg_type: "function_call".to_string(),
                 id: Some("fc-1".to_string()),
@@ -1601,6 +1617,7 @@ fn parse_output_items_function_call_blank_arguments() {
 fn parse_output_items_message_with_empty_content_array() {
     let response = ApiResponse {
         id: None,
+        model: None,
         output: vec![OutputMessage {
             msg_type: "message".to_string(),
             id: Some("msg-1".to_string()),
@@ -1628,6 +1645,7 @@ fn parse_output_items_message_with_non_text_content() {
     // Message with content type that isn't output_text
     let response = ApiResponse {
         id: None,
+        model: None,
         output: vec![OutputMessage {
             msg_type: "message".to_string(),
             id: Some("msg-1".to_string()),
@@ -1658,6 +1676,7 @@ fn parse_output_items_reasoning_with_summary_fallback() {
     // Reasoning with summary but no content
     let response = ApiResponse {
         id: None,
+        model: None,
         output: vec![OutputMessage {
             msg_type: "reasoning".to_string(),
             id: Some("r-1".to_string()),
@@ -1690,6 +1709,7 @@ fn parse_output_items_reasoning_content_fallback_to_summary() {
     // Reasoning with content containing reasoning_text
     let response = ApiResponse {
         id: None,
+        model: None,
         output: vec![OutputMessage {
             msg_type: "reasoning".to_string(),
             id: Some("r-1".to_string()),

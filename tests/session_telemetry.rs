@@ -11,6 +11,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 fn success_response() -> serde_json::Value {
     serde_json::json!({
         "id": "resp-123",
+        "model": "glm-5.1",
         "output": [
             {
                 "type": "message",
@@ -194,6 +195,184 @@ async fn session_telemetry_creates_sidecar_on_success() {
         records
             .iter()
             .all(|record| record["invocation_id"].is_string())
+    );
+}
+
+/// One provider attempt must name the model that ran, the model the provider
+/// reported serving the response, and whether the counters were complete, so a
+/// usage record can be tied to the response that produced it (ADR-030).
+#[tokio::test]
+async fn provider_attempt_records_provider_identity_and_usage_presence() {
+    let env = TestEnv::new("cake-provider-identity-test");
+    let mock_server = MockServer::start().await;
+    write_responses_settings(&env, &mock_server.uri());
+
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(success_response()))
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let output = env
+        .command()
+        .arg("--output-format")
+        .arg("json")
+        .arg("test prompt")
+        .env("SESSION_TELEMETRY_TEST_KEY", "test-token")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute cake");
+
+    assert!(
+        output.status.success(),
+        "cake should succeed. stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let records = telemetry_records(&env);
+    let attempt = records
+        .iter()
+        .find(|record| record["type"] == "api_attempt")
+        .expect("a successful attempt should be recorded");
+    assert_eq!(attempt["model"], "glm-5.1");
+    assert_eq!(attempt["response_model"], "glm-5.1");
+    assert_eq!(attempt["provider_request_id"], "resp-123");
+    assert_eq!(attempt["usage_presence"], "complete");
+    assert_eq!(attempt["usage"]["total_tokens"], 15);
+    assert!(
+        attempt.get("provider").is_none(),
+        "an endpoint with no provider strategy has no resolved provider: {attempt}"
+    );
+
+    let session = session_records(&env);
+    let usage = session
+        .iter()
+        .find(|record| record["type"] == "turn_usage")
+        .expect("the reported usage should be settled in the session file");
+    assert_eq!(usage["usage_presence"], "complete");
+    assert_eq!(usage["model"], "glm-5.1");
+    assert_eq!(usage["response_model"], "glm-5.1");
+    assert_eq!(
+        usage["provider_request_id"], "resp-123",
+        "the usage record must name the provider response that produced it"
+    );
+    assert_eq!(usage["usage"]["total_tokens"], 15);
+}
+
+/// A provider usage object missing a required counter must not read as a
+/// measured zero: the record states `partial`, and the aggregate still totals
+/// only what was reported.
+#[tokio::test]
+async fn partial_provider_usage_is_marked_partial_end_to_end() {
+    let env = TestEnv::new("cake-partial-usage-test");
+    let mock_server = MockServer::start().await;
+    write_responses_settings(&env, &mock_server.uri());
+
+    let mut body = success_response();
+    body["usage"] = serde_json::json!({"input_tokens": 10, "output_tokens": 5});
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let output = env
+        .command()
+        .arg("--output-format")
+        .arg("json")
+        .arg("test prompt")
+        .env("SESSION_TELEMETRY_TEST_KEY", "test-token")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute cake");
+
+    assert!(
+        output.status.success(),
+        "cake should succeed. stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let records = telemetry_records(&env);
+    let attempt = records
+        .iter()
+        .find(|record| record["type"] == "api_attempt")
+        .expect("a successful attempt should be recorded");
+    assert_eq!(attempt["usage_presence"], "partial");
+    assert_eq!(attempt["usage"]["input_tokens"], 10);
+    assert_eq!(attempt["usage"]["output_tokens"], 5);
+    assert_eq!(
+        attempt["usage"]["total_tokens"], 0,
+        "an absent counter is normalized to zero"
+    );
+
+    let session = session_records(&env);
+    let usage = session
+        .iter()
+        .find(|record| record["type"] == "turn_usage")
+        .expect("the reported usage should be settled in the session file");
+    assert_eq!(
+        usage["usage_presence"], "partial",
+        "the settled record must say the total is partly unknown"
+    );
+}
+
+/// An HTTP error attempt records its status and error with no usage, and never
+/// invents a zero: no `turn_usage` record is written for an attempt that
+/// reported nothing.
+#[tokio::test]
+async fn http_error_attempt_records_status_without_inventing_usage() {
+    let env = TestEnv::new("cake-http-error-usage-test");
+    let mock_server = MockServer::start().await;
+    write_responses_settings(&env, &mock_server.uri());
+
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "error": {"message": "unsupported request", "type": "invalid_request_error"}
+        })))
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let output = env
+        .command()
+        .arg("test prompt")
+        .env("SESSION_TELEMETRY_TEST_KEY", "test-token")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute cake");
+
+    assert_eq!(output.status.code(), Some(1), "a 400 is an agent error");
+
+    let records = telemetry_records(&env);
+    let attempt = records
+        .iter()
+        .find(|record| record["type"] == "api_attempt")
+        .expect("a failed attempt should still be recorded");
+    assert_eq!(attempt["status_code"], 400);
+    assert_eq!(attempt["terminal_class"], "http");
+    assert!(attempt["usage"].is_null());
+    assert_eq!(attempt["usage_presence"], "unreported");
+    assert_eq!(attempt["model"], "glm-5.1");
+    assert!(attempt.get("response_model").is_none());
+    assert!(attempt.get("provider_request_id").is_none());
+    assert!(
+        attempt["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("unsupported request")),
+        "the attempt keeps an error detail: {attempt}"
+    );
+
+    assert!(
+        !session_records(&env)
+            .iter()
+            .any(|record| record["type"] == "turn_usage"),
+        "an attempt that reported no usage must not write a zero-valued usage record"
     );
 }
 

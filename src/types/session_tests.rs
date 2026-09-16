@@ -1,7 +1,7 @@
 use super::*;
 use crate::config::session::CURRENT_FORMAT_VERSION;
 use crate::types::conversation::{ReasoningContentKind, ReasoningSummary};
-use crate::types::usage::{InputTokensDetails, OutputTokensDetails};
+use crate::types::usage::{InputTokensDetails, OutputTokensDetails, UsagePresence};
 
 fn stream_json_for(item: &ConversationItem) -> serde_json::Value {
     serde_json::to_value(StreamRecord::from_conversation_item(item)).unwrap()
@@ -1022,6 +1022,10 @@ fn snapshot_session_json_turn_usage() {
         timestamp: fixed_timestamp(),
         attempt: Some(2),
         terminal_class: Some(ApiAttemptTerminalClass::ResponseFailed),
+        usage_presence: Some(UsagePresence::Partial),
+        model: Some("glm-5.1".to_string()),
+        response_model: Some("served-glm-5.1".to_string()),
+        provider_request_id: Some("resp-fail".to_string()),
     });
 
     insta::assert_json_snapshot!("session_json_turn_usage", session_record_json(record));
@@ -1055,9 +1059,38 @@ fn legacy_turn_usage_shape_deserializes_without_attempt_metadata() {
         SessionRecord::TurnUsage(TurnUsageData {
             attempt: None,
             terminal_class: None,
+            usage_presence: None,
+            model: None,
+            response_model: None,
+            provider_request_id: None,
             ..
         })
     ));
+}
+
+#[test]
+fn turn_usage_without_provider_metadata_keeps_legacy_shape() {
+    let record = SessionRecord::TurnUsage(TurnUsageData {
+        session_id: fixed_session_id(),
+        task_id: fixed_task_id(),
+        turn: 1,
+        usage: Usage::default(),
+        timestamp: fixed_timestamp(),
+        attempt: None,
+        terminal_class: None,
+        usage_presence: None,
+        model: None,
+        response_model: None,
+        provider_request_id: None,
+    });
+    let json = session_record_json(record);
+
+    assert!(json.get("attempt").is_none());
+    assert!(json.get("terminal_class").is_none());
+    assert!(json.get("usage_presence").is_none());
+    assert!(json.get("model").is_none());
+    assert!(json.get("response_model").is_none());
+    assert!(json.get("provider_request_id").is_none());
 }
 
 #[test]
@@ -1070,6 +1103,10 @@ fn turn_usage_without_attempt_metadata_keeps_legacy_shape() {
         timestamp: fixed_timestamp(),
         attempt: None,
         terminal_class: None,
+        usage_presence: None,
+        model: None,
+        response_model: None,
+        provider_request_id: None,
     });
     let json = session_record_json(record);
 
