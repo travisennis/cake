@@ -14,30 +14,6 @@
           }
         ]
       }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "Edit|Write",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "./.cake/hooks/format-edited-file.sh",
-            "timeout": 15,
-            "status_message": "Formatting edited file"
-          }
-        ]
-      }
-    ],
-    "SessionStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "./.cake/hooks/remind-self-reflection.sh",
-            "timeout": 3
-          }
-        ]
-      }
     ]
   }
 }
