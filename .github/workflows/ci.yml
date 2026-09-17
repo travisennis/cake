@@ -70,6 +70,9 @@ jobs:
       - name: Binary-size baseline fixture tests
         shell: bash
         run: python3 scripts/test-binary-size-baseline.py
+      - name: Coverage guard fixture tests
+        shell: bash
+        run: python3 scripts/test-coverage-guard.py
       - name: Install just
         uses: taiki-e/install-action@v2
         with:

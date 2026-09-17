@@ -273,9 +273,13 @@ pre-push-docs:
     scripts/classify-changes.sh --check
     @python3 scripts/lint-domain-glossary.py
 
+# Run the coverage artifact guard fixture tests (stdlib only; no llvm-cov, no network)
+coverage-guard-check:
+    @python3 scripts/test-coverage-guard.py -v
+
 # Run the Python script fixture suites: the same suites the `changes` job in CI runs.
 # Stdlib only and no credentials; nothing here calls a model provider or the network.
-check-scripts: dependency-sweep-check profile-check binary-size-baseline-check test-classify-changes test-just-pr eval-check session-metrics-check
+check-scripts: dependency-sweep-check profile-check binary-size-baseline-check test-classify-changes test-just-pr eval-check session-metrics-check coverage-guard-check
     echo "Script fixture suites passed!"
 
 # Run the Linux compatibility check corresponding to GitHub Actions
@@ -335,20 +339,22 @@ coverage-lcov:
 
 # Regenerate the macOS cargo-crap baseline from current coverage.
 # Run this after intentional code or test changes alter coverage/complexity, then commit ci/cargo-crap-baseline.json with the change.
-# Profile data is cleaned first for the same reason scripts/check-coverage.sh cleans it:
-# a stale or duplicated artifact would bake a wrong per-function baseline into the ratchet.
+# Profile data is cleaned first and the resulting LCOV is guarded, so a stale artifact
+# or a duplicated source root cannot bake a wrong per-function baseline into the ratchet.
 change-risk-baseline:
-    cargo llvm-cov clean --profraw-only
+    cargo llvm-cov clean --workspace
     mkdir -p ci
     cargo llvm-cov --lcov --output-path lcov.info
+    python3 scripts/coverage-guard.py --lcov lcov.info
     scripts/cargo-crap.sh --lcov lcov.info --format json --output ci/cargo-crap-baseline.json
 
 # Print a reviewer-friendly macOS cargo-crap regression report.
-# Cleans profile data first, as `check-coverage` and `change-risk-baseline` do, so the
-# report cannot describe artifacts from an earlier checkout state.
+# Cleaned and guarded like `change-risk-baseline`, so the report cannot describe
+# artifacts from an earlier checkout state.
 change-risk-report:
-    cargo llvm-cov clean --profraw-only
+    cargo llvm-cov clean --workspace
     cargo llvm-cov --lcov --output-path lcov.info
+    python3 scripts/coverage-guard.py --lcov lcov.info
     scripts/cargo-crap.sh --lcov lcov.info --baseline ci/cargo-crap-baseline.json --format markdown
 
 update-dependencies:
