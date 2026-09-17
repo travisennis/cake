@@ -45,39 +45,48 @@ Append cases to `src/clients/tools/corpus/commands.jsonl` as documented in its R
 
 ## Verification
 
-**Definition of done:** run the final gate your change class routes to, matching [Pre-push routing](#pre-push-routing). For Rust, configuration, CI, fixture, or dependency changes, that gate is:
+**Definition of done:** run the gate your change class routes to and report, in the handoff or pull request, which gates ran and which did not. The matrix below names the command for each class and what it actually covers, so a passing fast gate is not mistaken for a complete one.
 
-```bash
-just check
-```
+### Change-class matrix
 
-This fast gate checks toolchain synchronization, formatting, strict Clippy in both feature modes, all-feature tests, imports, dependency direction, module size, instruction size, and the domain glossary. GitHub CI remains the source of truth for platform sandbox tests and coverage/change risk. Use `just check-full` when you need the complete local validation suite, including Rust and Markdown documentation checks. Run focused commands such as `cargo test <name>` before the gate.
+  | Change class                               | Gate                                                                                                                | What it covers                                                                                                                                                                                                                                                                    |
+  | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | Rust source, control flow, tests           | `just check`                                                                                                        | Toolchain pin, `cargo fmt --check`, strict Clippy in both feature modes, all-feature tests, import and dependency-direction lints, module/instruction/glossary lints, the per-function complexity ratchet (`just cc-check`), and the Python fixture suites (`just check-scripts`) |
+  | Per-function complexity or CRAP risk       | `just cc-check`, `just change-risk-report` for the per-function detail                                              | Cyclomatic complexity against `ci/cargo-crap-baseline.json`; new functions must meet the target and existing ones may not exceed their baseline. Also inside `just check`                                                                                                         |
+  | Coverage or change-risk sensitive          | `just check-coverage`                                                                                               | Coverage threshold, CRAP regression, and the same CC gate, all from one instrumented run. The script cleans profile data first, because stale or duplicated artifacts have reported false regressions                                                                             |
+  | Regenerating `ci/cargo-crap-baseline.json` | `just change-risk-baseline`                                                                                         | Cleans profile data first, matching `check-coverage`, then rewrites the baseline from a fresh run                                                                                                                                                                                 |
+  | `scripts/**` Python tooling                | `just check-scripts`                                                                                                | The same suites CI's `changes` job runs: dependency sweep, profiling helper, binary-size baseline, change classifier, `just pr`, eval harness, and session metrics. Stdlib only; no credentials, network, or provider calls. Also inside `just check`                             |
+  | Markdown                                   | `just docs-check` for the whole corpus; `panache format --check <files>` and `panache lint <files>` while iterating | Formatting and lint. The pre-push route checks only the changed living documents                                                                                                                                                                                                  |
+  | Snapshots                                  | `just snapshots`, then `cargo insta review`                                                                         | insta snapshot acceptance                                                                                                                                                                                                                                                         |
+  | Dependencies                               | `just check-deps`                                                                                                   | `cargo deny` advisories                                                                                                                                                                                                                                                           |
+  | Linux-only `cfg` paths                     | `just clippy-linux`                                                                                                 | Clippy against `x86_64-unknown-linux-gnu`, when the target and cross compiler are installed                                                                                                                                                                                       |
+  | Judge or evaluation fixtures               | `just judge-corpus-check`, `just judge-bench-check`, `just eval-check`                                              | Deterministic and offline. The live variants (`just judge-corpus`, `just judge-bench`, `just eval`) call model providers and need credentials and authorized spend                                                                                                                |
+  | Rust-version pin                           | `just rust-version-check`                                                                                           | The toolchain pin stays synchronized across its files. Also inside `just check`                                                                                                                                                                                                   |
+
+`just check` is the fast gate and is what the pre-push route runs for code and mixed pushes. GitHub CI remains the source of truth for the platform sandbox tests and the Coverage job. `just check-full` is the complete local suite: `just check`, the Linux compatibility check, coverage/change risk, dependency advisories, Rust and Markdown documentation, and a release build. Run focused commands such as `cargo test <name>` before the gate.
 
 Additional checks:
 
-- Dependency changes: `just check-deps`. [Dependency and supply chain posture](docs/dependencies.md) is the authority for pin ownership and update review.
-- Rust-version changes: `just rust-version-check`.
-- Linux-sensitive changes on macOS: `just clippy-linux` when the target and cross-compiler are installed.
-- Snapshot changes: `just snapshots`, then `cargo insta review`.
+- Dependency changes: `just check-deps`; [Dependency and supply chain posture](docs/dependencies.md) is the authority for pin ownership and update review.
+- Documentation-only changes: `just pre-push-docs` covers committed Markdown, plus `git diff --check`. No automated link checker exists; relative links were audited clean on 2026-09-02, see #222.
 - Label changes: `just labels-check-file` (file validation, also CI), `just labels-check` (repo drift vs `.github/labels.yml`), `just labels` (apply), `just labels-prune` (delete unlisted labels).
-- Full local validation, including the compatibility check, all CI fixture suites, coverage/change risk, dependency checks, Rust and Markdown documentation, and a release build: `just check-full`.
-- Documentation-only changes: targeted `panache format --check` and `panache lint` for changed living documents, and `git diff --check` (no automated link checker exists; relative links were audited clean on 2026-09-02, see #222). Use `just docs-check` when intentionally validating the complete Markdown corpus; it also runs `just lint-instruction-size`.
-- Markdown gate scopes are intentional: the pre-commit hook checks formatting for changed Markdown and lint for the full corpus. The pre-push route checks both for changed living documents. `just docs-check` and CI check the full corpus. This gives formatting feedback before commit without adding a full-corpus formatting pass to every commit; the full-corpus gates remain the final check.
 - Instruction changes (AGENTS.md, `.agents/skills/`, guardrails, runbooks): `just lint-instruction-size` caps AGENTS.md, the one document loaded every session, reports the corpus, and also runs in `just check`. [Agent-facing instructions](docs/guardrails/agent-instructions.md) is the authority for what an added instruction must justify.
+- Markdown gate scopes are intentional: the pre-commit hook checks formatting for changed Markdown and lint for the full corpus. The pre-push route checks both for changed living documents. `just docs-check` and CI check the full corpus. This gives formatting feedback before commit without adding a full-corpus formatting pass to every commit; the full-corpus gates remain the final check.
+- `just pre-push-docs` classifies the committed changes between the base and `HEAD`, so uncommitted and untracked Markdown is invisible to it. Run `just docs-check` while a document is still uncommitted, or commit before relying on the routed check.
 
 ### Pre-push routing
 
 The pre-push hook routes by changed path class instead of running the full local validation suite unconditionally.
 
 - Markdown-only pushes run `just pre-push-docs`: targeted `panache format --check` and `panache lint` on the changed living documents, plus `git diff --check`.
-- Pushes touching `src/`, `tests/`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `.cargo/`, `.github/workflows/`, `justfile`, `scripts/`, or `ci/` run the fast `just check` gate.
+- Pushes touching `src/`, `tests/`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `.cargo/`, `.github/workflows/`, `justfile`, `scripts/`, or `ci/` run the fast `just check` gate, which includes the complexity ratchet and the script fixture suites.
 - Mixed pushes run both.
 - Anything unclassified or unresolvable fails closed to `just check-full`.
 - `just pre-push-force` always runs `just check-full`; `just pre-push-classify` prints the classification for the current branch.
 
 [Working on branches and worktrees](docs/runbooks/parallel-worktrees.md) covers how the base is resolved and why the gate follows the checkout rather than the pushed ref.
 
-If an applicable check cannot run, report the exact reason and the narrower checks that did run. Do not describe a failing primary branch as unrelated without investigating it.
+If an applicable check cannot run, report the exact reason and the narrower checks that did run. Several checks need no build, coverage pass, or network, so a blocked prerequisite rarely means no evidence at all: `just cc-check`, `just check-scripts`, `just docs-check`, and `just pre-push-classify` cover complexity, the Python tooling, Markdown, and the change classification. Do not describe a failing primary branch as unrelated without investigating it.
 
 ## Code conventions
 

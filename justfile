@@ -89,6 +89,7 @@ ready-queue:
 #   body    pull request description file (default: fill title/body from commits)
 #   title   pull request title (default: HEAD commit subject; wins over --fill)
 # issue   comment the pull request URL back on this issue number
+# base    target branch (default: master); pass the branch below for a stacked pull request
 pr option1="" option2="" option3="" option4="":
     #!/usr/bin/env bash
     scripts/just-pr.sh {{ quote(option1) }} {{ quote(option2) }} {{ quote(option3) }} {{ quote(option4) }}
@@ -208,8 +209,11 @@ lint-deps:
     @grep -rn 'use crate::' src/types/ --include='*.rs' | grep -v 'use crate::types' | grep -v '_tests\.rs:' | { if grep -q .; then echo "ERROR: src/types/ imports from a non-types crate module. Violations:"; grep -rn 'use crate::' src/types/ --include='*.rs' | grep -v 'use crate::types' | grep -v '_tests\.rs:'; exit 1; fi; }
     @echo "Dependency lint passed!"
 
-# Run the fast local correctness gate for code changes
-check: rust-version-check fmt-check _clippy-strict _clippy-no-default-features _test-all-features lint-imports lint-deps lint-module-size lint-instruction-size lint-domain-glossary
+# Run the fast local gate for code changes.
+# Keep the composition in sync with the change-class matrix in CONTRIBUTING.md:
+# cc-check runs the per-function complexity ratchet here rather than only in the
+# Coverage job, and check-scripts runs the Python fixture suites.
+check: rust-version-check fmt-check cc-check _clippy-strict _clippy-no-default-features _test-all-features lint-imports lint-deps lint-module-size lint-instruction-size lint-domain-glossary check-scripts
     echo "Fast local checks passed!"
 
 # Print the changed-path classification the pre-push gate routes on: docs | code | mixed | unknown | none
@@ -269,16 +273,18 @@ pre-push-docs:
     scripts/classify-changes.sh --check
     @python3 scripts/lint-domain-glossary.py
 
-# Run all CI fixture suites as part of full local validation
-_check-fixtures: dependency-sweep-check profile-check binary-size-baseline-check test-classify-changes test-just-pr eval-check session-metrics-check
-    @:
+# Run the Python script fixture suites: the same suites the `changes` job in CI runs.
+# Stdlib only and no credentials; nothing here calls a model provider or the network.
+check-scripts: dependency-sweep-check profile-check binary-size-baseline-check test-classify-changes test-just-pr eval-check session-metrics-check
+    echo "Script fixture suites passed!"
 
 # Run the Linux compatibility check corresponding to GitHub Actions
 _check-linux:
     cargo check --all-features
 
-# Run the full local validation suite, including coverage, documentation, and all CI fixtures
-check-full: check _check-linux _check-fixtures check-coverage check-deps doc docs-check build
+# Run the full local validation suite: the fast gate above, then the Linux compatibility
+# check, coverage/change risk, dependency advisories, documentation, and a release build.
+check-full: check _check-linux check-coverage check-deps doc docs-check build
     echo "Full check suite passed!"
 
 # Check module sizes against thresholds (informational, always passes)
@@ -329,13 +335,19 @@ coverage-lcov:
 
 # Regenerate the macOS cargo-crap baseline from current coverage.
 # Run this after intentional code or test changes alter coverage/complexity, then commit ci/cargo-crap-baseline.json with the change.
+# Profile data is cleaned first for the same reason scripts/check-coverage.sh cleans it:
+# a stale or duplicated artifact would bake a wrong per-function baseline into the ratchet.
 change-risk-baseline:
+    cargo llvm-cov clean --profraw-only
     mkdir -p ci
     cargo llvm-cov --lcov --output-path lcov.info
     scripts/cargo-crap.sh --lcov lcov.info --format json --output ci/cargo-crap-baseline.json
 
-# Print a reviewer-friendly macOS cargo-crap regression report
+# Print a reviewer-friendly macOS cargo-crap regression report.
+# Cleans profile data first, as `check-coverage` and `change-risk-baseline` do, so the
+# report cannot describe artifacts from an earlier checkout state.
 change-risk-report:
+    cargo llvm-cov clean --profraw-only
     cargo llvm-cov --lcov --output-path lcov.info
     scripts/cargo-crap.sh --lcov lcov.info --baseline ci/cargo-crap-baseline.json --format markdown
 
