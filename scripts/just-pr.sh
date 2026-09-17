@@ -5,6 +5,10 @@ labels=""
 body_file=""
 title=""
 issue=""
+# Target branch for the pull request. A stacked pull request targets the branch
+# below it rather than master, so `base=` overrides this; the `changes` job in
+# ci.yml is deliberately unfiltered by base branch for the same reason.
+base="master"
 
 for option in "$@"; do
     [[ -z "$option" ]] && continue
@@ -13,11 +17,14 @@ for option in "$@"; do
         body=*)   body_file="${option#body=}" ;;
         title=*)  title="${option#title=}" ;;
         issue=*)  issue="${option#issue=}" ;;
-        *) echo "ERROR: unknown option '$option' (expected labels=..., body=<file>, title=..., issue=<number>)" >&2; exit 1 ;;
+        base=*)   base="${option#base=}" ;;
+        *) echo "ERROR: unknown option '$option' (expected labels=..., body=<file>, title=..., issue=<number>, base=<ref>)" >&2; exit 1 ;;
     esac
 done
 
-args=(--base master)
+[[ -n "$base" ]] || { echo "ERROR: base= requires a ref (for example base=feat/stacked-below)" >&2; exit 1; }
+
+args=(--base "$base")
 # Trim each label and drop empties before validating, so the checks see
 # exactly the argv element gh receives; its CSV split keeps inner spaces.
 labels=$(printf '%s\n' "$labels" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | sed '/^$/d' | paste -sd, -)

@@ -71,6 +71,13 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
+# The fast local gate runs this check, so a missing tool must name its remedy
+# instead of failing as an opaque exec error from scripts/cargo-crap.sh.
+if ! command -v cargo-crap >/dev/null 2>&1; then
+    echo "ERROR: cargo-crap not found — run \`just setup\` (installs cargo-crap 0.2.2)" >&2
+    exit 1
+fi
+
 if [ ! -f "$baseline" ]; then
     echo "ERROR: baseline not found: $baseline (regenerate with 'just change-risk-baseline')" >&2
     exit 1

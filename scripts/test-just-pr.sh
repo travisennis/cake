@@ -5,8 +5,9 @@
 # exact argv each stubbed call receives: fail-fast ordering before creation,
 # label normalization into the single CSV element gh parses, the title/--fill
 # interaction (explicit title wins; body file falls back to the HEAD subject),
-# and the issue comment-back. Run locally via `just test-just-pr` and in CI via
-# the `changes` job in .github/workflows/ci.yml.
+# the base default and the `base=` override for stacked pull requests, and the
+# issue comment-back. Run locally via `just test-just-pr` and in CI via the
+# `changes` job in .github/workflows/ci.yml.
 
 set -euo pipefail
 
@@ -76,6 +77,16 @@ run_pr
 expect_invocation 1 "pr${sep}create${sep}--base${sep}master${sep}--fill${sep}"
 [ "$(invocations)" -eq 1 ] || fail "no options: expected one gh invocation"
 grep -q "https://example.com/pr/1" "$OUT_LOG" || fail "no options: expected URL on stdout"
+
+# base= retargets a stacked pull request at the branch below it
+run_pr "base=feat/stacked-below"
+[ "$rc" -eq 0 ] || fail "base override: expected success, got $rc: $(cat "$ERR_LOG")"
+expect_invocation 1 "pr${sep}create${sep}--base${sep}feat/stacked-below${sep}--fill${sep}"
+
+# An empty base fails before creation
+run_pr "base="
+expect_failure "empty base" "base= requires a ref"
+expect_no_creation
 
 # Explicit title without body: kept alongside --fill (title wins over autofill)
 run_pr "title=My Title"
