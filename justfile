@@ -260,6 +260,10 @@ pre-push-force: check-full
 # commits), via scripts/classify-changes.sh --check.
 pre-push-docs:
     @set -e; files=$(scripts/classify-changes.sh --files); \
+    range=$(scripts/classify-changes.sh --range); \
+    if [ -n "$range" ]; then \
+        echo "pre-push-docs: measuring committed Markdown in $range, and nothing else"; \
+    fi; \
     if [ -n "$files" ]; then \
         command -v panache >/dev/null 2>&1 || { echo "ERROR: panache not found — run \`just setup\` (installs panache 3.0.0)" >&2; exit 1; }; \
         echo "pre-push-docs: checking changed Markdown files"; \
@@ -268,7 +272,11 @@ pre-push-docs:
         printf '%s\0' $files | xargs -0 panache format --check --force-exclude --quiet; \
         printf '%s\0' $files | xargs -0 panache lint --force-exclude --quiet; \
     else \
-        echo "pre-push-docs: no changed Markdown files"; \
+        echo "pre-push-docs: no changed Markdown files in that range"; \
+    fi; \
+    outside=$(git status --porcelain -- '*.md' '*.markdown' | wc -l | tr -d ' '); \
+    if [ "$outside" != "0" ]; then \
+        echo "pre-push-docs: $outside Markdown path(s) in the worktree are outside this measurement (untracked files are checked once added); \`just docs-check\` covers the tracked corpus"; \
     fi; \
     scripts/classify-changes.sh --check
     @python3 scripts/lint-domain-glossary.py
@@ -277,9 +285,13 @@ pre-push-docs:
 coverage-guard-check:
     @python3 scripts/test-coverage-guard.py -v
 
+# Run the documentation-corpus fixture tests (stub panache; no network)
+docs-corpus-check:
+    @scripts/test-docs-corpus.sh
+
 # Run the Python script fixture suites: the same suites the `changes` job in CI runs.
 # Stdlib only and no credentials; nothing here calls a model provider or the network.
-check-scripts: dependency-sweep-check profile-check binary-size-baseline-check test-classify-changes test-just-pr eval-check session-metrics-check coverage-guard-check
+check-scripts: dependency-sweep-check profile-check binary-size-baseline-check test-classify-changes test-just-pr eval-check session-metrics-check coverage-guard-check docs-corpus-check
     echo "Script fixture suites passed!"
 
 # Run the Linux compatibility check corresponding to GitHub Actions
@@ -361,14 +373,16 @@ change-risk-report:
 update-dependencies:
     cargo upgrade -i allow && cargo update    
 
-# Check markdown formatting and lint (requires panache; installed by `just setup`)
+# Check markdown formatting and lint over the repository's Markdown: the files git
+# tracks, so untracked scratch notes are neither checked nor rewritten (requires
+# panache; installed by `just setup`)
 docs-check: lint-instruction-size
-    panache format --check --force-exclude . --quiet
-    panache lint --force-exclude . --quiet
+    @scripts/docs-corpus.sh --check
 
-# Auto-format all markdown files
+# Auto-format the repository's Markdown (tracked files; format an untracked draft
+# explicitly with `panache format <path>`)
 docs-fmt:
-    panache format .
+    @scripts/docs-corpus.sh --fmt
 
 build:
     cargo build --release

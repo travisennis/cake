@@ -48,9 +48,10 @@ while [ "$#" -gt 0 ]; do
             ;;
         --files) mode="files"; shift ;;
         --check) mode="check"; shift ;;
+        --range) mode="range"; shift ;;
         *)
             echo "ERROR: unknown argument '$1'" >&2
-            echo "usage: scripts/classify-changes.sh [--base <ref>] [--head <ref>] [--files|--check]" >&2
+            echo "usage: scripts/classify-changes.sh [--base <ref>] [--head <ref>] [--files|--check|--range]" >&2
             exit 2
             ;;
     esac
@@ -83,6 +84,11 @@ if ! changed="$(git diff --name-only "$base...$head" 2>/dev/null)"; then
     # all-zeros sha); fail closed so the caller runs the full gate (class mode)
     # or skips quietly (--files and --check modes).
     [ "$mode" = "class" ] && echo "unknown"
+    exit 0
+fi
+
+if [ "$mode" = "range" ]; then
+    printf '%s...%s\n' "$base" "$head"
     exit 0
 fi
 
