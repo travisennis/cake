@@ -41,11 +41,12 @@ The selected directory applies only to that Bash call. It does not mutate `ToolC
 - Good, because the judge and executor receive the same effective directory, preventing safety context from describing one path while the command runs in another.
 - Good, because the default schema call and existing commands remain unchanged.
 - Good, because canonicalization prevents a symlinked subdirectory from escaping the workspace.
-- Bad, because a command cannot select an independently granted directory outside the invocation workspace; agents must use an invocation or worktree rooted at the desired project.
+- Bad, because a command cannot select an independently granted directory outside the invocation workspace; agents must use an invocation or worktree rooted at the desired project. (Partially superseded by [ADR 032](032-bash-cwd-sandbox-grants.md).)
 - Bad, because invalid cwd arguments now produce a tool error before the command-safety judge is called.
 
 ## More Information
 
+- [ADR 032](032-bash-cwd-sandbox-grants.md) partially supersedes this record: a `cwd` may also name a directory the sandbox grants, and any existing directory under `DangerFullAccess`. The rest of this decision, including the optional argument, canonicalization, per-call scope, and the single effective path used by the child, judge, repository digest, and denial diagnostics, stands.
 - Issue #575 owns the implementation.
 - The provider-facing schema and model-visible wording live in `src/clients/tools/bash.rs` and `src/clients/tools/bash-description.txt`.
 - Current sandbox guarantees remain in [Security](../security.md); this decision does not widen them.
