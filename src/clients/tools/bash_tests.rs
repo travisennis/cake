@@ -1628,7 +1628,7 @@ fn test_bash_git_ignores_inherited_git_dir_canary() {
 }
 
 /// Single-quote `value` for a POSIX shell.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', r"'\''"))
 }
