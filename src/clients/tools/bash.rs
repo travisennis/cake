@@ -81,8 +81,10 @@ struct BashExecutionArgs {
     command: String,
     timeout: u64,
     policy: super::sandbox::SandboxPolicy,
-    /// The model's requested working directory. It is resolved and validated
-    /// against the invocation workspace before execution.
+    /// The model's raw working-directory request, unresolved. [`parse_bash_call`]
+    /// resolves and validates it against the invocation workspace; the resolved
+    /// directory travels to the executor as an explicit argument instead of
+    /// being written back into this field.
     cwd: Option<PathBuf>,
     /// The model's untrusted self-report of intent, weighed against the
     /// command by the LLM judge preflight.
@@ -163,6 +165,21 @@ fn resolve_bash_cwd(
     }
 
     Ok(canonical)
+}
+
+/// Parse one Bash call and resolve its effective working directory.
+///
+/// Parsing and resolution happen together, once, so the child process, the
+/// command-safety judge request, the repository digest, and the sandbox-denial
+/// scan all receive the same validated directory and no caller can reach the
+/// executor with an unresolved request.
+fn parse_bash_call(
+    context: &super::ToolContext,
+    arguments: &str,
+) -> Result<(BashExecutionArgs, PathBuf), String> {
+    let args = BashExecutionArgs::from_json(arguments, context.sandbox_policy)?;
+    let cwd = resolve_bash_cwd(context, args.cwd.as_deref())?;
+    Ok((args, cwd))
 }
 
 // =============================================================================
@@ -900,8 +917,8 @@ pub(super) async fn execute_bash_for_call(
     arguments: &str,
     call_id: Option<String>,
 ) -> Result<super::ToolResult, super::ToolError> {
-    let args = BashExecutionArgs::from_json(arguments, context.sandbox_policy)?;
-    Box::pin(execute_bash_with_args(context, args, call_id)).await
+    let (args, cwd) = parse_bash_call(context, arguments)?;
+    Box::pin(execute_bash_with_args(context, args, cwd, call_id)).await
 }
 
 /// One prepared Bash invocation: the configured child command plus the
@@ -929,10 +946,10 @@ fn scrub_ambient_git_environment(command: &mut Command) {
 fn prepare_bash_command(
     context: &super::ToolContext,
     args: &BashExecutionArgs,
+    cwd: &Path,
     judge_events: &[CompensationEventTelemetry],
 ) -> Result<PreparedBashCommand, super::ToolError> {
     let use_sandbox = args.policy != super::sandbox::SandboxPolicy::DangerFullAccess;
-    let cwd = args.cwd.as_deref().unwrap_or(&context.cwd);
 
     // Build sandbox configuration with additional directories
     let sandbox_config = super::sandbox::SandboxConfig::build(context);
@@ -1296,18 +1313,15 @@ fn sandbox_denial_detail(denials: &[String]) -> String {
 async fn execute_bash_with_args(
     context: &super::ToolContext,
     args: BashExecutionArgs,
+    cwd: PathBuf,
     call_id: Option<String>,
 ) -> Result<super::ToolResult, super::ToolError> {
-    let effective_cwd = resolve_bash_cwd(context, args.cwd.as_deref())?;
-    let mut args = args;
-    args.cwd = Some(effective_cwd);
-
     // Command-safety preflight: the LLM judge is the only non-sandbox command
     // gate. A block prevents spawn and returns the judge's message as the tool
     // error; a warn prepends guidance to the output; a judge failure fails
     // closed (blocks) with an explanation. Judge decisions and denials are
     // recorded as telemetry compensation events.
-    let preflight = bash_judge_preflight(context, &args, call_id).await?;
+    let preflight = bash_judge_preflight(context, &args, &cwd, call_id).await?;
     let judge_warnings = preflight.warnings;
     let judge_events = preflight.compensation_events;
 
@@ -1321,7 +1335,7 @@ async fn execute_bash_with_args(
         mut command,
         sandbox_applied,
         _sandbox_guard,
-    } = prepare_bash_command(context, &args, &judge_events)?;
+    } = prepare_bash_command(context, &args, &cwd, &judge_events)?;
 
     // Place the child in its own process group so that SIGKILL to the
     // negative PID kills all descendants, not just the direct child.
@@ -1377,11 +1391,10 @@ async fn execute_bash_with_args(
         });
     }
     let output_str = String::from_utf8_lossy(&buf);
-    let cwd = args.cwd.as_deref().unwrap_or(&context.cwd);
     let denials = sandbox_denials(
         context,
         &args.command,
-        cwd,
+        &cwd,
         sandbox_applied,
         success,
         &output_str,
@@ -1488,6 +1501,7 @@ fn bypassed_preflight(raw_call_id: Option<&str>) -> JudgePreflight {
 async fn bash_judge_preflight(
     context: &super::ToolContext,
     args: &BashExecutionArgs,
+    cwd: &Path,
     call_id: Option<String>,
 ) -> Result<JudgePreflight, super::ToolError> {
     // The transcript call id links this Bash call to the judge request, the
@@ -1512,8 +1526,6 @@ async fn bash_judge_preflight(
             raw_call_id,
         ));
     };
-    let cwd = args.cwd.as_deref().unwrap_or(&context.cwd);
-
     // The emergency bypass short-circuits before any judge setup: a disabled
     // judge must not fail on an unusable model or rubric, because the bypass
     // is the recovery path when judge configuration is broken. The bypass is
@@ -1717,12 +1729,12 @@ async fn execute_bash_with_judge_in(
     judge: Option<std::sync::Arc<JudgeContext>>,
     cwd: &std::path::Path,
 ) -> Result<super::ToolResult, super::ToolError> {
-    let args =
-        BashExecutionArgs::from_json(arguments, super::sandbox::SandboxPolicy::DangerFullAccess)?;
     let mut context = super::ToolContext::from_current_process();
     context.cwd = cwd.to_path_buf();
     context.judge = judge;
-    Box::pin(execute_bash_with_args(&context, args, None)).await
+    context.sandbox_policy = super::sandbox::SandboxPolicy::DangerFullAccess;
+    let (args, effective_cwd) = parse_bash_call(&context, arguments)?;
+    Box::pin(execute_bash_with_args(&context, args, effective_cwd, None)).await
 }
 
 /// A judge context with the emergency bypass enabled, used by tests that

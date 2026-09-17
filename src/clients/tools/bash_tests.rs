@@ -4,7 +4,7 @@ use crate::clients::tools::sandbox::SandboxPolicy;
 use sha2::{Digest, Sha256};
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::sync::Arc;
-use wiremock::matchers::{body_string_contains, method};
+use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// Check whether `CAKE_REQUIRE_SANDBOX_TESTS` is set to a truthy value,
@@ -241,7 +241,6 @@ async fn bash_cwd_runs_in_a_relative_workspace_subdirectory() {
     .to_string();
     let mock_server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(body_string_contains(expected.display().to_string()))
         .respond_with(
             ResponseTemplate::new(200).set_body_json(judge_chat_response(
                 r#"{"verdict":"allow","message":"Safe"}"#,
@@ -263,6 +262,66 @@ async fn bash_cwd_runs_in_a_relative_workspace_subdirectory() {
             .output
             .starts_with(&format!("{}\n", expected.display())),
         "pwd should report the requested cwd, got: {}",
+        result.output
+    );
+
+    // The judge must be told about the same directory the command runs in.
+    // Assert the untrusted context object's `cwd` field from the recorded
+    // request instead of matching the path anywhere in the body, where the
+    // command text or a digest could satisfy the match.
+    let requests = mock_server
+        .received_requests()
+        .await
+        .expect("the judge request is recorded");
+    let body: serde_json::Value =
+        serde_json::from_slice(&requests[0].body).expect("judge request body is JSON");
+    let user_content = body["messages"]
+        .as_array()
+        .expect("judge history is a message list")
+        .iter()
+        .find(|message| message["role"] == "user")
+        .and_then(|message| message["content"].as_str())
+        .expect("judge history carries a user message");
+    let untrusted = user_content
+        .rsplit_once('\n')
+        .map(|(_, context)| context)
+        .expect("the judge prompt ends with the untrusted context object");
+    let judge_request_context: serde_json::Value =
+        serde_json::from_str(untrusted).expect("the untrusted context is a JSON object");
+    assert_eq!(
+        judge_request_context["cwd"],
+        serde_json::json!(expected.display().to_string()),
+        "the judge must see the resolved cwd"
+    );
+    assert_eq!(judge_request_context["command"], "pwd -P");
+}
+
+/// An absolute request inside the workspace is canonicalized and honored, so a
+/// caller that already knows the full path need not express it relatively.
+#[tokio::test]
+async fn bash_cwd_accepts_an_absolute_path_inside_the_workspace() {
+    let workspace = tempfile::tempdir().expect("workspace fixture");
+    let nested = workspace.path().join("nested");
+    std::fs::create_dir(&nested).expect("nested directory");
+    let expected = nested
+        .canonicalize()
+        .expect("nested path must canonicalize");
+    let arguments = serde_json::json!({
+        "command": "pwd -P",
+        "cwd": expected.display().to_string(),
+    })
+    .to_string();
+
+    let result =
+        execute_bash_with_judge_in(&arguments, Some(bypassed_judge_context()), workspace.path())
+            .await
+            .expect("bash run should succeed");
+
+    assert!(
+        result
+            .output
+            .starts_with(&format!("{}\n", expected.display())),
+        "an absolute cwd inside the workspace must be honored, got: {}",
         result.output
     );
 }
@@ -514,9 +573,14 @@ async fn bash_read_cap_holds_capture_at_configured_bytes() {
         crate::clients::tools::sandbox::SandboxPolicy::DangerFullAccess,
     )
     .unwrap();
-    let result = Box::pin(execute_bash_with_args(&context, args, None))
-        .await
-        .expect("bash run should succeed");
+    let result = Box::pin(execute_bash_with_args(
+        &context,
+        args,
+        context.cwd.clone(),
+        None,
+    ))
+    .await
+    .expect("bash run should succeed");
 
     let marker = "[... output truncated at 100 bytes ...]";
     let marker_start = result
@@ -552,9 +616,14 @@ async fn bash_output_max_bytes_override_spills_at_custom_cap() {
         crate::clients::tools::sandbox::SandboxPolicy::DangerFullAccess,
     )
     .unwrap();
-    let result = Box::pin(execute_bash_with_args(&context, args, None))
-        .await
-        .expect("bash run should succeed");
+    let result = Box::pin(execute_bash_with_args(
+        &context,
+        args,
+        context.cwd.clone(),
+        None,
+    ))
+    .await
+    .expect("bash run should succeed");
 
     assert!(
         result.output.contains("[Output too long"),
@@ -583,9 +652,14 @@ async fn bash_output_max_bytes_unlimited_passes_large_output_through() {
         crate::clients::tools::sandbox::SandboxPolicy::DangerFullAccess,
     )
     .unwrap();
-    let result = Box::pin(execute_bash_with_args(&context, args, None))
-        .await
-        .expect("bash run should succeed");
+    let result = Box::pin(execute_bash_with_args(
+        &context,
+        args,
+        context.cwd.clone(),
+        None,
+    ))
+    .await
+    .expect("bash run should succeed");
 
     // `yes x | head -c 60000` emits 60,000 bytes of "x\n" lines; without a
     // read cap or inline cap the full stream survives (plus the footer).
@@ -1303,6 +1377,59 @@ async fn test_sandbox_workspace_write_allows_write_in_cwd() {
         "workspace-write policy should allow writes to cwd, got: {}",
         result.output
     );
+}
+
+/// A per-call `cwd` inside the workspace selects where a sandboxed command
+/// starts without widening authority: writes inside the selected directory
+/// still succeed, and a write outside the workspace is still denied.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[tokio::test]
+async fn test_sandbox_cwd_selects_subdirectory_without_widening_authority() {
+    if skip_if_sandbox_unavailable() {
+        return;
+    }
+
+    let outside =
+        path_outside_cwd_for_sandbox_test().expect("should find a directory outside the workspace");
+    let workspace = tempfile::TempDir::new_in(&outside).expect("should create test workspace");
+    let nested = workspace.path().join("nested");
+    std::fs::create_dir(&nested).expect("should create nested fixture");
+    let expected = nested
+        .canonicalize()
+        .expect("nested path must canonicalize");
+    let denied = outside.join(format!("cake_cwd_probe_{}", uuid::Uuid::new_v4()));
+    let denied_display = shell_quote(&denied.display().to_string());
+    let args = format!(
+        r#"{{"command": "pwd -P && touch inside.txt; touch {denied_display}", "cwd": "nested"}}"#
+    );
+
+    let result = Box::pin(execute_bash(
+        &context_with_policy_at(
+            workspace.path().to_path_buf(),
+            SandboxPolicy::WorkspaceWrite,
+        ),
+        &args,
+    ))
+    .await
+    .unwrap();
+
+    assert!(
+        result
+            .output
+            .starts_with(&format!("{}\n", expected.display())),
+        "a sandboxed command must start in the selected cwd, got: {}",
+        result.output
+    );
+    assert!(
+        nested.join("inside.txt").exists(),
+        "workspace-write must still allow writes inside the selected cwd"
+    );
+    assert!(
+        !denied.exists(),
+        "selecting a cwd must not widen the sandbox's authority"
+    );
+    // Clean up just in case the sandbox did not block it.
+    _ = std::fs::remove_file(&denied);
 }
 
 /// Workspace-write policy grants sccache's default macOS cache dir
