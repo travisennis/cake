@@ -18,6 +18,8 @@ Cake does not attempt to make an untrusted model safe to run with arbitrary cred
 
 An explicit CLI policy takes precedence over `CAKE_SANDBOX`. For compatibility, `CAKE_SANDBOX=off` selects danger-full-access when no flag is present.
 
+The Bash tool's optional per-call `cwd` selects an existing directory inside the invocation working directory. Relative paths resolve from that directory, and canonicalization rejects symlinks that escape it. Selecting a subdirectory does not add a filesystem grant or persist to later calls.
+
 `--add-dir` adds a read-only path for one invocation. `directories` in settings adds persistent read-write paths. The `[sandbox]` section in settings adds persistent grants in two classes: `read_only` (read + execute, for files or directories) and `writable` (read + write + execute). Treat all of these as grants of authority.
 
 `tools.enabled` is a separate narrowing allowlist for the model-visible and executable tool registry. It cannot add authority: sandbox policy still removes tools that are unsafe under the selected policy, and an absent key preserves the default tool set.

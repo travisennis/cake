@@ -137,6 +137,58 @@ fn bash_timeout_argument_is_clamped() {
 }
 
 #[test]
+fn bash_cwd_argument_round_trips_and_is_optional() {
+    let policy = crate::clients::tools::sandbox::SandboxPolicy::DangerFullAccess;
+
+    let args =
+        BashExecutionArgs::from_json(r#"{"command": "pwd", "cwd": "nested/project"}"#, policy)
+            .unwrap();
+    assert_eq!(
+        args.cwd.as_deref(),
+        Some(std::path::Path::new("nested/project"))
+    );
+
+    let args = BashExecutionArgs::from_json(r#"{"command": "pwd"}"#, policy).unwrap();
+    assert_eq!(args.cwd, None);
+
+    let result = BashExecutionArgs::from_json(r#"{"command": "pwd", "cwd": 42}"#, policy);
+    assert!(result.is_err());
+}
+
+#[test]
+fn bash_cwd_guidance_directs_using_cwd_instead_of_a_cd_prefix() {
+    let tool = bash_tool();
+    // Model-visible description: now that a call can name its directory, agents
+    // must not hide the effective directory in a `cd` prefix, and must know the
+    // selection is per-call. The first revision of this feature dropped the
+    // `cd` prohibition as a side effect of rewriting the working-directory
+    // sentence, so the guidance is guarded here.
+    for phrase in [
+        "Do not prefix commands with cd",
+        "use `cwd` instead",
+        "applies to one call",
+    ] {
+        assert!(
+            tool.description.contains(phrase),
+            "Bash description must direct cwd use ({phrase:?})"
+        );
+    }
+}
+
+#[test]
+fn bash_cwd_schema_is_optional_and_describes_resolution() {
+    let tool = bash_tool();
+    let cwd = &tool.parameters["properties"]["cwd"];
+    assert_eq!(cwd["type"], "string");
+    let description = cwd["description"].as_str().unwrap();
+    assert!(description.contains("Relative paths resolve"));
+    assert!(description.contains("inside it"));
+
+    let required = tool.parameters["required"].as_array().unwrap();
+    assert_eq!(required, &[serde_json::json!("command")]);
+}
+
+#[test]
 fn bash_reason_argument_round_trips() {
     let policy = crate::clients::tools::sandbox::SandboxPolicy::DangerFullAccess;
 
@@ -192,6 +244,162 @@ fn bash_reason_guidance_directs_supplying_context_for_state_changing_commands() 
     // The reason stays optional at the wire level: only `command` is required.
     let required = tool.parameters["required"].as_array().unwrap();
     assert_eq!(required, &[serde_json::json!("command")]);
+}
+
+#[tokio::test]
+async fn bash_cwd_runs_in_a_relative_workspace_subdirectory() {
+    let workspace = tempfile::tempdir().expect("workspace fixture");
+    let nested = workspace.path().join("nested");
+    std::fs::create_dir(&nested).expect("nested directory");
+    let expected = nested
+        .canonicalize()
+        .expect("nested path must canonicalize");
+    let arguments = serde_json::json!({
+        "command": "pwd -P",
+        "cwd": "nested",
+    })
+    .to_string();
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(judge_chat_response(
+                r#"{"verdict":"allow","message":"Safe"}"#,
+            )),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let result = execute_bash_with_judge_in(
+        &arguments,
+        Some(judge_context(&mock_server)),
+        workspace.path(),
+    )
+    .await
+    .expect("bash run should succeed");
+
+    assert!(
+        result
+            .output
+            .starts_with(&format!("{}\n", expected.display())),
+        "pwd should report the requested cwd, got: {}",
+        result.output
+    );
+
+    // The judge must be told about the same directory the command runs in.
+    // Assert the untrusted context object's `cwd` field from the recorded
+    // request instead of matching the path anywhere in the body, where the
+    // command text or a digest could satisfy the match.
+    let requests = mock_server
+        .received_requests()
+        .await
+        .expect("the judge request is recorded");
+    let body: serde_json::Value =
+        serde_json::from_slice(&requests[0].body).expect("judge request body is JSON");
+    let user_content = body["messages"]
+        .as_array()
+        .expect("judge history is a message list")
+        .iter()
+        .find(|message| message["role"] == "user")
+        .and_then(|message| message["content"].as_str())
+        .expect("judge history carries a user message");
+    let untrusted = user_content
+        .rsplit_once('\n')
+        .map(|(_, context)| context)
+        .expect("the judge prompt ends with the untrusted context object");
+    let judge_request_context: serde_json::Value =
+        serde_json::from_str(untrusted).expect("the untrusted context is a JSON object");
+    assert_eq!(
+        judge_request_context["cwd"],
+        serde_json::json!(expected.display().to_string()),
+        "the judge must see the resolved cwd"
+    );
+    assert_eq!(judge_request_context["command"], "pwd -P");
+}
+
+/// An absolute request inside the workspace is canonicalized and honored, so a
+/// caller that already knows the full path need not express it relatively.
+#[tokio::test]
+async fn bash_cwd_accepts_an_absolute_path_inside_the_workspace() {
+    let workspace = tempfile::tempdir().expect("workspace fixture");
+    let nested = workspace.path().join("nested");
+    std::fs::create_dir(&nested).expect("nested directory");
+    let expected = nested
+        .canonicalize()
+        .expect("nested path must canonicalize");
+    let arguments = serde_json::json!({
+        "command": "pwd -P",
+        "cwd": expected.display().to_string(),
+    })
+    .to_string();
+
+    let result =
+        execute_bash_with_judge_in(&arguments, Some(bypassed_judge_context()), workspace.path())
+            .await
+            .expect("bash run should succeed");
+
+    assert!(
+        result
+            .output
+            .starts_with(&format!("{}\n", expected.display())),
+        "an absolute cwd inside the workspace must be honored, got: {}",
+        result.output
+    );
+}
+
+#[tokio::test]
+async fn bash_cwd_rejects_missing_file_and_outside_paths_before_spawn() {
+    let workspace = tempfile::tempdir().expect("workspace fixture");
+    let outside = tempfile::tempdir().expect("outside fixture");
+    let file = workspace.path().join("not-a-directory");
+    std::fs::write(&file, "fixture").expect("file fixture");
+    let marker = workspace.path().join("spawned");
+    let invalid_cwds = [
+        workspace.path().join("missing"),
+        file,
+        outside.path().to_path_buf(),
+    ];
+
+    for cwd in invalid_cwds {
+        let arguments = serde_json::json!({
+            "command": format!("touch {}", marker.display()),
+            "cwd": cwd.display().to_string(),
+        })
+        .to_string();
+        let error = execute_bash_with_judge_in(
+            &arguments,
+            Some(bypassed_judge_context()),
+            workspace.path(),
+        )
+        .await
+        .expect_err("invalid cwd must fail before spawning Bash");
+        assert!(
+            error.message.contains("Invalid Bash working directory"),
+            "unexpected cwd error: {}",
+            error.message
+        );
+    }
+
+    assert!(!marker.exists(), "invalid cwd must not spawn the command");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn bash_cwd_rejects_symlink_that_escapes_workspace() {
+    let workspace = tempfile::tempdir().expect("workspace fixture");
+    let outside = tempfile::tempdir().expect("outside fixture");
+    let link = workspace.path().join("outside-link");
+    std::os::unix::fs::symlink(outside.path(), &link).expect("symlink fixture");
+    let arguments = serde_json::json!({
+        "command": "pwd -P",
+        "cwd": "outside-link",
+    })
+    .to_string();
+
+    let error =
+        execute_bash_with_judge_in(&arguments, Some(bypassed_judge_context()), workspace.path())
+            .await
+            .expect_err("escaping cwd symlink must be rejected");
+    assert!(error.message.contains("outside the invocation workspace"));
 }
 
 #[test]
@@ -385,9 +593,14 @@ async fn bash_read_cap_holds_capture_at_configured_bytes() {
         crate::clients::tools::sandbox::SandboxPolicy::DangerFullAccess,
     )
     .unwrap();
-    let result = Box::pin(execute_bash_with_args(&context, args, None))
-        .await
-        .expect("bash run should succeed");
+    let result = Box::pin(execute_bash_with_args(
+        &context,
+        args,
+        context.cwd.clone(),
+        None,
+    ))
+    .await
+    .expect("bash run should succeed");
 
     let marker = "[... output truncated at 100 bytes ...]";
     let marker_start = result
@@ -423,9 +636,14 @@ async fn bash_output_max_bytes_override_spills_at_custom_cap() {
         crate::clients::tools::sandbox::SandboxPolicy::DangerFullAccess,
     )
     .unwrap();
-    let result = Box::pin(execute_bash_with_args(&context, args, None))
-        .await
-        .expect("bash run should succeed");
+    let result = Box::pin(execute_bash_with_args(
+        &context,
+        args,
+        context.cwd.clone(),
+        None,
+    ))
+    .await
+    .expect("bash run should succeed");
 
     assert!(
         result.output.contains("[Output too long"),
@@ -454,9 +672,14 @@ async fn bash_output_max_bytes_unlimited_passes_large_output_through() {
         crate::clients::tools::sandbox::SandboxPolicy::DangerFullAccess,
     )
     .unwrap();
-    let result = Box::pin(execute_bash_with_args(&context, args, None))
-        .await
-        .expect("bash run should succeed");
+    let result = Box::pin(execute_bash_with_args(
+        &context,
+        args,
+        context.cwd.clone(),
+        None,
+    ))
+    .await
+    .expect("bash run should succeed");
 
     // `yes x | head -c 60000` emits 60,000 bytes of "x\n" lines; without a
     // read cap or inline cap the full stream survives (plus the footer).
@@ -1176,6 +1399,59 @@ async fn test_sandbox_workspace_write_allows_write_in_cwd() {
     );
 }
 
+/// A per-call `cwd` inside the workspace selects where a sandboxed command
+/// starts without widening authority: writes inside the selected directory
+/// still succeed, and a write outside the workspace is still denied.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[tokio::test]
+async fn test_sandbox_cwd_selects_subdirectory_without_widening_authority() {
+    if skip_if_sandbox_unavailable() {
+        return;
+    }
+
+    let outside =
+        path_outside_cwd_for_sandbox_test().expect("should find a directory outside the workspace");
+    let workspace = tempfile::TempDir::new_in(&outside).expect("should create test workspace");
+    let nested = workspace.path().join("nested");
+    std::fs::create_dir(&nested).expect("should create nested fixture");
+    let expected = nested
+        .canonicalize()
+        .expect("nested path must canonicalize");
+    let denied = outside.join(format!("cake_cwd_probe_{}", uuid::Uuid::new_v4()));
+    let denied_display = shell_quote(&denied.display().to_string());
+    let args = format!(
+        r#"{{"command": "pwd -P && touch inside.txt; touch {denied_display}", "cwd": "nested"}}"#
+    );
+
+    let result = Box::pin(execute_bash(
+        &context_with_policy_at(
+            workspace.path().to_path_buf(),
+            SandboxPolicy::WorkspaceWrite,
+        ),
+        &args,
+    ))
+    .await
+    .unwrap();
+
+    assert!(
+        result
+            .output
+            .starts_with(&format!("{}\n", expected.display())),
+        "a sandboxed command must start in the selected cwd, got: {}",
+        result.output
+    );
+    assert!(
+        nested.join("inside.txt").exists(),
+        "workspace-write must still allow writes inside the selected cwd"
+    );
+    assert!(
+        !denied.exists(),
+        "selecting a cwd must not widen the sandbox's authority"
+    );
+    // Clean up just in case the sandbox did not block it.
+    _ = std::fs::remove_file(&denied);
+}
+
 /// Workspace-write policy grants sccache's default macOS cache dir
 /// (~/Library/Caches/Mozilla.sccache) so `RUSTC_WRAPPER=sccache` builds work
 /// under the sandbox.
@@ -1372,7 +1648,7 @@ fn test_bash_git_ignores_inherited_git_dir_canary() {
 }
 
 /// Single-quote `value` for a POSIX shell.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', r"'\''"))
 }
