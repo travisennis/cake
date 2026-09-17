@@ -156,6 +156,26 @@ fn bash_cwd_argument_round_trips_and_is_optional() {
 }
 
 #[test]
+fn bash_cwd_guidance_directs_using_cwd_instead_of_a_cd_prefix() {
+    let tool = bash_tool();
+    // Model-visible description: now that a call can name its directory, agents
+    // must not hide the effective directory in a `cd` prefix, and must know the
+    // selection is per-call. The first revision of this feature dropped the
+    // `cd` prohibition as a side effect of rewriting the working-directory
+    // sentence, so the guidance is guarded here.
+    for phrase in [
+        "Do not prefix commands with cd",
+        "use `cwd` instead",
+        "applies to one call",
+    ] {
+        assert!(
+            tool.description.contains(phrase),
+            "Bash description must direct cwd use ({phrase:?})"
+        );
+    }
+}
+
+#[test]
 fn bash_cwd_schema_is_optional_and_describes_resolution() {
     let tool = bash_tool();
     let cwd = &tool.parameters["properties"]["cwd"];
