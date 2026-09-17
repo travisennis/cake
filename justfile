@@ -333,16 +333,17 @@ cc-check:
 coverage-open:
     cargo llvm-cov --html --open
 
-# Generate coverage in lcov format for CI
+# Export coverage in lcov format. Raw export: no clean and no guard, so use
+# `just check-coverage` or the change-risk recipes when the number matters.
 coverage-lcov:
     cargo llvm-cov --lcov --output-path lcov.info
 
 # Regenerate the macOS cargo-crap baseline from current coverage.
 # Run this after intentional code or test changes alter coverage/complexity, then commit ci/cargo-crap-baseline.json with the change.
-# Profile data is cleaned first and the resulting LCOV is guarded, so a stale artifact
+# The same clean-and-guard policy as `check-coverage` runs first, so a stale artifact
 # or a duplicated source root cannot bake a wrong per-function baseline into the ratchet.
 change-risk-baseline:
-    cargo llvm-cov clean --workspace
+    scripts/coverage-clean.sh
     mkdir -p ci
     cargo llvm-cov --lcov --output-path lcov.info
     python3 scripts/coverage-guard.py --lcov lcov.info
@@ -352,7 +353,7 @@ change-risk-baseline:
 # Cleaned and guarded like `change-risk-baseline`, so the report cannot describe
 # artifacts from an earlier checkout state.
 change-risk-report:
-    cargo llvm-cov clean --workspace
+    scripts/coverage-clean.sh
     cargo llvm-cov --lcov --output-path lcov.info
     python3 scripts/coverage-guard.py --lcov lcov.info
     scripts/cargo-crap.sh --lcov lcov.info --baseline ci/cargo-crap-baseline.json --format markdown

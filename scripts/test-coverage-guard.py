@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
-"""Fixture tests for scripts/coverage-guard.py.
+"""Fixture tests for the coverage artifact policy: scripts/coverage-guard.py and
+scripts/coverage-clean.sh.
 
 The guard decides whether a coverage run's data can be trusted, so the fixtures
 pin both directions: each condition that has produced a false total is rejected,
 and the artifacts and reports a healthy run leaves behind are accepted. The
 symlinked-root case uses a real symlink, because the guard's duplicate detection
-is exactly the difference between a path as written and its canonical form.
+is exactly the difference between a path as written and its canonical form. The
+clean-helper fixtures stub `cargo`, because what that helper owns is the policy
+around the clean: which directory holds the artifacts, and that nothing survives
+the clean and removal. The guard accepts a missing directory, so a helper that
+derived the wrong path would pass without checking anything.
 
 Run locally with `just coverage-guard-check` and in CI via the `changes` job in
 .github/workflows/ci.yml.
@@ -13,6 +18,7 @@ Run locally with `just coverage-guard-check` and in CI via the `changes` job in
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import tempfile
@@ -22,6 +28,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "scripts" / "coverage-guard.py"
+CLEAN_SCRIPT = ROOT / "scripts" / "coverage-clean.sh"
 
 
 class CoverageGuardTests(unittest.TestCase):
@@ -188,6 +195,108 @@ class CoverageGuardTests(unittest.TestCase):
                 result = self.run_guard(*arguments)
                 self.assertEqual(result.returncode, 2)
                 self.assertIn("exactly one of --profiles-dir or --lcov is required", result.stderr)
+
+
+class CoverageCleanTests(unittest.TestCase):
+    """scripts/coverage-clean.sh: clean, remove what the clean left, prove it."""
+
+    def stub_environment(
+        self, directory: Path, **overrides: str
+    ) -> tuple[dict[str, str], Path]:
+        """An environment whose `cargo` is a stub that records the argv it was given."""
+        stub_dir = directory / "bin"
+        stub_dir.mkdir()
+        log = directory / "cargo.log"
+        stub = stub_dir / "cargo"
+        stub.write_text(
+            "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$CARGO_STUB_LOG\"\n",
+            encoding="utf-8",
+        )
+        stub.chmod(0o755)
+
+        environment = dict(os.environ)
+        # The directory derivation is exactly what these fixtures pin, so neither
+        # variable may leak in from the caller's environment.
+        environment.pop("CARGO_LLVM_COV_TARGET_DIR", None)
+        environment.pop("CARGO_TARGET_DIR", None)
+        environment.update(
+            PATH=f"{stub_dir}{os.pathsep}{environment['PATH']}",
+            CARGO_STUB_LOG=str(log),
+            **overrides,
+        )
+        return environment, log
+
+    def run_clean(
+        self, environment: dict[str, str], cwd: Path = ROOT
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [str(CLEAN_SCRIPT)],
+            cwd=cwd,
+            check=False,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+
+    def test_cleans_the_directory_named_by_cargo_llvm_cov_target_dir(self) -> None:
+        # cargo-llvm-cov puts the artifacts directly in this directory when it is
+        # set, with no nested `llvm-cov-target`, so deriving the default path here
+        # would leave the residue in place and pass the guard vacuously.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            coverage_dir = root / "cov"
+            coverage_dir.mkdir()
+            stale = coverage_dir / "cake-2.profdata"
+            stale.write_bytes(b"stale merged profile")
+            listed = coverage_dir / "cake-2-profraw-list"
+            listed.write_text("/tmp/default-1234.profraw\n", encoding="utf-8")
+
+            environment, log = self.stub_environment(
+                root, CARGO_LLVM_COV_TARGET_DIR=str(coverage_dir)
+            )
+            result = self.run_clean(environment)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(stale.exists())
+            self.assertFalse(listed.exists())
+            self.assertIn("Removed residual profile artifact", result.stdout)
+            self.assertIn("llvm-cov clean --workspace", log.read_text(encoding="utf-8"))
+
+    def test_cleans_the_nested_directory_under_cargo_target_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "target"
+            nested = target / "llvm-cov-target"
+            nested.mkdir(parents=True)
+            residue = nested / "cake-2-profraw-list"
+            residue.write_text("/tmp/default-1234.profraw\n", encoding="utf-8")
+            outside = target / "cake-2.profdata"
+            outside.write_bytes(b"not the coverage directory")
+
+            environment, _ = self.stub_environment(root, CARGO_TARGET_DIR=str(target))
+            result = self.run_clean(environment)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(residue.exists())
+            self.assertTrue(outside.exists())
+
+    def test_cleans_the_default_target_directory_relative_to_the_working_directory(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            work = root / "work"
+            nested = work / "target" / "llvm-cov-target"
+            nested.mkdir(parents=True)
+            stale = nested / "cake-2.profdata"
+            stale.write_bytes(b"stale merged profile")
+            (work / "scripts").symlink_to(ROOT / "scripts", target_is_directory=True)
+
+            environment, _ = self.stub_environment(root)
+            result = self.run_clean(environment, cwd=work)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(stale.exists())
 
 
 if __name__ == "__main__":

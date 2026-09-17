@@ -62,7 +62,7 @@ def lcov_sources(path: Path) -> list[str]:
     with path.open(encoding="utf-8", errors="replace") as handle:
         for line in handle:
             if line.startswith("SF:"):
-                sources.append(line[len("SF:") :].rstrip("\n"))
+                sources.append(line[len("SF:") :].rstrip("\r\n"))
     return sources
 
 

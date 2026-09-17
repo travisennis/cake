@@ -56,19 +56,15 @@ echo "=== Total Coverage Gate ==="
 # The summary below and the LCOV export for gates 2 and 3 both derive
 # from that single run.
 #
-# Any profile data from an earlier run is removed before measuring, and the gate
-# does not delegate that removal entirely to the tool: `cargo llvm-cov clean
-# --profraw-only` keeps the merged profile data and `--workspace` keeps the
-# previous run's profraw list (measured 2026-09-17), both of which merge into this
-# run. So the clean runs first, then the guard removes whatever it left and proves
-# the directory is clean. Residue and a report that spells one source file under
-# two roots have produced false totals (#520); rather than print a verdict nobody
-# can trust, this stops before the threshold is evaluated.
-profiles_dir="${CARGO_TARGET_DIR:-target}/llvm-cov-target"
+# Profile data from an earlier run is removed before measuring, and the gate does
+# not delegate that removal to the tool: no `cargo llvm-cov clean` mode removes
+# everything, so the strongest clean cannot stand alone. `scripts/coverage-clean.sh`
+# runs that clean, removes what it left, and proves the directory is clean. Residue
+# and a report that spells one source file under two roots have produced false
+# totals (#520); rather than print a verdict nobody can trust, this stops before
+# the threshold is evaluated.
 echo "=== Coverage Artifact Guard ==="
-cargo llvm-cov clean --workspace
-python3 scripts/coverage-guard.py --profiles-dir "$profiles_dir" --remove-residual || exit 1
-python3 scripts/coverage-guard.py --profiles-dir "$profiles_dir" || exit 1
+scripts/coverage-clean.sh || exit 1
 
 echo ""
 cargo llvm-cov --no-report
