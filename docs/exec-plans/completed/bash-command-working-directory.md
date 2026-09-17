@@ -14,6 +14,7 @@ Agents will be able to send an optional `cwd` with a Bash tool call to run one c
 - [x] (2026-09-17) Updated model-visible, integration, and security documentation plus Chat Completions and Responses snapshots.
 - [x] (2026-09-17) Ran focused verification, snapshot verification, formatting, documentation checks, and the repository gate.
 - [x] (2026-09-17) Filled Outcomes & Retrospective; the plan is ready to move to `docs/exec-plans/completed/`.
+- [x] (2026-09-17) Addressed pull-request review: resolve the working directory once before execution (which restores the `execute_bash_with_args` complexity baseline), tightened the judge-request assertion to the request's `cwd` field, and added absolute-path and sandboxed-`cwd` tests.
 
 ## Surprises & Discoveries
 
@@ -22,6 +23,7 @@ Agents will be able to send an optional `cwd` with a Bash tool call to run one c
 ## Decision Log
 
 - Decision: Constrain `cwd` to an existing directory beneath the canonical invocation working directory, resolve relative values from that directory, and use the canonical result for every judge and execution surface. Rationale: explicit subdirectory execution is useful, while accepting an arbitrary path would widen an untrusted model's filesystem authority. Date/Author: 2026-09-17 / Travis Ennis.
+- Decision: Resolve and validate the request once in `parse_bash_call` and pass the effective directory to the executor, the judge preflight, and the denial scan as an explicit argument, leaving `BashExecutionArgs.cwd` as the model's unresolved request. Rationale: resolving inside `execute_bash_with_args` added a branch that tripped the per-function complexity/CRAP ratchet, and reusing the request field for the resolved path left unreachable fallbacks that would mis-resolve a request if a future caller skipped resolution. Date/Author: 2026-09-17 / Travis Ennis.
 - Decision: Keep the selected directory per-call rather than mutating `ToolContext`. Rationale: tool calls are independently scheduled and persisted, so implicit cross-call shell state would be surprising and difficult to reason about. Date/Author: 2026-09-17 / Travis Ennis.
 
 ## Outcomes & Retrospective
