@@ -17,8 +17,10 @@ see README.md in this directory.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -98,6 +100,43 @@ def resolve_cake(value: str) -> str:
     return value
 
 
+def describe_cake(value: str) -> dict:
+    """Identify the executable a run will invoke, for the run record.
+
+    `--cake` defaults to the bare name `cake`, which resolves through PATH at
+    every trial, and `just install` overwrites `~/bin/cake` from whichever
+    worktree runs it last. The resolved path and its digest are therefore
+    recorded: two runs against different builds at the same path stay
+    distinguishable after the fact.
+
+    Returns `path: None` when no executable can be resolved, so the caller can
+    report it once instead of failing every trial.
+    """
+    candidate = value if os.sep in value else shutil.which(value)
+    if candidate is None:
+        return {"command": value, "path": None, "sha256": None, "size_bytes": None}
+    resolved = Path(candidate).resolve()
+    if not resolved.is_file():
+        return {"command": value, "path": None, "sha256": None, "size_bytes": None}
+    try:
+        payload = resolved.read_bytes()
+    except OSError:
+        return {"command": value, "path": str(resolved), "sha256": None, "size_bytes": None}
+    return {
+        "command": value,
+        "path": str(resolved),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "size_bytes": len(payload),
+    }
+
+
+def describe_cake_line(cake_binary: dict) -> str:
+    """One line naming the executable and its digest, for the human summary."""
+    digest = cake_binary["sha256"]
+    digest_label = f" sha256:{digest[:16]}" if digest else " sha256:unavailable"
+    return f"cake: {cake_binary['path']}{digest_label}"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     ns = parser.parse_args(argv)
@@ -131,6 +170,15 @@ def main(argv: list[str] | None = None) -> int:
 
     ns.results_dir.mkdir(parents=True, exist_ok=True)
     cake = resolve_cake(ns.cake)
+    cake_binary = describe_cake(cake)
+    if cake_binary["path"] is None:
+        print(
+            f"ERROR: cake executable not found: {ns.cake}"
+            " (pass --cake /path/to/cake, or install one with `just install`)",
+            file=sys.stderr,
+        )
+        return 1
+    print(describe_cake_line(cake_binary))
     trials = []
     for model in ns.model:
         for case in cases:
@@ -142,7 +190,7 @@ def main(argv: list[str] | None = None) -> int:
 
     summary = summarize(trials)
     print_summary(summary)
-    result = build_result(ns, cases, trials, summary)
+    result = build_result(ns, cases, trials, summary, cake_binary)
     result_path = write_results(ns.results_dir, result)
     print(f"\nResults written to: {result_path}")
     print(f"Results directory: {ns.results_dir}")
@@ -238,13 +286,22 @@ def print_table(headers: list[str], rows: list[list[str]], indent: int = 2) -> N
         print(line(row))
 
 
-def build_result(ns: argparse.Namespace, cases: list, trials: list, summary: dict) -> dict:
+def build_result(
+    ns: argparse.Namespace,
+    cases: list,
+    trials: list,
+    summary: dict,
+    cake_binary: dict,
+) -> dict:
     return {
         "schema_version": eval_lib.SCHEMA_VERSION,
         "tool": {"name": eval_lib.TOOL_NAME, "version": eval_lib.TOOL_VERSION},
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "configuration": {
             "cake_command": [resolve_cake(ns.cake)],
+            # `cake_command` is what was asked for; `cake_binary` is what ran.
+            # They differ whenever the default bare name resolves through PATH.
+            "cake_binary": cake_binary,
             "models": list(ns.model),
             "repetitions": ns.repetitions,
             "cases": [case.name for case in cases],

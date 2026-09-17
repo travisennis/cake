@@ -12,6 +12,8 @@ just eval --model <name> --repetitions 3
 
 `just eval` invokes the real `cake` binary, so it requires configured model credentials and authorized external spend. `--cake /path/to/cake` overrides the executable (default: `cake` on `PATH`).
 
+Because the default is a bare name resolved through `PATH`, and `just install` overwrites `~/bin/cake` from whichever worktree ran it last, the harness resolves the executable before the first trial and records its absolute path and SHA-256 in the run record as `configuration.cake_binary`. That is what keeps two runs against different builds at the same path distinguishable afterwards; `configuration.cake_command` records what was asked for. An executable that cannot be resolved fails the run before any trial instead of failing every trial.
+
 ## Fixtures
 
 Each fixture is a directory under `cases/`:
@@ -54,7 +56,7 @@ Each trial copies the fixture's `repo/` into a fresh temporary Git repository (w
 Generated output lives in `scripts/evals/results/` (gitignored; the directory is disposable). Each run writes `run-<timestamp>.json` plus `latest.json` with the same content:
 
 - `schema_version` --- stable schema version for machine readers.
-- `configuration` --- models, repetitions, cases, and cake command.
+- `configuration` --- models, repetitions, cases, the requested cake command, and `cake_binary`: the resolved executable's `command`, `path`, `sha256`, and `size_bytes`.
 - `trials` --- one object per (model, case, repetition) with `outcome`, `exit_code`, `duration_ms`, `turns`, `tool_calls`, `tool_failures`, `usage`, `model_reported`, `cake_elapsed_ms`, `result_preview`, `error`, `verifier`, `session_id`, and `session_file`.
 - `summary` --- correctness rate and median/p90 turns, tokens, duration, and tool failures, overall, by model, and by case tag.
 
