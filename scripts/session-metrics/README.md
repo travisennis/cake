@@ -54,6 +54,23 @@ The table is metadata-only: it reports the presence of `reason`, the bounded out
 
 Run the metrics tests with `just session-metrics-check`.
 
+## Reproducibility
+
+Numbers move while a session is running, because the report reads the transcript directory as it is: the session that is currently writing is included in its own measurement, and its tool calls, tokens, and task counts keep changing until it ends. Every section therefore carries the same provenance line, printed by `cakelib.describe_window`:
+
+```text
+Window: last 1 days | sessions: 12 (/Users/.../sessions) | telemetry invocations: 27 (/Users/.../session-telemetry) | measured 2026-09-17T20:03:00Z | newest activity 2026-09-17T20:02:56Z (4s ago) | unfinished tasks in 2 session(s)
+```
+
+`measured` is when this run read the data, `newest activity` is the newest record it saw, and the `unfinished tasks` count is the sessions whose final task started but never completed (live, crashed, or abandoned). Quote a number with that stamp, or rerun and quote the new one; a number without it cannot be compared with another report.
+
+To measure a frozen snapshot instead of the live directory, copy the transcripts and sidecars and point the report at the copies:
+
+```bash
+cp -R ~/.local/share/cake/sessions /tmp/cake-sessions-snapshot
+just session-metrics --sessions-dir /tmp/cake-sessions-snapshot --days 0
+```
+
 ## Caveats
 
 - Windowing attributes records by their own timestamps: tasks by their `task_start` timestamp (joined to `task_complete` by `task_id`, since `task_complete` carries none), tool calls by their `function_call` timestamp. The file mtime is only the fallback for untimestamped/legacy records. A long-running session's old tasks stay in their own window instead of counting in the window of the session's last activity.
