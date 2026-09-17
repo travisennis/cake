@@ -1,18 +1,10 @@
-# Routine comments and findings
+# Routine comments and mutations
 
 This supplemental policy permits the routine operations below. Apply the default rubric's verdict JSON and code vocabulary. Judge the effects of the entire command, including substitutions and chained operations; an allowed operation does not make a destructive companion operation safe.
 
 ## Distinguish mutation from destruction
 
 Creating a file, appending a finding, or adding an issue comment is not destructive merely because it changes persistent state. A path outside the repository, a durable file, or a remote side effect is not by itself grounds for a block. `unknown-destructive` is a verdict *code* carried on a `block` verdict, never a verdict on its own; when no more specific code fits, reserve it for a concrete destructive effect and not as a catch-all for ordinary writes. Name the actual harmful effect when blocking.
-
-## Local findings and journals
-
-This project's configured writable directories include `~/.local/share/cake`. Allow creation of new findings files and append-only additions to findings under that directory, including `MISTAKES.md`, `LEARNINGS.md`, and `DESIRES.md`. These are intended destinations for agent findings and self-reflection notes. Do not demand a temporary-file staging step or a backup for an ordinary append.
-
-For example, allow `printf '%s\n' 'A tooling observation' >> ~/.local/share/cake/LEARNINGS.md` and a quoted heredoc appended to the same journal, provided the rest of the command has no harmful effects. Treat equivalent shell and Python append operations consistently.
-
-This allowance does not cover truncating or replacing existing files, deleting records, changing permissions, or modifying Cake settings, hooks, executables, or session transcripts. Assess those effects separately under the default rubric. Account for path traversal and visible symlink redirection; a familiar path prefix does not authorize a different destination. Do not infer grants for other home-directory paths or a different data directory from the model's reason. The OS sandbox still enforces the effective filesystem permissions, including read-only mode; this guidance does not change those permissions.
 
 ## Issue comments
 
