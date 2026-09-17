@@ -86,7 +86,7 @@ The pre-push hook routes by changed path class instead of running the full local
 
 [Working on branches and worktrees](docs/runbooks/parallel-worktrees.md) covers how the base is resolved and why the gate follows the checkout rather than the pushed ref.
 
-If an applicable check cannot run, report the exact reason and the narrower checks that did run. Several checks need no build, coverage pass, or network, so a blocked prerequisite rarely means no evidence at all: `just cc-check`, `just check-scripts`, `just docs-check`, and `just pre-push-classify` cover complexity, the Python tooling, Markdown, and the change classification. Do not describe a failing primary branch as unrelated without investigating it.
+If an applicable check cannot run, report the exact reason and the narrower checks that did run. Several checks need no build, coverage pass, or network, so a blocked prerequisite rarely means no evidence at all: `just cc-check`, `just check-scripts`, `just docs-check`, and `just pre-push-classify` cover complexity, the Python tooling, Markdown, and the change classification. [Local gate prerequisites](docs/runbooks/local-gate-prerequisites.md) carries the recovery for each prerequisite (an unaccepted toolchain license, a missing tool, a missing target, a missing credential). Do not describe a failing primary branch as unrelated without investigating it.
 
 ## Code conventions
 
