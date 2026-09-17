@@ -1,4 +1,4 @@
-Execute a shell command in the host machine's terminal. Commands run in the current working directory by default. Returns stdout and stderr with a footer showing exit code and elapsed time. The working directory persists between commands; shell state does not. Does not support interactive commands.
+Execute a shell command in the host machine's terminal. Commands run in the current working directory by default. Use the optional `cwd` argument to select an existing directory inside it for this command; relative paths resolve from the current working directory. The selected directory does not persist between commands, and shell state does not. Returns stdout and stderr with a footer showing exit code and elapsed time. Does not support interactive commands.
 
 Guidance:
 - File search: Read file contents with Read, explore directories with Bash commands (ls, find, tree)
@@ -6,7 +6,7 @@ Guidance:
 - Read files: Use Read tool, not cat/head/tail
 - Edit files: Use Edit tool, not sed/awk
 - Write files: Use Write tool, not echo/cat
-- The working directory persists across calls — do not prefix commands with cd
+- The `cwd` argument applies to one call; shell state does not persist between calls — provide `cwd` again when needed
 
 Note: Shell interprets backticks (`) and $() inside double-quoted arguments as command substitution.
 

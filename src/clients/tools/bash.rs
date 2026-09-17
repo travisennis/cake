@@ -81,6 +81,9 @@ struct BashExecutionArgs {
     command: String,
     timeout: u64,
     policy: super::sandbox::SandboxPolicy,
+    /// The model's requested working directory. It is resolved and validated
+    /// against the invocation workspace before execution.
+    cwd: Option<PathBuf>,
     /// The model's untrusted self-report of intent, weighed against the
     /// command by the LLM judge preflight.
     reason: Option<String>,
@@ -92,6 +95,8 @@ impl BashExecutionArgs {
         struct BashArgs {
             command: String,
             timeout: Option<u64>,
+            #[serde(default)]
+            cwd: Option<String>,
             #[serde(default)]
             reason: Option<String>,
         }
@@ -106,9 +111,58 @@ impl BashExecutionArgs {
                 .unwrap_or(60)
                 .clamp(BASH_TIMEOUT_MIN_SECS, BASH_TIMEOUT_MAX_SECS),
             policy,
+            cwd: args.cwd.map(PathBuf::from),
             reason: args.reason,
         })
     }
+}
+
+/// Resolve and validate the optional per-call Bash working directory.
+///
+/// Relative paths are rooted at the invocation directory. Existing directory
+/// grants remain the sandbox boundary: an explicit cwd must be inside the
+/// invocation workspace, and canonicalization prevents a symlink from escaping
+/// it.
+fn resolve_bash_cwd(
+    context: &super::ToolContext,
+    requested: Option<&Path>,
+) -> Result<PathBuf, String> {
+    let Some(requested) = requested else {
+        return Ok(context.cwd.clone());
+    };
+
+    let candidate = if requested.is_absolute() {
+        requested.to_path_buf()
+    } else {
+        context.cwd.join(requested)
+    };
+    let workspace = context.cwd.canonicalize().map_err(|e| {
+        format!(
+            "Invalid Bash working directory '{}': {e}",
+            context.cwd.display()
+        )
+    })?;
+    let canonical = candidate.canonicalize().map_err(|e| {
+        format!(
+            "Invalid Bash working directory '{}': path not found or not accessible: {e}",
+            requested.display()
+        )
+    })?;
+
+    if !canonical.is_dir() {
+        return Err(format!(
+            "Invalid Bash working directory '{}': path is not a directory",
+            requested.display()
+        ));
+    }
+    if !canonical.starts_with(&workspace) {
+        return Err(format!(
+            "Invalid Bash working directory '{}': path is outside the invocation workspace",
+            requested.display()
+        ));
+    }
+
+    Ok(canonical)
 }
 
 // =============================================================================
@@ -127,6 +181,10 @@ pub(super) fn bash_tool() -> super::Tool {
                 "command": {
                     "type": "string",
                     "description": "The command to execute"
+                },
+                "cwd": {
+                    "type": "string",
+                    "description": "Optional working directory for this command. Relative paths resolve from the invocation working directory and must remain inside it."
                 },
                 "timeout": {
                     "type": "number",
@@ -874,6 +932,7 @@ fn prepare_bash_command(
     judge_events: &[CompensationEventTelemetry],
 ) -> Result<PreparedBashCommand, super::ToolError> {
     let use_sandbox = args.policy != super::sandbox::SandboxPolicy::DangerFullAccess;
+    let cwd = args.cwd.as_deref().unwrap_or(&context.cwd);
 
     // Build sandbox configuration with additional directories
     let sandbox_config = super::sandbox::SandboxConfig::build(context);
@@ -883,7 +942,7 @@ fn prepare_bash_command(
     command
         .arg("-c")
         .arg(&args.command)
-        .current_dir(&context.cwd)
+        .current_dir(cwd)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
@@ -1239,6 +1298,10 @@ async fn execute_bash_with_args(
     args: BashExecutionArgs,
     call_id: Option<String>,
 ) -> Result<super::ToolResult, super::ToolError> {
+    let effective_cwd = resolve_bash_cwd(context, args.cwd.as_deref())?;
+    let mut args = args;
+    args.cwd = Some(effective_cwd);
+
     // Command-safety preflight: the LLM judge is the only non-sandbox command
     // gate. A block prevents spawn and returns the judge's message as the tool
     // error; a warn prepends guidance to the output; a judge failure fails
@@ -1314,10 +1377,11 @@ async fn execute_bash_with_args(
         });
     }
     let output_str = String::from_utf8_lossy(&buf);
+    let cwd = args.cwd.as_deref().unwrap_or(&context.cwd);
     let denials = sandbox_denials(
         context,
         &args.command,
-        &context.cwd,
+        cwd,
         sandbox_applied,
         success,
         &output_str,
@@ -1448,6 +1512,7 @@ async fn bash_judge_preflight(
             raw_call_id,
         ));
     };
+    let cwd = args.cwd.as_deref().unwrap_or(&context.cwd);
 
     // The emergency bypass short-circuits before any judge setup: a disabled
     // judge must not fail on an unusable model or rubric, because the bypass
@@ -1461,13 +1526,9 @@ async fn bash_judge_preflight(
     let client = judge
         .judge_client()
         .map_err(|e| fail_closed_tool_error(e.class, &e.message, raw_call_id))?;
-    let request = JudgeRequest::new(
-        args.command.clone(),
-        context.cwd.clone(),
-        args.reason.clone(),
-    )
-    .with_repo_digest(repo_state_digest(&context.cwd))
-    .with_call_id(raw_call_id.map(String::from));
+    let request = JudgeRequest::new(args.command.clone(), cwd.to_path_buf(), args.reason.clone())
+        .with_repo_digest(repo_state_digest(cwd))
+        .with_call_id(raw_call_id.map(String::from));
 
     let evaluation = evaluate_command_observed(
         client,

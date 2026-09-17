@@ -4,7 +4,7 @@ use crate::clients::tools::sandbox::SandboxPolicy;
 use sha2::{Digest, Sha256};
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::sync::Arc;
-use wiremock::matchers::method;
+use wiremock::matchers::{body_string_contains, method};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// Check whether `CAKE_REQUIRE_SANDBOX_TESTS` is set to a truthy value,
@@ -137,6 +137,38 @@ fn bash_timeout_argument_is_clamped() {
 }
 
 #[test]
+fn bash_cwd_argument_round_trips_and_is_optional() {
+    let policy = crate::clients::tools::sandbox::SandboxPolicy::DangerFullAccess;
+
+    let args =
+        BashExecutionArgs::from_json(r#"{"command": "pwd", "cwd": "nested/project"}"#, policy)
+            .unwrap();
+    assert_eq!(
+        args.cwd.as_deref(),
+        Some(std::path::Path::new("nested/project"))
+    );
+
+    let args = BashExecutionArgs::from_json(r#"{"command": "pwd"}"#, policy).unwrap();
+    assert_eq!(args.cwd, None);
+
+    let result = BashExecutionArgs::from_json(r#"{"command": "pwd", "cwd": 42}"#, policy);
+    assert!(result.is_err());
+}
+
+#[test]
+fn bash_cwd_schema_is_optional_and_describes_resolution() {
+    let tool = bash_tool();
+    let cwd = &tool.parameters["properties"]["cwd"];
+    assert_eq!(cwd["type"], "string");
+    let description = cwd["description"].as_str().unwrap();
+    assert!(description.contains("Relative paths resolve"));
+    assert!(description.contains("inside it"));
+
+    let required = tool.parameters["required"].as_array().unwrap();
+    assert_eq!(required, &[serde_json::json!("command")]);
+}
+
+#[test]
 fn bash_reason_argument_round_trips() {
     let policy = crate::clients::tools::sandbox::SandboxPolicy::DangerFullAccess;
 
@@ -192,6 +224,103 @@ fn bash_reason_guidance_directs_supplying_context_for_state_changing_commands() 
     // The reason stays optional at the wire level: only `command` is required.
     let required = tool.parameters["required"].as_array().unwrap();
     assert_eq!(required, &[serde_json::json!("command")]);
+}
+
+#[tokio::test]
+async fn bash_cwd_runs_in_a_relative_workspace_subdirectory() {
+    let workspace = tempfile::tempdir().expect("workspace fixture");
+    let nested = workspace.path().join("nested");
+    std::fs::create_dir(&nested).expect("nested directory");
+    let expected = nested
+        .canonicalize()
+        .expect("nested path must canonicalize");
+    let arguments = serde_json::json!({
+        "command": "pwd -P",
+        "cwd": "nested",
+    })
+    .to_string();
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(body_string_contains(expected.display().to_string()))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(judge_chat_response(
+                r#"{"verdict":"allow","message":"Safe"}"#,
+            )),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let result = execute_bash_with_judge_in(
+        &arguments,
+        Some(judge_context(&mock_server)),
+        workspace.path(),
+    )
+    .await
+    .expect("bash run should succeed");
+
+    assert!(
+        result
+            .output
+            .starts_with(&format!("{}\n", expected.display())),
+        "pwd should report the requested cwd, got: {}",
+        result.output
+    );
+}
+
+#[tokio::test]
+async fn bash_cwd_rejects_missing_file_and_outside_paths_before_spawn() {
+    let workspace = tempfile::tempdir().expect("workspace fixture");
+    let outside = tempfile::tempdir().expect("outside fixture");
+    let file = workspace.path().join("not-a-directory");
+    std::fs::write(&file, "fixture").expect("file fixture");
+    let marker = workspace.path().join("spawned");
+    let invalid_cwds = [
+        workspace.path().join("missing"),
+        file,
+        outside.path().to_path_buf(),
+    ];
+
+    for cwd in invalid_cwds {
+        let arguments = serde_json::json!({
+            "command": format!("touch {}", marker.display()),
+            "cwd": cwd.display().to_string(),
+        })
+        .to_string();
+        let error = execute_bash_with_judge_in(
+            &arguments,
+            Some(bypassed_judge_context()),
+            workspace.path(),
+        )
+        .await
+        .expect_err("invalid cwd must fail before spawning Bash");
+        assert!(
+            error.message.contains("Invalid Bash working directory"),
+            "unexpected cwd error: {}",
+            error.message
+        );
+    }
+
+    assert!(!marker.exists(), "invalid cwd must not spawn the command");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn bash_cwd_rejects_symlink_that_escapes_workspace() {
+    let workspace = tempfile::tempdir().expect("workspace fixture");
+    let outside = tempfile::tempdir().expect("outside fixture");
+    let link = workspace.path().join("outside-link");
+    std::os::unix::fs::symlink(outside.path(), &link).expect("symlink fixture");
+    let arguments = serde_json::json!({
+        "command": "pwd -P",
+        "cwd": "outside-link",
+    })
+    .to_string();
+
+    let error =
+        execute_bash_with_judge_in(&arguments, Some(bypassed_judge_context()), workspace.path())
+            .await
+            .expect_err("escaping cwd symlink must be rejected");
+    assert!(error.message.contains("outside the invocation workspace"));
 }
 
 #[test]
