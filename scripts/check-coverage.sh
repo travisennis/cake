@@ -54,9 +54,19 @@ echo "=== Total Coverage Gate ==="
 
 # Run the suite once under instrumentation and retain the profile data.
 # The summary below and the LCOV export for gates 2 and 3 both derive
-# from that single run. Stale profiles are removed first because
-# --no-report retains rather than replaces them.
-cargo llvm-cov clean --profraw-only
+# from that single run.
+#
+# Profile data from an earlier run is removed before measuring, and the gate does
+# not delegate that removal to the tool: no `cargo llvm-cov clean` mode removes
+# everything, so the strongest clean cannot stand alone. `scripts/coverage-clean.sh`
+# runs that clean, removes what it left, and proves the directory is clean. Residue
+# and a report that spells one source file under two roots have produced false
+# totals (#520); rather than print a verdict nobody can trust, this stops before
+# the threshold is evaluated.
+echo "=== Coverage Artifact Guard ==="
+scripts/coverage-clean.sh || exit 1
+
+echo ""
 cargo llvm-cov --no-report
 
 output="$(cargo llvm-cov report)"
@@ -87,6 +97,7 @@ echo "=== CRAP Regression Gate ==="
 # scripts/cargo-crap.sh (task 226). Use --ignore-filename-regex to
 # suppress the warning for these expected cases.
 cargo llvm-cov report --lcov --output-path lcov.info --ignore-filename-regex '_tests\.rs$'
+python3 scripts/coverage-guard.py --lcov lcov.info || exit 1
 
 echo "CRAP regression epsilon: ${crap_epsilon}"
 
