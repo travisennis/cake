@@ -13,7 +13,7 @@ pub(super) struct AgentRunnerTelemetrySink {
 
 impl AgentRunnerTelemetrySink {
     pub(super) fn record(&self, event: AgentRunnerTelemetryEvent) {
-        let record = runner_telemetry_record(self.context.clone(), event);
+        let record = runner_telemetry_terminal_record(self.context.clone(), event);
         if let TelemetryAppend::Failed(error) = self.writer.append(&record) {
             tracing::warn!(
                 target: "cake",
@@ -43,7 +43,7 @@ impl Agent {
         let Some(context) = self.telemetry_context() else {
             return;
         };
-        let record = runner_telemetry_record(context, event);
+        let record = runner_telemetry_terminal_record(context, event);
         self.append_telemetry_record(&record);
     }
 
@@ -85,31 +85,6 @@ impl Agent {
             self.telemetry = None;
         }
     }
-}
-
-fn runner_telemetry_record(
-    context: SessionTelemetryContext,
-    event: AgentRunnerTelemetryEvent,
-) -> SessionTelemetryRecord {
-    if let Some(record) = in_flight_telemetry_record(&context, &event) {
-        return record;
-    }
-    runner_telemetry_terminal_record(context, event)
-}
-
-fn in_flight_telemetry_record(
-    context: &SessionTelemetryContext,
-    event: &AgentRunnerTelemetryEvent,
-) -> Option<SessionTelemetryRecord> {
-    let AgentRunnerTelemetryEvent::ApiAttemptInFlight(attempt) = event else {
-        return None;
-    };
-    Some(SessionTelemetryRecord::ApiAttemptInFlight {
-        session_id: context.session_id.clone(),
-        invocation_id: context.invocation_id.clone(),
-        timestamp: chrono::Utc::now(),
-        attempt: attempt.clone(),
-    })
 }
 
 fn runner_telemetry_terminal_record(
