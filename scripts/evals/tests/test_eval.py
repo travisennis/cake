@@ -9,8 +9,10 @@ credentials or network access are required. Run with:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -543,6 +545,80 @@ class CliFormattingTest(unittest.TestCase):
         self.assertEqual(run_eval.pair(0.0, 0.0), "0.0/0.0")
         self.assertEqual(run_eval.pair(None, None), "-/-")
         self.assertEqual(run_eval.pair(7.0, 9.0), "7.0/9.0")
+
+
+class CakeBinaryProvenanceTest(unittest.TestCase):
+    """The run record must name the executable that actually ran.
+
+    `--cake` defaults to the bare name `cake`, and `just install` overwrites
+    `~/bin/cake` from whichever worktree ran it last, so a record that stores
+    only the requested command cannot tell two builds apart.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="cake-eval-cake-")
+        self.root = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+        self.results = self.root / "results"
+        self.case_dir = make_fixture(self.root)
+        script = self.root / "fake-script.json"
+        script.write_text(json.dumps({}))
+        os.environ["FAKE_CAKE_SCRIPT"] = str(script)
+
+    def run_with_cake(self, cake: str) -> subprocess.CompletedProcess:
+        return run_harness([
+            "--cake", cake,
+            "--model", "test-model",
+            "--cases-dir", str(self.case_dir.parent),
+            "--cases", self.case_dir.name,
+            "--results-dir", str(self.results),
+        ])
+
+    def load_configuration(self) -> dict:
+        return json.loads((self.results / "latest.json").read_text())["configuration"]
+
+    def test_records_the_path_and_digest_of_the_requested_executable(self) -> None:
+        result = self.run_with_cake(str(FAKE_CAKE))
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        binary = self.load_configuration()["cake_binary"]
+        self.assertEqual(binary["path"], str(FAKE_CAKE.resolve()))
+        self.assertEqual(binary["sha256"], hashlib.sha256(FAKE_CAKE.read_bytes()).hexdigest())
+        self.assertEqual(binary["size_bytes"], FAKE_CAKE.stat().st_size)
+        self.assertIn(f"sha256:{binary['sha256'][:16]}", result.stdout)
+
+    def test_resolves_a_bare_name_through_path(self) -> None:
+        bin_dir = self.root / "bin"
+        bin_dir.mkdir()
+        cake = bin_dir / "cake"
+        shutil.copy(FAKE_CAKE, cake)
+        cake.chmod(0o755)
+        original_path = os.environ["PATH"]
+        os.environ["PATH"] = f"{bin_dir}{os.pathsep}{original_path}"
+        self.addCleanup(os.environ.__setitem__, "PATH", original_path)
+
+        result = self.run_with_cake("cake")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        configuration = self.load_configuration()
+        self.assertEqual(configuration["cake_command"], ["cake"])
+        binary = configuration["cake_binary"]
+        self.assertEqual(binary["path"], str(cake.resolve()))
+        self.assertEqual(binary["sha256"], hashlib.sha256(cake.read_bytes()).hexdigest())
+
+    def test_missing_executable_fails_before_any_trial(self) -> None:
+        result = self.run_with_cake(str(self.root / "absent" / "cake"))
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("cake executable not found", result.stderr)
+        self.assertFalse((self.results / "latest.json").exists())
+
+    def test_bare_name_missing_from_path_fails_before_any_trial(self) -> None:
+        result = self.run_with_cake("cake-not-installed-anywhere")
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("cake executable not found", result.stderr)
+        self.assertFalse((self.results / "latest.json").exists())
 
 
 if __name__ == "__main__":
