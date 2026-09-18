@@ -50,6 +50,12 @@ Triage a recent failed, interrupted, empty, or truncated cake run.
 
 Change a runner label or a workflow job name without breaking branch protection or silently moving platform coverage.
 
+### Local Gate Prerequisites
+
+[Local Gate Prerequisites](local-gate-prerequisites.md)
+
+Diagnose a local gate that cannot run because of the machine rather than the change, and report what remains unchecked.
+
 ## Skill Pointer Stub
 
 When a procedure moves from `.agents/skills/<name>/SKILL.md` into this directory, retain the catalog entry as a pointer stub:
