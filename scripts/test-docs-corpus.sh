@@ -10,6 +10,19 @@
 
 set -eu
 
+# git exports repository-pinning variables (GIT_DIR and friends) into hook
+# processes and everything those hooks spawn, and they outrank the working
+# directory, so without this the scratch repositories below would resolve to the
+# enclosing checkout instead. src/config/git.rs holds the list cake never
+# inherits and tests/support/mod.rs strips the same set for the integration
+# tests; these fixtures are the third place that spawns git. See
+# scripts/test-fixture-isolation.sh.
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY \
+    GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE GIT_PREFIX \
+    GIT_CONFIG_PARAMETERS GIT_CONFIG GIT_CONFIG_COUNT \
+    GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_AUTHOR_DATE \
+    GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL GIT_COMMITTER_DATE
+
 here="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 script="$here/scripts/docs-corpus.sh"
 
