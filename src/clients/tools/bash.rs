@@ -81,9 +81,9 @@ struct BashExecutionArgs {
     timeout: u64,
     policy: super::sandbox::SandboxPolicy,
     /// The model's raw working-directory request, unresolved. [`parse_bash_call`]
-    /// resolves and validates it against the invocation workspace; the resolved
-    /// directory travels to the executor as an explicit argument instead of
-    /// being written back into this field.
+    /// resolves and validates it against the invocation workspace and the
+    /// sandbox's grants; the resolved directory travels to the executor as an
+    /// explicit argument instead of being written back into this field.
     cwd: Option<PathBuf>,
     /// The model's untrusted self-report of intent, weighed against the
     /// command by the LLM judge preflight.
