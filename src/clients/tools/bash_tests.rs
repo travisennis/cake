@@ -382,25 +382,21 @@ async fn bash_cwd_rejects_missing_path_and_file_path_before_spawn() {
 }
 
 /// Build a `ToolContext` for working-directory admission tests: an explicit
-/// workspace and no temp-directory grants.
+/// workspace and policy, no temp-directory grants, and the judge bypassed.
 ///
 /// `ToolContext::from_current_process` treats the process `TMPDIR` as writable,
 /// which makes every `tempfile` fixture a grant and hides whether a grant is
 /// what admitted the path. Starting from an empty temp set keeps the fixtures
 /// honest: a fixture directory is selectable only because the test granted it.
-fn admission_context_at(
-    cwd: &std::path::Path,
-    policy: SandboxPolicy,
-    additional_dirs: Vec<std::path::PathBuf>,
-    settings_dirs: Vec<std::path::PathBuf>,
-    skill_dirs: Vec<std::path::PathBuf>,
-) -> ToolContext {
+/// Each test then adds the sandbox grants it exercises by field, so no call
+/// passes two same-typed directory lists positionally.
+fn admission_context_at(cwd: &std::path::Path, policy: SandboxPolicy) -> ToolContext {
     let mut context = ToolContext::with_temp_dirs(
         cwd.to_path_buf(),
         Vec::new(),
-        additional_dirs,
-        skill_dirs,
-        settings_dirs,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
     );
     context.sandbox_policy = policy;
     context.judge = Some(bypassed_judge_context());
@@ -432,13 +428,10 @@ fn bash_cwd_admits_settings_add_dir_and_skill_directory_grants() {
     let nested = add_dir.path().join("nested");
     std::fs::create_dir(&nested).expect("nested fixture");
 
-    let context = admission_context_at(
-        workspace.path(),
-        SandboxPolicy::WorkspaceWrite,
-        vec![add_dir.path().to_path_buf()],
-        vec![settings_dir.path().to_path_buf()],
-        vec![skill_dir.path().to_path_buf()],
-    );
+    let mut context = admission_context_at(workspace.path(), SandboxPolicy::WorkspaceWrite);
+    context.additional_dirs = vec![add_dir.path().to_path_buf()];
+    context.settings_dirs = vec![settings_dir.path().to_path_buf()];
+    context.skill_dirs = vec![skill_dir.path().to_path_buf()];
 
     for granted in [
         settings_dir.path(),
@@ -469,13 +462,8 @@ fn bash_cwd_admits_settings_add_dir_and_skill_directory_grants() {
 fn bash_cwd_admits_a_settings_directory_grant_under_read_only() {
     let workspace = tempfile::tempdir().expect("workspace fixture");
     let settings_dir = tempfile::tempdir().expect("settings fixture");
-    let context = admission_context_at(
-        workspace.path(),
-        SandboxPolicy::ReadOnly,
-        Vec::new(),
-        vec![settings_dir.path().to_path_buf()],
-        Vec::new(),
-    );
+    let mut context = admission_context_at(workspace.path(), SandboxPolicy::ReadOnly);
+    context.settings_dirs = vec![settings_dir.path().to_path_buf()];
 
     assert_eq!(
         resolve_cwd_for_test(&context, settings_dir.path())
@@ -493,13 +481,7 @@ fn bash_cwd_admits_a_settings_directory_grant_under_read_only() {
 #[test]
 fn bash_cwd_rejects_built_in_system_paths() {
     let workspace = tempfile::tempdir().expect("workspace fixture");
-    let context = admission_context_at(
-        workspace.path(),
-        SandboxPolicy::WorkspaceWrite,
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-    );
+    let context = admission_context_at(workspace.path(), SandboxPolicy::WorkspaceWrite);
 
     for system in ["/etc", "/usr"] {
         let error = resolve_cwd_for_test(&context, std::path::Path::new(system))
@@ -518,13 +500,7 @@ fn bash_cwd_rejects_built_in_system_paths() {
 fn bash_cwd_admits_any_existing_directory_under_danger_full_access() {
     let workspace = tempfile::tempdir().expect("workspace fixture");
     let ungranted = tempfile::tempdir().expect("ungranted fixture");
-    let context = admission_context_at(
-        workspace.path(),
-        SandboxPolicy::DangerFullAccess,
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-    );
+    let context = admission_context_at(workspace.path(), SandboxPolicy::DangerFullAccess);
 
     assert_eq!(
         resolve_cwd_for_test(&context, ungranted.path())
@@ -544,20 +520,9 @@ async fn bash_cwd_rejects_a_directory_outside_every_grant_before_spawn() {
     let workspace = tempfile::tempdir().expect("workspace fixture");
     let granted_elsewhere = tempfile::tempdir().expect("ungranted fixture");
     let marker = workspace.path().join("spawned");
-    let other_context = admission_context_at(
-        workspace.path(),
-        SandboxPolicy::WorkspaceWrite,
-        vec![granted_elsewhere.path().to_path_buf()],
-        Vec::new(),
-        Vec::new(),
-    );
-    let context = admission_context_at(
-        workspace.path(),
-        SandboxPolicy::WorkspaceWrite,
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-    );
+    let mut other_context = admission_context_at(workspace.path(), SandboxPolicy::WorkspaceWrite);
+    other_context.additional_dirs = vec![granted_elsewhere.path().to_path_buf()];
+    let context = admission_context_at(workspace.path(), SandboxPolicy::WorkspaceWrite);
 
     // Guard the fixture: the same directory is admitted once `--add-dir` grants
     // it, so a rejection here is about the missing grant and not the path.
@@ -608,13 +573,7 @@ async fn bash_cwd_rejects_symlink_that_escapes_every_grant() {
     let target = tempfile::tempdir().expect("ungranted target fixture");
     let link = workspace.path().join("outside-link");
     std::os::unix::fs::symlink(target.path(), &link).expect("symlink fixture");
-    let context = admission_context_at(
-        workspace.path(),
-        SandboxPolicy::WorkspaceWrite,
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-    );
+    let context = admission_context_at(workspace.path(), SandboxPolicy::WorkspaceWrite);
     let arguments = serde_json::json!({
         "command": "pwd -P",
         "cwd": "outside-link",
@@ -636,13 +595,8 @@ fn bash_cwd_accepts_a_symlink_whose_target_is_granted() {
     let granted = tempfile::tempdir().expect("grant fixture");
     let link = workspace.path().join("granted-link");
     std::os::unix::fs::symlink(granted.path(), &link).expect("symlink fixture");
-    let context = admission_context_at(
-        workspace.path(),
-        SandboxPolicy::WorkspaceWrite,
-        vec![granted.path().to_path_buf()],
-        Vec::new(),
-        Vec::new(),
-    );
+    let mut context = admission_context_at(workspace.path(), SandboxPolicy::WorkspaceWrite);
+    context.additional_dirs = vec![granted.path().to_path_buf()];
 
     assert_eq!(
         resolve_cwd_for_test(&context, &link).expect("a granted symlink target must be admitted"),
