@@ -1568,6 +1568,22 @@ async fn bash_judge_preflight(
     // future before the tool result and its compensation events are recorded,
     // so waiting for that path would drop the attempts.
     record_judge_attempts(judge, &evaluation.attempts);
+    if let Some(observation) = &evaluation.shadow
+        && let Some(sink) = &judge.record_attempt
+    {
+        sink.record_typesafe(
+            crate::session_telemetry::TypeSafeShadowTelemetry {
+                elapsed_ms: u64::try_from(observation.elapsed.as_millis()).unwrap_or(u64::MAX),
+                model: observation.model.clone(),
+                probability: observation.probability,
+                call_id: None,
+                usage_input_tokens: observation.usage_input_tokens,
+                usage_output_tokens: observation.usage_output_tokens,
+                failure_class: observation.failure_class.map(str::to_string),
+            },
+            raw_call_id,
+        );
+    }
     observed_evaluation_to_preflight(evaluation, raw_call_id)
 }
 

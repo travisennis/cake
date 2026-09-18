@@ -255,6 +255,19 @@ pub struct JudgeAttemptTelemetry {
     pub termination: Option<ProviderTermination>,
 }
 
+/// Metadata-only observation from the optional `TypeSafe` shadow evaluator.
+#[derive(Debug, Clone, Serialize)]
+pub struct TypeSafeShadowTelemetry {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
+    pub elapsed_ms: u64,
+    pub model: Option<String>,
+    pub probability: Option<f32>,
+    pub usage_input_tokens: Option<u64>,
+    pub usage_output_tokens: Option<u64>,
+    pub failure_class: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct RetryScheduledTelemetry {
     pub turn_index: u32,
@@ -539,6 +552,13 @@ pub enum SessionTelemetryRecord {
         #[serde(flatten)]
         attempt: JudgeAttemptTelemetry,
     },
+    TypeSafeShadow {
+        session_id: String,
+        invocation_id: String,
+        timestamp: DateTime<Utc>,
+        #[serde(flatten)]
+        observation: TypeSafeShadowTelemetry,
+    },
     RetryScheduled {
         session_id: String,
         invocation_id: String,
@@ -734,6 +754,21 @@ impl JudgeAttemptSink {
         };
         if let TelemetryAppend::Failed(error) = self.writer.append(&record) {
             tracing::warn!(target: "cake", "Failed to record judge attempt: {error}");
+        }
+    }
+
+    /// Append one bounded `TypeSafe` observation without retaining command text,
+    /// prompts, provider bodies, or credentials.
+    pub fn record_typesafe(&self, mut observation: TypeSafeShadowTelemetry, call_id: Option<&str>) {
+        observation.call_id = call_id.filter(|id| !id.is_empty()).map(digest_identifier);
+        let record = SessionTelemetryRecord::TypeSafeShadow {
+            session_id: self.context.session_id.clone(),
+            invocation_id: self.context.invocation_id.clone(),
+            timestamp: Utc::now(),
+            observation,
+        };
+        if let TelemetryAppend::Failed(error) = self.writer.append(&record) {
+            tracing::warn!(target: "cake", "Failed to record TypeSafe shadow observation: {error}");
         }
     }
 }
@@ -1408,6 +1443,57 @@ mod tests {
         for line in lines {
             let value: serde_json::Value = serde_json::from_str(line).unwrap();
             assert_eq!(value["type"], "session_summary");
+        }
+    }
+    #[test]
+    fn typesafe_shadow_sink_links_calls_without_raw_identifiers() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("telemetry.ndjson");
+        let writer = Arc::new(SharedSessionTelemetryWriter::new(
+            SessionTelemetryWriter::open(&path).unwrap(),
+        ));
+        let sink = JudgeAttemptSink::new(
+            writer,
+            SessionTelemetryContext {
+                session_id: "session".into(),
+                invocation_id: "invocation".into(),
+            },
+        );
+        let observation = TypeSafeShadowTelemetry {
+            call_id: None,
+            elapsed_ms: 15,
+            model: Some("jev-1.13.0".into()),
+            probability: Some(0.9),
+            usage_input_tokens: Some(20),
+            usage_output_tokens: Some(3),
+            failure_class: None,
+        };
+        sink.record_typesafe(observation.clone(), Some("raw-call-id-secret"));
+        sink.record_typesafe(observation, None);
+        let contents = std::fs::read_to_string(path).unwrap();
+        assert!(!contents.contains("raw-call-id-secret"));
+        let records: Vec<serde_json::Value> = contents
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0]["type"], "type_safe_shadow");
+        assert_eq!(
+            records[0]["call_id"],
+            digest_identifier("raw-call-id-secret")
+        );
+        assert_eq!(records[0]["elapsed_ms"], 15);
+        assert_eq!(records[0]["session_id"], "session");
+        assert!(records[1].get("call_id").is_none());
+        for key in [
+            "command",
+            "reason",
+            "cwd",
+            "response_body",
+            "api_key",
+            "authorization",
+        ] {
+            assert!(records[0].get(key).is_none());
         }
     }
 }

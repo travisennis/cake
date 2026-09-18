@@ -75,6 +75,21 @@ pub struct ToolsSettingsOverlay {
     /// If set, replaces the inherited exact tool-name selection.
     #[serde(default)]
     pub enabled: Option<Vec<String>>,
+    /// Bash tool settings overlay.
+    #[serde(default)]
+    pub bash: Option<ProfileBashSettings>,
+}
+
+/// Profile-only observational settings; primary judge policy remains top-level.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ProfileBashSettings {
+    pub judge: Option<ProfileJudgeSettings>,
+}
+
+/// A profile can select shadow evaluation without overriding execution policy.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ProfileJudgeSettings {
+    pub typesafe: Option<TypeSafeSettingsOverlay>,
 }
 
 /// Bash tool settings loaded from `[tools.bash]`.
@@ -118,6 +133,47 @@ pub struct BashJudgeSettings {
     /// `overridden` flag are recorded. No entries in shipped defaults.
     #[serde(default)]
     pub allowlist: Option<Vec<String>>,
+    /// Optional `TypeSafe` shadow evaluator.
+    #[serde(default)]
+    pub typesafe: Option<TypeSafeSettingsOverlay>,
+}
+
+/// Partial `TypeSafe` shadow evaluator settings used by settings overlays.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TypeSafeSettingsOverlay {
+    #[serde(default)]
+    pub mode: Option<TypeSafeMode>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+}
+
+/// `TypeSafe` evaluation mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TypeSafeMode {
+    #[default]
+    Off,
+    Shadow,
+}
+
+/// Resolved `TypeSafe` shadow evaluator configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeSafeSettings {
+    pub mode: TypeSafeMode,
+    pub model: String,
+    pub timeout_ms: u64,
+}
+
+impl Default for TypeSafeSettings {
+    fn default() -> Self {
+        Self {
+            mode: TypeSafeMode::Off,
+            model: "jev-1.13.0".to_string(),
+            timeout_ms: 1_000,
+        }
+    }
 }
 
 /// Resolved LLM judge settings for Bash command safety.
@@ -149,6 +205,8 @@ pub struct JudgeSettings {
     /// An allowlisted command is still judged; the verdict and the `overridden`
     /// flag are recorded for telemetry. Empty by default.
     pub allowlist: Vec<String>,
+    /// Optional bounded `TypeSafe` shadow evaluation.
+    pub typesafe: TypeSafeSettings,
 }
 
 impl Default for JudgeSettings {
@@ -160,6 +218,7 @@ impl Default for JudgeSettings {
             rubric_file: None,
             enabled: true,
             allowlist: Vec::new(),
+            typesafe: TypeSafeSettings::default(),
         }
     }
 }
@@ -1126,6 +1185,7 @@ impl SettingsLoader {
             rubric_file,
             enabled,
             allowlist,
+            typesafe,
         } = judge;
         Self::merge_judge_scalars(
             model,
@@ -1139,6 +1199,23 @@ impl SettingsLoader {
         // entry in any settings file is honored. An absent key contributes
         // nothing, matching the other list-valued settings.
         acc.judge_allowlist.extend(allowlist.unwrap_or_default());
+        Self::merge_typesafe_settings(typesafe, acc);
+    }
+
+    fn merge_typesafe_settings(
+        settings: Option<TypeSafeSettingsOverlay>,
+        acc: &mut SettingsAccumulator,
+    ) {
+        let Some(settings) = settings else { return };
+        if let Some(mode) = settings.mode {
+            acc.typesafe.mode = mode;
+        }
+        if let Some(model) = settings.model {
+            acc.typesafe.model = model;
+        }
+        if let Some(timeout_ms) = settings.timeout_ms {
+            acc.typesafe.timeout_ms = timeout_ms.max(1);
+        }
     }
 
     /// Copy the absent-key-preserving scalar judge fields into the
@@ -1241,6 +1318,7 @@ struct SettingsAccumulator {
     judge_rubric_file: Option<PathBuf>,
     judge_enabled: Option<bool>,
     judge_allowlist: Vec<String>,
+    typesafe: TypeSafeSettings,
     max_turns: Option<Limit>,
     max_tool_calls: Option<Limit>,
     bash_output_max_bytes: Option<Limit>,
@@ -1279,6 +1357,9 @@ impl SettingsAccumulator {
         if overlay.enabled.is_some() {
             self.tools_enabled.clone_from(&overlay.enabled);
         }
+        if let Some(judge) = overlay.bash.as_ref().and_then(|bash| bash.judge.as_ref()) {
+            SettingsLoader::merge_typesafe_settings(judge.typesafe.clone(), self);
+        }
     }
 
     /// Convert the accumulated merge state into the final [`LoadedSettings`].
@@ -1316,6 +1397,7 @@ impl SettingsAccumulator {
                 rubric_file: self.judge_rubric_file,
                 enabled: self.judge_enabled.unwrap_or(true),
                 allowlist: self.judge_allowlist,
+                typesafe: self.typesafe,
             },
             limits: limits.resolve(),
             warnings: self.warnings,

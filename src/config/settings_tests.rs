@@ -1305,6 +1305,79 @@ api_key_env = "KEY"
     assert_eq!(loaded.judge.retry_budget_secs, 15);
     assert!(loaded.judge.enabled, "the judge is enabled by default");
     assert!(loaded.judge.allowlist.is_empty());
+    assert_eq!(loaded.judge.typesafe.mode, TypeSafeMode::Off);
+    assert_eq!(loaded.judge.typesafe.model, "jev-1.13.0");
+    assert_eq!(loaded.judge.typesafe.timeout_ms, 1_000);
+}
+
+#[test]
+fn test_typesafe_global_project_and_profile_overlay_preserves_primary_judge() {
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"
+[tools.bash.judge]
+enabled = false
+timeout_secs = 7
+[tools.bash.judge.typesafe]
+mode = "shadow"
+model = "jev-global"
+timeout_ms = 900
+
+[profiles.review.tools.bash.judge]
+enabled = true
+timeout_secs = 1
+
+[profiles.review.tools.bash.judge.typesafe]
+model = "jev-profile"
+timeout_ms = 700
+"#,
+    );
+    let project = create_project_settings(
+        r#"
+[tools.bash.judge]
+timeout_secs = 11
+[tools.bash.judge.typesafe]
+model = "jev-project"
+"#,
+    );
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load_with_profile(Some(project.path()), Some("review"))
+    })
+    .unwrap();
+    assert!(!loaded.judge.enabled);
+    assert_eq!(loaded.judge.timeout_secs, 11);
+    assert_eq!(loaded.judge.typesafe.mode, TypeSafeMode::Shadow);
+    assert_eq!(loaded.judge.typesafe.model, "jev-profile");
+    assert_eq!(loaded.judge.typesafe.timeout_ms, 700);
+    assert!(
+        loaded
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("enabled"))
+    );
+    assert!(
+        loaded
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("timeout_secs"))
+    );
+}
+
+#[test]
+fn test_typesafe_rejects_unsupported_cascade_mode() {
+    let project = create_project_settings(
+        r#"
+[tools.bash.judge.typesafe]
+mode = "cascade"
+"#,
+    );
+    let home = create_home_dir();
+    let error = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load(Some(project.path()))
+    })
+    .unwrap_err();
+    assert!(error.to_string().contains("cascade"));
 }
 
 #[test]

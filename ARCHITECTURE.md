@@ -51,6 +51,8 @@ Built-in Edit and Write calls targeting the same canonical path execute sequenti
 
 Read, Edit, and Write enforce allowed paths in-process. Bash adds an LLM-judge command-safety preflight (ADR-018) and an operating-system filesystem sandbox: Seatbelt on macOS and Landlock on Linux. Every non-empty command is judged before spawn; the judge is default-on and fail-closed with no deterministic rule floor, and it replaced the compiled `bash_safety` guard. Hooks and toolbox executables are trusted control-plane extensions outside that sandbox. [Security](docs/security.md) defines the guarantees and limitations.
 
+An opt-in TypeSafe shadow evaluator observes the same command context alongside the primary judge under its own bounded deadline. Its probability or failure is metadata only and never changes execution authority; the default-off path makes no TypeSafe request.
+
 ### Persistence and integrations
 
 Persisted sessions are append-only, versioned JSONL logs. Stream-json is a current-task event stream, not a resumable session file. Public record shapes, configuration, exit codes, hook input/output, and toolbox protocols are compatibility contracts described in [Integrations](docs/integrations.md).

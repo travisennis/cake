@@ -35,8 +35,9 @@ use serde::{Deserialize, Serialize};
 use crate::clients::agent_runner::build_http_client;
 use crate::clients::judge_rubric::{VerdictCode, build_judge_system_prompt};
 use crate::clients::retry::RetryPolicy;
+use crate::clients::typesafe::{TypeSafeClient, TypeSafeObservation};
 use crate::config::model::ResolvedModelConfig;
-use crate::config::settings::{JudgeSettings, ModelDefinition};
+use crate::config::settings::{JudgeSettings, ModelDefinition, TypeSafeMode};
 use crate::session_telemetry::{
     JudgeAttemptSink, JudgeAttemptTelemetry, ProviderTermination, TerminationClassification,
 };
@@ -204,6 +205,7 @@ pub struct JudgeEvaluation {
     pub outcome: Result<JudgeOutcome, JudgeError>,
     pub attempts: Vec<JudgeAttemptTelemetry>,
     pub diagnostic: Option<JudgeDiagnostic>,
+    pub shadow: Option<TypeSafeObservation>,
 }
 
 /// Whether the judge is active for this process.
@@ -271,10 +273,15 @@ pub async fn evaluate_command_observed(
             outcome: Ok(JudgeOutcome::Bypassed),
             attempts: Vec::new(),
             diagnostic: None,
+            shadow: None,
         };
     }
     let command = request.command.clone();
-    let call = client.judge_observed(request, include_raw_diagnostic).await;
+    let shadow_request = request.clone();
+    let (call, shadow) = tokio::join!(
+        client.judge_observed(request, include_raw_diagnostic),
+        client.typesafe_observed(shadow_request, settings.typesafe.mode),
+    );
     let outcome = call.result.map(|verdict| {
         let overridden = verdict.decision == JudgeDecision::Block
             && settings.allowlist.iter().any(|entry| entry == &command);
@@ -287,6 +294,7 @@ pub async fn evaluate_command_observed(
         outcome,
         attempts: call.attempts,
         diagnostic: call.diagnostic,
+        shadow,
     }
 }
 
@@ -371,7 +379,8 @@ impl JudgeContext {
                         Duration::from_secs(self.settings.timeout_secs),
                         Duration::from_secs(self.settings.retry_budget_secs),
                     )
-                    .with_user_rubric(user_rubric),
+                    .with_user_rubric(user_rubric)
+                    .with_typesafe(TypeSafeClient::from_settings(&self.settings.typesafe)),
                 ))
             })
             .as_deref()
@@ -445,6 +454,7 @@ pub struct JudgeClient {
     /// Retry policy for the at-most-one recovery attempt.
     retry_policy: RetryPolicy,
     user_rubric: Option<String>,
+    typesafe: Option<Arc<TypeSafeClient>>,
 }
 
 impl JudgeClient {
@@ -461,14 +471,43 @@ impl JudgeClient {
             retry_budget,
             retry_policy: judge_retry_policy(retry_budget),
             user_rubric: None,
+            typesafe: None,
         }
     }
 
     /// Append optional user rubric guidance (from `[tools.bash.judge]
     /// rubric_file`) to the embedded default rubric.
     pub fn with_user_rubric(mut self, user_rubric: Option<String>) -> Self {
+        if let Some(client) = self.typesafe.take() {
+            self.typesafe = Some(Arc::new(
+                (*client).clone().with_rubric(user_rubric.as_deref()),
+            ));
+        }
         self.user_rubric = user_rubric;
         self
+    }
+
+    pub fn with_typesafe(mut self, client: Option<TypeSafeClient>) -> Self {
+        self.typesafe =
+            client.map(|client| Arc::new(client.with_rubric(self.user_rubric.as_deref())));
+        self
+    }
+
+    async fn typesafe_observed(
+        &self,
+        request: JudgeRequest,
+        mode: TypeSafeMode,
+    ) -> Option<TypeSafeObservation> {
+        if mode == TypeSafeMode::Off {
+            return None;
+        }
+        let Some(client) = self.typesafe.as_deref() else {
+            return Some(TypeSafeObservation::failed(
+                Duration::ZERO,
+                "client_configuration",
+            ));
+        };
+        Some(client.evaluate(&request).await)
     }
 
     /// The resolved API key, exposed so diagnostic output can redact it from
