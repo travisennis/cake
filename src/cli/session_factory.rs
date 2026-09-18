@@ -399,9 +399,10 @@ fn fork_source(
 /// model` override is resolved lazily at call time (after the bypass check) so
 /// a broken judge config cannot defeat the emergency bypass.
 ///
-/// The `CAKE_JUDGE` emergency bypass is the run's one environment read, taken
-/// here and carried on the context so the Bash preflight never consults the
-/// process environment and tests can supply the value directly.
+/// The `CAKE_JUDGE` emergency bypass is read here, once, when the run's context
+/// is built, rather than on every Bash call. The value is carried on the
+/// context so the Bash preflight never consults the process environment and
+/// tests can supply the value directly.
 fn attach_judge(
     tool_context: &Arc<ToolContext>,
     agent_model: &ResolvedModelConfig,
