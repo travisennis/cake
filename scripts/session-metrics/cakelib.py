@@ -738,9 +738,42 @@ def print_header(title: str) -> None:
     print(f"\n{'=' * 66}\n{title}\n{'=' * 66}")
 
 
+def fmt_utc(moment: datetime) -> str:
+    """A UTC instant with second precision, for provenance stamps."""
+    return moment.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def fmt_age(seconds: float) -> str:
+    """An elapsed span at one significant unit, for provenance stamps."""
+    if seconds < 0:
+        seconds = 0
+    for limit, unit in ((90, "s"), (5400, "m"), (172800, "h")):
+        if seconds < limit:
+            divisor = {"s": 1, "m": 60, "h": 3600}[unit]
+            return f"{round(seconds / divisor)}{unit}"
+    return f"{round(seconds / 86400)}d"
+
+
 def describe_window(data: Dataset) -> str:
-    window = f"last {data.cutoff and (datetime.now(timezone.utc) - data.cutoff).days} days" if data.cutoff else "all time"
+    """The loaded window, and the provenance of the numbers taken from it.
+
+    The report reads the transcript directory as it is, so a session that is
+    still being written is measured as part of this run and its counts move
+    afterwards. The `measured` stamp and the age of the newest activity are what
+    make a quoted number reproducible: two reports run minutes apart agree on
+    this line or they describe different data.
+    """
+    now = datetime.now(timezone.utc)
+    window = f"last {data.cutoff and (now - data.cutoff).days} days" if data.cutoff else "all time"
+    if data.sessions:
+        newest = max(session.last_activity for session in data.sessions)
+        measured = f"measured {fmt_utc(now)} | newest activity {fmt_utc(newest)} ({fmt_age((now - newest).total_seconds())} ago)"
+        unfinished = sum(1 for session in data.sessions if session.inflight)
+        if unfinished:
+            measured += f" | unfinished tasks in {unfinished} session(s)"
+    else:
+        measured = f"measured {fmt_utc(now)} | no session transcripts"
     return (
         f"Window: {window} | sessions: {len(data.sessions)} ({data.sessions_dir}) | "
-        f"telemetry invocations: {len(data.invocations)} ({data.telemetry_dir})"
+        f"telemetry invocations: {len(data.invocations)} ({data.telemetry_dir}) | {measured}"
     )

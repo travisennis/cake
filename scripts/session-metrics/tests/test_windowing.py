@@ -320,5 +320,66 @@ class TelemetryWindowTest(unittest.TestCase):
             self.assertEqual(len(invocations), 1)
 
 
+class DescribeWindowProvenanceTest(unittest.TestCase):
+    """The window line must say when it was measured and how fresh the data is.
+
+    A report run while a session is still writing includes that session, so the
+    counts move after the fact unless the line carries the measurement stamp.
+    """
+
+    def dataset(self, *sessions, cutoff=None):
+        return cakelib.Dataset(
+            sessions=list(sessions),
+            invocations=[],
+            sessions_dir=pathlib.Path("/tmp/sessions"),
+            telemetry_dir=pathlib.Path("/tmp/telemetry"),
+            cutoff=cutoff,
+        )
+
+    def test_stamps_measurement_time_and_newest_activity(self):
+        recent = datetime.now(timezone.utc) - timedelta(minutes=5)
+        line = cakelib.describe_window(self.dataset(
+            session(task_start("a", recent.isoformat()), mtime=recent),
+            cutoff=datetime.now(timezone.utc) - timedelta(days=7),
+        ))
+
+        self.assertRegex(line, r"measured \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
+        self.assertIn(f"newest activity {cakelib.fmt_utc(recent)}", line)
+        self.assertRegex(line, r"\(\d+[smhd] ago\)")
+        self.assertIn("Window: last 7 days", line)
+
+    def test_reports_sessions_with_unfinished_tasks(self):
+        unfinished = session(task_start("a", T(minutes=-2)), mtime=NOW, sid="unfinished")
+        finished = session(
+            task_start("b", T(minutes=-3)) + task_complete("b"), mtime=NOW, sid="finished",
+        )
+
+        with_unfinished = cakelib.describe_window(self.dataset(unfinished, finished))
+        without = cakelib.describe_window(self.dataset(finished))
+
+        self.assertIn("unfinished tasks in 1 session(s)", with_unfinished)
+        self.assertNotIn("unfinished tasks", without)
+
+    def test_empty_dataset_says_it_has_no_transcripts(self):
+        line = cakelib.describe_window(self.dataset())
+
+        self.assertIn("sessions: 0", line)
+        self.assertIn("no session transcripts", line)
+        self.assertNotIn("newest activity", line)
+
+    def test_age_uses_one_significant_unit(self):
+        cases = ((0, "0s"), (45, "45s"), (600, "10m"), (7200, "2h"), (259200, "3d"))
+        for seconds, expected in cases:
+            with self.subTest(seconds=seconds):
+                self.assertEqual(cakelib.fmt_age(seconds), expected)
+
+    def test_age_never_goes_negative_for_future_activity(self):
+        self.assertEqual(cakelib.fmt_age(-30), "0s")
+
+    def test_utc_stamp_is_second_precision_with_z(self):
+        moment = datetime(2026, 9, 17, 16, 5, 12, 345678, tzinfo=timezone.utc)
+        self.assertEqual(cakelib.fmt_utc(moment), "2026-09-17T16:05:12Z")
+
+
 if __name__ == "__main__":
     unittest.main()
