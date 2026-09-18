@@ -168,6 +168,7 @@ mod tests {
             writable: vec![missing.clone(), writable.clone()],
             read_execute: vec![missing, readable.clone(), readable_file.clone()],
             policy: crate::clients::tools::sandbox::SandboxPolicy::WorkspaceWrite,
+            user_grants: Vec::new(),
         };
 
         assert_eq!(

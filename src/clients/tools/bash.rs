@@ -81,9 +81,9 @@ struct BashExecutionArgs {
     timeout: u64,
     policy: super::sandbox::SandboxPolicy,
     /// The model's raw working-directory request, unresolved. [`parse_bash_call`]
-    /// resolves and validates it against the invocation workspace; the resolved
-    /// directory travels to the executor as an explicit argument instead of
-    /// being written back into this field.
+    /// resolves and validates it against the invocation workspace and the
+    /// sandbox's grants; the resolved directory travels to the executor as an
+    /// explicit argument instead of being written back into this field.
     cwd: Option<PathBuf>,
     /// The model's untrusted self-report of intent, weighed against the
     /// command by the LLM judge preflight.
@@ -120,12 +120,16 @@ impl BashExecutionArgs {
 
 /// Resolve and validate the optional per-call Bash working directory.
 ///
-/// Relative paths are rooted at the invocation directory. Existing directory
-/// grants remain the sandbox boundary: an explicit cwd must be inside the
-/// invocation workspace, and canonicalization prevents a symlink from escaping
-/// it.
+/// Relative paths are rooted at the invocation directory. A directory is
+/// admitted when the sandbox grants it, when it is inside the invocation
+/// workspace, or when the policy applies no sandbox at all. Canonicalization
+/// happens before the check, so a symlink cannot escape every grant.
+///
+/// Selecting a directory grants the command nothing: the sandbox still governs
+/// every access from wherever the command starts.
 fn resolve_bash_cwd(
     context: &super::ToolContext,
+    config: &super::sandbox::SandboxConfig,
     requested: Option<&Path>,
 ) -> Result<PathBuf, String> {
     let Some(requested) = requested else {
@@ -156,29 +160,39 @@ fn resolve_bash_cwd(
             requested.display()
         ));
     }
-    if !canonical.starts_with(&workspace) {
+    // `DangerFullAccess` applies no sandbox, so a grant check would be stricter
+    // than the policy in force.
+    let admitted = context.sandbox_policy == super::sandbox::SandboxPolicy::DangerFullAccess
+        || canonical.starts_with(&workspace)
+        || config.is_path_selectable(&canonical);
+    if !admitted {
         return Err(format!(
-            "Invalid Bash working directory '{}': path is outside the invocation workspace",
-            requested.display()
+            "Invalid Bash working directory '{}': path is outside the invocation workspace '{}' \
+             and outside every granted directory. A cwd must be the invocation workspace, a \
+             directory granted with `--add-dir` or `[sandbox]` in settings, or a skill directory.",
+            requested.display(),
+            workspace.display()
         ));
     }
 
     Ok(canonical)
 }
 
-/// Parse one Bash call and resolve its effective working directory.
+/// Parse one Bash call, build the sandbox configuration once, and resolve the
+/// effective working directory.
 ///
 /// Parsing and resolution happen together, once, so the child process, the
 /// command-safety judge request, the repository digest, and the sandbox-denial
-/// scan all receive the same validated directory and no caller can reach the
-/// executor with an unresolved request.
+/// scan all receive the same validated directory and the same grants, and no
+/// caller can reach the executor with an unresolved request.
 fn parse_bash_call(
     context: &super::ToolContext,
     arguments: &str,
-) -> Result<(BashExecutionArgs, PathBuf), String> {
+) -> Result<(BashExecutionArgs, PathBuf, super::sandbox::SandboxConfig), String> {
     let args = BashExecutionArgs::from_json(arguments, context.sandbox_policy)?;
-    let cwd = resolve_bash_cwd(context, args.cwd.as_deref())?;
-    Ok((args, cwd))
+    let config = super::sandbox::SandboxConfig::build(context);
+    let cwd = resolve_bash_cwd(context, &config, args.cwd.as_deref())?;
+    Ok((args, cwd, config))
 }
 
 // =============================================================================
@@ -200,7 +214,7 @@ pub(super) fn bash_tool() -> super::Tool {
                 },
                 "cwd": {
                     "type": "string",
-                    "description": "Optional working directory for this command. Relative paths resolve from the invocation working directory and must remain inside it."
+                    "description": "Optional working directory for this command. Relative paths resolve from the invocation working directory. The directory must be the invocation working directory or a directory the sandbox already grants (`--add-dir`, settings, or a skill directory)."
                 },
                 "timeout": {
                     "type": "number",
@@ -916,8 +930,15 @@ pub(super) async fn execute_bash_for_call(
     arguments: &str,
     call_id: Option<String>,
 ) -> Result<super::ToolResult, super::ToolError> {
-    let (args, cwd) = parse_bash_call(context, arguments)?;
-    Box::pin(execute_bash_with_args(context, args, cwd, call_id)).await
+    let (args, cwd, sandbox_config) = parse_bash_call(context, arguments)?;
+    Box::pin(execute_bash_with_args(
+        context,
+        args,
+        cwd,
+        &sandbox_config,
+        call_id,
+    ))
+    .await
 }
 
 /// One prepared Bash invocation: the configured child command plus the
@@ -943,15 +964,12 @@ fn scrub_ambient_git_environment(command: &mut Command) {
 /// the policy. Sandbox-setup failures carry the preflight's telemetry events,
 /// so an allow/warn verdict stays observable even when the command never runs.
 fn prepare_bash_command(
-    context: &super::ToolContext,
     args: &BashExecutionArgs,
     cwd: &Path,
+    sandbox_config: &super::sandbox::SandboxConfig,
     judge_events: &[CompensationEventTelemetry],
 ) -> Result<PreparedBashCommand, super::ToolError> {
     let use_sandbox = args.policy != super::sandbox::SandboxPolicy::DangerFullAccess;
-
-    // Build sandbox configuration with additional directories
-    let sandbox_config = super::sandbox::SandboxConfig::build(context);
 
     // Create command with proper stdio configuration
     let mut command = Command::new("bash");
@@ -970,7 +988,7 @@ fn prepare_bash_command(
         {
             Some(
                 strategy
-                    .apply(&mut command, &sandbox_config)
+                    .apply(&mut command, sandbox_config)
                     .map_err(|e| judge_tool_error(judge_events.to_vec(), e))?,
             )
         } else {
@@ -1243,9 +1261,9 @@ async fn drain_to_eof<R: tokio::io::AsyncRead + Unpin>(
 /// list. Kept off the hot path and out of `execute_bash_with_args` so that
 /// function's cyclomatic complexity stays within the gate.
 fn sandbox_denials(
-    context: &super::ToolContext,
     command: &str,
     cwd: &Path,
+    config: &super::sandbox::SandboxConfig,
     sandbox_applied: bool,
     success: bool,
     output: &str,
@@ -1254,8 +1272,7 @@ fn sandbox_denials(
     if !is_sandbox_violation(sandbox_applied, success, output, stderr) {
         return Vec::new();
     }
-    let config = super::sandbox::SandboxConfig::build(context);
-    denied_path_refs_in_command(command, cwd, &config)
+    denied_path_refs_in_command(command, cwd, config)
 }
 
 /// Select the model-visible text form of a completed run's combined output:
@@ -1313,6 +1330,7 @@ async fn execute_bash_with_args(
     context: &super::ToolContext,
     args: BashExecutionArgs,
     cwd: PathBuf,
+    sandbox_config: &super::sandbox::SandboxConfig,
     call_id: Option<String>,
 ) -> Result<super::ToolResult, super::ToolError> {
     // Command-safety preflight: the LLM judge is the only non-sandbox command
@@ -1334,7 +1352,7 @@ async fn execute_bash_with_args(
         mut command,
         sandbox_applied,
         _sandbox_guard,
-    } = prepare_bash_command(context, &args, &cwd, &judge_events)?;
+    } = prepare_bash_command(&args, &cwd, sandbox_config, &judge_events)?;
 
     // Place the child in its own process group so that SIGKILL to the
     // negative PID kills all descendants, not just the direct child.
@@ -1391,9 +1409,9 @@ async fn execute_bash_with_args(
     }
     let output_str = String::from_utf8_lossy(&buf);
     let denials = sandbox_denials(
-        context,
         &args.command,
         &cwd,
+        sandbox_config,
         sandbox_applied,
         success,
         &output_str,
@@ -1728,8 +1746,15 @@ async fn execute_bash_with_judge_in(
     context.cwd = cwd.to_path_buf();
     context.judge = judge;
     context.sandbox_policy = super::sandbox::SandboxPolicy::DangerFullAccess;
-    let (args, effective_cwd) = parse_bash_call(&context, arguments)?;
-    Box::pin(execute_bash_with_args(&context, args, effective_cwd, None)).await
+    let (args, effective_cwd, sandbox_config) = parse_bash_call(&context, arguments)?;
+    Box::pin(execute_bash_with_args(
+        &context,
+        args,
+        effective_cwd,
+        &sandbox_config,
+        None,
+    ))
+    .await
 }
 
 /// A judge context with the emergency bypass enabled, used by tests that
