@@ -14,7 +14,6 @@ use crate::clients::judge::{
     repo_state_digest,
 };
 use crate::clients::tools::secure_temp_dir::secure_temp_dir;
-use crate::config::settings::JUDGE_BYPASS_ENV;
 use crate::config::toolbox::ToolboxProcessGuard;
 use crate::session_telemetry::{CompensationEventTelemetry, CompensationKind};
 use crate::time_format::format_seconds_tenths;
@@ -1529,9 +1528,11 @@ async fn bash_judge_preflight(
     // The emergency bypass short-circuits before any judge setup: a disabled
     // judge must not fail on an unusable model or rubric, because the bypass
     // is the recovery path when judge configuration is broken. The bypass is
-    // still recorded so the escape hatch cannot be used silently.
-    let bypass_env = std::env::var(JUDGE_BYPASS_ENV).ok();
-    if !judge_is_enabled(&judge.settings, bypass_env.as_deref()) {
+    // still recorded so the escape hatch cannot be used silently. The value
+    // was captured once when the run's judge context was built, so this path
+    // never reads the process-global environment.
+    let bypass_env = judge.bypass_env.as_deref();
+    if !judge_is_enabled(&judge.settings, bypass_env) {
         return Ok(bypassed_preflight(raw_call_id));
     }
 
@@ -1542,14 +1543,8 @@ async fn bash_judge_preflight(
         .with_repo_digest(repo_state_digest(cwd))
         .with_call_id(raw_call_id.map(String::from));
 
-    let evaluation = evaluate_command_observed(
-        client,
-        &judge.settings,
-        request,
-        bypass_env.as_deref(),
-        false,
-    )
-    .await;
+    let evaluation =
+        evaluate_command_observed(client, &judge.settings, request, bypass_env, false).await;
     // Persist finalized attempts as soon as judging completes: an interrupted
     // command (for example Ctrl-C on a hung Bash call) cancels the agent
     // future before the tool result and its compensation events are recorded,
@@ -1770,6 +1765,7 @@ fn bypassed_judge_context() -> std::sync::Arc<JudgeContext> {
             model_config,
             api_key: String::new(),
         },
+        bypass_env: None,
         models: HashMap::new(),
         client: std::sync::OnceLock::new(),
         record_attempt: None,

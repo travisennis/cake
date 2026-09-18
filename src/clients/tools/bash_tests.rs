@@ -2399,6 +2399,7 @@ fn judge_context(mock_server: &MockServer) -> std::sync::Arc<JudgeContext> {
     };
     std::sync::Arc::new(JudgeContext {
         settings: crate::config::settings::JudgeSettings::default(),
+        bypass_env: None,
         agent_model: crate::config::model::ResolvedModelConfig {
             model_config,
             api_key: "test-key".to_string(),
@@ -2784,6 +2785,46 @@ async fn test_judge_bypass_records_bypass_event() {
         CompensationKind::JudgeBypass
     );
     assert_eq!(result.compensation_events[0].detail, None);
+}
+
+#[tokio::test]
+async fn test_judge_bypass_env_value_bypasses_without_a_judge_call() {
+    // The `CAKE_JUDGE=off` value carried on the judge context bypasses the
+    // judge even when settings enable it, and the escape hatch still records
+    // its event. The value is injected on the context instead of read from the
+    // process environment, so this assertion holds whatever the ambient
+    // `CAKE_JUDGE` is and cannot race other judge-path tests.
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(judge_chat_response(
+            r#"{"verdict":"block","code":"destructive-rm","message":"Refusing."}"#,
+        )))
+        .expect(0) // bypassed: no judge call may be made
+        .mount(&mock_server)
+        .await;
+
+    let mut judge = (*judge_context(&mock_server)).clone();
+    judge.bypass_env = Some("off".to_string());
+    let args = r#"{"command": "echo bypass-env-test"}"#;
+    let result = Box::pin(execute_bash_with_judge(
+        args,
+        Some(std::sync::Arc::new(judge)),
+    ))
+    .await
+    .unwrap();
+
+    assert!(result.output.contains("bypass-env-test"));
+    assert_eq!(
+        result.compensation_events.len(),
+        1,
+        "bypassed call must record one judge_bypass event, got: {:?}",
+        result.compensation_events
+    );
+    assert_eq!(
+        result.compensation_events[0].kind,
+        CompensationKind::JudgeBypass
+    );
+    mock_server.verify().await;
 }
 
 #[tokio::test]
