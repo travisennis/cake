@@ -389,6 +389,7 @@ class HarnessEndToEndTest(unittest.TestCase):
                     capture_output=True,
                     text=True,
                     check=True,
+                    env=eval_lib.git_env(),
                 )
                 self.assertEqual(out.stdout.strip(), expected)
 

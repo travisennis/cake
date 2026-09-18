@@ -289,9 +289,14 @@ coverage-guard-check:
 docs-corpus-check:
     @scripts/test-docs-corpus.sh
 
+# Run the fixture-isolation regression test (scratch repositories; no network):
+# every fixture that builds a scratch repository under a git hook's environment
+fixture-isolation-check:
+    @scripts/test-fixture-isolation.sh
+
 # Run the Python script fixture suites: the same suites the `changes` job in CI runs.
 # Stdlib only and no credentials; nothing here calls a model provider or the network.
-check-scripts: dependency-sweep-check profile-check binary-size-baseline-check test-classify-changes test-just-pr eval-check session-metrics-check coverage-guard-check docs-corpus-check
+check-scripts: dependency-sweep-check profile-check binary-size-baseline-check test-classify-changes test-just-pr eval-check session-metrics-check coverage-guard-check docs-corpus-check fixture-isolation-check
     echo "Script fixture suites passed!"
 
 # Run the Linux compatibility check corresponding to GitHub Actions

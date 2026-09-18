@@ -246,6 +246,40 @@ def terminate_live_group(proc_holder: dict[str, Any]) -> None:
         terminate_group(proc)
 
 
+# Environment variables that pin git to a repository, an index, an object store,
+# a configuration, or an identity independently of the working directory. git
+# exports them (GIT_DIR especially) into hook processes and everything those
+# hooks spawn, and `git -C` does not override them, so the scratch repositories
+# below would otherwise resolve to the checkout the suite was started from —
+# which under `git push` from a linked worktree is a real checkout. The list and
+# the reasoning live in src/config/git.rs; this mirrors the union that
+# tests/support/mod.rs strips for the integration tests.
+GIT_AMBIENT_ENV_VARS = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_NAMESPACE",
+    "GIT_PREFIX",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG",
+    "GIT_CONFIG_COUNT",
+    "GIT_AUTHOR_NAME",
+    "GIT_AUTHOR_EMAIL",
+    "GIT_AUTHOR_DATE",
+    "GIT_COMMITTER_NAME",
+    "GIT_COMMITTER_EMAIL",
+    "GIT_COMMITTER_DATE",
+)
+
+
+def git_env() -> dict[str, str]:
+    """The environment for the git commands and verifiers the harness spawns."""
+    return {key: value for key, value in os.environ.items() if key not in GIT_AMBIENT_ENV_VARS}
+
+
 def create_repo(work: Path, repo_src: Path) -> None:
     """Copy the fixture's initial state into a fresh git repository."""
     work.mkdir(parents=True)
@@ -274,6 +308,7 @@ def git(repo: Path, *args: str) -> None:
         check=True,
         capture_output=True,
         text=True,
+        env=git_env(),
     )
 
 
@@ -454,7 +489,7 @@ def tool_failures_from_sidecar(session_id: str, data_dir: Path) -> int | None:
 
 def run_verifier(case: Case, work: Path) -> dict[str, Any]:
     """Run the fixture's trusted verifier in the work repository."""
-    env = os.environ.copy()
+    env = git_env()
     env["EVAL_CASE_DIR"] = str(case.directory)
     try:
         proc = subprocess.run(
