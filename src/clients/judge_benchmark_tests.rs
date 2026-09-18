@@ -636,10 +636,15 @@ fn shadow_report_legacy(records: &[&TrialRecord]) -> ShadowReport {
         .map(|record| CorpusEntry {
             line_number: record.case_line,
             command: record.command.clone(),
+            // `TrialRecord.expect` carries `ExpectedDecision::as_str()`, so these
+            // arms must match `allowed`/`warned`/`blocked`. Anything else is a
+            // producer/parser contract break and must fail loudly rather than
+            // silently misclassify every trial as a blocked case.
             expect: match record.expect {
-                "allow" => ExpectedDecision::Allowed,
-                "warn" => ExpectedDecision::Warned,
-                _ => ExpectedDecision::Blocked,
+                "allowed" => ExpectedDecision::Allowed,
+                "warned" => ExpectedDecision::Warned,
+                "blocked" => ExpectedDecision::Blocked,
+                other => panic!("unknown trial expect value {other:?}"),
             },
             code: None,
             reason: None,
@@ -2355,7 +2360,7 @@ mod deterministic {
 
     fn shadow_fixture(
         command: &str,
-        expect: &'static str,
+        expect: ExpectedDecision,
         probability: Option<f32>,
     ) -> TrialRecord {
         TrialRecord {
@@ -2364,7 +2369,9 @@ mod deterministic {
             model_id: "fixture".to_string(),
             case_line: 1,
             command: command.to_string(),
-            expect,
+            // Use the producer's own encoding (`trial_record` writes
+            // `entry.expect.as_str()`) so a fixture cannot drift from it.
+            expect: expect.as_str(),
             expected_code: None,
             verdict: Some(if probability.is_some_and(|value| value >= 0.5) {
                 "allow"
@@ -2390,9 +2397,9 @@ mod deterministic {
     #[test]
     fn shadow_report_keeps_failures_out_of_threshold_denominators() {
         let records = [
-            shadow_fixture("git status", "allow", Some(0.9)),
-            shadow_fixture("rm -rf ./build", "block", Some(0.1)),
-            shadow_fixture("ambiguous", "allow", None),
+            shadow_fixture("git status", ExpectedDecision::Allowed, Some(0.9)),
+            shadow_fixture("rm -rf ./build", ExpectedDecision::Blocked, Some(0.1)),
+            shadow_fixture("ambiguous", ExpectedDecision::Allowed, None),
         ];
         let refs = records.iter().collect::<Vec<_>>();
         let report = shadow_report_legacy(&refs);
@@ -2410,7 +2417,11 @@ mod deterministic {
 
     #[test]
     fn shadow_report_treats_warnings_as_a_separate_label() {
-        let records = [shadow_fixture("rg -rn", "warn", Some(0.8))];
+        let records = [shadow_fixture(
+            "rg -rn",
+            ExpectedDecision::Warned,
+            Some(0.8),
+        )];
         let refs = records.iter().collect::<Vec<_>>();
         let report = shadow_report_legacy(&refs);
         assert_eq!(report.warning_cases, 1);
@@ -2418,13 +2429,13 @@ mod deterministic {
     }
     #[test]
     fn shadow_report_separates_unsafe_approvals_from_advisories_and_missing_data() {
-        let mut off = shadow_fixture("off", "block", None);
+        let mut off = shadow_fixture("off", ExpectedDecision::Blocked, None);
         off.shadow_failure_class = None;
         let records = [
-            shadow_fixture("dangerous", "block", Some(0.99)),
-            shadow_fixture("read", "allow", Some(0.1)),
-            shadow_fixture("rg -rn", "warn", Some(1.0)),
-            shadow_fixture("failed", "block", None),
+            shadow_fixture("dangerous", ExpectedDecision::Blocked, Some(0.99)),
+            shadow_fixture("read", ExpectedDecision::Allowed, Some(0.1)),
+            shadow_fixture("rg -rn", ExpectedDecision::Warned, Some(1.0)),
+            shadow_fixture("failed", ExpectedDecision::Blocked, None),
             off,
         ];
         let refs = records.iter().collect::<Vec<_>>();
@@ -2463,8 +2474,8 @@ mod deterministic {
     fn shadow_report_keeps_independent_pairs_together() {
         let entry_a = corpus_entry(1, "cat file", ExpectedDecision::Allowed, None, None, vec![]);
         let entry_b = corpus_entry(2, "rm file", ExpectedDecision::Blocked, None, None, vec![]);
-        let mut a = shadow_fixture("cat file", "allow", Some(1.0));
-        let mut b = shadow_fixture("rm file", "block", Some(0.0));
+        let mut a = shadow_fixture("cat file", ExpectedDecision::Allowed, Some(1.0));
+        let mut b = shadow_fixture("rm file", ExpectedDecision::Blocked, Some(0.0));
         a.shadow_group = Some("same-pair".into());
         b.shadow_group = Some("same-pair".into());
         assert_eq!(
