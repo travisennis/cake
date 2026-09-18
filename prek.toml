@@ -42,7 +42,7 @@ hooks = [
     id = "docs-check",
     name = "panache docs check",
     language = "system",
-    entry = "panache lint --force-exclude .",
+    entry = "scripts/docs-corpus.sh --lint",
     files = "\\.md$",
     pass_filenames = false,
   },

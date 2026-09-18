@@ -73,6 +73,9 @@ jobs:
       - name: Coverage guard fixture tests
         shell: bash
         run: python3 scripts/test-coverage-guard.py
+      - name: Documentation corpus fixture tests
+        shell: bash
+        run: scripts/test-docs-corpus.sh
       - name: Install just
         uses: taiki-e/install-action@v2
         with:
