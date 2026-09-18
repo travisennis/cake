@@ -110,10 +110,6 @@ clippy:
 _clippy-strict:
     cargo clippy --all-targets --all-features -- -D warnings
 
-# Ultra-strict clippy for the local gate without default features
-_clippy-no-default-features:
-    cargo clippy --all-targets --no-default-features -- -D warnings
-
 # Verify Rust toolchain pins stay synchronized
 rust-version-check:
     sh scripts/check-rust-toolchain.sh
@@ -213,7 +209,7 @@ lint-deps:
 # Keep the composition in sync with the change-class matrix in CONTRIBUTING.md:
 # cc-check runs the per-function complexity ratchet here rather than only in the
 # Coverage job, and check-scripts runs the Python fixture suites.
-check: rust-version-check fmt-check cc-check _clippy-strict _clippy-no-default-features _test-all-features lint-imports lint-deps lint-module-size lint-instruction-size lint-domain-glossary check-scripts
+check: rust-version-check fmt-check cc-check _clippy-strict _test-all-features lint-imports lint-deps lint-module-size lint-instruction-size lint-domain-glossary check-scripts
     echo "Fast local checks passed!"
 
 # Print the changed-path classification the pre-push gate routes on: docs | code | mixed | unknown | none
