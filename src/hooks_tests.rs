@@ -851,10 +851,14 @@ async fn timed_out_hook_process_is_killed() {
         .parse()
         .expect("failed to read PID from hook");
 
-    // Verify the immediate child (shell) is no longer alive
+    // Verify the immediate child (shell) is no longer alive.  The probe is
+    // expected to fail, and `kill` reports exactly that on stderr; discard it
+    // so a passing run does not print `kill: <pid>: No such process` and read
+    // like a failure.
     let shell_status = std::process::Command::new("kill")
         .arg("-0")
         .arg(pid.to_string())
+        .stderr(std::process::Stdio::null())
         .status()
         .expect("kill command failed");
     assert!(
@@ -869,6 +873,7 @@ async fn timed_out_hook_process_is_killed() {
     let pgid_status = std::process::Command::new("kill")
         .arg("-0")
         .arg(format!("-{pid}"))
+        .stderr(std::process::Stdio::null())
         .status()
         .expect("kill command failed");
     assert!(
