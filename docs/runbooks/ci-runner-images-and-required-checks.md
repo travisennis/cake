@@ -12,7 +12,7 @@ gh api repos/travisennis/cake/rulesets/<ruleset-id> \
   --jq '.rules[] | select(.type == "required_status_checks").parameters.required_status_checks[].context'
 ```
 
-The contexts come from each job's `name:` in `.github/workflows/ci.yml`, with matrix values already expanded. `Clippy (all-features)` and `Clippy (no-default-features)` are two separate required contexts produced by one job through `name: Clippy (${{ matrix.features.name }})`. Renaming the job, editing the `features.name` matrix values, or adding a matrix dimension changes those strings, and a required context that no longer reports blocks every pull request while appearing to be a protection setting rather than a typo.
+The contexts come from each job's `name:` in `.github/workflows/ci.yml`. `Clippy (all-features)` is a required context produced by the Clippy job. Renaming the job or changing its `name:` changes that string, and a required context that no longer reports blocks every pull request while appearing to be a protection setting rather than a typo.
 
 `Detect Changes` and `Coverage` are deliberately absent from the required list. `Coverage` carries an `if:` condition, and a conditional job makes a poor required context because its reporting depends on which paths a pull request touched.
 
