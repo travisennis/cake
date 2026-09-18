@@ -303,6 +303,15 @@ pub async fn evaluate_command_observed(
 pub struct JudgeContext {
     /// Resolved judge settings (allowlist, bypass, timeout, rubric file).
     pub settings: JudgeSettings,
+    /// The `CAKE_JUDGE` emergency-bypass value captured when the context was
+    /// built (`None` when unset): read once here, not on every Bash call.
+    ///
+    /// The judge path takes this value as a parameter instead of reading the
+    /// process environment, so an ambient `CAKE_JUDGE=off` reaches production
+    /// runs unchanged while tests inject the value they assert on and stay
+    /// hermetic. Settings load and `cake bash check` read the variable on
+    /// their own paths; this field replaces only the Bash preflight's read.
+    pub bypass_env: Option<String>,
     /// The agent's resolved model config; the default judge model when
     /// `settings.model` is unset.
     pub agent_model: ResolvedModelConfig,

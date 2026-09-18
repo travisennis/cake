@@ -1856,6 +1856,7 @@ printf 'completed:%s' "$index"
         };
         std::sync::Arc::new(JudgeContext {
             settings: crate::config::settings::JudgeSettings::default(),
+            bypass_env: None,
             agent_model: crate::config::model::ResolvedModelConfig {
                 model_config,
                 api_key: "test-key".to_string(),

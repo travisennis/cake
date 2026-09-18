@@ -13,7 +13,7 @@ use tracing::info;
 use crate::cli::run_mode::{RunMode, SessionPersistencePlan};
 use crate::clients::judge::JudgeContext;
 use crate::clients::{Agent, ToolContext};
-use crate::config::settings::JudgeSettings;
+use crate::config::settings::{JUDGE_BYPASS_ENV, JudgeSettings};
 use crate::config::skills::Skill;
 use crate::config::toolbox::ToolboxTool;
 use crate::config::{
@@ -398,6 +398,11 @@ fn fork_source(
 /// The judge defaults to the agent's resolved model; a `[tools.bash.judge]
 /// model` override is resolved lazily at call time (after the bypass check) so
 /// a broken judge config cannot defeat the emergency bypass.
+///
+/// The `CAKE_JUDGE` emergency bypass is read here, once, when the run's context
+/// is built, rather than on every Bash call. The value is carried on the
+/// context so the Bash preflight never consults the process environment and
+/// tests can supply the value directly.
 fn attach_judge(
     tool_context: &Arc<ToolContext>,
     agent_model: &ResolvedModelConfig,
@@ -406,6 +411,7 @@ fn attach_judge(
 ) -> Arc<ToolContext> {
     let context = JudgeContext {
         settings: judge.clone(),
+        bypass_env: std::env::var(JUDGE_BYPASS_ENV).ok(),
         agent_model: agent_model.clone(),
         models: models.clone(),
         client: std::sync::OnceLock::new(),
