@@ -292,7 +292,7 @@ fixture-isolation-check:
 
 # Run the Python script fixture suites: the same suites the `changes` job in CI runs.
 # Stdlib only and no credentials; nothing here calls a model provider or the network.
-check-scripts: dependency-sweep-check profile-check binary-size-baseline-check test-classify-changes test-just-pr eval-check session-metrics-check coverage-guard-check docs-corpus-check fixture-isolation-check
+check-scripts: dependency-sweep-check profile-check binary-size-baseline-check test-classify-changes test-just-pr eval-check session-metrics-check coverage-guard-check docs-corpus-check fixture-isolation-check cc-check-fixture
     echo "Script fixture suites passed!"
 
 # Run the Linux compatibility check corresponding to GitHub Actions
@@ -338,9 +338,13 @@ check-coverage:
     scripts/check-coverage.sh
 
 # Check per-function cyclomatic complexity against the baseline (no coverage pass needed).
-# New functions must stay at or below the CC target; existing functions may not exceed their baseline CC.
+# New functions must stay at or below the CC target; existing functions may not exceed max(target, baseline CC).
 cc-check:
     scripts/check-cc.sh
+
+# Run fixture tests for the per-function complexity ceiling without coverage or a Rust build.
+cc-check-fixture:
+    @scripts/test-check-cc.sh
 
 # Run coverage and open report
 coverage-open:

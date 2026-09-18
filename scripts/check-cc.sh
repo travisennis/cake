@@ -5,9 +5,10 @@ set -euo pipefail
 #
 # Enforces the complexity targets in docs/guardrails/complexity-targets.md:
 #   - A function absent from the baseline (new) may not exceed the CC target.
-#   - A function present in the baseline (existing) may not exceed the CC it
-#     had when the baseline was generated (ratchet; reductions are tracked in
-#     the per-function reduction tasks, see the guardrails doc).
+#   - A function present in the baseline (existing) may not exceed the greater
+#     of the CC target and the CC it had when the baseline was generated
+#     (ratchet; reductions are tracked in the per-function reduction tasks, see
+#     the guardrails doc).
 #
 # Cyclomatic complexity is coverage-independent, so this check runs without a
 # coverage pass (`just cc-check`). scripts/check-coverage.sh reuses the lcov
@@ -116,7 +117,7 @@ for entry in report.get("entries", []):
     key = (entry["file"], entry["function"])
     cc = float(entry["cyclomatic"])
     if key in baseline_cc:
-        allowed = baseline_cc[key]
+        allowed = max(float(target), baseline_cc[key])
         status = "regressed"
     else:
         allowed = float(target)
@@ -135,8 +136,8 @@ print(f"CC gate: {total} functions checked, {new_count} new, {failed} over allow
 
 if failed:
     print(
-        "Functions over the allowed CC must be reduced below the target, or the "
-        "baseline must be deliberately regenerated (just change-risk-baseline) "
+        "Functions over the allowed CC must be reduced to their allowed ceiling, "
+        "or the baseline must be deliberately regenerated (just change-risk-baseline) "
         "and the change reviewed against the complexity guardrails."
     )
     sys.exit(1)
