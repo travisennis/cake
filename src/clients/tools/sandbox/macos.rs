@@ -543,6 +543,7 @@ mod tests {
                 PathBuf::from("/etc"),
             ],
             policy: SandboxPolicy::WorkspaceWrite,
+            user_grants: Vec::new(),
         }
     }
 
@@ -686,6 +687,7 @@ mod tests {
             writable: vec![PathBuf::from("/workspace"), PathBuf::from("/tmp")],
             read_execute: vec![],
             policy: SandboxPolicy::WorkspaceWrite,
+            user_grants: Vec::new(),
         };
 
         let profile = MacOsSandbox::generate_profile(&config);
@@ -700,6 +702,7 @@ mod tests {
             writable: vec![],
             read_execute: vec![PathBuf::from("/usr"), PathBuf::from("/etc")],
             policy: SandboxPolicy::WorkspaceWrite,
+            user_grants: Vec::new(),
         };
 
         let profile = MacOsSandbox::generate_profile(&config);
@@ -720,6 +723,7 @@ mod tests {
             writable: vec![],
             read_execute: vec![allowed.clone()],
             policy: SandboxPolicy::WorkspaceWrite,
+            user_grants: Vec::new(),
         };
 
         let profile = MacOsSandbox::generate_profile(&config);
@@ -751,6 +755,7 @@ mod tests {
             writable: vec![allowed.clone()],
             read_execute: vec![],
             policy: SandboxPolicy::WorkspaceWrite,
+            user_grants: Vec::new(),
         };
 
         let profile = MacOsSandbox::generate_profile(&config);
@@ -1084,6 +1089,7 @@ mod tests {
             ],
             read_execute: vec![PathBuf::from("/usr"), PathBuf::from("/private/etc")],
             policy: SandboxPolicy::WorkspaceWrite,
+            user_grants: Vec::new(),
         };
 
         let profile = MacOsSandbox::generate_profile(&config);

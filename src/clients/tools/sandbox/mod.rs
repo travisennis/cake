@@ -81,6 +81,14 @@ pub(super) struct SandboxConfig {
     /// this to adjust rules that are not derived purely from the path lists
     /// (e.g. macOS Keychain file grants).
     pub policy: SandboxPolicy,
+    /// Directories the user granted directly --- `settings_dirs`,
+    /// `additional_dirs`, and `skill_dirs` --- in lexical and canonical form.
+    ///
+    /// Captured before `partition_read_only` demotes settings directories out
+    /// of `writable`, so it survives the read-only policy. Used only to decide
+    /// whether a Bash call may select a directory as its `cwd`; the platform
+    /// sandbox profiles never read it.
+    pub user_grants: Vec<PathBuf>,
 }
 
 const SCM_CLI_PATHS: &[&str] = &[
@@ -153,6 +161,20 @@ impl SandboxConfig {
         // Add skill directories as read-only (so scripts like x-fetch.js can execute)
         push_dirs_with_canonical(&mut read_execute, skill_dirs);
 
+        // Capture the user's own grants (settings, --add-dir, skill directories)
+        // before `partition_read_only` demotes settings directories out of
+        // `writable`, so a read-only run can still select them as a working
+        // directory. The built-in read-and-execute system paths are deliberately
+        // excluded: they are not user grants, and a command started in /etc or
+        // /usr fails for reasons unrelated to the request.
+        let user_grants = dedup_vec({
+            let mut grants = Vec::new();
+            push_dirs_with_canonical(&mut grants, settings_dirs);
+            push_dirs_with_canonical(&mut grants, additional_dirs);
+            push_dirs_with_canonical(&mut grants, skill_dirs);
+            grants
+        });
+
         // Read-only policy: keep only temp directories writable and move the
         // workspace dir, toolchain caches, and settings dirs into the
         // read-and-execute set. Temp directories stay read-write so commands can
@@ -170,6 +192,7 @@ impl SandboxConfig {
             writable,
             read_execute,
             policy,
+            user_grants,
         };
 
         // On unsupported platforms, no sandbox strategy reads the config
@@ -588,6 +611,29 @@ impl SandboxConfig {
         self.writable
             .iter()
             .any(|allowed| path.starts_with(allowed) || canonical.starts_with(allowed))
+    }
+
+    /// Whether `path` may be selected as a Bash working directory: it is inside
+    /// a read-write grant or inside a directory the user granted directly with
+    /// `--add-dir`, a `[sandbox]` settings entry, or a skill directory.
+    ///
+    /// Under the read-only policy the demoted settings directories are still
+    /// selectable, because selecting a directory is not a write and read-only
+    /// work happens in read-only directories. The built-in read-and-execute
+    /// system paths are not selectable; see `user_grants`.
+    ///
+    /// Like [`Self::is_path_writable`], this is a best-effort predicate that
+    /// compares path prefixes over this config's own lists: it is coarse enough
+    /// to admit a directory the OS still denies. That is acceptable here
+    /// because it gates admission only --- the OS governs every access from the
+    /// selected directory, so a wrong admission degrades the error message and
+    /// never widens the command's authority.
+    pub(super) fn is_path_selectable(&self, path: &Path) -> bool {
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        self.writable
+            .iter()
+            .chain(self.user_grants.iter())
+            .any(|granted| path.starts_with(granted) || canonical.starts_with(granted))
     }
 }
 
@@ -1024,6 +1070,74 @@ mod tests {
             !config.is_path_allowed(outside),
             "path outside cwd should be denied"
         );
+    }
+
+    #[test]
+    fn is_path_selectable_admits_read_write_and_user_grants_only() {
+        temp_env::with_var("HOME", Some("/tmp/cake-sandbox-selectable-home"), || {
+            let workspace = tempfile::tempdir().unwrap();
+            let temp_grant = tempfile::tempdir().unwrap();
+            let settings_dir = tempfile::tempdir().unwrap();
+            let add_dir = tempfile::tempdir().unwrap();
+            let skill_dir = tempfile::tempdir().unwrap();
+            let ungranted = tempfile::tempdir().unwrap();
+            let nested = add_dir.path().join("nested");
+            std::fs::create_dir(&nested).unwrap();
+
+            let config = SandboxConfig::build_with_policy(
+                SandboxPolicy::WorkspaceWrite,
+                workspace.path(),
+                &[temp_grant.path().to_path_buf()],
+                &[add_dir.path().to_path_buf()],
+                &[settings_dir.path().to_path_buf()],
+                &[skill_dir.path().to_path_buf()],
+            );
+
+            assert!(config.is_path_selectable(workspace.path()));
+            assert!(config.is_path_selectable(temp_grant.path()));
+            // Both grant classes are selectable: the settings directory is a
+            // read-write grant, and `--add-dir`/skill directories are
+            // user-granted read-only directories.
+            assert!(config.is_path_selectable(settings_dir.path()));
+            assert!(config.is_path_selectable(add_dir.path()));
+            assert!(config.is_path_selectable(skill_dir.path()));
+            // A grant covers its children, not just the granted directory.
+            assert!(config.is_path_selectable(&nested));
+
+            // An unrelated directory is not a grant.
+            assert!(!config.is_path_selectable(ungranted.path()));
+            // The account home is not a grant; only selected children are.
+            assert!(!config.is_path_selectable(Path::new("/tmp/cake-sandbox-selectable-home")));
+            // The built-in read-and-execute set is readable, not selectable.
+            assert!(!config.is_path_selectable(Path::new("/etc")));
+            assert!(!config.is_path_selectable(Path::new("/usr")));
+        });
+    }
+
+    #[test]
+    fn is_path_selectable_survives_the_read_only_demotion() {
+        temp_env::with_var("HOME", Some("/tmp/cake-sandbox-selectable-ro-home"), || {
+            let workspace = tempfile::tempdir().unwrap();
+            let temp_grant = tempfile::tempdir().unwrap();
+            let settings_dir = tempfile::tempdir().unwrap();
+
+            let config = SandboxConfig::build_with_policy(
+                SandboxPolicy::ReadOnly,
+                workspace.path(),
+                &[temp_grant.path().to_path_buf()],
+                &[],
+                &[settings_dir.path().to_path_buf()],
+                &[],
+            );
+
+            // The read-only policy demotes the settings directory out of
+            // `writable`, but the user grant set is captured before that, so a
+            // read-only run can still select the directory.
+            assert!(!config.is_path_writable(settings_dir.path()));
+            assert!(config.is_path_selectable(settings_dir.path()));
+            // Temp directories stay read-write and therefore selectable.
+            assert!(config.is_path_selectable(temp_grant.path()));
+        });
     }
 
     #[test]

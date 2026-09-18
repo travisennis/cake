@@ -182,7 +182,7 @@ fn bash_cwd_schema_is_optional_and_describes_resolution() {
     assert_eq!(cwd["type"], "string");
     let description = cwd["description"].as_str().unwrap();
     assert!(description.contains("Relative paths resolve"));
-    assert!(description.contains("inside it"));
+    assert!(description.contains("the sandbox already grants"));
 
     let required = tool.parameters["required"].as_array().unwrap();
     assert_eq!(required, &[serde_json::json!("command")]);
@@ -347,17 +347,16 @@ async fn bash_cwd_accepts_an_absolute_path_inside_the_workspace() {
 }
 
 #[tokio::test]
-async fn bash_cwd_rejects_missing_file_and_outside_paths_before_spawn() {
+async fn bash_cwd_rejects_missing_path_and_file_path_before_spawn() {
+    // Both cases are rejected by canonicalization, so they hold under every
+    // policy, including the `DangerFullAccess` context this helper applies. The
+    // ungranted-directory case needs a policy that consults the grant table and
+    // lives in `bash_cwd_rejects_a_directory_outside_every_grant_before_spawn`.
     let workspace = tempfile::tempdir().expect("workspace fixture");
-    let outside = tempfile::tempdir().expect("outside fixture");
     let file = workspace.path().join("not-a-directory");
     std::fs::write(&file, "fixture").expect("file fixture");
     let marker = workspace.path().join("spawned");
-    let invalid_cwds = [
-        workspace.path().join("missing"),
-        file,
-        outside.path().to_path_buf(),
-    ];
+    let invalid_cwds = [workspace.path().join("missing"), file];
 
     for cwd in invalid_cwds {
         let arguments = serde_json::json!({
@@ -382,24 +381,404 @@ async fn bash_cwd_rejects_missing_file_and_outside_paths_before_spawn() {
     assert!(!marker.exists(), "invalid cwd must not spawn the command");
 }
 
+/// Build a `ToolContext` for working-directory admission tests: an explicit
+/// workspace and no temp-directory grants.
+///
+/// `ToolContext::from_current_process` treats the process `TMPDIR` as writable,
+/// which makes every `tempfile` fixture a grant and hides whether a grant is
+/// what admitted the path. Starting from an empty temp set keeps the fixtures
+/// honest: a fixture directory is selectable only because the test granted it.
+fn admission_context_at(
+    cwd: &std::path::Path,
+    policy: SandboxPolicy,
+    additional_dirs: Vec<std::path::PathBuf>,
+    settings_dirs: Vec<std::path::PathBuf>,
+    skill_dirs: Vec<std::path::PathBuf>,
+) -> ToolContext {
+    let mut context = ToolContext::with_temp_dirs(
+        cwd.to_path_buf(),
+        Vec::new(),
+        additional_dirs,
+        skill_dirs,
+        settings_dirs,
+    );
+    context.sandbox_policy = policy;
+    context.judge = Some(bypassed_judge_context());
+    context
+}
+
+/// Resolve the requested `cwd` exactly as the tool executor does, without
+/// running a command.
+fn resolve_cwd_for_test(
+    context: &ToolContext,
+    requested: &std::path::Path,
+) -> Result<std::path::PathBuf, String> {
+    let arguments = serde_json::json!({
+        "command": "pwd -P",
+        "cwd": requested.display().to_string(),
+    })
+    .to_string();
+    parse_bash_call(context, &arguments).map(|(_, cwd, _)| cwd)
+}
+
+/// Every user grant class is selectable, as is the workspace and any child of a
+/// grant.
+#[test]
+fn bash_cwd_admits_settings_add_dir_and_skill_directory_grants() {
+    let workspace = tempfile::tempdir().expect("workspace fixture");
+    let settings_dir = tempfile::tempdir().expect("settings fixture");
+    let add_dir = tempfile::tempdir().expect("add-dir fixture");
+    let skill_dir = tempfile::tempdir().expect("skill fixture");
+    let nested = add_dir.path().join("nested");
+    std::fs::create_dir(&nested).expect("nested fixture");
+
+    let context = admission_context_at(
+        workspace.path(),
+        SandboxPolicy::WorkspaceWrite,
+        vec![add_dir.path().to_path_buf()],
+        vec![settings_dir.path().to_path_buf()],
+        vec![skill_dir.path().to_path_buf()],
+    );
+
+    for granted in [
+        settings_dir.path(),
+        add_dir.path(),
+        skill_dir.path(),
+        &nested,
+    ] {
+        let resolved = resolve_cwd_for_test(&context, granted)
+            .unwrap_or_else(|error| panic!("{} must be selectable: {error}", granted.display()));
+        assert_eq!(
+            resolved,
+            granted.canonicalize().expect("fixture must canonicalize")
+        );
+    }
+
+    assert_eq!(
+        resolve_cwd_for_test(&context, workspace.path()).expect("workspace must be selectable"),
+        workspace
+            .path()
+            .canonicalize()
+            .expect("fixture must canonicalize")
+    );
+}
+
+/// A settings directory stays selectable under the read-only policy, where the
+/// sandbox demotes it from a writable grant into the read-and-execute set.
+#[test]
+fn bash_cwd_admits_a_settings_directory_grant_under_read_only() {
+    let workspace = tempfile::tempdir().expect("workspace fixture");
+    let settings_dir = tempfile::tempdir().expect("settings fixture");
+    let context = admission_context_at(
+        workspace.path(),
+        SandboxPolicy::ReadOnly,
+        Vec::new(),
+        vec![settings_dir.path().to_path_buf()],
+        Vec::new(),
+    );
+
+    assert_eq!(
+        resolve_cwd_for_test(&context, settings_dir.path())
+            .expect("a read-only grant must stay selectable"),
+        settings_dir
+            .path()
+            .canonicalize()
+            .expect("fixture must canonicalize")
+    );
+}
+
+/// The built-in read-and-execute system paths are readable by absolute path but
+/// are not admission sources, so a command cannot start in them.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn bash_cwd_rejects_built_in_system_paths() {
+    let workspace = tempfile::tempdir().expect("workspace fixture");
+    let context = admission_context_at(
+        workspace.path(),
+        SandboxPolicy::WorkspaceWrite,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+
+    for system in ["/etc", "/usr"] {
+        let error = resolve_cwd_for_test(&context, std::path::Path::new(system))
+            .expect_err("a built-in system path must not be selectable");
+        assert!(
+            error.contains("outside the invocation workspace"),
+            "unexpected cwd error for {system}: {error}"
+        );
+    }
+}
+
+/// Under `DangerFullAccess` the sandbox applies no profile, so a grant check
+/// would be stricter than the policy in force: any existing directory is
+/// admitted.
+#[test]
+fn bash_cwd_admits_any_existing_directory_under_danger_full_access() {
+    let workspace = tempfile::tempdir().expect("workspace fixture");
+    let ungranted = tempfile::tempdir().expect("ungranted fixture");
+    let context = admission_context_at(
+        workspace.path(),
+        SandboxPolicy::DangerFullAccess,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+
+    assert_eq!(
+        resolve_cwd_for_test(&context, ungranted.path())
+            .expect("danger-full-access admits any existing directory"),
+        ungranted
+            .path()
+            .canonicalize()
+            .expect("fixture must canonicalize")
+    );
+}
+
+/// A directory outside the invocation workspace and outside every grant is
+/// rejected before the judge runs and before any process is spawned, with a
+/// message that names the grant classes.
+#[tokio::test]
+async fn bash_cwd_rejects_a_directory_outside_every_grant_before_spawn() {
+    let workspace = tempfile::tempdir().expect("workspace fixture");
+    let granted_elsewhere = tempfile::tempdir().expect("ungranted fixture");
+    let marker = workspace.path().join("spawned");
+    let other_context = admission_context_at(
+        workspace.path(),
+        SandboxPolicy::WorkspaceWrite,
+        vec![granted_elsewhere.path().to_path_buf()],
+        Vec::new(),
+        Vec::new(),
+    );
+    let context = admission_context_at(
+        workspace.path(),
+        SandboxPolicy::WorkspaceWrite,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+
+    // Guard the fixture: the same directory is admitted once `--add-dir` grants
+    // it, so a rejection here is about the missing grant and not the path.
+    assert!(
+        resolve_cwd_for_test(&other_context, granted_elsewhere.path()).is_ok(),
+        "fixture directory must be admissible when it is granted"
+    );
+
+    let arguments = serde_json::json!({
+        "command": format!("touch {}", marker.display()),
+        "cwd": granted_elsewhere.path().display().to_string(),
+    })
+    .to_string();
+
+    let error = execute_bash(&context, &arguments)
+        .await
+        .expect_err("a cwd outside every grant must fail before spawning Bash");
+    assert!(
+        error.message.contains("Invalid Bash working directory"),
+        "unexpected cwd error: {}",
+        error.message
+    );
+    assert!(
+        error.message.contains("outside the invocation workspace"),
+        "rejection must name the workspace boundary, got: {}",
+        error.message
+    );
+    for grant_class in ["--add-dir", "[sandbox]", "skill directory"] {
+        assert!(
+            error.message.contains(grant_class),
+            "rejection must name the {grant_class} grant class, got: {}",
+            error.message
+        );
+    }
+    assert!(
+        !marker.exists(),
+        "a rejected cwd must not spawn the command"
+    );
+}
+
+/// A symlink inside the workspace whose canonical target is outside every grant
+/// is rejected, so a grant cannot be reached through a link the grants do not
+/// cover.
 #[cfg(unix)]
 #[tokio::test]
-async fn bash_cwd_rejects_symlink_that_escapes_workspace() {
+async fn bash_cwd_rejects_symlink_that_escapes_every_grant() {
     let workspace = tempfile::tempdir().expect("workspace fixture");
-    let outside = tempfile::tempdir().expect("outside fixture");
+    let target = tempfile::tempdir().expect("ungranted target fixture");
     let link = workspace.path().join("outside-link");
-    std::os::unix::fs::symlink(outside.path(), &link).expect("symlink fixture");
+    std::os::unix::fs::symlink(target.path(), &link).expect("symlink fixture");
+    let context = admission_context_at(
+        workspace.path(),
+        SandboxPolicy::WorkspaceWrite,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
     let arguments = serde_json::json!({
         "command": "pwd -P",
         "cwd": "outside-link",
     })
     .to_string();
 
-    let error =
-        execute_bash_with_judge_in(&arguments, Some(bypassed_judge_context()), workspace.path())
-            .await
-            .expect_err("escaping cwd symlink must be rejected");
+    let error = execute_bash(&context, &arguments)
+        .await
+        .expect_err("an escaping cwd symlink must be rejected");
     assert!(error.message.contains("outside the invocation workspace"));
+}
+
+/// A symlink whose canonical target is inside a grant is accepted, so admission
+/// follows the link exactly as the child process does.
+#[cfg(unix)]
+#[test]
+fn bash_cwd_accepts_a_symlink_whose_target_is_granted() {
+    let workspace = tempfile::tempdir().expect("workspace fixture");
+    let granted = tempfile::tempdir().expect("grant fixture");
+    let link = workspace.path().join("granted-link");
+    std::os::unix::fs::symlink(granted.path(), &link).expect("symlink fixture");
+    let context = admission_context_at(
+        workspace.path(),
+        SandboxPolicy::WorkspaceWrite,
+        vec![granted.path().to_path_buf()],
+        Vec::new(),
+        Vec::new(),
+    );
+
+    assert_eq!(
+        resolve_cwd_for_test(&context, &link).expect("a granted symlink target must be admitted"),
+        granted
+            .path()
+            .canonicalize()
+            .expect("fixture must canonicalize")
+    );
+}
+
+/// A granted directory outside the invocation workspace is a real working
+/// directory: the child runs there and the judge is told the same canonical
+/// path.
+///
+/// Skipping when the platform sandbox cannot be applied also guards the fixture,
+/// which is created under the account home and would otherwise be refused by an
+/// outer sandbox. The macOS `Test` CI job is where this runs for real.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[tokio::test]
+async fn bash_cwd_runs_in_a_settings_directory_grant() {
+    if skip_if_sandbox_unavailable() {
+        return;
+    }
+
+    let outside =
+        path_outside_cwd_for_sandbox_test().expect("should find a directory outside the workspace");
+    let workspace = tempfile::TempDir::new_in(&outside).expect("should create test workspace");
+    let settings_dir =
+        tempfile::TempDir::new_in(&outside).expect("should create a settings-directory grant");
+    let expected = settings_dir
+        .path()
+        .canonicalize()
+        .expect("settings fixture must canonicalize");
+    let arguments = serde_json::json!({
+        "command": "pwd -P",
+        "cwd": settings_dir.path().display().to_string(),
+    })
+    .to_string();
+
+    let mock_server = MockServer::start().await;
+    mount_judge_verdict(&mock_server, r#"{"verdict":"allow","message":"Safe"}"#).await;
+
+    let mut context =
+        ToolContext::from_current_process().with_judge(Some(judge_context(&mock_server)));
+    context.cwd = workspace.path().to_path_buf();
+    context.sandbox_policy = SandboxPolicy::WorkspaceWrite;
+    context.settings_dirs = vec![settings_dir.path().to_path_buf()];
+
+    let result = Box::pin(execute_bash(&context, &arguments))
+        .await
+        .expect("bash run should succeed");
+    assert!(
+        result
+            .output
+            .starts_with(&format!("{}\n", expected.display())),
+        "a sandboxed command must start in the granted directory, got: {}",
+        result.output
+    );
+
+    let requests = mock_server
+        .received_requests()
+        .await
+        .expect("the judge request is recorded");
+    let body: serde_json::Value =
+        serde_json::from_slice(&requests[0].body).expect("judge request body is JSON");
+    let user_content = body["messages"]
+        .as_array()
+        .expect("judge history is a message list")
+        .iter()
+        .find(|message| message["role"] == "user")
+        .and_then(|message| message["content"].as_str())
+        .expect("judge history carries a user message");
+    let untrusted = user_content
+        .rsplit_once('\n')
+        .map(|(_, context)| context)
+        .expect("the judge prompt ends with the untrusted context object");
+    let judge_request_context: serde_json::Value =
+        serde_json::from_str(untrusted).expect("the untrusted context is a JSON object");
+    assert_eq!(
+        judge_request_context["cwd"],
+        serde_json::json!(expected.display().to_string()),
+        "the judge must see the resolved cwd"
+    );
+}
+
+/// Read-only grants stay selectable under the read-only policy, and selecting
+/// one still does not widen authority: a write inside the selected directory is
+/// denied by the sandbox.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[tokio::test]
+async fn bash_cwd_selects_an_add_dir_grant_under_read_only_without_widening_authority() {
+    if skip_if_sandbox_unavailable() {
+        return;
+    }
+
+    let outside =
+        path_outside_cwd_for_sandbox_test().expect("should find a directory outside the workspace");
+    let workspace = tempfile::TempDir::new_in(&outside).expect("should create test workspace");
+    let granted = tempfile::TempDir::new_in(&outside).expect("should create an --add-dir grant");
+    let expected = granted
+        .path()
+        .canonicalize()
+        .expect("grant fixture must canonicalize");
+    let probe = format!("cake_cwd_ro_probe_{}", uuid::Uuid::new_v4());
+    let arguments = serde_json::json!({
+        "command": format!("pwd -P; touch {probe}"),
+        "cwd": granted.path().display().to_string(),
+    })
+    .to_string();
+
+    let mut context =
+        ToolContext::from_current_process().with_judge(Some(bypassed_judge_context()));
+    context.cwd = workspace.path().to_path_buf();
+    context.sandbox_policy = SandboxPolicy::ReadOnly;
+    context.additional_dirs = vec![granted.path().to_path_buf()];
+
+    let result = Box::pin(execute_bash(&context, &arguments))
+        .await
+        .expect("bash run should succeed");
+    assert!(
+        result
+            .output
+            .starts_with(&format!("{}\n", expected.display())),
+        "the selected cwd must be the granted directory, got: {}",
+        result.output
+    );
+    assert!(
+        result.output.contains("Operation not permitted")
+            || result.output.contains("Permission denied"),
+        "the read-only policy must still deny a write inside the selected directory, got: {}",
+        result.output
+    );
+    assert!(
+        !granted.path().join(&probe).exists(),
+        "the read-only probe file must not be created"
+    );
 }
 
 #[test]
@@ -593,10 +972,12 @@ async fn bash_read_cap_holds_capture_at_configured_bytes() {
         crate::clients::tools::sandbox::SandboxPolicy::DangerFullAccess,
     )
     .unwrap();
+    let config = crate::clients::tools::sandbox::SandboxConfig::build(&context);
     let result = Box::pin(execute_bash_with_args(
         &context,
         args,
         context.cwd.clone(),
+        &config,
         None,
     ))
     .await
@@ -636,10 +1017,12 @@ async fn bash_output_max_bytes_override_spills_at_custom_cap() {
         crate::clients::tools::sandbox::SandboxPolicy::DangerFullAccess,
     )
     .unwrap();
+    let config = crate::clients::tools::sandbox::SandboxConfig::build(&context);
     let result = Box::pin(execute_bash_with_args(
         &context,
         args,
         context.cwd.clone(),
+        &config,
         None,
     ))
     .await
@@ -672,10 +1055,12 @@ async fn bash_output_max_bytes_unlimited_passes_large_output_through() {
         crate::clients::tools::sandbox::SandboxPolicy::DangerFullAccess,
     )
     .unwrap();
+    let config = crate::clients::tools::sandbox::SandboxConfig::build(&context);
     let result = Box::pin(execute_bash_with_args(
         &context,
         args,
         context.cwd.clone(),
+        &config,
         None,
     ))
     .await

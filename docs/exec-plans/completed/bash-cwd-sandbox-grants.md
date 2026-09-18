@@ -14,31 +14,59 @@ The decision behind this behavior is recorded in `docs/adr/032-bash-cwd-sandbox-
 
 - [x] (2026-09-17) Inspected the Bash tool, the sandbox grant table, the cwd tests, and the baseline complexity data.
 - [x] (2026-09-17) Recorded the decision in ADR 032 and annotated ADR 031 with a partial-supersession note.
-- [ ] Carry the user grant set on `SandboxConfig` and add the selectable-path predicate.
-- [ ] Admit granted directories in `resolve_bash_cwd` and build one `SandboxConfig` per call.
-- [ ] Update the focused tests, including the fixtures that currently rely on temp directories being ungranted.
-- [ ] Update `bash-description.txt`, `docs/security.md`, `docs/integrations.md`, and the two provider request snapshots.
-- [ ] Run focused tests, `just cc-check`, snapshots, formatting, documentation checks, and `just check`.
-- [ ] Verify the sandboxed path on macOS and record the Linux expectation.
-- [ ] Fill Outcomes & Retrospective and move this plan to `docs/exec-plans/completed/` before opening the pull request.
+- [x] (2026-09-18) Carried the user grant set on `SandboxConfig` and added the `is_path_selectable` predicate, with focused unit tests (Milestone 1).
+- [x] (2026-09-18) Admitted granted directories in `resolve_bash_cwd` and built one `SandboxConfig` per call (Milestone 2).
+- [x] (2026-09-18) Updated the focused tests, including the fixtures that relied on temp directories being ungranted.
+- [x] (2026-09-18) Updated `bash-description.txt`, the `cwd` schema text, `docs/security.md`, `docs/integrations.md`, and the two provider request snapshots (Milestone 3).
+- [x] (2026-09-18) Ran the focused tests, `just cc-check`, `cargo insta test --accept`, `just docs-fmt`, `just docs-check`, `just fmt-check`, `just clippy`, and `just check`.
+- [x] (2026-09-18) Recorded the platform expectation: the sandboxed runs are proved by the macOS `Test` CI job; the Linux jobs select `clients::tools::sandbox`, which now includes the new predicate tests, and do not select tests in the `bash` module.
+- [x] (2026-09-18) Filled Outcomes & Retrospective and moved this plan to `docs/exec-plans/completed/` before opening the pull request.
 
 ## Surprises & Discoveries
 
-- Observation: the focused Bash test helper `execute_bash_with_judge_in` in `src/clients/tools/bash.rs` forces `context.sandbox_policy = SandboxPolicy::DangerFullAccess` and sets no user grant directories. Evidence: the helper body assigns that policy after `ToolContext::from_current_process()`. Consequence: under the accepted decision, every one of its calls admits any existing directory, so the two tests that assert an outside directory is rejected cannot demonstrate anything through this helper and must be rerun under `WorkspaceWrite`.
-- Observation: `path_outside_cwd_for_sandbox_test()` in `src/clients/tools/bash_tests.rs` returns the account home directory, which is an ancestor of granted toolchain caches but is not itself a grant. Evidence: `SandboxConfig::build_with_policy` adds `home.join(".cargo")` and similar cache directories, not `home`. Consequence: it remains a valid ungranted fixture for admission tests, unlike a `tempfile` directory, which is a writable temp grant.
-- Observation: `ci/cargo-crap-baseline.json` was generated on 2026-09-14 (commit `faa1b44`), before ADR 031's implementation landed, so `resolve_bash_cwd`, `parse_bash_call`, and `SandboxConfig::is_path_writable` are absent from it and are therefore not ratcheted, while `SandboxConfig::is_path_allowed` is present at CC 1. Consequence: new branches belong in `resolve_bash_cwd` and in a new predicate; growing `is_path_allowed` would fail `just cc-check`.
+- Observation: the focused Bash test helper `execute_bash_with_judge_in` in `src/clients/tools/bash.rs` forces `context.sandbox_policy = SandboxPolicy::DangerFullAccess` and sets no user grant directories. Evidence: the helper body assigns that policy after `ToolContext::from_current_process()`. Consequence: under the accepted decision, every one of its calls admits any existing directory, so the two tests that assert an outside directory is rejected cannot demonstrate anything through this helper and must be rerun under `WorkspaceWrite`. Resolved: the missing-path and file-path cases stay with the helper (canonicalization rejects them under every policy), the ungranted-directory case moved to a `WorkspaceWrite` context built by `admission_context_at`, and the symlink case moved with it.
+
+- Observation: `path_outside_cwd_for_sandbox_test()` in `src/clients/tools/bash_tests.rs` returns the account home directory, which is an ancestor of granted toolchain caches but is not itself a grant. Evidence: `SandboxConfig::build_with_policy` adds `home.join(".cargo")` and similar cache directories, not `home`. Consequence: it remains a valid ungranted fixture for admission tests, unlike a `tempfile` directory, which is a writable temp grant. This held.
+
+- Observation: `ci/cargo-crap-baseline.json` was generated on 2026-09-14 (commit `faa1b44`), before ADR 031's implementation landed, so `resolve_bash_cwd`, `parse_bash_call`, and `SandboxConfig::is_path_writable` are absent from it and are therefore not ratcheted, while `SandboxConfig::is_path_allowed` is present at CC 1. Consequence: new branches belong in `resolve_bash_cwd` and in a new predicate; growing `is_path_allowed` would fail `just cc-check`. This held: `just cc-check` reported 1097 functions checked, 43 new, 0 over allowed.
+
+- Observation: `ToolContext::from_current_process` treats the process `TMPDIR` as a writable grant, so every `tempfile` fixture created by an admission test is already admitted by the temp grant and cannot show whether a settings or `--add-dir` grant was what admitted it. Evidence: the first draft of the positive admission test passed with the grant removed. Consequence: admission tests build their context through `admission_context_at`, which uses `ToolContext::with_temp_dirs` with an empty temp list, so a fixture directory is selectable only because the test granted it.
+
+- Observation: creating a fixture directory under the account home (`tempfile::TempDir::new_in(&outside)`) is refused with `Operation not permitted` when the test process is itself inside an enforcing sandbox, which is the normal state when a Cake session runs `just test`. Evidence: a draft of `bash_cwd_runs_in_a_settings_directory_grant` without the `skip_if_sandbox_unavailable()` guard panicked at `should create test workspace: PermissionDenied`. Consequence: the two tests that actually run a command in a granted directory keep the `skip_if_sandbox_unavailable()` guard, which also guards fixture creation; local runs skip them, and the macOS `Test` CI job is where they execute for real. `SandboxConfig` literals in `src/clients/tools/sandbox/macos.rs` gained `user_grants: Vec::new()`, and the two renamed Bash tests are `bash_cwd_rejects_missing_path_and_file_path_before_spawn` and `bash_cwd_rejects_symlink_that_escapes_every_grant`.
 
 ## Decision Log
 
 - Decision: admit a `cwd` when the effective policy is `DangerFullAccess`, when the canonical path is inside the canonical invocation working directory, or when `SandboxConfig` reports it inside a read-write grant or a user read-only grant. Rationale: this is option 4 plus option 2 from issue #588's review, and it is what ADR 032 records. Date/Author: 2026-09-17 / Travis Ennis.
+
 - Decision: the built-in read-and-execute set from `get_read_execute_paths()` is not an admission source, so `/etc` and `/usr` remain unselectable. Rationale: it is a diagnostic predicate coarse enough to admit paths the OS denies, and no user grants those paths for work; `DangerFullAccess` covers the arbitrary-directory case. Date/Author: 2026-09-17 / Travis Ennis.
+
 - Decision: capture the user grant set on `SandboxConfig` before `partition_read_only` runs. Rationale: under the `ReadOnly` policy that function demotes settings directories from `writable` into `read_execute`, so deriving the grant set from the final list would hide them. Date/Author: 2026-09-17 / Travis Ennis.
+
 - Decision: build `SandboxConfig` once in `parse_bash_call` and pass it to `prepare_bash_command` and `sandbox_denials`. Rationale: issue #588 asks for it, and admission must read the same config the denial diagnostics read. Date/Author: 2026-09-17 / Travis Ennis.
+
 - Decision: the rejection message names the boundary and the grant classes rather than enumerating every grant. Rationale: skill directories can be numerous, and the classes are what the model needs to choose a different directory. Date/Author: 2026-09-17 / Travis Ennis.
+
+- Decision: read the policy from `context.sandbox_policy` inside `resolve_bash_cwd` rather than adding a separate policy parameter, and drop the now-unused `context` parameter from `prepare_bash_command` and `sandbox_denials`. Rationale: the policy is already on the context, and the two functions reach the config through the explicit parameter instead. Date/Author: 2026-09-18 / Travis Ennis.
+
+- Decision: keep `user_grants` populated with only directories that exist, matching `push_dirs_with_canonical`, and store both the lexical and canonical form. Rationale: admission canonicalizes the candidate anyway, and matching the existing grant-push practice keeps the two path classes comparable. Date/Author: 2026-09-18 / Travis Ennis.
 
 ## Outcomes & Retrospective
 
-Pending implementation. This section must state what was delivered, what was measured, and what remains before the pull request opens.
+Delivered, in the terms of the acceptance criteria:
+
+1. A `cwd` inside a read-write grant or a user read-only grant is admitted and canonicalized. `SandboxConfig` now carries `user_grants` (settings directories, `--add-dir` directories, and skill directories in lexical and canonical form) captured before `partition_read_only`, and `is_path_selectable` returns true for a read-write grant or a user grant. Tests: `bash_cwd_admits_settings_add_dir_and_skill_directory_grants`, `bash_cwd_admits_a_settings_directory_grant_under_read_only`, and the sandbox-module tests `is_path_selectable_admits_read_write_and_user_grants_only` and `is_path_selectable_survives_the_read_only_demotion`.
+2. A `cwd` outside the workspace and every grant fails before judge evaluation and before spawn. `bash_cwd_rejects_a_directory_outside_every_grant_before_spawn` drives the same call through a context that does grant the path (so the fixture is admissible when granted) and one that does not, asserts the tool error names the workspace boundary and the `--add-dir`, `[sandbox]`, and skill-directory grant classes, and asserts the marker file the command would have created does not exist. `bash_cwd_rejects_built_in_system_paths` covers `/etc` and `/usr`.
+3. The symlink guard holds. `bash_cwd_rejects_symlink_that_escapes_every_grant` shows a link whose canonical target is outside every grant is rejected, and `bash_cwd_accepts_a_symlink_whose_target_is_granted` shows a link into a grant is accepted, both because canonicalization runs before the grant check.
+4. Nothing became writable that was not writable before. No sandbox profile or platform adapter changed: the only edit under `src/clients/tools/sandbox/` outside `mod.rs` is `user_grants: Vec::new()` on six test-only `SandboxConfig` literals in `macos.rs`. `bash_cwd_selects_an_add_dir_grant_under_read_only_without_widening_authority` asserts the `read-only` policy still denies a write inside the directory it selected as `cwd`.
+5. The models are recorded in ADR 032, including the `DangerFullAccess` and read-only-grant decisions. `bash_cwd_admits_any_existing_directory_under_danger_full_access` pins the first.
+6. The child, the judge request, the repository digest, and the denial diagnostics still take one canonical path: `resolve_bash_cwd` returns it once, `execute_bash_with_args` passes that one value to `prepare_bash_command`, `bash_judge_preflight`, and `sandbox_denials`, and `bash_cwd_runs_in_a_settings_directory_grant` asserts it on both the child's `pwd -P` output and the recorded judge request's `cwd` field.
+7. One `SandboxConfig` is built per Bash call, in `parse_bash_call`; `prepare_bash_command` and `sandbox_denials` now take it as a parameter instead of building their own.
+
+Measured: `cargo test --all-features` reports 1523 unit tests plus every integration suite passing with 0 failures; `just cc-check` reports 1097 functions checked, 43 new, 0 over allowed; `cargo fmt -- --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `just docs-fmt`, `just docs-check`, and `just check` all pass; `cargo insta test --accept` accepted exactly the two intended provider snapshots.
+
+Remaining before the pull request: the macOS `Test` CI job is the only place the two command-running tests execute against real Seatbelt enforcement, because a Cake session cannot apply a nested Seatbelt profile (ADR 016). The Linux expectation, to confirm from the `Linux Test` job, is that a directory admitted only by the coarse predicate still starts the process because Landlock has no access right governing `chdir`, while macOS denies the read at the first file access. The `Linux Test` job selects `clients::tools::sandbox`, so it runs the two new predicate tests, and it does not select tests in the `bash` module.
+
+Retrospective: the three implementation surprises were all about test fixtures rather than the admission rule, which is the shape the ADR predicted --- the risk was in how "granted" is decided, and the decision kept the grant table as the only source. The one thing worth changing next time is to check where a test process actually runs its fixtures before writing a fixture plan: `TMPDIR` being a grant, and the account home being unwritable from inside an enforcing sandbox, both invalidated the plan's first fixture sketches.
 
 ## Context and Orientation
 
@@ -118,16 +146,49 @@ Every source and documentation edit is safe to repeat after rereading the file. 
 
 ## Artifacts and Notes
 
-To be filled with the focused test transcripts, the `just cc-check` output, and the two snapshot diffs once the implementation runs. The initial evidence for the design is in `docs/adr/032-bash-cwd-sandbox-grants.md` and in the issue #588 discussion.
+Focused transcripts, from `/Users/travisennis/Projects/cake/cake-1`:
+
+```
+$ cargo test --bin cake clients::tools::bash
+test result: ok. 131 passed; 0 failed; 0 ignored; 0 measured; 1394 filtered out
+
+$ cargo test --bin cake clients::tools::sandbox
+test result: ok. 59 passed; 0 failed; 0 ignored; 1458 filtered out
+
+$ cargo test --all-features --quiet
+test result: ok. 1523 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out
+(plus every integration suite: 11, 18, 16, 15, 7, 5, 17, 16, 11, and 9 tests, all ok)
+
+$ just cc-check
+CC gate: 1097 functions checked, 43 new, 0 over allowed
+PASS: No cyclomatic complexity exceedances
+
+$ cargo fmt -- --check        # no output, exit 0
+$ cargo clippy --all-targets --all-features -- -D warnings   # Finished, exit 0
+$ just docs-fmt               # 133 files left unchanged
+$ just docs-check             # exit 0
+$ just check                  # Fast local checks passed!
+```
+
+The snapshot diff is exactly the two intended lines: the `cwd` parameter description in `cake__clients__chat_completions__tests__chat_request_full_with_agents_and_skills.snap` and `cake__clients__responses__tests__responses_request_full_with_agents_and_skills.snap`, plus the embedded `bash-description.txt` sentence in each.
+
+The two command-running tests print their skip notice when a Cake session runs them, because this process cannot apply a nested Seatbelt profile:
+
+```
+skipping macOS sandbox integration test: sandbox-exec cannot apply profiles in this process context
+```
+
+The initial evidence for the design is in `docs/adr/032-bash-cwd-sandbox-grants.md` and in the issue #588 discussion.
 
 ## Interfaces and Dependencies
 
 New and changed internal interfaces, all private to the crate:
 
-- `crate::clients::tools::sandbox::SandboxConfig::user_grants`, a private `Vec<PathBuf>` of user-granted directories in lexical and canonical form, populated before `partition_read_only`. Chosen over deriving the set from `read_execute` because the read-only policy merges user grants with the built-in system paths there.
+- `crate::clients::tools::sandbox::SandboxConfig::user_grants`, a `Vec<PathBuf>` field holding user-granted directories in lexical and canonical form, populated before `partition_read_only`. Chosen over deriving the set from `read_execute` because the read-only policy merges user grants with the built-in system paths there.
 - `crate::clients::tools::sandbox::SandboxConfig::is_path_selectable(&self, path: &Path) -> bool`, `pub(super)`, true for read-write grants and user grants. Chosen as a new predicate instead of widening `is_path_allowed`, whose baseline complexity is 1 and whose meaning is "readable or executable".
-- `resolve_bash_cwd(context: &ToolContext, config: &SandboxConfig, requested: Option<&Path>) -> Result<PathBuf, String>`, extended with the policy read from `context.sandbox_policy` and the config used for the grant check.
-- `parse_bash_call(...) -> Result<(BashExecutionArgs, PathBuf, SandboxConfig), String>`, extended to return the single built config.
-- `execute_bash_with_args(..., config: &SandboxConfig, ...)`, `prepare_bash_command(..., config: &SandboxConfig, ...)`, and `sandbox_denials(..., config: &SandboxConfig)`, extended to take the shared config rather than building their own.
+- `resolve_bash_cwd(context: &ToolContext, config: &SandboxConfig, requested: Option<&Path>) -> Result<PathBuf, String>`, extended with the config used for the grant check; the policy comes from `context.sandbox_policy`.
+- `parse_bash_call(context: &ToolContext, arguments: &str) -> Result<(BashExecutionArgs, PathBuf, SandboxConfig), String>`, extended to return the single built config.
+- `execute_bash_with_args(context: &ToolContext, args: BashExecutionArgs, cwd: PathBuf, sandbox_config: &SandboxConfig, call_id: Option<String>) -> Result<ToolResult, ToolError>`, extended to take the shared config.
+- `prepare_bash_command(args: &BashExecutionArgs, cwd: &Path, sandbox_config: &SandboxConfig, judge_events: &[CompensationEventTelemetry])` and `sandbox_denials(command: &str, cwd: &Path, config: &SandboxConfig, sandbox_applied: bool, success: bool, output: &str, stderr: &str)`, both extended to take the shared config and neither taking `context` any longer.
 
 No dependency, schema field, persisted record, or platform sandbox API changes. The provider-facing schema for `cwd` keeps its `string` type; only its description text changes.
