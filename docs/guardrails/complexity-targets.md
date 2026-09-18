@@ -13,7 +13,7 @@ This guardrail records the project's cyclomatic complexity (CC) and CRAP targets
   | CRAP score                        | ≤ 30   | Every function                                         |
   |                                   | ≤ 15   | Stretch goal for CC ≤ 10 functions with ≥ 90% coverage |
 
-Functions introduced or modified in a change must meet the CC target before merge. Grandfathered exceptions are recorded in the per-function baseline and in the table below, and carry a `#[expect(clippy::cognitive_complexity, reason = "...")]` annotation (where clippy's cognitive complexity also fires) referencing their reduction task.
+New functions must meet the CC target before merge. Existing functions are allowed up to the greater of the target and their current baseline CC, so functions below the target cannot grow past it while grandfathered functions above it cannot grow past their baseline. Grandfathered exceptions are recorded in the per-function baseline and in the table below, and carry a `#[expect(clippy::cognitive_complexity, reason = "...")]` annotation (where clippy's cognitive complexity also fires) referencing their reduction task.
 
 ## Enforcement
 
@@ -22,26 +22,14 @@ Functions introduced or modified in a change must meet the CC target before merg
 `just cc-check` (`scripts/check-cc.sh`) is the per-function CC gate, and it runs inside `just check`, so a function that exceeds its allowed CC fails the fast local gate rather than only the Coverage job. `scripts/check-coverage.sh` runs the same check from the lcov file it already produced in `just check-full`, and CI runs it through that script. Cyclomatic complexity is coverage-independent, so the check needs no coverage pass:
 
 - A function absent from `ci/cargo-crap-baseline.json` (a new function) may not exceed CC 10 (the target).
-- A function present in the baseline may not exceed the CC it had when the baseline was generated (a ratchet). Reductions are tracked in the reduction tasks referenced below; when a reduction lands, regenerate the baseline with `just change-risk-baseline`.
+- A function present in the baseline may not exceed `max(CC 10, its baseline CC)`. This keeps existing functions below the target under the target ceiling while preserving the historical ceiling for grandfathered functions above it. Reductions are tracked in the reduction tasks referenced below; when a reduction lands, regenerate the baseline with `just change-risk-baseline`.
 - Raising an allowed CC requires a deliberate baseline regeneration plus a documented reason in the change (and, for functions above CC 15, the reduction task record below must be updated).
 
 The clippy cognitive-complexity ceiling is a separate, complementary signal: `cognitive-complexity-threshold = 15` in `clippy.toml`, enabled by `cognitive_complexity = "warn"` in `Cargo.toml`. It is enforced in CI by `-D warnings`. Functions above that ceiling carry `#[expect(clippy::cognitive_complexity, reason = "...")]` referencing their reduction task. Clippy's cognitive complexity is not the same metric as McCabe CC; the McCabe CC target is enforced by the per-function gate above.
 
 ### Grandfathered functions
 
-Functions whose current McCabe CC is at or above the ≤ 15 dispatch-heavy allowance are grandfathered in the baseline and tracked by the reduction tasks below. Until their task lands, they may not grow past their baseline CC.
-
-  | Current CC | Function                            | File                                      | Reduction task |
-  | ---------- | ----------------------------------- | ----------------------------------------- | -------------- |
-  | 38         | `has_unsafe_message_flag`           | `src/clients/tools/bash_safety/checks.rs` | #96            |
-  | 27         | `check_rg_replace_flag`             | `src/clients/tools/bash_safety/checks.rs` | #96            |
-  | 26         | `split_segments`                    | `src/clients/tools/bash_safety/parse.rs`  | #97            |
-  | 22         | `check_dangerous_rm`                | `src/clients/tools/bash_safety/checks.rs` | #96            |
-  | 18         | `SettingsLoader::load_with_profile` | `src/config/settings.rs`                  | #100           |
-  | 16         | `check_git_commit_backticks`        | `src/clients/tools/bash_safety/checks.rs` | #96            |
-  | 15         | `strip_shell_data`                  | `src/clients/tools/bash_safety/parse.rs`  | #97            |
-
-Functions at CC 11--14 are within the dispatch-heavy allowance and are likewise ratcheted by the baseline; they are candidates for future reduction tasks when touched.
+The committed baseline currently has no functions at or above the ≤ 15 dispatch-heavy allowance. Functions at CC 11--14 are within that allowance and remain ratcheted by `max(CC 10, baseline CC)`; the current highest entries are `Skill::parse_frontmatter_fallback`, `ensure_secure_temp_dir`, `run_command_hook`, and `TaskOutcome::deserialize` at CC 14, followed by `scan_directory` and `escape_control_chars_in_strings` at CC 13. Functions below CC 10 use the default target as their ceiling, so the baseline does not permit growth through the target.
 
 ## Coverage-first refactoring workflow
 
