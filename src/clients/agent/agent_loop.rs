@@ -1077,6 +1077,11 @@ fn detect_skill_activation_if_configured(
 
 /// Check whether a just-executed tool call targeted a known SKILL.md path and,
 /// if so, emit a `SkillActivated` record once per skill per session.
+///
+/// Activation telemetry is deliberately `Read`-only: the `Read` tool carries a
+/// single path argument, while matching a known `SKILL.md` inside arbitrary
+/// shell text is a heuristic that could misattribute activation. A `Bash` read
+/// of a `SKILL.md` does not emit a record (see ADR 002).
 fn detect_skill_activation(
     name: &str,
     arguments: &str,

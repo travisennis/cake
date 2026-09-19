@@ -215,6 +215,83 @@ enabled = ["Bash"]
     assert!(!description.contains("Write"));
 }
 
+/// A Bash-only run receives the skill catalog with Bash instructions, because
+/// `Bash` can read a `SKILL.md` even when `Read` is not selected (#546).
+#[tokio::test]
+async fn bash_only_selection_discloses_the_skill_catalog() {
+    let env = TestEnv::new("cake-bash-only-skill-catalog-test");
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(success_response()))
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let skill_dir = env
+        .workspace_dir
+        .join(".agents")
+        .join("skills")
+        .join("debugging");
+    fs::create_dir_all(&skill_dir).expect("skill directory");
+    fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: debugging\ndescription: How to debug things\n---\n\nInstructions.",
+    )
+    .expect("skill file");
+
+    env.write_project_settings(&format!(
+        r#"
+default_model = "test"
+
+[[models]]
+name = "test"
+model = "test-model"
+base_url = "{}"
+api_key_env = "{}"
+api_type = "responses"
+
+[tools]
+enabled = ["Bash"]
+"#,
+        mock_server.uri(),
+        TEST_KEY
+    ));
+
+    let output = env
+        .command()
+        .args(["apply the debugging skill"])
+        .env(TEST_KEY, "test-token")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute cake");
+    assert!(
+        output.status.success(),
+        "cake should succeed. stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let requests = mock_server
+        .received_requests()
+        .await
+        .expect("recorded requests");
+    assert_eq!(requests.len(), 1);
+    let request: serde_json::Value =
+        serde_json::from_slice(&requests[0].body).expect("request JSON");
+    assert_eq!(request_tool_names(&request), vec!["Bash".to_string()]);
+
+    let input = request["input"].as_array().expect("input messages");
+    let skills = input
+        .iter()
+        .filter_map(|message| message["content"][0]["text"].as_str())
+        .find(|text| text.starts_with("## Skills"))
+        .expect("the Bash-only run receives the skill catalog");
+    assert!(skills.contains("<name>debugging</name>"));
+    assert!(skills.contains("`cat <location>`"));
+    assert!(!skills.contains("file-read tool"));
+}
+
 /// Read the `tools` recorded in the new session's metadata record.
 fn session_tools(env: &TestEnv) -> Vec<String> {
     let session_file = fs::read_dir(env.data_dir.join("sessions"))

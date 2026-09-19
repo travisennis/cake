@@ -32,13 +32,66 @@ use crate::types::Role;
 /// Built-in default system prompt, embedded at compile time from `system.md`.
 const BUILTIN_SYSTEM_PROMPT: &str = include_str!("system.md");
 
-const SKILL_USAGE_INSTRUCTIONS: &str = r"<skill_instructions>
+/// Instructions for a run whose reader is the `Read` tool.
+const SKILL_USAGE_INSTRUCTIONS_READ: &str = r"<skill_instructions>
 The following skills provide specialized instructions for specific tasks.
 When a task matches a skill's description, use your file-read tool to load
 the SKILL.md at the listed location before proceeding.
 When a skill references relative paths, resolve them against the skill's
 directory (the parent of SKILL.md) and use absolute paths in tool calls.
 </skill_instructions>";
+
+/// Instructions for a run whose only reader is a shell-capable tool.
+const SKILL_USAGE_INSTRUCTIONS_SHELL: &str = r"<skill_instructions>
+The following skills provide specialized instructions for specific tasks.
+When a task matches a skill's description, use the Bash tool to load the
+SKILL.md at the listed location with `cat <location>` before proceeding.
+When a skill references relative paths, resolve them against the skill's
+directory (the parent of SKILL.md) and use absolute paths in tool calls.
+</skill_instructions>";
+
+/// Built-in tools that can read a `SKILL.md` without the `Read` tool.
+const SHELL_TOOL_NAMES: &[&str] = &["Bash"];
+
+/// How a run can load a skill body, in preference order.
+///
+/// The catalog is disclosed only when this resolves; without a reader the model
+/// has no way to act on it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SkillReader {
+    /// The `Read` tool, which takes a single file path.
+    Read,
+    /// A shell-capable tool, which reads a `SKILL.md` through the shell.
+    Shell,
+}
+
+impl SkillReader {
+    /// Resolves the reader for a run. `None` means the full tool registry, which
+    /// includes `Read`; an explicit selection with neither reader yields `None`.
+    fn resolve(enabled_tools: Option<&[String]>) -> Option<Self> {
+        let Some(enabled) = enabled_tools else {
+            return Some(Self::Read);
+        };
+        if enabled.iter().any(|name| name == "Read") {
+            Some(Self::Read)
+        } else if enabled
+            .iter()
+            .any(|name| SHELL_TOOL_NAMES.contains(&name.as_str()))
+        {
+            Some(Self::Shell)
+        } else {
+            None
+        }
+    }
+
+    /// Instructions that match how this run loads a skill body.
+    const fn instructions(self) -> &'static str {
+        match self {
+            Self::Read => SKILL_USAGE_INSTRUCTIONS_READ,
+            Self::Shell => SKILL_USAGE_INSTRUCTIONS_SHELL,
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 enum PromptSource {
@@ -195,14 +248,15 @@ pub fn build_initial_prompt_messages_with_enabled_tools(
         messages.push((Role::Developer, context));
     }
 
-    let read_tool_available =
-        enabled_tools.is_none_or(|enabled| enabled.iter().any(|name| name == "Read"));
-    if read_tool_available && !skill_catalog.skills.is_empty() {
+    if let Some(reader) = SkillReader::resolve(enabled_tools)
+        && !skill_catalog.skills.is_empty()
+    {
         let catalog_xml = skill_catalog.to_prompt_xml();
         if !catalog_xml.is_empty() {
+            let instructions = reader.instructions();
             messages.push((
                 Role::Developer,
-                format!("## Skills\n\n{SKILL_USAGE_INSTRUCTIONS}\n\n{catalog_xml}"),
+                format!("## Skills\n\n{instructions}\n\n{catalog_xml}"),
             ));
         }
     }
@@ -663,15 +717,9 @@ mod tests {
         assert!(prompt.contains("Today's date:"));
     }
 
-    #[test]
-    fn discovered_skill_is_omitted_without_read_tool() {
-        let working_dir = TempDir::new().unwrap();
-        let config_dir = default_config_dir();
-        let skill_dir = working_dir
-            .path()
-            .join(".agents")
-            .join("skills")
-            .join("debugging");
+    /// Writes one project skill into `working_dir` and returns its catalog.
+    fn project_skill_catalog(working_dir: &Path) -> SkillCatalog {
+        let skill_dir = working_dir.join(".agents").join("skills").join("debugging");
         std::fs::create_dir_all(&skill_dir).unwrap();
         std::fs::write(
             skill_dir.join("SKILL.md"),
@@ -679,25 +727,89 @@ mod tests {
         )
         .unwrap();
 
-        let catalog = discover_skills(working_dir.path());
+        let catalog = discover_skills(working_dir);
         assert!(catalog.skills.iter().any(|skill| skill.name == "debugging"));
+        catalog
+    }
 
-        let enabled = vec!["Bash".to_string()];
+    /// Builds the prompt for a discovered project skill under `enabled_tools`.
+    fn skill_prompt(working_dir: &Path, config_dir: &Path, enabled: &[String]) -> String {
+        let catalog = project_skill_catalog(working_dir);
         let messages = build_initial_prompt_messages_with_enabled_tools(
-            working_dir.path(),
-            config_dir.path(),
+            working_dir,
+            config_dir,
             None,
             None,
             &[],
             &catalog,
             SandboxPolicy::WorkspaceWrite,
             &[],
-            Some(&enabled),
+            Some(enabled),
         );
-        let prompt = render_messages(&messages);
+        render_messages(&messages)
+    }
 
-        assert!(!prompt.contains("## Skills"));
-        assert!(!prompt.contains("<name>debugging</name>"));
+    #[test]
+    fn skill_catalog_disclosed_with_bash_only_reader() {
+        let working_dir = TempDir::new().unwrap();
+        let config_dir = default_config_dir();
+
+        let prompt = skill_prompt(working_dir.path(), config_dir.path(), &["Bash".to_string()]);
+
+        assert!(prompt.contains("## Skills"));
+        assert!(prompt.contains("<name>debugging</name>"));
+        assert!(prompt.contains("`cat <location>`"));
+        assert!(!prompt.contains("file-read tool"));
+    }
+
+    #[test]
+    fn skill_catalog_omitted_when_no_reader_is_available() {
+        let working_dir = TempDir::new().unwrap();
+        let config_dir = default_config_dir();
+
+        for enabled in [
+            Vec::new(),
+            vec!["Edit".to_string(), "Write".to_string()],
+            vec!["tb__run_tests".to_string()],
+        ] {
+            let prompt = skill_prompt(working_dir.path(), config_dir.path(), &enabled);
+            assert!(
+                !prompt.contains("## Skills"),
+                "catalog disclosed for {enabled:?}"
+            );
+            assert!(!prompt.contains("<name>debugging</name>"));
+        }
+    }
+
+    #[test]
+    fn skill_catalog_keeps_read_instructions_with_read_tool() {
+        let working_dir = TempDir::new().unwrap();
+        let config_dir = default_config_dir();
+
+        for enabled in [
+            vec!["Read".to_string()],
+            vec!["Bash".to_string(), "Read".to_string()],
+        ] {
+            let prompt = skill_prompt(working_dir.path(), config_dir.path(), &enabled);
+            assert!(prompt.contains("<name>debugging</name>"));
+            assert!(prompt.contains("use your file-read tool"));
+            assert!(!prompt.contains("`cat <location>`"));
+        }
+    }
+
+    #[test]
+    fn skill_reader_resolution_prefers_read() {
+        assert_eq!(SkillReader::resolve(None), Some(SkillReader::Read));
+        assert_eq!(
+            SkillReader::resolve(Some(&["Bash".to_string(), "Read".to_string()])),
+            Some(SkillReader::Read)
+        );
+        assert_eq!(
+            SkillReader::resolve(Some(&["Bash".to_string()])),
+            Some(SkillReader::Shell)
+        );
+        assert_eq!(SkillReader::resolve(Some(&[])), None);
+        assert_eq!(SkillReader::resolve(Some(&["Edit".to_string()])), None);
     }
 
     #[test]
@@ -788,6 +900,32 @@ mod tests {
             None,
         );
         assert_prompt_snapshot("prompt_with_skill_catalog", &messages);
+    }
+
+    #[test]
+    fn snapshot_with_bash_only_skill_catalog() {
+        let config_dir = default_config_dir();
+        let mut catalog = SkillCatalog::empty();
+        catalog.skills.push(Skill {
+            name: "debugging".to_string(),
+            description: "How to debug Rust programs".to_string(),
+            location: PathBuf::from("/project/.agents/skills/debugging/SKILL.md"),
+            base_directory: PathBuf::from("/project/.agents/skills/debugging"),
+            scope: SkillScope::Project,
+        });
+        let enabled = vec!["Bash".to_string()];
+        let messages = build_initial_prompt_messages_with_enabled_tools(
+            Path::new("/project"),
+            config_dir.path(),
+            None,
+            None,
+            &[],
+            &catalog,
+            SandboxPolicy::WorkspaceWrite,
+            &[],
+            Some(&enabled),
+        );
+        assert_prompt_snapshot("prompt_with_bash_only_skill_catalog", &messages);
     }
 
     #[test]
