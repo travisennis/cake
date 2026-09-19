@@ -237,6 +237,8 @@ path = "~/my-skills:/shared/team-skills"
 
 `path` uses the platform path separator. An empty `only` list permits all discovered skills. `--no-skills` disables them for one run; `--skills name1,name2` selects a one-run allowlist.
 
+A run receives the catalog only when it can read a `SKILL.md`: the `Read` tool when it is selected, otherwise a shell-capable tool such as `Bash`, whose instructions load a skill with `cat <location>`. A run with neither, such as `--no-tools`, receives no catalog. `SkillActivated` session records remain `Read`-only, so a skill loaded through `Bash` is not recorded.
+
 Profiles may overlay `disabled`, `only`, and `path` under `[profiles.<name>.skills]`.
 
 Inspect the selected catalog without calling a model:
@@ -250,7 +252,7 @@ cake debug skills --catalog-budget 8000 --description-budget 400
 
 The report counts the rendered XML, including escaping and locations, in UTF-8 bytes and Unicode characters. Its token estimate is characters divided by four, rounded up; it is not a provider token count. It lists descriptions largest first and warns above the advisory defaults of 8,000 catalog characters and 400 description characters. These are configurable review thresholds, not model limits or measurements of instruction quality. Warnings exit successfully and never truncate descriptions or remove skills. Select fewer skills with `skills.only`, a profile, or `--no-skills` when appropriate.
 
-The report measures the selected catalog, not the complete prompt; an agent run only includes the catalog when the Read tool is available. Discovery precedence and profile filtering match an agent run. Place `--skills` and `--no-skills` after `debug skills` for this report. To include it in the repository's existing instruction report after building Cake, run `python3 scripts/lint-instruction-size.py --skill-catalog target/debug/cake`.
+The report measures the selected catalog, not the complete prompt; an agent run includes the catalog only when the run can read a `SKILL.md` (see above). Discovery precedence and profile filtering match an agent run. Place `--skills` and `--no-skills` after `debug skills` for this report. To include it in the repository's existing instruction report after building Cake, run `python3 scripts/lint-instruction-size.py --skill-catalog target/debug/cake`.
 
 ## Instructions and system prompts
 
