@@ -1255,12 +1255,12 @@ done
         );
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
+    // The loop is still writing, so poll to a deadline rather than asserting
+    // over a fixed window: one iteration delayed past a window leaves the
+    // descendant alive while the assertion fires.
     let before = marker_modified_time(&alive);
-    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-    assert!(
-        marker_modified_time(&alive) != before,
-        "the descendant did not survive the SIGTERM it traps"
-    );
+    let resume_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    assert_marker_updates_resume(&alive, before, resume_deadline).await;
 
     terminate_process_group_gracefully(&mut child, TERMINATE_GRACE_PERIOD).await;
 
@@ -1310,6 +1310,28 @@ async fn dropping_bash_future_kills_descendants() {
     // deadline the way the one-shot marker could.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     assert_marker_updates_stop(&marker, deadline).await;
+}
+
+/// Wait until `marker`'s mtime moves past `before`, or panic after `deadline`.
+///
+/// The descendant writes the marker every ~100 ms while it lives, so a live
+/// descendant is detected by the first poll.  Polling rather than asserting
+/// over a fixed window keeps a slow or loaded machine from failing while the
+/// descendant is still writing; a descendant that stopped writing never moves
+/// the marker and still fails, just at the deadline.
+#[cfg(unix)]
+async fn assert_marker_updates_resume(
+    marker: &std::path::Path,
+    before: Option<std::time::SystemTime>,
+    deadline: std::time::Instant,
+) {
+    while marker_modified_time(marker) == before {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the descendant did not survive the SIGTERM it traps"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
 }
 
 /// Wait until `marker`'s mtime stops changing, or panic after `deadline`.
