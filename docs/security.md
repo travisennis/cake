@@ -99,6 +99,8 @@ A review-reported bypass class that was not enumerated signals a wrong design, n
 
 Validating an untrusted command string by parsing it is the recurring instance of this. Shell quoting, expansion, chaining, symlinked targets, and a child process's own configuration flags each reopen the boundary independently, so a parser that rejects today's evasions does not constrain tomorrow's.
 
+TypeSafe shadow evaluation is an explicit opt-in data transmission. When enabled, Cake sends the command and bounded judge context to `api.typesafe.ai`; the TypeSafe answer has no execution authority. The existing judge, allowlist, and emergency bypass keep their command-policy behavior; the OS sandbox remains the filesystem boundary. Hooks run independently and retain their own warning or blocking behavior. Local telemetry stores only elapsed time, bounded model and usage metadata, the typed probability, a failure class, and an optional one-way tool-call digest.
+
 ## Related decisions
 
 - [ADR 014](adr/014-sandbox-policy-cli-flag.md), the sandbox policy flag.

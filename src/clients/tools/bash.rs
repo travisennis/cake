@@ -1568,6 +1568,7 @@ async fn bash_judge_preflight(
     // future before the tool result and its compensation events are recorded,
     // so waiting for that path would drop the attempts.
     record_judge_attempts(judge, &evaluation.attempts);
+    record_typesafe_shadow(judge, evaluation.shadow.as_ref(), raw_call_id);
     observed_evaluation_to_preflight(evaluation, raw_call_id)
 }
 
@@ -1581,6 +1582,33 @@ fn record_judge_attempts(
             sink.record(attempt.clone());
         }
     }
+}
+
+/// Persist one shadow observation through the run's telemetry sink, if any.
+///
+/// The optional observation adds no decision point to `bash_judge_preflight`:
+/// the change-risk ratchet scores any new branch there as a regression, so both
+/// `Option` checks live here instead.
+fn record_typesafe_shadow(
+    judge: &crate::clients::judge::JudgeContext,
+    shadow: Option<&crate::clients::typesafe::TypeSafeObservation>,
+    call_id: Option<&str>,
+) {
+    let (Some(observation), Some(sink)) = (shadow, judge.record_attempt.as_ref()) else {
+        return;
+    };
+    sink.record_typesafe(
+        crate::session_telemetry::TypeSafeShadowTelemetry {
+            elapsed_ms: u64::try_from(observation.elapsed.as_millis()).unwrap_or(u64::MAX),
+            model: observation.model.clone(),
+            probability: observation.probability,
+            call_id: None,
+            usage_input_tokens: observation.usage_input_tokens,
+            usage_output_tokens: observation.usage_output_tokens,
+            failure_class: observation.failure_class.map(str::to_string),
+        },
+        call_id,
+    );
 }
 
 fn observed_evaluation_to_preflight(

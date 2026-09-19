@@ -21,6 +21,7 @@ use crate::clients::judge::{
     JudgeVerdict, evaluate_command, evaluate_command_observed, judge_is_enabled, read_user_rubric,
     repo_state_digest, resolve_judge_client_config,
 };
+use crate::clients::typesafe::TypeSafeClient;
 use crate::config::settings::{JUDGE_BYPASS_ENV, JudgeSettings, LoadedSettings};
 use crate::config::{DataDir, ResolvedModelConfig, SettingsLoader};
 use serde::Serialize;
@@ -292,12 +293,15 @@ fn resolve_run_judge_client(
         return Ok((None, bypass_env));
     }
     let model = resolve_judge_model(loaded, cli_model)?;
+    let rubric = read_user_rubric(&loaded.judge).map_err(anyhow::Error::msg)?;
+    let typesafe = TypeSafeClient::from_settings(&loaded.judge.typesafe);
     let client = JudgeClient::new(
         model,
         Duration::from_secs(loaded.judge.timeout_secs),
         Duration::from_secs(loaded.judge.retry_budget_secs),
     )
-    .with_user_rubric(read_user_rubric(&loaded.judge).map_err(anyhow::Error::msg)?);
+    .with_user_rubric(rubric)
+    .with_typesafe(typesafe);
     Ok((Some(client), bypass_env))
 }
 
@@ -379,6 +383,7 @@ fn render_diagnostic_evaluation(
         outcome,
         attempts,
         diagnostic,
+        ..
     } = evaluation;
     let Some(attempt) = attempts.last() else {
         return match outcome {

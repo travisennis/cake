@@ -11,6 +11,25 @@ just judge-bench                            # live run; requires credentials and
 
 `just judge-bench` runs the ignored `judge_benchmark_live_slos` test. It resolves one `JudgeClient` per model name, runs every selected corpus case `CAKE_JUDGE_BENCH_REPETITIONS` times per model, writes per-trial JSON to the results directory, prints a human report, and **exits nonzero** when any selected profile misses an SLO threshold.
 
+To collect TypeSafe shadow observations in the same run, configure the opt-in observer and export `TYPESAFE_AI_API_KEY`:
+
+```toml
+[tools.bash.judge.typesafe]
+mode = "shadow"
+model = "jev-1.13.0"
+timeout_ms = 1000
+```
+
+Shadow answers are stored per trial as metadata and never affect the primary SLO gate or command authorization. Both the existing judge credential and the TypeSafe credential are needed to measure both models. Setting the key without `mode = "shadow"` makes no request.
+
+For a bounded live smoke run, after configuring the observer and credentials, run:
+
+```bash
+CAKE_JUDGE_BENCH_CORPUS=independent CAKE_JUDGE_BENCH_CASES=1,2 CAKE_JUDGE_BENCH_REPETITIONS=1 just judge-bench
+```
+
+This evaluates two selected corpus entries without executing their commands. Inspect `scripts/judge-bench/results/independent-<timestamp>.json`, including `performance.models[].shadow`, per-trial shadow fields, and the independent safety metadata. A smoke run verifies connectivity only; remove the case selection and use both corpora for meaningful coverage. Repeated trials measure consistency, not additional independent safety cases.
+
 ## Environment variables
 
   | Variable                       | Meaning                                                                     | Default                       |
@@ -20,6 +39,8 @@ just judge-bench                            # live run; requires credentials and
   | `CAKE_JUDGE_BENCH_CASES`       | Comma-separated 1-based corpus line numbers to run (empty = all cases)      | all                           |
   | `CAKE_JUDGE_BENCH_PROFILE`     | Settings profile applied on top of global and project settings              | none                          |
   | `CAKE_JUDGE_BENCH_RESULTS_DIR` | Directory for generated JSON artifacts (gitignored by default)              | `scripts/judge-bench/results` |
+
+TypeSafe is configured under `[tools.bash.judge.typesafe]` rather than through a benchmark environment variable. Its API key is always `TYPESAFE_AI_API_KEY`; alternate credential variable names are not supported.
 
 SLO thresholds are overridable per threshold for experiments:
 
@@ -52,7 +73,15 @@ Each run writes `run-<timestamp>.json` plus `latest.json` into the results direc
 - `report` --- schema version, configuration, per-model and per-case-class aggregates (trials, verdicts, attempts, timeouts, failure counts by class, timeout/failure rates, label agreement, consistency, p50/p90/p95/p99 and max latency over successful verdicts, token totals), a per-model SLO pass/fail table, the overall `passes` boolean, and an explicit sample-size note. The timeout and failure rates are **post-retry**: they count the trials whose evaluation ended without a verdict after the bounded recovery, so a recovered trial counts as a verdict, not a failure, and `attempts > trials` is what shows recovery ran.
 - `trials` --- one object per (model, case, repetition): case identity and command, expected and observed verdict/code, label agreement, failure class, attempt count, per-attempt telemetry (phase timing, token usage, terminal class), derived case classes, and latency. A trial's `failure_class` is its **last** attempt's class (absent when the evaluation produced a verdict); the first attempt's class stays in `attempts[0].terminal_class`.
 
+When shadow observations are enabled, each model report includes a `shadow` section with successful observations, typed failures, primary verdict disagreements, measured parallel TypeSafe latency, and offline threshold rows at candidate cutoffs `0.9`, `0.95`, `0.99`, and `0.999`. Each cutoff exposes separate `tuning` and `held_out` counts for total trials, observations, approvals, allow cases, allow observations and allow approvals (the coverage the cutoff buys), blocked cases, unsafe approvals, and warning cases. Unscored cases are explicit and excluded from threshold denominators. Warning cases have a separate denominator; an empty warning set is not zero accuracy.
+
 Latency percentiles use the nearest-rank method over successful-verdict trials only; timeouts and other failures are counted separately in the timeout and failure rates. Consistency is the fraction of verdict trials matching each case's modal verdict, aggregated over cases with at least two verdict trials; a single-repetition smoke run cannot measure it and the SLO is reported as "not measurable" rather than failed. **Percentile and rate estimates from fewer than \~100 trials per model are indicative only** --- the report says so and a small run should be treated as a smoke check, not evidence for a release decision.
+
+Groups stay together across repetitions and primary model selections: independent cases use their pair ID; legacy cases use the raw command so different reasons for the same command cannot cross splits. A group is held out when the first SHA-256 byte modulo 5 is zero; all other groups are tuning. Do not tune a threshold on held-out results.
+
+`observations` counts successes plus failures, and `missing_observations` counts trials with no shadow evaluation (including off mode). Compare `blocked_total`, `blocked_observed`, and `unsafe_approvals` together; failure is not evidence of safety. `allow_approvals` over `allow_observed` is the coverage the cutoff buys, and it is not an accuracy figure: read it beside the unsafe-approval count rather than alone, because `approvals` counts approved trials across every label, including blocked and warning cases. `warning_approvals` measures legacy advisory disagreement, not an unsafe approval or a lost hook warning. Hooks remain independent. Shadow latency includes successes and failures; the primary latency described below still excludes failures.
+
+Shadow threshold summaries are offline evaluation calculations, never execution policy. No threshold is selected automatically until a separately reviewed calibration decision exists. Their latency is measured for concurrent observation and cannot establish sequential cascade savings or a cascade p95.
 
 Two retry-era details matter when reading a run after #204 (bounded judge recovery):
 

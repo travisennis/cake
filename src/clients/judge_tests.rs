@@ -1,4 +1,6 @@
 use super::*;
+use crate::clients::typesafe::TypeSafeClient;
+use crate::config::settings::{TypeSafeMode, TypeSafeSettings};
 use sha2::{Digest, Sha256};
 use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -82,6 +84,34 @@ fn judge_client(mock_server: &MockServer) -> JudgeClient {
         Duration::from_secs(5),
         Duration::ZERO,
     )
+}
+
+fn shadow_settings() -> JudgeSettings {
+    JudgeSettings {
+        typesafe: TypeSafeSettings {
+            mode: TypeSafeMode::Shadow,
+            model: "jev-1.13.0".to_string(),
+            timeout_ms: 100,
+        },
+        ..JudgeSettings::default()
+    }
+}
+
+fn shadow_client(server: &MockServer, timeout: Duration) -> TypeSafeClient {
+    TypeSafeClient::new(
+        "test-typesafe-key".to_string(),
+        "jev-1.13.0".to_string(),
+        timeout,
+    )
+    .with_endpoint(server.uri())
+}
+
+fn typesafe_response(probability: f64) -> serde_json::Value {
+    serde_json::json!({
+        "model": "jev-1.13.0",
+        "answers": {"eligible": {"type": "noul", "noul": probability}},
+        "usage": {"input_tokens": 4, "output_tokens": 2}
+    })
 }
 
 #[tokio::test]
@@ -2053,6 +2083,209 @@ async fn facades_agree_on_a_plain_verdict() {
     // Diagnostics are opt-in: metadata-only observation carries none.
     assert!(observed.diagnostic.is_none());
     mock_server.verify().await;
+}
+
+#[tokio::test]
+async fn shadow_never_changes_primary_allow_warn_block_or_error() {
+    let cases = [
+        (
+            r#"{"verdict":"allow","message":"Safe"}"#,
+            0.01,
+            Some(JudgeDecision::Allow),
+        ),
+        (
+            r#"{"verdict":"warn","code":"rg-replace-footgun","message":"Check flags"}"#,
+            0.99,
+            Some(JudgeDecision::Warn),
+        ),
+        (
+            r#"{"verdict":"block","code":"git-force-push","message":"No"}"#,
+            0.99,
+            Some(JudgeDecision::Block),
+        ),
+    ];
+    for (primary, probability, expected) in cases {
+        let primary_server = MockServer::start().await;
+        let shadow_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(chat_response(primary)))
+            .expect(1)
+            .mount(&primary_server)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(typesafe_response(probability)))
+            .expect(1)
+            .mount(&shadow_server)
+            .await;
+        let client = judge_client(&primary_server).with_typesafe(Some(shadow_client(
+            &shadow_server,
+            Duration::from_millis(100),
+        )));
+        let evaluation = evaluate_command_observed(
+            &client,
+            &shadow_settings(),
+            request("git status", None),
+            None,
+            false,
+        )
+        .await;
+        let JudgeOutcome::Verdict { verdict, .. } = evaluation.outcome.unwrap() else {
+            panic!("shadow must preserve primary verdict");
+        };
+        assert_eq!(verdict.decision, expected.unwrap());
+        assert_eq!(evaluation.shadow.unwrap().failure_class, None);
+    }
+
+    let primary_server = MockServer::start().await;
+    let shadow_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("primary failure"))
+        .expect(1)
+        .mount(&primary_server)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(typesafe_response(0.99)))
+        .expect(1)
+        .mount(&shadow_server)
+        .await;
+    let evaluation = evaluate_command_observed(
+        &judge_client(&primary_server).with_typesafe(Some(shadow_client(
+            &shadow_server,
+            Duration::from_millis(100),
+        ))),
+        &shadow_settings(),
+        request("git status", None),
+        None,
+        false,
+    )
+    .await;
+    assert!(evaluation.outcome.is_err());
+    assert_eq!(evaluation.shadow.unwrap().probability, Some(0.99));
+}
+
+#[tokio::test]
+async fn shadow_off_and_bypass_make_zero_injected_typesafe_requests() {
+    let primary_server = MockServer::start().await;
+    let shadow_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(chat_response(r#"{"verdict":"allow","message":"Safe"}"#)),
+        )
+        .expect(1)
+        .mount(&primary_server)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(typesafe_response(0.99)))
+        .expect(0)
+        .mount(&shadow_server)
+        .await;
+    let client = judge_client(&primary_server).with_typesafe(Some(shadow_client(
+        &shadow_server,
+        Duration::from_millis(100),
+    )));
+    let off = evaluate_command_observed(
+        &client,
+        &JudgeSettings::default(),
+        request("git status", None),
+        None,
+        false,
+    )
+    .await;
+    assert!(matches!(off.outcome, Ok(JudgeOutcome::Verdict { .. })));
+    assert!(off.shadow.is_none());
+    let bypassed = evaluate_command_observed(
+        &client,
+        &shadow_settings(),
+        request("git status", None),
+        Some("off"),
+        false,
+    )
+    .await;
+    assert_eq!(bypassed.outcome, Ok(JudgeOutcome::Bypassed));
+    assert!(bypassed.shadow.is_none());
+}
+
+#[tokio::test]
+async fn shadow_failure_preserves_primary_and_allowlist_authority() {
+    let primary_server = MockServer::start().await;
+    let shadow_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(chat_response(
+            r#"{"verdict":"block","code":"git-force-push","message":"No"}"#,
+        )))
+        .expect(1)
+        .mount(&primary_server)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_millis(200))
+                .set_body_json(typesafe_response(0.01)),
+        )
+        .expect(1)
+        .mount(&shadow_server)
+        .await;
+    let mut settings = shadow_settings();
+    settings.allowlist = vec!["git push --force".to_string()];
+    let evaluation = evaluate_command_observed(
+        &judge_client(&primary_server).with_typesafe(Some(shadow_client(
+            &shadow_server,
+            Duration::from_millis(20),
+        ))),
+        &settings,
+        request("git push --force", None),
+        None,
+        false,
+    )
+    .await;
+    let JudgeOutcome::Verdict {
+        verdict,
+        overridden,
+    } = evaluation.outcome.unwrap()
+    else {
+        panic!("primary verdict should remain authoritative");
+    };
+    assert_eq!(verdict.decision, JudgeDecision::Block);
+    assert!(overridden);
+    assert_eq!(evaluation.shadow.unwrap().failure_class, Some("timeout"));
+}
+
+#[tokio::test]
+async fn shadow_custom_rubric_syncs_when_builder_order_is_reversed() {
+    let primary_server = MockServer::start().await;
+    let shadow_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(chat_response(r#"{"verdict":"allow","message":"Safe"}"#)),
+        )
+        .mount(&primary_server)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(typesafe_response(0.8)))
+        .mount(&shadow_server)
+        .await;
+    let client = judge_client(&primary_server)
+        .with_typesafe(Some(shadow_client(&shadow_server, Duration::from_secs(1))))
+        .with_user_rubric(Some("Custom rubric marker".to_string()));
+    let evaluation = evaluate_command_observed(
+        &client,
+        &shadow_settings(),
+        request("git status", None),
+        None,
+        false,
+    )
+    .await;
+    assert!(evaluation.shadow.unwrap().probability.is_some());
+    let requests = shadow_server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert!(
+        body["questions"]["eligible"]["instructions"]["effective_rubric"]
+            .as_str()
+            .unwrap()
+            .contains("Custom rubric marker")
+    );
 }
 
 #[tokio::test]

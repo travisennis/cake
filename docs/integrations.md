@@ -184,6 +184,8 @@ Main-provider `api_attempt.usage.input_tokens_details` may additionally contain 
 
 A `compensation` carries its `kind`, optional `detail`, judge-verdict `latency_ms`, and allowlist `overridden` flag. Kinds are `json_repair`, `judge_verdict`, `judge_fail_closed`, `judge_bypass`, `same_path_serialization`, `output_truncation`, `context_overflow_retry`, and `edit_invalid_arguments`. Judge details are `block:<code>`, `warn:<code>`, or `allow`; fail-closed details name the failure class. A judge event also carries `call_id`, the one-way SHA-256 digest of the originating transcript tool-call identifier that `judge_attempt.call_id` records, so a consumer can pair a transcript call with its judge outcome without the raw identifier reaching telemetry; it is absent when the call has no provider-assigned identifier.
 
+When `[tools.bash.judge.typesafe].mode = "shadow"`, the sidecar also receives additive `type_safe_shadow` metadata. It contains elapsed time, the validated model identity, the eligible probability, optional token usage, a bounded failure class, and the same one-way call identifier digest. It never changes the primary judge outcome or completion JSON.
+
 Consumers must tolerate added enum values and optional fields; old sidecars remain valid. Sidecars never drive resume, fork, or session discovery.
 
 ## Bash tool and command-safety checks

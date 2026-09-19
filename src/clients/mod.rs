@@ -27,6 +27,7 @@ mod responses;
 mod responses_types;
 pub mod retry;
 mod tools;
+pub mod typesafe;
 
 pub use agent::Agent;
 #[doc(inline)]

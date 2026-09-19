@@ -185,6 +185,23 @@ allowlist = ["git status"]  # exact raw commands whose blocks are overridden
 - `enabled`: emergency bypass. `false` disables the judge for every command, equivalent to the `CAKE_JUDGE=off` environment variable; the environment variable wins when both are set. Off by default means the judge is enabled, and there are no allowlist entries in shipped defaults.
 - `allowlist`: list of exact raw-command strings whose `block` verdicts are overridden to allow. An allowlisted command is still judged, and the verdict plus an `overridden` flag are recorded; only a `block` is overridden, so the command still cannot hide a judge failure. Matching is exact raw-command equality (no patterns, aliases, or normalization). Entries from global and project settings are merged.
 
+### TypeSafe shadow evaluation
+
+To evaluate a candidate fast approval signal, opt into the bounded TypeSafe shadow observer:
+
+```toml
+[tools.bash.judge.typesafe]
+mode = "shadow"
+model = "jev-1.13.0"
+timeout_ms = 1000
+```
+
+Set `TYPESAFE_AI_API_KEY` in the environment. The setting is off by default, and the key alone enables nothing. Shadow mode sends the command, working directory, repository digest, untrusted reason, and the effective local rubric to TypeSafe. Its typed probability is recorded as metadata only; the existing safety judge remains authoritative. TypeSafe failures never approve or block a command. No raw command, reason, provider body, or credential is written to local telemetry.
+
+Only `off` (the default) and `shadow` are supported. `model` is a pinned TypeSafe model ID, not a `[[models]]` name; the returned ID must match it. `timeout_ms` defaults to 1000 and is raised to 1 when set to 0. It covers the complete HTTP request and response body, with no retries. The credential variable is fixed to `TYPESAFE_AI_API_KEY`; do not put the credential in TOML. These three settings support global/project and profile overlays, including `[profiles.evaluate.tools.bash.judge.typesafe]`. Primary judge policy remains configured at the top level.
+
+Shadow and primary evaluations run concurrently and complete before execution. Shadow can add up to its deadline when the primary finishes first. Emergency bypass skips both evaluations. Jev judges safety eligibility; advisory-only hook warnings do not make an otherwise observational command ineligible, and hooks continue to run independently. See [the benchmark guide](../scripts/judge-bench/README.md) for evaluation commands and report interpretation.
+
 ## Filesystem access
 
 Top-level and profile `directories` grant persistent read-write access to the listed directories under `workspace-write`. Global and project entries are merged, deduplicated, and sorted, so the resolved list is stable across runs. The `read-only` policy demotes these paths to read-only access.

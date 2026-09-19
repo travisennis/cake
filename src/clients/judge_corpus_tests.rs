@@ -17,6 +17,7 @@ use crate::clients::judge::{
     read_user_rubric, repo_state_digest, resolve_judge_client_config,
 };
 use crate::clients::judge_rubric::VerdictCode;
+use crate::clients::typesafe::TypeSafeClient;
 use crate::config::SettingsLoader;
 use crate::config::model::{ApiType, ResolvedModelConfig};
 use crate::config::settings::{
@@ -517,7 +518,8 @@ fn live_judge_client(loaded: &LoadedSettings) -> Result<(JudgeClient, String), S
         Duration::from_secs(loaded.judge.timeout_secs),
         Duration::from_secs(loaded.judge.retry_budget_secs),
     )
-    .with_user_rubric(user_rubric);
+    .with_user_rubric(user_rubric)
+    .with_typesafe(TypeSafeClient::from_settings(&loaded.judge.typesafe));
     Ok((client, resolved_model))
 }
 
