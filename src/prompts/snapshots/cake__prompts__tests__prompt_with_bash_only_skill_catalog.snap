@@ -19,7 +19,8 @@ developer:
 <skill_instructions>
 The following skills provide specialized instructions for specific tasks.
 When a task matches a skill's description, use the Bash tool to load the
-SKILL.md at the listed location with `cat <location>` before proceeding.
+SKILL.md at the listed location with `cat <location>`, quoting the path for
+the shell, before proceeding.
 When a skill references relative paths, resolve them against the skill's
 directory (the parent of SKILL.md) and use absolute paths in tool calls.
 </skill_instructions>

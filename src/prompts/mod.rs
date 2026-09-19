@@ -42,10 +42,14 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
 </skill_instructions>";
 
 /// Instructions for a run whose only reader is a shell-capable tool.
+///
+/// The prose names `Bash`, so it must change with `SHELL_TOOL_NAMES` when that
+/// list admits a second tool.
 const SKILL_USAGE_INSTRUCTIONS_SHELL: &str = r"<skill_instructions>
 The following skills provide specialized instructions for specific tasks.
 When a task matches a skill's description, use the Bash tool to load the
-SKILL.md at the listed location with `cat <location>` before proceeding.
+SKILL.md at the listed location with `cat <location>`, quoting the path for
+the shell, before proceeding.
 When a skill references relative paths, resolve them against the skill's
 directory (the parent of SKILL.md) and use absolute paths in tool calls.
 </skill_instructions>";
