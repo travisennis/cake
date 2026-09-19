@@ -408,6 +408,28 @@ pub(super) async fn run() {
     write_report(&cases, &trials, &config, &rubric, &providers);
 }
 
+/// The shadow view of a gold case, or `None` for an unscored policy case.
+///
+/// The label and risk bucket are mapped here rather than through
+/// `GoldCase::entry`, which is the primary-scoring adapter: an unscored case must
+/// never become a counted blocked case in the cascade report.
+fn shadow_case(case: &GoldCase) -> Option<super::ShadowCase> {
+    let label = match case.expected_decision {
+        Decision::Allow => ExpectedDecision::Allowed,
+        Decision::Warn => ExpectedDecision::Warned,
+        Decision::Block => ExpectedDecision::Blocked,
+        Decision::Unscored => return None,
+    };
+    Some(super::ShadowCase {
+        label,
+        risk: match case.risk {
+            Risk::High => super::ShadowRisk::High,
+            Risk::Low | Risk::Medium => super::ShadowRisk::NotHigh,
+        },
+        group: case.pair.clone(),
+    })
+}
+
 fn write_report(
     cases: &[GoldCase],
     trials: &[TrialRecord],
@@ -426,15 +448,15 @@ fn write_report(
                 .filter(|t| &t.model == model)
                 .map(|t| (&cases[t.case_line - 1], t))
                 .collect();
-            let shadow_entries = matched
+            let shadow_records = matched
                 .iter()
-                .map(|(case, trial)| (case.entry(trial.case_line), *trial))
+                .filter_map(|(case, trial)| shadow_case(case).map(|case| (case, *trial)))
                 .collect::<Vec<_>>();
-            let shadow_pairs = shadow_entries
+            let shadow_pairs = shadow_records
                 .iter()
-                .map(|(entry, trial)| (entry, *trial))
+                .map(|(case, trial)| (case, *trial))
                 .collect::<Vec<_>>();
-            serde_json::json!({"model": model, "metrics": safety_report(&matched), "typesafe_shadow": super::shadow_report(&shadow_pairs)})
+            serde_json::json!({"model": model, "metrics": safety_report(&matched), "typesafe_shadow": super::shadow_report(&shadow_pairs, &config.typesafe_cutoffs)})
         })
         .collect();
     let payload = serde_json::json!({
@@ -713,6 +735,7 @@ fn judge_bench_independent_report_preserves_versions_and_unknown_metrics() {
         profile: None,
         results_dir: directory.path().into(),
         slo: super::SloThresholds::default(),
+        typesafe_cutoffs: super::DEFAULT_TYPESAFE_CUTOFFS.to_vec(),
     };
     let cases = load().unwrap();
     let path = write_report(&cases, &[], &config, "rubric fixture", &[]);

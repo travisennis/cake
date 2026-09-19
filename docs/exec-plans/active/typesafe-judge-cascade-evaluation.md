@@ -13,7 +13,7 @@ After this plan completes, a maintainer can run one documented benchmark over th
 ## Progress
 
 - [x] (2026-09-19) Inspected the shadow implementation, benchmark reporting, corpora, and issue workflow; opened #604; wrote this plan.
-- [ ] Milestone 1: cascade decision metrics in the benchmark report, with deterministic tests (cargo test judge_bench passes; the new calculations are asserted).
+- [x] (2026-09-19) Milestone 1: cascade decision metrics in the benchmark report (`feat/typesafe-cascade-metrics`, PR #606). Per-cutoff `blocked_unobserved`, high-risk counts, rule-of-three bounds, per-split estimated cascade latency, `recommended_cutoff`, success-only latency and TypeSafe tokens, with `CAKE_JUDGE_BENCH_TYPESAFE_CUTOFFS`; `shadow_report` covers 13 cases.
 - [ ] Milestone 2: indicative live run on the current corpora plus a shadow-off primary baseline, with the aggregates copied into #604.
 - [ ] Milestone 3: decision-grade gold set (corpus version bump) if Milestone 2 justifies it.
 - [ ] Milestone 4: full live evaluation, cutoff evidence, and a recorded go/no-go; ADR and implementation issue if the answer is yes.
