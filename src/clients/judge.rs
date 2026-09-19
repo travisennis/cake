@@ -478,11 +478,12 @@ impl JudgeClient {
     /// Append optional user rubric guidance (from `[tools.bash.judge]
     /// rubric_file`) to the embedded default rubric.
     pub fn with_user_rubric(mut self, user_rubric: Option<String>) -> Self {
-        if let Some(client) = self.typesafe.take() {
-            self.typesafe = Some(Arc::new(
-                (*client).clone().with_rubric(user_rubric.as_deref()),
-            ));
-        }
+        // Branchless remap: this builder's change-risk budget allows no new
+        // branch, and an absent shadow client must stay absent.
+        self.typesafe = self
+            .typesafe
+            .take()
+            .map(|client| Arc::new((*client).clone().with_rubric(user_rubric.as_deref())));
         self.user_rubric = user_rubric;
         self
     }

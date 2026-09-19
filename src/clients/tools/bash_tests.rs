@@ -2865,6 +2865,58 @@ async fn test_judge_allow_records_attempt_through_sink() {
 }
 
 #[tokio::test]
+async fn shadow_observation_reaches_the_telemetry_sink() {
+    // The Bash preflight reaches `TypeSafe` through the resolved settings, so a
+    // Bash-level shadow test would need a live endpoint. Exercise the emission
+    // helper directly: a present observation is recorded, an absent one is not.
+    let mock_server = MockServer::start().await;
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("telemetry.ndjson");
+    let writer = std::sync::Arc::new(crate::session_telemetry::SharedSessionTelemetryWriter::new(
+        crate::session_telemetry::SessionTelemetryWriter::open(&path).unwrap(),
+    ));
+    let sink = crate::session_telemetry::JudgeAttemptSink::new(
+        std::sync::Arc::clone(&writer),
+        crate::session_telemetry::SessionTelemetryContext {
+            session_id: "session".to_string(),
+            invocation_id: "invocation".to_string(),
+        },
+    );
+    let mut judge = (*judge_context(&mock_server)).clone();
+    judge.record_attempt = Some(sink);
+    let observation = crate::clients::typesafe::TypeSafeObservation {
+        elapsed: std::time::Duration::from_millis(120),
+        model: Some("jev-1.13.0".to_string()),
+        probability: Some(0.97),
+        usage_input_tokens: Some(11),
+        usage_output_tokens: Some(2),
+        failure_class: None,
+    };
+
+    record_typesafe_shadow(&judge, Some(&observation), Some("call-9"));
+    record_typesafe_shadow(&judge, None, Some("call-9"));
+
+    let contents = std::fs::read_to_string(&path).unwrap();
+    let lines = contents.lines().collect::<Vec<_>>();
+    assert_eq!(lines.len(), 1, "only the present observation is recorded");
+    let record: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(record["type"], "type_safe_shadow");
+    assert_eq!(record["session_id"], "session");
+    assert_eq!(record["elapsed_ms"], 120);
+    assert_eq!(record["model"], "jev-1.13.0");
+    assert_eq!(record["probability"], serde_json::json!(0.97));
+    assert_eq!(record["usage_input_tokens"], 11);
+    assert_eq!(record["usage_output_tokens"], 2);
+    let mut hasher = Sha256::new();
+    hasher.update(b"call-9");
+    assert_eq!(
+        record["call_id"],
+        hex::encode(hasher.finalize()),
+        "the raw call identifier must not reach telemetry"
+    );
+}
+
+#[tokio::test]
 async fn test_judge_allow_runs_ungated() {
     // An `allow` verdict runs the command with no annotation.
     let mock_server = MockServer::start().await;

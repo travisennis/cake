@@ -1357,9 +1357,14 @@ impl SettingsAccumulator {
         if overlay.enabled.is_some() {
             self.tools_enabled.clone_from(&overlay.enabled);
         }
-        if let Some(judge) = overlay.bash.as_ref().and_then(|bash| bash.judge.as_ref()) {
-            SettingsLoader::merge_typesafe_settings(judge.typesafe.clone(), self);
-        }
+        // Unconditional: `merge_typesafe_settings` is a no-op on `None`, and
+        // this function's change-risk budget allows no new branch.
+        let profile_typesafe = overlay
+            .bash
+            .as_ref()
+            .and_then(|bash| bash.judge.as_ref())
+            .and_then(|judge| judge.typesafe.clone());
+        SettingsLoader::merge_typesafe_settings(profile_typesafe, self);
     }
 
     /// Convert the accumulated merge state into the final [`LoadedSettings`].
