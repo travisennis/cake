@@ -21,7 +21,7 @@ We implement a skills system with the following design:
 
 3. **Catalog disclosure**: Discovered skills are listed in the system prompt as an XML `<available_skills>` catalog, telling the model which skills exist and where to find them.
 
-4. **Lazy activation**: The model uses the existing `Read` tool to load a `SKILL.md` file when its description matches the current task. The skill content is then in the conversation context. A `SkillActivated` session record is emitted once per skill per session on the first read, but the Read tool always returns the actual file contents.
+4. **Lazy activation**: The model loads a `SKILL.md` with whichever reader the run provides: the `Read` tool when it is available, otherwise a shell-capable tool such as `Bash` (`cat <location>`). The catalog's `<skill_instructions>` text matches the resolved reader, and a run with neither reader receives no catalog. The skill content is then in the conversation context. A `SkillActivated` session record is emitted once per skill per session on the first `Read` of that file, but the `Read` tool always returns the actual file contents.
 
 5. **No deduplication**: Every `Read` of a `SKILL.md` returns the file contents like any other read. There is no interception, no state machine, and no "already active" message. The model retains full control over when and what it reads.
 
@@ -64,6 +64,8 @@ We implement a skills system with the following design:
 2026-07-07: Decision point 5 changed from "Deduplication" to "No deduplication". The Read interception state machine (`skill_dedup.rs`) and its agent plumbing were removed. `SkillActivated` records are still emitted on first read per skill per session via path-watching (no output substitution). See task 235.
 
 2026-07-29: Decision point 7 established the skill / runbook / reference content model. Repeatable repository procedures move to `docs/runbooks/` and are routed from `AGENTS.md`; catalog compatibility may be preserved with a pointer-only `SKILL.md`. See task 300.
+
+2026-09-19: Decision point 4 changed from a `Read`-only activation path to a reader capability. A run whose tool selection omits `Read`, such as `--tools Bash`, now receives the catalog plus Bash-appropriate `<skill_instructions>`; a run with neither reader, such as `--no-tools`, receives none. `SkillActivated` telemetry stays `Read`-only: the `Read` tool carries one path argument, while matching a known `SKILL.md` path inside arbitrary shell text is a heuristic that could misattribute activation. See task 546.
 
 ## References
 
