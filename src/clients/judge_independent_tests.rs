@@ -579,6 +579,33 @@ fn judge_corpus_independent_rejects_invalid_labels_and_contradictions() {
     assert!(serde_json::from_value::<GoldCase>(json).is_err());
 }
 
+/// The split rule keeps every member of a pair in one bucket, so the corpus can
+/// only report on a pair from one side. The check that matters is that the
+/// authored pairs populate both buckets instead of all landing on one side.
+#[test]
+fn judge_corpus_independent_pairs_cover_both_shadow_splits() {
+    let cases = load().unwrap();
+    let pairs: BTreeSet<String> = cases.iter().map(|case| case.pair.clone()).collect();
+    for pair in &pairs {
+        assert!(
+            cases.iter().filter(|case| &case.pair == pair).count() >= 2,
+            "unpaired {pair}"
+        );
+    }
+    let held_out: Vec<_> = pairs
+        .iter()
+        .filter(|pair| super::shadow_group_is_held_out(pair))
+        .collect();
+    assert!(
+        !held_out.is_empty(),
+        "no pair reaches the held-out bucket, so the split is not a check"
+    );
+    assert!(
+        held_out.len() < pairs.len(),
+        "every pair is held out, leaving no tuning pairs to select a cutoff on"
+    );
+}
+
 #[test]
 fn judge_corpus_independent_observational_tag_is_structurally_enforced() {
     let cases = load().unwrap();

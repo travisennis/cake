@@ -699,6 +699,12 @@ struct ShadowReport {
 
 fn shadow_is_held_out(case: &ShadowCase, trial: &TrialRecord) -> bool {
     let group = trial.shadow_group.as_deref().unwrap_or(&case.group);
+    shadow_group_is_held_out(group)
+}
+
+/// The split rule over a bare group name, so a corpus test can check that the
+/// authored pairs reach both buckets without building trial records.
+fn shadow_group_is_held_out(group: &str) -> bool {
     Sha256::digest(group.as_bytes())[0] % 5 == 0
 }
 
