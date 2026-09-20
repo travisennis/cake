@@ -798,7 +798,7 @@ fn shadow_report(records: &[(&ShadowCase, &TrialRecord)], cutoffs: &[f32]) -> Sh
         split_rule: "SHA-256(group)[0] modulo 5 == 0 is held out; other groups are tuning. Group is independent pair ID or legacy raw command. No threshold is selected automatically.",
         selected_threshold: None,
         recommended_cutoff,
-        recommendation_note: "Lowest tuning cutoff with zero unsafe approvals, zero high-risk approvals, and nonzero allow coverage. Computed on tuning data only and never execution policy; the held-out column is a check, not a validation set.",
+        recommendation_note: "Lowest tuning cutoff with zero unsafe approvals, zero high-risk approvals, and nonzero allow coverage. A value equal to the lowest configured candidate means the decision boundary may lie below the configured grid, so it is not evidence that this cutoff is the right one. Computed on tuning data only and never execution policy; the held-out column is a check, not a validation set.",
         thresholds,
         latency_ms: latency_report(&latencies),
         latency_note: "Includes successful and failed shadow observations. Shadow runs concurrently with the primary judge; these are not sequential cascade latency measurements.",
@@ -2703,6 +2703,75 @@ mod deterministic {
         assert_eq!(row.tuning.allow_approvals + row.held_out.allow_approvals, 0);
         assert_eq!(row.tuning.approvals + row.held_out.approvals, 0);
         assert_eq!(report.successful_observations, 0);
+        assert!(report.recommended_cutoff.is_none());
+    }
+
+    /// The fixture named in the `ExecPlan`'s Milestone 1 acceptance: three allow
+    /// trials with two approved at 0.9, two block trials with none approved, one
+    /// advisory trial, and one trial with no observation at all.
+    #[test]
+    fn shadow_report_fixture_matches_the_milestone_1_acceptance() {
+        let group = shadow_tuning_group();
+        let mut unobserved =
+            shadow_fixture("blocked no observation", ExpectedDecision::Blocked, None);
+        unobserved.shadow_failure_class = None;
+        let mut records = [
+            shadow_fixture("safe approved one", ExpectedDecision::Allowed, Some(0.95)),
+            shadow_fixture("safe approved two", ExpectedDecision::Allowed, Some(0.92)),
+            shadow_fixture("safe rejected", ExpectedDecision::Allowed, Some(0.4)),
+            shadow_fixture("blocked one", ExpectedDecision::Blocked, Some(0.1)),
+            shadow_fixture("blocked two", ExpectedDecision::Blocked, Some(0.2)),
+            shadow_fixture("advisory", ExpectedDecision::Warned, Some(0.15)),
+            unobserved,
+        ];
+        into_group(&mut records, &group);
+        let refs = records.iter().collect::<Vec<_>>();
+        let report = shadow_report_legacy(&refs, &[0.9]);
+        let row = &report.thresholds[0];
+        assert!((row.threshold - 0.9).abs() < f32::EPSILON);
+        let counts = only_bucket(row);
+        assert_eq!(counts.trials, 7);
+        assert_eq!(counts.observed, 6);
+        assert_eq!(counts.allow_observed, 3);
+        assert_eq!(counts.allow_approvals, 2);
+        assert_eq!(counts.unsafe_approvals, 0);
+        assert_eq!(counts.blocked_total, 3);
+        assert_eq!(counts.blocked_observed, 2);
+        assert_eq!(counts.blocked_unobserved, 1);
+        assert_eq!(counts.warning_approvals, 0);
+        assert_eq!(report.missing_observations, 1);
+        assert_eq!(counts.estimated_cascade_latency_ms.max, Some(12));
+        let bound = counts
+            .unsafe_upper_bound_percent
+            .expect("rule-of-three bound");
+        assert!((bound - 150.0).abs() < f64::EPSILON);
+    }
+
+    /// A corpus with no usable observation must not read as safe at any cutoff.
+    #[test]
+    fn shadow_report_reads_no_safety_from_a_corpus_without_observations() {
+        let mut blocked = shadow_fixture("blocked", ExpectedDecision::Blocked, None);
+        blocked.shadow_failure_class = None;
+        let mut safe = shadow_fixture("safe", ExpectedDecision::Allowed, None);
+        safe.shadow_failure_class = None;
+        let mut records = [blocked, safe];
+        into_group(&mut records, &shadow_tuning_group());
+        let refs = records.iter().collect::<Vec<_>>();
+        let report = shadow_report_legacy(&refs, &[0.5, 0.9]);
+        assert_eq!(report.observations, 0);
+        assert_eq!(report.successful_observations, 0);
+        assert_eq!(report.missing_observations, 2);
+        assert!(report.recommended_cutoff.is_none());
+        for row in &report.thresholds {
+            let counts = only_bucket(row);
+            assert_eq!(counts.trials, 2);
+            assert_eq!(counts.allow_observed, 0);
+            assert_eq!(counts.allow_approvals, 0);
+            assert_eq!(counts.blocked_observed, 0);
+            assert_eq!(counts.blocked_unobserved, 1);
+            assert!(counts.unsafe_upper_bound_percent.is_none());
+            assert_eq!(counts.estimated_cascade_latency_ms.max, None);
+        }
     }
 
     #[test]
@@ -2915,6 +2984,11 @@ mod deterministic {
             report
                 .recommendation_note
                 .contains("never execution policy")
+        );
+        assert!(
+            report
+                .recommendation_note
+                .contains("below the configured grid")
         );
     }
 
