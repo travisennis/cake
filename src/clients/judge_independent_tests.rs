@@ -15,8 +15,8 @@ use crate::clients::judge_rubric::{VerdictCode, build_judge_system_prompt};
 use crate::config::SettingsLoader;
 use crate::config::settings::JUDGE_BYPASS_ENV;
 
-const CORPUS: &str = include_str!("tools/corpus/independent-v1.jsonl");
-const VERSION: &str = "independent-v1";
+const CORPUS: &str = include_str!("tools/corpus/independent-v2.jsonl");
+const VERSION: &str = "independent-v2";
 
 macro_rules! labels {
     ($name:ident { $($variant:ident),+ }) => {
@@ -71,6 +71,7 @@ labels!(Tag {
     Evidence,
     DenialLoop,
     HookWrite,
+    Observational,
     Benign
 });
 
@@ -141,7 +142,34 @@ impl GoldCase {
             return Err("duplicate tags".into());
         }
         self.validate_decision()?;
+        self.validate_observational()?;
         self.validate_effects()
+    }
+
+    /// `observational` claims the command cannot mutate local or remote state,
+    /// cannot transmit data, and cannot disclose a secret. The structural part of
+    /// that claim is checkable here: only an allowed, egress-free command without
+    /// a mutation or credential tag can qualify, and the claim implies `benign`
+    /// while `benign` does not imply it.
+    fn validate_observational(&self) -> Result<(), String> {
+        if !self.tags.contains(&Tag::Observational) {
+            return Ok(());
+        }
+        if self.expected_decision != Decision::Allow || self.egress != Egress::None {
+            return Err("observational requires an allowed decision and egress none".into());
+        }
+        if self.tags.iter().any(|tag| {
+            matches!(
+                tag,
+                Tag::LocalDestruction | Tag::RemoteMutation | Tag::Credential
+            )
+        }) {
+            return Err("observational cannot carry a mutation or credential tag".into());
+        }
+        if !self.tags.contains(&Tag::Benign) {
+            return Err("observational implies benign".into());
+        }
+        Ok(())
     }
 
     fn validate_decision(&self) -> Result<(), String> {
@@ -426,6 +454,7 @@ fn shadow_case(case: &GoldCase) -> Option<super::ShadowCase> {
             Risk::High => super::ShadowRisk::High,
             Risk::Low | Risk::Medium => super::ShadowRisk::NotHigh,
         },
+        observational: case.tags.contains(&Tag::Observational),
         group: case.pair.clone(),
     })
 }
@@ -499,6 +528,7 @@ fn judge_corpus_independent_schema_and_coverage() {
         Tag::Evidence,
         Tag::DenialLoop,
         Tag::HookWrite,
+        Tag::Observational,
         Tag::Benign,
     ] {
         assert!(
@@ -547,6 +577,48 @@ fn judge_corpus_independent_rejects_invalid_labels_and_contradictions() {
     let mut json = serde_json::to_value(base).unwrap();
     json.as_object_mut().unwrap().remove("authorization");
     assert!(serde_json::from_value::<GoldCase>(json).is_err());
+}
+
+#[test]
+fn judge_corpus_independent_observational_tag_is_structurally_enforced() {
+    let cases = load().unwrap();
+    let case = cases
+        .iter()
+        .find(|c| c.tags.contains(&Tag::Observational))
+        .expect("the corpus carries an observational case");
+    assert!(case.validate().is_ok());
+    assert_eq!(case.expected_decision, Decision::Allow);
+    assert_eq!(case.egress, Egress::None);
+    // `observational` implies `benign`; the reverse does not hold.
+    assert!(case.tags.contains(&Tag::Benign));
+    assert!(
+        cases
+            .iter()
+            .any(|c| c.tags.contains(&Tag::Benign) && !c.tags.contains(&Tag::Observational))
+    );
+
+    let mut blocked = case.clone();
+    blocked.expected_decision = Decision::Block;
+    blocked.verdict_code = Some("unknown-destructive".into());
+    assert!(blocked.validate().is_err());
+
+    let mut egress = case.clone();
+    egress.egress = Egress::Public;
+    assert!(egress.validate().is_err());
+
+    for tag in [Tag::LocalDestruction, Tag::RemoteMutation, Tag::Credential] {
+        let mut tagged = case.clone();
+        tagged.tags.push(tag);
+        assert!(tagged.validate().is_err(), "{tag:?}");
+    }
+
+    let mut unbenign = case.clone();
+    unbenign.tags.retain(|tag| *tag != Tag::Benign);
+    assert!(unbenign.validate().is_err());
+
+    let mut plain_benign = case.clone();
+    plain_benign.tags.retain(|tag| *tag != Tag::Observational);
+    assert!(plain_benign.validate().is_ok());
 }
 
 #[test]
