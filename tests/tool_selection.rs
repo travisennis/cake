@@ -215,6 +215,186 @@ enabled = ["Bash"]
     assert!(!description.contains("Write"));
 }
 
+/// A Bash-only run receives the skill catalog with Bash instructions, because
+/// `Bash` can read a `SKILL.md` even when `Read` is not selected (#546).
+#[tokio::test]
+async fn bash_only_selection_discloses_the_skill_catalog() {
+    let env = TestEnv::new("cake-bash-only-skill-catalog-test");
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(success_response()))
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let skill_dir = env
+        .workspace_dir
+        .join(".agents")
+        .join("skills")
+        .join("debugging");
+    fs::create_dir_all(&skill_dir).expect("skill directory");
+    fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: debugging\ndescription: How to debug things\n---\n\nInstructions.",
+    )
+    .expect("skill file");
+
+    env.write_project_settings(&format!(
+        r#"
+default_model = "test"
+
+[[models]]
+name = "test"
+model = "test-model"
+base_url = "{}"
+api_key_env = "{}"
+api_type = "responses"
+
+[tools]
+enabled = ["Bash"]
+"#,
+        mock_server.uri(),
+        TEST_KEY
+    ));
+
+    let output = env
+        .command()
+        .args(["apply the debugging skill"])
+        .env(TEST_KEY, "test-token")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute cake");
+    assert!(
+        output.status.success(),
+        "cake should succeed. stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let requests = mock_server
+        .received_requests()
+        .await
+        .expect("recorded requests");
+    assert_eq!(requests.len(), 1);
+    let request: serde_json::Value =
+        serde_json::from_slice(&requests[0].body).expect("request JSON");
+    assert_eq!(request_tool_names(&request), vec!["Bash".to_string()]);
+
+    let input = request["input"].as_array().expect("input messages");
+    let skills = input
+        .iter()
+        .filter_map(|message| message["content"][0]["text"].as_str())
+        .find(|text| text.starts_with("## Skills"))
+        .expect("the Bash-only run receives the skill catalog");
+    assert!(skills.contains("<name>debugging</name>"));
+    assert!(skills.contains("`cat <location>`"));
+    assert!(!skills.contains("file-read tool"));
+}
+
+/// A Bash-only run can load a skill body, not just see the catalog: the Bash
+/// call's output carrying the `SKILL.md` contents reaches the next provider
+/// request (#546).
+#[tokio::test]
+async fn bash_only_run_loads_a_skill_body_with_cat() {
+    let env = TestEnv::new("cake-bash-only-skill-load-test");
+    let mock_server = MockServer::start().await;
+
+    let skill_dir = env
+        .workspace_dir
+        .join(".agents")
+        .join("skills")
+        .join("debugging");
+    fs::create_dir_all(&skill_dir).expect("skill directory");
+    let skill_path = skill_dir.join("SKILL.md");
+    fs::write(
+        &skill_path,
+        "---\nname: debugging\ndescription: How to debug things\n---\n\nRun the failing test first.\n",
+    )
+    .expect("skill file");
+
+    env.write_project_settings(&format!(
+        r#"
+default_model = "test"
+
+[[models]]
+name = "test"
+model = "test-model"
+base_url = "{}"
+api_key_env = "{}"
+api_type = "responses"
+
+[tools]
+enabled = ["Bash"]
+"#,
+        mock_server.uri(),
+        TEST_KEY
+    ));
+
+    // The model answers the catalog by reading the skill with the Bash reader
+    // the instructions describe.
+    let command = format!("cat -- '{}'", skill_path.display());
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": "resp-skill-load-1",
+            "output": [{
+                "type": "function_call",
+                "id": "fc-skill-load-1",
+                "call_id": "call-skill-load-1",
+                "name": "Bash",
+                "arguments": serde_json::json!({ "command": command }).to_string()
+            }],
+            "usage": { "input_tokens": 10, "output_tokens": 5, "total_tokens": 15 }
+        })))
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(success_response()))
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let output = env
+        .command()
+        .args(["apply the debugging skill"])
+        .env(TEST_KEY, "test-token")
+        .env("CAKE_JUDGE", "off")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute cake");
+    assert!(
+        output.status.success(),
+        "cake should succeed. stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let requests = mock_server
+        .received_requests()
+        .await
+        .expect("recorded requests");
+    assert_eq!(requests.len(), 2, "one tool turn plus the final answer");
+    let follow_up: serde_json::Value =
+        serde_json::from_slice(&requests[1].body).expect("request JSON");
+    let tool_output = follow_up["input"]
+        .as_array()
+        .expect("input messages")
+        .iter()
+        .find(|item| item["type"] == "function_call_output")
+        .expect("the Bash call is answered in the next request");
+    let text = tool_output["output"]
+        .as_str()
+        .expect("function call output text");
+    assert!(
+        text.contains("Run the failing test first."),
+        "the skill body should reach the model: {text}"
+    );
+}
+
 /// Read the `tools` recorded in the new session's metadata record.
 fn session_tools(env: &TestEnv) -> Vec<String> {
     let session_file = fs::read_dir(env.data_dir.join("sessions"))
