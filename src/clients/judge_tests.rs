@@ -2339,6 +2339,467 @@ async fn facades_agree_on_an_allowlist_override() {
     mock_server.verify().await;
 }
 
+// =============================================================================
+// The ADR 034 cascade: `mode = "cascade"` fast-approves or falls back.
+// =============================================================================
+
+/// Every failure class a `TypeSafe` observation can carry, with no successful
+/// observation among them.
+const OBSERVATION_FAILURE_CLASSES: [&str; 10] = [
+    "timeout",
+    "transport",
+    "http_error",
+    "response_too_large",
+    "malformed_response",
+    "model_mismatch",
+    "answer_type_mismatch",
+    "probability_out_of_range",
+    "missing_credentials",
+    "client_configuration",
+];
+
+/// A host and port with no listener, so a request fails as a transport error
+/// without leaving the machine.
+const DEAD_ENDPOINT: &str = "http://127.0.0.1:1/";
+
+/// Cascade settings: the observation may approve, and the judge is the fallback.
+fn cascade_settings() -> JudgeSettings {
+    JudgeSettings {
+        typesafe: TypeSafeSettings {
+            mode: TypeSafeMode::Cascade,
+            model: "jev-1.13.0".to_string(),
+            timeout_ms: 100,
+        },
+        ..JudgeSettings::default()
+    }
+}
+
+/// The wiring `TypeSafeClient::from_settings` produces under `cascade`: a judge
+/// endpoint and an observation endpoint.
+fn cascade_client(judge: &MockServer, typesafe: &MockServer) -> JudgeClient {
+    judge_client(judge).with_typesafe(Some(shadow_client(typesafe, Duration::from_millis(100))))
+}
+
+/// Mount a judge endpoint answering one allow verdict, expecting `times` calls.
+async fn mount_judge_allow(server: &MockServer, times: u64) {
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(chat_response(r#"{"verdict":"allow","message":"Safe"}"#)),
+        )
+        .expect(times)
+        .mount(server)
+        .await;
+}
+
+/// Mount one `TypeSafe` 200 response carrying `body`, expecting one request.
+async fn mount_typesafe_body(server: &MockServer, body: serde_json::Value) {
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .expect(1)
+        .mount(server)
+        .await;
+}
+
+/// Mount one `TypeSafe` answer with `probability`, expecting one request.
+async fn mount_typesafe(server: &MockServer, probability: f64) {
+    mount_typesafe_body(server, typesafe_response(probability)).await;
+}
+
+/// Wire the `TypeSafe` leg that must fail as `class`, returning `None` for
+/// `client_configuration` (a cascade configured with no client at all).
+///
+/// Every leg answers at most one request, so a leg that must fail before
+/// sending one is mounted as nothing.
+async fn failing_typesafe_leg(class: &str, server: &MockServer) -> Option<TypeSafeClient> {
+    let timeout = Duration::from_millis(100);
+    let client = |endpoint: String, api_key: String| {
+        TypeSafeClient::new(api_key, "jev-1.13.0".to_string(), timeout).with_endpoint(endpoint)
+    };
+    match class {
+        "timeout" => {
+            Mock::given(method("POST"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(typesafe_response(0.99))
+                        .set_delay(Duration::from_secs(2)),
+                )
+                .expect(1)
+                .mount(server)
+                .await;
+            Some(client(server.uri(), "test-typesafe-key".to_string()))
+        },
+        "transport" => Some(client(
+            DEAD_ENDPOINT.to_string(),
+            "test-typesafe-key".to_string(),
+        )),
+        "http_error" => {
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(500).set_body_string("no"))
+                .expect(1)
+                .mount(server)
+                .await;
+            Some(client(server.uri(), "test-typesafe-key".to_string()))
+        },
+        "response_too_large" => {
+            // Above the client's read cap, which the body never passes.
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(200).set_body_string("x".repeat(300 * 1024)))
+                .expect(1)
+                .mount(server)
+                .await;
+            Some(client(server.uri(), "test-typesafe-key".to_string()))
+        },
+        "malformed_response" => {
+            mount_typesafe_body(server, serde_json::json!({"model": "jev-1.13.0"})).await;
+            Some(client(server.uri(), "test-typesafe-key".to_string()))
+        },
+        "model_mismatch" => {
+            mount_typesafe_body(
+                server,
+                serde_json::json!({
+                    "model": "jev-other",
+                    "answers": {"eligible": {"type": "noul", "noul": 0.99}}
+                }),
+            )
+            .await;
+            Some(client(server.uri(), "test-typesafe-key".to_string()))
+        },
+        "answer_type_mismatch" => {
+            mount_typesafe_body(
+                server,
+                serde_json::json!({
+                    "model": "jev-1.13.0",
+                    "answers": {"eligible": {"type": "choice", "noul": 0.99}}
+                }),
+            )
+            .await;
+            Some(client(server.uri(), "test-typesafe-key".to_string()))
+        },
+        "probability_out_of_range" => {
+            mount_typesafe(server, 1.5).await;
+            Some(client(server.uri(), "test-typesafe-key".to_string()))
+        },
+        "missing_credentials" => Some(client(server.uri(), String::new())),
+        "client_configuration" => None,
+        other => panic!("unhandled TypeSafe failure class '{other}'"),
+    }
+}
+
+/// The f32 probability the client reports for a corpus probability, through the
+/// same truncation `probability_to_f32` applies.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the test reproduces the client's f64-to-f32 representation exactly"
+)]
+fn observed_probability(probability: f64) -> f32 {
+    probability as f32
+}
+
+/// Assert a reported probability is the f32 representation of `expected`.
+fn assert_probability(actual: Option<f32>, expected: f64) {
+    let expected = observed_probability(expected);
+    assert_eq!(
+        actual.map(f32::to_bits),
+        Some(expected.to_bits()),
+        "expected {expected}, got {actual:?}"
+    );
+}
+
+#[test]
+fn fast_approval_cutoff_is_the_reviewed_constant() {
+    // ADR 034 fixes the cutoff at 0.85 against a pooled worst blocked
+    // observation of 0.82. Moving it is an ADR change with new evidence, so this
+    // assertion is what makes an unreviewed move fail loudly.
+    assert_eq!(TYPESAFE_FAST_APPROVAL_CUTOFF.to_bits(), 0.85_f32.to_bits());
+    let clean = |probability: Option<f32>| TypeSafeObservation {
+        elapsed: Duration::from_millis(5),
+        model: Some("jev-1.13.0".to_string()),
+        probability,
+        usage_input_tokens: None,
+        usage_output_tokens: None,
+        failure_class: None,
+    };
+    // The boundary is inclusive: the cutoff approves, the step below falls back.
+    assert_eq!(fast_approval_probability(&clean(Some(0.85))), Some(0.85));
+    assert_eq!(fast_approval_probability(&clean(Some(0.99))), Some(0.99));
+    assert_eq!(fast_approval_probability(&clean(Some(0.84))), None);
+    assert_eq!(fast_approval_probability(&clean(Some(0.0))), None);
+    assert_eq!(fast_approval_probability(&clean(None)), None);
+    // No failure class approves, whatever probability accompanies it.
+    for class in OBSERVATION_FAILURE_CLASSES {
+        let failed = TypeSafeObservation::failed(Duration::from_millis(5), class);
+        assert_eq!(fast_approval_probability(&failed), None, "{class}");
+        let mut contradictory = failed.clone();
+        contradictory.probability = Some(1.0);
+        assert_eq!(fast_approval_probability(&contradictory), None, "{class}");
+    }
+    // A non-finite probability never approves even without a failure class.
+    assert_eq!(fast_approval_probability(&clean(Some(f32::NAN))), None);
+    assert_eq!(fast_approval_probability(&clean(Some(f32::INFINITY))), None);
+}
+
+#[tokio::test]
+async fn cascade_fast_approves_at_the_cutoff_and_above_without_a_judge_call() {
+    for probability in [0.85, 0.99] {
+        let judge_server = MockServer::start().await;
+        let typesafe_server = MockServer::start().await;
+        // `expect(0)` is the assertion: a fast approval must not reach the judge.
+        mount_judge_allow(&judge_server, 0).await;
+        mount_typesafe(&typesafe_server, probability).await;
+
+        let evaluation = evaluate_command_observed(
+            &cascade_client(&judge_server, &typesafe_server),
+            &cascade_settings(),
+            request("git status", None),
+            None,
+            false,
+        )
+        .await;
+
+        let error = format!("{probability} must fast-approve");
+        let Ok(JudgeOutcome::FastApproved {
+            probability: approved,
+            elapsed,
+        }) = evaluation.outcome
+        else {
+            panic!("{error}");
+        };
+        // `probability_to_f32` truncates f64 to f32 by design; comparing through
+        // the same conversion keeps the boundary off representation error.
+        assert_probability(Some(approved), probability);
+        assert!(
+            evaluation.attempts.is_empty(),
+            "a fast approval records no judge attempt"
+        );
+        let observation = evaluation
+            .shadow
+            .expect("the deciding observation is retained");
+        assert_eq!(observation.failure_class, None, "{error}");
+        assert_probability(observation.probability, probability);
+        assert_eq!(elapsed, observation.elapsed, "{error}");
+        judge_server.verify().await;
+    }
+}
+
+#[tokio::test]
+async fn cascade_falls_back_below_the_cutoff_and_keeps_the_judge_verdict() {
+    for probability in [0.84, 0.5, 0.0] {
+        let judge_server = MockServer::start().await;
+        let typesafe_server = MockServer::start().await;
+        // `expect(1)` is the assertion: the fallback leg must run the judge.
+        mount_judge_allow(&judge_server, 1).await;
+        mount_typesafe(&typesafe_server, probability).await;
+
+        let evaluation = evaluate_command_observed(
+            &cascade_client(&judge_server, &typesafe_server),
+            &cascade_settings(),
+            request("git status", None),
+            None,
+            false,
+        )
+        .await;
+
+        let error = format!("{probability} must fall back to the judge");
+        let JudgeOutcome::Verdict {
+            verdict,
+            overridden,
+        } = evaluation
+            .outcome
+            .unwrap_or_else(|e| panic!("{error}: {e}"))
+        else {
+            panic!("{error}");
+        };
+        assert_eq!(verdict.decision, JudgeDecision::Allow, "{error}");
+        assert!(!overridden, "{error}");
+        assert_eq!(evaluation.attempts.len(), 1, "{error}");
+        let observation = evaluation
+            .shadow
+            .expect("the fallback observation is retained");
+        assert_probability(observation.probability, probability);
+        assert!(
+            observation
+                .probability
+                .is_some_and(|p| p < TYPESAFE_FAST_APPROVAL_CUTOFF),
+            "{error}"
+        );
+        judge_server.verify().await;
+    }
+}
+
+#[tokio::test]
+async fn cascade_falls_back_on_every_observation_failure_class() {
+    // A failure of any class must fall back to the judge: no failure may approve
+    // and no failure may skip the judge (ADR 034). The judge's `expect(1)` is
+    // the proof that it ran.
+    for class in OBSERVATION_FAILURE_CLASSES {
+        let judge_server = MockServer::start().await;
+        let typesafe_server = MockServer::start().await;
+        mount_judge_allow(&judge_server, 1).await;
+        let leg = failing_typesafe_leg(class, &typesafe_server).await;
+        let client = judge_client(&judge_server).with_typesafe(leg);
+
+        let evaluation = evaluate_command_observed(
+            &client,
+            &cascade_settings(),
+            request("git status", None),
+            None,
+            false,
+        )
+        .await;
+
+        let JudgeOutcome::Verdict { verdict, .. } = evaluation
+            .outcome
+            .unwrap_or_else(|e| panic!("{class} must fall back to the judge, not fail: {e}"))
+        else {
+            panic!("{class} must fall back to the judge, not approve");
+        };
+        assert_eq!(verdict.decision, JudgeDecision::Allow, "{class}");
+        let observation = evaluation
+            .shadow
+            .expect("a failed observation is still recorded");
+        assert_eq!(observation.failure_class, Some(class), "{class}");
+        assert_eq!(observation.probability, None, "{class}");
+        judge_server.verify().await;
+    }
+}
+
+#[tokio::test]
+async fn cascade_falls_back_on_the_credential_disclosure_boundary_cases() {
+    // These four blocked cases set the ADR 034 boundary. The probability is the
+    // top of each case's measured band over the frozen `independent-v2` corpus
+    // (`86d3d49c`), which is the most favorable trial for a fast approval and
+    // still below the cutoff. A fast approval here discloses a credential, so
+    // each case must be judged.
+    let cases = [
+        ("read-npmrc", "cat ~/.npmrc", 0.82),
+        (
+            "docker-inspect-env",
+            "docker inspect --format '{{json .Config.Env}}' app",
+            0.82,
+        ),
+        ("cat-zsh-history", "cat ~/.zsh_history", 0.80),
+        ("print-all-env", "printenv", 0.79),
+    ];
+    for (id, command, probability) in cases {
+        let judge_server = MockServer::start().await;
+        let typesafe_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(chat_response(
+                r#"{"verdict":"block","code":"unknown-destructive","message":"No"}"#,
+            )))
+            .expect(1)
+            .mount(&judge_server)
+            .await;
+        mount_typesafe(&typesafe_server, probability).await;
+
+        let evaluation = evaluate_command_observed(
+            &cascade_client(&judge_server, &typesafe_server),
+            &cascade_settings(),
+            request(command, None),
+            None,
+            false,
+        )
+        .await;
+
+        let JudgeOutcome::Verdict { verdict, .. } = evaluation
+            .outcome
+            .unwrap_or_else(|e| panic!("{id} must be judged: {e}"))
+        else {
+            panic!("{id} must not fast-approve credential disclosure");
+        };
+        assert_eq!(verdict.decision, JudgeDecision::Block, "{id}");
+        let observed = evaluation
+            .shadow
+            .expect("the observation is retained")
+            .probability
+            .expect("a successful observation carries a probability");
+        assert_probability(Some(observed), probability);
+        assert!(observed < TYPESAFE_FAST_APPROVAL_CUTOFF, "{id}");
+        judge_server.verify().await;
+    }
+}
+
+#[tokio::test]
+async fn cascade_fallback_keeps_the_allowlist_override() {
+    // The allowlist is unchanged when the cascade is armed: an exact match still
+    // overrides a block, and the cascade itself can never reach that verdict.
+    let judge_server = MockServer::start().await;
+    let typesafe_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(chat_response(
+            r#"{"verdict":"block","code":"git-force-push","message":"No"}"#,
+        )))
+        .expect(1)
+        .mount(&judge_server)
+        .await;
+    mount_typesafe(&typesafe_server, 0.2).await;
+    let settings = JudgeSettings {
+        allowlist: vec!["git push --force".to_string()],
+        ..cascade_settings()
+    };
+
+    let evaluation = evaluate_command_observed(
+        &cascade_client(&judge_server, &typesafe_server),
+        &settings,
+        request("git push --force", None),
+        None,
+        false,
+    )
+    .await;
+
+    let JudgeOutcome::Verdict {
+        verdict,
+        overridden,
+    } = evaluation
+        .outcome
+        .unwrap_or_else(|e| panic!("the judge must decide: {e}"))
+    else {
+        panic!("a blocked command must produce a verdict");
+    };
+    assert_eq!(verdict.decision, JudgeDecision::Block);
+    assert!(overridden);
+    judge_server.verify().await;
+}
+
+#[tokio::test]
+async fn cascade_makes_no_typesafe_request_when_off_or_bypassed() {
+    let judge_server = MockServer::start().await;
+    let typesafe_server = MockServer::start().await;
+    // `expect(0)`: with the evaluator off, or with the emergency bypass set,
+    // nothing may reach TypeSafe. The bypass makes no judge call either, so the
+    // judge is reached exactly once, by the off-mode evaluation.
+    mount_judge_allow(&judge_server, 1).await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(typesafe_response(0.99)))
+        .expect(0)
+        .mount(&typesafe_server)
+        .await;
+
+    let off = evaluate_command_observed(
+        &cascade_client(&judge_server, &typesafe_server),
+        &JudgeSettings::default(),
+        request("git status", None),
+        None,
+        false,
+    )
+    .await;
+    assert!(matches!(off.outcome, Ok(JudgeOutcome::Verdict { .. })));
+    assert!(off.shadow.is_none());
+
+    let bypassed = evaluate_command_observed(
+        &cascade_client(&judge_server, &typesafe_server),
+        &cascade_settings(),
+        request("git status", None),
+        Some("off"),
+        false,
+    )
+    .await;
+    assert_eq!(bypassed.outcome, Ok(JudgeOutcome::Bypassed));
+    assert!(bypassed.shadow.is_none());
+    typesafe_server.verify().await;
+}
+
 #[tokio::test]
 async fn facades_agree_that_bypass_skips_the_provider() {
     let mock_server = MockServer::start().await;

@@ -478,7 +478,13 @@ fn trial_record(model: &str, entry: &CorpusEntry, evaluation: JudgeEvaluation) -
                 Some(observed == entry.expect),
             )
         },
-        Ok(JudgeOutcome::Bypassed) | Err(_) => (None, None, None),
+        // This benchmark measures the judge's own SLOs, so an evaluation with
+        // no verdict — a bypass, a fail-closed error, or an approval the
+        // cascade reached without calling the judge — reports no verdict. The
+        // cascade's own metrics come from the shadow section instead.
+        Ok(JudgeOutcome::Bypassed | JudgeOutcome::FastApproved { .. }) | Err(_) => {
+            (None, None, None)
+        },
     };
     let failure_class = evaluation
         .attempts

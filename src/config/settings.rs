@@ -86,7 +86,8 @@ pub struct ProfileBashSettings {
     pub judge: Option<ProfileJudgeSettings>,
 }
 
-/// A profile can select shadow evaluation without overriding execution policy.
+/// A profile can select the `TypeSafe` evaluation mode, model, and deadline;
+/// the fast-approval cutoff is compiled, not overridable here.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProfileJudgeSettings {
     pub typesafe: Option<TypeSafeSettingsOverlay>,
@@ -133,12 +134,12 @@ pub struct BashJudgeSettings {
     /// `overridden` flag are recorded. No entries in shipped defaults.
     #[serde(default)]
     pub allowlist: Option<Vec<String>>,
-    /// Optional `TypeSafe` shadow evaluator.
+    /// Optional `TypeSafe` evaluator (shadow or cascade).
     #[serde(default)]
     pub typesafe: Option<TypeSafeSettingsOverlay>,
 }
 
-/// Partial `TypeSafe` shadow evaluator settings used by settings overlays.
+/// Partial `TypeSafe` evaluator settings used by settings overlays.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TypeSafeSettingsOverlay {
     #[serde(default)]
@@ -150,15 +151,23 @@ pub struct TypeSafeSettingsOverlay {
 }
 
 /// `TypeSafe` evaluation mode.
+///
+/// `Shadow` observes beside the judge and never changes a decision. `Cascade`
+/// makes the observation the first approval stage: a clean observation at or
+/// above the reviewed cutoff approves the command without a judge call, and
+/// every other outcome falls back to the judge (ADR 034). The cutoff itself is
+/// compiled, so no mode value can lower it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum TypeSafeMode {
     #[default]
     Off,
     Shadow,
+    Cascade,
 }
 
-/// Resolved `TypeSafe` shadow evaluator configuration.
+/// Resolved `TypeSafe` evaluator configuration: an observation under `shadow`,
+/// an approval stage under `cascade`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeSafeSettings {
     pub mode: TypeSafeMode,
@@ -205,7 +214,7 @@ pub struct JudgeSettings {
     /// An allowlisted command is still judged; the verdict and the `overridden`
     /// flag are recorded for telemetry. Empty by default.
     pub allowlist: Vec<String>,
-    /// Optional bounded `TypeSafe` shadow evaluation.
+    /// Optional bounded `TypeSafe` evaluation (shadow or cascade).
     pub typesafe: TypeSafeSettings,
 }
 

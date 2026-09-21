@@ -1584,7 +1584,13 @@ fn record_judge_attempts(
     }
 }
 
-/// Persist one shadow observation through the run's telemetry sink, if any.
+/// Persist one `TypeSafe` observation through the run's telemetry sink, if any.
+///
+/// The record is emitted under `mode = "shadow"` and `mode = "cascade"` alike:
+/// under the cascade the observation is the deciding evidence for a fast
+/// approval and the reason for a fallback, so the record carries both. A fast
+/// approval is identifiable from it, the `judge_verdict` event, and the absence
+/// of a `judge_attempt` for the same call (ADR 034).
 ///
 /// The optional observation adds no decision point to `bash_judge_preflight`:
 /// the change-risk ratchet scores any new branch there as a regression, so both
@@ -1615,13 +1621,23 @@ fn observed_evaluation_to_preflight(
     evaluation: crate::clients::judge::JudgeEvaluation,
     raw_call_id: Option<&str>,
 ) -> Result<JudgePreflight, super::ToolError> {
-    // Cumulative wall time across every attempt, including the backoff waits
-    // between them, so the verdict/fail-closed latency reflects the whole
-    // judge operation after a bounded recovery.
-    let latency_ms = evaluation.attempts.iter().fold(0_u64, |acc, attempt| {
-        acc.saturating_add(attempt.total_ms)
-            .saturating_add(attempt.retry_delay_ms)
-    });
+    // The decision latency. A cascade fast approval made no judge call, so the
+    // fast leg's elapsed time is the whole decision; it lands in the existing
+    // `judge_verdict` latency field rather than a new record field, which is
+    // what keeps the cascade measurable without changing the telemetry shape
+    // (ADR 034). Every other decision is the cumulative wall time across every
+    // attempt, including the backoff waits between them, so the
+    // verdict/fail-closed latency reflects the whole judge operation after a
+    // bounded recovery.
+    let latency_ms = match &evaluation.outcome {
+        Ok(JudgeOutcome::FastApproved { elapsed, .. }) => {
+            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+        },
+        _ => evaluation.attempts.iter().fold(0_u64, |acc, attempt| {
+            acc.saturating_add(attempt.total_ms)
+                .saturating_add(attempt.retry_delay_ms)
+        }),
+    };
     match evaluation.outcome {
         Ok(outcome) => judge_preflight_outcome(outcome, latency_ms, raw_call_id),
         Err(error) => {
@@ -1646,6 +1662,23 @@ fn judge_preflight_outcome(
 ) -> Result<JudgePreflight, super::ToolError> {
     match outcome {
         JudgeOutcome::Bypassed => Ok(bypassed_preflight(raw_call_id)),
+        // A fast approval emits the unannotated `allow` event an allow verdict
+        // emits, carrying the fast leg's elapsed time as the latency. It is
+        // preceded by no `judge_attempt` record, which is what identifies it in
+        // telemetry (ADR 034). A fast approval adds no warning: it approved the
+        // command as observational, so there is nothing to prepend.
+        JudgeOutcome::FastApproved { .. } => Ok(JudgePreflight {
+            warnings: Vec::new(),
+            compensation_events: vec![
+                CompensationEventTelemetry::judge_verdict(
+                    JudgeDecision::Allow.as_str(),
+                    None,
+                    latency_ms,
+                    false,
+                )
+                .with_call_id(raw_call_id),
+            ],
+        }),
         JudgeOutcome::Verdict {
             verdict,
             overridden,

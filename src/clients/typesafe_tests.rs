@@ -110,6 +110,22 @@ async fn typesafe_rejects_invalid_answers_without_echoing_provider_content() {
     }
 }
 
+#[test]
+fn typesafe_client_resolves_for_shadow_and_cascade_only() {
+    // The client itself is mode-agnostic: `shadow` observes, `cascade`
+    // approves, and both need the same bounded request. `off` resolves nothing.
+    assert!(TypeSafeClient::from_settings(&TypeSafeSettings::default()).is_none());
+    for mode in [TypeSafeMode::Shadow, TypeSafeMode::Cascade] {
+        let settings = TypeSafeSettings {
+            mode,
+            ..TypeSafeSettings::default()
+        };
+        let client = TypeSafeClient::from_settings(&settings)
+            .expect("a mode other than off resolves a client");
+        assert_eq!(client.timeout, Duration::from_millis(settings.timeout_ms));
+    }
+}
+
 #[tokio::test]
 async fn typesafe_missing_credentials_make_no_request() {
     let server = MockServer::start().await;
@@ -120,7 +136,6 @@ async fn typesafe_missing_credentials_make_no_request() {
         Some("missing_credentials")
     );
     assert!(server.received_requests().await.unwrap().is_empty());
-    assert!(TypeSafeClient::from_settings(&TypeSafeSettings::default()).is_none());
 }
 
 #[tokio::test]
