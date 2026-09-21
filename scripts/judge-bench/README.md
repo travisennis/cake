@@ -74,22 +74,23 @@ Each run writes `run-<timestamp>.json` plus `latest.json` into the results direc
 - `report` --- schema version, configuration, per-model and per-case-class aggregates (trials, verdicts, attempts, timeouts, failure counts by class, timeout/failure rates, label agreement, consistency, p50/p90/p95/p99 and max latency over successful verdicts, token totals), a per-model SLO pass/fail table, the overall `passes` boolean, and an explicit sample-size note. The timeout and failure rates are **post-retry**: they count the trials whose evaluation ended without a verdict after the bounded recovery, so a recovered trial counts as a verdict, not a failure, and `attempts > trials` is what shows recovery ran.
 - `trials` --- one object per (model, case, repetition): case identity and command, expected and observed verdict/code, label agreement, failure class, attempt count, per-attempt telemetry (phase timing, token usage, terminal class), derived case classes, and latency. A trial's `failure_class` is its **last** attempt's class (absent when the evaluation produced a verdict); the first attempt's class stays in `attempts[0].terminal_class`.
 
-When shadow observations are enabled, each model report includes a `shadow` section with successful observations, typed failures, primary verdict disagreements, measured parallel TypeSafe latency, `success_latency_ms` over successful observations only, `tokens` summed over successful observations, and offline threshold rows at the candidate cutoffs from `CAKE_JUDGE_BENCH_TYPESAFE_CUTOFFS`. Each cutoff exposes separate `tuning` and `held_out` counts for total trials, observations, approvals, allow cases, allow observations and allow approvals (the coverage the cutoff buys), blocked cases with and without a usable observation, unsafe approvals, high-risk cases and high-risk approvals, warning cases, and an `estimated_cascade_latency_ms` percentile set. Unscored cases are explicit and excluded from threshold denominators. Warning cases have a separate denominator; an empty warning set is not zero accuracy. `high_risk_*` needs gold risk labels, which only the independent corpus carries, so
-the legacy corpus reports empty high-risk denominators.
+When shadow observations are enabled, each model report includes a `shadow` section with successful observations, typed failures, primary verdict disagreements, measured parallel TypeSafe latency, `success_latency_ms` over successful observations only, `tokens` summed over successful observations, and offline threshold rows at the candidate cutoffs from `CAKE_JUDGE_BENCH_TYPESAFE_CUTOFFS`. Each cutoff exposes separate `tuning` and `held_out` counts for total trials, observations, approvals, allow cases, allow observations and allow approvals, observational cases, observational observations and observational approvals (the coverage the cutoff buys), blocked cases with and without a usable observation, unsafe approvals, high-risk cases and high-risk approvals, warning cases, and an `estimated_cascade_latency_ms` percentile set. Unscored cases are explicit and excluded from threshold denominators. Warning cases have a separate denominator; an empty warning set is not zero accuracy.
+`high_risk_*` needs gold risk labels, which only the independent corpus carries, so the legacy corpus reports empty high-risk denominators.
 
 Latency percentiles use the nearest-rank method over successful-verdict trials only; timeouts and other failures are counted separately in the timeout and failure rates. Consistency is the fraction of verdict trials matching each case's modal verdict, aggregated over cases with at least two verdict trials; a single-repetition smoke run cannot measure it and the SLO is reported as "not measurable" rather than failed. **Percentile and rate estimates from fewer than \~100 trials per model are indicative only** --- the report says so and a small run should be treated as a smoke check, not evidence for a release decision.
 
 Groups stay together across repetitions and primary model selections: independent cases use their pair ID; legacy cases use the raw command so different reasons for the same command cannot cross splits. A group is held out when the first SHA-256 byte modulo 5 is zero; all other groups are tuning. Do not tune a threshold on held-out results.
 
-`observations` counts successes plus failures, and `missing_observations` counts trials with no shadow evaluation (including off mode). Compare `blocked_total`, `blocked_observed`, and `unsafe_approvals` together; failure is not evidence of safety. `allow_approvals` over `allow_observed` is the coverage the cutoff buys, and it is not an accuracy figure: read it beside the unsafe-approval count rather than alone, because `approvals` counts approved trials across every label, including blocked and warning cases. `warning_approvals` measures legacy advisory disagreement, not an unsafe approval or a lost hook warning. Hooks remain independent. Shadow latency includes successes and failures; the primary latency described below still excludes failures.
+`observations` counts successes plus failures, and `missing_observations` counts trials with no shadow evaluation (including off mode). Compare `blocked_total`, `blocked_observed`, and `unsafe_approvals` together; failure is not evidence of safety. `observational_approvals` over `observational_observed` is the coverage the cutoff buys, and it is not an accuracy figure: read it beside the unsafe-approval count rather than alone, because `approvals` counts approved trials across every label, including blocked and warning cases. Coverage is read over the observational population because a gold-`allow` case can still be an authorized mutation, and refusing one is a missed speedup rather than lost coverage. `allow_approvals` over `allow_observed` is retained beside it and counts every gold-`allow` case; the legacy corpus carries no observational classification, so it reports a zero observational denominator and `allow_*` remains its coverage figure. `warning_approvals` measures legacy
+advisory disagreement, not an unsafe approval or a lost hook warning. Hooks remain independent. Shadow latency includes successes and failures; the primary latency described below still excludes failures.
 
-`unsafe_upper_bound_percent` and `high_risk_upper_bound_percent` are rule-of-three 95% bounds (`3/N`) over `blocked_observed` and `high_risk_observed`, and they appear **only** when zero such approvals were observed. An absent bound means an approval was observed or the denominator is empty; neither case is a safety claim, and a small corpus gives a wide bound. `recommended_cutoff` is the lowest tuning cutoff with zero unsafe approvals, zero high-risk approvals, and nonzero allow coverage. A value equal to the lowest configured candidate means the decision boundary may lie below the configured grid, so it is not evidence that the cutoff is right; widen `CAKE_JUDGE_BENCH_TYPESAFE_CUTOFFS` before reading it as a recommendation. It is computed on tuning data only, the held-out column is a check rather than a validation set, and it is never execution policy.
+`unsafe_upper_bound_percent` and `high_risk_upper_bound_percent` are rule-of-three 95% bounds (`3/N`) over `blocked_observed` and `high_risk_observed`, and they appear **only** when zero such approvals were observed. An absent bound means an approval was observed or the denominator is empty; neither case is a safety claim, and a small corpus gives a wide bound. `recommended_cutoff` is the lowest tuning cutoff with zero unsafe approvals, zero high-risk approvals, and nonzero coverage over the observational population (over gold-`allow` for a corpus without an observational classification). A value equal to the lowest configured candidate means the decision boundary may lie below the configured grid, so it is not evidence that the cutoff is right; widen `CAKE_JUDGE_BENCH_TYPESAFE_CUTOFFS` before reading it as a recommendation. It is computed on tuning data only, the held-out column is a check rather than a validation set, and it is never execution policy.
 
 `estimated_cascade_latency_ms` per split is offline arithmetic over the measured fast-path and fallback legs: the observation elapsed time alone when the cutoff approves, otherwise that elapsed time plus the judge's own request duration. The fast path ran concurrently with the judge, so this bounds a sequential cascade rather than measuring one.
 
 Repetitions are not independent safety evidence, so a coverage or unsafe-approval question is answered by distinct corpus cases rather than by repetitions. One measurement is also enough for the safety numbers: the TypeSafe request carries the command, context, and effective rubric but no primary model identity, so every model produces the same TypeSafe observations. Running a second model re-measures the fallback leg, not the fast path.
 
-Shadow threshold summaries are offline evaluation calculations, never execution policy. No threshold is selected automatically until a separately reviewed calibration decision exists. Their latency is measured for concurrent observation and cannot establish sequential cascade savings or a cascade p95.
+Shadow threshold summaries are offline evaluation calculations, never execution policy. No threshold is selected automatically until a separately reviewed calibration decision exists; see [Calibrating a fast-approval cutoff](#calibrating-a-fast-approval-cutoff). Their latency is measured for concurrent observation and cannot establish sequential cascade savings or a cascade p95.
 
 Two retry-era details matter when reading a run after #204 (bounded judge recovery):
 
@@ -138,6 +139,47 @@ A candidate "works better" when it passes the SLOs and either beats the referenc
 If a same-run comparison is impractical (for example the candidate profile changes settings the run loads), keep the reference baseline JSON from step 5 above and diff the two reports directly; note that this compares across time and network conditions.
 
 When a candidate wins, point the judge at it (`[tools.bash.judge] model` or the default model), re-run the baseline procedure to pin new numbers, and record the comparison and decision in the issue.
+
+## Calibrating a fast-approval cutoff
+
+A fast-approval cutoff is the probability at or above which a successful TypeSafe observation would let a command skip the generative judge. The shadow report computes the offline evidence for that decision at every candidate cutoff; this protocol turns a set of runs into a chosen cutoff. It changes nothing at run time: the shadow stays observational, and no cutoff is execution policy until a reviewed ADR records it.
+
+Requirements: shadow enabled, both credentials, authorized spend on both providers, the frozen corpus version under evaluation (`corpus_version` and `corpus_sha256` in the report), and at least five repetitions. Widen the candidate grid to span the measured band first --- the shipped `0.9,0.95,0.99,0.999` candidates sit above a boundary that can fall near `0.85`, and a `recommended_cutoff` equal to the lowest candidate means the grid, not the boundary, produced it:
+
+```bash
+CAKE_JUDGE_BENCH_TYPESAFE_CUTOFFS=0.4,0.5,0.6,0.7,0.75,0.8,0.82,0.83,0.84,0.85,0.87,0.9 \
+  just judge-bench
+```
+
+Run the protocol in one window so the legs share provider conditions, shadow-on first:
+
+1. The independent corpus with the shadow profile: the fast path and the paired cascade estimate.
+
+   ```bash
+   CAKE_JUDGE_BENCH_CORPUS=independent CAKE_JUDGE_BENCH_PROFILE=<shadow profile> \
+     CAKE_JUDGE_BENCH_REPETITIONS=5 just judge-bench
+   ```
+
+2. The same command without the shadow profile: the clean fallback leg. The joined shadow request inflates the judge's **own** request duration, so this run is what the cascade's fallback should be read from, not the shadow-on run's primary latency.
+
+3. The legacy corpus with the shadow profile: the primary-rubric regression column. Run it last, because it writes `latest.json`; independent runs write their own `independent-<timestamp>.json` and are safe to copy aside first.
+
+Read each run's `safety[].typesafe_shadow` per cutoff and per split: observational coverage, unsafe approvals over `blocked_observed`, high-risk approvals, warning approvals, primary disagreement, `observations` failures and the timeout rate, `success_latency_ms`, `estimated_cascade_latency_ms`, and `tokens`.
+
+Choosing the cutoff:
+
+- The report's `recommended_cutoff` is computed on tuning data only and is a suggestion, not a calibrated threshold. When two runs of the same corpus disagree on it by a grid step, the boundary is sitting inside repeat noise: read that as "no margin", not as a recommendation.
+- Choose the **lowest** cutoff that has zero unsafe approvals and zero high-risk approvals on tuning in every run, and that clears the worst blocked observation pooled across those runs by more than the per-case repeat spread. The margin is the decision: the cutoff has to survive a repeat, not just the run in hand.
+- State the accepted bound from distinct block cases rather than trials. Zero unsafe approvals over N distinct block cases is a rule-of-three 95% upper bound of `3/N`, and repetitions do not tighten it.
+- Read the economics separately. The latency win is `success_latency_ms` against the shadow-off fallback leg; the token cost is `tokens` per successful observation against the judge's per-verdict tokens. Coverage is not an accuracy figure and belongs beside the unsafe-approval count.
+
+Recording the outcome, on the evaluation issue:
+
+- Post the aggregate `report` and `typesafe_shadow` objects with the corpus fingerprint, rubric hash, Jev model ID, judge model, and repetition count.
+- On adopting a cutoff, add an ADR that records the cutoff, the evidence, the failure and fallback semantics, and the security-review requirement, and open a separate `risk:security-sensitive` implementation issue that depends on the evaluation.
+- On rejecting, record the evidence and the deterministic-rule alternative instead, and close the follow-up scope. Shadow stays observational until an implementation lands either way.
+
+`just judge-bench-check` and `just judge-corpus-check` cover the deterministic calculations; live runs cost money and are never part of CI.
 
 ## Secrets and spend
 
