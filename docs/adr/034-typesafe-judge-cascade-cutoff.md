@@ -11,7 +11,7 @@ informed: issue 604
 
 Cake's Bash tool sends every non-empty command to a generative command-safety judge before the operating-system sandbox runs it (ADR 018). That judge is authoritative and fail-closed, and it costs provider latency on every command, including trivially observational ones such as `git status --short`. Issue #602 added an opt-in TypeSafe shadow evaluator, and ADR 033 kept it observational. Issue #604 asked whether Jev's probability is accurate, available, and fast enough to become a fast-approval stage: ask Jev first, approve immediately when its probability clears a cutoff, and fall back to the generative judge otherwise.
 
-The evaluation is recorded on #604. Two independent shadow-on runs over the frozen gold corpus `independent-v2` (`86d3d49c`) at five repetitions each placed the worst single blocked trial at `0.82`, and the lowest cutoff with zero unsafe approvals moved a full grid step between them (`0.83` then `0.82`). At `0.82` the cutoff sits exactly on the worst blocked trial and has no headroom against Jev's repeat spread. `0.85` is the lowest candidate that clears the observed block band.
+The evaluation is recorded on #604. Two independent shadow-on runs over the frozen gold corpus `independent-v2` (`86d3d49c`) at five repetitions each placed the worst single blocked trial at `0.82`, and the lowest cutoff with zero unsafe approvals moved a full grid step between them: `0.83` in `1789919771` and `0.82` in `1789980818`. At `0.82` the cutoff sits exactly on the worst blocked trial and has no headroom against Jev's repeat spread. `0.85` is the lowest candidate that clears the observed block band.
 
 ## Decision Drivers
 
@@ -30,9 +30,9 @@ Option 2. Jev becomes the first stage of the Bash safety judge with a fast-appro
 
 Evidence on #604, at `0.85`:
 
-- Zero unsafe approvals and zero high-risk approvals in both independent shadow-on runs: 0/250 and 0/340 tuning, 0/72 and 0/100 held-out blocked observations, zero across all 762 pooled blocked observations from 88 distinct block cases.
-- Observational coverage 167/201 (83.1%) tuning and 62/70 (88.6%) held-out in the clean run; 214/250 (85.6%) and 73/85 (85.9%) in the other. Legacy rubric-regression column: 0/334 and 0/105 unsafe, 0/30 warning approvals, 50/230 (21.7%) tuning and 27/105 (25.7%) held-out gold-`allow` coverage.
-- Fast path: Jev success latency p50 316 ms / p95 576 ms, against 2798 ms / 5998 ms for the judge alone in the same window. Paired cascade estimate p50 2338 ms / p95 5603 ms tuning, with a fast-path-only leg of p50 305 ms.
+- Zero unsafe approvals and zero high-risk approvals in both independent shadow-on runs, counted over blocked observations: 0/250 tuning and 0/72 held-out in `1789980818`, which lost 118 of its 440 blocked observations to shadow timeouts and transport failures, and 0/340 tuning and 0/100 held-out in `1789919771`. Zero across all 762 pooled blocked observations from 88 distinct block cases.
+- Observational coverage 167/201 (83.1%) tuning and 62/70 (88.6%) held-out in `1789980818`, whose primary judge leg is intact but whose shadow leg failed 23.9% of its observations; 214/250 (85.6%) and 73/85 (85.9%) in `1789919771`, whose shadow answers are complete but whose primary leg was corrupted. Legacy rubric-regression column: 0/334 and 0/105 unsafe, 0/30 warning approvals, 50/230 (21.7%) tuning and 27/105 (25.7%) held-out gold-`allow` coverage.
+- Fast path: Jev success latency p50 316 ms / p95 576 ms, against 2798 ms / 5998 ms for the judge alone in the same window. Paired cascade estimate p50 2338 ms / p95 5603 ms tuning, with a fast-path-only leg of p50 305 ms. That estimate substitutes the same-window shadow-off leg per case and repetition; the report's own `estimated_cascade_latency_ms` at `0.85` reads p50 3489 ms / p95 12543 ms, because the joined observation inflated the judge's own request duration.
 - Accepted bound: zero unsafe approvals over 88 distinct block cases is a rule-of-three 95% upper bound of about 3.4%. Repetitions do not tighten it. The corpus over-samples dangerous commands and does not describe production traffic.
 
 ### Failure and fallback semantics
