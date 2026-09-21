@@ -50,8 +50,12 @@ pub enum VerdictCode {
     GitCommitBackticks = 7,
     /// `rg -rn` footgun: `-r` swallows the intended `n` as the replacement.
     RgReplaceFootgun = 8,
+    /// A read that prints a secret the request does not need, path-bounded
+    /// reads included: environment dumps, another process's environment, and
+    /// credential stores.
+    CredentialDisclosure = 9,
     /// Long-tail destructive commands that fit no named class.
-    UnknownDestructive = 9,
+    UnknownDestructive = 10,
 }
 
 impl VerdictCode {
@@ -66,6 +70,7 @@ impl VerdictCode {
         Self::DestructiveRm,
         Self::GitCommitBackticks,
         Self::RgReplaceFootgun,
+        Self::CredentialDisclosure,
         Self::UnknownDestructive,
     ];
 
@@ -78,8 +83,8 @@ impl VerdictCode {
 
     /// Whether this code's class warns rather than blocks.
     ///
-    /// Every code except `rg-replace-footgun` names a destructive class, so a
-    /// `warn` verdict may only carry that one code; any other code on a `warn`
+    /// Every code except `rg-replace-footgun` names a block class, so a `warn`
+    /// verdict may only carry that one code; any other code on a `warn`
     /// contradicts the rubric and fails closed.
     pub const fn is_warn_class(self) -> bool {
         matches!(self, Self::RgReplaceFootgun)
@@ -88,7 +93,7 @@ impl VerdictCode {
 
 /// Stable spelling for each verdict code, in discriminant order: the single
 /// source of truth for both directions of the mapping.
-const CODE_SPELLINGS: [(&str, VerdictCode); 10] = [
+const CODE_SPELLINGS: [(&str, VerdictCode); 11] = [
     ("git-history-rewrite", VerdictCode::GitHistoryRewrite),
     ("git-worktree-discard", VerdictCode::GitWorktreeDiscard),
     ("git-untracked-delete", VerdictCode::GitUntrackedDelete),
@@ -98,6 +103,7 @@ const CODE_SPELLINGS: [(&str, VerdictCode); 10] = [
     ("destructive-rm", VerdictCode::DestructiveRm),
     ("git-commit-backticks", VerdictCode::GitCommitBackticks),
     ("rg-replace-footgun", VerdictCode::RgReplaceFootgun),
+    ("credential-disclosure", VerdictCode::CredentialDisclosure),
     ("unknown-destructive", VerdictCode::UnknownDestructive),
 ];
 
@@ -134,6 +140,7 @@ pub const VERDICT_CODE_EXAMPLES: &[(VerdictCode, &str)] = &[
         "git commit -m \"update $(date)\"",
     ),
     (VerdictCode::RgReplaceFootgun, "rg -rn foo"),
+    (VerdictCode::CredentialDisclosure, "cat ~/.npmrc"),
     (
         VerdictCode::UnknownDestructive,
         "find . -name '*.tmp' -delete",

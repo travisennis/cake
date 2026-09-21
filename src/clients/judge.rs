@@ -775,8 +775,8 @@ fn parse_verdict(content: &str) -> Result<JudgeVerdict, JudgeError> {
 ///
 /// - A `block` needs a known code.
 /// - A `warn` needs a known warn-class code (only `rg-replace-footgun`); a
-///   `warn` carrying a destructive-class code would let a destructive command
-///   run with a warning, so it fails closed.
+///   `warn` carrying a block-class code would let a destructive or disclosing
+///   command run with a warning, so it fails closed.
 /// - An `allow` must omit the code (an empty string counts as omitted).
 ///
 /// Normalizes an empty `allow` code to `None`.
@@ -813,7 +813,7 @@ fn validate_block_code(code: Option<&str>) -> Result<(), JudgeError> {
     // contradicts the rubric and would record an inconsistent severity.
     if parsed.is_warn_class() {
         return Err(JudgeError::Malformed(format!(
-            "block verdicts must carry a destructive-class verdict code; '{code}' is a warn class"
+            "block verdicts must carry a block-class verdict code; '{code}' is a warn class"
         )));
     }
     Ok(())
@@ -825,7 +825,7 @@ fn validate_warn_code(code: Option<&str>) -> Result<(), JudgeError> {
             "warn verdicts must include a verdict code".to_string(),
         ));
     };
-    // A warn carrying a destructive-class code would let the command run with
+    // A warn carrying a block-class code would let the command run with
     // only a warning; every code except rg-replace-footgun is a block class,
     // so any other code fails closed.
     if !matches!(VerdictCode::from_str(code), Ok(parsed) if parsed.is_warn_class()) {

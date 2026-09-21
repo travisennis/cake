@@ -29,6 +29,7 @@ fn code_spellings_are_stable_and_namespaced() {
         "destructive-rm",
         "git-commit-backticks",
         "rg-replace-footgun",
+        "credential-disclosure",
         "unknown-destructive",
     ];
     assert_eq!(VerdictCode::ALL.len(), expected.len());
@@ -82,6 +83,45 @@ fn default_rubric_is_stateless_and_requires_self_contained_remediation() {
             "rubric must state the stateless-evaluation rule ({phrase:?})"
         );
     }
+}
+
+#[test]
+fn default_rubric_states_the_credential_disclosure_allowed_neighbors() {
+    // The credential-disclosure class widens what the judge blocks, so its
+    // allowed neighbors are pinned here: a granted, non-credential read, a
+    // named variable or status, a process listing, a variable-setting wrapper,
+    // and listing, counting, keys-only, or existence forms stay `allow` (issue
+    // #617). A false block on these is the failure this guards against. The
+    // rubric is reflowed to a fixed width, so compare whitespace-normalized
+    // text.
+    let normalized = DEFAULT_RUBRIC
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    for allowed in [
+        "cat ~/.gitconfig",
+        "cat ~/.ssh/config",
+        "cat ~/.ssh/id_ed25519.pub",
+        "printenv PATH",
+        "gh auth status",
+        "ps aux",
+        "env PYTHONPATH=. python app.py",
+        "ls -l ~/.ssh",
+        "wc -l ~/.zsh_history",
+        "cut -d= -f1 .env",
+        "kubectl get secret -o name",
+        "test -f ~/.ssh/id_ed25519",
+        "git config --list",
+    ] {
+        assert!(
+            normalized.contains(allowed),
+            "rubric must name {allowed:?} as an allowed neighbor"
+        );
+    }
+    assert!(
+        normalized.contains("Allowed neighbors"),
+        "the credential-disclosure class must state what stays allowed"
+    );
 }
 
 #[test]
