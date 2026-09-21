@@ -430,7 +430,9 @@ const BASH_CHECK_BYPASS_GOLDEN: &str = r#"{
     "message": "the command-safety judge is disabled (CAKE_JUDGE=off or [tools.bash.judge] enabled = false); no judge call was made.",
     "overridden": false,
     "bypassed": true,
-    "latency_ms": 0
+    "latency_ms": 0,
+    "stage": null,
+    "probability": null
   }
 }
 "#;

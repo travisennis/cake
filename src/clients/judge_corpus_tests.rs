@@ -559,6 +559,11 @@ async fn observe(
             decision: verdict.decision.into(),
             code: verdict.code,
         }),
+        // This runner measures the judge, so an approval the cascade reached
+        // without calling it is a missing measurement, not a verdict.
+        JudgeOutcome::FastApproved { .. } => {
+            Err("judge was skipped by the TypeSafe cascade".to_string())
+        },
         JudgeOutcome::Bypassed => Err("judge was bypassed".to_string()),
     }
 }

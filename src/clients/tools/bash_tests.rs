@@ -2938,6 +2938,253 @@ async fn shadow_observation_reaches_the_telemetry_sink() {
     );
 }
 
+/// A cascade judge context: the observation may approve, the judge is the
+/// fallback.
+///
+/// The run's judge client is built lazily from settings, which would send the
+/// observation to the real endpoint. Pre-populating the cached client is the
+/// same wiring with the observation endpoint pointed at a mock server.
+fn cascade_judge_context(
+    judge: &MockServer,
+    typesafe: &MockServer,
+    timeout: std::time::Duration,
+) -> JudgeContext {
+    let mut context = (*judge_context(judge)).clone();
+    context.settings.typesafe = crate::config::settings::TypeSafeSettings {
+        mode: crate::config::settings::TypeSafeMode::Cascade,
+        model: "jev-1.13.0".to_string(),
+        timeout_ms: u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
+    };
+    let client = crate::clients::judge::JudgeClient::new(
+        context.agent_model.clone(),
+        std::time::Duration::from_secs(5),
+        std::time::Duration::ZERO,
+    )
+    .with_typesafe(Some(
+        crate::clients::typesafe::TypeSafeClient::new(
+            "test-typesafe-key".to_string(),
+            "jev-1.13.0".to_string(),
+            timeout,
+        )
+        .with_endpoint(typesafe.uri()),
+    ));
+    context
+        .client
+        .set(Ok(std::sync::Arc::new(client)))
+        .expect("the cached client is set once");
+    context
+}
+
+/// Mount one `TypeSafe` answer with `probability`, expecting one request.
+///
+/// The answer is delayed so the observation's elapsed time is a real
+/// measurement: an instant answer would record zero and make the latency
+/// assertions in the cascade tests vacuous.
+async fn mount_typesafe_answer(server: &MockServer, probability: f64) {
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({
+                    "model": "jev-1.13.0",
+                    "answers": {"eligible": {"type": "noul", "noul": probability}},
+                    "usage": {"input_tokens": 5, "output_tokens": 1}
+                }))
+                .set_delay(std::time::Duration::from_millis(30)),
+        )
+        .expect(1)
+        .mount(server)
+        .await;
+}
+
+/// A telemetry sink writing to a fresh sidecar, with the temporary directory
+/// that owns it and the path it writes to.
+fn telemetry_sink() -> (
+    tempfile::TempDir,
+    crate::session_telemetry::JudgeAttemptSink,
+    std::path::PathBuf,
+) {
+    let dir = tempfile::TempDir::new().expect("a temp dir");
+    let path = dir.path().join("telemetry.ndjson");
+    let writer = std::sync::Arc::new(crate::session_telemetry::SharedSessionTelemetryWriter::new(
+        crate::session_telemetry::SessionTelemetryWriter::open(&path).expect("a sidecar"),
+    ));
+    let sink = crate::session_telemetry::JudgeAttemptSink::new(
+        std::sync::Arc::clone(&writer),
+        crate::session_telemetry::SessionTelemetryContext {
+            session_id: "session".to_string(),
+            invocation_id: "invocation".to_string(),
+        },
+    );
+    (dir, sink, path)
+}
+
+/// The one-way digest the sidecar stores for a provider-controlled identifier.
+fn call_digest(call_id: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(call_id.as_bytes());
+    hex::encode(hasher.finalize())
+}
+
+/// The telemetry records one Bash call wrote, in order.
+fn recorded_telemetry(path: &std::path::Path) -> Vec<serde_json::Value> {
+    std::fs::read_to_string(path)
+        .expect("the sidecar is readable")
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("each record is one JSON object"))
+        .collect()
+}
+
+#[tokio::test]
+async fn cascade_fast_approval_executes_and_records_the_fast_path() {
+    // A clean observation at or above the cutoff approves the command without a
+    // judge call, and the command still runs under the sandbox as usual.
+    let judge_server = MockServer::start().await;
+    let typesafe_server = MockServer::start().await;
+    // `expect(0)`: a fast approval must not reach the judge at all.
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(judge_chat_response(
+                r#"{"verdict":"allow","message":"Safe"}"#,
+            )),
+        )
+        .expect(0)
+        .mount(&judge_server)
+        .await;
+    mount_typesafe_answer(&typesafe_server, 0.97).await;
+
+    let (_dir, sink, path) = telemetry_sink();
+    let mut judge = cascade_judge_context(
+        &judge_server,
+        &typesafe_server,
+        std::time::Duration::from_millis(200),
+    );
+    judge.record_attempt = Some(sink);
+    let mut tool_context = crate::clients::tools::ToolContext::from_current_process();
+    tool_context.judge = Some(std::sync::Arc::new(judge));
+
+    let args = r#"{"command": "echo cascade-fast-path"}"#;
+    let result = Box::pin(execute_bash_for_call(
+        &tool_context,
+        args,
+        Some("call-cascade".to_string()),
+    ))
+    .await
+    .expect("a fast-approved command runs");
+
+    assert!(
+        result.output.contains("cascade-fast-path"),
+        "a fast approval runs the command, got: {}",
+        result.output
+    );
+    assert!(
+        !result.output.contains("NOTICE:"),
+        "a fast approval adds no annotation, got: {}",
+        result.output
+    );
+    assert_eq!(
+        result.compensation_events.len(),
+        1,
+        "a fast approval records one judge verdict event"
+    );
+    let event = &result.compensation_events[0];
+    assert_eq!(event.kind, CompensationKind::JudgeVerdict);
+    assert_eq!(event.detail.as_deref(), Some("allow"));
+    assert_eq!(event.overridden, None);
+    assert_eq!(
+        event.call_id.as_deref(),
+        Some(call_digest("call-cascade").as_str())
+    );
+
+    let records = recorded_telemetry(&path);
+    assert_eq!(
+        records.len(),
+        1,
+        "a fast approval records the observation and no judge attempt: {records:?}"
+    );
+    let observation = &records[0];
+    assert_eq!(observation["type"], "type_safe_shadow");
+    assert_eq!(observation["probability"], 0.97);
+    assert_eq!(observation["failure_class"], serde_json::Value::Null);
+    assert_eq!(observation["call_id"], call_digest("call-cascade"));
+    // The fast leg's elapsed time lands in the existing judge-verdict latency
+    // field, which is what makes the cascade measurable without a new record.
+    // The answer is delayed, so a zero here would mean the latency wiring read
+    // nothing at all rather than that the response was fast.
+    let elapsed_ms = observation["elapsed_ms"]
+        .as_u64()
+        .expect("the observation records its elapsed time");
+    assert!(
+        elapsed_ms > 0,
+        "the fast leg's elapsed time must be a real measurement: {records:?}"
+    );
+    assert_eq!(
+        event.latency_ms,
+        Some(elapsed_ms),
+        "the verdict latency must be the fast leg's elapsed time"
+    );
+
+    judge_server.verify().await;
+    typesafe_server.verify().await;
+}
+
+#[tokio::test]
+async fn cascade_fallback_runs_the_judge_and_a_warning_still_executes() {
+    // An observation below the cutoff falls back to the judge. A `warn` verdict
+    // still prints its NOTICE and still runs the command: the cascade changes
+    // neither (ADR 034).
+    let judge_server = MockServer::start().await;
+    let typesafe_server = MockServer::start().await;
+    mount_judge_verdict(
+        &judge_server,
+        r#"{"verdict":"warn","code":"rg-replace-footgun","message":"Prefer rg -n foo."}"#,
+    )
+    .await;
+    mount_typesafe_answer(&typesafe_server, 0.2).await;
+
+    let (_dir, sink, path) = telemetry_sink();
+    let mut judge = cascade_judge_context(
+        &judge_server,
+        &typesafe_server,
+        std::time::Duration::from_millis(200),
+    );
+    judge.record_attempt = Some(sink);
+    let mut tool_context = crate::clients::tools::ToolContext::from_current_process();
+    tool_context.judge = Some(std::sync::Arc::new(judge));
+
+    let args = r#"{"command": "echo cascade-fallback"}"#;
+    let result = Box::pin(execute_bash_for_call(&tool_context, args, None))
+        .await
+        .expect("a warned command runs");
+
+    assert!(
+        result.output.contains("NOTICE: Prefer rg -n foo."),
+        "a warn verdict still prints, got: {}",
+        result.output
+    );
+    assert!(
+        result.output.contains("cascade-fallback"),
+        "a warn verdict still executes, got: {}",
+        result.output
+    );
+    assert_eq!(
+        result.compensation_events[0].detail.as_deref(),
+        Some("warn:rg-replace-footgun")
+    );
+
+    let records = recorded_telemetry(&path);
+    let kinds = records
+        .iter()
+        .map(|record| record["type"].as_str().unwrap_or_default())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        kinds,
+        ["judge_attempt", "type_safe_shadow"],
+        "the fallback records the judge attempt, then the observation: {records:?}"
+    );
+    assert_eq!(records[1]["probability"], 0.2);
+    judge_server.verify().await;
+}
+
 #[tokio::test]
 async fn test_judge_allow_runs_ungated() {
     // An `allow` verdict runs the command with no annotation.

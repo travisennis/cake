@@ -255,7 +255,14 @@ pub struct JudgeAttemptTelemetry {
     pub termination: Option<ProviderTermination>,
 }
 
-/// Metadata-only observation from the optional `TypeSafe` shadow evaluator.
+/// Metadata-only observation from the opt-in `TypeSafe` evaluator.
+///
+/// Emitted under `mode = "shadow"` and `mode = "cascade"`. Under `shadow` it
+/// changes no decision; under `cascade` it is the fast-approval stage, so a
+/// record with no `failure_class` and a `probability` at or above the compiled
+/// cutoff, with no `judge_attempt` for the same `call_id` and a `judge_verdict`
+/// event carrying the fast leg's `latency_ms`, is a command the judge never saw
+/// (ADR 034).
 #[derive(Debug, Clone, Serialize)]
 pub struct TypeSafeShadowTelemetry {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -334,8 +341,10 @@ pub enum CompensationKind {
     /// `detail` names the tool whose arguments were repaired.
     JsonRepair,
     /// LLM judge verdict on a Bash command. `detail` is `block:<code>`,
-    /// `warn:<code>`, or `allow`; `latency_ms` is the judge call duration;
-    /// `overridden` is set when an allowlist entry overrode the verdict.
+    /// `warn:<code>`, or `allow`; `latency_ms` is the judge call duration, or
+    /// the fast leg's elapsed time when the `TypeSafe` cascade approved the
+    /// command without a judge call (ADR 034); `overridden` is set when an
+    /// allowlist entry overrode the verdict.
     JudgeVerdict,
     /// The judge failed (timeout, transport, malformed, refusal) and the
     /// command was blocked. `detail` names the failure class.
@@ -758,7 +767,8 @@ impl JudgeAttemptSink {
     }
 
     /// Append one bounded `TypeSafe` observation without retaining command text,
-    /// prompts, provider bodies, or credentials.
+    /// prompts, provider bodies, or credentials. Under the cascade the record is
+    /// the fast leg's evidence, whether it approved the command or fell back.
     pub fn record_typesafe(&self, mut observation: TypeSafeShadowTelemetry, call_id: Option<&str>) {
         observation.call_id = call_id.filter(|id| !id.is_empty()).map(digest_identifier);
         let record = SessionTelemetryRecord::TypeSafeShadow {

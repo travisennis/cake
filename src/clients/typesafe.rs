@@ -1,4 +1,12 @@
-//! Bounded, opt-in `TypeSafe` shadow evaluation for Bash judge observations.
+//! Bounded, opt-in `TypeSafe` evaluation for Bash judge observations.
+//!
+//! The client performs one bounded request and reports what it observed. Under
+//! `mode = "shadow"` the observation is metadata only; under `mode =
+//! "cascade"` the judge pipeline reads the same observation to decide whether
+//! the command still needs a generative-judge call (ADR 034). Nothing in this
+//! module decides approval: it reports a probability or a failure class, and
+//! only [`crate::clients::judge`] turns a clean success at or above the
+//! compiled cutoff into an approval.
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -82,6 +90,9 @@ struct UsageBody {
 }
 
 /// An observation only: no value here grants authority to execute a command.
+///
+/// [`crate::clients::judge`] reads [`Self::probability`] together with
+/// [`Self::failure_class`]; the type itself carries no approval.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeSafeObservation {
     pub elapsed: Duration,
@@ -125,7 +136,7 @@ impl std::fmt::Debug for TypeSafeClient {
 
 impl TypeSafeClient {
     pub fn from_settings(settings: &TypeSafeSettings) -> Option<Self> {
-        if settings.mode != TypeSafeMode::Shadow {
+        if settings.mode == TypeSafeMode::Off {
             return None;
         }
         Some(Self::new(
@@ -204,6 +215,16 @@ impl TypeSafeClient {
         Ok(response)
     }
 
+    /// The measured request text, unchanged since the ADR 034 evaluation.
+    ///
+    /// The trailing "shadow observation" sentence is inaccurate under `mode =
+    /// "cascade"`, where this answer does authorize the command. It stays
+    /// because the cutoff's evidence was measured against exactly this text:
+    /// rewording it changes Jev's input and needs a new measurement rather than
+    /// an edit (issue #613).
+    ///
+    /// `typesafe_preserves_context_rubric_and_typed_wire_contract` pins the
+    /// sentence so it cannot drift silently.
     fn request_body<'a>(&'a self, request: &'a JudgeRequest) -> RequestBody<'a> {
         RequestBody {
             model: &self.model,

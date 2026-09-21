@@ -179,6 +179,14 @@ struct CheckOutcome {
 const JUDGE_BYPASS_MESSAGE: &str = "the command-safety judge is disabled \
      (CAKE_JUDGE=off or [tools.bash.judge] enabled = false); no judge call was made.";
 
+/// The message a fast approval reports in both output modes.
+///
+/// The numbers behind it travel in the additive `stage` and `probability`
+/// fields rather than in this prose, so the message never restates a cutoff
+/// that could drift from [`crate::clients::judge::TYPESAFE_FAST_APPROVAL_CUTOFF`].
+const FAST_APPROVAL_MESSAGE: &str = "the command-safety judge was not called: the TypeSafe observation \
+     approved the command as observational.";
+
 impl CheckOutcome {
     /// The outcome of a disabled judge: no call was made and no time elapsed.
     const fn bypassed() -> Self {
@@ -211,6 +219,26 @@ impl CheckOutcome {
                     overridden: false,
                     bypassed: true,
                     latency_ms: 0,
+                    stage: None,
+                    probability: None,
+                },
+            ),
+            // A fast approval keeps the `allow` verdict: consumers switching on
+            // `summary.verdict` or `data.verdict` see the same decision they
+            // would see from a judge allow, and the additive `stage` and
+            // `probability` fields carry the provenance (ADR 034).
+            JudgeOutcome::FastApproved { probability, .. } => (
+                decision_label(JudgeDecision::Allow),
+                VerdictData {
+                    verdict: Some(decision_label(JudgeDecision::Allow)),
+                    code: None,
+                    confidence: None,
+                    message: FAST_APPROVAL_MESSAGE,
+                    overridden: false,
+                    bypassed: false,
+                    latency_ms,
+                    stage: Some(TYPESAFE_STAGE),
+                    probability: Some(*probability),
                 },
             ),
             JudgeOutcome::Verdict {
@@ -226,6 +254,8 @@ impl CheckOutcome {
                     overridden: *overridden,
                     bypassed: false,
                     latency_ms,
+                    stage: Some(JUDGE_STAGE),
+                    probability: None,
                 },
             ),
         };
@@ -254,6 +284,13 @@ struct VerdictData<'a> {
     /// Whether the judge is disabled and made no call.
     bypassed: bool,
     latency_ms: u64,
+    /// The stage that decided the command: `"typesafe"` when the cascade
+    /// fast-approved it without a judge call, `"judge"` when the safety judge
+    /// decided, and `null` when the judge was disabled. Additive (ADR 034).
+    stage: Option<&'static str>,
+    /// The observed `TypeSafe` probability that cleared the cutoff, on a fast
+    /// approval; `null` for every other outcome. Additive (ADR 034).
+    probability: Option<f32>,
 }
 
 /// Run `cake bash check --diagnostic`: render the raw inspection report, which
@@ -387,10 +424,17 @@ fn render_diagnostic_evaluation(
     } = evaluation;
     let Some(attempt) = attempts.last() else {
         return match outcome {
+            // With no judge attempt the only elapsed time available is the fast
+            // leg's, which is the whole decision on a fast approval. Reporting
+            // zero there would understate a cascade approval by its own
+            // latency.
             Ok(outcome) => (
                 format!(
                     "WARNING: raw judge diagnostics may contain command text, paths, repository state, reason text, and secrets embedded in those values.\n\n{}",
-                    redact_all(&render_outcome(&outcome, Duration::ZERO), secrets)
+                    redact_all(
+                        &render_outcome(&outcome, fast_approval_latency(&outcome)),
+                        secrets
+                    )
                 ),
                 Ok(()),
             ),
@@ -491,6 +535,19 @@ fn redact_all(text: &str, secrets: &[String]) -> String {
     redacted
 }
 
+/// The elapsed time a no-attempt outcome has to report for itself.
+///
+/// A cascade fast approval carries the fast leg's elapsed time and no judge
+/// attempt, so it is the only outcome whose latency is not already on the
+/// terminal attempt. Every other no-attempt outcome (the bypass) made no call
+/// and reports zero.
+const fn fast_approval_latency(outcome: &JudgeOutcome) -> Duration {
+    match outcome {
+        JudgeOutcome::FastApproved { elapsed, .. } => *elapsed,
+        JudgeOutcome::Verdict { .. } | JudgeOutcome::Bypassed => Duration::ZERO,
+    }
+}
+
 /// Redact the configured secrets from a [`JudgeError`]'s human-readable fields
 /// while preserving the concrete type, so exit-code classification via
 /// `downcast_ref::<JudgeError>()` still works.
@@ -545,12 +602,25 @@ fn render_outcome(outcome: &JudgeOutcome, latency: Duration) -> String {
         JudgeOutcome::Bypassed => {
             format!("Verdict: bypassed\nMessage: {JUDGE_BYPASS_MESSAGE}\n")
         },
+        // A fast approval prints as the allow it is, with the stage and the
+        // observed probability that both output modes report.
+        JudgeOutcome::FastApproved { probability, .. } => format!(
+            "Verdict: {}\nStage: {TYPESAFE_STAGE}\nProbability: {probability}\nMessage: {FAST_APPROVAL_MESSAGE}\nLatency: {:.2}s\n",
+            decision_label(JudgeDecision::Allow),
+            latency.as_secs_f32()
+        ),
         JudgeOutcome::Verdict {
             verdict,
             overridden,
         } => render_verdict(verdict, *overridden, latency),
     }
 }
+
+/// The `data.stage` value naming the `TypeSafe` fast-approval stage (ADR 034).
+const TYPESAFE_STAGE: &str = "typesafe";
+
+/// The `data.stage` value naming a judge-decided outcome (ADR 034).
+const JUDGE_STAGE: &str = "judge";
 
 /// The label used for a judge decision in both output modes.
 const fn decision_label(decision: JudgeDecision) -> &'static str {

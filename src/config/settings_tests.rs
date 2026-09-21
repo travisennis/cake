@@ -1365,19 +1365,65 @@ model = "jev-project"
 }
 
 #[test]
-fn test_typesafe_rejects_unsupported_cascade_mode() {
+fn test_typesafe_cascade_mode_resolves_and_a_profile_can_select_it() {
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"
+[tools.bash.judge.typesafe]
+mode = "shadow"
+"#,
+    );
+    let project = create_project_settings(
+        r#"
+[profiles.ship.tools.bash.judge.typesafe]
+mode = "cascade"
+timeout_ms = 800
+"#,
+    );
+
+    let default = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load_with_profile(Some(project.path()), None)
+    })
+    .unwrap();
+    assert_eq!(default.judge.typesafe.mode, TypeSafeMode::Shadow);
+
+    let selected = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load_with_profile(Some(project.path()), Some("ship"))
+    })
+    .unwrap();
+    assert_eq!(selected.judge.typesafe.mode, TypeSafeMode::Cascade);
+    assert_eq!(selected.judge.typesafe.timeout_ms, 800);
+}
+
+#[test]
+fn test_typesafe_cutoff_is_not_a_setting() {
+    // ADR 034 fixes the fast-approval cutoff in code. A `cutoff` key is an
+    // unrecognized key that the loader reports and ignores, so no settings file
+    // can lower the floor the evaluation measured.
     let project = create_project_settings(
         r#"
 [tools.bash.judge.typesafe]
 mode = "cascade"
+cutoff = 0.5
 "#,
     );
     let home = create_home_dir();
-    let error = with_var("HOME", Some(home.path()), || {
+    let loaded = with_var("HOME", Some(home.path()), || {
         SettingsLoader::load(Some(project.path()))
     })
-    .unwrap_err();
-    assert!(error.to_string().contains("cascade"));
+    .unwrap();
+
+    assert_eq!(loaded.judge.typesafe.mode, TypeSafeMode::Cascade);
+    assert!(
+        loaded
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("unknown key 'cutoff'")
+                && warning.contains("tools.bash.judge.typesafe")),
+        "a cutoff key must be reported as unrecognized, got {:?}",
+        loaded.warnings
+    );
 }
 
 #[test]

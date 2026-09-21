@@ -22,6 +22,12 @@
 //! loop share one resolution — and [`resolve_judge_client_config`], the shared
 //! judge-model resolution.
 //!
+//! The ADR 034 cascade lands here too: under `[tools.bash.judge.typesafe] mode
+//! = "cascade"` a clean observation at or above
+//! [`TYPESAFE_FAST_APPROVAL_CUTOFF`] approves the command without a judge call,
+//! and every other observation outcome falls back to the judge unchanged.
+//! `shadow` stays observational.
+//!
 //! The types and client are consumed by `cake bash check` and the Bash
 //! preflight.
 
@@ -45,6 +51,35 @@ use crate::types::{ConversationItem, Role, Usage};
 
 #[path = "judge_observer.rs"]
 mod observer;
+
+/// The reviewed `TypeSafe` probability at or above which the cascade approves a
+/// command without a generative-judge call (ADR 034).
+///
+/// Deliberately a compiled constant rather than a setting: it is the safety
+/// floor the evaluation measured against the frozen corpus, so no setting,
+/// profile, or environment variable can lower it, and a different cutoff is a
+/// new ADR with new evidence, not a configuration change. The value clears the
+/// pooled worst blocked observation of the 762 measured (`0.82`) by `0.03`.
+pub const TYPESAFE_FAST_APPROVAL_CUTOFF: f32 = 0.85;
+
+/// The probability that fast-approves the command, when an observation is
+/// allowed to approve one at all.
+///
+/// Only a clean success counts. A failure class of any kind, a missing
+/// probability, and a probability below [`TYPESAFE_FAST_APPROVAL_CUTOFF`] all
+/// return `None` so the caller runs the judge, which is what keeps a `TypeSafe`
+/// failure unable to approve or block. A non-finite probability is rejected
+/// here as well as in the client, so the predicate holds on its own: an
+/// observation that somehow escaped validation cannot approve a command with an
+/// infinity.
+fn fast_approval_probability(observation: &TypeSafeObservation) -> Option<f32> {
+    if observation.failure_class.is_some() {
+        return None;
+    }
+    observation.probability.filter(|probability| {
+        probability.is_finite() && *probability >= TYPESAFE_FAST_APPROVAL_CUTOFF
+    })
+}
 
 /// Verdict decision returned by the judge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -169,7 +204,7 @@ impl JudgeRequest {
     }
 }
 
-/// Result of the judge path after bypass and allowlist handling.
+/// Result of the judge path after bypass, cascade, and allowlist handling.
 ///
 /// `cake bash check` (Milestone 3) and the Bash preflight wiring (Milestone 5)
 /// consume the same outcome so bypass, override, and fail-closed behavior stay
@@ -183,6 +218,20 @@ pub enum JudgeOutcome {
     Verdict {
         verdict: JudgeVerdict,
         overridden: bool,
+    },
+    /// The cascade approved the command from a clean `TypeSafe` observation at
+    /// or above [`TYPESAFE_FAST_APPROVAL_CUTOFF`]; no judge call was made
+    /// (ADR 034).
+    ///
+    /// An approval only, and not a sandbox bypass: the command still runs
+    /// under the operating-system sandbox. The allowlist was not consulted
+    /// because it only ever overrides a `block`, and the emergency bypass was
+    /// checked before the cascade ran.
+    FastApproved {
+        /// The observed probability that cleared the cutoff.
+        probability: f32,
+        /// The fast leg's elapsed time, recorded as the decision's latency.
+        elapsed: Duration,
     },
     /// The judge is disabled (emergency bypass); no judge call was made.
     Bypassed,
@@ -200,6 +249,12 @@ pub struct JudgeDiagnostic {
 }
 
 /// Full observed result of the judge path.
+///
+/// A cascade fast approval appears in `outcome` as
+/// [`JudgeOutcome::FastApproved`]; `attempts` is empty in that case because no
+/// judge call happened. `shadow` carries the `TypeSafe` observation under
+/// `shadow` and `cascade` alike, so telemetry records what the fast leg saw
+/// whether it decided the command or fell back.
 #[derive(Debug)]
 pub struct JudgeEvaluation {
     pub outcome: Result<JudgeOutcome, JudgeError>,
@@ -245,12 +300,19 @@ pub async fn evaluate_command(
 }
 
 /// The sole command-safety policy pipeline: emergency bypass check, the
-/// bounded judge call, and the exact-match allowlist override, in that order.
+/// `TypeSafe` cascade (under `mode = "cascade"`), the bounded judge call, and
+/// the exact-match allowlist override, in that order.
 ///
 /// Every caller — `cake bash check`, the Bash preflight, the corpus runner,
 /// and the benchmark harness — evaluates through this function so bypass and
 /// allowlist policy cannot diverge between facades. [`evaluate_command`]
 /// wraps it for callers that need only the outcome.
+///
+/// The bypass is checked first, so no configuration of the cascade can skip
+/// it. Under `mode = "cascade"` a clean observation at or above
+/// [`TYPESAFE_FAST_APPROVAL_CUTOFF`] approves the command without a judge
+/// call; every other cascade outcome falls back to the judge, whose authority
+/// and fail-closed behavior are unchanged (ADR 034).
 ///
 /// An allowlisted command is still judged. A `block` verdict on an exact
 /// allowlist match is overridden to allow (the original verdict and the
@@ -276,26 +338,84 @@ pub async fn evaluate_command_observed(
             shadow: None,
         };
     }
+    if settings.typesafe.mode == TypeSafeMode::Cascade {
+        return evaluate_cascade(client, settings, request, include_raw_diagnostic).await;
+    }
     let command = request.command.clone();
     let shadow_request = request.clone();
+    // `shadow` keeps the concurrent observation: the calibration evidence on
+    // #604 was measured through this join, where the fast leg ran beside the
+    // judge rather than before it. The cascade is sequential by design.
     let (call, shadow) = tokio::join!(
         client.judge_observed(request, include_raw_diagnostic),
         client.typesafe_observed(shadow_request, settings.typesafe.mode),
     );
-    let outcome = call.result.map(|verdict| {
-        let overridden = verdict.decision == JudgeDecision::Block
-            && settings.allowlist.iter().any(|entry| entry == &command);
-        JudgeOutcome::Verdict {
-            verdict,
-            overridden,
-        }
-    });
     JudgeEvaluation {
-        outcome,
+        outcome: judge_outcome(call.result, &settings.allowlist, &command),
         attempts: call.attempts,
         diagnostic: call.diagnostic,
         shadow,
     }
+}
+
+/// Evaluate one command under `mode = "cascade"`: the observation runs first
+/// and alone, and the judge runs only when the observation does not
+/// fast-approve the command (ADR 034).
+///
+/// The observation is returned either way, so telemetry records the fast leg's
+/// outcome even when it decided nothing. On the fallback the judge is the sole
+/// authority: it keeps its allowlist override, its retry policy, and its
+/// fail-closed denial, and no failure class can produce a fast approval.
+async fn evaluate_cascade(
+    client: &JudgeClient,
+    settings: &JudgeSettings,
+    request: JudgeRequest,
+    include_raw_diagnostic: bool,
+) -> JudgeEvaluation {
+    let observation = client
+        .typesafe_observed(request.clone(), settings.typesafe.mode)
+        .await;
+    if let Some(probability) = observation.as_ref().and_then(fast_approval_probability) {
+        let elapsed = observation.as_ref().map_or(Duration::ZERO, |o| o.elapsed);
+        return JudgeEvaluation {
+            outcome: Ok(JudgeOutcome::FastApproved {
+                probability,
+                elapsed,
+            }),
+            attempts: Vec::new(),
+            diagnostic: None,
+            shadow: observation,
+        };
+    }
+    let command = request.command.clone();
+    let call = client.judge_observed(request, include_raw_diagnostic).await;
+    JudgeEvaluation {
+        outcome: judge_outcome(call.result, &settings.allowlist, &command),
+        attempts: call.attempts,
+        diagnostic: call.diagnostic,
+        shadow: observation,
+    }
+}
+
+/// Apply the exact-match allowlist to one judge call's result.
+///
+/// The allowlist only ever overrides a `block` to allow: an `allow` or `warn`
+/// verdict passes through unchanged and a `block` outside the allowlist stays
+/// the fail-closed denial it is. A failed call stays an `Err`. The cascade runs
+/// before this mapping, so a fast approval never reaches it.
+fn judge_outcome(
+    result: Result<JudgeVerdict, JudgeError>,
+    allowlist: &[String],
+    command: &str,
+) -> Result<JudgeOutcome, JudgeError> {
+    result.map(|verdict| {
+        let overridden = verdict.decision == JudgeDecision::Block
+            && allowlist.iter().any(|entry| entry == command);
+        JudgeOutcome::Verdict {
+            verdict,
+            overridden,
+        }
+    })
 }
 
 /// Per-run judge configuration shared by every Bash preflight call.
@@ -494,6 +614,12 @@ impl JudgeClient {
         self
     }
 
+    /// One bounded observation of one command, or `None` when the evaluator is
+    /// off.
+    ///
+    /// A client is resolved for `shadow` and `cascade` alike; a missing client
+    /// under either mode is reported as a configured-failure observation, which
+    /// falls back to the judge like every other failure class.
     async fn typesafe_observed(
         &self,
         request: JudgeRequest,

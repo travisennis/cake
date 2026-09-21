@@ -185,22 +185,30 @@ allowlist = ["git status"]  # exact raw commands whose blocks are overridden
 - `enabled`: emergency bypass. `false` disables the judge for every command, equivalent to the `CAKE_JUDGE=off` environment variable; the environment variable wins when both are set. Off by default means the judge is enabled, and there are no allowlist entries in shipped defaults.
 - `allowlist`: list of exact raw-command strings whose `block` verdicts are overridden to allow. An allowlisted command is still judged, and the verdict plus an `overridden` flag are recorded; only a `block` is overridden, so the command still cannot hide a judge failure. Matching is exact raw-command equality (no patterns, aliases, or normalization). Entries from global and project settings are merged.
 
-### TypeSafe shadow evaluation
+### TypeSafe evaluation (`shadow` and `cascade`)
 
-To evaluate a candidate fast approval signal, opt into the bounded TypeSafe shadow observer:
+TypeSafe is an opt-in evaluation stage above the safety judge. `shadow` observes beside the judge and decides nothing; `cascade` lets a confident observation approve a command without a judge call.
 
 ```toml
 [tools.bash.judge.typesafe]
-mode = "shadow"
+mode = "cascade"
 model = "jev-1.13.0"
 timeout_ms = 1000
 ```
 
-Set `TYPESAFE_AI_API_KEY` in the environment. The setting is off by default, and the key alone enables nothing. Shadow mode sends the command, working directory, repository digest, untrusted reason, and the effective local rubric to TypeSafe. Its typed probability is recorded as metadata only; the existing safety judge remains authoritative. TypeSafe failures never approve or block a command. No raw command, reason, provider body, or credential is written to local telemetry.
+Set `TYPESAFE_AI_API_KEY` in the environment. The setting is off by default, and the key alone enables nothing. Both modes send the command, working directory, repository digest, untrusted reason, and the effective local rubric to TypeSafe: the disclosure surface [ADR 033](adr/033-typesafe-judge-shadow-evaluation.md) recorded, unchanged. No raw command, reason, provider body, or credential is written to local telemetry.
 
-Only `off` (the default) and `shadow` are supported. `model` is a pinned TypeSafe model ID, not a `[[models]]` name; the returned ID must match it. `timeout_ms` defaults to 1000 and is raised to 1 when set to 0. It covers the complete HTTP request and response body, with no retries. The credential variable is fixed to `TYPESAFE_AI_API_KEY`; do not put the credential in TOML. These three settings support global/project and profile overlays, including `[profiles.evaluate.tools.bash.judge.typesafe]`. Primary judge policy remains configured at the top level.
+Only `off` (the default), `shadow`, and `cascade` are supported. `model` is a pinned TypeSafe model ID, not a `[[models]]` name; the returned ID must match it. `timeout_ms` defaults to 1000 and is raised to 1 when set to 0. It covers the complete HTTP request and response body, with no retries. The credential variable is fixed to `TYPESAFE_AI_API_KEY`; do not put the credential in TOML. These three settings support global/project and profile overlays, including `[profiles.evaluate.tools.bash.judge.typesafe]`. Primary judge policy remains configured at the top level.
 
-Shadow and primary evaluations run concurrently and complete before execution. Shadow can add up to its deadline when the primary finishes first. Emergency bypass skips both evaluations. Jev judges safety eligibility; advisory-only hook warnings do not make an otherwise observational command ineligible, and hooks continue to run independently. See [the benchmark guide](../scripts/judge-bench/README.md) for evaluation commands and report interpretation.
+`mode = "shadow"` records the typed probability as metadata only. Shadow and primary evaluations run concurrently and complete before execution, so shadow can add up to its deadline when the primary finishes first.
+
+`mode = "cascade"` makes the observation the first approval stage ([ADR 034](adr/034-typesafe-judge-cascade-cutoff.md)). The observation runs first and alone, and when it succeeds with a probability at or above the fast-approval cutoff the command runs without a judge call. Every other outcome --- a probability below the cutoff, a timeout at the observation deadline, a transport or protocol failure, a missing credential --- falls back to the judge, which keeps its retry policy, its allowlist override, and its fail-closed denial. A TypeSafe failure can never approve a command and can never block one.
+
+A fast approval carries no judge verdict, so it also carries no judge `warn`: a command the judge would have warned about (today only the `rg-replace-footgun` class) runs with no `NOTICE` when the observation approves it at or above the cutoff. That is the same accepted trade the cascade makes for a would-be `block`, and it is bounded by the same evidence: the measured runs record zero unsafe approvals and zero warn-class approvals at `0.85`.
+
+The fast-approval cutoff is `0.85`, and it is a reviewed constant in the code rather than a setting: no settings file, profile, or environment variable can lower it, and a `cutoff` key is reported as unrecognized. A different cutoff is an ADR change with new evidence. A fast approval is an approval only: the command still runs under the operating-system sandbox, and the allowlist and the emergency bypass keep their precedence. The fast leg keeps its configured `timeout_ms` and adds no retry, so a slow TypeSafe costs at most that deadline before the judge runs.
+
+Emergency bypass skips both evaluations. Jev judges safety eligibility; advisory-only hook warnings do not make an otherwise observational command ineligible, and hooks continue to run independently. See [the benchmark guide](../scripts/judge-bench/README.md) for evaluation commands and report interpretation.
 
 ## Filesystem access
 

@@ -859,6 +859,10 @@ fn render_json_reports_a_block_verdict_document() {
     assert_eq!(parsed["data"]["latency_ms"], 1234);
     assert_eq!(parsed["data"]["overridden"], false);
     assert_eq!(parsed["data"]["bypassed"], false);
+    // The provenance fields are additive: a judge-decided document names the
+    // judge stage and carries no fast-approval probability (ADR 034).
+    assert_eq!(parsed["data"]["stage"], "judge");
+    assert_eq!(parsed["data"]["probability"], serde_json::Value::Null);
 }
 
 #[test]
@@ -898,6 +902,9 @@ fn render_json_reports_the_bypass_without_a_judge_call() {
     assert_eq!(parsed["data"]["bypassed"], true);
     assert_eq!(parsed["data"]["verdict"], serde_json::Value::Null);
     assert_eq!(parsed["data"]["latency_ms"], 0);
+    // No stage decided a bypassed command.
+    assert_eq!(parsed["data"]["stage"], serde_json::Value::Null);
+    assert_eq!(parsed["data"]["probability"], serde_json::Value::Null);
     // Both output modes state the same reason for making no call.
     assert_eq!(parsed["data"]["message"], JUDGE_BYPASS_MESSAGE);
     assert!(bypassed.render_text().contains(JUDGE_BYPASS_MESSAGE));
@@ -918,6 +925,211 @@ fn render_json_carries_settings_findings_in_checks() {
         parsed["checks"][0]["message"],
         "unknown key 'tempurature' in settings.toml"
     );
+}
+
+// =============================================================================
+// The ADR 034 cascade in `cake bash check`
+// =============================================================================
+
+/// Cascade settings that arm the observation as an approval stage.
+fn cascade_check_settings() -> crate::config::settings::JudgeSettings {
+    crate::config::settings::JudgeSettings {
+        typesafe: crate::config::settings::TypeSafeSettings {
+            mode: crate::config::settings::TypeSafeMode::Cascade,
+            model: "jev-1.13.0".to_string(),
+            timeout_ms: 100,
+        },
+        ..JudgeSettings::default()
+    }
+}
+
+/// A `TypeSafe` client answering one mock server.
+fn typesafe_check_client(server: &MockServer) -> TypeSafeClient {
+    TypeSafeClient::new(
+        "test-typesafe-key".to_string(),
+        "jev-1.13.0".to_string(),
+        Duration::from_millis(100),
+    )
+    .with_endpoint(server.uri())
+}
+
+/// One `TypeSafe` answer with `probability`.
+fn typesafe_answer(probability: f64) -> serde_json::Value {
+    serde_json::json!({
+        "model": "jev-1.13.0",
+        "answers": {"eligible": {"type": "noul", "noul": probability}},
+        "usage": {"input_tokens": 3, "output_tokens": 1}
+    })
+}
+
+#[test]
+fn render_json_reports_a_fast_approval_as_allow_with_provenance() {
+    let outcome = CheckOutcome {
+        outcome: JudgeOutcome::FastApproved {
+            probability: 0.91,
+            elapsed: Duration::from_millis(250),
+        },
+        latency: Duration::from_millis(250),
+    };
+
+    let rendered = outcome.render_json(&[]).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+
+    // Consumers switching on the verdict see the allow a judge would have
+    // produced; the provenance is additive.
+    assert_eq!(parsed["summary"]["verdict"], "allow");
+    assert_eq!(parsed["data"]["verdict"], "allow");
+    assert_eq!(parsed["data"]["stage"], "typesafe");
+    assert_eq!(parsed["data"]["probability"], 0.91);
+    assert_eq!(parsed["data"]["latency_ms"], 250);
+    assert_eq!(parsed["data"]["overridden"], false);
+    assert_eq!(parsed["data"]["bypassed"], false);
+    assert_eq!(parsed["data"]["code"], serde_json::Value::Null);
+    assert_eq!(parsed["data"]["message"], FAST_APPROVAL_MESSAGE);
+}
+
+#[test]
+fn render_outcome_reports_a_fast_approval_as_allow_with_its_stage() {
+    let outcome = JudgeOutcome::FastApproved {
+        probability: 0.91,
+        elapsed: Duration::from_millis(250),
+    };
+
+    assert_eq!(
+        render_outcome(&outcome, Duration::from_millis(250)),
+        format!(
+            "Verdict: allow\nStage: typesafe\nProbability: 0.91\nMessage: {FAST_APPROVAL_MESSAGE}\nLatency: 0.25s\n"
+        )
+    );
+}
+
+#[tokio::test]
+async fn bash_check_fast_approves_without_a_judge_call() {
+    let judge_server = MockServer::start().await;
+    let typesafe_server = MockServer::start().await;
+    // `expect(0)`: a fast approval must not reach the judge at all.
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(chat_response(
+            r#"{"verdict":"block","code":"unknown-destructive","message":"No"}"#,
+        )))
+        .expect(0)
+        .mount(&judge_server)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(typesafe_answer(0.91)))
+        .expect(1)
+        .mount(&typesafe_server)
+        .await;
+
+    let outcome = evaluate_with_client(
+        judge_client(&judge_server).with_typesafe(Some(typesafe_check_client(&typesafe_server))),
+        &cascade_check_settings(),
+        None,
+        std::path::Path::new("/work"),
+        "git status",
+    )
+    .await
+    .unwrap();
+
+    let rendered = outcome.render_json(&[]).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+    assert_eq!(parsed["status"], "ok");
+    assert_eq!(parsed["summary"]["verdict"], "allow");
+    assert_eq!(parsed["data"]["stage"], "typesafe");
+    assert_eq!(parsed["data"]["probability"], 0.91);
+    assert!(outcome.render_text().contains("Stage: typesafe"));
+    judge_server.verify().await;
+    typesafe_server.verify().await;
+}
+
+#[tokio::test]
+async fn bash_check_falls_back_to_the_judge_below_the_cutoff() {
+    let judge_server = MockServer::start().await;
+    let typesafe_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(chat_response(r#"{"verdict":"allow","message":"Safe"}"#)),
+        )
+        .expect(1)
+        .mount(&judge_server)
+        .await;
+    // The measured band for `cat ~/.npmrc` over `independent-v2`; it falls back.
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(typesafe_answer(0.82)))
+        .expect(1)
+        .mount(&typesafe_server)
+        .await;
+
+    let outcome = evaluate_with_client(
+        judge_client(&judge_server).with_typesafe(Some(typesafe_check_client(&typesafe_server))),
+        &cascade_check_settings(),
+        None,
+        std::path::Path::new("/work"),
+        "cat ~/.npmrc",
+    )
+    .await
+    .unwrap();
+
+    let rendered = outcome.render_json(&[]).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+    // The judge decided, so the document reports the judge's stage and message
+    // and carries no fast-approval probability.
+    assert_eq!(parsed["summary"]["verdict"], "allow");
+    assert_eq!(parsed["data"]["stage"], "judge");
+    assert_eq!(parsed["data"]["probability"], serde_json::Value::Null);
+    assert_eq!(parsed["data"]["message"], "Safe");
+    judge_server.verify().await;
+    typesafe_server.verify().await;
+}
+
+#[tokio::test]
+async fn bash_check_diagnostic_reports_the_fast_leg_latency() {
+    // A fast approval has no judge attempt, so `--diagnostic` has no raw request
+    // to show. It must still render the outcome, with the fast leg's own elapsed
+    // time instead of a zero latency.
+    let judge_server = MockServer::start().await;
+    let typesafe_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(chat_response(r#"{"verdict":"allow","message":"Safe"}"#)),
+        )
+        .expect(0)
+        .mount(&judge_server)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(typesafe_answer(0.97))
+                .set_delay(Duration::from_millis(60)),
+        )
+        .expect(1)
+        .mount(&typesafe_server)
+        .await;
+
+    let report = evaluate_with_client_diagnostic(
+        judge_client(&judge_server).with_typesafe(Some(typesafe_check_client(&typesafe_server))),
+        &cascade_check_settings(),
+        None,
+        std::path::Path::new("/work"),
+        "git status",
+    )
+    .await
+    .unwrap();
+
+    assert!(report.error.is_none());
+    assert!(
+        report.report.contains("Stage: typesafe"),
+        "{}",
+        report.report
+    );
+    assert!(
+        !report.report.contains("Latency: 0.00s"),
+        "the fast leg's elapsed time must be reported:\n{}",
+        report.report
+    );
+    judge_server.verify().await;
 }
 
 // =============================================================================
