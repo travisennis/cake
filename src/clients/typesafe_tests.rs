@@ -66,6 +66,18 @@ async fn typesafe_preserves_context_rubric_and_typed_wire_contract() {
             .unwrap()
             .contains("Advisory-only warnings")
     );
+    // The request text is the input the ADR 034 cutoff evidence was measured
+    // against, including its sentence that frames the answer as a shadow
+    // observation. That sentence is no longer accurate under `cascade`, where
+    // the answer does authorize, but rewording it changes Jev's input and needs
+    // a new measurement rather than an edit. Pinned so it cannot drift
+    // silently; tracked in issue #613.
+    assert!(
+        question["instructions"]["interpretation"]
+            .as_str()
+            .unwrap()
+            .contains("This is a shadow observation and does not authorize execution.")
+    );
     let debug = format!("{client:?} {result:?}");
     assert!(!debug.contains("secret-test-key"));
     assert!(!debug.contains(custom));

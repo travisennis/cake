@@ -2976,13 +2976,21 @@ fn cascade_judge_context(
 }
 
 /// Mount one `TypeSafe` answer with `probability`, expecting one request.
+///
+/// The answer is delayed so the observation's elapsed time is a real
+/// measurement: an instant answer would record zero and make the latency
+/// assertions in the cascade tests vacuous.
 async fn mount_typesafe_answer(server: &MockServer, probability: f64) {
     Mock::given(method("POST"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "model": "jev-1.13.0",
-            "answers": {"eligible": {"type": "noul", "noul": probability}},
-            "usage": {"input_tokens": 5, "output_tokens": 1}
-        })))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({
+                    "model": "jev-1.13.0",
+                    "answers": {"eligible": {"type": "noul", "noul": probability}},
+                    "usage": {"input_tokens": 5, "output_tokens": 1}
+                }))
+                .set_delay(std::time::Duration::from_millis(30)),
+        )
         .expect(1)
         .mount(server)
         .await;
@@ -3100,9 +3108,18 @@ async fn cascade_fast_approval_executes_and_records_the_fast_path() {
     assert_eq!(observation["call_id"], call_digest("call-cascade"));
     // The fast leg's elapsed time lands in the existing judge-verdict latency
     // field, which is what makes the cascade measurable without a new record.
+    // The answer is delayed, so a zero here would mean the latency wiring read
+    // nothing at all rather than that the response was fast.
+    let elapsed_ms = observation["elapsed_ms"]
+        .as_u64()
+        .expect("the observation records its elapsed time");
+    assert!(
+        elapsed_ms > 0,
+        "the fast leg's elapsed time must be a real measurement: {records:?}"
+    );
     assert_eq!(
         event.latency_ms,
-        observation["elapsed_ms"].as_u64(),
+        Some(elapsed_ms),
         "the verdict latency must be the fast leg's elapsed time"
     );
 

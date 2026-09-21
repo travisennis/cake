@@ -215,6 +215,16 @@ impl TypeSafeClient {
         Ok(response)
     }
 
+    /// The measured request text, unchanged since the ADR 034 evaluation.
+    ///
+    /// The trailing "shadow observation" sentence is inaccurate under `mode =
+    /// "cascade"`, where this answer does authorize the command. It stays
+    /// because the cutoff's evidence was measured against exactly this text:
+    /// rewording it changes Jev's input and needs a new measurement rather than
+    /// an edit (issue #613).
+    ///
+    /// `typesafe_preserves_context_rubric_and_typed_wire_contract` pins the
+    /// sentence so it cannot drift silently.
     fn request_body<'a>(&'a self, request: &'a JudgeRequest) -> RequestBody<'a> {
         RequestBody {
             model: &self.model,
