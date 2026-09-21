@@ -15,8 +15,9 @@
 //! the allowlist override and the emergency bypass. [`evaluate_command_observed`]
 //! is now the sole policy pipeline — the bypass check, the bounded call, and
 //! the exact-match allowlist override, returning a [`JudgeOutcome`] — shared
-//! by every caller; [`evaluate_command`] delegates to it with diagnostics
-//! disabled. `Milestone 5` adds
+//! by every caller, including `cake bash check`; the test-only
+//! `evaluate_command` delegates to it with diagnostics disabled. `Milestone 5`
+//! adds
 //! [`JudgeContext`] — the per-run judge configuration carried on the
 //! [`crate::clients::tools::ToolContext`] so the Bash preflight and the agent
 //! loop share one resolution — and [`resolve_judge_client_config`], the shared
@@ -275,11 +276,14 @@ pub fn judge_is_enabled(settings: &JudgeSettings, bypass_env: Option<&str>) -> b
 
 /// Evaluate a command without retaining per-attempt metadata.
 ///
-/// This is a thin wrapper over [`evaluate_command_observed`], the sole policy
-/// pipeline, run there with diagnostics disabled: bypass, allowlist, retry,
-/// and fail-closed semantics are defined once and cannot diverge between the
-/// facades. Only the outcome is returned; attempts and diagnostics are dropped
-/// so an unobserved evaluation can never leak them.
+/// This is the test-only convenience form of [`evaluate_command_observed`]
+/// (diagnostics disabled, attempts dropped). Production callers read the
+/// observed form: the Bash preflight records the observation in its telemetry
+/// and `cake bash check` reports it (issue #616). It stays so the
+/// facade-parity and corpus tests can assert that bypass, allowlist, retry, and
+/// fail-closed semantics are defined once and cannot diverge. Only the outcome
+/// is returned, so an unobserved evaluation can never leak attempts or
+/// diagnostics.
 ///
 /// `bypass_env` is the value of the `CAKE_JUDGE` environment variable (`None`
 /// when unset), passed in so callers control the single env read and tests
@@ -288,6 +292,7 @@ pub fn judge_is_enabled(settings: &JudgeSettings, bypass_env: Option<&str>) -> b
 /// # Errors
 ///
 /// Returns any [`JudgeError`] the pipeline produced; callers fail closed.
+#[cfg(test)]
 pub async fn evaluate_command(
     client: &JudgeClient,
     settings: &JudgeSettings,
@@ -305,8 +310,8 @@ pub async fn evaluate_command(
 ///
 /// Every caller — `cake bash check`, the Bash preflight, the corpus runner,
 /// and the benchmark harness — evaluates through this function so bypass and
-/// allowlist policy cannot diverge between facades. [`evaluate_command`]
-/// wraps it for callers that need only the outcome.
+/// allowlist policy cannot diverge between facades. The test-only
+/// `evaluate_command` wraps it for callers that need only the outcome.
 ///
 /// The bypass is checked first, so no configuration of the cascade can skip
 /// it. Under `mode = "cascade"` a clean observation at or above
@@ -669,8 +674,9 @@ impl JudgeClient {
     ///
     /// This is the test-only convenience form of [`Self::judge_observed`]
     /// (diagnostics disabled, attempts dropped). Production callers go through
-    /// the facades — [`evaluate_command_observed`] or [`evaluate_command`] — so
-    /// bypass, allowlist, and retry policy stay in one pipeline.
+    /// [`evaluate_command_observed`], and the test-only [`evaluate_command`] is
+    /// its thin form, so bypass, allowlist, and retry policy stay in one
+    /// pipeline.
     ///
     /// # Errors
     ///

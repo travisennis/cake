@@ -2,11 +2,12 @@
 //!
 //! `cake bash check -- <command>` runs the same judge path and prompt the
 //! Bash preflight will use (Milestone 5 of the LLM-judge `ExecPlan`), prints the
-//! verdict, code, message, confidence, and latency, and never executes the
-//! command. `--json` reports the same verdict as one diagnostic document; a
-//! judge error exits nonzero either way. A verdict is successful inspection
-//! output. Follows the ADR-009 introspection pattern (load merged settings,
-//! print to stdout, exit before agent/session setup).
+//! verdict, code, message, confidence, latency, and the `TypeSafe` observation
+//! the decision rests on, and never executes the command. `--json` reports the
+//! same verdict as one diagnostic document; a judge error exits nonzero either
+//! way. A verdict is successful inspection output. Follows the ADR-009
+//! introspection pattern (load merged settings, print to stdout, exit before
+//! agent/session setup).
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -18,11 +19,11 @@ use crate::cli::{
 };
 use crate::clients::judge::{
     JudgeClient, JudgeDecision, JudgeError, JudgeEvaluation, JudgeOutcome, JudgeRequest,
-    JudgeVerdict, evaluate_command, evaluate_command_observed, judge_is_enabled, read_user_rubric,
-    repo_state_digest, resolve_judge_client_config,
+    JudgeVerdict, evaluate_command_observed, judge_is_enabled, read_user_rubric, repo_state_digest,
+    resolve_judge_client_config,
 };
-use crate::clients::typesafe::TypeSafeClient;
-use crate::config::settings::{JUDGE_BYPASS_ENV, JudgeSettings, LoadedSettings};
+use crate::clients::typesafe::{TypeSafeClient, TypeSafeObservation};
+use crate::config::settings::{JUDGE_BYPASS_ENV, JudgeSettings, LoadedSettings, TypeSafeMode};
 use crate::config::{DataDir, ResolvedModelConfig, SettingsLoader};
 use serde::Serialize;
 
@@ -166,13 +167,16 @@ async fn run_bash_check(
     evaluate_with_client(client, &loaded.judge, bypass_env.as_deref(), cwd, command).await
 }
 
-/// One judge outcome and the latency it was measured in.
+/// One judge outcome, the latency it was measured in, and the `TypeSafe`
+/// observation it rests on.
 ///
 /// Both output modes render this same value, so the human verdict and the
-/// machine-readable document cannot disagree about what the judge decided.
+/// machine-readable document cannot disagree about what the judge decided or
+/// about what the observation did (issue #616).
 struct CheckOutcome {
     outcome: JudgeOutcome,
     latency: Duration,
+    observation: ObservationReport,
 }
 
 /// Why a `cake bash check` run made no judge call.
@@ -193,12 +197,14 @@ impl CheckOutcome {
         Self {
             outcome: JudgeOutcome::Bypassed,
             latency: Duration::ZERO,
+            // A bypassed judge makes no observation either.
+            observation: ObservationReport::absent(),
         }
     }
 
     /// Render the outcome as the human-readable verdict.
     fn render_text(&self) -> String {
-        render_outcome(&self.outcome, self.latency)
+        render_outcome(&self.outcome, self.latency, &self.observation)
     }
 
     /// Render the outcome as one diagnostic document, carrying the findings the
@@ -207,7 +213,7 @@ impl CheckOutcome {
     /// The latency is reported in whole milliseconds, which is the same
     /// measurement the text verdict prints as seconds.
     fn render_json(&self, checks: &[DiagnosticCheck]) -> anyhow::Result<String> {
-        let latency_ms = u64::try_from(self.latency.as_millis()).unwrap_or(u64::MAX);
+        let latency_ms = duration_millis(self.latency);
         let (summary_verdict, data) = match &self.outcome {
             JudgeOutcome::Bypassed => (
                 "bypassed",
@@ -221,6 +227,7 @@ impl CheckOutcome {
                     latency_ms: 0,
                     stage: None,
                     probability: None,
+                    observation: &self.observation,
                 },
             ),
             // A fast approval keeps the `allow` verdict: consumers switching on
@@ -239,6 +246,7 @@ impl CheckOutcome {
                     latency_ms,
                     stage: Some(TYPESAFE_STAGE),
                     probability: Some(*probability),
+                    observation: &self.observation,
                 },
             ),
             JudgeOutcome::Verdict {
@@ -256,6 +264,7 @@ impl CheckOutcome {
                     latency_ms,
                     stage: Some(JUDGE_STAGE),
                     probability: None,
+                    observation: &self.observation,
                 },
             ),
         };
@@ -267,6 +276,124 @@ impl CheckOutcome {
         )
         .render()
     }
+}
+
+/// The bounded vocabulary `cake bash check` reports for the `TypeSafe`
+/// observation, alongside `data.stage` and `data.probability` (issue #616).
+///
+/// `stage` and `probability` answer "did the fast path decide?"; a fallback
+/// renders as `stage: "judge"` whether the cascade was never armed, failed, or
+/// came in below the cutoff. This vocabulary separates those cases, so an
+/// unset `mode` is diagnosable from the command's own output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ObservationOutcome {
+    /// No `TypeSafe` request was made: `mode = "off"` (the default), or the
+    /// judge itself was disabled or bypassed.
+    Absent,
+    /// The observation ran under `mode = "shadow"` and decided nothing; the
+    /// other fields report what it observed.
+    Shadow,
+    /// The cascade approved the command from the observation, with no judge
+    /// call.
+    Approved,
+    /// The observation succeeded below the fast-approval cutoff, so the judge
+    /// decided the command.
+    BelowCutoff,
+    /// The observation failed (a missing credential, a timeout, a transport or
+    /// protocol error), so the judge decided the command.
+    Failed,
+}
+
+impl ObservationOutcome {
+    /// The label the text rendering prints, identical to the serialized value
+    /// so both output modes use one vocabulary.
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Absent => "absent",
+            Self::Shadow => "shadow",
+            Self::Approved => "approved",
+            Self::BelowCutoff => "below_cutoff",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+/// What the `TypeSafe` observation was and returned, as both output modes
+/// report it.
+///
+/// Serialized as `data.observation`, always present and never `null`, so a
+/// consumer reads `data.observation.outcome` unconditionally.
+#[derive(Debug, PartialEq, Serialize)]
+struct ObservationReport {
+    /// Which of the bounded outcomes this observation was.
+    outcome: ObservationOutcome,
+    /// The probability the observation measured, when it returned one. On a
+    /// fast approval it repeats `data.probability`, which keeps "what the
+    /// observation measured" in one field for every outcome.
+    probability: Option<f32>,
+    /// The observation's failure class when it failed, matching the
+    /// `failure_class` of the `type_safe_shadow` telemetry record.
+    failure_class: Option<&'static str>,
+    /// How long the observation took, when one was made.
+    elapsed_ms: Option<u64>,
+}
+
+impl ObservationReport {
+    /// The report for a run that made no observation: `mode = "off"`, a disabled
+    /// judge, or the `CAKE_JUDGE=off` bypass.
+    const fn absent() -> Self {
+        Self {
+            outcome: ObservationOutcome::Absent,
+            probability: None,
+            failure_class: None,
+            elapsed_ms: None,
+        }
+    }
+
+    /// Classify one pipeline result into the bounded vocabulary.
+    ///
+    /// `fast_approved` is whether the pipeline approved the command from the
+    /// observation (a [`JudgeOutcome::FastApproved`]). The label needs nothing
+    /// else from the outcome, so a caller whose run produced no outcome to
+    /// inspect passes `false`. Only a fast approval means the observation
+    /// carried authority, and under `mode = "shadow"` it never does; every
+    /// other observation either failed or fell short of the cutoff under the
+    /// cascade, which is the split `fast_approval_probability` decides between.
+    fn classify(
+        observation: Option<&TypeSafeObservation>,
+        mode: TypeSafeMode,
+        fast_approved: bool,
+    ) -> Self {
+        let Some(observation) = observation else {
+            return Self::absent();
+        };
+        let outcome_kind = if fast_approved {
+            ObservationOutcome::Approved
+        } else if mode != TypeSafeMode::Cascade {
+            ObservationOutcome::Shadow
+        } else if observation.failure_class.is_some() {
+            ObservationOutcome::Failed
+        } else {
+            ObservationOutcome::BelowCutoff
+        };
+        Self {
+            outcome: outcome_kind,
+            probability: observation.probability,
+            failure_class: observation.failure_class,
+            elapsed_ms: Some(duration_millis(observation.elapsed)),
+        }
+    }
+}
+
+/// Whether a judge-path outcome approved the command from the observation.
+const fn is_fast_approval(outcome: &JudgeOutcome) -> bool {
+    matches!(outcome, JudgeOutcome::FastApproved { .. })
+}
+
+/// Whole milliseconds for a duration, saturating rather than wrapping.
+fn duration_millis(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 /// The `bash check` payload: what the judge decided, as both output modes
@@ -291,6 +418,9 @@ struct VerdictData<'a> {
     /// The observed `TypeSafe` probability that cleared the cutoff, on a fast
     /// approval; `null` for every other outcome. Additive (ADR 034).
     probability: Option<f32>,
+    /// The `TypeSafe` observation this decision rests on: whether the cascade
+    /// was armed and what it observed. Additive (issue #616).
+    observation: &'a ObservationReport,
 }
 
 /// Run `cake bash check --diagnostic`: render the raw inspection report, which
@@ -305,7 +435,11 @@ async fn run_bash_check_diagnostic(
     let (client, bypass_env) = resolve_run_judge_client(loaded, cli_model)?;
     let Some(client) = client else {
         return Ok(DiagnosticReport {
-            report: render_outcome(&JudgeOutcome::Bypassed, Duration::ZERO),
+            report: render_outcome(
+                &JudgeOutcome::Bypassed,
+                Duration::ZERO,
+                &ObservationReport::absent(),
+            ),
             error: None,
         });
     };
@@ -362,10 +496,23 @@ async fn evaluate_with_client(
         .with_repo_digest(repo_state_digest(cwd));
 
     let started = Instant::now();
-    let outcome = evaluate_command(&client, settings, request, bypass_env).await?;
+    // The observed form carries the `TypeSafe` observation the check reports
+    // beside the verdict; diagnostics stay off, so no raw request or response is
+    // retained.
+    let evaluation = evaluate_command_observed(&client, settings, request, bypass_env, false).await;
     let latency = started.elapsed();
+    let outcome = evaluation.outcome?;
+    let observation = ObservationReport::classify(
+        evaluation.shadow.as_ref(),
+        settings.typesafe.mode,
+        is_fast_approval(&outcome),
+    );
 
-    Ok(CheckOutcome { outcome, latency })
+    Ok(CheckOutcome {
+        outcome,
+        latency,
+        observation,
+    })
 }
 
 /// Rendered `--diagnostic` output and the fail-closed judge outcome.
@@ -389,7 +536,8 @@ async fn evaluate_with_client_diagnostic(
     let request = JudgeRequest::new(command.to_string(), cwd.to_path_buf(), None)
         .with_repo_digest(repo_state_digest(cwd));
     let evaluation = evaluate_command_observed(&client, settings, request, bypass_env, true).await;
-    let (report, result) = render_diagnostic_evaluation(evaluation, &secrets);
+    let (report, result) =
+        render_diagnostic_evaluation(evaluation, &secrets, settings.typesafe.mode);
     Ok(DiagnosticReport {
         report,
         error: result.err(),
@@ -410,9 +558,57 @@ fn diagnostic_redaction_secrets(client: &JudgeClient) -> Vec<String> {
     secrets
 }
 
+/// Render the `--diagnostic` report for an evaluation that made no judge
+/// attempt: a cascade fast approval, whose only elapsed time is the fast leg's,
+/// or an error that produced no request at all.
+///
+/// Reporting zero latency for a fast approval would understate the decision by
+/// the fast leg's own latency, so the observation's elapsed time is used here
+/// instead of a judge attempt's.
+fn render_attemptless_diagnostic(
+    outcome: Result<JudgeOutcome, JudgeError>,
+    observation: &ObservationReport,
+    secrets: &[String],
+) -> (String, Result<(), JudgeError>) {
+    match outcome {
+        Ok(outcome) => {
+            let rendered = render_outcome(&outcome, fast_approval_latency(&outcome), observation);
+            (
+                format!(
+                    "WARNING: raw judge diagnostics may contain command text, paths, repository state, reason text, and secrets embedded in those values.\n\n{}",
+                    redact_all(&rendered, secrets)
+                ),
+                Ok(()),
+            )
+        },
+        Err(error) => {
+            let error = redact_judge_error(error, secrets);
+            (
+                format!(
+                    "WARNING: raw judge diagnostics may contain command text, paths, repository state, reason text, and secrets embedded in those values.\n\n{}Judge error: {error}\n",
+                    render_observation(observation)
+                ),
+                Err(error),
+            )
+        },
+    }
+}
+
+/// Render the `--diagnostic` report: the effective prompts, the transformed
+/// request JSON, the parsed response, the attempt metadata, and the verdict.
+///
+/// The report renders the observation's bounded summary but never the raw
+/// `TypeSafe` request or response. The client retains neither, and the request
+/// would disclose nothing the judge diagnostic above does not already print
+/// under the same redaction: it carries the same command, working directory,
+/// repository digest, untrusted reason, and effective rubric. The raw response
+/// is provider-supplied text that would need a second redaction path, and what
+/// the cascade decides on is the bounded observation, which every branch of
+/// this report renders, including the ones that report a judge error.
 fn render_diagnostic_evaluation(
     evaluation: JudgeEvaluation,
     secrets: &[String],
+    mode: TypeSafeMode,
 ) -> (String, Result<(), JudgeError>) {
     use std::fmt::Write as _;
 
@@ -420,38 +616,24 @@ fn render_diagnostic_evaluation(
         outcome,
         attempts,
         diagnostic,
-        ..
+        shadow,
     } = evaluation;
+    // Classified before the match on `outcome` so the error paths report the
+    // observation too: a failed observation beside a failed judge is the
+    // compound failure this report is read for.
+    let observation = ObservationReport::classify(
+        shadow.as_ref(),
+        mode,
+        outcome.as_ref().is_ok_and(is_fast_approval),
+    );
     let Some(attempt) = attempts.last() else {
-        return match outcome {
-            // With no judge attempt the only elapsed time available is the fast
-            // leg's, which is the whole decision on a fast approval. Reporting
-            // zero there would understate a cascade approval by its own
-            // latency.
-            Ok(outcome) => (
-                format!(
-                    "WARNING: raw judge diagnostics may contain command text, paths, repository state, reason text, and secrets embedded in those values.\n\n{}",
-                    redact_all(
-                        &render_outcome(&outcome, fast_approval_latency(&outcome)),
-                        secrets
-                    )
-                ),
-                Ok(()),
-            ),
-            Err(error) => {
-                let error = redact_judge_error(error, secrets);
-                (
-                    format!(
-                        "WARNING: raw judge diagnostics may contain command text, paths, repository state, reason text, and secrets embedded in those values.\n\nJudge error: {error}\n"
-                    ),
-                    Err(error),
-                )
-            },
-        };
+        return render_attemptless_diagnostic(outcome, &observation, secrets);
     };
     let Some(raw) = diagnostic else {
-        let report = "WARNING: raw judge diagnostics contain command text, paths, repository state, reason text, and may contain secrets embedded in those values. Handle this output as sensitive.\n\nJudge diagnostic data was unavailable.\n"
-            .to_string();
+        let report = format!(
+            "WARNING: raw judge diagnostics contain command text, paths, repository state, reason text, and may contain secrets embedded in those values. Handle this output as sensitive.\n\n{}Judge diagnostic data was unavailable.\n",
+            render_observation(&observation)
+        );
         let result = outcome
             .err()
             .map(|error| redact_judge_error(error, secrets));
@@ -503,13 +685,21 @@ fn render_diagnostic_evaluation(
     );
     match outcome {
         Ok(outcome) => {
-            let rendered = render_outcome(&outcome, Duration::from_millis(attempt.total_ms));
+            let rendered = render_outcome(
+                &outcome,
+                Duration::from_millis(attempt.total_ms),
+                &observation,
+            );
             _ = write!(out, "\n{}", redact_all(&rendered, secrets));
             (redact_all(&out, secrets), Ok(()))
         },
         Err(error) => {
             let error = redact_judge_error(error, secrets);
-            _ = write!(out, "\nJudge error: {error}\n");
+            _ = write!(
+                out,
+                "\n{}Judge error: {error}\n",
+                render_observation(&observation)
+            );
             (redact_all(&out, secrets), Err(error))
         },
     }
@@ -597,23 +787,63 @@ fn resolve_judge_model(
 }
 
 /// Render a judge-path outcome as human-readable inspection output on stdout.
-fn render_outcome(outcome: &JudgeOutcome, latency: Duration) -> String {
+fn render_outcome(
+    outcome: &JudgeOutcome,
+    latency: Duration,
+    observation: &ObservationReport,
+) -> String {
     match outcome {
-        JudgeOutcome::Bypassed => {
-            format!("Verdict: bypassed\nMessage: {JUDGE_BYPASS_MESSAGE}\n")
-        },
+        JudgeOutcome::Bypassed => format!(
+            "Verdict: bypassed\n{}Message: {JUDGE_BYPASS_MESSAGE}\n",
+            render_observation(observation)
+        ),
         // A fast approval prints as the allow it is, with the stage and the
         // observed probability that both output modes report.
         JudgeOutcome::FastApproved { probability, .. } => format!(
-            "Verdict: {}\nStage: {TYPESAFE_STAGE}\nProbability: {probability}\nMessage: {FAST_APPROVAL_MESSAGE}\nLatency: {:.2}s\n",
+            "Verdict: {}\nStage: {TYPESAFE_STAGE}\nProbability: {probability}\n{}Message: {FAST_APPROVAL_MESSAGE}\nLatency: {:.2}s\n",
             decision_label(JudgeDecision::Allow),
+            render_observation(observation),
             latency.as_secs_f32()
         ),
         JudgeOutcome::Verdict {
             verdict,
             overridden,
-        } => render_verdict(verdict, *overridden, latency),
+        } => render_verdict(verdict, *overridden, latency, observation),
     }
+}
+
+/// Render the `TypeSafe` observation as one text line, naming the same bounded
+/// outcome the document reports.
+///
+/// The line is printed for every outcome, including a fast approval, so a
+/// `stage: judge` fallback is as diagnosable in text mode as it is in `--json`:
+/// `absent` means the cascade was never armed and no request was made. A fast
+/// approval's probability repeats the `Probability:` line above it, which keeps
+/// one rule for every outcome: the line reports everything the observation
+/// returned. Only `absent` carries no detail, which is why an empty detail list
+/// prints that it made no request.
+fn render_observation(observation: &ObservationReport) -> String {
+    let details: Vec<String> = [
+        observation
+            .probability
+            .map(|probability| format!("probability {probability}")),
+        observation
+            .failure_class
+            .map(|class| format!("failure {class}")),
+        observation.elapsed_ms.map(|millis| format!("{millis}ms")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let details = if details.is_empty() {
+        "no TypeSafe request".to_string()
+    } else {
+        details.join(", ")
+    };
+    format!(
+        "Observation: {} ({details})\n",
+        observation.outcome.as_str()
+    )
 }
 
 /// The `data.stage` value naming the `TypeSafe` fast-approval stage (ADR 034).
@@ -639,7 +869,12 @@ fn verdict_code(verdict: &JudgeVerdict) -> Option<&str> {
 }
 
 /// Render a verdict as human-readable inspection output on stdout.
-fn render_verdict(verdict: &JudgeVerdict, overridden: bool, latency: Duration) -> String {
+fn render_verdict(
+    verdict: &JudgeVerdict,
+    overridden: bool,
+    latency: Duration,
+    observation: &ObservationReport,
+) -> String {
     use std::fmt::Write as _;
 
     let mut out = format!("Verdict: {}\n", decision_label(verdict.decision));
@@ -652,6 +887,7 @@ fn render_verdict(verdict: &JudgeVerdict, overridden: bool, latency: Duration) -
     if let Some(confidence) = verdict.confidence {
         _ = writeln!(out, "Confidence: {confidence}");
     }
+    out.push_str(&render_observation(observation));
     _ = writeln!(out, "Message: {}", verdict.message);
     _ = writeln!(out, "Latency: {:.2}s", latency.as_secs_f32());
     out
