@@ -20,7 +20,7 @@ model = "jev-1.13.0"
 timeout_ms = 1000
 ```
 
-Shadow answers are stored per trial as metadata and never affect the primary SLO gate or command authorization. Both the existing judge credential and the TypeSafe credential are needed to measure both models. Setting the key without `mode = "shadow"` makes no request.
+Shadow answers are stored per trial as metadata and never affect the primary SLO gate or command authorization. Both the existing judge credential and the TypeSafe credential are needed to measure both models. Setting the key without `mode = "shadow"` makes no request. The benchmark measures the judge, so keep `mode = "shadow"`: under `mode = "cascade"` an observation at or above the fast-approval cutoff approves a case without calling the judge, and that trial reports no verdict.
 
 For a bounded live smoke run, after configuring the observer and credentials, run:
 

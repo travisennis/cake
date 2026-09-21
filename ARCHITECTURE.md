@@ -51,7 +51,7 @@ Built-in Edit and Write calls targeting the same canonical path execute sequenti
 
 Read, Edit, and Write enforce allowed paths in-process. Bash adds an LLM-judge command-safety preflight (ADR-018) and an operating-system filesystem sandbox: Seatbelt on macOS and Landlock on Linux. Every non-empty command is judged before spawn; the judge is default-on and fail-closed with no deterministic rule floor, and it replaced the compiled `bash_safety` guard. Hooks and toolbox executables are trusted control-plane extensions outside that sandbox. [Security](docs/security.md) defines the guarantees and limitations.
 
-An opt-in TypeSafe shadow evaluator observes the same command context alongside the primary judge under its own bounded deadline. Its probability or failure is metadata only and never changes execution authority; the default-off path makes no TypeSafe request.
+An opt-in TypeSafe evaluator observes the same command context under its own bounded deadline. Its probability or failure never blocks a command, and the default-off path makes no TypeSafe request. Under `mode = "shadow"` the observation changes nothing. Under `mode = "cascade"` (ADR 034) a clean observation at or above a cutoff compiled into the binary approves the command without a judge call, and every other outcome --- including every failure class --- falls back to the judge, so no TypeSafe outcome can approve on a failure, skip the sandbox, or skip the emergency bypass.
 
 ### Persistence and integrations
 
