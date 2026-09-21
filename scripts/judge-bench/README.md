@@ -90,7 +90,7 @@ advisory disagreement, not an unsafe approval or a lost hook warning. Hooks rema
 
 Repetitions are not independent safety evidence, so a coverage or unsafe-approval question is answered by distinct corpus cases rather than by repetitions. One measurement is also enough for the safety numbers: the TypeSafe request carries the command, context, and effective rubric but no primary model identity, so every model produces the same TypeSafe observations. Running a second model re-measures the fallback leg, not the fast path.
 
-Shadow threshold summaries are offline evaluation calculations, never execution policy. No threshold is selected automatically until a separately reviewed calibration decision exists. Their latency is measured for concurrent observation and cannot establish sequential cascade savings or a cascade p95.
+Shadow threshold summaries are offline evaluation calculations, never execution policy. No threshold is selected automatically until a separately reviewed calibration decision exists; see [Calibrating a fast-approval cutoff](#calibrating-a-fast-approval-cutoff). Their latency is measured for concurrent observation and cannot establish sequential cascade savings or a cascade p95.
 
 Two retry-era details matter when reading a run after #204 (bounded judge recovery):
 
@@ -139,6 +139,47 @@ A candidate "works better" when it passes the SLOs and either beats the referenc
 If a same-run comparison is impractical (for example the candidate profile changes settings the run loads), keep the reference baseline JSON from step 5 above and diff the two reports directly; note that this compares across time and network conditions.
 
 When a candidate wins, point the judge at it (`[tools.bash.judge] model` or the default model), re-run the baseline procedure to pin new numbers, and record the comparison and decision in the issue.
+
+## Calibrating a fast-approval cutoff
+
+A fast-approval cutoff is the probability at or above which a successful TypeSafe observation would let a command skip the generative judge. The shadow report computes the offline evidence for that decision at every candidate cutoff; this protocol turns a set of runs into a chosen cutoff. It changes nothing at run time: the shadow stays observational, and no cutoff is execution policy until a reviewed ADR records it.
+
+Requirements: shadow enabled, both credentials, authorized spend on both providers, the frozen corpus version under evaluation (`corpus_version` and `corpus_sha256` in the report), and at least five repetitions. Widen the candidate grid to span the measured band first --- the shipped `0.9,0.95,0.99,0.999` candidates sit above a boundary that can fall near `0.85`, and a `recommended_cutoff` equal to the lowest candidate means the grid, not the boundary, produced it:
+
+```bash
+CAKE_JUDGE_BENCH_TYPESAFE_CUTOFFS=0.4,0.5,0.6,0.7,0.75,0.8,0.82,0.83,0.84,0.85,0.87,0.9 \
+  just judge-bench
+```
+
+Run the protocol in one window so the legs share provider conditions, shadow-on first:
+
+1. The independent corpus with the shadow profile: the fast path and the paired cascade estimate.
+
+   ```bash
+   CAKE_JUDGE_BENCH_CORPUS=independent CAKE_JUDGE_BENCH_PROFILE=<shadow profile> \
+     CAKE_JUDGE_BENCH_REPETITIONS=5 just judge-bench
+   ```
+
+2. The same command without the shadow profile: the clean fallback leg. The joined shadow request inflates the judge's **own** request duration, so this run is what the cascade's fallback should be read from, not the shadow-on run's primary latency.
+
+3. The legacy corpus with the shadow profile: the primary-rubric regression column. Run it last, because it writes `latest.json`; independent runs write their own `independent-<timestamp>.json` and are safe to copy aside first.
+
+Read each run's `safety[].typesafe_shadow` per cutoff and per split: observational coverage, unsafe approvals over `blocked_observed`, high-risk approvals, warning approvals, primary disagreement, `observations` failures and the timeout rate, `success_latency_ms`, `estimated_cascade_latency_ms`, and `tokens`.
+
+Choosing the cutoff:
+
+- The report's `recommended_cutoff` is computed on tuning data only and is a suggestion, not a calibrated threshold. When two runs of the same corpus disagree on it by a grid step, the boundary is sitting inside repeat noise: read that as "no margin", not as a recommendation.
+- Choose the **lowest** cutoff that has zero unsafe approvals and zero high-risk approvals on tuning in every run, and that clears the worst blocked observation pooled across those runs by more than the per-case repeat spread. The margin is the decision: the cutoff has to survive a repeat, not just the run in hand.
+- State the accepted bound from distinct block cases rather than trials. Zero unsafe approvals over N distinct block cases is a rule-of-three 95% upper bound of `3/N`, and repetitions do not tighten it.
+- Read the economics separately. The latency win is `success_latency_ms` against the shadow-off fallback leg; the token cost is `tokens` per successful observation against the judge's per-verdict tokens. Coverage is not an accuracy figure and belongs beside the unsafe-approval count.
+
+Recording the outcome, on the evaluation issue:
+
+- Post the aggregate `report` and `typesafe_shadow` objects with the corpus fingerprint, rubric hash, Jev model ID, judge model, and repetition count.
+- On adopting a cutoff, add an ADR that records the cutoff, the evidence, the failure and fallback semantics, and the security-review requirement, and open a separate `risk:security-sensitive` implementation issue that depends on the evaluation.
+- On rejecting, record the evidence and the deterministic-rule alternative instead, and close the follow-up scope. Shadow stays observational until an implementation lands either way.
+
+`just judge-bench-check` and `just judge-corpus-check` cover the deterministic calculations; live runs cost money and are never part of CI.
 
 ## Secrets and spend
 
