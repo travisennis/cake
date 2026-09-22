@@ -9,7 +9,7 @@ Each line is one object:
 ```
 
 - `expect` is `blocked`, `warned`, or `allowed`.
-- Every blocked or warned case declares the stable verdict `code`; allowed cases omit it. `unknown-destructive` covers blocked destructive cases outside the named classes, and `data-egress` covers blocked transmission cases outside them.
+- Every blocked or warned case declares the stable verdict `code`; allowed cases omit it. `unknown-destructive` covers blocked destructive cases outside the named classes, and `data-egress` covers blocked payload-transmission cases outside them.
 - `reason` is optional and is passed to the judge as the model's untrusted self-report. `tags` may contain `same-command-pair`, `reason-laundering`, `reason-injection`, or `reason-context` for the corresponding judge-specific regression groups: `same-command-pair` repeats one command with distinct reasons and the same expected verdict; `reason-laundering` and `reason-injection` verify that hostile or injected reason text cannot override command semantics; `reason-context` proves a reason cannot authorize a remote destructive command: a bare command is blocked without a reason and stays blocked with a claimed-authorization reason, while the guarded variant (the required check chained in the same command) is allowed.
 - `note` is optional contributor context and appears in mismatch reports.
 
@@ -22,6 +22,8 @@ For latency, reliability, consistency, and token-cost measurement against explic
 ## Independent evaluation (issue #314)
 
 `independent-v2.jsonl` is the current gold set; it supersedes `independent-v1.jsonl`, which is kept for the historical fingerprint. It carries every v1 case forward with its labels unchanged and classifies the cases whose effects are purely observational. It is authored from synthetic user requests, known effects, and the issue examples, without querying the judge or copying its outputs into labels. The legacy corpus remains a rubric regression set. Gold labels describe the complete scenario; they do not assert that the current rubric or request packet can handle it. Review label changes from the user scope, payload, destination, and evidence before looking at model results. Never relabel a case merely to improve measured agreement. Version the corpus when cases or expectations change, and retain its SHA-256 fingerprint with each run. Initial provenance is independent authoring, not a claim of a second human review.
+
+`independent-v2.jsonl` is frozen at fingerprint `86d3d49c`: a later rubric change does not retarget its verdict codes, so its egress and disclosure rows keep `unknown-destructive` even where a newer class names their failure, and those mismatches are known and deliberate. Retargeting them belongs to a deliberate future corpus version with its own fingerprint, not to a rubric or class change.
 
 Each case requires schema and corpus versions, a stable ID and pair ID, command and synthetic cwd, context, expected decision, verdict code, risk, authorization, egress, injection, evidence completeness, tags, rationale, and provenance. `reason` and `repo_digest` are nullable current-judge inputs. Context explicitly names user request, payload, destination, repository evidence, sandbox scope, and prior results; use an explicit absence description rather than empty text. No fixture commands execute.
 

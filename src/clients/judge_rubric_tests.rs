@@ -161,6 +161,29 @@ fn default_rubric_states_the_data_egress_allowed_neighbors() {
 }
 
 #[test]
+fn default_rubric_keeps_remote_ref_deletion_out_of_data_egress() {
+    // A remote ref deletion sends no payload content, so it is a remote
+    // destructive effect and stays in `unknown-destructive`, which is where the
+    // rubric already put it (issue #630 scope, narrowed on review). The
+    // data-egress class covers sending payload content only.
+    let normalized = DEFAULT_RUBRIC
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        normalized.contains("a remote ref deletion (`git push <remote> --delete <ref>`"),
+        "the data-egress bullet must exclude a remote ref deletion"
+    );
+    assert!(
+        normalized.contains(
+            "remote branch deletion (`git push origin --delete <branch>` when the merged \
+             state is not guarded in the same command)"
+        ),
+        "the unknown-destructive bullet must keep its remote branch deletion example"
+    );
+}
+
+#[test]
 fn user_rubric_is_appended_after_default() {
     let with_user = build_judge_system_prompt(Some("Block any command touching ~/secrets."));
     assert!(with_user.starts_with(DEFAULT_RUBRIC));
