@@ -15,7 +15,7 @@ use crate::config::model::ResolvedModelConfig;
 use crate::session_telemetry::{
     AgentRunnerTelemetryEvent, ApiAttemptInFlightTelemetry, ApiAttemptPhase, ApiAttemptTelemetry,
     CompensationEventTelemetry, CompensationKind, RequestOverridesSnapshot,
-    RetryScheduledTelemetry,
+    RetryScheduledTelemetry, RetryWaitTelemetry,
 };
 use crate::types::{ApiAttemptTerminalClass, ConversationItem, ReportedUsage, UsagePresence};
 
@@ -495,7 +495,7 @@ impl AgentRunner {
             session_id,
         ) {
             retry::RetryDecision::Retry { status } => {
-                in_flight.report(AgentRunnerTelemetryEvent::RetryScheduled(
+                in_flight.report(AgentRunnerTelemetryEvent::retry_scheduled(
                     RetryScheduledTelemetry::from_status(
                         &status,
                         turn_index,
@@ -503,7 +503,9 @@ impl AgentRunner {
                         request_overrides,
                     ),
                 ));
-                wait_for_retry(&status).await;
+                in_flight.report(AgentRunnerTelemetryEvent::retry_wait(
+                    wait_for_retry(&status, turn_index).await,
+                ));
                 Ok(())
             },
             retry::RetryDecision::RetryWithOverrides { .. } | retry::RetryDecision::DoNotRetry => {
@@ -596,7 +598,7 @@ impl AgentRunner {
             request_overrides,
         ) {
             retry::RetryDecision::Retry { status } => {
-                in_flight.report(AgentRunnerTelemetryEvent::RetryScheduled(
+                in_flight.report(AgentRunnerTelemetryEvent::retry_scheduled(
                     RetryScheduledTelemetry::from_status(
                         &status,
                         turn_index,
@@ -604,18 +606,22 @@ impl AgentRunner {
                         &*request_overrides,
                     ),
                 ));
-                wait_for_retry(&status).await;
+                in_flight.report(AgentRunnerTelemetryEvent::retry_wait(
+                    wait_for_retry(&status, turn_index).await,
+                ));
                 AttemptResult::RetryNeeded
             },
             retry::RetryDecision::RetryWithOverrides { status, overrides } => {
-                in_flight.report(AgentRunnerTelemetryEvent::RetryScheduled(
+                in_flight.report(AgentRunnerTelemetryEvent::retry_scheduled(
                     RetryScheduledTelemetry::from_status(&status, turn_index, true, &overrides),
                 ));
                 in_flight.report(AgentRunnerTelemetryEvent::Compensation(
                     CompensationEventTelemetry::new(CompensationKind::ContextOverflowRetry, None),
                 ));
                 *request_overrides = overrides;
-                wait_for_retry(&status).await;
+                in_flight.report(AgentRunnerTelemetryEvent::retry_wait(
+                    wait_for_retry(&status, turn_index).await,
+                ));
                 AttemptResult::RetryNeeded
             },
             retry::RetryDecision::DoNotRetry => AttemptResult::Terminal(
@@ -730,7 +736,7 @@ impl AgentRunner {
                     *client = build_http_client(true);
                     *disable_connection_reuse = true;
                 }
-                in_flight.report(AgentRunnerTelemetryEvent::RetryScheduled(
+                in_flight.report(AgentRunnerTelemetryEvent::retry_scheduled(
                     RetryScheduledTelemetry::from_status(
                         &status,
                         turn_index,
@@ -738,15 +744,19 @@ impl AgentRunner {
                         request_overrides,
                     ),
                 ));
-                wait_for_retry(&status).await;
+                in_flight.report(AgentRunnerTelemetryEvent::retry_wait(
+                    wait_for_retry(&status, turn_index).await,
+                ));
                 AttemptResult::RetryNeeded
             },
             retry::RetryDecision::RetryWithOverrides { status, overrides } => {
-                in_flight.report(AgentRunnerTelemetryEvent::RetryScheduled(
+                in_flight.report(AgentRunnerTelemetryEvent::retry_scheduled(
                     RetryScheduledTelemetry::from_status(&status, turn_index, true, &overrides),
                 ));
                 *request_overrides = overrides;
-                wait_for_retry(&status).await;
+                in_flight.report(AgentRunnerTelemetryEvent::retry_wait(
+                    wait_for_retry(&status, turn_index).await,
+                ));
                 AttemptResult::RetryNeeded
             },
             retry::RetryDecision::DoNotRetry => AttemptResult::Terminal(error),
@@ -844,7 +854,7 @@ fn elapsed_ms(start: Instant) -> u64 {
     start.elapsed().as_millis().try_into().unwrap_or(u64::MAX)
 }
 
-async fn wait_for_retry(status: &RetryStatus) {
+async fn wait_for_retry(status: &RetryStatus, turn_index: u32) -> RetryWaitTelemetry {
     debug!(
         target: "cake",
         reason = ?status.reason,
@@ -855,8 +865,17 @@ async fn wait_for_retry(status: &RetryStatus) {
         "Retrying API request"
     );
 
+    let started_at = Utc::now();
+    let start = Instant::now();
     if !status.delay.is_zero() {
         sleep(status.delay).await;
+    }
+    RetryWaitTelemetry {
+        turn_index,
+        attempt: status.attempt,
+        started_at,
+        completed_at: Utc::now(),
+        duration_ms: elapsed_ms(start),
     }
 }
 

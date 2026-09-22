@@ -1,20 +1,155 @@
 #!/usr/bin/env python3
-"""Invocation wall-clock context alongside recorded API time, cumulative tool
-work, and scheduled retry delays, plus turn pacing, think time between tasks,
-and the slowest individual operations.
+"""Invocation wall-clock timelines alongside aggregate API, tool, and retry
+measurements, turn pacing, and the slowest individual operations.
 
-Wall time comes from telemetry session_summary; API time from api_attempt
-total_ms (request + response parsing); cumulative tool work from tool_call
-duration_ms; scheduled retry delay from retry_scheduled delay_ms. Tool records
-have no execution intervals, and retry records have no observed wait duration,
-so the report does not derive an exclusive remainder from them. Hook time is
-reported from transcript hook_event records (it overlaps the tool path, so it
-is shown for scale, not added to the breakdown). Think time is the transcript
-gap between a task_complete and the next task_start in the same session.
+Wall time comes from telemetry session_summary. New sidecars carry tool spans
+and observed retry waits; API starts come from api_attempt_in_flight. These
+permit an exclusive, interval-based timeline for each invocation while old
+records remain unobserved. Aggregate tool work still overlaps and scheduled
+retry delay is not observed wait. Hook time comes from transcript hook_event
+records and is shown separately because it can overlap the tool path.
 """
+
+from collections import defaultdict
 
 import cakelib
 from cakelib import fmt_bytes, fmt_int, fmt_ms, fmt_pct, percentile, print_header, print_table
+
+
+TIMELINE_CATEGORIES = (
+    "main provider", "retry wait", "delegated agent", "Bash safety models",
+    "Bash remaining", "other tools", "parallel activity", "unobserved",
+)
+
+
+def _ms(value: str | None) -> float | None:
+    parsed = cakelib.parse_ts(value)
+    return parsed.timestamp() * 1000 if parsed is not None else None
+
+
+def _span(record: dict) -> tuple[float, float] | None:
+    start, end = _ms(record.get("started_at")), _ms(record.get("completed_at"))
+    if start is None or end is None or end < start:
+        return None
+    return start, end
+
+
+def invocation_timeline(inv: cakelib.Invocation) -> tuple[dict[str, float], dict[str, int]] | None:
+    """Assign each observed instant once; keep missing historical spans visible."""
+    if not inv.summary or (end := _ms(inv.summary.get("timestamp"))) is None:
+        return None
+    wall = inv.summary.get("duration_ms") or 0
+    begin = end - wall
+    spans: list[tuple[float, float, str]] = []
+    missing = defaultdict(int)
+
+    def add(start: float, stop: float, category: str) -> None:
+        start, stop = max(start, begin), min(stop, end)
+        if stop > start:
+            spans.append((start, stop, category))
+
+    # One in-flight attempt may have two phase records. Its earliest start is
+    # the request start; the completed attempt's timestamp is its end.
+    api_starts = {}
+    for record in inv.other:
+        if record.get("type") != "api_attempt_in_flight":
+            continue
+        key = (record.get("turn_index"), record.get("attempt"))
+        start = _ms(record.get("started_at"))
+        if start is not None:
+            api_starts[key] = min(start, api_starts.get(key, start))
+    for attempt in inv.attempts:
+        key = (attempt.get("turn_index"), attempt.get("attempt"))
+        start, stop = api_starts.get(key), _ms(attempt.get("timestamp"))
+        if start is None or stop is None or stop < start:
+            missing["provider attempts"] += 1
+        else:
+            add(start, stop, "main provider")
+
+    for wait in inv.retry_waits:
+        if (span := _span(wait)) is None:
+            missing["retry waits"] += 1
+        else:
+            add(*span, "retry wait")
+    if inv.retries and not inv.retry_waits:
+        missing["retry waits"] += len(inv.retries)
+
+    # Judge attempts and TypeSafe observations identify the model time inside
+    # a Bash call. Shadow observations may overlap judging, so the reported
+    # safety slice uses the larger of the two totals, a conservative estimate.
+    judge_ms = defaultdict(int)
+    shadow_ms = defaultdict(int)
+    for attempt in inv.judge_attempts:
+        if digest := attempt.get("call_id"):
+            judge_ms[digest] += (attempt.get("total_ms") or 0) + (attempt.get("retry_delay_ms") or 0)
+    for observation in inv.other:
+        if observation.get("type") == "type_safe_shadow" and (digest := observation.get("call_id")):
+            shadow_ms[digest] += observation.get("elapsed_ms") or 0
+
+    for tool in inv.tool_calls:
+        if (span := _span(tool)) is None:
+            missing["tool calls"] += 1
+            continue
+        start, stop = span
+        name = tool.get("name")
+        if name == "tb__subagent":
+            add(start, stop, "delegated agent")
+        elif name == "Bash":
+            digest = cakelib.call_id_digest(tool.get("call_id", ""))
+            safety = min(stop - start, max(judge_ms[digest], shadow_ms[digest]))
+            add(start, start + safety, "Bash safety models")
+            add(start + safety, stop, "Bash remaining")
+        else:
+            add(start, stop, "other tools")
+
+    totals = {category: 0.0 for category in TIMELINE_CATEGORIES}
+    boundaries = {begin, end}
+    for start, stop, _ in spans:
+        boundaries.update((start, stop))
+    boundaries = sorted(boundaries)
+    for left, right in zip(boundaries, boundaries[1:]):
+        active = [category for start, stop, category in spans if start < right and stop > left]
+        category = "unobserved" if not active else active[0] if len(active) == 1 else "parallel activity"
+        totals[category] += right - left
+    return totals, dict(missing)
+
+
+def print_invocation_timelines(data: cakelib.Dataset) -> None:
+    complete = [inv for inv in data.invocations if inv.summary]
+    selected = data.selected_invocation
+    shown = complete if selected else sorted(
+        complete, key=lambda inv: -(inv.summary.get("duration_ms") or 0)
+    )[:5]
+    print("\nPer-invocation wall time (selected invocations, or five slowest):")
+    for inv in shown:
+        result = invocation_timeline(inv)
+        if result is None:
+            print(f"  {inv.session_id} / {inv.invocation_id}: precise timeline unavailable")
+            continue
+        totals, missing = result
+        print(f"\n  {inv.session_id} / {inv.invocation_id}  "
+              f"wall {fmt_ms(inv.summary['duration_ms'])}")
+        print_table(["activity", "exclusive wall time"], [
+            [category, fmt_ms(totals[category])]
+            for category in TIMELINE_CATEGORIES if totals[category] >= 1
+        ])
+        if missing:
+            print("  Missing spans: " + ", ".join(
+                f"{count} {name}" for name, count in sorted(missing.items())
+            ))
+        slow = sorted(
+            [(t.get("duration_ms") or 0, t.get("name", "tool")) for t in inv.tool_calls]
+            + [(a.get("total_ms") or 0, "main provider") for a in inv.attempts],
+            reverse=True,
+        )[:3]
+        if slow:
+            print("  Slowest operations: " + ", ".join(
+                f"{name} {fmt_ms(duration)}" for duration, name in slow
+            ))
+    print("\nBash safety model time is estimated within each Bash span; Bash remaining "
+          "also includes command setup, execution, output handling, and hooks. "
+          "Parallel activity is counted once. Unobserved includes setup, "
+          "unmeasured waits, and historical records without spans.")
 
 
 def run(data: cakelib.Dataset) -> None:
@@ -24,6 +159,8 @@ def run(data: cakelib.Dataset) -> None:
     if not data.invocations:
         print("\nNo telemetry invocations in window.")
         return
+
+    print_invocation_timelines(data)
 
     complete = [inv for inv in data.invocations if inv.summary]
     incomplete = len(data.invocations) - len(complete)
@@ -51,9 +188,9 @@ def run(data: cakelib.Dataset) -> None:
             ["scheduled retry delay", fmt_ms(retry_wait), "actual wait not measured"],
         ],
     )
-    print("\nExclusive remainder is unavailable: tool calls record durations without "
-          "execution intervals, and actual retry wait elapsed time is unavailable "
-          "because telemetry records only the scheduled delay.")
+    print("\nAggregate durations are cumulative work, so they cannot be subtracted "
+          "from wall time. Use the per-invocation timeline for exclusive "
+          "attribution when span records are available.")
     if incomplete:
         noun = "invocation" if incomplete == 1 else "invocations"
         verb = "has" if incomplete == 1 else "have"

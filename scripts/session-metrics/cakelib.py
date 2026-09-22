@@ -53,6 +53,14 @@ def build_arg_parser(description: str) -> argparse.ArgumentParser:
         "--project", default=None,
         help="Only include sessions/invocations whose working directory contains this substring",
     )
+    parser.add_argument(
+        "--session", default=None,
+        help="Only include the session with this exact ID",
+    )
+    parser.add_argument(
+        "--invocation", default=None,
+        help="Only include the invocation with this exact ID",
+    )
     return parser
 
 
@@ -272,6 +280,7 @@ class Invocation:
     attempts: list[dict] = field(default_factory=list)
     judge_attempts: list[dict] = field(default_factory=list)
     retries: list[dict] = field(default_factory=list)
+    retry_waits: list[dict] = field(default_factory=list)
     tool_calls: list[dict] = field(default_factory=list)
     compensations: list[dict] = field(default_factory=list)
     summary: dict | None = None
@@ -299,7 +308,7 @@ class Invocation:
 
     def _records(self) -> list[dict]:
         recs = []
-        for group in (self.attempts, self.judge_attempts, self.retries,
+        for group in (self.attempts, self.judge_attempts, self.retries, self.retry_waits,
                       self.tool_calls, self.compensations, self.other):
             recs.extend(group)
         if self.init is not None:
@@ -318,6 +327,7 @@ class Dataset:
     cutoff: datetime | None
     session_parse_errors: int = 0
     telemetry_parse_errors: int = 0
+    selected_invocation: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -350,6 +360,12 @@ def load(ns: argparse.Namespace) -> Dataset:
 
     sessions, session_errors = load_sessions(sessions_dir, cutoff, ns.model, ns.project)
     invocations, telemetry_errors = load_telemetry(telemetry_dir, cutoff, ns.model, ns.project)
+    if ns.session:
+        sessions = [s for s in sessions if s.id == ns.session]
+        invocations = [inv for inv in invocations if inv.session_id == ns.session]
+    if ns.invocation:
+        invocations = [inv for inv in invocations if inv.invocation_id == ns.invocation]
+        sessions = [s for s in sessions if any(inv.session_id == s.id for inv in invocations)]
 
     return Dataset(
         sessions=sessions,
@@ -359,6 +375,7 @@ def load(ns: argparse.Namespace) -> Dataset:
         cutoff=cutoff,
         session_parse_errors=session_errors,
         telemetry_parse_errors=telemetry_errors,
+        selected_invocation=bool(ns.session or ns.invocation),
     )
 
 
@@ -451,6 +468,8 @@ def load_telemetry(
                         inv.judge_attempts.append(rec)
                     elif t == "retry_scheduled":
                         inv.retries.append(rec)
+                    elif t == "retry_wait":
+                        inv.retry_waits.append(rec)
                     elif t == "tool_call":
                         inv.tool_calls.append(rec)
                     elif t == "compensation":

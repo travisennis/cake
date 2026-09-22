@@ -108,12 +108,15 @@ fn immediate_tool_error_result(
     output: String,
     turn_index: u32,
 ) -> ToolRunResult {
+    let now = chrono::Utc::now();
     ToolRunResult {
         telemetry: ToolCallTelemetry {
             turn_index,
             call_id: call_id.to_string(),
             name: name.to_string(),
             duration_ms: 0,
+            started_at: Some(now),
+            completed_at: Some(now),
             output_bytes: output.len(),
             was_error: true,
         },
@@ -548,6 +551,7 @@ impl Agent {
                 prefix_notice,
                 additional_context,
             } => {
+                let started_at = chrono::Utc::now();
                 let start = Instant::now();
                 let result = self
                     .tools
@@ -617,12 +621,15 @@ impl Agent {
                 output = append_hook_context(output, &additional_context);
 
                 let duration_ms = start.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+                let completed_at = chrono::Utc::now();
                 ToolRunResult {
                     telemetry: ToolCallTelemetry {
                         turn_index,
                         call_id: call_id.clone(),
                         name,
                         duration_ms,
+                        started_at: Some(started_at),
+                        completed_at: Some(completed_at),
                         output_bytes: output.len(),
                         was_error,
                     },
@@ -887,7 +894,7 @@ impl Agent {
             reasoning_max_tokens: self.config.model_config.reasoning_max_tokens,
             context_overflow_retry_used: false,
         };
-        self.append_runner_telemetry(AgentRunnerTelemetryEvent::RetryScheduled(
+        self.append_runner_telemetry(AgentRunnerTelemetryEvent::retry_scheduled(
             RetryScheduledTelemetry::from_status(
                 &status,
                 self.turn_count,
@@ -1499,6 +1506,8 @@ mod helper_tests {
                 call_id: "call-1".to_string(),
                 name: "Read".to_string(),
                 duration_ms: 1,
+                started_at: None,
+                completed_at: None,
                 output_bytes: 11,
                 was_error: false,
             },

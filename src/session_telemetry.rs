@@ -287,12 +287,26 @@ pub struct RetryScheduledTelemetry {
     pub request_overrides: RequestOverridesSnapshot,
 }
 
+/// Elapsed backoff actually awaited after a scheduled main-provider retry.
+#[derive(Debug, Clone, Serialize)]
+pub struct RetryWaitTelemetry {
+    pub turn_index: u32,
+    pub attempt: u32,
+    pub started_at: DateTime<Utc>,
+    pub completed_at: DateTime<Utc>,
+    pub duration_ms: u64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ToolCallTelemetry {
     pub turn_index: u32,
     pub call_id: String,
     pub name: String,
     pub duration_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<DateTime<Utc>>,
     pub output_bytes: usize,
     pub was_error: bool,
 }
@@ -307,8 +321,24 @@ pub struct ToolCallTelemetry {
 pub enum AgentRunnerTelemetryEvent {
     ApiAttemptInFlight(ApiAttemptInFlightTelemetry),
     ApiAttempt(ApiAttemptTelemetry),
-    RetryScheduled(RetryScheduledTelemetry),
+    Retry(RetryTelemetryEvent),
     Compensation(CompensationEventTelemetry),
+}
+
+#[derive(Debug, Clone)]
+pub enum RetryTelemetryEvent {
+    Scheduled(RetryScheduledTelemetry),
+    Wait(RetryWaitTelemetry),
+}
+
+impl AgentRunnerTelemetryEvent {
+    pub const fn retry_scheduled(retry: RetryScheduledTelemetry) -> Self {
+        Self::Retry(RetryTelemetryEvent::Scheduled(retry))
+    }
+
+    pub const fn retry_wait(wait: RetryWaitTelemetry) -> Self {
+        Self::Retry(RetryTelemetryEvent::Wait(wait))
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -574,6 +604,13 @@ pub enum SessionTelemetryRecord {
         timestamp: DateTime<Utc>,
         #[serde(flatten)]
         retry: RetryScheduledTelemetry,
+    },
+    RetryWait {
+        session_id: String,
+        invocation_id: String,
+        timestamp: DateTime<Utc>,
+        #[serde(flatten)]
+        wait: RetryWaitTelemetry,
     },
     ToolCall {
         session_id: String,
@@ -1039,6 +1076,46 @@ mod tests {
         assert_eq!(record["type"], "judge_attempt");
         assert_eq!(record["session_id"], "session");
         assert_eq!(record["attempt"], 1);
+    }
+
+    #[test]
+    fn tool_and_retry_wait_spans_are_additive_metadata() {
+        let start = Utc::now();
+        let end = start + chrono::Duration::milliseconds(12);
+        let tool = SessionTelemetryRecord::ToolCall {
+            session_id: "session".to_string(),
+            invocation_id: "invocation".to_string(),
+            timestamp: end,
+            tool_call: ToolCallTelemetry {
+                turn_index: 1,
+                call_id: "call".to_string(),
+                name: "Read".to_string(),
+                duration_ms: 12,
+                started_at: Some(start),
+                completed_at: Some(end),
+                output_bytes: 0,
+                was_error: false,
+            },
+        };
+        let wait = SessionTelemetryRecord::RetryWait {
+            session_id: "session".to_string(),
+            invocation_id: "invocation".to_string(),
+            timestamp: end,
+            wait: RetryWaitTelemetry {
+                turn_index: 1,
+                attempt: 2,
+                started_at: start,
+                completed_at: end,
+                duration_ms: 12,
+            },
+        };
+        let tool = serde_json::to_value(tool).unwrap();
+        let wait = serde_json::to_value(wait).unwrap();
+        assert_eq!(tool["type"], "tool_call");
+        assert_eq!(tool["started_at"], wait["started_at"]);
+        assert_eq!(tool["completed_at"], wait["completed_at"]);
+        assert_eq!(wait["type"], "retry_wait");
+        assert_eq!(wait["duration_ms"], 12);
     }
 
     #[test]
