@@ -9,7 +9,7 @@ Each line is one object:
 ```
 
 - `expect` is `blocked`, `warned`, or `allowed`.
-- Every blocked or warned case declares the stable verdict `code`; allowed cases omit it. `unknown-destructive` covers blocked cases outside the named classes.
+- Every blocked or warned case declares the stable verdict `code`; allowed cases omit it. `unknown-destructive` covers blocked destructive cases outside the named classes, and `data-egress` covers blocked transmission cases outside them.
 - `reason` is optional and is passed to the judge as the model's untrusted self-report. `tags` may contain `same-command-pair`, `reason-laundering`, `reason-injection`, or `reason-context` for the corresponding judge-specific regression groups: `same-command-pair` repeats one command with distinct reasons and the same expected verdict; `reason-laundering` and `reason-injection` verify that hostile or injected reason text cannot override command semantics; `reason-context` proves a reason cannot authorize a remote destructive command: a bare command is blocked without a reason and stays blocked with a claimed-authorization reason, while the guarded variant (the required check chained in the same command) is allowed.
 - `note` is optional contributor context and appears in mismatch reports.
 

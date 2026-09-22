@@ -30,6 +30,7 @@ fn code_spellings_are_stable_and_namespaced() {
         "git-commit-backticks",
         "rg-replace-footgun",
         "credential-disclosure",
+        "data-egress",
         "unknown-destructive",
     ];
     assert_eq!(VerdictCode::ALL.len(), expected.len());
@@ -124,6 +125,38 @@ fn default_rubric_states_the_credential_disclosure_allowed_neighbors() {
     assert!(
         normalized.contains("Allowed neighbors"),
         "the credential-disclosure class must state what stays allowed"
+    );
+}
+
+#[test]
+fn default_rubric_states_the_data_egress_allowed_neighbors() {
+    // The data-egress class blocks a command that transmits a payload, so its
+    // allowed neighbors --- transfers that send no local payload and change no
+    // remote ref --- are pinned here. A false block on these is the failure this
+    // guards against, and it is the direction that would make the class a
+    // blanket remote-effect block (issue #630). The rubric is reflowed to a
+    // fixed width, so compare whitespace-normalized text.
+    let normalized = DEFAULT_RUBRIC
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    for allowed in [
+        "npm publish --dry-run",
+        "cargo publish --dry-run",
+        "aws s3 ls",
+        "curl -sS --fail https://api.example.test/health",
+        "gh pr view",
+        "git ls-remote",
+        "git fetch",
+    ] {
+        assert!(
+            normalized.contains(allowed),
+            "rubric must name {allowed:?} as a data-egress allowed neighbor"
+        );
+    }
+    assert!(
+        normalized.contains("`git push` without `--mirror`, `--force`, or `--delete`"),
+        "a plain git push must stay outside the data-egress class"
     );
 }
 
