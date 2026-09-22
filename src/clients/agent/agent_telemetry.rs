@@ -114,6 +114,12 @@ fn runner_telemetry_terminal_record(
                 retry,
             }
         },
+        AgentRunnerTelemetryEvent::RetryWait(wait) => SessionTelemetryRecord::RetryWait {
+            session_id: context.session_id,
+            invocation_id: context.invocation_id,
+            timestamp: chrono::Utc::now(),
+            wait,
+        },
         AgentRunnerTelemetryEvent::Compensation(event) => SessionTelemetryRecord::Compensation {
             session_id: context.session_id,
             invocation_id: context.invocation_id,

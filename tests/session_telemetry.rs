@@ -434,6 +434,15 @@ async fn session_telemetry_records_retry_attempts() {
         }),
         "{records:#?}"
     );
+    assert!(
+        records.iter().any(|record| {
+            record["type"] == "retry_wait"
+                && record["started_at"].is_string()
+                && record["completed_at"].is_string()
+                && record["duration_ms"].is_number()
+        }),
+        "observed retry wait should follow the scheduled retry: {records:#?}"
+    );
 }
 
 #[tokio::test]
@@ -933,6 +942,15 @@ async fn session_telemetry_records_compensation_events() {
 
     assert_eq!(fs::read_to_string(&file).unwrap(), "hey");
     let records = telemetry_records(&env);
+    let tool_spans = records
+        .iter()
+        .filter(|record| {
+            record["type"] == "tool_call"
+                && record["started_at"].is_string()
+                && record["completed_at"].is_string()
+        })
+        .count();
+    assert_eq!(tool_spans, 2, "both Edit calls need spans: {records:#?}");
     let compensations = records
         .iter()
         .filter(|record| record["type"] == "compensation")
