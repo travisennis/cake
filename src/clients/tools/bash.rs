@@ -1611,9 +1611,10 @@ fn script_judge_request(
     cwd: &Path,
     raw_call_id: Option<&str>,
 ) -> Result<JudgeRequest, super::ToolError> {
-    let mut request = JudgeRequest::new(args.command.clone(), cwd.to_path_buf(), args.reason.clone())
-        .with_repo_digest(repo_state_digest(cwd))
-        .with_call_id(raw_call_id.map(String::from));
+    let mut request =
+        JudgeRequest::new(args.command.clone(), cwd.to_path_buf(), args.reason.clone())
+            .with_repo_digest(repo_state_digest(cwd))
+            .with_call_id(raw_call_id.map(String::from));
     request.script_evidence =
         crate::clients::tools::script_evidence::collect(context, &args.command).map_err(|detail| {
             // The generic unavailable-judge helper would misdescribe this

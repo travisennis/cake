@@ -31,6 +31,10 @@ Enumerated bypass classes are shell expansion, quoting, compound commands and cw
 
 Interpreter identity, startup files, and environment-driven behavior are not verified. Script operands resolve against the tool cwd; a missing cwd file fails collection rather than collecting a PATH alternative. Interpreter options (including `+` forms), wrappers such as `env` or `busybox`, and arbitrary interpreter paths remain unobserved. These limits apply equally to the expanded Bourne-family set.
 
+### Evidence completeness and fast approval
+
+A command whose preflight collected script evidence is never eligible for the `TypeSafe` fast approval the cascade provides ([ADR-034](034-typesafe-judge-cascade-cutoff.md)). The observation request state carries the command, working directory, repository digest, and reason, and deliberately never script contents, so an observation made for such a command would approve blind to evidence the generative judge was shown. The cascade therefore makes no `TypeSafe` request at all for that command --- no token is spent on an observation that could never authorize --- and the judge decides with the evidence in hand ([ADR-018](018-llm-judge-command-gate.md)). The disclosure surface of ADR-033 and ADR-034 is unchanged: script contents reach the generative judge only. Script contents must reach both stages, or neither stage may approve.
+
 ### Consequences
 
 The model can inspect ordinary script invocations without command rewriting. Script contents are sent to the configured judge provider, like Read tool results sent to the agent provider. Normal telemetry contains no script text. Tool output identifies the observed path without echoing contents. Introspection and corpus callers without a tool context report that evidence was not collected; they do not silently read arbitrary host files.

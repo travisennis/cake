@@ -2431,6 +2431,24 @@ async fn mount_typesafe(server: &MockServer, probability: f64) {
     mount_typesafe_body(server, typesafe_response(probability)).await;
 }
 
+/// Mount a judge endpoint answering one `verdict`, expecting `times` calls.
+async fn mount_judge_verdict(server: &MockServer, verdict: &str, times: u64) {
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(chat_response(verdict)))
+        .expect(times)
+        .mount(server)
+        .await;
+}
+
+/// Mount one `TypeSafe` answer with `probability`, expecting `times` requests.
+async fn mount_typesafe_expecting(server: &MockServer, probability: f64, times: u64) {
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(typesafe_response(probability)))
+        .expect(times)
+        .mount(server)
+        .await;
+}
+
 /// Wire the `TypeSafe` leg that must fail as `class`, returning `None` for
 /// `client_configuration` (a cascade configured with no client at all).
 ///
@@ -2838,6 +2856,101 @@ async fn cascade_makes_no_typesafe_request_when_off_or_bypassed() {
     .await;
     assert_eq!(bypassed.outcome, Ok(JudgeOutcome::Bypassed));
     assert!(bypassed.shadow.is_none());
+    typesafe_server.verify().await;
+}
+
+/// A judge request carrying collected script evidence, as the Bash preflight
+/// builds one (ADR 035).
+fn request_with_script_evidence(command: &str) -> JudgeRequest {
+    let mut request = request(command, None);
+    request.script_evidence = Some(ScriptEvidence {
+        path: "/work/project/job.sh".to_string(),
+        contents: "printf observed-script".to_string(),
+    });
+    request
+}
+
+#[tokio::test]
+async fn cascade_makes_no_observation_when_script_evidence_was_collected() {
+    // Script contents reach the generative judge and never the `TypeSafe`
+    // request state, so a command whose referenced script was collected must
+    // not be eligible for fast approval: it makes no observation at all, and
+    // the judge decides --- for an allow and for a block alike (ADR 035,
+    // ADR 034, ADR 018).
+    for (verdict, expected) in [
+        (
+            r#"{"verdict":"allow","message":"Safe"}"#,
+            JudgeDecision::Allow,
+        ),
+        (
+            r#"{"verdict":"block","code":"destructive-rm","message":"Use a narrower delete."}"#,
+            JudgeDecision::Block,
+        ),
+    ] {
+        let judge_server = MockServer::start().await;
+        let typesafe_server = MockServer::start().await;
+        // `expect(1)` on the judge and `expect(0)` on the observation are the
+        // assertions: the judge decides and no observation request is made.
+        // The observation would fast-approve at 0.99 if it were sent at all.
+        mount_judge_verdict(&judge_server, verdict, 1).await;
+        mount_typesafe_expecting(&typesafe_server, 0.99, 0).await;
+
+        let evaluation = evaluate_command_observed(
+            &cascade_client(&judge_server, &typesafe_server),
+            &cascade_settings(),
+            request_with_script_evidence("bash job.sh"),
+            None,
+            false,
+        )
+        .await;
+
+        let error = format!("{expected:?} must be decided by the judge");
+        let JudgeOutcome::Verdict {
+            verdict,
+            overridden,
+        } = evaluation
+            .outcome
+            .unwrap_or_else(|e| panic!("{error}: {e}"))
+        else {
+            panic!("{error}: a collected script must not be fast-approved");
+        };
+        assert_eq!(verdict.decision, expected, "{error}");
+        assert!(!overridden, "{error}");
+        assert_eq!(evaluation.attempts.len(), 1, "{error}");
+        assert!(
+            evaluation.shadow.is_none(),
+            "{error}: no observation may be made or reported"
+        );
+        judge_server.verify().await;
+        typesafe_server.verify().await;
+    }
+}
+
+#[tokio::test]
+async fn cascade_still_fast_approves_a_request_without_script_evidence() {
+    // The gate keys on collected evidence alone: the same clean observation at
+    // or above the cutoff still fast-approves a request that carries none
+    // (ADR 034 preserved).
+    let judge_server = MockServer::start().await;
+    let typesafe_server = MockServer::start().await;
+    mount_judge_allow(&judge_server, 0).await;
+    mount_typesafe(&typesafe_server, 0.99).await;
+
+    let evaluation = evaluate_command_observed(
+        &cascade_client(&judge_server, &typesafe_server),
+        &cascade_settings(),
+        request("bash job.sh", None),
+        None,
+        false,
+    )
+    .await;
+
+    let Ok(JudgeOutcome::FastApproved { probability, .. }) = evaluation.outcome else {
+        panic!("an unobserved request must still fast-approve");
+    };
+    assert_probability(Some(probability), 0.99);
+    assert!(evaluation.attempts.is_empty());
+    judge_server.verify().await;
     typesafe_server.verify().await;
 }
 
