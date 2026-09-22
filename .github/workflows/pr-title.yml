@@ -1,8 +1,7 @@
 name: PR Title
 
-# GitHub uses the PR title as the default squash-commit subject when a PR has
-# multiple commits. Recheck edits so an old passing result cannot survive a
-# title change.
+# Cake configures the PR title as the default squash-commit subject. Recheck
+# edits so an old passing result cannot survive a title change.
 on:
   pull_request:
     types: [opened, reopened, synchronize, edited]
