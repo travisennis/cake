@@ -123,7 +123,7 @@ def find_prompt_assets(root: str) -> list[str]:
 
 
 def count_prose_words(filepath: str) -> int:
-    """Return the word count of a Markdown file, ignoring fenced code blocks.
+    """Return the word count of a prose file, ignoring fenced code blocks.
 
     A fence is a line whose first non-space characters are ``` or ~~~. Fences
     toggle in and out of code; the fence lines themselves are not counted.

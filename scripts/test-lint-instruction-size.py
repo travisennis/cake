@@ -7,13 +7,14 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from types import ModuleType
 import unittest
 
 
 SCRIPT = Path(__file__).resolve().with_name("lint-instruction-size.py")
 
 
-def load_module():
+def load_module() -> ModuleType:
     """Import the hyphenated report script as a module."""
     spec = importlib.util.spec_from_file_location("lint_instruction_size", SCRIPT)
     assert spec is not None and spec.loader is not None
