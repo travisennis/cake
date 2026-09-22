@@ -2,7 +2,9 @@ use super::*;
 use crate::clients::judge::{JudgeDecision, JudgeError, judge_is_enabled};
 use crate::config::ModelDefinition;
 use crate::config::model::ApiType;
-use crate::config::settings::{JudgeSettings, ResolvedLimits, SandboxSettings, SkillSettings};
+use crate::config::settings::{
+    JudgeSettings, ResolvedLimits, SandboxSettings, SkillSettings, TypeSafeMode, TypeSafeSettings,
+};
 use clap::CommandFactory;
 use std::collections::HashMap;
 use wiremock::matchers::method;
@@ -705,6 +707,10 @@ async fn bash_check_bypass_setting_skips_judge() {
         output.contains("Verdict: bypassed"),
         "bypass must render as bypassed, got:\n{output}"
     );
+    assert!(
+        output.contains("Observation: absent (no TypeSafe request)"),
+        "a bypassed judge makes no observation, got:\n{output}"
+    );
     mock_server.verify().await;
 }
 
@@ -813,6 +819,198 @@ async fn bash_check_diagnostic_bypass_short_circuits_broken_judge_config() {
     assert!(report.error.is_none());
 }
 
+// =============================================================================
+// The TypeSafe observation report (issue #616)
+// =============================================================================
+
+/// One fabricated `TypeSafe` observation, so the classifier can be driven
+/// without a provider call.
+fn typesafe_observation(
+    probability: Option<f32>,
+    failure_class: Option<&'static str>,
+    elapsed_ms: u64,
+) -> TypeSafeObservation {
+    TypeSafeObservation {
+        elapsed: Duration::from_millis(elapsed_ms),
+        model: Some("jev-1.13.0".to_string()),
+        probability,
+        usage_input_tokens: None,
+        usage_output_tokens: None,
+        failure_class,
+    }
+}
+
+/// The judge's own `allow` outcome, for the cases the observation did not
+/// decide.
+fn judge_allow_outcome() -> JudgeOutcome {
+    JudgeOutcome::Verdict {
+        verdict: JudgeVerdict {
+            decision: JudgeDecision::Allow,
+            code: None,
+            message: "Safe".to_string(),
+            confidence: Some(0.9),
+        },
+        overridden: false,
+    }
+}
+
+/// Assert the document's `data.observation` object, which every verdict carries
+/// whether or not the cascade was armed (issue #616).
+///
+/// The probability is compared as the decimal the document prints, which is what
+/// `data.probability` asserts elsewhere, rather than as the `f32` the pipeline
+/// holds.
+fn assert_observation(
+    parsed: &serde_json::Value,
+    outcome: &str,
+    probability: Option<f64>,
+    failure_class: Option<&str>,
+) {
+    let observation = &parsed["data"]["observation"];
+    assert_eq!(observation["outcome"], outcome);
+    assert_eq!(observation["probability"], serde_json::json!(probability));
+    assert_eq!(
+        observation["failure_class"],
+        serde_json::json!(failure_class)
+    );
+}
+
+/// Assert the document reports no `TypeSafe` request at all.
+fn assert_absent_observation(parsed: &serde_json::Value) {
+    assert_observation(parsed, "absent", None, None);
+    assert_eq!(
+        parsed["data"]["observation"]["elapsed_ms"],
+        serde_json::Value::Null
+    );
+}
+
+#[test]
+fn classify_names_each_observation_outcome() {
+    let clean = typesafe_observation(Some(0.82), None, 132);
+    let failed = typesafe_observation(None, Some("timeout"), 100);
+
+    let cases = [
+        // No request at all: the mode is off, or the judge never ran.
+        (
+            TypeSafeMode::Off,
+            judge_allow_outcome(),
+            None,
+            ObservationOutcome::Absent,
+        ),
+        (
+            TypeSafeMode::Cascade,
+            JudgeOutcome::Bypassed,
+            None,
+            ObservationOutcome::Absent,
+        ),
+        // An observation that carried no authority, and the two cascade
+        // fallbacks the judge decided.
+        (
+            TypeSafeMode::Shadow,
+            judge_allow_outcome(),
+            Some(clean.clone()),
+            ObservationOutcome::Shadow,
+        ),
+        (
+            TypeSafeMode::Cascade,
+            judge_allow_outcome(),
+            Some(clean.clone()),
+            ObservationOutcome::BelowCutoff,
+        ),
+        (
+            TypeSafeMode::Cascade,
+            judge_allow_outcome(),
+            Some(failed),
+            ObservationOutcome::Failed,
+        ),
+        (
+            TypeSafeMode::Cascade,
+            JudgeOutcome::FastApproved {
+                probability: 0.91,
+                elapsed: Duration::from_millis(250),
+            },
+            Some(clean),
+            ObservationOutcome::Approved,
+        ),
+    ];
+
+    for (mode, outcome, observation, expected) in cases {
+        let report =
+            ObservationReport::classify(observation.as_ref(), mode, is_fast_approval(&outcome));
+        assert_eq!(report.outcome, expected, "{mode:?} {outcome:?}");
+        assert_eq!(
+            report.elapsed_ms.is_some(),
+            observation.is_some(),
+            "an elapsed time is reported exactly when a request was made"
+        );
+    }
+
+    // `mode = "off"` makes no request, so this pair is unreachable. It must
+    // still report the absence the mode states rather than the `shadow` label a
+    // non-cascade comparison would hand a measured observation.
+    assert_eq!(
+        ObservationReport::classify(
+            Some(&typesafe_observation(Some(0.82), None, 132)),
+            TypeSafeMode::Off,
+            false,
+        ),
+        ObservationReport::absent()
+    );
+}
+
+#[test]
+fn classify_reports_what_the_observation_measured() {
+    assert_eq!(
+        ObservationReport::classify(
+            Some(&typesafe_observation(Some(0.82), None, 132)),
+            TypeSafeMode::Cascade,
+            false,
+        ),
+        ObservationReport {
+            outcome: ObservationOutcome::BelowCutoff,
+            probability: Some(0.82),
+            failure_class: None,
+            elapsed_ms: Some(132),
+        }
+    );
+    assert_eq!(
+        ObservationReport::classify(
+            Some(&typesafe_observation(None, Some("timeout"), 100)),
+            TypeSafeMode::Cascade,
+            false,
+        ),
+        ObservationReport {
+            outcome: ObservationOutcome::Failed,
+            probability: None,
+            failure_class: Some("timeout"),
+            elapsed_ms: Some(100),
+        }
+    );
+}
+
+#[test]
+fn observation_outcome_labels_match_serialized_values() {
+    // The text line and the document must name one vocabulary: `as_str` is what
+    // `Observation:` prints and the derived `Serialize` is what
+    // `data.observation.outcome` carries, so both are pinned to the same list
+    // instead of two spellings being left to drift apart.
+    let cases = [
+        (ObservationOutcome::Absent, "absent"),
+        (ObservationOutcome::Shadow, "shadow"),
+        (ObservationOutcome::Approved, "approved"),
+        (ObservationOutcome::BelowCutoff, "below_cutoff"),
+        (ObservationOutcome::Failed, "failed"),
+    ];
+
+    for (outcome, expected) in cases {
+        assert_eq!(outcome.as_str(), expected);
+        assert_eq!(
+            serde_json::to_value(outcome).unwrap(),
+            serde_json::json!(expected)
+        );
+    }
+}
+
 #[test]
 fn render_verdict_omits_optional_lines_for_allow() {
     let verdict = JudgeVerdict {
@@ -821,9 +1019,15 @@ fn render_verdict_omits_optional_lines_for_allow() {
         message: "Safe".to_string(),
         confidence: None,
     };
-    let output = render_verdict(&verdict, false, Duration::from_millis(1234));
+    let output = render_verdict(
+        &verdict,
+        false,
+        Duration::from_millis(1234),
+        &ObservationReport::absent(),
+    );
     assert_eq!(
-        output, "Verdict: allow\nMessage: Safe\nLatency: 1.23s\n",
+        output,
+        "Verdict: allow\nObservation: absent (no TypeSafe request)\nMessage: Safe\nLatency: 1.23s\n",
         "unexpected output shape:\n{output}"
     );
 }
@@ -841,6 +1045,7 @@ fn render_json_reports_a_block_verdict_document() {
             overridden: false,
         },
         latency: Duration::from_millis(1234),
+        observation: ObservationReport::absent(),
     };
 
     let rendered = outcome.render_json(&[]).unwrap();
@@ -863,6 +1068,9 @@ fn render_json_reports_a_block_verdict_document() {
     // judge stage and carries no fast-approval probability (ADR 034).
     assert_eq!(parsed["data"]["stage"], "judge");
     assert_eq!(parsed["data"]["probability"], serde_json::Value::Null);
+    // A judge that decided without arming the cascade reports an absent
+    // observation, which is what separates it from a fallback (issue #616).
+    assert_absent_observation(&parsed);
 }
 
 #[test]
@@ -878,6 +1086,7 @@ fn render_json_marks_an_allowlist_override() {
             overridden: true,
         },
         latency: Duration::ZERO,
+        observation: ObservationReport::absent(),
     };
 
     let rendered = outcome.render_json(&[]).unwrap();
@@ -902,12 +1111,17 @@ fn render_json_reports_the_bypass_without_a_judge_call() {
     assert_eq!(parsed["data"]["bypassed"], true);
     assert_eq!(parsed["data"]["verdict"], serde_json::Value::Null);
     assert_eq!(parsed["data"]["latency_ms"], 0);
-    // No stage decided a bypassed command.
+    // No stage decided a bypassed command, and no observation was made:
+    // `absent` is the state a `mode = "off"` judge also reports.
     assert_eq!(parsed["data"]["stage"], serde_json::Value::Null);
     assert_eq!(parsed["data"]["probability"], serde_json::Value::Null);
-    // Both output modes state the same reason for making no call.
+    assert_absent_observation(&parsed);
+    // Both output modes state the same reason for making no call, and both
+    // name the observation the decision rests on (issue #616).
     assert_eq!(parsed["data"]["message"], JUDGE_BYPASS_MESSAGE);
-    assert!(bypassed.render_text().contains(JUDGE_BYPASS_MESSAGE));
+    let text = bypassed.render_text();
+    assert!(text.contains(JUDGE_BYPASS_MESSAGE));
+    assert!(text.contains("Observation: absent (no TypeSafe request)"));
 }
 
 #[test]
@@ -932,10 +1146,22 @@ fn render_json_carries_settings_findings_in_checks() {
 // =============================================================================
 
 /// Cascade settings that arm the observation as an approval stage.
-fn cascade_check_settings() -> crate::config::settings::JudgeSettings {
-    crate::config::settings::JudgeSettings {
-        typesafe: crate::config::settings::TypeSafeSettings {
-            mode: crate::config::settings::TypeSafeMode::Cascade,
+fn cascade_check_settings() -> JudgeSettings {
+    JudgeSettings {
+        typesafe: TypeSafeSettings {
+            mode: TypeSafeMode::Cascade,
+            model: "jev-1.13.0".to_string(),
+            timeout_ms: 100,
+        },
+        ..JudgeSettings::default()
+    }
+}
+
+/// Shadow settings: the observation runs and carries no authority.
+fn shadow_check_settings() -> JudgeSettings {
+    JudgeSettings {
+        typesafe: TypeSafeSettings {
+            mode: TypeSafeMode::Shadow,
             model: "jev-1.13.0".to_string(),
             timeout_ms: 100,
         },
@@ -964,11 +1190,17 @@ fn typesafe_answer(probability: f64) -> serde_json::Value {
 
 #[test]
 fn render_json_reports_a_fast_approval_as_allow_with_provenance() {
+    let outcome = JudgeOutcome::FastApproved {
+        probability: 0.91,
+        elapsed: Duration::from_millis(250),
+    };
     let outcome = CheckOutcome {
-        outcome: JudgeOutcome::FastApproved {
-            probability: 0.91,
-            elapsed: Duration::from_millis(250),
-        },
+        observation: ObservationReport::classify(
+            Some(&typesafe_observation(Some(0.91), None, 250)),
+            TypeSafeMode::Cascade,
+            true,
+        ),
+        outcome,
         latency: Duration::from_millis(250),
     };
 
@@ -986,6 +1218,10 @@ fn render_json_reports_a_fast_approval_as_allow_with_provenance() {
     assert_eq!(parsed["data"]["bypassed"], false);
     assert_eq!(parsed["data"]["code"], serde_json::Value::Null);
     assert_eq!(parsed["data"]["message"], FAST_APPROVAL_MESSAGE);
+    // The observation the approval rests on is reported in full, including the
+    // probability that cleared the cutoff (issue #616).
+    assert_observation(&parsed, "approved", Some(0.91), None);
+    assert_eq!(parsed["data"]["observation"]["elapsed_ms"], 250);
 }
 
 #[test]
@@ -994,11 +1230,16 @@ fn render_outcome_reports_a_fast_approval_as_allow_with_its_stage() {
         probability: 0.91,
         elapsed: Duration::from_millis(250),
     };
+    let observation = ObservationReport::classify(
+        Some(&typesafe_observation(Some(0.91), None, 250)),
+        TypeSafeMode::Cascade,
+        true,
+    );
 
     assert_eq!(
-        render_outcome(&outcome, Duration::from_millis(250)),
+        render_outcome(&outcome, Duration::from_millis(250), &observation),
         format!(
-            "Verdict: allow\nStage: typesafe\nProbability: 0.91\nMessage: {FAST_APPROVAL_MESSAGE}\nLatency: 0.25s\n"
+            "Verdict: allow\nStage: typesafe\nProbability: 0.91\nObservation: approved (probability 0.91, 250ms)\nMessage: {FAST_APPROVAL_MESSAGE}\nLatency: 0.25s\n"
         )
     );
 }
@@ -1037,7 +1278,10 @@ async fn bash_check_fast_approves_without_a_judge_call() {
     assert_eq!(parsed["summary"]["verdict"], "allow");
     assert_eq!(parsed["data"]["stage"], "typesafe");
     assert_eq!(parsed["data"]["probability"], 0.91);
-    assert!(outcome.render_text().contains("Stage: typesafe"));
+    assert_eq!(parsed["data"]["observation"]["outcome"], "approved");
+    let text = outcome.render_text();
+    assert!(text.contains("Stage: typesafe"), "{text}");
+    assert!(text.contains("Observation: approved"), "{text}");
     judge_server.verify().await;
     typesafe_server.verify().await;
 }
@@ -1079,8 +1323,196 @@ async fn bash_check_falls_back_to_the_judge_below_the_cutoff() {
     assert_eq!(parsed["data"]["stage"], "judge");
     assert_eq!(parsed["data"]["probability"], serde_json::Value::Null);
     assert_eq!(parsed["data"]["message"], "Safe");
+    // The armed cascade fell back because the observation came in below the
+    // cutoff, which is now distinguishable from a cascade that never ran
+    // (issue #616).
+    assert_observation(&parsed, "below_cutoff", Some(0.82), None);
+    let text = outcome.render_text();
+    assert!(
+        text.contains("Observation: below_cutoff (probability 0.82, "),
+        "{text}"
+    );
     judge_server.verify().await;
     typesafe_server.verify().await;
+}
+
+#[tokio::test]
+async fn bash_check_reports_a_failed_observation_and_falls_back() {
+    // The cascade is armed and the observation fails (here an HTTP error). The
+    // judge decides, exactly as it does below the cutoff, and the two fallbacks
+    // are told apart by the observation outcome (issue #616).
+    let judge_server = MockServer::start().await;
+    let typesafe_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(chat_response(r#"{"verdict":"allow","message":"Safe"}"#)),
+        )
+        .expect(1)
+        .mount(&judge_server)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(1)
+        .mount(&typesafe_server)
+        .await;
+
+    let outcome = evaluate_with_client(
+        judge_client(&judge_server).with_typesafe(Some(typesafe_check_client(&typesafe_server))),
+        &cascade_check_settings(),
+        None,
+        std::path::Path::new("/work"),
+        "git status",
+    )
+    .await
+    .unwrap();
+
+    let rendered = outcome.render_json(&[]).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+    assert_eq!(parsed["data"]["stage"], "judge");
+    assert_observation(&parsed, "failed", None, Some("http_error"));
+    assert!(
+        parsed["data"]["observation"]["elapsed_ms"].is_u64(),
+        "a failed observation still reports its elapsed time: {rendered}"
+    );
+    let text = outcome.render_text();
+    assert!(
+        text.contains("Observation: failed (failure http_error, "),
+        "{text}"
+    );
+    judge_server.verify().await;
+    typesafe_server.verify().await;
+}
+
+#[tokio::test]
+async fn bash_check_reports_a_shadow_observation_as_unauthoritative() {
+    // `mode = "shadow"` observes beside the judge and decides nothing, even
+    // when the probability clears the cutoff: the judge keeps its authority,
+    // and the outcome vocabulary says so instead of reporting a fast approval.
+    let judge_server = MockServer::start().await;
+    let typesafe_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(chat_response(r#"{"verdict":"allow","message":"Safe"}"#)),
+        )
+        .expect(1)
+        .mount(&judge_server)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(typesafe_answer(0.95)))
+        .expect(1)
+        .mount(&typesafe_server)
+        .await;
+
+    let outcome = evaluate_with_client(
+        judge_client(&judge_server).with_typesafe(Some(typesafe_check_client(&typesafe_server))),
+        &shadow_check_settings(),
+        None,
+        std::path::Path::new("/work"),
+        "git status",
+    )
+    .await
+    .unwrap();
+
+    let rendered = outcome.render_json(&[]).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+    assert_eq!(parsed["data"]["stage"], "judge");
+    assert_eq!(parsed["data"]["message"], "Safe");
+    assert_observation(&parsed, "shadow", Some(0.95), None);
+    let text = outcome.render_text();
+    assert!(
+        text.contains("Observation: shadow (probability 0.95, "),
+        "{text}"
+    );
+    judge_server.verify().await;
+    typesafe_server.verify().await;
+}
+
+#[tokio::test]
+async fn bash_check_reports_an_absent_observation_when_the_cascade_is_not_armed() {
+    // `mode` is unset, so it defaults to `off`: no `TypeSafe` request is made,
+    // and the document says so rather than leaving the fallback to be inferred
+    // from a null probability (issue #616).
+    let judge_server = MockServer::start().await;
+    let typesafe_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(chat_response(r#"{"verdict":"allow","message":"Safe"}"#)),
+        )
+        .expect(1)
+        .mount(&judge_server)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(typesafe_answer(0.95)))
+        .expect(0) // off makes no request, even with a client configured
+        .mount(&typesafe_server)
+        .await;
+
+    let outcome = evaluate_with_client(
+        judge_client(&judge_server).with_typesafe(Some(typesafe_check_client(&typesafe_server))),
+        &JudgeSettings::default(),
+        None,
+        std::path::Path::new("/work"),
+        "git status",
+    )
+    .await
+    .unwrap();
+
+    let rendered = outcome.render_json(&[]).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+    assert_eq!(parsed["data"]["stage"], "judge");
+    assert_absent_observation(&parsed);
+    let text = outcome.render_text();
+    assert!(
+        text.contains("Observation: absent (no TypeSafe request)"),
+        "{text}"
+    );
+    judge_server.verify().await;
+    typesafe_server.verify().await;
+}
+
+#[tokio::test]
+async fn bash_check_diagnostic_reports_a_failed_observation_beside_a_judge_error() {
+    // The compound failure the report is read for: the observation failed and so
+    // did the judge. `--diagnostic` renders both, because nothing else reports
+    // the observation on a fail-closed path (issue #616).
+    let judge_server = MockServer::start().await;
+    let typesafe_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&judge_server)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&typesafe_server)
+        .await;
+
+    let report = evaluate_with_client_diagnostic(
+        judge_client(&judge_server).with_typesafe(Some(typesafe_check_client(&typesafe_server))),
+        &cascade_check_settings(),
+        None,
+        std::path::Path::new("/work"),
+        "git status",
+    )
+    .await
+    .unwrap();
+
+    assert!(report.error.is_some(), "the judge call failed closed");
+    let observation = report
+        .report
+        .find("Observation: failed (failure http_error, ")
+        .expect("the report must name the failed observation");
+    let error = report
+        .report
+        .find("Judge error: ")
+        .expect("the report must carry the judge error");
+    assert!(
+        observation < error,
+        "the observation precedes the error:\n{}",
+        report.report
+    );
 }
 
 #[tokio::test]
@@ -1127,6 +1559,15 @@ async fn bash_check_diagnostic_reports_the_fast_leg_latency() {
     assert!(
         !report.report.contains("Latency: 0.00s"),
         "the fast leg's elapsed time must be reported:\n{}",
+        report.report
+    );
+    // `--diagnostic` reports the observation's bounded summary, not the raw
+    // `TypeSafe` request or response (issue #616).
+    assert!(
+        report
+            .report
+            .contains("Observation: approved (probability 0.97, "),
+        "{}",
         report.report
     );
     judge_server.verify().await;

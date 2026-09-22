@@ -432,7 +432,13 @@ const BASH_CHECK_BYPASS_GOLDEN: &str = r#"{
     "bypassed": true,
     "latency_ms": 0,
     "stage": null,
-    "probability": null
+    "probability": null,
+    "observation": {
+      "outcome": "absent",
+      "probability": null,
+      "failure_class": null,
+      "elapsed_ms": null
+    }
   }
 }
 "#;

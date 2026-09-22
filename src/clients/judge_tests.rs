@@ -2045,10 +2045,10 @@ fn repo_state_digest_follows_linked_worktree_git_file() {
 // Facade parity (issue #276): one policy pipeline behind both facades
 // =============================================================================
 
-/// `cake bash check` and the corpus runner call [`evaluate_command`]; the Bash
-/// preflight and the benchmark harness call [`evaluate_command_observed`].
-/// Both facades must return the same outcome for the same inputs, so a verdict
-/// cannot depend on which facade a caller used.
+/// `cake bash check`, the Bash preflight, and the benchmark harness call
+/// [`evaluate_command_observed`]; the corpus runner calls the test-only
+/// [`evaluate_command`]. Both facades must return the same outcome for the same
+/// inputs, so a verdict cannot depend on which facade a caller used.
 #[tokio::test]
 async fn facades_agree_on_a_plain_verdict() {
     let mock_server = MockServer::start().await;
