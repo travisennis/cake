@@ -944,6 +944,18 @@ fn classify_names_each_observation_outcome() {
             "an elapsed time is reported exactly when a request was made"
         );
     }
+
+    // `mode = "off"` makes no request, so this pair is unreachable. It must
+    // still report the absence the mode states rather than the `shadow` label a
+    // non-cascade comparison would hand a measured observation.
+    assert_eq!(
+        ObservationReport::classify(
+            Some(&typesafe_observation(Some(0.82), None, 132)),
+            TypeSafeMode::Off,
+            false,
+        ),
+        ObservationReport::absent()
+    );
 }
 
 #[test]

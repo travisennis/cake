@@ -357,9 +357,14 @@ impl ObservationReport {
     /// observation (a [`JudgeOutcome::FastApproved`]). The label needs nothing
     /// else from the outcome, so a caller whose run produced no outcome to
     /// inspect passes `false`. Only a fast approval means the observation
-    /// carried authority, and under `mode = "shadow"` it never does; every
-    /// other observation either failed or fell short of the cutoff under the
-    /// cascade, which is the split `fast_approval_probability` decides between.
+    /// carried authority, and under `mode = "shadow"` it never does.
+    ///
+    /// Each mode names its own outcome, so a mode added later fails to compile
+    /// here instead of inheriting the `shadow` label a non-cascade comparison
+    /// would give it. `mode = "off"` makes no request —
+    /// `JudgeClient::typesafe_observed` returns before the client is called —
+    /// so an observation beside it is unreachable, and reports the absence that
+    /// mode states.
     fn classify(
         observation: Option<&TypeSafeObservation>,
         mode: TypeSafeMode,
@@ -368,17 +373,17 @@ impl ObservationReport {
         let Some(observation) = observation else {
             return Self::absent();
         };
-        let outcome_kind = if fast_approved {
-            ObservationOutcome::Approved
-        } else if mode != TypeSafeMode::Cascade {
-            ObservationOutcome::Shadow
-        } else if observation.failure_class.is_some() {
-            ObservationOutcome::Failed
-        } else {
-            ObservationOutcome::BelowCutoff
+        let outcome = match mode {
+            TypeSafeMode::Off => return Self::absent(),
+            TypeSafeMode::Shadow => ObservationOutcome::Shadow,
+            TypeSafeMode::Cascade if fast_approved => ObservationOutcome::Approved,
+            TypeSafeMode::Cascade if observation.failure_class.is_some() => {
+                ObservationOutcome::Failed
+            },
+            TypeSafeMode::Cascade => ObservationOutcome::BelowCutoff,
         };
         Self {
-            outcome: outcome_kind,
+            outcome,
             probability: observation.probability,
             failure_class: observation.failure_class,
             elapsed_ms: Some(duration_millis(observation.elapsed)),
