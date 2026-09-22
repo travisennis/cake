@@ -977,6 +977,29 @@ fn classify_reports_what_the_observation_measured() {
 }
 
 #[test]
+fn observation_outcome_labels_match_serialized_values() {
+    // The text line and the document must name one vocabulary: `as_str` is what
+    // `Observation:` prints and the derived `Serialize` is what
+    // `data.observation.outcome` carries, so both are pinned to the same list
+    // instead of two spellings being left to drift apart.
+    let cases = [
+        (ObservationOutcome::Absent, "absent"),
+        (ObservationOutcome::Shadow, "shadow"),
+        (ObservationOutcome::Approved, "approved"),
+        (ObservationOutcome::BelowCutoff, "below_cutoff"),
+        (ObservationOutcome::Failed, "failed"),
+    ];
+
+    for (outcome, expected) in cases {
+        assert_eq!(outcome.as_str(), expected);
+        assert_eq!(
+            serde_json::to_value(outcome).unwrap(),
+            serde_json::json!(expected)
+        );
+    }
+}
+
+#[test]
 fn render_verdict_omits_optional_lines_for_allow() {
     let verdict = JudgeVerdict {
         decision: JudgeDecision::Allow,
