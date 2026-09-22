@@ -35,6 +35,8 @@ Include untracked new files from `git status --short` (or `git ls-files --others
 
 Only read context items that are relevant to the changed surface. Discover them with targeted commands, e.g. `rg --files -g AGENTS.md`, `rg --files docs`, `git diff -- <paths>`.
 
+Size decides review effort here, not whether the change lands as one change: [CONTRIBUTING.md](../../../CONTRIBUTING.md) sets the change-size budget and the staging fallback past it. A target over the budget gets a staging plan in the report, not a longer diff.
+
 Required context items, in priority order:
 
 - repo root `AGENTS.md`

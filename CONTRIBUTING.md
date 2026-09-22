@@ -39,6 +39,12 @@ Follow the [Auditing Binary Size runbook](docs/runbooks/auditing-binary-size.md)
 
 The crate has no library target. Do not use `cargo test --lib`.
 
+### Change size
+
+Keep a change within 800 changed lines unless it is mechanical, and within 500 when it changes complex logic. The preflight scale tiers decide how much review a change gets; this budget decides whether it lands as one change at all.
+
+Past either limit, stop extending the diff and report a staging plan instead: the smallest coherent stage to land first, based on the actual diff, its dependencies, and the affected call sites. A change that cannot be staged at all is a scope problem to raise, not a budget to raise.
+
 ## Command-safety corpus cases
 
 Append cases to `src/clients/tools/corpus/commands.jsonl` as documented in its README. Run `just judge-corpus-check` locally; the live `just judge-corpus` requires provider credentials and authorized external spend.
@@ -70,7 +76,7 @@ Additional checks:
 - Dependency changes: `just check-deps`; [Dependency and supply chain posture](docs/dependencies.md) is the authority for pin ownership and update review.
 - Documentation-only changes: `just pre-push-docs` covers committed Markdown, plus `git diff --check`. No automated link checker exists; relative links were audited clean on 2026-09-02, see #222.
 - Label changes: `just labels-check-file` (file validation, also CI), `just labels-check` (repo drift vs `.github/labels.yml`), `just labels` (apply), `just labels-prune` (delete unlisted labels).
-- Instruction changes (AGENTS.md, `.agents/skills/`, guardrails, runbooks): `just lint-instruction-size` caps AGENTS.md, the one document loaded every session, reports the corpus, and also runs in `just check`. [Agent-facing instructions](docs/guardrails/agent-instructions.md) is the authority for what an added instruction must justify.
+- Instruction changes (AGENTS.md, `.agents/skills/`, guardrails, runbooks): `just lint-instruction-size` caps AGENTS.md, the one document loaded every session, reports the corpus, reports the model-visible prompt assets (`src/clients/tools/*-description.txt`, `src/prompts/*.md`) that are not instructions but reach the model on every request, and also runs in `just check`. [Agent-facing instructions](docs/guardrails/agent-instructions.md) is the authority for what an added instruction must justify.
 - Markdown gate scopes are intentional: the pre-commit hook checks formatting for changed Markdown and lint over the tracked corpus. The pre-push route checks both for changed living documents. `just docs-check` and CI check the tracked corpus, which is the whole corpus on a clean CI checkout. This gives formatting feedback before commit without adding a full-corpus formatting pass to every commit; the full-corpus gates remain the final check.
 - `just pre-push-docs` measures the committed changes between the base and `HEAD` and prints that range, plus a note when worktree Markdown sits outside it, so an empty file list cannot read as a pass. Untracked Markdown becomes checkable the moment it is staged; `just docs-check` covers the tracked corpus, which is what the gates own. Neither gate looks at untracked files, and neither rewrites them.
 
@@ -98,8 +104,19 @@ If an applicable check cannot run, report the exact reason and the narrower chec
 - Use absolute `crate::` imports in production code; verified by `just lint-imports`.
 - Preserve public behavior during refactors unless the task explicitly changes it.
 - Spawn `git` through `config::git::command`, and in tests through `config::git::test_support` or the `git` helper in `tests/`. Git exports `GIT_DIR` and its siblings into hooks and everything they spawn, so a command that inherits them operates on the exporting repository rather than the directory it was given.
+- Tests that early-exit when `CAKE_SANDBOX` turns sandboxing off exist because those tests cannot run inside cake's own sandbox. They are deliberate, not dead code; change them only when the sandbox behavior they describe changes. The guard is `skip_if_sandbox_unavailable` in `src/clients/tools/bash_tests.rs`, repeated inline in that file and in `src/clients/tools/bash_issue_366_tests.rs`.
 
 Tests and snapshots should encode behavior close to its implementation. Add documentation only when the change affects a user workflow, external contract, security boundary, durable architectural invariant, or contributor workflow.
+
+## Module size
+
+`just lint-module-size` reports every `src/` file over 800 production lines, and every test module over 800 test lines at more than 40% of its file. It is a report, not a gate: the brace-counting heuristic in `scripts/lint-module-size.py` documents the cases it misclassifies, and promoting it to a gate needs a parser-backed implementation first. Treat the report as a direction rather than a threshold to cross --- new functionality goes in a new module, and a change to a file already over the line should not make it longer.
+
+These files are already over the production threshold, which is what makes them the ones that attract unrelated changes. Add to one only when the change belongs to what the file already does:
+
+`src/cli/bash.rs`, `src/clients/agent/agent_loop.rs`, `src/clients/agent_runner.rs`, `src/clients/judge.rs`, `src/clients/judge_observer.rs`, `src/clients/responses.rs`, `src/clients/tools/bash.rs`, `src/clients/tools/edit.rs`, `src/clients/tools/mod.rs`, `src/clients/tools/sandbox/mod.rs`, `src/config/settings.rs`, `src/config/toolbox.rs`, `src/hooks.rs`, `src/main.rs`, `src/types/session.rs`.
+
+`just lint-module-size` prints the current counts; do not copy them here, where they would drift.
 
 ## Managed work
 
@@ -112,6 +129,8 @@ Commit and push freely on a feature branch, and commit often --- uncommitted wor
 Repository changes happen on a branch, which is what makes that safe: `master` is protected by a GitHub ruleset rejecting direct pushes, and by the `branch-guard` hook in `prek.toml`, which rejects commits and pushes on `master` at both `pre-commit` and `pre-push`. Branch names use the commit type as a prefix, such as `feat/turn-limits` or `fix/sandbox-read-only`. [Working on branches and worktrees](docs/runbooks/parallel-worktrees.md) covers the mechanics, including running several branches at once in linked worktrees.
 
 `ci/cargo-crap-baseline.json` is generated and committed, so parallel branches conflict on it. A three-way merge of that file is meaningless. Take `master`'s copy and regenerate with `just change-risk-baseline`.
+
+`src/**/snapshots/*.snap` files are generated output too, and the same reasoning applies: they are the contract for tool schemas, wire examples, prompt assembly, and session records, so a hand edit rewrites the contract without the code that owns it. Regenerate them with `just snapshots` and accept the result through `cargo insta review`, accepting only what the code change caused. A snapshot that conflicts during a merge takes `master`'s copy and is regenerated, never hand-merged.
 
 Commits use [Conventional Commits](https://www.conventionalcommits.org/):
 
