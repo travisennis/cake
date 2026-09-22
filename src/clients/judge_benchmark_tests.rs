@@ -18,9 +18,9 @@
 //! this module never spawns a process.
 //!
 //! Trials run with bounded concurrency (`CAKE_JUDGE_BENCH_CONCURRENCY`, default
-//! `1`) and are recorded in case/repetition order, so raising it changes wall
-//! clock and nothing else about the verdict columns. Latency columns are
-//! reported as not measurable above serial, because a concurrent trial measures
+//! `1`) and are recorded in model/case/repetition order, so raising it changes
+//! wall clock and nothing else about the verdict columns. The three latency SLO
+//! checks are not measured above serial, because a concurrent trial measures
 //! provider queueing as well as the judge's own request duration.
 
 use std::collections::{BTreeMap, BTreeSet};

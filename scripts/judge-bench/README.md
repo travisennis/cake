@@ -40,7 +40,7 @@ This evaluates two selected corpus entries without executing their commands. Ins
   | `CAKE_JUDGE_BENCH_PROFILE`          | Settings profile applied on top of global and project settings              | none                          |
   | `CAKE_JUDGE_BENCH_RESULTS_DIR`      | Directory for generated JSON artifacts (gitignored by default)              | `scripts/judge-bench/results` |
   | `CAKE_JUDGE_BENCH_TYPESAFE_CUTOFFS` | Comma-separated candidate fast-approval cutoffs swept in the shadow report  | `0.9,0.95,0.99,0.999`         |
-  | `CAKE_JUDGE_BENCH_CONCURRENCY`      | Trials in flight at once; above `1` the latency columns are not measurable  | `1`                           |
+  | `CAKE_JUDGE_BENCH_CONCURRENCY`      | Trials in flight at once; above `1` the latency SLO checks are not measured | `1`                           |
 
 TypeSafe is configured under `[tools.bash.judge.typesafe]` rather than through a benchmark environment variable. Its API key is always `TYPESAFE_AI_API_KEY`; alternate credential variable names are not supported.
 
