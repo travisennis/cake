@@ -16,11 +16,19 @@
 //!
 //! No case command is ever executed: the judge evaluates command text only and
 //! this module never spawns a process.
+//!
+//! Trials run with bounded concurrency (`CAKE_JUDGE_BENCH_CONCURRENCY`, default
+//! `1`) and are recorded in model/case/repetition order, so raising it changes
+//! wall clock and nothing else about the verdict columns. The three latency SLO
+//! checks are not measured above serial, because a concurrent trial measures
+//! provider queueing as well as the judge's own request duration.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use futures::StreamExt as _;
 use serde::Serialize;
 
 use crate::clients::judge::{
@@ -54,6 +62,7 @@ const SLO_FAILURE_ENV: &str = "CAKE_JUDGE_BENCH_SLO_FAILURE_PERCENT";
 const SLO_AGREEMENT_ENV: &str = "CAKE_JUDGE_BENCH_SLO_LABEL_AGREEMENT_PERCENT";
 const SLO_CONSISTENCY_ENV: &str = "CAKE_JUDGE_BENCH_SLO_CONSISTENCY_PERCENT";
 const TYPESAFE_CUTOFFS_ENV: &str = "CAKE_JUDGE_BENCH_TYPESAFE_CUTOFFS";
+const CONCURRENCY_ENV: &str = "CAKE_JUDGE_BENCH_CONCURRENCY";
 
 /// Candidate fast-approval cutoffs swept when `CAKE_JUDGE_BENCH_TYPESAFE_CUTOFFS`
 /// is unset. These are report rows, never execution policy.
@@ -61,6 +70,17 @@ const DEFAULT_TYPESAFE_CUTOFFS: [f32; 4] = [0.9, 0.95, 0.99, 0.999];
 
 const DEFAULT_REPETITIONS: usize = 5;
 const DEFAULT_RESULTS_DIR: &str = "scripts/judge-bench/results";
+
+/// Trials in flight at once when `CAKE_JUDGE_BENCH_CONCURRENCY` is unset.
+///
+/// Serial by default, because that is what one Bash preflight asks of the
+/// judge: the SLO latency checks and every recorded latency describe a judge
+/// serving one request at a time. A safety or cutoff measurement can raise it,
+/// and then pays for the speed with latency columns it cannot use.
+const DEFAULT_CONCURRENCY: usize = 1;
+
+/// Cases between progress lines, scaled by the repetition count.
+const PROGRESS_CASES: usize = 5;
 
 /// Explicit release service-level objectives for the judge.
 ///
@@ -142,6 +162,8 @@ struct BenchmarkConfig {
     slo: SloThresholds,
     /// Candidate fast-approval cutoffs swept in the shadow report.
     typesafe_cutoffs: Vec<f32>,
+    /// Trials in flight at once; `1` measures the judge sequentially.
+    concurrency: usize,
 }
 
 impl BenchmarkConfig {
@@ -173,6 +195,7 @@ impl BenchmarkConfig {
             .map_or_else(|_| PathBuf::from(DEFAULT_RESULTS_DIR), PathBuf::from);
         let slo = SloThresholds::from_env()?;
         let typesafe_cutoffs = typesafe_cutoffs_from_env()?;
+        let concurrency = concurrency()?;
         Ok(Self {
             models,
             repetitions,
@@ -181,6 +204,7 @@ impl BenchmarkConfig {
             results_dir,
             slo,
             typesafe_cutoffs,
+            concurrency,
         })
     }
 }
@@ -360,6 +384,9 @@ struct ModelReport {
 #[derive(Debug, Clone, Serialize)]
 struct ReportConfiguration {
     models: Vec<String>,
+    /// Trials in flight at once; a value above `1` makes the latency columns
+    /// unmeasurable, so a concurrent artifact is not an SLO baseline.
+    concurrency: usize,
     repetitions: usize,
     case_count: usize,
     trial_count: usize,
@@ -943,7 +970,28 @@ fn modal_verdict(verdicts: &[Option<&'static str>]) -> Option<&'static str> {
     clippy::cast_precision_loss,
     reason = "latency milliseconds are far below 2^53, so f64 preserves the measured values exactly"
 )]
-fn latency_check(label: &'static str, measured: Option<u64>, limit: u64) -> SloCheck {
+fn latency_check(
+    label: &'static str,
+    measured: Option<u64>,
+    limit: u64,
+    concurrency: usize,
+) -> SloCheck {
+    if concurrency > 1 {
+        // A concurrent trial waits on provider queueing as well as on the
+        // judge, so the number is not a latency measurement. Reporting it as
+        // unmeasurable keeps the gate honest: `passes` is true because nothing
+        // was measured, exactly as an unmeasurable consistency check behaves.
+        return SloCheck {
+            label,
+            measured: None,
+            limit: limit as f64,
+            operator: "<=",
+            passes: true,
+            note: Some(format!(
+                "not measurable: {concurrency} concurrent trials measure provider queueing, not the judge's own request duration"
+            )),
+        };
+    }
     SloCheck {
         label,
         measured: measured.map(|value| value as f64),
@@ -987,10 +1035,11 @@ fn slo_pass_fail(
     agreement_rate: f64,
     consistency: Option<f64>,
     slo: SloThresholds,
+    concurrency: usize,
 ) -> SloPassFail {
-    let p50 = latency_check("p50 latency", latency.p50, slo.p50_latency_ms);
-    let p95 = latency_check("p95 latency", latency.p95, slo.p95_latency_ms);
-    let p99 = latency_check("p99 latency", latency.p99, slo.p99_latency_ms);
+    let p50 = latency_check("p50 latency", latency.p50, slo.p50_latency_ms, concurrency);
+    let p95 = latency_check("p95 latency", latency.p95, slo.p95_latency_ms, concurrency);
+    let p99 = latency_check("p99 latency", latency.p99, slo.p99_latency_ms, concurrency);
     let timeout = rate_check(
         "timeout rate",
         Some(timeout_rate),
@@ -1088,6 +1137,7 @@ fn model_report(
     records: &[&TrialRecord],
     slo: SloThresholds,
     typesafe_cutoffs: &[f32],
+    concurrency: usize,
 ) -> ModelReport {
     let trials = records.len();
     let verdicts = records
@@ -1135,6 +1185,7 @@ fn model_report(
         agreement_rate,
         consistency,
         slo,
+        concurrency,
     );
     let shadow = shadow_report_legacy(records, typesafe_cutoffs);
     ModelReport {
@@ -1174,7 +1225,13 @@ fn compute_report(
                 .iter()
                 .filter(|record| record.model == *model)
                 .collect();
-            model_report(model, &model_records, config.slo, &config.typesafe_cutoffs)
+            model_report(
+                model,
+                &model_records,
+                config.slo,
+                &config.typesafe_cutoffs,
+                config.concurrency,
+            )
         })
         .collect::<Vec<_>>();
     let case_count = records
@@ -1195,6 +1252,7 @@ fn compute_report(
         run_id: run_id.to_string(),
         configuration: ReportConfiguration {
             models: config.models.clone(),
+            concurrency: config.concurrency,
             repetitions: config.repetitions,
             case_count,
             trial_count: records.len(),
@@ -1216,6 +1274,12 @@ fn render_human_report(report: &BenchmarkReport) -> String {
         report.configuration.trial_count / report.configuration.models.len().max(1),
         report.run_id
     )];
+    if report.configuration.concurrency > 1 {
+        lines.push(format!(
+            "concurrency {}: latency checks and estimated cascade latency are not measurable; read this run for verdicts, not for latency",
+            report.configuration.concurrency
+        ));
+    }
     for model in &report.models {
         lines.push(format!(
             "model {} ({}): trials {} | verdicts {} | attempts {} | timeouts {} ({:.1}%) | failures {} ({:.1}%)",
@@ -1391,6 +1455,18 @@ fn parse_cutoffs(raw: &str) -> Result<Vec<f32>, String> {
     Ok(cutoffs)
 }
 
+/// Trials in flight at once, from `CAKE_JUDGE_BENCH_CONCURRENCY`.
+fn concurrency() -> Result<usize, String> {
+    let Ok(value) = std::env::var(CONCURRENCY_ENV) else {
+        return Ok(DEFAULT_CONCURRENCY);
+    };
+    value
+        .parse::<usize>()
+        .ok()
+        .filter(|value| *value > 0)
+        .ok_or_else(|| format!("{CONCURRENCY_ENV} must be a positive integer, got {value:?}"))
+}
+
 fn env_usize(name: &str) -> Result<Option<usize>, String> {
     let Some(value) = std::env::var(name).ok().filter(|value| !value.is_empty()) else {
         return Ok(None);
@@ -1473,6 +1549,49 @@ fn select_cases<'a>(
     }
 }
 
+/// Drive one future per job with at most `concurrency` in flight, returning
+/// results in job order.
+///
+/// The judge is stateless per call, so completion order carries no information
+/// about the run: recording in job order is what keeps a concurrent run's report
+/// identical to a serial one. `concurrency == 1` is the serial path this harness
+/// ran before the knob existed, and every `progress_every` completions print one
+/// progress line.
+async fn run_bounded<J, F, Fut, T>(
+    label: &str,
+    jobs: &[J],
+    concurrency: usize,
+    progress_every: usize,
+    trial: F,
+) -> Vec<T>
+where
+    J: Sync,
+    F: Send + FnMut(&J) -> Fut,
+    Fut: Send + Future<Output = T>,
+    T: Send,
+{
+    let total = jobs.len();
+    let mut results: Vec<Option<T>> = (0..total).map(|_| None).collect();
+    let mut trial = trial;
+    let mut done = 0usize;
+    let mut stream = futures::stream::iter(jobs.iter().enumerate().map(|(index, job)| {
+        let future = trial(job);
+        async move { (index, future.await) }
+    }))
+    .buffer_unordered(concurrency);
+    while let Some((index, value)) = stream.next().await {
+        done += 1;
+        if done.is_multiple_of(progress_every) || done == total {
+            eprintln!("{label}: {done}/{total} trials");
+        }
+        results[index] = Some(value);
+    }
+    results
+        .into_iter()
+        .map(|value| value.expect("every trial should complete before recording"))
+        .collect()
+}
+
 /// Live benchmark across selected `[[models]]` profiles and the command corpus.
 #[tokio::test]
 #[ignore = "calls configured judge providers and incurs external cost; run with `just judge-bench`"]
@@ -1496,34 +1615,59 @@ async fn judge_benchmark_live_slos() {
     let selected =
         select_cases(&entries, &config.case_lines).unwrap_or_else(|error| panic!("{error}"));
     let digest = repo_state_digest(&cwd);
-    let mut records = Vec::new();
-    for (model_index, model) in config.models.iter().enumerate() {
-        let client = live_judge_client(&loaded, model).unwrap_or_else(|error| panic!("{error}"));
-        for (case_index, entry) in selected.iter().enumerate() {
-            for _ in 0..config.repetitions {
+    // One client per model, resolved before any trial runs. The judge is
+    // stateless per call --- a request carries only command, cwd, repo digest,
+    // and reason --- so no verdict can depend on trial order and bounded
+    // concurrency cannot change what a trial measures. Results are recorded in
+    // model/case/repetition order afterward to keep the report deterministic.
+    let clients: Vec<JudgeClient> = config
+        .models
+        .iter()
+        .map(|model| live_judge_client(&loaded, model).unwrap_or_else(|error| panic!("{error}")))
+        .collect();
+    let jobs: Vec<(usize, usize)> = (0..clients.len())
+        .flat_map(|model_index| {
+            (0..selected.len()).flat_map(move |case_index| {
+                (0..config.repetitions).map(move |_| (model_index, case_index))
+            })
+        })
+        .collect();
+    let evaluations = {
+        // Shared state enters every trial's `move` closure as a `Copy`
+        // reference; owned values would have to be cloned once per trial.
+        let judge = &loaded.judge;
+        let bypass = bypass_env.as_deref();
+        let cwd = &cwd;
+        let digest = &digest;
+        let clients = &clients;
+        let selected = &selected;
+        run_bounded(
+            "judge benchmark",
+            &jobs,
+            config.concurrency,
+            PROGRESS_CASES * config.repetitions,
+            |(model_index, case_index): &(usize, usize)| {
+                let entry = selected[*case_index];
                 let request =
                     JudgeRequest::new(entry.command.clone(), cwd.clone(), entry.reason.clone())
                         .with_repo_digest(digest.clone());
-                let evaluation = evaluate_command_observed(
-                    &client,
-                    &loaded.judge,
-                    request,
-                    bypass_env.as_deref(),
-                    false,
-                )
-                .await;
-                records.push(trial_record(model, entry, evaluation));
-            }
-            let completed = case_index + 1;
-            if completed % 5 == 0 || completed == selected.len() {
-                eprintln!(
-                    "judge benchmark progress: model {model_index}/{} ({model:?}), {completed}/{} cases",
-                    config.models.len(),
-                    selected.len()
-                );
-            }
-        }
-    }
+                let client = &clients[*model_index];
+                async move { evaluate_command_observed(client, judge, request, bypass, false).await }
+            },
+        )
+        .await
+    };
+    let records: Vec<TrialRecord> = jobs
+        .iter()
+        .zip(evaluations)
+        .map(|((model_index, case_index), evaluation)| {
+            trial_record(
+                &config.models[*model_index],
+                selected[*case_index],
+                evaluation,
+            )
+        })
+        .collect();
     let run_id = unix_timestamp();
     let report = compute_report(&records, &config, &run_id);
     let written = write_results(&config.results_dir, &run_id, &report, &records)
@@ -1619,6 +1763,7 @@ mod deterministic {
             results_dir: PathBuf::from("unused"),
             slo: SloThresholds::default(),
             typesafe_cutoffs: DEFAULT_TYPESAFE_CUTOFFS.to_vec(),
+            concurrency: DEFAULT_CONCURRENCY,
         }
     }
 
@@ -1882,6 +2027,7 @@ mod deterministic {
     #[test]
     fn bench_report_measures_agreement_consistency_and_slos() {
         let report = compute_report(&mixed_records(), &config_with_models(&["m1"]), "run-test");
+        assert_eq!(report.configuration.concurrency, DEFAULT_CONCURRENCY);
         assert_eq!(report.configuration.case_count, 2);
         assert_eq!(report.configuration.trial_count, 5);
         let model = &report.models[0];
@@ -2311,6 +2457,7 @@ mod deterministic {
                 (CASES_ENV, Some("3,9")),
                 (PROFILE_ENV, Some("fast")),
                 (RESULTS_DIR_ENV, Some("/tmp/bench")),
+                (CONCURRENCY_ENV, Some("8")),
             ],
             || {
                 let config = BenchmarkConfig::from_env().unwrap();
@@ -2319,6 +2466,7 @@ mod deterministic {
                 assert_eq!(config.case_lines, vec![3, 9]);
                 assert_eq!(config.profile.as_deref(), Some("fast"));
                 assert_eq!(config.results_dir, PathBuf::from("/tmp/bench"));
+                assert_eq!(config.concurrency, 8);
             },
         );
     }
@@ -2358,6 +2506,91 @@ mod deterministic {
                 let error = BenchmarkConfig::from_env().unwrap_err();
                 assert!(error.contains("1-based"), "unexpected error: {error}");
             },
+        );
+    }
+
+    #[test]
+    fn bench_concurrency_is_a_positive_integer_and_defaults_to_serial() {
+        temp_env::with_var(CONCURRENCY_ENV, None::<&str>, || {
+            assert_eq!(concurrency().unwrap(), DEFAULT_CONCURRENCY);
+        });
+        temp_env::with_var(CONCURRENCY_ENV, Some("8"), || {
+            assert_eq!(concurrency().unwrap(), 8);
+        });
+        for value in ["0", "-2", "not-a-number"] {
+            temp_env::with_var(CONCURRENCY_ENV, Some(value), || {
+                let error = concurrency().unwrap_err();
+                assert!(
+                    error.contains("positive integer") && error.contains(value),
+                    "unexpected error: {error}"
+                );
+            });
+        }
+    }
+
+    #[tokio::test]
+    async fn bench_bounded_trials_keep_job_order_and_bound_concurrency() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        for concurrency in [1usize, 4] {
+            let in_flight = Arc::new(AtomicUsize::new(0));
+            let peak = Arc::new(AtomicUsize::new(0));
+            let jobs: Vec<usize> = (0..24).collect();
+            let results = run_bounded("test", &jobs, concurrency, 1_000, |job: &usize| {
+                let job = *job;
+                let in_flight = Arc::clone(&in_flight);
+                let peak = Arc::clone(&peak);
+                async move {
+                    let current = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(current, Ordering::SeqCst);
+                    // Yield so the other in-flight trials run before this one
+                    // finishes, which is what makes the bound observable.
+                    tokio::task::yield_now().await;
+                    in_flight.fetch_sub(1, Ordering::SeqCst);
+                    job * 2
+                }
+            })
+            .await;
+            assert_eq!(
+                results,
+                (0..24).map(|job| job * 2).collect::<Vec<_>>(),
+                "results must come back in job order at concurrency {concurrency}"
+            );
+            assert_eq!(
+                peak.load(Ordering::SeqCst),
+                concurrency,
+                "exactly {concurrency} trials should have been in flight"
+            );
+        }
+    }
+
+    #[test]
+    fn bench_concurrent_run_records_concurrency_and_unmeasurable_latency() {
+        let mut config = config_with_models(&["m1"]);
+        config.concurrency = 8;
+        let report = compute_report(&mixed_records(), &config, "run-test");
+        assert_eq!(report.configuration.concurrency, 8);
+        let model = &report.models[0];
+        for check in [
+            &model.slo.p50_latency_ms,
+            &model.slo.p95_latency_ms,
+            &model.slo.p99_latency_ms,
+        ] {
+            assert_eq!(check.measured, None, "concurrency must not measure latency");
+            assert!(check.passes, "an unmeasurable latency check must not fail");
+            let note = check.note.as_deref().expect("a note explains the gap");
+            assert!(note.contains("not measurable"), "unexpected note: {note}");
+            assert!(note.contains('8'), "the note names the concurrency: {note}");
+        }
+        // The raw latency report and the rate checks keep their numbers:
+        // concurrency changes what the SLO gate may claim, not what was measured.
+        assert_eq!(model.latency.p50, Some(4_000));
+        assert_close(model.slo.label_agreement_percent.measured.unwrap(), 80.0);
+        assert!(model.slo.timeout_rate_percent.measured.is_some());
+        assert!(
+            !report.passes,
+            "80% label agreement still misses the 90% SLO under concurrency"
         );
     }
 

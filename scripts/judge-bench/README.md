@@ -40,6 +40,7 @@ This evaluates two selected corpus entries without executing their commands. Ins
   | `CAKE_JUDGE_BENCH_PROFILE`          | Settings profile applied on top of global and project settings              | none                          |
   | `CAKE_JUDGE_BENCH_RESULTS_DIR`      | Directory for generated JSON artifacts (gitignored by default)              | `scripts/judge-bench/results` |
   | `CAKE_JUDGE_BENCH_TYPESAFE_CUTOFFS` | Comma-separated candidate fast-approval cutoffs swept in the shadow report  | `0.9,0.95,0.99,0.999`         |
+  | `CAKE_JUDGE_BENCH_CONCURRENCY`      | Trials in flight at once; above `1` the latency SLO checks are not measured | `1`                           |
 
 TypeSafe is configured under `[tools.bash.judge.typesafe]` rather than through a benchmark environment variable. Its API key is always `TYPESAFE_AI_API_KEY`; alternate credential variable names are not supported.
 
@@ -63,6 +64,19 @@ CAKE_JUDGE_BENCH_MODELS=default,fast-judge CAKE_JUDGE_BENCH_REPETITIONS=5 just j
 
 The defaults are candidate values derived from the observed local baseline recorded in issue #205 (successful p50 2.54s, p95 9.89s, p99 20.63s, 1.7% timeout rate) and the #174 corpus agreement gate. They are not a frozen release contract: treat them as the starting budget until a real provider run on the profile you intend to ship confirms they hold. Compare profiles on the same run so provider and network conditions are shared.
 
+## Bounded concurrency
+
+`CAKE_JUDGE_BENCH_CONCURRENCY` sets how many trials are in flight at once. Each trial is an independent request --- the judge is stateless per call, carrying only command, cwd, repo digest, and reason --- and results are recorded in case/repetition order, so the verdict columns do not depend on the value and only the wall clock changes. A 204-case, five-repetition independent run is roughly an hour at `1` and minutes at `8`.
+
+Latency is the exception. A concurrent trial waits on provider queueing as well as on the judge, so at a value above `1`:
+
+- the three latency SLO checks report **not measurable** with a note instead of a number, and they do not fail the gate;
+- `latency_ms`, `success_latency_ms`, and `estimated_cascade_latency_ms` are inflated by queueing and are not cascade or SLO evidence.
+
+The timeout and failure rates, label agreement, consistency, and every shadow column still measure the run. A concurrency high enough to reach provider rate limits shows up there as failures, so read the failure classes and the timeout rate beside the wall clock rather than assuming a higher value is free.
+
+Use concurrency above `1` for safety and cutoff evidence. Run at `1` for an SLO baseline, a latency comparison, or anything that quotes a percentile.
+
 ## Case classes
 
 The report breaks statistics down by overlapping classes derived from the committed corpus (the corpus itself is unchanged): `safe`, `named-destructive`, `unknown-destructive` (long-tail), `warned`, `compound` (chains, pipes, substitutions), `merge` (`gh pr merge`), `branch-delete` (`--delete`), `reason` (cases carrying a reason), `injection` (reason-laundering and reason-injection tags), and `reason-context`. The corpus already covers every scenario #205 requires; see `src/clients/tools/corpus/commands.jsonl`.
@@ -71,7 +85,7 @@ The report breaks statistics down by overlapping classes derived from the commit
 
 Each run writes `run-<timestamp>.json` plus `latest.json` into the results directory. The payload has two top-level keys:
 
-- `report` --- schema version, configuration, per-model and per-case-class aggregates (trials, verdicts, attempts, timeouts, failure counts by class, timeout/failure rates, label agreement, consistency, p50/p90/p95/p99 and max latency over successful verdicts, token totals), a per-model SLO pass/fail table, the overall `passes` boolean, and an explicit sample-size note. The timeout and failure rates are **post-retry**: they count the trials whose evaluation ended without a verdict after the bounded recovery, so a recovered trial counts as a verdict, not a failure, and `attempts > trials` is what shows recovery ran.
+- `report` --- schema version, configuration, per-model and per-case-class aggregates (trials, verdicts, attempts, timeouts, failure counts by class, timeout/failure rates, label agreement, consistency, p50/p90/p95/p99 and max latency over successful verdicts, token totals), a per-model SLO pass/fail table, the overall `passes` boolean, and an explicit sample-size note. `configuration.concurrency` records the trials in flight; only a run at `1` carries measurable latency. The timeout and failure rates are **post-retry**: they count the trials whose evaluation ended without a verdict after the bounded recovery, so a recovered trial counts as a verdict, not a failure, and `attempts > trials` is what shows recovery ran.
 - `trials` --- one object per (model, case, repetition): case identity and command, expected and observed verdict/code, label agreement, failure class, attempt count, per-attempt telemetry (phase timing, token usage, terminal class), derived case classes, and latency. A trial's `failure_class` is its **last** attempt's class (absent when the evaluation produced a verdict); the first attempt's class stays in `attempts[0].terminal_class`.
 
 When shadow observations are enabled, each model report includes a `shadow` section with successful observations, typed failures, primary verdict disagreements, measured parallel TypeSafe latency, `success_latency_ms` over successful observations only, `tokens` summed over successful observations, and offline threshold rows at the candidate cutoffs from `CAKE_JUDGE_BENCH_TYPESAFE_CUTOFFS`. Each cutoff exposes separate `tuning` and `held_out` counts for total trials, observations, approvals, allow cases, allow observations and allow approvals, observational cases, observational observations and observational approvals (the coverage the cutoff buys), blocked cases with and without a usable observation, unsafe approvals, high-risk cases and high-risk approvals, warning cases, and an `estimated_cascade_latency_ms` percentile set. Unscored cases are explicit and excluded from threshold denominators. Warning cases have a separate denominator; an empty warning set is not zero accuracy.
@@ -86,7 +100,7 @@ advisory disagreement, not an unsafe approval or a lost hook warning. Hooks rema
 
 `unsafe_upper_bound_percent` and `high_risk_upper_bound_percent` are rule-of-three 95% bounds (`3/N`) over `blocked_observed` and `high_risk_observed`, and they appear **only** when zero such approvals were observed. An absent bound means an approval was observed or the denominator is empty; neither case is a safety claim, and a small corpus gives a wide bound. `recommended_cutoff` is the lowest tuning cutoff with zero unsafe approvals, zero high-risk approvals, and nonzero coverage over the observational population (over gold-`allow` for a corpus without an observational classification). A value equal to the lowest configured candidate means the decision boundary may lie below the configured grid, so it is not evidence that the cutoff is right; widen `CAKE_JUDGE_BENCH_TYPESAFE_CUTOFFS` before reading it as a recommendation. It is computed on tuning data only, the held-out column is a check rather than a validation set, and it is never execution policy.
 
-`estimated_cascade_latency_ms` per split is offline arithmetic over the measured fast-path and fallback legs: the observation elapsed time alone when the cutoff approves, otherwise that elapsed time plus the judge's own request duration. The fast path ran concurrently with the judge, so this bounds a sequential cascade rather than measuring one.
+`estimated_cascade_latency_ms` per split is offline arithmetic over the measured fast-path and fallback legs: the observation elapsed time alone when the cutoff approves, otherwise that elapsed time plus the judge's own request duration. The fast path ran concurrently with the judge, so this bounds a sequential cascade rather than measuring one, and a run above serial concurrency adds queueing to both legs.
 
 Repetitions are not independent safety evidence, so a coverage or unsafe-approval question is answered by distinct corpus cases rather than by repetitions. One measurement is also enough for the safety numbers: the TypeSafe request carries the command, context, and effective rubric but no primary model identity, so every model produces the same TypeSafe observations. Running a second model re-measures the fallback leg, not the fast path.
 
@@ -144,7 +158,7 @@ When a candidate wins, point the judge at it (`[tools.bash.judge] model` or the 
 
 A fast-approval cutoff is the probability at or above which a successful TypeSafe observation would let a command skip the generative judge. The shadow report computes the offline evidence for that decision at every candidate cutoff; this protocol turns a set of runs into a chosen cutoff. It changes nothing at run time: the shadow stays observational, and no cutoff is execution policy until a reviewed ADR records it.
 
-Requirements: shadow enabled, both credentials, authorized spend on both providers, the frozen corpus version under evaluation (`corpus_version` and `corpus_sha256` in the report), and at least five repetitions. Widen the candidate grid to span the measured band first --- the shipped `0.9,0.95,0.99,0.999` candidates sit above a boundary that can fall near `0.85`, and a `recommended_cutoff` equal to the lowest candidate means the grid, not the boundary, produced it:
+Requirements: shadow enabled, both credentials, authorized spend on both providers, the frozen corpus version under evaluation (`corpus_version` and `corpus_sha256` in the report), and at least five repetitions. Raise `CAKE_JUDGE_BENCH_CONCURRENCY` for the safety columns when the wall clock matters ([Bounded concurrency](#bounded-concurrency)); read any latency number only from a run at `1`. Widen the candidate grid to span the measured band first --- the shipped `0.9,0.95,0.99,0.999` candidates sit above a boundary that can fall near `0.85`, and a `recommended_cutoff` equal to the lowest candidate means the grid, not the boundary, produced it:
 
 ```bash
 CAKE_JUDGE_BENCH_TYPESAFE_CUTOFFS=0.4,0.5,0.6,0.7,0.75,0.8,0.82,0.83,0.84,0.85,0.87,0.9 \

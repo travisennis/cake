@@ -391,37 +391,67 @@ pub(super) async fn run() {
     let selected = super::select_cases(&entries, &config.case_lines).unwrap();
     let user_rubric = read_user_rubric(&loaded.judge).unwrap();
     let rubric = build_judge_system_prompt(user_rubric.as_deref());
-    let mut trials = Vec::new();
-    for model in &config.models {
-        let client = super::live_judge_client(&loaded, model)
-            .unwrap()
-            .with_user_rubric(user_rubric.clone());
-        for entry in &selected {
+    let repetitions = config.repetitions;
+    // Scored cases only: an unscored policy case is never sent, and the judge is
+    // stateless per call, so no verdict can depend on trial order. Trials run
+    // with bounded concurrency and are recorded in model/case/repetition order
+    // afterward to keep the report deterministic.
+    let clients: Vec<_> = config
+        .models
+        .iter()
+        .map(|model| {
+            super::live_judge_client(&loaded, model)
+                .unwrap()
+                .with_user_rubric(user_rubric.clone())
+        })
+        .collect();
+    let jobs: Vec<(usize, usize)> = (0..clients.len())
+        .flat_map(|model_index| {
+            (0..selected.len()).flat_map(move |case_index| {
+                (0..repetitions).map(move |_| (model_index, case_index))
+            })
+        })
+        .filter(|(_, case_index)| {
+            cases[selected[*case_index].line_number - 1].expected_decision != Decision::Unscored
+        })
+        .collect();
+    let evaluations = {
+        // Shared state enters every trial's `move` closure as a `Copy`
+        // reference; owned values would have to be cloned once per trial.
+        let judge = &loaded.judge;
+        let bypass = bypass.as_deref();
+        let clients = &clients;
+        let selected = &selected;
+        let cases = &cases;
+        super::run_bounded(
+            "independent judge",
+            &jobs,
+            config.concurrency,
+            super::PROGRESS_CASES * repetitions,
+            |(model_index, case_index): &(usize, usize)| {
+                let request = cases[selected[*case_index].line_number - 1].request();
+                let client = &clients[*model_index];
+                async move { evaluate_command_observed(client, judge, request, bypass, false).await }
+            },
+        )
+        .await
+    };
+    let trials: Vec<TrialRecord> = jobs
+        .iter()
+        .zip(evaluations)
+        .map(|((model_index, case_index), evaluation)| {
+            let entry = selected[*case_index];
             let case = &cases[entry.line_number - 1];
-            if case.expected_decision == Decision::Unscored {
-                continue;
-            }
-            for _ in 0..config.repetitions {
-                let evaluation = evaluate_command_observed(
-                    &client,
-                    &loaded.judge,
-                    case.request(),
-                    bypass.as_deref(),
-                    false,
-                )
-                .await;
-                let mut trial = super::trial_record(model, entry, evaluation);
-                trial.shadow_group = Some(case.pair.clone());
-                trial.latency_ms = trial
-                    .attempts
-                    .iter()
-                    .map(|a| a.total_ms + a.retry_delay_ms)
-                    .sum();
-                trials.push(trial);
-            }
-            eprintln!("independent judge: {model}: {} complete", case.id);
-        }
-    }
+            let mut trial = super::trial_record(&config.models[*model_index], entry, evaluation);
+            trial.shadow_group = Some(case.pair.clone());
+            trial.latency_ms = trial
+                .attempts
+                .iter()
+                .map(|a| a.total_ms + a.retry_delay_ms)
+                .sum();
+            trial
+        })
+        .collect();
     assert!(!trials.is_empty(), "selection contains no scored cases");
     let providers: Vec<_> = config
         .models
@@ -835,6 +865,7 @@ fn judge_bench_independent_report_preserves_versions_and_unknown_metrics() {
         results_dir: directory.path().into(),
         slo: super::SloThresholds::default(),
         typesafe_cutoffs: super::DEFAULT_TYPESAFE_CUTOFFS.to_vec(),
+        concurrency: 1,
     };
     let cases = load().unwrap();
     let path = write_report(&cases, &[], &config, "rubric fixture", &[]);
