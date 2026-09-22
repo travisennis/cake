@@ -16,6 +16,8 @@ Every instruction costs context on every session that loads it, and the corpus o
 
 An instruction that restates what a linked document already says is not an addition worth making. Route to the authority instead.
 
+`just lint-instruction-size` also reports the model-visible prompt assets (`src/clients/tools/*-description.txt`, `src/prompts/*.md`). This guardrail does not govern them --- they are prompt text rather than instructions --- but they reach the model on every request, so their cost is reported alongside the corpus instead of staying invisible.
+
 ## Removing an instruction
 
 Removing an instruction is ordinary editing and needs only the normal documentation checks. Prefer removal when an instruction duplicates its authority, describes a failure a mechanical check now prevents, or has never demonstrably changed a trajectory.

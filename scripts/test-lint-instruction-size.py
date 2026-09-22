@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Regression tests for the optional native skill-catalog report."""
+"""Regression tests for the instruction-size report and its optional skill catalog."""
 
+import importlib.util
 import os
 from pathlib import Path
 import subprocess
@@ -10,6 +11,15 @@ import unittest
 
 
 SCRIPT = Path(__file__).resolve().with_name("lint-instruction-size.py")
+
+
+def load_module():
+    """Import the hyphenated report script as a module."""
+    spec = importlib.util.spec_from_file_location("lint_instruction_size", SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class SkillCatalogLaunchTests(unittest.TestCase):
@@ -46,6 +56,30 @@ class SkillCatalogLaunchTests(unittest.TestCase):
             result = self.run_report(binary)
             self.assertEqual(result.returncode, 7, result.stderr)
             self.assertEqual(result.stderr, "")
+
+
+class PromptAssetTests(unittest.TestCase):
+    def test_reports_prompt_text_and_excludes_snapshots(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "src/clients/tools").mkdir(parents=True)
+            (root / "src/prompts/snapshots").mkdir(parents=True)
+            (root / "src/clients/tools/read-description.txt").write_text(
+                "Read a file.\n", encoding="utf-8"
+            )
+            (root / "src/clients/tools/bash.rs").write_text("", encoding="utf-8")
+            (root / "src/prompts/system.md").write_text(
+                "You are cake.\n", encoding="utf-8"
+            )
+            (root / "src/prompts/snapshots/prompt.snap").write_text(
+                "generated\n", encoding="utf-8"
+            )
+
+            self.assertEqual(
+                module.find_prompt_assets(str(root)),
+                ["src/clients/tools/read-description.txt", "src/prompts/system.md"],
+            )
 
 
 if __name__ == "__main__":

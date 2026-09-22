@@ -11,7 +11,7 @@ their purpose.
 Counting is prose-only: fenced code blocks are stripped before counting, so a
 document is not penalised for carrying the commands a reader needs.
 
-The check has one hard rule and one report:
+The check has one hard rule and two reports:
 
 - AGENTS.md is the only document loaded into every session; the system prompt,
   the skill catalog, and the tool descriptions make up the rest of the loaded
@@ -23,6 +23,11 @@ The check has one hard rule and one report:
   largest documents, so review can see where the weight accumulates. No
   per-document budgets: an arbitrary number per document just gets renegotiated
   on contact.
+- Model-visible prompt assets are reported separately from the instruction
+  corpus. Tool descriptions and the system prompt are not instructions and the
+  cap does not apply to them, but they reach the model on every request, so
+  their cost belongs in the same report instead of growing uncounted. They stay
+  out of the corpus total so the two costs remain distinguishable.
 
 Exit code is 1 when AGENTS.md exceeds its cap.
 """
@@ -33,6 +38,7 @@ import argparse
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 # Policy cap on AGENTS.md in prose words. AGENTS.md is the one document loaded
 # into every session, so its size is a per-session cost: 1200 words is roughly
@@ -58,6 +64,15 @@ INSTRUCTION_DIRS = [
 # report the day it lands, without pulling in the record subdirectories.
 INSTRUCTION_DIRS_SHALLOW = [
     "docs",
+]
+
+# Model-visible prompt assets, relative to the repo root. These are not
+# instructions and carry no budget: they are reported because they are injected
+# into every model request, so their growth is a per-request cost. Snapshots are
+# excluded --- they are generated test output, not prompt text.
+PROMPT_ASSET_GLOBS = [
+    "src/clients/tools/*-description.txt",
+    "src/prompts/*.md",
 ]
 
 # Individual instruction files relative to the repo root.
@@ -91,6 +106,18 @@ def find_instruction_files(root: str) -> list[str]:
         for name in sorted(os.listdir(absdir)):
             if name.endswith(".md") and os.path.isfile(os.path.join(absdir, name)):
                 found.add(os.path.join(reldir, name))
+
+    return sorted(found)
+
+
+def find_prompt_assets(root: str) -> list[str]:
+    """Return sorted repo-relative paths of the model-visible prompt assets."""
+    found: set[str] = set()
+
+    for pattern in PROMPT_ASSET_GLOBS:
+        for path in Path(root).glob(pattern):
+            if path.is_file():
+                found.add(path.relative_to(root).as_posix())
 
     return sorted(found)
 
@@ -139,6 +166,13 @@ def main() -> int:
     }
     total = sum(counts.values())
 
+    prompt_assets = find_prompt_assets(root)
+    prompt_counts = {
+        relpath: count_prose_words(os.path.join(root, relpath))
+        for relpath in prompt_assets
+    }
+    prompt_total = sum(prompt_counts.values())
+
     agents_count = counts.get("AGENTS.md")
     violations: list[str] = []
     if agents_count is not None and agents_count > AGENTS_CAP:
@@ -148,6 +182,17 @@ def main() -> int:
     for relpath, count in sorted(counts.items(), key=lambda item: (-item[1], item[0])):
         suffix = f" (cap {AGENTS_CAP})" if relpath == "AGENTS.md" else ""
         print(f"  {count:6d}  {relpath}{suffix}")
+
+    if prompt_counts:
+        print(
+            f"\nModel-visible prompt assets: {prompt_total} prose words across "
+            f"{len(prompt_counts)} files. Not instructions and not capped; "
+            f"reported because they reach the model on every request."
+        )
+        for relpath, count in sorted(
+            prompt_counts.items(), key=lambda item: (-item[1], item[0])
+        ):
+            print(f"  {count:6d}  {relpath}")
 
     if args.skill_catalog:
         binary = os.path.abspath(args.skill_catalog)
