@@ -104,7 +104,7 @@ If an applicable check cannot run, report the exact reason and the narrower chec
 - Use absolute `crate::` imports in production code; verified by `just lint-imports`.
 - Preserve public behavior during refactors unless the task explicitly changes it.
 - Spawn `git` through `config::git::command`, and in tests through `config::git::test_support` or the `git` helper in `tests/`. Git exports `GIT_DIR` and its siblings into hooks and everything they spawn, so a command that inherits them operates on the exporting repository rather than the directory it was given.
-- Tests that early-exit when `CAKE_SANDBOX` turns sandboxing off (for example the macOS sandbox integration tests in `src/clients/tools/bash_tests.rs`) exist because those tests cannot run inside cake's own sandbox. They are deliberate, not dead code; change them only when the sandbox behavior they describe changes.
+- Tests that early-exit when `CAKE_SANDBOX` turns sandboxing off exist because those tests cannot run inside cake's own sandbox. They are deliberate, not dead code; change them only when the sandbox behavior they describe changes. The guard is `skip_if_sandbox_unavailable` in `src/clients/tools/bash_tests.rs`, repeated inline in that file and in `src/clients/tools/bash_issue_366_tests.rs`.
 
 Tests and snapshots should encode behavior close to its implementation. Add documentation only when the change affects a user workflow, external contract, security boundary, durable architectural invariant, or contributor workflow.
 

@@ -69,7 +69,8 @@ INSTRUCTION_DIRS_SHALLOW = [
 # Model-visible prompt assets, relative to the repo root. These are not
 # instructions and carry no budget: they are reported because they are injected
 # into every model request, so their growth is a per-request cost. Snapshots are
-# excluded --- they are generated test output, not prompt text.
+# excluded --- they are generated test output, not prompt text --- and every
+# pattern is single-level, so a `snapshots/` directory never matches.
 PROMPT_ASSET_GLOBS = [
     "src/clients/tools/*-description.txt",
     "src/prompts/*.md",

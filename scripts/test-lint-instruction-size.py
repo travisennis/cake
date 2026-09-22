@@ -65,7 +65,7 @@ class PromptAssetTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "src/clients/tools").mkdir(parents=True)
-            (root / "src/prompts/snapshots").mkdir(parents=True)
+            (root / "src/prompts").mkdir(parents=True)
             (root / "src/clients/tools/read-description.txt").write_text(
                 "Read a file.\n", encoding="utf-8"
             )
@@ -73,7 +73,14 @@ class PromptAssetTests(unittest.TestCase):
             (root / "src/prompts/system.md").write_text(
                 "You are cake.\n", encoding="utf-8"
             )
-            (root / "src/prompts/snapshots/prompt.snap").write_text(
+            # Snapshot fixtures carry the globbed extensions, so the assertion
+            # fails if a pattern ever widens to reach a snapshots directory.
+            (root / "src/clients/tools/snapshots").mkdir(parents=True)
+            (root / "src/prompts/snapshots").mkdir(parents=True)
+            (root / "src/clients/tools/snapshots/read-description.txt").write_text(
+                "generated\n", encoding="utf-8"
+            )
+            (root / "src/prompts/snapshots/prompt.md").write_text(
                 "generated\n", encoding="utf-8"
             )
 
