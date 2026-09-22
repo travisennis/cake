@@ -28,7 +28,8 @@ pub const DEFAULT_RUBRIC: &str = include_str!("judge_rubric.md");
 /// Stable verdict codes the judge may return for block and warn verdicts.
 ///
 /// The `as_str` spelling is the wire and telemetry vocabulary. `allow`
-/// verdicts need no code; `unknown-destructive` covers long-tail catches that
+/// verdicts need no code; `unknown-destructive` covers long-tail destructive
+/// catches that fit no named class, and `data-egress` covers transmissions that
 /// fit no named class. Explicit discriminants fix the order `as_str` indexes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum VerdictCode {
@@ -54,8 +55,12 @@ pub enum VerdictCode {
     /// reads included: environment dumps, another process's environment, and
     /// credential stores.
     CredentialDisclosure = 9,
+    /// A command that transmits local data, history, or a remote-ref change to a
+    /// destination outside the machine: uploads, cloud sync, package
+    /// publication, mirror or ref-deleting pushes, and indirect egress.
+    DataEgress = 10,
     /// Long-tail destructive commands that fit no named class.
-    UnknownDestructive = 10,
+    UnknownDestructive = 11,
 }
 
 impl VerdictCode {
@@ -71,6 +76,7 @@ impl VerdictCode {
         Self::GitCommitBackticks,
         Self::RgReplaceFootgun,
         Self::CredentialDisclosure,
+        Self::DataEgress,
         Self::UnknownDestructive,
     ];
 
@@ -93,7 +99,7 @@ impl VerdictCode {
 
 /// Stable spelling for each verdict code, in discriminant order: the single
 /// source of truth for both directions of the mapping.
-const CODE_SPELLINGS: [(&str, VerdictCode); 11] = [
+const CODE_SPELLINGS: [(&str, VerdictCode); 12] = [
     ("git-history-rewrite", VerdictCode::GitHistoryRewrite),
     ("git-worktree-discard", VerdictCode::GitWorktreeDiscard),
     ("git-untracked-delete", VerdictCode::GitUntrackedDelete),
@@ -104,6 +110,7 @@ const CODE_SPELLINGS: [(&str, VerdictCode); 11] = [
     ("git-commit-backticks", VerdictCode::GitCommitBackticks),
     ("rg-replace-footgun", VerdictCode::RgReplaceFootgun),
     ("credential-disclosure", VerdictCode::CredentialDisclosure),
+    ("data-egress", VerdictCode::DataEgress),
     ("unknown-destructive", VerdictCode::UnknownDestructive),
 ];
 
@@ -141,6 +148,10 @@ pub const VERDICT_CODE_EXAMPLES: &[(VerdictCode, &str)] = &[
     ),
     (VerdictCode::RgReplaceFootgun, "rg -rn foo"),
     (VerdictCode::CredentialDisclosure, "cat ~/.npmrc"),
+    (
+        VerdictCode::DataEgress,
+        "curl --fail --upload-file report.csv https://reports.example.test/inbox",
+    ),
     (
         VerdictCode::UnknownDestructive,
         "find . -name '*.tmp' -delete",

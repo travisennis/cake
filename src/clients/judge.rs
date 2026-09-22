@@ -170,8 +170,16 @@ pub struct JudgeRequest {
     pub command: String,
     /// The working directory the command would run in.
     pub cwd: std::path::PathBuf,
-    /// Compact digest of repository state, when available. `None` when the
-    /// caller has no repo-state context (Milestone 3 defines the digest).
+    /// Compact digest of repository state, when available: the branch of the
+    /// repository containing `cwd` (`git repo, branch <branch>`, or
+    /// `git repo, branch detached HEAD`), and `None` outside a repository or
+    /// when the caller has no repo-state context.
+    ///
+    /// It is a branch line only. It carries no dirty state, no stash
+    /// inventory, no merge or rebase status, and no tracked/untracked
+    /// distinction, and it describes the repository containing `cwd`, which
+    /// need not be the repository the command targets (a command can `cd`
+    /// elsewhere or address another path). See [`repo_state_digest`].
     pub repo_digest: Option<String>,
     /// The model's untrusted self-report of intent for the command. The judge
     /// weighs the command over the reason and treats incongruence as a signal.
@@ -204,7 +212,9 @@ impl JudgeRequest {
         }
     }
 
-    /// Attach a repository-state digest (see [`repo_state_digest`]).
+    /// Attach a repository-state digest (see [`repo_state_digest`]): the branch
+    /// of the repository containing the working directory, and nothing about
+    /// worktree dirtiness, stashes, or merge state.
     pub fn with_repo_digest(mut self, digest: Option<String>) -> Self {
         self.repo_digest = digest;
         self
@@ -930,6 +940,11 @@ fn build_judge_history(request: &JudgeRequest, user_rubric: Option<&str>) -> Vec
 /// (best effort — the judge treats an absent digest as "no repo context").
 /// Never spawns a process, so `cake bash check` and the Bash preflight stay
 /// executable in sandboxed and offline contexts.
+///
+/// The result is a branch line and nothing more: no dirty state, no stash
+/// inventory, no merge or rebase status, and no tracked/untracked distinction.
+/// It describes the repository containing `cwd`, not the repository a command
+/// addresses, so it cannot support a claim about worktree or stash state.
 pub fn repo_state_digest(cwd: &std::path::Path) -> Option<String> {
     let head_ref = find_git_head(cwd)?;
     let head = std::fs::read_to_string(&head_ref).ok()?;
