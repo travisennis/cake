@@ -894,7 +894,7 @@ impl Agent {
             reasoning_max_tokens: self.config.model_config.reasoning_max_tokens,
             context_overflow_retry_used: false,
         };
-        self.append_runner_telemetry(AgentRunnerTelemetryEvent::RetryScheduled(
+        self.append_runner_telemetry(AgentRunnerTelemetryEvent::retry_scheduled(
             RetryScheduledTelemetry::from_status(
                 &status,
                 self.turn_count,

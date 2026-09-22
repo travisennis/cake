@@ -321,9 +321,24 @@ pub struct ToolCallTelemetry {
 pub enum AgentRunnerTelemetryEvent {
     ApiAttemptInFlight(ApiAttemptInFlightTelemetry),
     ApiAttempt(ApiAttemptTelemetry),
-    RetryScheduled(RetryScheduledTelemetry),
-    RetryWait(RetryWaitTelemetry),
+    Retry(RetryTelemetryEvent),
     Compensation(CompensationEventTelemetry),
+}
+
+#[derive(Debug, Clone)]
+pub enum RetryTelemetryEvent {
+    Scheduled(RetryScheduledTelemetry),
+    Wait(RetryWaitTelemetry),
+}
+
+impl AgentRunnerTelemetryEvent {
+    pub const fn retry_scheduled(retry: RetryScheduledTelemetry) -> Self {
+        Self::Retry(RetryTelemetryEvent::Scheduled(retry))
+    }
+
+    pub const fn retry_wait(wait: RetryWaitTelemetry) -> Self {
+        Self::Retry(RetryTelemetryEvent::Wait(wait))
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -2,8 +2,9 @@ use std::sync::Arc;
 
 use crate::clients::agent::Agent;
 use crate::session_telemetry::{
-    AgentRunnerTelemetryEvent, CompensationEventTelemetry, SessionTelemetryContext,
-    SessionTelemetryRecord, SharedSessionTelemetryWriter, TelemetryAppend, ToolCallTelemetry,
+    AgentRunnerTelemetryEvent, CompensationEventTelemetry, RetryTelemetryEvent,
+    SessionTelemetryContext, SessionTelemetryRecord, SharedSessionTelemetryWriter, TelemetryAppend,
+    ToolCallTelemetry,
 };
 
 pub(super) struct AgentRunnerTelemetrySink {
@@ -106,25 +107,32 @@ fn runner_telemetry_terminal_record(
             timestamp: chrono::Utc::now(),
             attempt,
         },
-        AgentRunnerTelemetryEvent::RetryScheduled(retry) => {
-            SessionTelemetryRecord::RetryScheduled {
-                session_id: context.session_id,
-                invocation_id: context.invocation_id,
-                timestamp: chrono::Utc::now(),
-                retry,
-            }
-        },
-        AgentRunnerTelemetryEvent::RetryWait(wait) => SessionTelemetryRecord::RetryWait {
-            session_id: context.session_id,
-            invocation_id: context.invocation_id,
-            timestamp: chrono::Utc::now(),
-            wait,
-        },
+        AgentRunnerTelemetryEvent::Retry(retry) => retry_telemetry_record(context, retry),
         AgentRunnerTelemetryEvent::Compensation(event) => SessionTelemetryRecord::Compensation {
             session_id: context.session_id,
             invocation_id: context.invocation_id,
             timestamp: chrono::Utc::now(),
             event,
+        },
+    }
+}
+
+fn retry_telemetry_record(
+    context: SessionTelemetryContext,
+    retry: RetryTelemetryEvent,
+) -> SessionTelemetryRecord {
+    match retry {
+        RetryTelemetryEvent::Scheduled(retry) => SessionTelemetryRecord::RetryScheduled {
+            session_id: context.session_id,
+            invocation_id: context.invocation_id,
+            timestamp: chrono::Utc::now(),
+            retry,
+        },
+        RetryTelemetryEvent::Wait(wait) => SessionTelemetryRecord::RetryWait {
+            session_id: context.session_id,
+            invocation_id: context.invocation_id,
+            timestamp: chrono::Utc::now(),
+            wait,
         },
     }
 }
