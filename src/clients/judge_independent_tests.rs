@@ -891,6 +891,101 @@ fn judge_bench_independent_report_preserves_versions_and_unknown_metrics() {
     assert!(!directory.path().join("latest.json").exists());
 }
 
+/// #628: the rule-of-three bound divides by distinct corpus cases, not by trials
+/// and not by the pair group that carries the split. Five repetitions of the
+/// blocked cases of one pair are one sample per case, so the bound is `3/cases`
+/// while `blocked_observed` counts every trial.
+#[test]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "a corpus pair holds far fewer than 2^53 blocked cases, so f64 preserves the count exactly"
+)]
+fn judge_bench_independent_shadow_bound_counts_distinct_blocked_cases() {
+    let cases = load().unwrap();
+    let pair = cases
+        .iter()
+        .filter(|case| case.expected_decision == Decision::Block)
+        .map(|case| case.pair.clone())
+        .find(|pair| blocked_in_pair(&cases, pair).len() > 1)
+        .expect("a pair holds more than one blocked case");
+    let blocked = blocked_in_pair(&cases, &pair);
+    assert!(
+        blocked.len() > 1,
+        "the fixture needs a pair holding several blocked cases"
+    );
+    let repetitions = 5;
+    let trials = blocked
+        .iter()
+        .flat_map(|(index, case)| {
+            let line = *index + 1;
+            let pair = pair.clone();
+            (0..repetitions).map(move |_| {
+                let mut trial = super::trial_record(
+                    "fixture",
+                    &case.entry(line),
+                    crate::clients::judge::JudgeEvaluation {
+                        outcome: Ok(crate::clients::judge::JudgeOutcome::Bypassed),
+                        attempts: vec![],
+                        diagnostic: None,
+                        shadow: None,
+                    },
+                );
+                trial.shadow_probability = Some(0.1);
+                trial.shadow_elapsed_ms = Some(100);
+                trial.shadow_failure_class = None;
+                trial.shadow_group = Some(pair.clone());
+                trial
+            })
+        })
+        .collect::<Vec<_>>();
+    let directory = tempfile::tempdir().unwrap();
+    let config = BenchmarkConfig {
+        models: vec!["fixture".into()],
+        repetitions,
+        case_lines: Vec::new(),
+        profile: None,
+        results_dir: directory.path().into(),
+        slo: super::SloThresholds::default(),
+        typesafe_cutoffs: vec![0.99],
+        concurrency: 1,
+    };
+    let path = write_report(&cases, &trials, &config, "rubric fixture", &[]);
+    let json: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    let row = &json["safety"][0]["typesafe_shadow"]["thresholds"][0];
+    let split = if super::shadow_group_is_held_out(&pair) {
+        "held_out"
+    } else {
+        "tuning"
+    };
+    let counts = &row[split];
+    assert_eq!(counts["trials"], repetitions * blocked.len());
+    assert_eq!(counts["blocked_observed"], repetitions * blocked.len());
+    assert_eq!(counts["blocked_cases_observed"], blocked.len());
+    assert_eq!(counts["unsafe_approvals"], 0);
+    let bound = counts["unsafe_upper_bound_percent_per_case"]
+        .as_f64()
+        .expect("case-level bound");
+    assert!((bound - 300.0 / blocked.len() as f64).abs() < f64::EPSILON);
+    // The trial-level denominator is a repeatability count, not the bound's.
+    assert!(counts.get("unsafe_upper_bound_percent").is_none());
+    let other = if split == "tuning" {
+        "held_out"
+    } else {
+        "tuning"
+    };
+    assert_eq!(row[other]["blocked_cases_observed"], 0);
+}
+
+/// The blocked cases of one pair, with their corpus positions, so a trial carries
+/// the line the report maps back to its case.
+fn blocked_in_pair<'a>(cases: &'a [GoldCase], pair: &str) -> Vec<(usize, &'a GoldCase)> {
+    cases
+        .iter()
+        .enumerate()
+        .filter(|(_, case)| case.expected_decision == Decision::Block && case.pair == pair)
+        .collect()
+}
+
 #[test]
 fn judge_corpus_independent_rejects_authority_and_code_contradictions() {
     let base = load().unwrap().remove(0);
