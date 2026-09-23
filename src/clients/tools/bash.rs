@@ -1023,19 +1023,20 @@ struct ChildRun {
     status: Option<std::process::ExitStatus>,
 }
 
-/// Own a Bash lifecycle task until its result is consumed. Dropping the
-/// caller before that point aborts the task, which drops the child's
+/// Own a Bash lifecycle task until its result is consumed. Dropping this task
+/// or its `finish` future aborts the worker, which then drops the child's
 /// process-group guard and kills descendants as well as the direct child.
-/// A future session registry can take ownership of the task after yielding.
 struct BashChildTask(tokio::task::JoinHandle<Result<ChildRun, String>>);
 
 impl BashChildTask {
-    async fn finish(&mut self) -> Result<ChildRun, String> {
-        // Keep the abort-on-drop behavior armed while waiting. If this
-        // future is cancelled, `self` drops and aborts the lifecycle task.
-        (&mut self.0)
-            .await
-            .map_err(|e| format!("Bash lifecycle task failed: {e}"))?
+    async fn finish(mut self) -> Result<ChildRun, String> {
+        match (&mut self.0).await {
+            Ok(result) => result,
+            // A panic in capture or reaping used to unwind the Bash call.
+            // Preserve that failure instead of turning it into a tool error.
+            Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
+            Err(error) => Err(format!("Bash lifecycle task failed: {error}")),
+        }
     }
 }
 
@@ -1392,8 +1393,9 @@ async fn execute_bash_with_args(
         .map_or(0, |(read, max)| read.min(max));
 
     let timeout_secs = args.timeout;
-    let mut child_task = BashChildTask(tokio::spawn(async move {
+    let child_task = BashChildTask(tokio::spawn(async move {
         let result = run_bash_child(command, timeout_secs, read_cap, initial_capacity).await;
+        // The sandbox profile must remain alive until the child is reaped.
         drop(sandbox_guard);
         result
     }));

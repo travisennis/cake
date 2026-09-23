@@ -22,7 +22,8 @@ Cake currently kills a Bash command when its tool-call timeout expires. A build 
 - The current `run_bash_child` owns capture, timeout termination, and reaping as one future. A yielded process therefore needs a new owner for the child, pipes, sandbox guard, and group guard; wrapping the current future in a timeout would cancel and kill it.
 - `ToolContext` is cloned when the judge is attached. The registry must be held through `Arc` so that clone cannot create an independent session map.
 - `Bash` is currently registered as read-safe. The new session contract requires removing that capability as well as keeping `BashSession` unavailable under read-only policy.
-- The existing cancellation test already proves that dropping a Bash call kills a descendant process group. Moving the lifecycle into an owned task preserves that property and creates a handoff point for the later registry.
+- The existing cancellation test proves that dropping a Bash call eventually kills a descendant process group. Moving the lifecycle into an owned task keeps that tested result and creates a handoff point for the later registry.
+- An abort now schedules the worker's drop before its process-group guard sends SIGKILL, rather than sending SIGKILL synchronously in the caller's drop. A hard process exit during that scheduling gap can skip the kill. The shutdown-cleanup stage must signal registered process groups explicitly on normal exit and first interrupt rather than depend on worker drop ordering; a second interrupt remains a hard exit.
 
 ## Decision Log
 
@@ -82,7 +83,7 @@ Focused tests and formatting can be repeated. Session IDs and process records ex
 
 ## Artifacts and Notes
 
-Issue: https://github.com/travisennis/cake/issues/639. The owned-task stage passed `cargo test dropping_bash_future_kills_descendants` and, with local mock-server socket access, `cargo test clients::tools::bash::tests` (132 passed), `just check`, and `just docs-check`. Record later test commands and platform results here as they run. A final pull request should close #639 only after the model-visible behavior, settings, documentation, and lifecycle checks all pass.
+Issue: https://github.com/travisennis/cake/issues/639. The owned-task stage passed `cargo test dropping_bash_future_kills_descendants`, `cargo test bash_child_task_preserves_worker_panic`, and, with local mock-server socket access, `cargo test clients::tools::bash::tests` (133 passed), `just check`, and `just docs-check`. Record later test commands and platform results here as they run. A final pull request should close #639 only after the model-visible behavior, settings, documentation, and lifecycle checks all pass.
 
 ## Interfaces and Dependencies
 
@@ -91,3 +92,5 @@ The new registry belongs to `crate::clients::tools` and is shared by `ToolContex
 Revision 2026-09-23: inlined the model-visible contract and limit defaults, resolved `bash_read_cap` and live-cap behavior, made the read-only Bash removal explicit, and added verifiable milestones after review of planning PR #642.
 
 Revision 2026-09-23: split the first milestone into an owned-task bridge and the registry/journal work so the first code PR stays inside the complex-logic diff budget while preserving the existing cancellation guarantee.
+
+Revision 2026-09-23: clarified that cancellation schedules the group kill, made `finish` own its task, and preserved panic propagation after review of the first code PR.

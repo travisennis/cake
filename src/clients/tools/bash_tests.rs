@@ -7,6 +7,13 @@ use std::sync::Arc;
 use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+#[tokio::test]
+async fn bash_child_task_preserves_worker_panic() {
+    let task = BashChildTask(tokio::spawn(async { panic!("capture bug") }));
+    let caller = tokio::spawn(async move { task.finish().await });
+    assert!(matches!(caller.await, Err(error) if error.is_panic()));
+}
+
 /// Check whether `CAKE_REQUIRE_SANDBOX_TESTS` is set to a truthy value,
 /// indicating that macOS Seatbelt integration tests must run instead of skip.
 ///
