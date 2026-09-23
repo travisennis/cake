@@ -33,10 +33,14 @@ The session owner retains the sandbox guard and process-group guard until the ch
 
 The session journal bounds unread bytes, reports dropped bytes, and truncates on UTF-8 boundaries. A bounded count of live sessions prevents unbounded process growth. Exited sessions remain available for a bounded retention window so repeated final reads return the same status. Four positive-integer `[limits]` keys configure those bounds: `bash_session_output_max_bytes`, `bash_session_max`, `bash_session_max_seconds`, and `bash_session_exited_ttl_seconds`.
 
+Session-managed Bash commands no longer use the existing `bash_read_cap` kill threshold. The bounded journal drops the oldest unread bytes instead, reports the gap, and emits an `output_truncation` compensation event on the Bash or BashSession result that first reports that gap. `bash_read_cap` remains parseable for settings compatibility but does not control session execution; `bash_output_max_bytes` still bounds inline output. When the live-session limit is full, refuse the new Bash call before judging or spawning it and report the limit and active session IDs. Do not kill an older session to make room.
+
 ### Consequences
 
 - Commands longer than the yield window can finish without blocking the agent turn.
 - `Bash.timeout` changes from a kill deadline to a yield window, a deliberate model-visible compatibility break.
+- `bash_read_cap` no longer kills a Bash process; output beyond the session journal's unread-byte cap is dropped and reported instead. A fast command with more output than the old read cap therefore need not return exactly its former result.
+- Removing Bash's read-safe capability removes **Bash itself** from `--sandbox read-only`, including shell-based `rg`, `find`, and `ls` exploration. `BashSession` is also unavailable there. The implementation must update `docs/security.md` and the read-only tool-selection tests to reflect this availability break.
 - Judge authorization lasts for the process lifetime, potentially much longer than one tool call. The OS sandbox continues to enforce filesystem policy throughout that lifetime; the hard wall clock bounds the exposure.
 - Session IDs in a resumed transcript cannot be used in a later Cake process. An unknown-ID result must say so clearly and list active IDs.
 - Pipe-backed capture remains; PTY, stdin, readiness conditions, persistence, and journal rotation are deferred to issue #391.

@@ -11,6 +11,7 @@ Cake currently kills a Bash command when its tool-call timeout expires. A build 
 ## Progress
 
 - [x] (2026-09-23) Inspected issue #639, Bash execution, tool registry, settings, and shutdown paths; claimed the issue, raised Effort to L, and recorded ADR 036.
+- [x] (2026-09-23) Resolved planning review: inlined the tool contract, decided `bash_read_cap` and saturation behavior, and recorded the read-only Bash availability break.
 - [ ] Add a bounded, shared in-run process registry and focused lifecycle tests.
 - [ ] Change Bash's timeout to a yield window and add background mode and a BashSession tool.
 - [ ] Wire four session limits, shutdown cleanup, model descriptions, and tool snapshots.
@@ -26,12 +27,22 @@ Cake currently kills a Bash command when its tool-call timeout expires. A build 
 
 - Decision: implement in bounded stages because this changes complex execution and security logic and the repository caps such diffs at 500 changed lines. Rationale: a separate session core can be verified before changing the model-visible Bash contract. Date/Author: 2026-09-23, Codex.
 - Decision: the four safety keys accept positive integers; `"unlimited"` is not meaningful for session count, hard wall clock, exit retention, or a bounded journal. Rationale: these are mandatory lifecycle bounds, unlike optional output budgets. Date/Author: 2026-09-23, Codex.
+- Decision: session-managed commands ignore `bash_read_cap`; the bounded unread journal drops old output and reports an `output_truncation` event on the result that first reports the gap. Rationale: a read cap that kills the process conflicts with the session's purpose. Date/Author: 2026-09-23, Codex.
+- Decision: when the live-session cap is full, refuse a new Bash call before judge preflight or spawn and name the cap and active IDs. Rationale: killing an existing session would discard work the model may still need. Date/Author: 2026-09-23, Codex.
 
 ## Security and Compatibility Impact
 
-The command-safety judge still authorizes exactly the normalized command before spawn. Its authorization now lasts until exit, explicit kill, Cake shutdown, or the hard wall clock, rather than one tool call. The OS sandbox must remain in force throughout that lifetime. The changed meaning of `Bash.timeout` is model-visible and breaks callers that expected a kill deadline; CLI flags, exit codes, stream JSON, and persisted session records keep their shapes.
+The command-safety judge still authorizes exactly the normalized command before spawn. Its authorization now lasts until exit, explicit kill, Cake shutdown, or the hard wall clock, rather than one tool call. The OS sandbox must remain in force throughout that lifetime. The changed meaning of `Bash.timeout` is model-visible and breaks callers that expected a kill deadline. `bash_read_cap` stops killing Bash commands, and removing Bash's read-safe capability removes shell exploration from `--sandbox read-only`. CLI flags, exit codes, stream JSON, and persisted session records keep their shapes. Update `docs/security.md` and the relevant read-only tests during implementation.
 
 The bypass classes to defend against are a backgrounded descendant surviving a shell exit, a child ignoring SIGTERM, a tool call cancelled before the session ID reaches the model, a Cake interrupt or normal exit leaving a group alive, a dropped Seatbelt profile while a command runs, journal flooding or invalid UTF-8 at a trim boundary, and a stale session ID in a resumed transcript. The trailing `&` normalization addresses only the simple background operator. Process-group ownership and shutdown cleanup must handle descendants regardless of shell syntax, including pipelines, quoting, and child scripts; no shell-text parser is a security boundary.
+
+## Model-visible Contract and Limits
+
+`Bash` keeps `command`, `cwd`, and `reason`. Its `timeout` remains seconds, defaults to 60, and clamps to 1--600, but is a yield window. Optional `background: true` yields immediately. A command with output below the caps that finishes inside the window keeps the current output and `[exit:0 | 1.2s]` footer format. If it outlives the window or starts in background, Bash returns output so far followed by `[still running | session: bash_a1b2c3 | 12.3s]` and `The command was NOT killed; it is still running. Use BashSession with session "bash_a1b2c3" to poll for new output or kill it.` A stripped trailing `&` is noted in this result.
+
+`BashSession` accepts `{"action":"read","session":"bash_a1b2c3"}`, the same call with `"wait":30`, `{"action":"kill","session":"bash_a1b2c3"}`, or `{"action":"list"}`. `read` returns only output since the previous call and returns on new output, exit, or expiry of its wait window. `wait` defaults to 10 seconds, is capped at 120, and `0` polls without blocking. A live read ends with `[running | session: bash_a1b2c3 | 45.1s elapsed]`; a completed read ends with `[exit:0 | total 61.2s]`. `kill` returns remaining output and final status. `list` gives each live or recently exited session's ID, status, elapsed time, and truncated command. A journal gap adds `[Oldest output was dropped: N bytes since the last read.]` to the footer. A repeated read of an exited session within retention returns the same final output and exit code. An unknown ID returns an error naming active IDs and explaining that sessions do not survive Cake restarts.
+
+The four positive-integer `[limits]` keys default to `bash_session_output_max_bytes = 1048576` (unread bytes per session), `bash_session_max = 16` (concurrent live sessions), `bash_session_max_seconds = 3600` (hard wall clock), and `bash_session_exited_ttl_seconds = 600` (post-exit retention). At the live cap, a new Bash call is refused before judge preflight or spawn; no older process is evicted. `bash_read_cap` remains parseable but does not kill session-managed commands. Journal overflow drops the oldest unread bytes, reports the precise gap, and emits `output_truncation` on the first Bash or BashSession result that reports that gap. `bash_output_max_bytes` still bounds inline Bash output.
 
 ## Outcomes & Retrospective
 
@@ -43,11 +54,17 @@ Pending implementation and verification.
 
 ## Plan of Work
 
-First, add a session core in a new module under `src/clients/tools/`. It owns child execution after spawn, both pipe readers, process-group cleanup, the sandbox guard, a bounded UTF-8-safe unread journal, timestamps, final status, and a shared registry. Its tests should prove incremental reads, overflow reporting, repeat final reads, cap enforcement, hard deadline, and descendant cleanup. The first stage must have production call sites or remain entirely test-scoped; do not add dead production code merely to stage the diff. Keep the model-visible Bash behavior while this core is developed, so the stage is independently testable and does not expose an incomplete tool.
+### Milestone 1: Own a running process after the call returns
 
-Next, make `src/clients/tools/bash.rs` judge and normalize the command before spawning. Remove a trailing shell background operator before the judge sees it, retaining a result annotation. A command finishing inside its yield window must still use the existing formatting path. On yield or `background: true`, transfer the child, its sandbox guard, and its process-group guard to the shared core and return the running footer. Cancellation before the ID is delivered must kill the group. `BashSession` receives only action, ID, and optional wait, and never invokes the command judge.
+Add a session core in a new module under `src/clients/tools/`. It owns child execution after spawn, both pipe readers, process-group cleanup, the sandbox guard, a bounded UTF-8-safe unread journal, timestamps, final status, and a shared registry. Its tests should prove incremental reads, overflow reporting, repeat final reads, cap enforcement, hard deadline, and descendant cleanup. The first stage must have production call sites or remain entirely test-scoped; do not add dead production code merely to stage the diff. Keep the model-visible Bash behavior while this core is developed. From the repository root, run `cargo test bash_session` and `cargo fmt --check`; the tests should pass while existing Bash results remain unchanged.
 
-Then register `BashSession` in `src/clients/tools/mod.rs`, remove Bash's read-safe capability, connect the registry through an `Arc` in `ToolContext`, and ensure Cake shutdown drops or explicitly kills every live session. Add the four positive integer settings keys in `src/config/settings.rs` and document them in `docs/configuration.md`. Update `docs/security.md` with the changed authorization lifetime and verification on each supported platform. Regenerate tool-definition snapshots through `just snapshots` and review only changes caused by these contracts.
+### Milestone 2: Yield and manage Bash sessions
+
+Make `src/clients/tools/bash.rs` judge and normalize the command before spawning. Remove a trailing shell background operator before the judge sees it, retaining a result annotation. A command finishing inside its yield window must still use the existing formatting path for output within the old caps. On yield or `background: true`, transfer the child, its sandbox guard, and its process-group guard to the shared core and return the running footer. Cancellation before the ID is delivered must kill the group. `BashSession` receives only action, ID, and optional wait, and never invokes the command judge. From the repository root, run `cargo test bash` and `cargo test bash_session`; a short command must return inline, a long one must yield, and read, kill, list, repeat final read, and unknown-ID cases must pass.
+
+### Milestone 3: Wire limits, shutdown, and public contracts
+
+Register `BashSession` in `src/clients/tools/mod.rs`, remove Bash's read-safe capability, connect the registry through an `Arc` in `ToolContext`, and ensure Cake shutdown drops or explicitly kills every live session. Add the four positive integer settings keys in `src/config/settings.rs` and document them in `docs/configuration.md`; explain that `bash_read_cap` no longer kills Bash processes and add `BashSession` to the registered names for `tools.enabled`. Update `docs/security.md` with the authorization lifetime and the loss of Bash under read-only policy. Regenerate tool-definition snapshots through `just snapshots` and review only changes caused by these contracts. From the repository root, run `just snapshots`, `just check`, and `just docs-check`; all must pass. Exercise yield, poll, kill, and Cake exit under macOS Seatbelt and Linux Landlock, recording the result or exact unavailable platform prerequisite before the final PR.
 
 ## Concrete Steps
 
@@ -55,7 +72,7 @@ From the repository root, implement and verify each bounded stage with a focused
 
 ## Validation and Acceptance
 
-A short Bash command returns the same output and exit footer as before. A long command yields with a session ID and remains alive; `BashSession read` reports only new output, waits at most its configured window, and returns the final exit status after completion. A second read within retention repeats the final result. `kill`, the hard deadline, Ctrl-C, SIGTERM, and Cake exit leave no descendant in the command's process group. The journal never exceeds its byte limit, preserves valid UTF-8, and reports the precise dropped-byte count. Unknown IDs report active IDs. The model cannot select `BashSession` under read-only policy and can select it via `--tools BashSession` otherwise.
+A short Bash command whose output stays within the former read cap returns the same output and exit footer as before. A long command yields with a session ID and remains alive; `BashSession read` reports only new output, waits at most its configured window, and returns the final exit status after completion. A second read within retention repeats the final result. `kill`, the hard deadline, Ctrl-C, SIGTERM, and Cake exit leave no descendant in the command's process group. The journal never exceeds its byte limit, preserves valid UTF-8, and reports the precise dropped-byte count. Unknown IDs report active IDs. The model cannot select Bash or BashSession under read-only policy and can select `BashSession` via `--tools BashSession` otherwise.
 
 ## Idempotence and Recovery
 
@@ -67,4 +84,6 @@ Issue: https://github.com/travisennis/cake/issues/639. Record test commands and 
 
 ## Interfaces and Dependencies
 
-The new registry belongs to `crate::clients::tools` and is shared by `ToolContext` clones through `Arc`. `Bash` starts a command and uses the registry on yield. `BashSession` uses the registry for read, kill, and list. The registry owns `SandboxGuard` until the process is reaped and owns `ToolboxProcessGuard` until it has killed the group or confirmed all process work is finished. No new crate or persisted record type is required.
+The new registry belongs to `crate::clients::tools` and is shared by `ToolContext` clones through `Arc`. `Bash` starts a command and uses the registry on yield. `BashSession` uses the registry for read, kill, and list. The registry owns `SandboxGuard` until the process is reaped and owns `ToolboxProcessGuard` until it has killed the group or confirmed all process work is finished. `bash_read_cap` stays parseable for settings compatibility but is superseded for session-managed Bash execution by `bash_session_output_max_bytes`; journal gaps produce `output_truncation` telemetry instead of killing the group. No new crate or persisted record type is required.
+
+Revision 2026-09-23: inlined the model-visible contract and limit defaults, resolved `bash_read_cap` and live-cap behavior, made the read-only Bash removal explicit, and added verifiable milestones after review of planning PR #642.
