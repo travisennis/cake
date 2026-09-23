@@ -13,6 +13,7 @@ Cake currently kills a Bash command when its tool-call timeout expires. A build 
 - [x] (2026-09-23) Inspected issue #639, Bash execution, tool registry, settings, and shutdown paths; claimed the issue, raised Effort to L, and recorded ADR 036.
 - [x] (2026-09-23) Resolved planning review: inlined the tool contract, decided `bash_read_cap` and saturation behavior, and recorded the read-only Bash availability break.
 - [ ] Add a bounded, shared in-run process registry and focused lifecycle tests. First stage complete: the existing Bash lifecycle now runs in an owned abort-on-drop task; cancellation and the full focused Bash suite pass. Registry and journal remain.
+- [x] (2026-09-23) Added a test-scoped shared registry and bounded output journal with incremental reads, final-read replay, UTF-8 boundary handling, live-cap refusal, TTL pruning, and reservation discard. Process ownership and production wiring remain in the next stage.
 - [ ] Change Bash's timeout to a yield window and add background mode and a BashSession tool.
 - [ ] Wire four session limits, shutdown cleanup, model descriptions, and tool snapshots.
 - [ ] Update configuration and security documentation, verify on macOS and Linux, run the repository gate, and archive this plan.
@@ -23,6 +24,7 @@ Cake currently kills a Bash command when its tool-call timeout expires. A build 
 - `ToolContext` is cloned when the judge is attached. The registry must be held through `Arc` so that clone cannot create an independent session map.
 - `Bash` is currently registered as read-safe. The new session contract requires removing that capability as well as keeping `BashSession` unavailable under read-only policy.
 - The existing cancellation test proves that dropping a Bash call eventually kills a descendant process group. Moving the lifecycle into an owned task keeps that tested result and creates a handoff point for the later registry.
+- The journal and registry state machine can be tested without changing the current model-visible Bash contract. The module stays `#[cfg(test)]` until the child lifecycle and sandbox guard are transferred to it, so this stage does not add unused production code.
 - An abort now schedules the worker's drop before its process-group guard sends SIGKILL, rather than sending SIGKILL synchronously in the caller's drop. A hard process exit during that scheduling gap can skip the kill. The shutdown-cleanup stage must signal registered process groups explicitly on normal exit and first interrupt rather than depend on worker drop ordering; a second interrupt remains a hard exit.
 
 ## Decision Log
@@ -83,7 +85,7 @@ Focused tests and formatting can be repeated. Session IDs and process records ex
 
 ## Artifacts and Notes
 
-Issue: https://github.com/travisennis/cake/issues/639. The owned-task stage passed `cargo test dropping_bash_future_kills_descendants`, `cargo test bash_child_task_preserves_worker_panic`, and, with local mock-server socket access, `cargo test clients::tools::bash::tests` (133 passed), `just check`, and `just docs-check`. Record later test commands and platform results here as they run. A final pull request should close #639 only after the model-visible behavior, settings, documentation, and lifecycle checks all pass.
+Issue: https://github.com/travisennis/cake/issues/639. The owned-task stage passed `cargo test dropping_bash_future_kills_descendants`, `cargo test bash_child_task_preserves_worker_panic`, and, with local mock-server socket access, `cargo test clients::tools::bash::tests` (133 passed), `just check`, and `just docs-check`. The registry state-machine stage passed `cargo test bash_session_core`, `just check` (with local mock-server socket access), and `just docs-check`; no process-lifecycle or platform verification is claimed for that test-scoped stage. Record later platform results here as they run. A final pull request should close #639 only after the model-visible behavior, settings, documentation, and lifecycle checks all pass.
 
 ## Interfaces and Dependencies
 
@@ -94,3 +96,5 @@ Revision 2026-09-23: inlined the model-visible contract and limit defaults, reso
 Revision 2026-09-23: split the first milestone into an owned-task bridge and the registry/journal work so the first code PR stays inside the complex-logic diff budget while preserving the existing cancellation guarantee.
 
 Revision 2026-09-23: clarified that cancellation schedules the group kill, made `finish` own its task, and preserved panic propagation after review of the first code PR.
+
+Revision 2026-09-23: staged and verified the registry/journal state machine separately from process ownership. The next code stage must make this module production and connect child ownership, hard deadlines, and shutdown cleanup before enabling yielded Bash results.
