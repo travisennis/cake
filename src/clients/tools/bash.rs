@@ -1023,6 +1023,29 @@ struct ChildRun {
     status: Option<std::process::ExitStatus>,
 }
 
+/// Own a Bash lifecycle task until its result is consumed. Dropping this task
+/// or its `finish` future aborts the worker, which then drops the child's
+/// process-group guard and kills descendants as well as the direct child.
+struct BashChildTask(tokio::task::JoinHandle<Result<ChildRun, String>>);
+
+impl BashChildTask {
+    async fn finish(mut self) -> Result<ChildRun, String> {
+        match (&mut self.0).await {
+            Ok(result) => result,
+            // A panic in capture or reaping used to unwind the Bash call.
+            // Preserve that failure instead of turning it into a tool error.
+            Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
+            Err(error) => Err(format!("Bash lifecycle task failed: {error}")),
+        }
+    }
+}
+
+impl Drop for BashChildTask {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// Spawn the prepared command and drive its full lifecycle under the
 /// configured timeout: concurrent stream capture, killing the process group
 /// when the cap cuts the capture or the timeout fires, and reaping the child.
@@ -1351,7 +1374,7 @@ async fn execute_bash_with_args(
     let PreparedBashCommand {
         mut command,
         sandbox_applied,
-        _sandbox_guard,
+        _sandbox_guard: sandbox_guard,
     } = prepare_bash_command(&args, &cwd, sandbox_config, &judge_events)?;
 
     // Place the child in its own process group so that SIGKILL to the
@@ -1369,19 +1392,23 @@ async fn execute_bash_with_args(
         .zip(output_max)
         .map_or(0, |(read, max)| read.min(max));
 
+    let timeout_secs = args.timeout;
+    let child_task = BashChildTask(tokio::spawn(async move {
+        let result = run_bash_child(command, timeout_secs, read_cap, initial_capacity).await;
+        // The sandbox profile must remain alive until the child is reaped.
+        drop(sandbox_guard);
+        result
+    }));
+
     let ChildRun {
         buf,
         stderr_buf,
         hit_cap,
         status,
-    } = Box::pin(run_bash_child(
-        command,
-        args.timeout,
-        read_cap,
-        initial_capacity,
-    ))
-    .await
-    .map_err(|e| judge_tool_error(judge_events.clone(), e))?;
+    } = child_task
+        .finish()
+        .await
+        .map_err(|e| judge_tool_error(judge_events.clone(), e))?;
 
     let elapsed_ms = start_time.elapsed().as_millis();
     let stderr_str = String::from_utf8_lossy(&stderr_buf);
