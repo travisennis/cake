@@ -49,7 +49,7 @@ fn read_only_tool_context_removes_edit_and_write() {
     )
     .with_tool_context(Arc::new(context));
 
-    assert_eq!(agent.tool_names(), vec!["Bash", "Read"]);
+    assert_eq!(agent.tool_names(), vec!["Read"]);
 }
 
 #[test]
@@ -142,7 +142,10 @@ fn workspace_write_tool_context_keeps_all_tools() {
     )
     .with_tool_context(Arc::new(ToolContext::from_current_process()));
 
-    assert_eq!(agent.tool_names(), vec!["Bash", "Edit", "Read", "Write"]);
+    assert_eq!(
+        agent.tool_names(),
+        vec!["Bash", "BashSession", "Edit", "Read", "Write"]
+    );
 }
 
 fn test_toolbox_tool() -> crate::config::toolbox::ToolboxTool {
@@ -169,7 +172,14 @@ fn toolbox_tools_register_after_builtins() {
 
     assert_eq!(
         agent.tool_names(),
-        vec!["Bash", "Edit", "Read", "Write", "tb__run_tests"]
+        vec![
+            "Bash",
+            "BashSession",
+            "Edit",
+            "Read",
+            "Write",
+            "tb__run_tests"
+        ]
     );
 }
 
@@ -186,7 +196,7 @@ fn read_only_tool_context_skips_toolbox_tools_regardless_of_order() {
     )
     .with_tool_context(Arc::clone(&context))
     .with_toolbox_tools(vec![test_toolbox_tool()]);
-    assert_eq!(agent.tool_names(), vec!["Bash", "Read"]);
+    assert_eq!(agent.tool_names(), vec!["Read"]);
 
     // Read-only context applied second: registered entries are stripped.
     let agent = Agent::new(
@@ -195,7 +205,7 @@ fn read_only_tool_context_skips_toolbox_tools_regardless_of_order() {
     )
     .with_toolbox_tools(vec![test_toolbox_tool()])
     .with_tool_context(context);
-    assert_eq!(agent.tool_names(), vec!["Bash", "Read"]);
+    assert_eq!(agent.tool_names(), vec!["Read"]);
 }
 
 #[test]

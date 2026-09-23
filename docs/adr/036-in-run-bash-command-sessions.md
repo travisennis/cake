@@ -48,5 +48,5 @@ Session-managed Bash commands no longer use the existing `bash_read_cap` kill th
 ## More Information
 
 - Issue #639 records the model-visible contract and acceptance criteria.
-- `docs/exec-plans/active/639-bash-command-sessions.md` records the implementation and platform verification sequence.
+- `docs/exec-plans/completed/639-bash-command-sessions.md` records the implementation and platform verification sequence.
 - This extends the command judge boundary in ADR 018; it does not replace the judge or the OS sandbox.

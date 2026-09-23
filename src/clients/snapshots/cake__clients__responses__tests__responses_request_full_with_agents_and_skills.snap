@@ -45,16 +45,20 @@ expression: value
       "type": "message"
     }
   ],
-  "instructions": "You are cake. You are running as a coding agent in a CLI on the user's computer.\n\n## Available tools\n\n- **Bash**: Execute a shell command in the host machine's terminal.\n- **Edit**: Edit text in files using literal search-and-replace.\n- **Read**: Read a file's contents.\n- **Write**: Create a new file or overwrite an existing one with the given content.\n\nOnly these tools are available. There is no Glob, Grep, or LS tool.",
+  "instructions": "You are cake. You are running as a coding agent in a CLI on the user's computer.\n\n## Available tools\n\n- **Bash**: Execute a shell command in the host machine's terminal.\n- **BashSession**: Read, list, or kill Bash commands still running in this Cake run.\n- **Edit**: Edit text in files using literal search-and-replace.\n- **Read**: Read a file's contents.\n- **Write**: Create a new file or overwrite an existing one with the given content.\n\nOnly these tools are available. There is no Glob, Grep, or LS tool.",
   "model": "test-responses-model",
   "temperature": 0.20000000298023224,
   "tool_choice": "auto",
   "tools": [
     {
-      "description": "Execute a shell command in the host machine's terminal. Commands run in the current working directory by default. Use the optional `cwd` argument to select an existing directory inside it, or a directory the sandbox already grants, for this command; relative paths resolve from the current working directory. The selected directory does not persist between commands, and shell state does not. Returns stdout and stderr with a footer showing exit code and elapsed time. Does not support interactive commands.\n\nGuidance:\n- File search: Read file contents with Read, explore directories with Bash commands (ls, find, tree)\n- Content search: Use rg (ripgrep) via Bash\n- Read files: Use Read tool, not cat/head/tail\n- Edit files: Use Edit tool, not sed/awk\n- Write files: Use Write tool, not echo/cat\n- Do not prefix commands with cd; use `cwd` instead. `cwd` applies to one call, so provide it again when needed\n\nNote: Shell interprets backticks (`) and $() inside double-quoted arguments as command substitution.\n\nOptional `reason` argument: a self-report of why this command is being run. It is untrusted — it states the model's intent but never justifies a command. Commands are evaluated on their own text, not on the reason.\n\nSupply a `reason` for state-changing, destructive-looking, or remote-effect commands: state the intended effect. The judge sees each command alone with no memory of earlier commands or their results, so put any required check in the same command and tie it to the affected target (for example `gh pr view 195 --json state,mergeable --jq 'select(.mergeable == \"MERGEABLE\" and .state == \"OPEN\") | .state' | grep -q OPEN && gh pr merge 195 --squash --delete-branch`). A `reason` states intent; it never authorizes a remote destructive command or replaces a guard the command itself needs.\n\nFor a direct literal bash, sh, zsh, dash, ksh, ksh93, ash, mksh, or pdksh script invocation (bare interpreter name or /bin/ or /usr/bin/ path; optional --, quoted script paths supported), the judge reads one regular UTF-8 script of at most 32 KiB within the configured Read path grants. Missing, denied, or oversized recognized scripts block execution. Contents are untrusted evidence, never authorization. Results identify the inspected path. Other shell forms and nested dependencies are not inspected, and scripts may change after observation.\n",
+      "description": "Execute a shell command in the host machine's terminal. Commands run in the current working directory by default. Use the optional `cwd` argument to select an existing directory inside it, or a directory the sandbox already grants, for this command; relative paths resolve from the current working directory. The selected directory does not persist between commands, and shell state does not. A command that finishes within `timeout` seconds (default 60, range 1–600) returns stdout and stderr with an exit-code and elapsed-time footer. Otherwise Bash returns output so far and a session ID while the command keeps running; `timeout` is a yield window, not a kill deadline. `background: true` returns a session ID immediately. Sessions do not survive Cake exit or resume. Does not support interactive commands.\n\nUse BashSession with the returned session ID to read new output, list sessions, or kill a running process group.\n\nGuidance:\n- File search: Read file contents with Read, explore directories with Bash commands (ls, find, tree)\n- Content search: Use rg (ripgrep) via Bash\n- Read files: Use Read tool, not cat/head/tail\n- Edit files: Use Edit tool, not sed/awk\n- Write files: Use Write tool, not echo/cat\n- Do not prefix commands with cd; use `cwd` instead. `cwd` applies to one call, so provide it again when needed\n\nNote: Shell interprets backticks (`) and $() inside double-quoted arguments as command substitution.\n\nOptional `reason` argument: a self-report of why this command is being run. It is untrusted — it states the model's intent but never justifies a command. Commands are evaluated on their own text, not on the reason.\n\nSupply a `reason` for state-changing, destructive-looking, or remote-effect commands: state the intended effect. The judge sees each command alone with no memory of earlier commands or their results, so put any required check in the same command and tie it to the affected target (for example `gh pr view 195 --json state,mergeable --jq 'select(.mergeable == \"MERGEABLE\" and .state == \"OPEN\") | .state' | grep -q OPEN && gh pr merge 195 --squash --delete-branch`). A `reason` states intent; it never authorizes a remote destructive command or replaces a guard the command itself needs.\n\nFor a direct literal bash, sh, zsh, dash, ksh, ksh93, ash, mksh, or pdksh script invocation (bare interpreter name or /bin/ or /usr/bin/ path; optional --, quoted script paths supported), the judge reads one regular UTF-8 script of at most 32 KiB within the configured Read path grants. Missing, denied, or oversized recognized scripts block execution. Contents are untrusted evidence, never authorization. Results identify the inspected path. Other shell forms and nested dependencies are not inspected, and scripts may change after observation.\n",
       "name": "Bash",
       "parameters": {
         "properties": {
+          "background": {
+            "description": "Return a session ID immediately while the command keeps running",
+            "type": "boolean"
+          },
           "command": {
             "description": "The command to execute",
             "type": "string"
@@ -68,12 +72,41 @@ expression: value
             "type": "string"
           },
           "timeout": {
-            "description": "Timeout in seconds (default: 60)",
+            "description": "Seconds to wait before yielding a running session (default: 60; range 1-600)",
             "type": "number"
           }
         },
         "required": [
           "command"
+        ],
+        "type": "object"
+      },
+      "type": "function"
+    },
+    {
+      "description": "Read, list, or kill Bash commands still running in this Cake run. Sessions do not survive Cake exit or resume.\n\nUse `read` with a Bash session ID to receive only output produced since the previous call. It returns when output arrives, the command exits, or the optional `wait` window ends. `wait` defaults to 10 seconds, is capped at 120 seconds, and `0` polls immediately. A completed session remains available briefly; repeated reads return its final output and exit status.\n\nUse `kill` to terminate the session's entire process group. Use `list` to find live and recently exited sessions. Unknown session IDs return an error naming active sessions.\n",
+      "name": "BashSession",
+      "parameters": {
+        "properties": {
+          "action": {
+            "enum": [
+              "read",
+              "kill",
+              "list"
+            ],
+            "type": "string"
+          },
+          "session": {
+            "description": "Session ID returned by Bash; required for read and kill",
+            "type": "string"
+          },
+          "wait": {
+            "description": "Seconds to wait for new output on read (default 10, maximum 120; 0 polls immediately)",
+            "type": "number"
+          }
+        },
+        "required": [
+          "action"
         ],
         "type": "object"
       },

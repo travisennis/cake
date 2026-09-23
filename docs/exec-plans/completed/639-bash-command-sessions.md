@@ -12,14 +12,14 @@ Cake currently kills a Bash command when its tool-call timeout expires. A build 
 
 - [x] (2026-09-23) Inspected issue #639, Bash execution, tool registry, settings, and shutdown paths; claimed the issue, raised Effort to L, and recorded ADR 036.
 - [x] (2026-09-23) Resolved planning review: inlined the tool contract, decided `bash_read_cap` and saturation behavior, and recorded the read-only Bash availability break.
-- [ ] Add a bounded, shared in-run process registry and focused lifecycle tests. First stage complete: the existing Bash lifecycle now runs in an owned abort-on-drop task; cancellation and the full focused Bash suite pass. Registry and journal remain.
+- [x] (2026-09-23) Added the bounded, shared in-run process registry and focused lifecycle tests; production Bash now transfers spawned children, sandbox guards, and process-group cleanup to it.
 - [x] (2026-09-23) Added a test-scoped shared registry and bounded output journal with incremental reads, final-read replay, UTF-8 boundary handling, live-cap refusal, TTL pruning, and reservation discard. Process ownership and production wiring remain in the next stage.
 - [x] (2026-09-23) Corrected invalid-byte accounting and bounded retained exited sessions after review of the registry stage.
 - [x] (2026-09-23) Added and validated the four positive Bash session settings through resolved limits and settings precedence; process wiring and public documentation remain in the later stages.
 - [x] (2026-09-23) Added a test-scoped process owner to the registry: pipe capture, kill signal, hard wall clock, and abort-on-drop process-group cleanup. Production Bash integration remains.
-- [ ] Change Bash's timeout to a yield window and add background mode and a BashSession tool.
-- [ ] Wire four session limits, shutdown cleanup, model descriptions, and tool snapshots.
-- [ ] Update configuration and security documentation, verify on macOS and Linux, run the repository gate, and archive this plan.
+- [x] (2026-09-23) Changed Bash timeout to a yield window, added background mode, and registered BashSession read, kill, and list actions.
+- [x] (2026-09-23) Wired the four session limits, synchronous process-group cleanup on registry drop, model descriptions, and tool snapshots.
+- [x] (2026-09-23) Updated configuration, integration, and security documentation; verified yield, poll, and kill under macOS Seatbelt and passed `just check` and `just docs-check`. The same platform test awaits Linux CI because local Linux execution and its cross compiler are unavailable.
 
 ## Surprises & Discoveries
 
@@ -55,7 +55,7 @@ The four positive-integer `[limits]` keys default to `bash_session_output_max_by
 
 ## Outcomes & Retrospective
 
-Pending implementation and verification.
+Bash now yields a live session when its window expires or background mode is requested. BashSession can read incremental output, kill a process group, and list retained sessions. The registry bounds live processes, unread bytes, hard run time, and completed-session retention. Short commands keep their ordinary output and exit footer. The full local gate, docs gate, and macOS Seatbelt yield/poll/kill test pass. Linux Landlock runtime verification remains a CI requirement: this macOS host has the Linux Rust target but lacks `x86_64-linux-gnu-gcc` and a Linux container runtime. The final integration diff exceeds the 500-line complex-logic budget because replacing the old Bash lifecycle, registering the tool, updating its tests, and regenerating snapshots form one model-visible contract; the preceding core stages were delivered separately.
 
 ## Context and Orientation
 
@@ -111,3 +111,5 @@ Revision 2026-09-23: clarified that cancellation schedules the group kill, made 
 Revision 2026-09-23: staged and verified the registry/journal state machine separately from process ownership. The next code stage must make this module production and connect child ownership, hard deadlines, and shutdown cleanup before enabling yielded Bash results.
 
 Revision 2026-09-23: review found that a leading invalid continuation byte was counted as dropped without overflow, and that TTL alone did not bound completed-session memory. The journal now trims only a split valid character, and completed sessions have a count cap derived from the live-session limit.
+
+Revision 2026-09-23: completed the model-visible session integration, documented the compatibility and authorization changes, and recorded the macOS platform result and Linux CI prerequisite.

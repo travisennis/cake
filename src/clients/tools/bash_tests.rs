@@ -7,13 +7,6 @@ use std::sync::Arc;
 use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-#[tokio::test]
-async fn bash_child_task_preserves_worker_panic() {
-    let task = BashChildTask(tokio::spawn(async { panic!("capture bug") }));
-    let caller = tokio::spawn(async move { task.finish().await });
-    assert!(matches!(caller.await, Err(error) if error.is_panic()));
-}
-
 /// Check whether `CAKE_REQUIRE_SANDBOX_TESTS` is set to a truthy value,
 /// indicating that macOS Seatbelt integration tests must run instead of skip.
 ///
@@ -888,7 +881,7 @@ async fn test_streaming_large_output_is_capped() {
     let args = r#"{"command": "yes | head -c 200000"}"#;
     let result = Box::pin(execute_bash_unsandboxed(args)).await.unwrap();
     // Should contain the truncation marker
-    assert!(result.output.contains("[... output truncated at"));
+    assert!(result.output.contains("[Output too long"));
     // Should still have useful content
     assert!(!result.output.is_empty());
     // Should contain metadata footer
@@ -916,47 +909,21 @@ async fn test_streaming_large_output_is_capped() {
 }
 
 #[tokio::test]
-async fn bash_read_cap_holds_capture_at_configured_bytes() {
-    // A read cap smaller than the 8192-byte read buffer must still hold the
-    // capture to the configured maximum: the read loop cuts each chunk at the
-    // remaining budget instead of appending whole 8 KiB chunks before checking.
-    let dir = tempfile::tempdir().expect("hermetic temp dir for bash test");
+async fn bash_read_cap_no_longer_kills_or_truncates_session_command() {
+    let dir = tempfile::tempdir().unwrap();
     let mut context = crate::clients::tools::ToolContext::from_current_process();
     context.cwd = dir.path().to_path_buf();
     context.judge = Some(bypassed_judge_context());
+    context.sandbox_policy = SandboxPolicy::DangerFullAccess;
     let mut limits = crate::config::settings::ToolLimits::defaults();
     limits.bash_read_cap = Some(100);
-    context.limits = limits;
-
-    let args = BashExecutionArgs::from_json(
-        r#"{"command": "yes x | head -c 20000"}"#,
-        crate::clients::tools::sandbox::SandboxPolicy::DangerFullAccess,
-    )
-    .unwrap();
-    let config = crate::clients::tools::sandbox::SandboxConfig::build(&context);
-    let result = Box::pin(execute_bash_with_args(
-        &context,
-        args,
-        context.cwd.clone(),
-        &config,
-        None,
-    ))
-    .await
-    .expect("bash run should succeed");
-
-    let marker = "[... output truncated at 100 bytes ...]";
-    let marker_start = result
-        .output
-        .find(marker)
-        .unwrap_or_else(|| panic!("expected truncation marker, got: {}", result.output));
-    // The marker directly follows the 100 captured bytes plus its leading
-    // newline; a larger offset means whole 8192-byte chunks were buffered
-    // before the cap check.
-    assert_eq!(
-        marker_start, 101,
-        "capture before the marker is {marker_start} bytes, expected exactly 100 (plus the newline): {}",
-        result.output
-    );
+    context = context.with_limits(limits);
+    let result = execute_bash(&context, r#"{"command": "yes x | head -c 20000"}"#)
+        .await
+        .unwrap();
+    assert!(result.output.len() > 20_000);
+    assert!(result.output.contains("[exit:0 |"));
+    assert!(!result.output.contains("output truncated"));
 }
 
 #[tokio::test]
@@ -1044,139 +1011,191 @@ async fn bash_output_max_bytes_unlimited_passes_large_output_through() {
     );
 }
 
-#[tokio::test]
-async fn test_streaming_timeout() {
-    // Command that hangs respects the timeout
-    let args = r#"{"command": "sleep 999", "timeout": 1}"#;
-    let result = Box::pin(execute_bash_unsandboxed(args)).await;
-    assert!(result.is_err());
-    assert!(result.unwrap_err().message.contains("timed out"));
+fn session_test_context() -> ToolContext {
+    let mut context = ToolContext::from_current_process();
+    context.judge = Some(bypassed_judge_context());
+    context.sandbox_policy = SandboxPolicy::DangerFullAccess;
+    context
 }
 
 #[tokio::test]
-async fn test_streaming_closed_streams_does_not_hang() {
-    // Command closes both stdout and stderr (by redirecting to /dev/null)
-    // but stays alive.  The configured timeout must cover the process wait
-    // even after both streams reach EOF.
-    let args = r#"{"command": "exec 1>/dev/null 2>&1; sleep 999", "timeout": 1}"#;
-    let result = Box::pin(execute_bash_unsandboxed(args)).await;
-    assert!(
-        result.is_err(),
-        "expected timeout error but got: {result:?}"
-    );
-    assert!(
-        result.unwrap_err().message.contains("timed out"),
-        "expected 'timed out' in error"
+async fn short_bash_command_returns_inline_without_retained_session() {
+    let context = session_test_context();
+    let result = execute_bash(&context, r#"{"command":"printf short"}"#)
+        .await
+        .unwrap();
+    assert!(result.output.starts_with("short\n\n[exit:0 |"));
+    assert!(context.bash_sessions.list(Instant::now()).is_empty());
+}
+
+#[tokio::test]
+async fn full_session_cap_blocks_before_judge_preflight() {
+    let limits = crate::config::settings::ToolLimits {
+        bash_session_max: 1,
+        ..crate::config::settings::ToolLimits::defaults()
+    };
+    let context = ToolContext::from_current_process().with_limits(limits);
+    let occupied = context
+        .bash_sessions
+        .start("occupied".into(), Instant::now())
+        .unwrap();
+    let error = execute_bash(&context, r#"{"command":"printf never"}"#)
+        .await
+        .unwrap_err();
+    assert!(error.message.contains("session limit 1"));
+    assert!(error.message.contains(&occupied));
+    assert!(!error.message.contains("judge"));
+}
+
+#[tokio::test]
+async fn trailing_ampersand_is_stripped_and_reported() {
+    let context = session_test_context();
+    let result = execute_bash(&context, r#"{"command":"printf safe &"}"#)
+        .await
+        .unwrap();
+    assert!(result.output.contains("safe"));
+    assert!(result.output.contains("Trailing & was removed"));
+    assert!(context.bash_sessions.list(Instant::now()).is_empty());
+    assert_eq!(
+        normalize_trailing_background("printf safe &&"),
+        ("printf safe &&".into(), false)
     );
 }
 
-#[cfg(unix)]
 #[tokio::test]
-async fn test_streaming_timeout_kills_descendants() {
-    // Command spawns a background process that would outlive a 1-second
-    // timeout.  The process-group cleanup must terminate the descendant, so
-    // its marker stops being updated after the timeout fires.
-    let dir = tempfile::tempdir().unwrap();
-    let marker = dir.path().join("descendant-survived");
-    let script = format!(
-        // The descendant writes the marker in a loop until the process group
-        // is killed.  A one-shot `sleep 2; touch` would instead race the
-        // kill: under load the marker can be written before the kill lands,
-        // failing the test even though the process-group teardown is prompt.
-        "#!/bin/sh\n(while true; do touch '{}'; sleep 0.2; done) &\nsleep 999\n",
-        marker.display()
-    );
-    let script_path = dir.path().join("spawns_child.sh");
-    std::fs::write(&script_path, script.as_bytes()).unwrap();
-    std::fs::set_permissions(
-        &script_path,
-        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+async fn trailing_ampersand_is_removed_before_judge_request() {
+    let mock_server = MockServer::start().await;
+    mount_judge_verdict(&mock_server, r#"{"verdict":"allow","message":"Safe"}"#).await;
+    let result = execute_bash_with_judge(
+        r#"{"command":"printf safe &"}"#,
+        Some(judge_context(&mock_server)),
     )
+    .await
     .unwrap();
-
-    let args = format!(
-        r#"{{"command": "{}", "timeout": 1}}"#,
-        script_path.display()
-    );
-    let result = Box::pin(execute_bash_unsandboxed(&args)).await;
-    assert!(
-        result.is_err(),
-        "expected timeout error but got: {result:?}"
-    );
-    assert!(
-        result.unwrap_err().message.contains("timed out"),
-        "expected 'timed out' in error"
-    );
-
-    // The descendant must stop updating the marker once the timeout kill
-    // lands.  A slow kill only extends the poll; it cannot race a fixed
-    // deadline the way the one-shot marker could.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    assert_marker_updates_stop(&marker, deadline).await;
+    assert!(result.output.contains("Trailing & was removed"));
+    let requests = mock_server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    let user = body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message["role"] == "user")
+        .unwrap()["content"]
+        .as_str()
+        .unwrap();
+    assert!(user.contains("printf safe"));
+    assert!(!user.contains("printf safe &"));
 }
 
-#[cfg(unix)]
 #[tokio::test]
-async fn timeout_runs_sigterm_cleanup_handler_before_force_kill() {
-    // A command that traps SIGTERM and records that its handler ran must be
-    // given the grace period to clean up before the forceful SIGKILL. The
-    // marker can only be written from the handler, so its presence proves the
-    // cooperative phase happened.
+async fn bash_yields_then_session_read_reports_new_output_and_final_exit() {
+    let context = session_test_context();
+    let started = execute_bash(
+        &context,
+        r#"{"command":"printf first; sleep 2; printf second","timeout":1}"#,
+    )
+    .await
+    .unwrap();
+    assert!(started.output.contains("first"));
+    assert!(started.output.contains("[still running | session: bash_"));
+    let id = context.bash_sessions.list(Instant::now())[0].id.clone();
+    let mut new_output = String::new();
+    let final_read = loop {
+        let read = super::super::bash_session::execute(
+            &context,
+            &serde_json::json!({"action":"read","session":id,"wait":5}).to_string(),
+        )
+        .await
+        .unwrap();
+        new_output.push_str(&read.output);
+        if read.output.contains("[exit:0 | total") {
+            break read;
+        }
+    };
+    assert!(new_output.contains("second"));
+    assert!(!new_output.contains("first"));
+    assert!(final_read.output.contains("[exit:0 | total"));
+    let replay = super::super::bash_session::execute(
+        &context,
+        &serde_json::json!({"action":"read","session":id,"wait":0}).to_string(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(replay.output, final_read.output);
+}
+
+#[tokio::test]
+async fn bash_background_returns_immediately_and_can_be_killed() {
+    let context = session_test_context();
+    let started = Instant::now();
+    let result = execute_bash(&context, r#"{"command":"sleep 999","background":true}"#)
+        .await
+        .unwrap();
+    assert!(started.elapsed() < Duration::from_secs(1));
+    assert!(result.output.contains("[still running | session: bash_"));
+    let id = context.bash_sessions.list(Instant::now())[0].id.clone();
+    let killed = super::super::bash_session::execute(
+        &context,
+        &serde_json::json!({"action":"kill","session":id}).to_string(),
+    )
+    .await
+    .unwrap();
+    assert!(killed.output.contains("[exit:-1 | total"));
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[tokio::test]
+async fn sandboxed_bash_session_yields_and_completes_under_platform_policy() {
+    if skip_if_sandbox_unavailable() {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
-    let marker = dir.path().join("cleanup-ran");
-    // The trap runs in the tracked shell itself: the command is passed inline
-    // to `bash -c`, so there is no separate script process to confuse the
-    // direct-child status with.
-    let command = format!(
-        "trap 'touch \"{}\"' TERM; while true; do sleep 0.1; done",
-        marker.display()
-    );
-    let args = serde_json::json!({ "command": command, "timeout": 1 }).to_string();
-    let result = Box::pin(execute_bash_unsandboxed(&args)).await;
-    assert!(
-        result.is_err(),
-        "expected timeout error but got: {result:?}"
-    );
-    assert!(
-        result.unwrap_err().message.contains("timed out"),
-        "expected 'timed out' in error"
-    );
-    assert!(
-        marker.exists(),
-        "the SIGTERM cleanup handler did not run before the force-kill"
-    );
-}
+    let marker = dir.path().join("session-finished");
+    let mut context = ToolContext::from_current_process();
+    context.cwd = dir.path().to_path_buf();
+    context.judge = Some(bypassed_judge_context());
+    context.sandbox_policy = SandboxPolicy::WorkspaceWrite;
+    let command = format!("sleep 2; touch '{}'", marker.display());
+    let result = execute_bash(
+        &context,
+        &serde_json::json!({"command":command,"timeout":1}).to_string(),
+    )
+    .await
+    .unwrap();
+    assert!(result.output.contains("[still running | session: bash_"));
+    let id = context.bash_sessions.list(Instant::now())[0].id.clone();
+    context
+        .bash_sessions
+        .wait_for_completion(&id, Duration::from_secs(5))
+        .await
+        .unwrap();
+    let final_read = super::super::bash_session::execute(
+        &context,
+        &serde_json::json!({"action":"read","session":id,"wait":0}).to_string(),
+    )
+    .await
+    .unwrap();
+    assert!(final_read.output.contains("[exit:0 | total"));
+    assert!(marker.exists());
 
-#[cfg(unix)]
-#[tokio::test]
-async fn timeout_force_kills_child_that_ignores_sigterm() {
-    // A command that ignores SIGTERM cannot exit during the cooperative
-    // phase, so the grace period must expire and SIGKILL must still reap it.
-    // The lower bound shows the child was granted the grace period rather
-    // than killed immediately; the upper bound shows the wait is bounded.
-    // Inline `trap '' TERM` runs in the tracked shell, so the direct child
-    // itself ignores SIGTERM and only SIGKILL ends it.
-    let command = "trap '' TERM; while true; do sleep 0.1; done";
-    let args = serde_json::json!({ "command": command, "timeout": 1 }).to_string();
-    let started = std::time::Instant::now();
-    let result = Box::pin(execute_bash_unsandboxed(&args)).await;
-    let elapsed = started.elapsed();
-    assert!(
-        result.is_err(),
-        "expected timeout error but got: {result:?}"
-    );
-    assert!(
-        result.unwrap_err().message.contains("timed out"),
-        "expected 'timed out' in error"
-    );
-    assert!(
-        elapsed >= TERMINATE_GRACE_PERIOD,
-        "SIGTERM-ignoring child was not given the grace period: {elapsed:?}"
-    );
-    assert!(
-        elapsed < TERMINATE_GRACE_PERIOD + std::time::Duration::from_secs(5),
-        "force-kill did not bound total termination time: {elapsed:?}"
-    );
+    let running = execute_bash(&context, r#"{"command":"sleep 999","background":true}"#)
+        .await
+        .unwrap();
+    assert!(running.output.contains("[still running | session: bash_"));
+    let live_id = context
+        .bash_sessions
+        .list(Instant::now())
+        .into_iter()
+        .find(|session| session.exit_code.is_none())
+        .unwrap()
+        .id;
+    let killed = super::super::bash_session::execute(
+        &context,
+        &serde_json::json!({"action":"kill","session":live_id}).to_string(),
+    )
+    .await
+    .unwrap();
+    assert!(killed.output.contains("[exit:-1 | total"));
 }
 
 #[cfg(unix)]
@@ -3489,27 +3508,30 @@ async fn test_judge_verdict_survives_command_timeout() {
     mount_judge_verdict(&mock_server, r#"{"verdict":"allow","message":"Safe"}"#).await;
 
     let args = r#"{"command": "sleep 5", "timeout": 1}"#;
-    let err = Box::pin(execute_bash_with_judge(
+    let result = Box::pin(execute_bash_with_judge(
         args,
         Some(judge_context(&mock_server)),
     ))
     .await
-    .unwrap_err();
+    .unwrap();
     assert!(
-        err.message.contains("timed out"),
-        "expected a timeout error, got: {err}"
+        result.output.contains("[still running | session:"),
+        "expected a yielded session"
     );
     assert_eq!(
-        err.compensation_events.len(),
+        result.compensation_events.len(),
         1,
-        "a timeout after an allow verdict must keep the judge verdict event, got: {:?}",
-        err.compensation_events
+        "a yield after an allow verdict must keep the judge verdict event, got: {:?}",
+        result.compensation_events
     );
     assert_eq!(
-        err.compensation_events[0].kind,
+        result.compensation_events[0].kind,
         CompensationKind::JudgeVerdict
     );
-    assert_eq!(err.compensation_events[0].detail.as_deref(), Some("allow"));
+    assert_eq!(
+        result.compensation_events[0].detail.as_deref(),
+        Some("allow")
+    );
 }
 
 #[tokio::test]
@@ -3832,7 +3854,7 @@ async fn test_streaming_stderr_drain_after_stdout_close_hits_cap() {
     match result {
         Ok(res) => {
             assert!(
-                res.output.contains("[... output truncated at"),
+                res.output.contains("[Output too long"),
                 "Expected truncation when stderr fills after stdout closes. Output: {}",
                 res.output
             );
@@ -3863,7 +3885,7 @@ async fn test_streaming_stdout_drain_after_stderr_close_hits_cap() {
     match result {
         Ok(res) => {
             assert!(
-                res.output.contains("[... output truncated at"),
+                res.output.contains("[Output too long"),
                 "Expected truncation when stdout fills after stderr closes. Output: {}",
                 res.output
             );
