@@ -15,6 +15,8 @@ Cake currently kills a Bash command when its tool-call timeout expires. A build 
 - [ ] Add a bounded, shared in-run process registry and focused lifecycle tests. First stage complete: the existing Bash lifecycle now runs in an owned abort-on-drop task; cancellation and the full focused Bash suite pass. Registry and journal remain.
 - [x] (2026-09-23) Added a test-scoped shared registry and bounded output journal with incremental reads, final-read replay, UTF-8 boundary handling, live-cap refusal, TTL pruning, and reservation discard. Process ownership and production wiring remain in the next stage.
 - [x] (2026-09-23) Corrected invalid-byte accounting and bounded retained exited sessions after review of the registry stage.
+- [x] (2026-09-23) Added and validated the four positive Bash session settings through resolved limits and settings precedence; process wiring and public documentation remain in the later stages.
+- [x] (2026-09-23) Added a test-scoped process owner to the registry: pipe capture, kill signal, hard wall clock, and abort-on-drop process-group cleanup. Production Bash integration remains.
 - [ ] Change Bash's timeout to a yield window and add background mode and a BashSession tool.
 - [ ] Wire four session limits, shutdown cleanup, model descriptions, and tool snapshots.
 - [ ] Update configuration and security documentation, verify on macOS and Linux, run the repository gate, and archive this plan.
@@ -26,6 +28,7 @@ Cake currently kills a Bash command when its tool-call timeout expires. A build 
 - `Bash` is currently registered as read-safe. The new session contract requires removing that capability as well as keeping `BashSession` unavailable under read-only policy.
 - The existing cancellation test proves that dropping a Bash call eventually kills a descendant process group. Moving the lifecycle into an owned task keeps that tested result and creates a handoff point for the later registry.
 - The journal and registry state machine can be tested without changing the current model-visible Bash contract. The module stays `#[cfg(test)]` until the child lifecycle and sandbox guard are transferred to it, so this stage does not add unused production code.
+- A worker that reaps the direct shell before its descendants close inherited pipes loses `Child::id()`. The capture must finish before reaping so explicit kill and the hard wall clock can still signal the original process group.
 - An abort now schedules the worker's drop before its process-group guard sends SIGKILL, rather than sending SIGKILL synchronously in the caller's drop. A hard process exit during that scheduling gap can skip the kill. The shutdown-cleanup stage must signal registered process groups explicitly on normal exit and first interrupt rather than depend on worker drop ordering; a second interrupt remains a hard exit.
 
 ## Decision Log
@@ -88,6 +91,12 @@ Focused tests and formatting can be repeated. Session IDs and process records ex
 ## Artifacts and Notes
 
 Issue: https://github.com/travisennis/cake/issues/639. The owned-task stage passed `cargo test dropping_bash_future_kills_descendants`, `cargo test bash_child_task_preserves_worker_panic`, and, with local mock-server socket access, `cargo test clients::tools::bash::tests` (133 passed), `just check`, and `just docs-check`. The registry state-machine stage and its review fixes passed `cargo test bash_session_core` (10 passed), `just check` (with local mock-server socket access), `just docs-check`, and `git diff --check`; no process-lifecycle or platform verification is claimed for that test-scoped stage. Record later platform results here as they run. A final pull request should close #639 only after the model-visible behavior, settings, documentation, and lifecycle checks all pass.
+
+The settings stage passed `cargo test bash_session_limits_resolve_and_reject_unbounded_values`, `cargo test test_limits_output_budget_project_overrides_global_per_key`, and `just check` with local mock-server socket access. An initial sandboxed `just check` could not bind mock-server ports; the rerun passed. The settings are not yet consumed by running sessions, so `docs/configuration.md` will be updated when that behavior lands.
+
+The process-owner prototype passed `cargo test process_owner`, `cargo test dropping_registry_kills_descendant_process_group`, `just check` with local mock-server socket access, and `just docs-check`. A worker join was found to be polled twice on normal completion; the second poll was removed. This stage remains test-scoped, so it does not yet establish the model-visible session contract or platform sandbox behavior.
+
+PR #645 review found that the worker reaped the shell before kill and hard-wall signalling. The worker now waits for capture before reaping; focused tests cover both termination paths when a descendant outlives its shell, and capture with one pipe absent. The regression tests require the group to terminate promptly, before the former five-second capture fallback.
 
 ## Interfaces and Dependencies
 

@@ -60,7 +60,7 @@ const BASH_TIMEOUT_MAX_SECS: u64 = 600;
 /// child to run a cleanup handler (temp files, sockets, locks), short enough
 /// that total termination time stays bounded by the configured timeout plus
 /// this grace.
-const TERMINATE_GRACE_PERIOD: Duration = Duration::from_secs(3);
+pub(super) const TERMINATE_GRACE_PERIOD: Duration = Duration::from_secs(3);
 
 /// Bound for reaping the direct child after the forceful `SIGKILL`.
 ///
@@ -886,7 +886,7 @@ fn terminate_process_group(child: &mut Child) {
 /// exited during the grace window --- and the child is reaped under
 /// [`TERMINATE_REAP_TIMEOUT`]. Both phases are bounded.
 #[cfg(unix)]
-async fn terminate_process_group_gracefully(child: &mut Child, grace: Duration) {
+pub(super) async fn terminate_process_group_gracefully(child: &mut Child, grace: Duration) {
     // Capture the group id before waiting: `Child::id()` is `None` once the
     // child has been reaped, so resolving the group after the cooperative
     // window would silently skip the forceful phase whenever the direct child
@@ -906,7 +906,7 @@ async fn terminate_process_group_gracefully(child: &mut Child, grace: Duration) 
 }
 
 #[cfg(not(unix))]
-async fn terminate_process_group_gracefully(child: &mut Child, _grace: Duration) {
+pub(super) async fn terminate_process_group_gracefully(child: &mut Child, _grace: Duration) {
     // Non-Unix has no cooperative signal: force-kill the direct child now,
     // then reap under the same bound as the Unix path.
     drop(child.start_kill());

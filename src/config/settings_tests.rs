@@ -2002,6 +2002,38 @@ max_tool_calls = 7
 // --- [limits] tool output budgets ---
 
 #[test]
+fn bash_session_limits_resolve_and_reject_unbounded_values() {
+    let overlay: LimitsSettingsOverlay = toml::from_str(
+        "bash_session_output_max_bytes = 4096\n\
+         bash_session_max = 2\n\
+         bash_session_max_seconds = 90\n\
+         bash_session_exited_ttl_seconds = 30\n",
+    )
+    .unwrap();
+    let limits = overlay.resolve().tool_limits;
+    assert_eq!(limits.bash_session_output_max_bytes, 4096);
+    assert_eq!(limits.bash_session_max, 2);
+    assert_eq!(limits.bash_session_max_seconds, 90);
+    assert_eq!(limits.bash_session_exited_ttl_seconds, 30);
+
+    for key in [
+        "bash_session_output_max_bytes",
+        "bash_session_max",
+        "bash_session_max_seconds",
+        "bash_session_exited_ttl_seconds",
+    ] {
+        assert!(
+            toml::from_str::<LimitsSettingsOverlay>(&format!("{key} = 0")).is_err(),
+            "{key} accepted zero"
+        );
+        assert!(
+            toml::from_str::<LimitsSettingsOverlay>(&format!("{key} = \"unlimited\"")).is_err(),
+            "{key} accepted unlimited"
+        );
+    }
+}
+
+#[test]
 fn test_limits_output_budgets_load_from_settings() {
     let dir = create_project_settings(
         r#"
@@ -2136,6 +2168,8 @@ api_key_env = "MY_KEY"
 
 [limits]
 bash_output_max_bytes = 5000
+bash_session_max = 3
+bash_session_max_seconds = 120
 read_default_end_line = 10
 read_max_line_bytes = 5000
 "#,
@@ -2151,6 +2185,7 @@ api_key_env = "MY_KEY"
 
 [limits]
 bash_output_max_bytes = 9000
+bash_session_max = 5
 read_max_line_bytes = 3000
 "#,
     );
@@ -2162,6 +2197,8 @@ read_max_line_bytes = 3000
 
     let tool = loaded.limits.tool_limits;
     assert_eq!(tool.bash_output_max_bytes, Some(9000));
+    assert_eq!(tool.bash_session_max, 5);
+    assert_eq!(tool.bash_session_max_seconds, 120);
     assert_eq!(tool.read_default_end_line, Some(10));
     assert_eq!(tool.read_max_line_bytes, Some(3000));
 }
