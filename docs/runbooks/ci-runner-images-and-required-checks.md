@@ -12,9 +12,11 @@ gh api repos/travisennis/cake/rulesets/<ruleset-id> \
   --jq '.rules[] | select(.type == "required_status_checks").parameters.required_status_checks[].context'
 ```
 
-The contexts come from each job's `name:` in `.github/workflows/ci.yml`. `Clippy (all-features)` is a required context produced by the Clippy job. Renaming the job or changing its `name:` changes that string, and a required context that no longer reports blocks every pull request while appearing to be a protection setting rather than a typo.
+The contexts come from each required job's `name:` in `.github/workflows/`. `Clippy (all-features)` is a required context produced by the Clippy job. Renaming the job or changing its `name:` changes that string, and a required context that no longer reports blocks every pull request while appearing to be a protection setting rather than a typo.
 
 `Detect Changes` and `Coverage` are deliberately absent from the required list. `Coverage` carries an `if:` condition, and a conditional job makes a poor required context because its reporting depends on which paths a pull request touched.
+
+`Conventional PR Title` is a required context from `.github/workflows/pr-title.yml`. It runs on pull request creation, pushes, reopening, and edits, so changing a title invalidates the previous result before squash merge. Keep the workflow unfiltered by base branch so stacked pull requests receive the check too.
 
 `Linux Test` is required alongside `Test`: it reports on every run and covers the Landlock security path.
 
