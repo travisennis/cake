@@ -35,6 +35,8 @@ use crate::config::settings::ToolLimits;
 use crate::session_telemetry::{CompensationEventTelemetry, CompensationKind};
 use crate::types::ReplaySafety;
 
+#[cfg(test)]
+mod bash_session_core;
 mod sandbox;
 
 pub use sandbox::{SandboxPolicy, resolve_linked_worktree_dirs, resolve_sandbox_policy};
