@@ -7,6 +7,25 @@ use std::sync::Arc;
 use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+#[test]
+fn post_preflight_error_preserves_judge_telemetry() {
+    let event = CompensationEventTelemetry::judge_verdict("allow", None, 12, false)
+        .with_call_id(Some("call-123"));
+    let error = judge_tool_error(vec![event], "session read failed");
+    assert_eq!(error.message, "session read failed");
+    assert_eq!(error.compensation_events.len(), 1);
+    assert_eq!(
+        error.compensation_events[0].kind,
+        CompensationKind::JudgeVerdict
+    );
+    assert_eq!(
+        error.compensation_events[0].detail.as_deref(),
+        Some("allow")
+    );
+    assert_eq!(error.compensation_events[0].latency_ms, Some(12));
+    assert!(error.compensation_events[0].call_id.is_some());
+}
+
 /// Check whether `CAKE_REQUIRE_SANDBOX_TESTS` is set to a truthy value,
 /// indicating that macOS Seatbelt integration tests must run instead of skip.
 ///

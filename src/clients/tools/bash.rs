@@ -1119,17 +1119,7 @@ async fn execute_bash_with_args(
     };
     let (preflight, sandbox_applied) =
         start_session(context, &args, &cwd, sandbox_config, call_id, &reservation).await?;
-    if !args.background {
-        reservation
-            .registry
-            .wait_for_completion(&reservation.id, Duration::from_secs(args.timeout))
-            .await
-            .map_err(|e| judge_tool_error(preflight.compensation_events.clone(), e))?;
-    }
-    let read = reservation
-        .registry
-        .read(&reservation.id, Instant::now())
-        .map_err(|e| judge_tool_error(preflight.compensation_events.clone(), e))?;
+    let read = read_bash_session(&reservation, &args, &preflight).await?;
     let note = stripped_background
         .then_some("[Trailing & was removed before safety review and execution.]");
     if read.exit_code.is_none() || args.background {
@@ -1154,6 +1144,24 @@ async fn execute_bash_with_args(
         &read,
         preflight,
     )
+}
+
+async fn read_bash_session(
+    reservation: &SessionReservation,
+    args: &BashExecutionArgs,
+    preflight: &JudgePreflight,
+) -> Result<super::bash_session_core::SessionRead, super::ToolError> {
+    if !args.background {
+        reservation
+            .registry
+            .wait_for_completion(&reservation.id, Duration::from_secs(args.timeout))
+            .await
+            .map_err(|e| judge_tool_error(preflight.compensation_events.clone(), e))?;
+    }
+    reservation
+        .registry
+        .read(&reservation.id, Instant::now())
+        .map_err(|e| judge_tool_error(preflight.compensation_events.clone(), e))
 }
 
 async fn start_session(
