@@ -5,6 +5,8 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+const EXITED_SESSIONS_PER_LIVE_SLOT: usize = 4;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct JournalRead {
     pub output: String,
@@ -33,18 +35,9 @@ impl Journal {
     fn append(&mut self, chunk: &[u8]) {
         self.cursor = self.cursor.saturating_add(chunk.len() as u64);
         self.bytes.extend(chunk);
-        while self.bytes.len() > self.max_bytes {
-            self.bytes.pop_front();
-            self.dropped_bytes += 1;
-        }
-        // Dropping at a byte limit can land inside a multibyte character.
-        // Discard its remaining continuation bytes so the next read starts
-        // at a character boundary, and account for every discarded byte.
-        while self
-            .bytes
-            .front()
-            .is_some_and(|b| b & 0b1100_0000 == 0b1000_0000)
-        {
+        let overflow = self.bytes.len().saturating_sub(self.max_bytes);
+        let discard = utf8_trim_boundary(&self.bytes, overflow);
+        for _ in 0..discard {
             self.bytes.pop_front();
             self.dropped_bytes += 1;
         }
@@ -61,6 +54,44 @@ impl Journal {
             dropped_bytes: std::mem::take(&mut self.dropped_bytes),
             cursor: self.cursor,
         }
+    }
+}
+
+/// Advance a byte-limit cut only when it splits a valid UTF-8 character.
+/// Standalone invalid continuation bytes stay in the journal for lossy decode.
+fn utf8_trim_boundary(bytes: &VecDeque<u8>, cut: usize) -> usize {
+    if cut == 0 {
+        return 0;
+    }
+    for start in cut.saturating_sub(3)..cut {
+        let Some(width) = utf8_lead_width(bytes[start]) else {
+            continue;
+        };
+        if start + width <= cut {
+            continue;
+        }
+        let end = (start + width).min(bytes.len());
+        let candidate: Vec<_> = bytes.range(start..end).copied().collect();
+        if valid_utf8_prefix(&candidate) {
+            return end;
+        }
+    }
+    cut
+}
+
+fn utf8_lead_width(byte: u8) -> Option<usize> {
+    match byte {
+        0xc2..=0xdf => Some(2),
+        0xe0..=0xef => Some(3),
+        0xf0..=0xf4 => Some(4),
+        _ => None,
+    }
+}
+
+fn valid_utf8_prefix(bytes: &[u8]) -> bool {
+    match std::str::from_utf8(bytes) {
+        Ok(_) => true,
+        Err(error) => error.valid_up_to() == 0 && error.error_len().is_none(),
     }
 }
 
@@ -165,6 +196,7 @@ impl SessionRegistry {
             && session.exited.is_none()
         {
             session.exited = Some((now, exit_code));
+            inner.prune(now);
         }
     }
 
@@ -233,6 +265,20 @@ impl RegistryInner {
                 .exited
                 .is_none_or(|(finished, _)| now.duration_since(finished) < self.exited_ttl)
         });
+        let mut exited: Vec<_> = self
+            .sessions
+            .iter()
+            .filter_map(|(id, session)| session.exited.map(|(finished, _)| (id.clone(), finished)))
+            .collect();
+        let excess = exited
+            .len()
+            .saturating_sub(self.live_max.saturating_mul(EXITED_SESSIONS_PER_LIVE_SLOT));
+        if excess > 0 {
+            exited.sort_by_key(|(_, finished)| *finished);
+            for (id, _) in exited.into_iter().take(excess) {
+                self.sessions.remove(&id);
+            }
+        }
     }
 }
 
@@ -275,6 +321,22 @@ mod tests {
         let sessions = registry(1, 2);
         let id = sessions.start("binary".into(), now).unwrap();
         sessions.append(&id, &[b'a', 0xff, b'b']);
+        let read = sessions.read(&id, now).unwrap();
+        assert_eq!(read.output.output, "�b");
+        assert_eq!(read.output.dropped_bytes, 1);
+    }
+
+    #[test]
+    fn journal_keeps_invalid_continuation_bytes_without_overflow() {
+        let now = Instant::now();
+        let sessions = registry(1, 2);
+        let id = sessions.start("binary".into(), now).unwrap();
+        sessions.append(&id, &[0x80]);
+        let read = sessions.read(&id, now).unwrap();
+        assert_eq!(read.output.output, "�");
+        assert_eq!(read.output.dropped_bytes, 0);
+
+        sessions.append(&id, &[b'a', 0x80, b'b']);
         let read = sessions.read(&id, now).unwrap();
         assert_eq!(read.output.output, "�b");
         assert_eq!(read.output.dropped_bytes, 1);
@@ -326,6 +388,43 @@ mod tests {
                 .is_err()
         );
         assert_eq!(sessions.list(now + Duration::from_secs(10))[0].id, second);
+    }
+
+    #[test]
+    fn exited_retention_evicts_oldest_without_displacing_live_sessions() {
+        let now = Instant::now();
+        let sessions = registry(1, 100);
+        let live = sessions.start("live".into(), now).unwrap();
+        sessions.finish(&live, 0, now);
+        let mut exited = vec![live];
+        for index in 1..=EXITED_SESSIONS_PER_LIVE_SLOT {
+            let at = now + Duration::from_secs(index as u64);
+            let id = sessions.start(format!("short {index}"), at).unwrap();
+            sessions.finish(&id, 0, at);
+            exited.push(id);
+        }
+        assert_eq!(sessions.list(now + Duration::from_secs(4)).len(), 4);
+        assert!(
+            sessions
+                .read(&exited[0], now + Duration::from_secs(4))
+                .is_err()
+        );
+        assert_eq!(
+            sessions
+                .read(&exited[4], now + Duration::from_secs(4))
+                .unwrap()
+                .exit_code,
+            Some(0)
+        );
+        let active = sessions
+            .start("still running".into(), now + Duration::from_secs(4))
+            .unwrap();
+        assert!(
+            sessions
+                .list(now + Duration::from_secs(4))
+                .iter()
+                .any(|s| s.id == active)
+        );
     }
 
     #[test]
