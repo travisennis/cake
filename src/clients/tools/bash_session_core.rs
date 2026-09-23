@@ -1,9 +1,14 @@
-//! The bounded session state machine. Kept test-scoped until the Bash worker
-//! hands its child and sandbox guard to this registry in the next stage.
+//! The bounded session state machine. Kept test-scoped until Bash and
+//! `BashSession` route model-visible calls through the process owner.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tokio::io::AsyncReadExt;
+use tokio::process::Child;
+use tokio::sync::{Notify, oneshot};
+
+use crate::config::toolbox::ToolboxProcessGuard;
 
 const EXITED_SESSIONS_PER_LIVE_SLOT: usize = 4;
 
@@ -112,6 +117,24 @@ struct Session {
     journal: Journal,
     exited: Option<(Instant, i32)>,
     final_read: Option<JournalRead>,
+    notify: Arc<Notify>,
+    process: Option<ProcessControl>,
+}
+
+#[derive(Debug)]
+struct ProcessControl {
+    abort: tokio::task::AbortHandle,
+    kill: Option<oneshot::Sender<()>>,
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        if self.exited.is_none()
+            && let Some(process) = &self.process
+        {
+            process.abort.abort();
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -175,10 +198,96 @@ impl SessionRegistry {
                 journal: Journal::new(output_max_bytes),
                 exited: None,
                 final_read: None,
+                notify: Arc::new(Notify::new()),
+                process: None,
             },
         );
         drop(inner);
         Ok(id)
+    }
+
+    /// Transfer a spawned child and its sandbox resources to the registry.
+    /// The worker holds only a weak reference back to the registry, so dropping
+    /// the final context aborts every live worker and kills its process group.
+    pub fn attach_process(
+        &self,
+        id: &str,
+        child: Child,
+        sandbox_guard: Option<super::sandbox::SandboxGuard>,
+        hard_wall: Duration,
+    ) -> Result<(), String> {
+        let guard = ToolboxProcessGuard::new(child.id());
+        let (kill, kill_rx) = oneshot::channel();
+        let mut inner = self.0.lock().unwrap();
+        let session = inner
+            .sessions
+            .get_mut(id)
+            .ok_or("Bash reservation disappeared")?;
+        if session.process.is_some() || session.exited.is_some() {
+            return Err(format!(
+                "Bash session {id} is already attached or completed"
+            ));
+        }
+        let deadline = session.started + hard_wall;
+        let registry = Arc::downgrade(&self.0);
+        let id_owned = id.to_owned();
+        let worker = tokio::spawn(async move {
+            run_process(
+                child,
+                guard,
+                sandbox_guard,
+                registry,
+                id_owned,
+                deadline,
+                kill_rx,
+            )
+            .await;
+        });
+        session.process = Some(ProcessControl {
+            abort: worker.abort_handle(),
+            kill: Some(kill),
+        });
+        drop(inner);
+        Ok(())
+    }
+
+    pub fn request_kill(&self, id: &str) -> Result<(), String> {
+        let mut inner = self.0.lock().unwrap();
+        let session = inner
+            .sessions
+            .get_mut(id)
+            .ok_or_else(|| format!("Unknown Bash session {id}"))?;
+        if let Some(kill) = session
+            .process
+            .as_mut()
+            .and_then(|process| process.kill.take())
+        {
+            kill.send(()).unwrap_or(());
+        }
+        drop(inner);
+        Ok(())
+    }
+
+    pub async fn read_wait(&self, id: &str, wait: Duration) -> Result<SessionRead, String> {
+        let notify = {
+            let inner = self.0.lock().unwrap();
+            inner.sessions.get(id).map(|session| session.notify.clone())
+        };
+        let Some(notify) = notify else {
+            return self.read(id, Instant::now());
+        };
+        let notified = notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        let read = self.read(id, Instant::now())?;
+        if !read.output.output.is_empty()
+            || read.output.dropped_bytes > 0
+            || read.exit_code.is_some()
+        {
+            return Ok(read);
+        }
+        drop(tokio::time::timeout(wait, notified).await);
+        self.read(id, Instant::now())
     }
 
     pub fn append(&self, id: &str, chunk: &[u8]) {
@@ -187,6 +296,7 @@ impl SessionRegistry {
             && session.exited.is_none()
         {
             session.journal.append(chunk);
+            session.notify.notify_waiters();
         }
     }
 
@@ -196,6 +306,8 @@ impl SessionRegistry {
             && session.exited.is_none()
         {
             session.exited = Some((now, exit_code));
+            session.process = None;
+            session.notify.notify_waiters();
             inner.prune(now);
         }
     }
@@ -250,6 +362,83 @@ impl SessionRegistry {
     }
 }
 
+async fn run_process(
+    mut child: Child,
+    guard: ToolboxProcessGuard,
+    sandbox_guard: Option<super::sandbox::SandboxGuard>,
+    registry: std::sync::Weak<Mutex<RegistryInner>>,
+    id: String,
+    deadline: Instant,
+    kill: oneshot::Receiver<()>,
+) {
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let mut capture = tokio::spawn(capture_output(stdout, stderr, registry.clone(), id.clone()));
+    let mut capture_finished = false;
+    let status = tokio::select! {
+        result = async {
+            let status = child.wait().await.ok().and_then(|status| status.code()).unwrap_or(-1);
+            drop((&mut capture).await);
+            status
+        } => {
+            capture_finished = true;
+            result
+        },
+        _ = kill => {
+            super::bash::terminate_process_group_gracefully(
+                &mut child, super::bash::TERMINATE_GRACE_PERIOD,
+            ).await;
+            -1
+        },
+        () = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => {
+            super::bash::terminate_process_group_gracefully(
+                &mut child, super::bash::TERMINATE_GRACE_PERIOD,
+            ).await;
+            -1
+        },
+    };
+    if !capture_finished {
+        drop(tokio::time::timeout(Duration::from_secs(5), &mut capture).await);
+        capture.abort();
+    }
+    drop(guard);
+    drop(sandbox_guard);
+    if let Some(inner) = registry.upgrade() {
+        SessionRegistry(inner).finish(&id, status, Instant::now());
+    }
+}
+
+async fn capture_output(
+    stdout: Option<tokio::process::ChildStdout>,
+    stderr: Option<tokio::process::ChildStderr>,
+    registry: std::sync::Weak<Mutex<RegistryInner>>,
+    id: String,
+) {
+    let (Some(mut stdout), Some(mut stderr)) = (stdout, stderr) else {
+        return;
+    };
+    let mut stdout_open = true;
+    let mut stderr_open = true;
+    let mut stdout_buf = [0u8; 8192];
+    let mut stderr_buf = [0u8; 8192];
+    while stdout_open || stderr_open {
+        let chunk = tokio::select! {
+            read = stdout.read(&mut stdout_buf), if stdout_open => {
+                match read { Ok(0) | Err(_) => { stdout_open = false; None }, Ok(n) => Some(&stdout_buf[..n]) }
+            },
+            read = stderr.read(&mut stderr_buf), if stderr_open => {
+                match read { Ok(0) | Err(_) => { stderr_open = false; None }, Ok(n) => Some(&stderr_buf[..n]) }
+            },
+        };
+        if let Some(chunk) = chunk {
+            let Some(inner) = registry.upgrade() else {
+                return;
+            };
+            SessionRegistry(inner).append(&id, chunk);
+        }
+    }
+}
+
 impl RegistryInner {
     fn active_ids(&self) -> Vec<String> {
         self.sessions
@@ -285,6 +474,8 @@ impl RegistryInner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Stdio;
+    use tokio::process::Command;
 
     fn registry(live_max: usize, output_max_bytes: usize) -> SessionRegistry {
         SessionRegistry::new(live_max, output_max_bytes, Duration::from_secs(10))
@@ -447,5 +638,110 @@ mod tests {
         let id = sessions.start("never spawned".into(), now).unwrap();
         sessions.discard(&id);
         assert!(sessions.start("next".into(), now).is_ok());
+    }
+
+    #[cfg(unix)]
+    fn spawn_shell(script: &str) -> Child {
+        use std::os::unix::process::CommandExt;
+
+        let mut command = Command::new("bash");
+        command
+            .arg("-c")
+            .arg(script)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        command.as_std_mut().process_group(0);
+        command.spawn().unwrap()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn process_owner_streams_output_and_replays_final_read() {
+        let sessions = registry(1, 100);
+        let id = sessions
+            .start("printf hello".into(), Instant::now())
+            .unwrap();
+        sessions
+            .attach_process(
+                &id,
+                spawn_shell("printf hello; sleep 0.05; printf world"),
+                None,
+                Duration::from_secs(2),
+            )
+            .unwrap();
+        let mut output = String::new();
+        let final_read = loop {
+            let read = sessions
+                .read_wait(&id, Duration::from_secs(1))
+                .await
+                .unwrap();
+            output.push_str(&read.output.output);
+            if read.exit_code.is_some() {
+                break read;
+            }
+        };
+        assert_eq!(output, "helloworld");
+        assert_eq!(final_read.exit_code, Some(0));
+        assert_eq!(sessions.read(&id, Instant::now()).unwrap(), final_read);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn process_owner_kill_and_hard_wall_finish_sessions() {
+        let sessions = registry(1, 100);
+        let id = sessions.start("sleep 10".into(), Instant::now()).unwrap();
+        sessions
+            .attach_process(
+                &id,
+                spawn_shell("sleep 10"),
+                None,
+                Duration::from_millis(50),
+            )
+            .unwrap();
+        let read = sessions
+            .read_wait(&id, Duration::from_secs(2))
+            .await
+            .unwrap();
+        assert_eq!(read.exit_code, Some(-1));
+
+        let id = sessions.start("sleep 10".into(), Instant::now()).unwrap();
+        sessions
+            .attach_process(&id, spawn_shell("sleep 10"), None, Duration::from_secs(5))
+            .unwrap();
+        sessions.request_kill(&id).unwrap();
+        let read = sessions
+            .read_wait(&id, Duration::from_secs(2))
+            .await
+            .unwrap();
+        assert_eq!(read.exit_code, Some(-1));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dropping_registry_kills_descendant_process_group() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("survived");
+        let script = format!(
+            "(sleep 0.3; touch '{}') & echo ready; wait",
+            marker.display()
+        );
+        let sessions = registry(1, 100);
+        let id = sessions.start(script.clone(), Instant::now()).unwrap();
+        sessions
+            .attach_process(&id, spawn_shell(&script), None, Duration::from_secs(5))
+            .unwrap();
+        assert!(
+            sessions
+                .read_wait(&id, Duration::from_secs(1))
+                .await
+                .unwrap()
+                .output
+                .output
+                .contains("ready")
+        );
+        drop(sessions);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(!marker.exists());
     }
 }
