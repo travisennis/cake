@@ -11,6 +11,7 @@ use tokio::sync::{Notify, oneshot};
 use crate::config::toolbox::ToolboxProcessGuard;
 
 const EXITED_SESSIONS_PER_LIVE_SLOT: usize = 4;
+const CAPTURE_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct JournalRead {
@@ -222,7 +223,7 @@ impl SessionRegistry {
         let session = inner
             .sessions
             .get_mut(id)
-            .ok_or("Bash reservation disappeared")?;
+            .ok_or_else(|| format!("Bash reservation {id} disappeared"))?;
         if session.process.is_some() || session.exited.is_some() {
             return Err(format!(
                 "Bash session {id} is already attached or completed"
@@ -369,36 +370,41 @@ async fn run_process(
     registry: std::sync::Weak<Mutex<RegistryInner>>,
     id: String,
     deadline: Instant,
-    kill: oneshot::Receiver<()>,
+    mut kill: oneshot::Receiver<()>,
 ) {
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let mut capture = tokio::spawn(capture_output(stdout, stderr, registry.clone(), id.clone()));
     let mut capture_finished = false;
-    let status = tokio::select! {
-        result = async {
-            let status = child.wait().await.ok().and_then(|status| status.code()).unwrap_or(-1);
-            drop((&mut capture).await);
-            status
-        } => {
-            capture_finished = true;
-            result
-        },
-        _ = kill => {
-            super::bash::terminate_process_group_gracefully(
-                &mut child, super::bash::TERMINATE_GRACE_PERIOD,
-            ).await;
-            -1
-        },
-        () = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => {
-            super::bash::terminate_process_group_gracefully(
-                &mut child, super::bash::TERMINATE_GRACE_PERIOD,
-            ).await;
-            -1
-        },
+    let deadline = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline));
+    tokio::pin!(deadline);
+    let status = loop {
+        tokio::select! {
+            result = &mut capture, if !capture_finished => {
+                drop(result);
+                capture_finished = true;
+            },
+            // Reap only after the pipes close. A descendant can hold a pipe
+            // after the shell exits; until then kill/wall needs Child::id().
+            result = child.wait(), if capture_finished => {
+                break result.ok().and_then(|status| status.code()).unwrap_or(-1);
+            },
+            _ = &mut kill => {
+                super::bash::terminate_process_group_gracefully(
+                    &mut child, super::bash::TERMINATE_GRACE_PERIOD,
+                ).await;
+                break -1;
+            },
+            () = &mut deadline => {
+                super::bash::terminate_process_group_gracefully(
+                    &mut child, super::bash::TERMINATE_GRACE_PERIOD,
+                ).await;
+                break -1;
+            },
+        }
     };
     if !capture_finished {
-        drop(tokio::time::timeout(Duration::from_secs(5), &mut capture).await);
+        drop(tokio::time::timeout(CAPTURE_DRAIN_TIMEOUT, &mut capture).await);
         capture.abort();
     }
     drop(guard);
@@ -414,19 +420,28 @@ async fn capture_output(
     registry: std::sync::Weak<Mutex<RegistryInner>>,
     id: String,
 ) {
-    let (Some(mut stdout), Some(mut stderr)) = (stdout, stderr) else {
-        return;
-    };
-    let mut stdout_open = true;
-    let mut stderr_open = true;
+    let mut stdout = stdout;
+    let mut stderr = stderr;
+    let mut stdout_open = stdout.is_some();
+    let mut stderr_open = stderr.is_some();
     let mut stdout_buf = [0u8; 8192];
     let mut stderr_buf = [0u8; 8192];
     while stdout_open || stderr_open {
         let chunk = tokio::select! {
-            read = stdout.read(&mut stdout_buf), if stdout_open => {
+            read = async {
+                match stdout.as_mut() {
+                    Some(pipe) => pipe.read(&mut stdout_buf).await,
+                    None => std::future::pending().await,
+                }
+            }, if stdout_open => {
                 match read { Ok(0) | Err(_) => { stdout_open = false; None }, Ok(n) => Some(&stdout_buf[..n]) }
             },
-            read = stderr.read(&mut stderr_buf), if stderr_open => {
+            read = async {
+                match stderr.as_mut() {
+                    Some(pipe) => pipe.read(&mut stderr_buf).await,
+                    None => std::future::pending().await,
+                }
+            }, if stderr_open => {
                 match read { Ok(0) | Err(_) => { stderr_open = false; None }, Ok(n) => Some(&stderr_buf[..n]) }
             },
         };
@@ -723,7 +738,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let marker = dir.path().join("survived");
         let script = format!(
-            "(sleep 0.3; touch '{}') & echo ready; wait",
+            "(sleep 1.5; touch '{}') & echo ready; wait",
             marker.display()
         );
         let sessions = registry(1, 100);
@@ -741,7 +756,72 @@ mod tests {
                 .contains("ready")
         );
         drop(sessions);
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        tokio::time::sleep(Duration::from_millis(1700)).await;
         assert!(!marker.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exited_shell_descendant_is_killed_at_wall_or_on_request() {
+        for explicit_kill in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let marker = dir.path().join("survived");
+            let script = format!("(sleep 2; touch '{}') & exit 0", marker.display());
+            let sessions = registry(1, 100);
+            let id = sessions.start(script.clone(), Instant::now()).unwrap();
+            sessions
+                .attach_process(
+                    &id,
+                    spawn_shell(&script),
+                    None,
+                    if explicit_kill {
+                        Duration::from_secs(5)
+                    } else {
+                        Duration::from_millis(200)
+                    },
+                )
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            if explicit_kill {
+                sessions.request_kill(&id).unwrap();
+            }
+            let read = sessions
+                .read_wait(&id, Duration::from_secs(1))
+                .await
+                .unwrap();
+            assert_eq!(read.exit_code, Some(-1));
+            tokio::time::sleep(Duration::from_millis(2100)).await;
+            assert!(
+                !marker.exists(),
+                "descendant survived explicit_kill={explicit_kill}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn process_owner_captures_stdout_when_stderr_is_not_piped() {
+        use std::os::unix::process::CommandExt;
+
+        let sessions = registry(1, 100);
+        let id = sessions
+            .start("printf visible".into(), Instant::now())
+            .unwrap();
+        let mut command = Command::new("bash");
+        command
+            .arg("-c")
+            .arg("printf visible")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        command.as_std_mut().process_group(0);
+        sessions
+            .attach_process(&id, command.spawn().unwrap(), None, Duration::from_secs(2))
+            .unwrap();
+        let read = sessions
+            .read_wait(&id, Duration::from_secs(1))
+            .await
+            .unwrap();
+        assert_eq!(read.output.output, "visible");
     }
 }
