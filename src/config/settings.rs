@@ -446,12 +446,29 @@ impl<'de> Deserialize<'de> for Limit {
     }
 }
 
+/// A mandatory positive bound. Session safety limits cannot be unlimited.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(try_from = "u32")]
+pub struct PositiveLimit(u32);
+
+impl TryFrom<u32> for PositiveLimit {
+    type Error = &'static str;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        if value == 0 {
+            Err("session limit must be a positive integer")
+        } else {
+            Ok(Self(value))
+        }
+    }
+}
+
 /// TOML-facing resource-limit overlay.
 ///
-/// The outer `Option` on each field means the setting key was absent. A
-/// present [`Limit`] may hold a positive cap or the explicit `"unlimited"`
-/// sentinel. This representation is kept only while settings are deserialized
-/// and merged; [`ResolvedLimits`] is used at runtime.
+/// The outer `Option` on each field means the setting key was absent. Output
+/// budgets use [`Limit`] to allow `"unlimited"`; Bash session bounds use
+/// [`PositiveLimit`] because they must stay finite. [`ResolvedLimits`] is used
+/// at runtime.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LimitsSettingsOverlay {
     /// Maximum number of agent-loop turns before the run terminates with a
@@ -475,6 +492,18 @@ pub struct LimitsSettingsOverlay {
     /// `"unlimited"` reads until the process exits.
     #[serde(default)]
     pub bash_read_cap: Option<Limit>,
+    /// Maximum unread bytes retained per running Bash session.
+    #[serde(default)]
+    pub bash_session_output_max_bytes: Option<PositiveLimit>,
+    /// Maximum concurrent Bash sessions.
+    #[serde(default)]
+    pub bash_session_max: Option<PositiveLimit>,
+    /// Hard wall clock for a Bash session, in seconds.
+    #[serde(default)]
+    pub bash_session_max_seconds: Option<PositiveLimit>,
+    /// Retention period for completed Bash sessions, in seconds.
+    #[serde(default)]
+    pub bash_session_exited_ttl_seconds: Option<PositiveLimit>,
     /// Default Read window in lines when the model omits `end_line`. Absent
     /// uses the compiled default of 200; `"unlimited"` reads to the end of
     /// the file.
@@ -512,13 +541,10 @@ pub struct ResolvedLimits {
     pub tool_limits: ToolLimits,
 }
 
-/// Compiled-default output budgets for the Bash, Read, and hook tools.
+/// Resolved limits for Bash, Read, and hook tools.
 ///
-/// These replaced the hard-coded constants in `src/clients/tools/bash.rs`,
-/// `src/clients/tools/read.rs`, and `src/hooks.rs`; the defaults match the
-/// old values exactly, so out-of-the-box behavior is unchanged. Each field is
-/// the byte/line cap, or `None` when the user configured `"unlimited"` for
-/// that budget.
+/// Optional output budgets use `None` when the user configures `"unlimited"`.
+/// Bash session bounds are mandatory positive values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ToolLimits {
     /// Maximum bytes of Bash output returned inline (default 50,000).
@@ -526,6 +552,10 @@ pub struct ToolLimits {
     /// Maximum bytes of Bash output read before the process is killed
     /// (default 100,000).
     pub bash_read_cap: Option<usize>,
+    pub bash_session_output_max_bytes: usize,
+    pub bash_session_max: usize,
+    pub bash_session_max_seconds: u64,
+    pub bash_session_exited_ttl_seconds: u64,
     /// Default Read window in lines (default 200).
     pub read_default_end_line: Option<usize>,
     /// Maximum bytes of Read output before truncation and of an input file
@@ -543,6 +573,10 @@ pub const DEFAULT_BASH_OUTPUT_MAX_BYTES: u32 = 50_000;
 /// Compiled default for [`ToolLimits::bash_read_cap`]: 2× the inline cap so
 /// `truncate_output()` has enough data for a useful head+tail preview.
 pub const DEFAULT_BASH_READ_CAP: u32 = 100_000;
+pub const DEFAULT_BASH_SESSION_OUTPUT_MAX_BYTES: u32 = 1_048_576;
+pub const DEFAULT_BASH_SESSION_MAX: u32 = 16;
+pub const DEFAULT_BASH_SESSION_MAX_SECONDS: u32 = 3_600;
+pub const DEFAULT_BASH_SESSION_EXITED_TTL_SECONDS: u32 = 600;
 /// Compiled default for [`ToolLimits::read_default_end_line`].
 pub const DEFAULT_READ_DEFAULT_END_LINE: u32 = 200;
 /// Compiled default for [`ToolLimits::read_max_output_bytes`].
@@ -560,6 +594,10 @@ impl ToolLimits {
         Self {
             bash_output_max_bytes: Some(DEFAULT_BASH_OUTPUT_MAX_BYTES as usize),
             bash_read_cap: Some(DEFAULT_BASH_READ_CAP as usize),
+            bash_session_output_max_bytes: DEFAULT_BASH_SESSION_OUTPUT_MAX_BYTES as usize,
+            bash_session_max: DEFAULT_BASH_SESSION_MAX as usize,
+            bash_session_max_seconds: DEFAULT_BASH_SESSION_MAX_SECONDS as u64,
+            bash_session_exited_ttl_seconds: DEFAULT_BASH_SESSION_EXITED_TTL_SECONDS as u64,
             read_default_end_line: Some(DEFAULT_READ_DEFAULT_END_LINE as usize),
             read_max_output_bytes: Some(DEFAULT_READ_MAX_OUTPUT_BYTES as usize),
             read_max_line_bytes: Some(DEFAULT_READ_MAX_LINE_BYTES as usize),
@@ -588,6 +626,22 @@ impl LimitsSettingsOverlay {
                     DEFAULT_BASH_OUTPUT_MAX_BYTES,
                 ),
                 bash_read_cap: resolve_tool_limit(self.bash_read_cap, DEFAULT_BASH_READ_CAP),
+                bash_session_output_max_bytes: self
+                    .bash_session_output_max_bytes
+                    .map_or(DEFAULT_BASH_SESSION_OUTPUT_MAX_BYTES as usize, |cap| {
+                        cap.0 as usize
+                    }),
+                bash_session_max: self
+                    .bash_session_max
+                    .map_or(DEFAULT_BASH_SESSION_MAX as usize, |cap| cap.0 as usize),
+                bash_session_max_seconds: u64::from(
+                    self.bash_session_max_seconds
+                        .map_or(DEFAULT_BASH_SESSION_MAX_SECONDS, |cap| cap.0),
+                ),
+                bash_session_exited_ttl_seconds: u64::from(
+                    self.bash_session_exited_ttl_seconds
+                        .map_or(DEFAULT_BASH_SESSION_EXITED_TTL_SECONDS, |cap| cap.0),
+                ),
                 read_default_end_line: resolve_tool_limit(
                     self.read_default_end_line,
                     DEFAULT_READ_DEFAULT_END_LINE,
@@ -1136,6 +1190,7 @@ impl SettingsLoader {
             acc.max_tool_calls = limits.max_tool_calls;
         }
         Self::merge_output_budgets(&limits, acc);
+        Self::merge_session_limits(&limits, acc);
     }
 
     /// Merge the output-budget `[limits]` fields into the accumulator,
@@ -1160,6 +1215,21 @@ impl SettingsLoader {
         }
         if limits.hook_output_limit.is_some() {
             acc.hook_output_limit = limits.hook_output_limit;
+        }
+    }
+
+    const fn merge_session_limits(limits: &LimitsSettingsOverlay, acc: &mut SettingsAccumulator) {
+        if limits.bash_session_output_max_bytes.is_some() {
+            acc.bash_session_output_max_bytes = limits.bash_session_output_max_bytes;
+        }
+        if limits.bash_session_max.is_some() {
+            acc.bash_session_max = limits.bash_session_max;
+        }
+        if limits.bash_session_max_seconds.is_some() {
+            acc.bash_session_max_seconds = limits.bash_session_max_seconds;
+        }
+        if limits.bash_session_exited_ttl_seconds.is_some() {
+            acc.bash_session_exited_ttl_seconds = limits.bash_session_exited_ttl_seconds;
         }
     }
 
@@ -1332,6 +1402,10 @@ struct SettingsAccumulator {
     max_tool_calls: Option<Limit>,
     bash_output_max_bytes: Option<Limit>,
     bash_read_cap: Option<Limit>,
+    bash_session_output_max_bytes: Option<PositiveLimit>,
+    bash_session_max: Option<PositiveLimit>,
+    bash_session_max_seconds: Option<PositiveLimit>,
+    bash_session_exited_ttl_seconds: Option<PositiveLimit>,
     read_default_end_line: Option<Limit>,
     read_max_output_bytes: Option<Limit>,
     read_max_line_bytes: Option<Limit>,
@@ -1383,6 +1457,10 @@ impl SettingsAccumulator {
             max_tool_calls: self.max_tool_calls,
             bash_output_max_bytes: self.bash_output_max_bytes,
             bash_read_cap: self.bash_read_cap,
+            bash_session_output_max_bytes: self.bash_session_output_max_bytes,
+            bash_session_max: self.bash_session_max,
+            bash_session_max_seconds: self.bash_session_max_seconds,
+            bash_session_exited_ttl_seconds: self.bash_session_exited_ttl_seconds,
             read_default_end_line: self.read_default_end_line,
             read_max_output_bytes: self.read_max_output_bytes,
             read_max_line_bytes: self.read_max_line_bytes,

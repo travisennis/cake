@@ -15,6 +15,7 @@ Cake currently kills a Bash command when its tool-call timeout expires. A build 
 - [ ] Add a bounded, shared in-run process registry and focused lifecycle tests. First stage complete: the existing Bash lifecycle now runs in an owned abort-on-drop task; cancellation and the full focused Bash suite pass. Registry and journal remain.
 - [x] (2026-09-23) Added a test-scoped shared registry and bounded output journal with incremental reads, final-read replay, UTF-8 boundary handling, live-cap refusal, TTL pruning, and reservation discard. Process ownership and production wiring remain in the next stage.
 - [x] (2026-09-23) Corrected invalid-byte accounting and bounded retained exited sessions after review of the registry stage.
+- [x] (2026-09-23) Added and validated the four positive Bash session settings through resolved limits and settings precedence; process wiring and public documentation remain in the later stages.
 - [ ] Change Bash's timeout to a yield window and add background mode and a BashSession tool.
 - [ ] Wire four session limits, shutdown cleanup, model descriptions, and tool snapshots.
 - [ ] Update configuration and security documentation, verify on macOS and Linux, run the repository gate, and archive this plan.
@@ -88,6 +89,8 @@ Focused tests and formatting can be repeated. Session IDs and process records ex
 ## Artifacts and Notes
 
 Issue: https://github.com/travisennis/cake/issues/639. The owned-task stage passed `cargo test dropping_bash_future_kills_descendants`, `cargo test bash_child_task_preserves_worker_panic`, and, with local mock-server socket access, `cargo test clients::tools::bash::tests` (133 passed), `just check`, and `just docs-check`. The registry state-machine stage and its review fixes passed `cargo test bash_session_core` (10 passed), `just check` (with local mock-server socket access), `just docs-check`, and `git diff --check`; no process-lifecycle or platform verification is claimed for that test-scoped stage. Record later platform results here as they run. A final pull request should close #639 only after the model-visible behavior, settings, documentation, and lifecycle checks all pass.
+
+The settings stage passed `cargo test bash_session_limits_resolve_and_reject_unbounded_values`, `cargo test test_limits_output_budget_project_overrides_global_per_key`, and `just check` with local mock-server socket access. An initial sandboxed `just check` could not bind mock-server ports; the rerun passed. The settings are not yet consumed by running sessions, so `docs/configuration.md` will be updated when that behavior lands.
 
 ## Interfaces and Dependencies
 
