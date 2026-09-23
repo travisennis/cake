@@ -12,7 +12,7 @@ Cake currently kills a Bash command when its tool-call timeout expires. A build 
 
 - [x] (2026-09-23) Inspected issue #639, Bash execution, tool registry, settings, and shutdown paths; claimed the issue, raised Effort to L, and recorded ADR 036.
 - [x] (2026-09-23) Resolved planning review: inlined the tool contract, decided `bash_read_cap` and saturation behavior, and recorded the read-only Bash availability break.
-- [ ] Add a bounded, shared in-run process registry and focused lifecycle tests.
+- [ ] Add a bounded, shared in-run process registry and focused lifecycle tests. First stage complete: the existing Bash lifecycle now runs in an owned abort-on-drop task; cancellation and the full focused Bash suite pass. Registry and journal remain.
 - [ ] Change Bash's timeout to a yield window and add background mode and a BashSession tool.
 - [ ] Wire four session limits, shutdown cleanup, model descriptions, and tool snapshots.
 - [ ] Update configuration and security documentation, verify on macOS and Linux, run the repository gate, and archive this plan.
@@ -22,6 +22,7 @@ Cake currently kills a Bash command when its tool-call timeout expires. A build 
 - The current `run_bash_child` owns capture, timeout termination, and reaping as one future. A yielded process therefore needs a new owner for the child, pipes, sandbox guard, and group guard; wrapping the current future in a timeout would cancel and kill it.
 - `ToolContext` is cloned when the judge is attached. The registry must be held through `Arc` so that clone cannot create an independent session map.
 - `Bash` is currently registered as read-safe. The new session contract requires removing that capability as well as keeping `BashSession` unavailable under read-only policy.
+- The existing cancellation test already proves that dropping a Bash call kills a descendant process group. Moving the lifecycle into an owned task preserves that property and creates a handoff point for the later registry.
 
 ## Decision Log
 
@@ -56,7 +57,8 @@ Pending implementation and verification.
 
 ### Milestone 1: Own a running process after the call returns
 
-Add a session core in a new module under `src/clients/tools/`. It owns child execution after spawn, both pipe readers, process-group cleanup, the sandbox guard, a bounded UTF-8-safe unread journal, timestamps, final status, and a shared registry. Its tests should prove incremental reads, overflow reporting, repeat final reads, cap enforcement, hard deadline, and descendant cleanup. The first stage must have production call sites or remain entirely test-scoped; do not add dead production code merely to stage the diff. Keep the model-visible Bash behavior while this core is developed. From the repository root, run `cargo test bash_session` and `cargo fmt --check`; the tests should pass while existing Bash results remain unchanged.
+First, move the current Bash child lifecycle into an owned task while preserving its output and timeout behavior. The task retains the sandbox guard and aborts on caller cancellation; `cargo test clients::tools::bash::tests` must pass, including the descendant-cancellation test. Then add a session core in a new module under `src/clients/tools/`. It owns child execution after yield, both pipe readers, process-group cleanup, the sandbox guard, a bounded UTF-8-safe unread journal, timestamps, final status, and a shared registry. Its tests should prove incremental reads, overflow reporting, repeat final reads, cap enforcement, hard deadline, and descendant cleanup. A stage must have production call sites or remain entirely test-scoped; do not add dead production code merely to stage the diff. Keep the model-visible Bash behavior while the core is developed. From the repository root, run `cargo test bash_session` and `cargo fmt --check`; the tests should pass while existing Bash results
+remain unchanged.
 
 ### Milestone 2: Yield and manage Bash sessions
 
@@ -80,10 +82,12 @@ Focused tests and formatting can be repeated. Session IDs and process records ex
 
 ## Artifacts and Notes
 
-Issue: https://github.com/travisennis/cake/issues/639. Record test commands and platform results here as they run. A final pull request should close #639 only after the model-visible behavior, settings, documentation, and lifecycle checks all pass.
+Issue: https://github.com/travisennis/cake/issues/639. The owned-task stage passed `cargo test dropping_bash_future_kills_descendants` and, with local mock-server socket access, `cargo test clients::tools::bash::tests` (132 passed), `just check`, and `just docs-check`. Record later test commands and platform results here as they run. A final pull request should close #639 only after the model-visible behavior, settings, documentation, and lifecycle checks all pass.
 
 ## Interfaces and Dependencies
 
 The new registry belongs to `crate::clients::tools` and is shared by `ToolContext` clones through `Arc`. `Bash` starts a command and uses the registry on yield. `BashSession` uses the registry for read, kill, and list. The registry owns `SandboxGuard` until the process is reaped and owns `ToolboxProcessGuard` until it has killed the group or confirmed all process work is finished. `bash_read_cap` stays parseable for settings compatibility but is superseded for session-managed Bash execution by `bash_session_output_max_bytes`; journal gaps produce `output_truncation` telemetry instead of killing the group. No new crate or persisted record type is required.
 
 Revision 2026-09-23: inlined the model-visible contract and limit defaults, resolved `bash_read_cap` and live-cap behavior, made the read-only Bash removal explicit, and added verifiable milestones after review of planning PR #642.
+
+Revision 2026-09-23: split the first milestone into an owned-task bridge and the registry/journal work so the first code PR stays inside the complex-logic diff budget while preserving the existing cancellation guarantee.
