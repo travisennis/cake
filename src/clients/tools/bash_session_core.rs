@@ -509,9 +509,9 @@ async fn run_process(
                 drop(result);
                 capture_finished = true;
             },
-            // Reap only after the pipes close. A descendant can hold a pipe
-            // after the shell exits; until then kill/wall needs Child::id().
-            result = child.wait(), if capture_finished => {
+            // Observe the direct shell independently of pipe EOF. Descendants may
+            // inherit a captured pipe and keep it open after the shell exits.
+            result = child.wait() => {
                 break (result.ok().and_then(|status| status.code()).unwrap_or(-1), None);
             },
             _ = &mut kill => {
@@ -528,13 +528,14 @@ async fn run_process(
             },
         }
     };
+    // The guard retained the process-group ID from before the direct child was
+    // reaped. Drop it before draining output so descendants holding a pipe are
+    // stopped first, even when the shell itself exited normally.
+    drop(guard);
     if !capture_finished {
         drop(tokio::time::timeout(CAPTURE_DRAIN_TIMEOUT, &mut capture).await);
         capture.abort();
     }
-    // The shell can exit after a child redirects both captured pipes. Kill
-    // any remaining group members before marking the session complete.
-    drop(guard);
     drop(sandbox_guard);
     if let Some(inner) = registry.upgrade() {
         SessionRegistry(inner).finish(&id, status, termination, Instant::now());
@@ -830,6 +831,46 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn process_owner_finishes_when_shell_exits_before_captured_pipes() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("descendant.pid");
+        let script = format!("sleep 30 & echo $! > '{}'; echo done", pid_file.display());
+        let sessions = registry(1, 100);
+        let id = sessions.start(script.clone(), Instant::now()).unwrap();
+        sessions
+            .attach_process(&id, spawn_shell(&script), None, Duration::from_secs(5))
+            .unwrap();
+
+        let started = Instant::now();
+        sessions
+            .wait_for_completion(&id, Duration::from_secs(2))
+            .await
+            .unwrap();
+        let read = sessions.read(&id, Instant::now()).unwrap();
+        assert_eq!(read.output.output.trim(), "done");
+        assert_eq!(read.exit_code, Some(0));
+        assert!(started.elapsed() < Duration::from_secs(2));
+
+        let pid: i32 = std::fs::read_to_string(pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            // SAFETY: the PID names the sleep process spawned by this test.
+            let exists = unsafe { libc::kill(pid, 0) } == 0
+                || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH);
+            if !exists {
+                break;
+            }
+            assert!(Instant::now() < deadline, "descendant survived shell exit");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn process_owner_kill_and_hard_wall_finish_sessions() {
         let sessions = registry(1, 100);
         let id = sessions.start("sleep 10".into(), Instant::now()).unwrap();
@@ -885,44 +926,6 @@ mod tests {
         drop(sessions);
         tokio::time::sleep(Duration::from_millis(1700)).await;
         assert!(!marker.exists());
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn exited_shell_descendant_is_killed_at_wall_or_on_request() {
-        for explicit_kill in [false, true] {
-            let dir = tempfile::tempdir().unwrap();
-            let marker = dir.path().join("survived");
-            let script = format!("(sleep 2; touch '{}') & exit 0", marker.display());
-            let sessions = registry(1, 100);
-            let id = sessions.start(script.clone(), Instant::now()).unwrap();
-            sessions
-                .attach_process(
-                    &id,
-                    spawn_shell(&script),
-                    None,
-                    if explicit_kill {
-                        Duration::from_secs(5)
-                    } else {
-                        Duration::from_millis(200)
-                    },
-                )
-                .unwrap();
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            if explicit_kill {
-                sessions.request_kill(&id).unwrap();
-            }
-            let read = sessions
-                .read_wait(&id, Duration::from_secs(1))
-                .await
-                .unwrap();
-            assert_eq!(read.exit_code, Some(-1));
-            tokio::time::sleep(Duration::from_millis(2100)).await;
-            assert!(
-                !marker.exists(),
-                "descendant survived explicit_kill={explicit_kill}"
-            );
-        }
     }
 
     #[cfg(unix)]

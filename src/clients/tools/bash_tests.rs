@@ -1288,6 +1288,49 @@ async fn sandboxed_bash_session_yields_and_completes_under_platform_policy() {
     );
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[tokio::test]
+async fn sandboxed_bash_session_finishes_when_descendant_holds_captured_pipe() {
+    if skip_if_sandbox_unavailable() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let pid_file = dir.path().join("pipe-holder.pid");
+    let mut context = ToolContext::from_current_process();
+    context.cwd = dir.path().to_path_buf();
+    context.judge = Some(bypassed_judge_context());
+    context.sandbox_policy = SandboxPolicy::WorkspaceWrite;
+    let command = format!("sleep 30 & echo $! > '{}'; echo done", pid_file.display());
+
+    let started = Instant::now();
+    let completed = execute_bash(
+        &context,
+        &serde_json::json!({"command":command,"timeout":2}).to_string(),
+    )
+    .await
+    .unwrap();
+    assert!(completed.output.contains("done"));
+    assert!(completed.output.contains("[exit:0 |"));
+    assert!(started.elapsed() < Duration::from_secs(2));
+
+    let pid: i32 = std::fs::read_to_string(pid_file)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        // SAFETY: the PID names the sleep process spawned by this test.
+        let exists = unsafe { libc::kill(pid, 0) } == 0
+            || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH);
+        if !exists {
+            break;
+        }
+        assert!(Instant::now() < deadline, "descendant survived shell exit");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn timeout_kills_descendant_that_outlives_the_direct_child() {
