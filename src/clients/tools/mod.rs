@@ -2051,12 +2051,11 @@ mod tests {
         let mut registry = default_tool_registry();
         registry.retain_enabled_tools(&["BashSession".to_string()]);
         assert_eq!(registry.names(), vec!["BashSession"]);
-        assert!(registry.definitions()[0].description.contains("Use `read`"));
-        assert!(
-            registry.definitions()[0]
-                .description
-                .contains("`wait` defaults to 10 seconds")
-        );
+        let description = &registry.definitions()[0].description;
+        assert!(description.contains("Use `read`"));
+        assert!(description.contains(
+            "`wait` takes whole seconds, defaults to 10 seconds, is capped at 120 seconds"
+        ));
     }
 
     #[test]

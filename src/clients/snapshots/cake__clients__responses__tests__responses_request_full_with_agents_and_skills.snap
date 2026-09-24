@@ -84,7 +84,7 @@ expression: value
       "type": "function"
     },
     {
-      "description": "Read, list, or kill Bash commands still running in this Cake run. Sessions do not survive Cake exit or resume.\n\nUse `read` with a Bash session ID to receive only output produced since the previous call. It returns when output arrives, the command exits, or the optional `wait` window ends. `wait` defaults to 10 seconds, is capped at 120 seconds, and `0` polls immediately. A completed session remains available briefly; repeated reads return its final output and exit status.\n\nUse `kill` to terminate the session's entire process group. Use `list` to find live and recently exited sessions. Unknown session IDs return an error naming active sessions.\n",
+      "description": "Read, list, or kill Bash commands still running in this Cake run. Sessions do not survive Cake exit or resume.\n\nUse `read` with a Bash session ID to receive only output produced since the previous call. It returns when output arrives, the command exits, or the optional `wait` window ends. `wait` takes whole seconds, defaults to 10 seconds, is capped at 120 seconds, and `0` polls immediately. A completed session remains available briefly; repeated reads return its final output and exit status.\n\nUse `kill` to terminate the session's entire process group. Use `list` to find live and recently exited sessions. Unknown session IDs return an error naming active sessions.\n",
       "name": "BashSession",
       "parameters": {
         "properties": {
@@ -101,8 +101,8 @@ expression: value
             "type": "string"
           },
           "wait": {
-            "description": "Seconds to wait for new output on read (default 10, maximum 120; 0 polls immediately)",
-            "type": "number"
+            "description": "Whole seconds to wait for new output on read (default 10, maximum 120; 0 polls immediately)",
+            "type": "integer"
           }
         },
         "required": [

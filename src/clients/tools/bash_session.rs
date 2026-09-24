@@ -28,7 +28,7 @@ pub(super) fn bash_session_tool() -> super::Tool {
             "properties": {
                 "action": {"type": "string", "enum": ["read", "kill", "list"]},
                 "session": {"type": "string", "description": "Session ID returned by Bash; required for read and kill"},
-                "wait": {"type": "number", "description": "Seconds to wait for new output on read (default 10, maximum 120; 0 polls immediately)"}
+                "wait": {"type": "integer", "description": "Whole seconds to wait for new output on read (default 10, maximum 120; 0 polls immediately)"}
             },
             "required": ["action"]
         }),
@@ -217,6 +217,46 @@ mod tests {
         .await
         .unwrap_err();
         assert!(error.message.contains(&id));
+    }
+
+    #[test]
+    fn wait_schema_and_parser_accept_only_whole_seconds() {
+        let tool = bash_session_tool();
+        let wait_schema = &tool.parameters["properties"]["wait"];
+        assert_eq!(wait_schema["type"], "integer");
+        let description = wait_schema["description"].as_str().unwrap();
+        assert!(description.contains("Whole seconds"));
+        assert!(description.contains("default 10"));
+        assert!(description.contains("maximum 120"));
+        assert!(description.contains("0 polls immediately"));
+
+        let validator = jsonschema::draft202012::new(&tool.parameters).unwrap();
+        for wait in [0, READ_WAIT_MAX] {
+            let arguments = serde_json::json!({
+                "action": "read",
+                "session": "bash_test",
+                "wait": wait
+            });
+            assert!(validator.is_valid(&arguments));
+            let Action::Read {
+                wait: parsed_wait, ..
+            } = serde_json::from_value(arguments).unwrap()
+            else {
+                panic!("expected a read action");
+            };
+            assert_eq!(parsed_wait, Some(wait));
+        }
+
+        let fractional = serde_json::json!({
+            "action": "read",
+            "session": "bash_test",
+            "wait": 0.5
+        });
+        assert!(!validator.is_valid(&fractional));
+        let Err(error) = serde_json::from_value::<Action>(fractional) else {
+            panic!("fractional wait should fail argument parsing");
+        };
+        assert!(error.to_string().contains("invalid type: floating point"));
     }
 
     #[test]
