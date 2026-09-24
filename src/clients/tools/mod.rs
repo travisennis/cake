@@ -1382,13 +1382,9 @@ fn filter_builtin_description(
     description: &str,
     available_names: &[String],
 ) -> String {
-    if !BUILTIN_TOOL_NAMES.contains(&tool_name) {
-        return description.to_string();
-    }
-
     // BashSession describes Bash output and IDs, but never recommends calling
     // Bash. Those lines are essential even in a BashSession-only selection.
-    if tool_name == "BashSession" {
+    if !["Bash", "Read", "Edit", "Write"].contains(&tool_name) {
         return description.to_string();
     }
 
