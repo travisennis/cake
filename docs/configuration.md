@@ -143,7 +143,7 @@ read_max_line_bytes = 10000     # Read per-line cap (bytes; default 10000)
 hook_output_limit = 65536       # Hook stdout/stderr cap per hook (bytes; default 65536)
 ```
 
-- `bash_output_max_bytes`: maximum bytes of Bash tool output returned inline. Output exceeding the cap is written to a secure temp file and the agent receives a summary with the path plus a head+tail preview. `"unlimited"` disables the spill.
+- `bash_output_max_bytes`: maximum bytes of Bash or BashSession output returned inline. Output exceeding the cap is written to a secure temp file; completed Bash results include a head+tail preview, while yielded Bash and BashSession results include a head preview. `"unlimited"` disables the spill.
 - `bash_read_cap`: retained for settings compatibility. Session-managed Bash commands no longer use it or kill a command for producing too much output.
 - `bash_session_output_max_bytes`: maximum unread bytes held for one Bash session. Overflow drops the oldest bytes at a UTF-8 boundary and reports the gap on the next read.
 - `bash_session_max`: maximum concurrently running Bash sessions. Completed sessions are retained up to four times this count.
@@ -168,7 +168,7 @@ enabled = ["Read", "Edit"]
 enabled = ["Read"]
 ```
 
-Names are case-sensitive registered names: `Bash`, `BashSession`, `Read`, `Edit`, `Write`, or a toolbox name such as `tb__run_tests`. The list replaces lower-precedence global or project values, so a selected profile can narrow the top-level selection. A profile that omits `enabled` inherits the lower-precedence list; there is no `all` value that restores every tool. Unknown or unavailable names are warned about and are never registered. The selection is applied after sandbox filtering; for example, `--sandbox read-only` still removes `Bash`, `BashSession`, `Edit`, `Write`, and toolbox tools. `tools.enabled = []` also causes provider requests to omit tool definitions.
+Names are case-sensitive registered names: `Bash`, `BashSession`, `Read`, `Edit`, `Write`, or a toolbox name such as `tb__run_tests`. Selecting `Bash` also exposes `BashSession` so commands that yield can be read or killed. Selecting `BashSession` alone remains valid, though it cannot start a command. The list replaces lower-precedence global or project values, so a selected profile can narrow the top-level selection. A profile that omits `enabled` inherits the lower-precedence list; there is no `all` value that restores every tool. Unknown or unavailable names are warned about and are never registered. The selection is applied after sandbox filtering; for example, `--sandbox read-only` still removes `Bash`, `BashSession`, `Edit`, `Write`, and toolbox tools. `tools.enabled = []` also causes provider requests to omit tool definitions.
 
 `--tools name1,name2` selects a one-run allowlist and `--no-tools` exposes no tools for the run, the CLI spelling of `enabled = []`. Both mirror `--skills`/`--no-skills`. Because CLI flags are the highest precedence, either flag replaces the profile and top-level `[tools].enabled` chain instead of unioning with it, and `--no-tools` wins when both flags are passed. Values split on `,`, trim surrounding whitespace, and drop empty entries, so `--tools ""` or `--tools ","` selects no tools, matching `--skills ""`. As with settings, unknown or unavailable names warn and are dropped without failing the run; `--tools` is a usability filter, not a security boundary, and the sandbox and Bash judge remain the enforcement.
 

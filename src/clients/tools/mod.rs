@@ -834,10 +834,14 @@ impl ToolRegistry {
         self.refresh_definitions();
     }
 
-    /// Retain only the exact registered names in `enabled`.
+    /// Retain selected names, including `BashSession` when Bash is selected so
+    /// every yielded command has a model-visible controller.
     pub(super) fn retain_enabled_tools(&mut self, enabled: &[String]) {
-        self.entries
-            .retain(|entry| enabled.iter().any(|name| name == &entry.definition.name));
+        let bash_enabled = enabled.iter().any(|name| name == "Bash");
+        self.entries.retain(|entry| {
+            enabled.iter().any(|name| name == &entry.definition.name)
+                || (bash_enabled && entry.definition.name == "BashSession")
+        });
         self.refresh_definitions();
     }
 
@@ -1379,6 +1383,12 @@ fn filter_builtin_description(
     available_names: &[String],
 ) -> String {
     if !BUILTIN_TOOL_NAMES.contains(&tool_name) {
+        return description.to_string();
+    }
+
+    // BashSession describes Bash output and IDs, but never recommends calling
+    // Bash. Those lines are essential even in a BashSession-only selection.
+    if tool_name == "BashSession" {
         return description.to_string();
     }
 
@@ -2045,6 +2055,24 @@ mod tests {
         let mut registry = default_tool_registry();
         registry.retain_enabled_tools(&["BashSession".to_string()]);
         assert_eq!(registry.names(), vec!["BashSession"]);
+        assert!(registry.definitions()[0].description.contains("Use `read`"));
+        assert!(
+            registry.definitions()[0]
+                .description
+                .contains("`wait` defaults to 10 seconds")
+        );
+    }
+
+    #[test]
+    fn selecting_bash_includes_its_session_controller() {
+        let mut registry = default_tool_registry();
+        registry.retain_enabled_tools(&["Bash".to_string()]);
+        assert_eq!(registry.names(), vec!["Bash", "BashSession"]);
+        assert!(
+            registry.definitions()[0]
+                .description
+                .contains("Use BashSession")
+        );
     }
 
     // ── capability-driven classification (#277) ──

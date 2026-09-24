@@ -22,7 +22,7 @@ The Bash tool's optional per-call `cwd` selects an existing directory that the s
 
 `--add-dir` adds a read-only path for one invocation. `directories` in settings adds persistent read-write paths. The `[sandbox]` section in settings adds persistent grants in two classes: `read_only` (read + execute, for files or directories) and `writable` (read + write + execute). Treat all of these as grants of authority.
 
-`tools.enabled` is a separate narrowing allowlist for the model-visible and executable tool registry. It cannot add authority: sandbox policy still removes tools that are unsafe under the selected policy, and an absent key preserves the default tool set.
+`tools.enabled` is a separate narrowing allowlist for the model-visible and executable tool registry. Selecting Bash includes its BashSession controller so yielded commands remain manageable. It cannot add authority beyond the selected sandbox policy: that policy still removes tools that are unsafe under it, and an absent key preserves the default tool set.
 
 The `[sandbox]` and `directories` path lists feed both the in-process Read/Edit/Write/Grep validation and the OS sandbox, so the two enforcement layers cannot diverge. A `read_only` entry naming a single executable grants exactly that file (plus read access to its ancestor directories), so sibling files in the same directory remain denied.
 

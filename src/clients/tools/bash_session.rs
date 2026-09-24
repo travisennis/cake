@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
 use crate::clients::tools::bash_session_core::{SessionRead, SessionRegistry};
@@ -90,7 +91,15 @@ pub(super) fn format_read(
     max_bytes: Option<usize>,
 ) -> super::ToolResult {
     let mut events = Vec::new();
-    let (output, truncated) = cap_output(&read.output.output, max_bytes);
+    let (mut output, truncated) = cap_output(&read.output.output, max_bytes);
+    if truncated {
+        match super::bash::spill_output(&read.output.output) {
+            Ok(path) => {
+                _ = write!(output, "\nFull output saved to: {}", path.display());
+            },
+            Err(e) => tracing::debug!("Failed to spill BashSession output: {e}"),
+        }
+    }
     if truncated || read.output.dropped_bytes > 0 {
         events.push(CompensationEventTelemetry::new(
             CompensationKind::OutputTruncation,

@@ -490,7 +490,7 @@ impl SessionRegistry {
 
 async fn run_process(
     mut child: Child,
-    guard: ToolboxProcessGuard,
+    mut guard: ToolboxProcessGuard,
     sandbox_guard: Option<super::sandbox::SandboxGuard>,
     registry: std::sync::Weak<Mutex<RegistryInner>>,
     id: String,
@@ -531,6 +531,9 @@ async fn run_process(
     if !capture_finished {
         drop(tokio::time::timeout(CAPTURE_DRAIN_TIMEOUT, &mut capture).await);
         capture.abort();
+    }
+    if termination.is_none() {
+        guard.defuse();
     }
     drop(guard);
     drop(sandbox_guard);

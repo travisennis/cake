@@ -218,8 +218,10 @@ const DEFAULT_SETTINGS: &str = r#"# Cake project settings, created by `cake init
 # api_type = "chat_completions"
 
 # Optional exact-name tool allowlist. An absent key keeps all tools; [] exposes
-# no tools. Built-in names are Bash, Read, Edit, and Write. Toolbox names use
-# their registered `tb__` prefix. A selected profile can override this list.
+# no tools. Built-in names are Bash, BashSession, Read, Edit, and Write.
+# Selecting Bash also exposes BashSession so yielded commands can be managed.
+# Toolbox names use their registered `tb__` prefix. A selected profile can
+# override this list.
 # [tools]
 # enabled = ["Read", "Edit"]
 #
@@ -254,7 +256,11 @@ const DEFAULT_SETTINGS: &str = r#"# Cake project settings, created by `cake init
 # max_tool_calls = 50          # stop after 50 executed tool calls
 # max_turns = "unlimited"      # explicit opt-out; overrides a global cap
 # bash_output_max_bytes = 50000    # Bash inline output cap (bytes)
-# bash_read_cap = 100000           # Bash read cap before kill (bytes)
+# bash_read_cap = 100000           # Legacy key; no longer limits Bash sessions
+# bash_session_output_max_bytes = 1048576 # Unread output kept per session
+# bash_session_max = 16                    # Concurrent running commands
+# bash_session_max_seconds = 3600          # Hard wall clock per command
+# bash_session_exited_ttl_seconds = 600    # Retention after exit
 # read_default_end_line = 200      # Read default window (lines)
 # read_max_output_bytes = 100000   # Read output and Edit input cap (bytes)
 # read_max_line_bytes = 10000      # Read per-line cap (bytes; "unlimited" reads a whole line into memory)

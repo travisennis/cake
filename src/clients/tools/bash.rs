@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Instant;
@@ -1208,7 +1209,15 @@ fn format_yielded(
     note: Option<&str>,
 ) -> super::ToolResult {
     let mut events = preflight.compensation_events;
-    let (output, truncated) = super::bash_session::cap_output(&read.output.output, max_bytes);
+    let (mut output, truncated) = super::bash_session::cap_output(&read.output.output, max_bytes);
+    if truncated {
+        match spill_output(&read.output.output) {
+            Ok(path) => {
+                _ = write!(output, "\nFull output saved to: {}", path.display());
+            },
+            Err(e) => debug!("Failed to spill yielded Bash output: {e}"),
+        }
+    }
     push_truncation_event_if(
         &mut events,
         "Bash",
@@ -1851,17 +1860,7 @@ pub(super) fn truncate_output(
     // Try to write the full output to a secure temp file so the agent can
     // search it.  Fail closed: if the directory cannot be created or the
     // write fails, fall back to the inline truncated result.
-    let write_result = match bash_temp_output_dir() {
-        Ok(dir) => {
-            let file_name = format!("bash_output_{}.txt", uuid::Uuid::new_v4());
-            let tmp_path = dir.join(&file_name);
-            std::fs::write(&tmp_path, output).map(|()| tmp_path)
-        },
-        Err(e) => {
-            debug!("Failed to create secure Bash temp dir: {e}; fall back to inline truncation");
-            Err(e)
-        },
-    };
+    let write_result = spill_output(output);
 
     match write_result {
         Ok(tmp_path) => {
@@ -1898,6 +1897,13 @@ pub(super) fn truncate_output(
             )
         },
     }
+}
+
+pub(super) fn spill_output(output: &str) -> std::io::Result<PathBuf> {
+    let dir = bash_temp_output_dir()?;
+    let path = dir.join(format!("bash_output_{}.txt", uuid::Uuid::new_v4()));
+    std::fs::write(&path, output)?;
+    Ok(path)
 }
 
 /// Prepend soft safety warnings to command output, if any.

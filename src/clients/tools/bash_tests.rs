@@ -1162,6 +1162,59 @@ async fn bash_background_returns_immediately_and_can_be_killed() {
     assert!(killed.output.contains("[exit:-1 | total"));
 }
 
+#[tokio::test]
+async fn yielded_bash_output_spills_drained_bytes() {
+    let mut context = session_test_context();
+    context.limits.bash_output_max_bytes = Some(100);
+    let result = execute_bash(
+        &context,
+        r#"{"command":"yes x | head -c 60000; sleep 2","timeout":1}"#,
+    )
+    .await
+    .unwrap();
+
+    assert!(result.output.contains("[still running | session: bash_"));
+    let path = result
+        .output
+        .lines()
+        .find_map(|line| line.strip_prefix("Full output saved to: "))
+        .expect("yielded output must provide a recovery path");
+    let spilled = std::fs::read(path).unwrap();
+    assert_eq!(spilled.len(), 60_000);
+    assert!(spilled.starts_with(b"x\nx\n"));
+}
+
+#[tokio::test]
+async fn bash_session_read_spills_drained_bytes() {
+    let mut context = session_test_context();
+    context.limits.bash_output_max_bytes = Some(100);
+    let started = execute_bash(
+        &context,
+        r#"{"command":"sleep 1; yes x | head -c 60000","background":true}"#,
+    )
+    .await
+    .unwrap();
+    assert!(started.output.contains("session: bash_"));
+    let id = context.bash_sessions.list(Instant::now())[0].id.clone();
+    context
+        .bash_sessions
+        .wait_for_completion(&id, Duration::from_secs(5))
+        .await
+        .unwrap();
+    let result = super::super::bash_session::execute(
+        &context,
+        &serde_json::json!({"action":"read","session":id,"wait":0}).to_string(),
+    )
+    .await
+    .unwrap();
+    let path = result
+        .output
+        .lines()
+        .find_map(|line| line.strip_prefix("Full output saved to: "))
+        .expect("read output must provide a recovery path");
+    assert_eq!(std::fs::read(path).unwrap().len(), 60_000);
+}
+
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[tokio::test]
 async fn sandboxed_bash_session_yields_and_completes_under_platform_policy() {
@@ -1411,10 +1464,14 @@ fn marker_modified_time(marker: &std::path::Path) -> Option<std::time::SystemTim
 async fn completed_bash_future_does_not_kill_descendants() {
     let dir = tempfile::tempdir().unwrap();
     let marker = dir.path().join("background-descendant-completed");
-    let command = format!("(sleep 1; touch '{}') >/dev/null 2>&1 &", marker.display());
+    let command = format!(
+        "(sleep 1; touch '{}') >/dev/null 2>&1 & true",
+        marker.display()
+    );
     let args = serde_json::json!({ "command": command }).to_string();
 
-    execute_bash_unsandboxed(&args).await.unwrap();
+    let result = execute_bash_unsandboxed(&args).await.unwrap();
+    assert!(!result.output.contains("Trailing & was removed"));
 
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     assert!(
