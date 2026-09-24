@@ -84,6 +84,7 @@ expression: value
             },
             "wait": {
               "description": "Whole seconds to wait for new output on read (default 10, maximum 120; 0 polls immediately)",
+              "minimum": 0,
               "type": "integer"
             }
           },

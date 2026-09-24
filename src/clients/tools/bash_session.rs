@@ -28,7 +28,7 @@ pub(super) fn bash_session_tool() -> super::Tool {
             "properties": {
                 "action": {"type": "string", "enum": ["read", "kill", "list"]},
                 "session": {"type": "string", "description": "Session ID returned by Bash; required for read and kill"},
-                "wait": {"type": "integer", "description": "Whole seconds to wait for new output on read (default 10, maximum 120; 0 polls immediately)"}
+                "wait": {"type": "integer", "minimum": 0, "description": "Whole seconds to wait for new output on read (default 10, maximum 120; 0 polls immediately)"}
             },
             "required": ["action"]
         }),
@@ -257,6 +257,14 @@ mod tests {
             panic!("fractional wait should fail argument parsing");
         };
         assert!(error.to_string().contains("invalid type: floating point"));
+
+        let negative = serde_json::json!({
+            "action": "read",
+            "session": "bash_test",
+            "wait": -1
+        });
+        assert!(!validator.is_valid(&negative));
+        assert!(serde_json::from_value::<Action>(negative).is_err());
     }
 
     #[test]
