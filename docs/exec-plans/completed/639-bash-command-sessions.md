@@ -29,6 +29,7 @@ Cake currently kills a Bash command when its tool-call timeout expires. A build 
 - The existing cancellation test proves that dropping a Bash call eventually kills a descendant process group. Moving the lifecycle into an owned task keeps that tested result and creates a handoff point for the later registry.
 - The journal and registry state machine can be tested without changing the current model-visible Bash contract. The module stays `#[cfg(test)]` until the child lifecycle and sandbox guard are transferred to it, so this stage does not add unused production code.
 - A worker that reaps the direct shell before its descendants close inherited pipes loses `Child::id()`. The capture must finish before reaping so explicit kill and the hard wall clock can still signal the original process group.
+- A background child can redirect both captured pipes, allowing the shell and capture to finish while the child remains alive. Normal completion must also kill remaining process-group members before the session is marked exited.
 - An abort now schedules the worker's drop before its process-group guard sends SIGKILL, rather than sending SIGKILL synchronously in the caller's drop. A hard process exit during that scheduling gap can skip the kill. The shutdown-cleanup stage must signal registered process groups explicitly on normal exit and first interrupt rather than depend on worker drop ordering; a second interrupt remains a hard exit.
 
 ## Decision Log
@@ -55,7 +56,7 @@ The four positive-integer `[limits]` keys default to `bash_session_output_max_by
 
 ## Outcomes & Retrospective
 
-Bash now yields a live session when its window expires or background mode is requested. BashSession can read incremental output, kill a process group, and list retained sessions. The registry bounds live processes, unread bytes, hard run time, and completed-session retention. Short commands keep their ordinary output and exit footer. The full local gate, docs gate, and macOS Seatbelt yield/poll/kill test pass. Linux Landlock runtime verification remains a CI requirement: this macOS host has the Linux Rust target but lacks `x86_64-linux-gnu-gcc` and a Linux container runtime. The final integration diff exceeds the 500-line complex-logic budget because replacing the old Bash lifecycle, registering the tool, updating its tests, and regenerating snapshots form one model-visible contract; the preceding core stages were delivered separately.
+Bash now yields a live session when its window expires or background mode is requested. BashSession can read incremental output, kill a process group, and list retained sessions. The registry bounds live processes, unread bytes, hard run time, and completed-session retention. Short commands keep their ordinary output and exit footer. A review fix kills background descendants that redirected their pipes when the shell exits. The full local gate, docs gate, and macOS Seatbelt yield/poll/kill test pass. Linux Landlock runtime verification remains a CI requirement: this macOS host has the Linux target but lacks `x86_64-linux-gnu-gcc` and a Linux container runtime. The final integration diff exceeds the 500-line complex-logic budget because replacing the old Bash lifecycle, registering the tool, updating its tests, and regenerating snapshots form one model-visible contract; the preceding core stages were delivered separately.
 
 ## Context and Orientation
 
@@ -113,3 +114,5 @@ Revision 2026-09-23: staged and verified the registry/journal state machine sepa
 Revision 2026-09-23: review found that a leading invalid continuation byte was counted as dropped without overflow, and that TTL alone did not bound completed-session memory. The journal now trims only a split valid character, and completed sessions have a count cap derived from the live-session limit.
 
 Revision 2026-09-23: completed the model-visible session integration, documented the compatibility and authorization changes, and recorded the macOS platform result and Linux CI prerequisite.
+
+Revision 2026-09-24: a final review found that a child with redirected pipes could survive normal shell completion. The process owner now kills remaining group members before marking the session exited; unsandboxed and macOS Seatbelt tests cover the case.

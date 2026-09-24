@@ -1268,6 +1268,24 @@ async fn sandboxed_bash_session_yields_and_completes_under_platform_policy() {
     .await
     .unwrap();
     assert!(killed.output.contains("[exit:-1 | total"));
+
+    let orphan = dir.path().join("redirected-background-child");
+    let command = format!(
+        "(sleep 1; touch '{}') >/dev/null 2>&1 & true",
+        orphan.display()
+    );
+    let completed = execute_bash(
+        &context,
+        &serde_json::json!({"command":command}).to_string(),
+    )
+    .await
+    .unwrap();
+    assert!(completed.output.contains("[exit:0 |"));
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert!(
+        !orphan.exists(),
+        "redirected background child survived shell exit"
+    );
 }
 
 #[cfg(unix)]
@@ -1461,7 +1479,7 @@ fn marker_modified_time(marker: &std::path::Path) -> Option<std::time::SystemTim
 
 #[cfg(unix)]
 #[tokio::test]
-async fn completed_bash_future_does_not_kill_descendants() {
+async fn completed_bash_future_kills_background_descendants() {
     let dir = tempfile::tempdir().unwrap();
     let marker = dir.path().join("background-descendant-completed");
     let command = format!(
@@ -1475,8 +1493,8 @@ async fn completed_bash_future_does_not_kill_descendants() {
 
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     assert!(
-        marker.exists(),
-        "normal bash completion killed a deliberately backgrounded descendant"
+        !marker.exists(),
+        "backgrounded descendant survived normal Bash completion"
     );
 }
 

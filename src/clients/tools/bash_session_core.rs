@@ -490,7 +490,7 @@ impl SessionRegistry {
 
 async fn run_process(
     mut child: Child,
-    mut guard: ToolboxProcessGuard,
+    guard: ToolboxProcessGuard,
     sandbox_guard: Option<super::sandbox::SandboxGuard>,
     registry: std::sync::Weak<Mutex<RegistryInner>>,
     id: String,
@@ -532,9 +532,8 @@ async fn run_process(
         drop(tokio::time::timeout(CAPTURE_DRAIN_TIMEOUT, &mut capture).await);
         capture.abort();
     }
-    if termination.is_none() {
-        guard.defuse();
-    }
+    // The shell can exit after a child redirects both captured pipes. Kill
+    // any remaining group members before marking the session complete.
     drop(guard);
     drop(sandbox_guard);
     if let Some(inner) = registry.upgrade() {
