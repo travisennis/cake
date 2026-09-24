@@ -127,20 +127,28 @@ The limits combine; whichever fires first stops the loop. The stop is reported a
 
 ### Tool output budgets
 
-The output-budget keys have built-in compiled defaults that match the hard-coded constants they replaced, so out-of-the-box behavior is unchanged. Overriding a key changes tool behavior without a release; `"unlimited"` disables the cap.
+Tool limits have built-in defaults. Output budgets accept `"unlimited"`; Bash session safety limits require positive integers.
 
 ```toml
 [limits]
 bash_output_max_bytes = 50000   # Bash inline output cap (bytes; default 50000)
-bash_read_cap = 100000          # Bash read cap before kill (bytes; default 100000)
+bash_read_cap = 100000          # Legacy key; parsed but no longer limits Bash sessions
+bash_session_output_max_bytes = 1048576 # Unread output kept per session
+bash_session_max = 16                    # Concurrent running commands
+bash_session_max_seconds = 3600          # Hard wall clock per command
+bash_session_exited_ttl_seconds = 600    # Retention after exit
 read_default_end_line = 200     # Read default window (lines; default 200)
 read_max_output_bytes = 100000  # Read output and Edit input cap (bytes; default 100000)
 read_max_line_bytes = 10000     # Read per-line cap (bytes; default 10000)
 hook_output_limit = 65536       # Hook stdout/stderr cap per hook (bytes; default 65536)
 ```
 
-- `bash_output_max_bytes`: maximum bytes of Bash tool output returned inline. Output exceeding the cap is written to a secure temp file and the agent receives a summary with the path plus a head+tail preview. `"unlimited"` disables the spill.
-- `bash_read_cap`: maximum bytes of Bash output read before the process is killed and the capture ends. The default is 2× the inline cap, so a spill has enough data for a useful preview. `"unlimited"` reads until the process exits.
+- `bash_output_max_bytes`: maximum bytes of Bash or BashSession output returned inline. Output exceeding the cap is written to a secure temp file; completed Bash results include a head+tail preview, while yielded Bash and BashSession results include a head preview. `"unlimited"` disables the spill.
+- `bash_read_cap`: retained for settings compatibility. Session-managed Bash commands no longer use it or kill a command for producing too much output.
+- `bash_session_output_max_bytes`: maximum unread bytes held for one Bash session. Overflow drops the oldest bytes at a UTF-8 boundary and reports the gap on the next read.
+- `bash_session_max`: maximum concurrently running Bash sessions. Completed sessions are retained up to four times this count.
+- `bash_session_max_seconds`: hard wall clock in seconds; reaching it terminates the process group.
+- `bash_session_exited_ttl_seconds`: seconds a completed session remains available for late or repeated reads, subject to the completed-session count cap.
 - `read_default_end_line`: default Read window in lines when the model omits `end_line`. `"unlimited"` reads to the end of the file.
 - `read_max_output_bytes`: maximum bytes of Read output before truncation at a UTF-8 boundary and maximum bytes of an input file Edit will read. `"unlimited"` disables both caps.
 - `read_max_line_bytes`: maximum bytes delivered for a single Read line before it is truncated with a marker at a UTF-8 boundary. The cap bounds memory for newline-free giant lines. `"unlimited"` re-enables reading a whole line into memory, which can starve memory for such a file.
@@ -160,7 +168,7 @@ enabled = ["Read", "Edit"]
 enabled = ["Read"]
 ```
 
-Names are case-sensitive registered names: `Bash`, `Read`, `Edit`, `Write`, or a toolbox name such as `tb__run_tests`. The list replaces lower-precedence global or project values, so a selected profile can narrow the top-level selection. A profile that omits `enabled` inherits the lower-precedence list; there is no `all` value that restores every tool. Unknown or unavailable names are warned about and are never registered. The selection is applied after sandbox filtering; for example, `--sandbox read-only` still removes `Edit`, `Write`, and toolbox tools. `tools.enabled = []` also causes provider requests to omit tool definitions.
+Names are case-sensitive registered names: `Bash`, `BashSession`, `Read`, `Edit`, `Write`, or a toolbox name such as `tb__run_tests`. Selecting `Bash` also exposes `BashSession` so commands that yield can be read or killed. Selecting `BashSession` alone remains valid, though it cannot start a command. The list replaces lower-precedence global or project values, so a selected profile can narrow the top-level selection. A profile that omits `enabled` inherits the lower-precedence list; there is no `all` value that restores every tool. Unknown or unavailable names are warned about and are never registered. The selection is applied after sandbox filtering; for example, `--sandbox read-only` still removes `Bash`, `BashSession`, `Edit`, `Write`, and toolbox tools. `tools.enabled = []` also causes provider requests to omit tool definitions.
 
 `--tools name1,name2` selects a one-run allowlist and `--no-tools` exposes no tools for the run, the CLI spelling of `enabled = []`. Both mirror `--skills`/`--no-skills`. Because CLI flags are the highest precedence, either flag replaces the profile and top-level `[tools].enabled` chain instead of unioning with it, and `--no-tools` wins when both flags are passed. Values split on `,`, trim surrounding whitespace, and drop empty entries, so `--tools ""` or `--tools ","` selects no tools, matching `--skills ""`. As with settings, unknown or unavailable names warn and are dropped without failing the run; `--tools` is a usability filter, not a security boundary, and the sandbox and Bash judge remain the enforcement.
 

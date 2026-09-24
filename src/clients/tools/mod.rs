@@ -35,7 +35,7 @@ use crate::config::settings::ToolLimits;
 use crate::session_telemetry::{CompensationEventTelemetry, CompensationKind};
 use crate::types::ReplaySafety;
 
-#[cfg(test)]
+mod bash_session;
 mod bash_session_core;
 mod sandbox;
 
@@ -92,6 +92,7 @@ pub struct ToolContext {
     /// Resolved tool output budgets from `[limits]` settings. Defaults to the
     /// compiled constants; `with_limits` applies configured overrides.
     pub limits: ToolLimits,
+    bash_sessions: bash_session_core::SessionRegistry,
 }
 
 impl ToolContext {
@@ -124,7 +125,12 @@ impl ToolContext {
     /// Attach resolved tool output budgets from the `[limits]` settings
     /// section. Absent keys already resolved to the compiled defaults inside
     /// `ToolLimits`, so this is a plain override.
-    pub const fn with_limits(mut self, limits: ToolLimits) -> Self {
+    pub fn with_limits(mut self, limits: ToolLimits) -> Self {
+        self.bash_sessions = bash_session_core::SessionRegistry::new(
+            limits.bash_session_max,
+            limits.bash_session_output_max_bytes,
+            std::time::Duration::from_secs(limits.bash_session_exited_ttl_seconds),
+        );
         self.limits = limits;
         self
     }
@@ -134,7 +140,7 @@ impl ToolContext {
     /// This keeps construction testable without depending on process-global
     /// cache state. The sandbox policy defaults to `WorkspaceWrite` so the
     /// many existing test call sites need not pass it explicitly.
-    pub const fn with_temp_dirs(
+    pub fn with_temp_dirs(
         cwd: PathBuf,
         temp_dirs: Vec<PathBuf>,
         additional_dirs: Vec<PathBuf>,
@@ -150,6 +156,13 @@ impl ToolContext {
             sandbox_policy: SandboxPolicy::WorkspaceWrite,
             judge: None,
             limits: ToolLimits::defaults(),
+            bash_sessions: bash_session_core::SessionRegistry::new(
+                ToolLimits::defaults().bash_session_max,
+                ToolLimits::defaults().bash_session_output_max_bytes,
+                std::time::Duration::from_secs(
+                    ToolLimits::defaults().bash_session_exited_ttl_seconds,
+                ),
+            ),
         }
     }
 
@@ -166,6 +179,13 @@ impl ToolContext {
             sandbox_policy: SandboxPolicy::WorkspaceWrite,
             judge: None,
             limits: ToolLimits::defaults(),
+            bash_sessions: bash_session_core::SessionRegistry::new(
+                ToolLimits::defaults().bash_session_max,
+                ToolLimits::defaults().bash_session_output_max_bytes,
+                std::time::Duration::from_secs(
+                    ToolLimits::defaults().bash_session_exited_ttl_seconds,
+                ),
+            ),
         }
     }
 }
@@ -814,10 +834,14 @@ impl ToolRegistry {
         self.refresh_definitions();
     }
 
-    /// Retain only the exact registered names in `enabled`.
+    /// Retain selected names, including `BashSession` when Bash is selected so
+    /// every yielded command has a model-visible controller.
     pub(super) fn retain_enabled_tools(&mut self, enabled: &[String]) {
-        self.entries
-            .retain(|entry| enabled.iter().any(|name| name == &entry.definition.name));
+        let bash_enabled = enabled.iter().any(|name| name == "Bash");
+        self.entries.retain(|entry| {
+            enabled.iter().any(|name| name == &entry.definition.name)
+                || (bash_enabled && entry.definition.name == "BashSession")
+        });
         self.refresh_definitions();
     }
 
@@ -1244,6 +1268,14 @@ fn execute_bash_tool(context: Arc<ToolContext>, call_id: String, arguments: Stri
     Box::pin(async move { bash::execute_bash_for_call(&context, &arguments, Some(call_id)).await })
 }
 
+fn execute_bash_session_tool(
+    context: Arc<ToolContext>,
+    _call_id: String,
+    arguments: String,
+) -> ToolFuture {
+    Box::pin(async move { bash_session::execute(&context, &arguments).await })
+}
+
 fn execute_edit_tool(context: Arc<ToolContext>, _call_id: String, arguments: String) -> ToolFuture {
     Box::pin(async move {
         tokio::task::spawn_blocking(move || edit::execute_edit(&context, &arguments))
@@ -1343,14 +1375,16 @@ fn append_tool_availability_footer(s: &mut String, has_tools: bool) {
     }
 }
 
-const BUILTIN_TOOL_NAMES: &[&str] = &["Bash", "Read", "Edit", "Write"];
+const BUILTIN_TOOL_NAMES: &[&str] = &["Bash", "BashSession", "Read", "Edit", "Write"];
 
 fn filter_builtin_description(
     tool_name: &str,
     description: &str,
     available_names: &[String],
 ) -> String {
-    if !BUILTIN_TOOL_NAMES.contains(&tool_name) {
+    // BashSession describes Bash output and IDs, but never recommends calling
+    // Bash. Those lines are essential even in a BashSession-only selection.
+    if !["Bash", "Read", "Edit", "Write"].contains(&tool_name) {
         return description.to_string();
     }
 
@@ -1388,7 +1422,8 @@ fn is_enabled_tool(name: &str, enabled_tools: Option<&[String]>) -> bool {
 /// tool names (#277).
 pub(super) fn default_tool_registry() -> ToolRegistry {
     let entries = vec![
-        ToolEntry::new(bash::bash_tool(), execute_bash_tool).read_safe(),
+        ToolEntry::new(bash::bash_tool(), execute_bash_tool),
+        ToolEntry::new(bash_session::bash_session_tool(), execute_bash_session_tool),
         ToolEntry::new(edit::edit_tool(), execute_edit_tool)
             .repairs_arguments()
             .mutates_path(edit::mutating_target),
@@ -1949,6 +1984,7 @@ mod tests {
         let result = format_tool_list_section(SandboxPolicy::WorkspaceWrite, &[], None);
         assert!(result.starts_with("## Available tools"));
         assert!(result.contains("- **Bash**:"));
+        assert!(result.contains("- **BashSession**:"));
         assert!(result.contains("- **Read**:"));
         assert!(result.contains("- **Edit**:"));
         assert!(result.contains("- **Write**:"));
@@ -1970,7 +2006,8 @@ mod tests {
     fn format_tool_list_section_read_only_excludes_mutating_tools() {
         let result =
             format_tool_list_section(SandboxPolicy::ReadOnly, &[fixture_toolbox_tool()], None);
-        assert!(result.contains("- **Bash**:"));
+        assert!(!result.contains("- **Bash**:"));
+        assert!(!result.contains("- **BashSession**:"));
         assert!(result.contains("- **Read**:"));
         assert!(
             !result.contains("- **Edit**:"),
@@ -1995,11 +2032,43 @@ mod tests {
         ));
         assert_eq!(
             registry.names(),
-            vec!["Bash", "Edit", "Read", "Write", "tb__run_tests"]
+            vec![
+                "Bash",
+                "BashSession",
+                "Edit",
+                "Read",
+                "Write",
+                "tb__run_tests"
+            ]
         );
         registry.retain_read_safe_tools();
-        assert_eq!(registry.names(), vec!["Bash", "Read"]);
-        assert_eq!(registry.definitions().len(), 2);
+        assert_eq!(registry.names(), vec!["Read"]);
+        assert_eq!(registry.definitions().len(), 1);
+    }
+
+    #[test]
+    fn bash_session_is_selectable_by_exact_name() {
+        let mut registry = default_tool_registry();
+        registry.retain_enabled_tools(&["BashSession".to_string()]);
+        assert_eq!(registry.names(), vec!["BashSession"]);
+        assert!(registry.definitions()[0].description.contains("Use `read`"));
+        assert!(
+            registry.definitions()[0]
+                .description
+                .contains("`wait` defaults to 10 seconds")
+        );
+    }
+
+    #[test]
+    fn selecting_bash_includes_its_session_controller() {
+        let mut registry = default_tool_registry();
+        registry.retain_enabled_tools(&["Bash".to_string()]);
+        assert_eq!(registry.names(), vec!["Bash", "BashSession"]);
+        assert!(
+            registry.definitions()[0]
+                .description
+                .contains("Use BashSession")
+        );
     }
 
     // ── capability-driven classification (#277) ──

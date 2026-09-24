@@ -170,9 +170,9 @@ pub struct Agent {
 impl Agent {
     /// Creates a new agent with the given configuration and initial prompt messages.
     ///
-    /// The agent is initialized with four default tools: Bash, Read, Edit, and Write.
-    /// Attaching a read-only tool context via [`Self::with_tool_context`] removes
-    /// Edit and Write. A new session ID is generated automatically.
+    /// The agent is initialized with five default tools: Bash, `BashSession`, Read, Edit, and Write.
+    /// Attaching a read-only tool context via [`Self::with_tool_context`] retains
+    /// only Read. A new session ID is generated automatically.
     pub fn new(config: ResolvedModelConfig, initial_messages: &[(Role, String)]) -> Self {
         Self {
             runner: AgentRunner::new(Backend::from_api_type(config.model_config.api_type)),

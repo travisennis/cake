@@ -6,7 +6,7 @@
 //! # Architecture
 //!
 //! - [`Agent`] - Main orchestrator that manages conversation loops and tool execution
-//! - `tools` - Tool definitions for Bash, Read, Edit, and Write operations
+//! - `tools` - Tool definitions for Bash, `BashSession`, Read, Edit, and Write operations
 //! - `chat_completions` / `responses` - API-specific request handlers
 
 mod agent;

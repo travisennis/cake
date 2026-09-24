@@ -1,5 +1,4 @@
-//! The bounded session state machine. Kept test-scoped until Bash and
-//! `BashSession` route model-visible calls through the process owner.
+//! Bounded, in-run Bash process ownership and incremental output.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -16,6 +15,7 @@ const CAPTURE_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct JournalRead {
     pub output: String,
+    pub raw: Vec<u8>,
     pub dropped_bytes: usize,
     pub cursor: u64,
 }
@@ -29,7 +29,7 @@ struct Journal {
 }
 
 impl Journal {
-    fn new(max_bytes: usize) -> Self {
+    const fn new(max_bytes: usize) -> Self {
         Self {
             bytes: VecDeque::new(),
             max_bytes,
@@ -57,6 +57,7 @@ impl Journal {
         }
         JournalRead {
             output: String::from_utf8_lossy(&bytes).into_owned(),
+            raw: bytes,
             dropped_bytes: std::mem::take(&mut self.dropped_bytes),
             cursor: self.cursor,
         }
@@ -85,7 +86,7 @@ fn utf8_trim_boundary(bytes: &VecDeque<u8>, cut: usize) -> usize {
     cut
 }
 
-fn utf8_lead_width(byte: u8) -> Option<usize> {
+const fn utf8_lead_width(byte: u8) -> Option<usize> {
     match byte {
         0xc2..=0xdf => Some(2),
         0xe0..=0xef => Some(3),
@@ -94,7 +95,7 @@ fn utf8_lead_width(byte: u8) -> Option<usize> {
     }
 }
 
-fn valid_utf8_prefix(bytes: &[u8]) -> bool {
+const fn valid_utf8_prefix(bytes: &[u8]) -> bool {
     match std::str::from_utf8(bytes) {
         Ok(_) => true,
         Err(error) => error.valid_up_to() == 0 && error.error_len().is_none(),
@@ -116,7 +117,9 @@ struct Session {
     command: String,
     started: Instant,
     journal: Journal,
+    stderr: VecDeque<u8>,
     exited: Option<(Instant, i32)>,
+    termination: Option<&'static str>,
     final_read: Option<JournalRead>,
     notify: Arc<Notify>,
     process: Option<ProcessControl>,
@@ -126,6 +129,7 @@ struct Session {
 struct ProcessControl {
     abort: tokio::task::AbortHandle,
     kill: Option<oneshot::Sender<()>>,
+    shutdown_guard: ToolboxProcessGuard,
 }
 
 impl Drop for Session {
@@ -142,6 +146,9 @@ impl Drop for Session {
 pub(super) struct SessionRead {
     pub output: JournalRead,
     pub exit_code: Option<i32>,
+    pub stderr: String,
+    pub elapsed: Duration,
+    pub termination: Option<&'static str>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -178,7 +185,10 @@ impl SessionRegistry {
     /// Reserve a live slot before preflight or spawn. A full registry does not
     /// evict an older command, even if its output has not been polled.
     pub fn start(&self, command: String, now: Instant) -> Result<String, String> {
-        let mut inner = self.0.lock().unwrap();
+        let mut inner = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         inner.prune(now);
         let mut active = inner.active_ids();
         if active.len() >= inner.live_max {
@@ -197,7 +207,9 @@ impl SessionRegistry {
                 command,
                 started: now,
                 journal: Journal::new(output_max_bytes),
+                stderr: VecDeque::new(),
                 exited: None,
+                termination: None,
                 final_read: None,
                 notify: Arc::new(Notify::new()),
                 process: None,
@@ -217,9 +229,13 @@ impl SessionRegistry {
         sandbox_guard: Option<super::sandbox::SandboxGuard>,
         hard_wall: Duration,
     ) -> Result<(), String> {
-        let guard = ToolboxProcessGuard::new(child.id());
+        let child_pid = child.id();
+        let guard = ToolboxProcessGuard::new(child_pid);
         let (kill, kill_rx) = oneshot::channel();
-        let mut inner = self.0.lock().unwrap();
+        let mut inner = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let session = inner
             .sessions
             .get_mut(id)
@@ -247,13 +263,25 @@ impl SessionRegistry {
         session.process = Some(ProcessControl {
             abort: worker.abort_handle(),
             kill: Some(kill),
+            shutdown_guard: ToolboxProcessGuard::new(child_pid),
         });
         drop(inner);
         Ok(())
     }
 
     pub fn request_kill(&self, id: &str) -> Result<(), String> {
-        let mut inner = self.0.lock().unwrap();
+        let mut inner = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !inner.sessions.contains_key(id) {
+            let mut active = inner.active_ids();
+            active.sort();
+            return Err(format!(
+                "Unknown Bash session {id}; sessions do not survive Cake restarts. Active sessions: {}",
+                active.join(", ")
+            ));
+        }
         let session = inner
             .sessions
             .get_mut(id)
@@ -271,7 +299,10 @@ impl SessionRegistry {
 
     pub async fn read_wait(&self, id: &str, wait: Duration) -> Result<SessionRead, String> {
         let notify = {
-            let inner = self.0.lock().unwrap();
+            let inner = self
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             inner.sessions.get(id).map(|session| session.notify.clone())
         };
         let Some(notify) = notify else {
@@ -291,22 +322,90 @@ impl SessionRegistry {
         self.read(id, Instant::now())
     }
 
-    pub fn append(&self, id: &str, chunk: &[u8]) {
-        let mut inner = self.0.lock().unwrap();
+    /// Wait for completion without consuming output intended for the Bash
+    /// result. Output notifications may wake this loop before the deadline.
+    pub async fn wait_for_completion(&self, id: &str, wait: Duration) -> Result<(), String> {
+        let deadline = tokio::time::Instant::now() + wait;
+        loop {
+            let notify = {
+                let inner = self
+                    .0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let session = inner
+                    .sessions
+                    .get(id)
+                    .ok_or_else(|| format!("Unknown Bash session {id}"))?;
+                let done = session.exited.is_some();
+                let notify = session.notify.clone();
+                drop(inner);
+                if done {
+                    return Ok(());
+                }
+                notify
+            };
+            let notified = notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.is_exited(id)? {
+                return Ok(());
+            }
+            if tokio::time::timeout_at(deadline, notified).await.is_err() {
+                return Ok(());
+            }
+        }
+    }
+
+    fn is_exited(&self, id: &str) -> Result<bool, String> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .sessions
+            .get(id)
+            .map(|session| session.exited.is_some())
+            .ok_or_else(|| format!("Unknown Bash session {id}"))
+    }
+
+    pub fn append(&self, id: &str, chunk: &[u8], is_stderr: bool) {
+        let mut inner = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(session) = inner.sessions.get_mut(id)
             && session.exited.is_none()
         {
             session.journal.append(chunk);
+            if is_stderr {
+                session.stderr.extend(chunk);
+                let excess = session
+                    .stderr
+                    .len()
+                    .saturating_sub(session.journal.max_bytes);
+                session.stderr.drain(..excess);
+            }
             session.notify.notify_waiters();
         }
     }
 
-    pub fn finish(&self, id: &str, exit_code: i32, now: Instant) {
-        let mut inner = self.0.lock().unwrap();
+    pub fn finish(
+        &self,
+        id: &str,
+        exit_code: i32,
+        termination: Option<&'static str>,
+        now: Instant,
+    ) {
+        let mut inner = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(session) = inner.sessions.get_mut(id)
             && session.exited.is_none()
         {
             session.exited = Some((now, exit_code));
+            session.termination = termination;
+            if let Some(process) = &mut session.process {
+                process.shutdown_guard.defuse();
+            }
             session.process = None;
             session.notify.notify_waiters();
             inner.prune(now);
@@ -316,11 +415,18 @@ impl SessionRegistry {
     /// Remove a reservation when preflight or spawn fails before the model
     /// receives its ID.
     pub fn discard(&self, id: &str) {
-        self.0.lock().unwrap().sessions.remove(id);
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .sessions
+            .remove(id);
     }
 
     pub fn read(&self, id: &str, now: Instant) -> Result<SessionRead, String> {
-        let mut inner = self.0.lock().unwrap();
+        let mut inner = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         inner.prune(now);
         let Some(session) = inner.sessions.get_mut(id) else {
             let mut active = inner.active_ids();
@@ -340,12 +446,28 @@ impl SessionRegistry {
             session.journal.take(false)
         };
         let exit_code = session.exited.map(|(_, code)| code);
+        let stderr = String::from_utf8_lossy(&session.stderr.iter().copied().collect::<Vec<_>>())
+            .into_owned();
+        let elapsed = session
+            .exited
+            .map_or(now, |(finished, _)| finished)
+            .duration_since(session.started);
+        let termination = session.termination;
         drop(inner);
-        Ok(SessionRead { output, exit_code })
+        Ok(SessionRead {
+            output,
+            exit_code,
+            stderr,
+            elapsed,
+            termination,
+        })
     }
 
     pub fn list(&self, now: Instant) -> Vec<SessionListing> {
-        let mut inner = self.0.lock().unwrap();
+        let mut inner = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         inner.prune(now);
         let mut list: Vec<_> = inner
             .sessions
@@ -353,7 +475,10 @@ impl SessionRegistry {
             .map(|(id, session)| SessionListing {
                 id: id.clone(),
                 command: session.command.clone(),
-                elapsed: now.duration_since(session.started),
+                elapsed: session
+                    .exited
+                    .map_or(now, |(finished, _)| finished)
+                    .duration_since(session.started),
                 exit_code: session.exited.map(|(_, code)| code),
             })
             .collect();
@@ -378,7 +503,7 @@ async fn run_process(
     let mut capture_finished = false;
     let deadline = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline));
     tokio::pin!(deadline);
-    let status = loop {
+    let (status, termination) = loop {
         tokio::select! {
             result = &mut capture, if !capture_finished => {
                 drop(result);
@@ -387,19 +512,19 @@ async fn run_process(
             // Reap only after the pipes close. A descendant can hold a pipe
             // after the shell exits; until then kill/wall needs Child::id().
             result = child.wait(), if capture_finished => {
-                break result.ok().and_then(|status| status.code()).unwrap_or(-1);
+                break (result.ok().and_then(|status| status.code()).unwrap_or(-1), None);
             },
             _ = &mut kill => {
                 super::bash::terminate_process_group_gracefully(
                     &mut child, super::bash::TERMINATE_GRACE_PERIOD,
                 ).await;
-                break -1;
+                break (-1, Some("killed"));
             },
             () = &mut deadline => {
                 super::bash::terminate_process_group_gracefully(
                     &mut child, super::bash::TERMINATE_GRACE_PERIOD,
                 ).await;
-                break -1;
+                break (-1, Some("hard wall clock reached"));
             },
         }
     };
@@ -407,10 +532,12 @@ async fn run_process(
         drop(tokio::time::timeout(CAPTURE_DRAIN_TIMEOUT, &mut capture).await);
         capture.abort();
     }
+    // The shell can exit after a child redirects both captured pipes. Kill
+    // any remaining group members before marking the session complete.
     drop(guard);
     drop(sandbox_guard);
     if let Some(inner) = registry.upgrade() {
-        SessionRegistry(inner).finish(&id, status, Instant::now());
+        SessionRegistry(inner).finish(&id, status, termination, Instant::now());
     }
 }
 
@@ -434,7 +561,7 @@ async fn capture_output(
                     None => std::future::pending().await,
                 }
             }, if stdout_open => {
-                match read { Ok(0) | Err(_) => { stdout_open = false; None }, Ok(n) => Some(&stdout_buf[..n]) }
+                match read { Ok(0) | Err(_) => { stdout_open = false; None }, Ok(n) => Some((&stdout_buf[..n], false)) }
             },
             read = async {
                 match stderr.as_mut() {
@@ -442,14 +569,14 @@ async fn capture_output(
                     None => std::future::pending().await,
                 }
             }, if stderr_open => {
-                match read { Ok(0) | Err(_) => { stderr_open = false; None }, Ok(n) => Some(&stderr_buf[..n]) }
+                match read { Ok(0) | Err(_) => { stderr_open = false; None }, Ok(n) => Some((&stderr_buf[..n], true)) }
             },
         };
-        if let Some(chunk) = chunk {
+        if let Some((chunk, is_stderr)) = chunk {
             let Some(inner) = registry.upgrade() else {
                 return;
             };
-            SessionRegistry(inner).append(&id, chunk);
+            SessionRegistry(inner).append(&id, chunk, is_stderr);
         }
     }
 }
@@ -501,7 +628,7 @@ mod tests {
         let now = Instant::now();
         let sessions = registry(1, 3);
         let id = sessions.start("printf text".into(), now).unwrap();
-        sessions.append(&id, "abéxy".as_bytes());
+        sessions.append(&id, "abéxy".as_bytes(), false);
         let read = sessions.read(&id, now).unwrap();
         assert_eq!(read.output.output, "xy");
         assert_eq!(read.output.dropped_bytes, 4);
@@ -515,9 +642,9 @@ mod tests {
         let sessions = registry(1, 100);
         let id = sessions.start("printf unicode".into(), now).unwrap();
         let bytes = "é".as_bytes();
-        sessions.append(&id, &bytes[..1]);
+        sessions.append(&id, &bytes[..1], false);
         assert_eq!(sessions.read(&id, now).unwrap().output.output, "");
-        sessions.append(&id, &bytes[1..]);
+        sessions.append(&id, &bytes[1..], false);
         assert_eq!(sessions.read(&id, now).unwrap().output.output, "é");
     }
 
@@ -526,7 +653,7 @@ mod tests {
         let now = Instant::now();
         let sessions = registry(1, 2);
         let id = sessions.start("binary".into(), now).unwrap();
-        sessions.append(&id, &[b'a', 0xff, b'b']);
+        sessions.append(&id, &[b'a', 0xff, b'b'], false);
         let read = sessions.read(&id, now).unwrap();
         assert_eq!(read.output.output, "�b");
         assert_eq!(read.output.dropped_bytes, 1);
@@ -537,12 +664,12 @@ mod tests {
         let now = Instant::now();
         let sessions = registry(1, 2);
         let id = sessions.start("binary".into(), now).unwrap();
-        sessions.append(&id, &[0x80]);
+        sessions.append(&id, &[0x80], false);
         let read = sessions.read(&id, now).unwrap();
         assert_eq!(read.output.output, "�");
         assert_eq!(read.output.dropped_bytes, 0);
 
-        sessions.append(&id, &[b'a', 0x80, b'b']);
+        sessions.append(&id, &[b'a', 0x80, b'b'], false);
         let read = sessions.read(&id, now).unwrap();
         assert_eq!(read.output.output, "�b");
         assert_eq!(read.output.dropped_bytes, 1);
@@ -553,9 +680,9 @@ mod tests {
         let now = Instant::now();
         let sessions = registry(1, 100);
         let id = sessions.start("mixed".into(), now).unwrap();
-        sessions.append(&id, &[0xff, "é".as_bytes()[0]]);
+        sessions.append(&id, &[0xff, "é".as_bytes()[0]], false);
         assert_eq!(sessions.read(&id, now).unwrap().output.output, "�");
-        sessions.append(&id, &"é".as_bytes()[1..]);
+        sessions.append(&id, &"é".as_bytes()[1..], false);
         assert_eq!(sessions.read(&id, now).unwrap().output.output, "é");
     }
 
@@ -564,10 +691,10 @@ mod tests {
         let now = Instant::now();
         let sessions = registry(1, 100);
         let id = sessions.start("printf hello".into(), now).unwrap();
-        sessions.append(&id, b"hel");
+        sessions.append(&id, b"hel", false);
         assert_eq!(sessions.read(&id, now).unwrap().output.output, "hel");
-        sessions.append(&id, b"lo");
-        sessions.finish(&id, 0, now);
+        sessions.append(&id, b"lo", false);
+        sessions.finish(&id, 0, None, now);
         let final_read = sessions.read(&id, now).unwrap();
         assert_eq!(final_read.output.output, "lo");
         assert_eq!(final_read.exit_code, Some(0));
@@ -585,7 +712,7 @@ mod tests {
                 .unwrap_err()
                 .contains(&first)
         );
-        sessions.finish(&first, 1, now);
+        sessions.finish(&first, 1, None, now);
         let second = sessions.start("second".into(), now).unwrap();
         assert_eq!(sessions.list(now).len(), 2);
         assert!(
@@ -601,12 +728,12 @@ mod tests {
         let now = Instant::now();
         let sessions = registry(1, 100);
         let live = sessions.start("live".into(), now).unwrap();
-        sessions.finish(&live, 0, now);
+        sessions.finish(&live, 0, None, now);
         let mut exited = vec![live];
         for index in 1..=EXITED_SESSIONS_PER_LIVE_SLOT {
             let at = now + Duration::from_secs(index as u64);
             let id = sessions.start(format!("short {index}"), at).unwrap();
-            sessions.finish(&id, 0, at);
+            sessions.finish(&id, 0, None, at);
             exited.push(id);
         }
         assert_eq!(sessions.list(now + Duration::from_secs(4)).len(), 4);

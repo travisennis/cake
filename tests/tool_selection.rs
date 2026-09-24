@@ -279,7 +279,10 @@ enabled = ["Bash"]
     assert_eq!(requests.len(), 1);
     let request: serde_json::Value =
         serde_json::from_slice(&requests[0].body).expect("request JSON");
-    assert_eq!(request_tool_names(&request), vec!["Bash".to_string()]);
+    assert_eq!(
+        request_tool_names(&request),
+        vec!["Bash".to_string(), "BashSession".to_string()]
+    );
 
     let input = request["input"].as_array().expect("input messages");
     let skills = input

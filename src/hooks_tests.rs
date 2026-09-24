@@ -59,7 +59,9 @@ printf '{\"permission\":\"allow\"}'"#;
         matcher: HookMatcher::All,
         hooks: vec![HookCommand {
             command: command.to_string(),
-            timeout: Duration::from_secs(2),
+            // Coverage instrumentation and parallel test load can delay these
+            // short hooks; the test asserts concurrency and completion below.
+            timeout: Duration::from_secs(10),
             fail_closed: false,
             status_message: None,
             source_path: dir.path().join("hooks.json"),

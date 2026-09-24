@@ -8,6 +8,7 @@ You are cake. You are running as a coding agent in a CLI on the user's computer.
 ## Available tools
 
 - **Bash**: Execute a shell command in the host machine's terminal.
+- **BashSession**: Read, list, or kill Bash commands still running in this Cake run.
 
 Only these tools are available. There is no Glob, Grep, or LS tool.
 

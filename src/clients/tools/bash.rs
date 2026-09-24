@@ -1,8 +1,8 @@
 use serde::Deserialize;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Instant;
-use tokio::io::AsyncReadExt;
 use tokio::process::{Child, Command};
 use tokio::time::{Duration, timeout};
 use tracing::debug;
@@ -14,7 +14,6 @@ use crate::clients::judge::{
     repo_state_digest,
 };
 use crate::clients::tools::secure_temp_dir::secure_temp_dir;
-use crate::config::toolbox::ToolboxProcessGuard;
 use crate::session_telemetry::{CompensationEventTelemetry, CompensationKind};
 use crate::time_format::format_seconds_tenths;
 
@@ -31,7 +30,6 @@ const BINARY_NULL_BYTE_THRESHOLD: usize = 8;
 const BINARY_RATIO_THRESHOLD_PERCENT: usize = 30;
 
 /// Size of one read chunk captured from a Bash child pipe.
-const READ_CHUNK_BYTES: usize = 8192;
 const BYTES_PER_KIB: u128 = 1024;
 const TENTHS_PER_KIB: u128 = 10;
 const EXIT_ZERO_STDERR_WARNING: &str = "[stderr output present despite exit 0]";
@@ -79,6 +77,7 @@ const JUDGE_MESSAGE_MAX_CHARS: usize = 1000;
 struct BashExecutionArgs {
     command: String,
     timeout: u64,
+    background: bool,
     policy: super::sandbox::SandboxPolicy,
     /// The model's raw working-directory request, unresolved. [`parse_bash_call`]
     /// resolves and validates it against the invocation workspace and the
@@ -97,6 +96,8 @@ impl BashExecutionArgs {
             command: String,
             timeout: Option<u64>,
             #[serde(default)]
+            background: bool,
+            #[serde(default)]
             cwd: Option<String>,
             #[serde(default)]
             reason: Option<String>,
@@ -111,6 +112,7 @@ impl BashExecutionArgs {
                 .timeout
                 .unwrap_or(60)
                 .clamp(BASH_TIMEOUT_MIN_SECS, BASH_TIMEOUT_MAX_SECS),
+            background: args.background,
             policy,
             cwd: args.cwd.map(PathBuf::from),
             reason: args.reason,
@@ -218,7 +220,11 @@ pub(super) fn bash_tool() -> super::Tool {
                 },
                 "timeout": {
                     "type": "number",
-                    "description": "Timeout in seconds (default: 60)"
+                    "description": "Seconds to wait before yielding a running session (default: 60; range 1-600)"
+                },
+                "background": {
+                    "type": "boolean",
+                    "description": "Return a session ID immediately while the command keeps running"
                 },
                 "reason": {
                     "type": "string",
@@ -864,19 +870,6 @@ fn signal_process_group(pgid: Option<u32>, signal: libc::c_int) {
     }
 }
 
-/// Immediately force-kill the child's process group, rejecting the
-/// cooperative phase. Used by the read-cap path, where the goal is to stop a
-/// runaway producer as fast as possible.
-#[cfg(unix)]
-fn terminate_process_group(child: &Child) {
-    signal_process_group(child.id(), libc::SIGKILL);
-}
-
-#[cfg(not(unix))]
-fn terminate_process_group(child: &mut Child) {
-    let _ = child.start_kill();
-}
-
 /// Terminate the child's process group cooperatively, then forcefully.
 ///
 /// `SIGTERM` is sent to the whole group so a well-behaved child can run its
@@ -1012,272 +1005,6 @@ fn prepare_bash_command(
     })
 }
 
-/// A completed Bash child run before output formatting: the combined stream
-/// capture, the stderr-only capture, whether the read cap cut the capture,
-/// and the reaped exit status (`None` when the child was killed and could not
-/// report a code).
-struct ChildRun {
-    buf: Vec<u8>,
-    stderr_buf: Vec<u8>,
-    hit_cap: bool,
-    status: Option<std::process::ExitStatus>,
-}
-
-/// Own a Bash lifecycle task until its result is consumed. Dropping this task
-/// or its `finish` future aborts the worker, which then drops the child's
-/// process-group guard and kills descendants as well as the direct child.
-struct BashChildTask(tokio::task::JoinHandle<Result<ChildRun, String>>);
-
-impl BashChildTask {
-    async fn finish(mut self) -> Result<ChildRun, String> {
-        match (&mut self.0).await {
-            Ok(result) => result,
-            // A panic in capture or reaping used to unwind the Bash call.
-            // Preserve that failure instead of turning it into a tool error.
-            Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
-            Err(error) => Err(format!("Bash lifecycle task failed: {error}")),
-        }
-    }
-}
-
-impl Drop for BashChildTask {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
-}
-
-/// Spawn the prepared command and drive its full lifecycle under the
-/// configured timeout: concurrent stream capture, killing the process group
-/// when the cap cuts the capture or the timeout fires, and reaping the child.
-/// The returned error carries only the model-visible message; the caller
-/// attaches the preflight's telemetry events.
-async fn run_bash_child(
-    mut command: Command,
-    timeout_secs: u64,
-    read_cap: Option<usize>,
-    initial_capacity: usize,
-) -> Result<ChildRun, String> {
-    // Spawn the command with piped stdout/stderr for streaming
-    let mut child = command
-        .spawn()
-        .map_err(|e| format!("Failed to spawn command: {e}"))?;
-
-    // RAII guard: kills the whole process group on drop unless defused.
-    // This ensures Ctrl-C or any other future cancellation terminates
-    // descendant processes, not just the direct child.
-    let mut guard = ToolboxProcessGuard::new(child.id());
-
-    let mut stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
-    let mut stderr = child.stderr.take().ok_or("Failed to capture stderr")?;
-
-    // The configured timeout covers the full lifecycle: reading both
-    // streams, optionally killing the process group on cap, and reaping
-    // the child.  This prevents hangs when a command closes both captured
-    // streams while continuing to run — the wait is bounded by the same
-    // timeout as the read loop.
-    let lifecycle_result = timeout(Duration::from_secs(timeout_secs), async {
-        let captured = Box::pin(capture_streams(
-            &mut stdout,
-            &mut stderr,
-            read_cap,
-            initial_capacity,
-        ))
-        .await;
-        let CapturedStreams {
-            buf,
-            stderr_buf,
-            hit_cap,
-        } = captured?;
-
-        // If we hit the cap, terminate the process group so descendants
-        // do not survive.
-        if hit_cap {
-            #[cfg(unix)]
-            terminate_process_group(&child);
-            #[cfg(not(unix))]
-            terminate_process_group(&mut child);
-        }
-
-        let status = child.wait().await.ok();
-        Ok::<_, String>((buf, stderr_buf, hit_cap, status))
-    })
-    .await;
-
-    let (buf, stderr_buf, hit_cap, status) = match lifecycle_result {
-        Ok(Ok(tuple)) => tuple,
-        Ok(Err(e)) => return Err(e),
-        Err(_) => {
-            // Timed out: terminate the process group cooperatively, then
-            // forcefully after the bounded grace period, so a well-behaved
-            // child can run its cleanup handler before being killed.
-            terminate_process_group_gracefully(&mut child, TERMINATE_GRACE_PERIOD).await;
-            return Err(format!("Command timed out after {timeout_secs} seconds"));
-        },
-    };
-
-    // Normal completion (or hit_cap with group already killed by
-    // terminate_process_group above): defuse the guard so it does not
-    // send a harmless-but-unnecessary SIGKILL to the reaped group.
-    guard.defuse();
-
-    Ok(ChildRun {
-        buf,
-        stderr_buf,
-        hit_cap,
-        status,
-    })
-}
-
-/// The two captures of one Bash run: the interleaved combined view shown to
-/// the model and the stderr-only view used for sandbox diagnostics.
-struct CapturedStreams {
-    buf: Vec<u8>,
-    stderr_buf: Vec<u8>,
-    hit_cap: bool,
-}
-
-/// Read both pipes concurrently, interleaved, until both close or the read
-/// cap cuts the combined capture.
-async fn capture_streams(
-    stdout: &mut tokio::process::ChildStdout,
-    stderr: &mut tokio::process::ChildStderr,
-    read_cap: Option<usize>,
-    initial_capacity: usize,
-) -> Result<CapturedStreams, String> {
-    // Bound the initial allocation by the read cap: the read loop never
-    // holds more than `read_cap` bytes, so a large configured inline cap
-    // alone must not trigger a huge upfront allocation.
-    let mut buf = Vec::with_capacity(initial_capacity);
-    let mut stderr_buf = Vec::new();
-    let mut tmp_stdout = [0u8; READ_CHUNK_BYTES];
-    let mut tmp_stderr = [0u8; READ_CHUNK_BYTES];
-    let mut hit_cap = false;
-
-    loop {
-        tokio::select! {
-            n = stdout.read(&mut tmp_stdout) => {
-                let Some(n) = checked_chunk_len(n, "stdout")? else {
-                    // stdout closed — read remaining stderr
-                    if drain_to_eof(
-                        &mut *stderr,
-                        "stderr",
-                        &mut buf,
-                        Some(&mut stderr_buf),
-                        &mut tmp_stderr,
-                        read_cap,
-                    )
-                    .await?
-                    {
-                        hit_cap = true;
-                    }
-                    break;
-                };
-                let take = take_chunk_within_cap(&mut buf, None, &tmp_stdout[..n], read_cap);
-                if take < n { hit_cap = true; break; }
-            }
-            n = stderr.read(&mut tmp_stderr) => {
-                let Some(n) = checked_chunk_len(n, "stderr")? else {
-                    // stderr closed — read remaining stdout
-                    if drain_to_eof(
-                        &mut *stdout,
-                        "stdout",
-                        &mut buf,
-                        None,
-                        &mut tmp_stdout,
-                        read_cap,
-                    )
-                    .await?
-                    {
-                        hit_cap = true;
-                    }
-                    break;
-                };
-                let take = take_chunk_within_cap(
-                    &mut buf,
-                    Some(&mut stderr_buf),
-                    &tmp_stderr[..n],
-                    read_cap,
-                );
-                if take < n { hit_cap = true; break; }
-            }
-        }
-    }
-
-    Ok(CapturedStreams {
-        buf,
-        stderr_buf,
-        hit_cap,
-    })
-}
-
-/// Map one pipe read result to its byte count: a clean EOF (0 bytes) closes
-/// the pipe, an IO error fails the capture with the model-visible message.
-fn checked_chunk_len(
-    read: std::io::Result<usize>,
-    stream_name: &'static str,
-) -> Result<Option<usize>, String> {
-    match read {
-        Ok(0) => Ok(None),
-        Ok(n) => Ok(Some(n)),
-        Err(e) => Err(format!("{stream_name} read error: {e}")),
-    }
-}
-
-/// Append one chunk to the combined capture — and to the stderr-only capture
-/// when reading stderr — keeping the buffer within the configured `read_cap`
-/// (see [`take_within_cap`]). Returns the number of bytes kept; fewer than
-/// the chunk length means the cap was hit.
-fn take_chunk_within_cap(
-    buf: &mut Vec<u8>,
-    stderr_buf: Option<&mut Vec<u8>>,
-    chunk: &[u8],
-    read_cap: Option<usize>,
-) -> usize {
-    let take = take_within_cap(chunk.len(), read_cap, buf.len());
-    buf.extend_from_slice(&chunk[..take]);
-    if let Some(stderr_buf) = stderr_buf {
-        stderr_buf.extend_from_slice(&chunk[..take]);
-    }
-    take
-}
-
-/// After the other pipe closed, read this one to EOF, appending kept bytes to
-/// the combined capture (and to the stderr-only capture when draining stderr).
-/// Returns whether the cap cut a chunk, which stops the caller's read loop.
-async fn drain_to_eof<R: tokio::io::AsyncRead + Unpin>(
-    stream: &mut R,
-    stream_name: &'static str,
-    buf: &mut Vec<u8>,
-    mut stderr_buf: Option<&mut Vec<u8>>,
-    tmp: &mut [u8],
-    read_cap: Option<usize>,
-) -> Result<bool, String> {
-    loop {
-        let n = stream
-            .read(tmp)
-            .await
-            .map_err(|e| format!("{stream_name} read error: {e}"))?;
-        if n == 0 {
-            return Ok(false);
-        }
-        // Reborrow the optional stderr capture each iteration so the drain
-        // loop keeps appending without giving up ownership.
-        #[expect(
-            clippy::option_as_ref_deref,
-            reason = "explicit reborrow of Option<&mut Vec<u8>>"
-        )]
-        let take = take_chunk_within_cap(
-            buf,
-            stderr_buf.as_mut().map(|capture| &mut **capture),
-            &tmp[..n],
-            read_cap,
-        );
-        if take < n {
-            return Ok(true);
-        }
-    }
-}
-
 /// Collect the denied-path references to append to a `[Sandbox restriction]`
 /// notice and to `task_complete.permission_denials`. Only scans the command
 /// when the run looks like a sandbox denial; otherwise it returns an empty
@@ -1349,146 +1076,293 @@ fn sandbox_denial_detail(denials: &[String]) -> String {
     )
 }
 
+struct SessionReservation {
+    registry: super::bash_session_core::SessionRegistry,
+    id: String,
+    keep: bool,
+}
+
+impl Drop for SessionReservation {
+    fn drop(&mut self) {
+        if !self.keep {
+            self.registry.discard(&self.id);
+        }
+    }
+}
+
+fn normalize_trailing_background(command: &str) -> (String, bool) {
+    let trimmed = command.trim_end();
+    if let Some(prefix) = trimmed.strip_suffix('&')
+        && !prefix.ends_with(['&', '\\'])
+    {
+        return (prefix.trim_end().to_string(), true);
+    }
+    (command.to_string(), false)
+}
+
 async fn execute_bash_with_args(
     context: &super::ToolContext,
-    args: BashExecutionArgs,
+    mut args: BashExecutionArgs,
     cwd: PathBuf,
     sandbox_config: &super::sandbox::SandboxConfig,
     call_id: Option<String>,
 ) -> Result<super::ToolResult, super::ToolError> {
-    // Command-safety preflight: the LLM judge is the only non-sandbox command
-    // gate. A block prevents spawn and returns the judge's message as the tool
-    // error; a warn prepends guidance to the output; a judge failure fails
-    // closed (blocks) with an explanation. Judge decisions and denials are
-    // recorded as telemetry compensation events.
-    let preflight = bash_judge_preflight(context, &args, &cwd, call_id).await?;
-    let judge_warnings = preflight.warnings;
-    let judge_events = preflight.compensation_events;
+    let (command, stripped_background) = normalize_trailing_background(&args.command);
+    args.command = command;
+    let registry = context.bash_sessions.clone();
+    let id = registry
+        .start(args.command.clone(), Instant::now())
+        .map_err(super::ToolError::new)?;
+    let mut reservation = SessionReservation {
+        registry,
+        id,
+        keep: false,
+    };
+    let (preflight, sandbox_applied) =
+        start_session(context, &args, &cwd, sandbox_config, call_id, &reservation).await?;
+    let read = read_bash_session(&reservation, &args, &preflight).await?;
+    let note = stripped_background
+        .then_some("[Trailing & was removed before safety review and execution.]");
+    if read.exit_code.is_none() || args.background {
+        reservation.keep = true;
+        return Ok(format_yielded(
+            &reservation.id,
+            &read,
+            preflight,
+            context.limits.bash_output_max_bytes,
+            note,
+        ));
+    }
+    format_completed(
+        &CompletionContext {
+            context,
+            command: &args.command,
+            cwd: &cwd,
+            sandbox_config,
+            sandbox_applied,
+            note,
+        },
+        &read,
+        preflight,
+    )
+}
 
-    // Output budgets resolved from `[limits]`; `None` means unlimited.
-    let output_max = context.limits.bash_output_max_bytes;
-    let read_cap = context.limits.bash_read_cap;
+async fn read_bash_session(
+    reservation: &SessionReservation,
+    args: &BashExecutionArgs,
+    preflight: &JudgePreflight,
+) -> Result<super::bash_session_core::SessionRead, super::ToolError> {
+    if !args.background {
+        reservation
+            .registry
+            .wait_for_completion(&reservation.id, Duration::from_secs(args.timeout))
+            .await
+            .map_err(|e| judge_tool_error(preflight.compensation_events.clone(), e))?;
+    }
+    reservation
+        .registry
+        .read(&reservation.id, Instant::now())
+        .map_err(|e| judge_tool_error(preflight.compensation_events.clone(), e))
+}
 
-    let start_time = Instant::now();
-
+async fn start_session(
+    context: &super::ToolContext,
+    args: &BashExecutionArgs,
+    cwd: &Path,
+    sandbox_config: &super::sandbox::SandboxConfig,
+    call_id: Option<String>,
+    reservation: &SessionReservation,
+) -> Result<(JudgePreflight, bool), super::ToolError> {
+    // Reserve before the judge. The exact normalized text judged is executed.
+    let preflight = bash_judge_preflight(context, args, cwd, call_id).await?;
+    let events = &preflight.compensation_events;
     let PreparedBashCommand {
         mut command,
         sandbox_applied,
         _sandbox_guard: sandbox_guard,
-    } = prepare_bash_command(&args, &cwd, sandbox_config, &judge_events)?;
-
-    // Place the child in its own process group so that SIGKILL to the
-    // negative PID kills all descendants, not just the direct child.
+    } = prepare_bash_command(args, cwd, sandbox_config, events)?;
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
         command.as_std_mut().process_group(0);
     }
+    let child = command
+        .spawn()
+        .map_err(|e| judge_tool_error(events.clone(), format!("Failed to spawn command: {e}")))?;
+    reservation
+        .registry
+        .attach_process(
+            &reservation.id,
+            child,
+            sandbox_guard,
+            Duration::from_secs(context.limits.bash_session_max_seconds),
+        )
+        .map_err(|e| judge_tool_error(events.clone(), e))?;
+    Ok((preflight, sandbox_applied))
+}
 
-    // Bound the initial allocation by the read cap: the read loop never
-    // holds more than `read_cap` bytes, so a large configured inline cap
-    // alone must not trigger a huge upfront allocation.
-    let initial_capacity = read_cap
-        .zip(output_max)
-        .map_or(0, |(read, max)| read.min(max));
-
-    let timeout_secs = args.timeout;
-    let child_task = BashChildTask(tokio::spawn(async move {
-        let result = run_bash_child(command, timeout_secs, read_cap, initial_capacity).await;
-        // The sandbox profile must remain alive until the child is reaped.
-        drop(sandbox_guard);
-        result
-    }));
-
-    let ChildRun {
-        buf,
-        stderr_buf,
-        hit_cap,
-        status,
-    } = child_task
-        .finish()
-        .await
-        .map_err(|e| judge_tool_error(judge_events.clone(), e))?;
-
-    let elapsed_ms = start_time.elapsed().as_millis();
-    let stderr_str = String::from_utf8_lossy(&stderr_buf);
-    let success = status
-        .as_ref()
-        .is_some_and(std::process::ExitStatus::success);
-    let exit_code = status.and_then(|s| s.code()).unwrap_or(-1);
-    let warn_exit_zero_stderr = should_warn_exit_zero_stderr(success, &stderr_str);
-    if let Some(output_str) = sandbox_initialization_output(sandbox_applied, &stderr_str, &buf) {
-        return Err(sandbox_initialization_tool_error(&output_str, judge_events));
+fn format_yielded(
+    id: &str,
+    read: &super::bash_session_core::SessionRead,
+    preflight: JudgePreflight,
+    max_bytes: Option<usize>,
+    note: Option<&str>,
+) -> super::ToolResult {
+    let mut events = preflight.compensation_events;
+    let (mut output, truncated) = super::bash_session::cap_output(&read.output.output, max_bytes);
+    if truncated {
+        match spill_output(&read.output.output) {
+            Ok(path) => {
+                _ = write!(output, "\nFull output saved to: {}", path.display());
+            },
+            Err(e) => debug!("Failed to spill yielded Bash output: {e}"),
+        }
     }
-    if is_binary_data(&buf) {
-        // Judge warnings still prepend here: a `warn` verdict ran the
-        // command, so its guidance must reach the model even when the
-        // output is binary.
-        let mut compensation_events = judge_events;
-        let spilled = output_max.is_some_and(|max| buf.len() > max);
-        push_truncation_event_if(&mut compensation_events, "Bash", hit_cap, spilled);
-        let output = handle_binary_output(&buf, exit_code, elapsed_ms, warn_exit_zero_stderr);
-        return Ok(super::ToolResult {
-            output: prepend_safety_warnings(output, &judge_warnings),
-            compensation_events,
-            permission_denials: Vec::new(),
-        });
+    push_truncation_event_if(
+        &mut events,
+        "Bash",
+        read.output.dropped_bytes > 0,
+        truncated,
+    );
+    let elapsed = format_seconds_tenths(read.elapsed.as_millis());
+    let gap = if read.output.dropped_bytes > 0 {
+        format!(
+            "\n[Oldest output was dropped: {} bytes since the last read.]",
+            read.output.dropped_bytes
+        )
+    } else {
+        String::new()
+    };
+    let note = note.map_or(String::new(), |value| format!("\n{value}"));
+    let (footer, instruction) = read.exit_code.map_or_else(
+        || (format!("[still running | session: {id} | {elapsed}s]"),
+            format!("The command was NOT killed; it is still running. Use BashSession with session \"{id}\" to poll for new output or kill it.")),
+        |code| (format!("[session: {id} | exit:{code} | {elapsed}s]"),
+            format!("The command has finished. Use BashSession with session \"{id}\" to read its final output.")),
+    );
+    let result = format!("{output}\n\n{footer}{gap}{note}\n{instruction}");
+    super::ToolResult {
+        output: prepend_safety_warnings(result, &preflight.warnings),
+        compensation_events: events,
+        permission_denials: Vec::new(),
     }
-    let output_str = String::from_utf8_lossy(&buf);
+}
+
+struct CompletionContext<'a> {
+    context: &'a super::ToolContext,
+    command: &'a str,
+    cwd: &'a Path,
+    sandbox_config: &'a super::sandbox::SandboxConfig,
+    sandbox_applied: bool,
+    note: Option<&'a str>,
+}
+
+fn format_completed(
+    meta: &CompletionContext<'_>,
+    read: &super::bash_session_core::SessionRead,
+    preflight: JudgePreflight,
+) -> Result<super::ToolResult, super::ToolError> {
+    let mut events = preflight.compensation_events;
+    let exit_code = read.exit_code.unwrap_or(-1);
+    let success = exit_code == 0;
+    let stderr = &read.stderr;
+    let output = &read.output.output;
+    if let Some(initialization) =
+        sandbox_initialization_output(meta.sandbox_applied, stderr, &read.output.raw)
+    {
+        return Err(sandbox_initialization_tool_error(&initialization, events));
+    }
+    if is_binary_data(&read.output.raw) {
+        return Ok(format_completed_binary(
+            meta.context,
+            read,
+            exit_code,
+            &preflight.warnings,
+            events,
+        ));
+    }
     let denials = sandbox_denials(
-        &args.command,
-        &cwd,
-        sandbox_config,
-        sandbox_applied,
+        meta.command,
+        meta.cwd,
+        meta.sandbox_config,
+        meta.sandbox_applied,
         success,
-        &output_str,
-        &stderr_str,
+        output,
+        stderr,
     );
     let denial_details = denials.iter().map(format_path_ref).collect::<Vec<_>>();
     let result = compose_text_output(
-        &output_str,
-        &stderr_str,
-        hit_cap,
-        read_cap,
+        output,
+        stderr,
+        false,
+        None,
         success,
-        sandbox_applied,
+        meta.sandbox_applied,
         &denial_details,
     );
-    let permission_denials = denials
-        .iter()
-        .map(SandboxPathRef::permission_label)
-        .collect();
-
-    let result = annotate_empty_search_result(&args.command, result, exit_code, &stderr_str);
-    let spilled = output_max.is_some_and(|max| result.len() > max);
+    let mut result = annotate_empty_search_result(meta.command, result, exit_code, stderr);
+    if let Some(note) = meta.note {
+        result.push('\n');
+        result.push_str(note);
+    }
+    let result = append_journal_gap(result, read.output.dropped_bytes);
+    let spilled = meta
+        .context
+        .limits
+        .bash_output_max_bytes
+        .is_some_and(|max| result.len() > max);
     let result = truncate_output(
         &result,
-        output_max,
+        meta.context.limits.bash_output_max_bytes,
         exit_code,
-        elapsed_ms,
-        warn_exit_zero_stderr,
+        read.elapsed.as_millis(),
+        should_warn_exit_zero_stderr(success, stderr),
     );
-    let mut compensation_events = judge_events;
-    push_truncation_event_if(&mut compensation_events, "Bash", hit_cap, spilled);
-
-    let output = prepend_safety_warnings(result, &judge_warnings);
-
+    push_truncation_event_if(&mut events, "Bash", read.output.dropped_bytes > 0, spilled);
+    let termination = read
+        .termination
+        .map_or(String::new(), |why| format!("\n[Session {why}.]"));
     Ok(super::ToolResult {
-        output,
-        compensation_events,
-        permission_denials,
+        output: prepend_safety_warnings(format!("{result}{termination}"), &preflight.warnings),
+        compensation_events: events,
+        permission_denials: denials
+            .iter()
+            .map(SandboxPathRef::permission_label)
+            .collect(),
     })
 }
 
-/// Bytes of an `n`-byte read chunk to append when `buffered` bytes are already
-/// held, so the capture never exceeds a configured `read_cap`. Without a cap
-/// the whole chunk is kept; with a cap the chunk is cut at the remaining
-/// budget so the buffer holds at most `read_cap` bytes.
-fn take_within_cap(n: usize, read_cap: Option<usize>, buffered: usize) -> usize {
-    match read_cap {
-        Some(cap) if buffered < cap => n.min(cap - buffered),
-        Some(_) => 0,
-        None => n,
+fn format_completed_binary(
+    context: &super::ToolContext,
+    read: &super::bash_session_core::SessionRead,
+    exit_code: i32,
+    warnings: &[String],
+    mut events: Vec<CompensationEventTelemetry>,
+) -> super::ToolResult {
+    let result = handle_binary_output(
+        &read.output.raw,
+        exit_code,
+        read.elapsed.as_millis(),
+        should_warn_exit_zero_stderr(exit_code == 0, &read.stderr),
+    );
+    let result = append_journal_gap(result, read.output.dropped_bytes);
+    let spilled = context
+        .limits
+        .bash_output_max_bytes
+        .is_some_and(|max| read.output.raw.len() > max);
+    push_truncation_event_if(&mut events, "Bash", read.output.dropped_bytes > 0, spilled);
+    super::ToolResult {
+        output: prepend_safety_warnings(result, warnings),
+        compensation_events: events,
+        permission_denials: Vec::new(),
+    }
+}
+
+fn append_journal_gap(output: String, dropped_bytes: usize) -> String {
+    if dropped_bytes == 0 {
+        output
+    } else {
+        format!("{output}\n[Oldest output was dropped: {dropped_bytes} bytes since the last read.]")
     }
 }
 
@@ -1986,17 +1860,7 @@ pub(super) fn truncate_output(
     // Try to write the full output to a secure temp file so the agent can
     // search it.  Fail closed: if the directory cannot be created or the
     // write fails, fall back to the inline truncated result.
-    let write_result = match bash_temp_output_dir() {
-        Ok(dir) => {
-            let file_name = format!("bash_output_{}.txt", uuid::Uuid::new_v4());
-            let tmp_path = dir.join(&file_name);
-            std::fs::write(&tmp_path, output).map(|()| tmp_path)
-        },
-        Err(e) => {
-            debug!("Failed to create secure Bash temp dir: {e}; fall back to inline truncation");
-            Err(e)
-        },
-    };
+    let write_result = spill_output(output);
 
     match write_result {
         Ok(tmp_path) => {
@@ -2033,6 +1897,13 @@ pub(super) fn truncate_output(
             )
         },
     }
+}
+
+pub(super) fn spill_output(output: &str) -> std::io::Result<PathBuf> {
+    let dir = bash_temp_output_dir()?;
+    let path = dir.join(format!("bash_output_{}.txt", uuid::Uuid::new_v4()));
+    std::fs::write(&path, output)?;
+    Ok(path)
 }
 
 /// Prepend soft safety warnings to command output, if any.
