@@ -18,18 +18,19 @@ How to verify it works:
 ## Progress
 
 - [x] (2026-09-25T12:45Z) Claimed issue 542, created `feat/session-end-hook` from current `origin/master`, and recorded ADR 037.
-- [ ] Add the `SessionEnd` event, typed reason, and focused configuration and runner tests.
-- [ ] Dispatch the event once for setup failure, successful turn, failed turn, and graceful interrupt while preserving `task_complete` as the final task record.
-- [ ] Update hook protocol, configuration, and Herdr integration documentation.
-- [ ] Run focused tests, manual process checks, `just check`, and `just cc-check`.
-- [ ] Run preflight, commit, push, open the pull request, and record acceptance evidence on issue 542.
+- [x] (2026-09-25T12:55Z) Added the `SessionEnd` event, typed reason, and focused configuration and runner tests.
+- [x] (2026-09-25T12:58Z) Dispatches the event once for setup failure, successful turn, failed turn, and graceful interrupt while preserving `task_complete` as the final task record.
+- [x] (2026-09-25T12:59Z) Updated hook protocol, configuration, and Herdr integration documentation.
+- [x] (2026-09-25T13:00Z) Passed focused tests, manual process checks, `just check`, and `just cc-check`.
+- [x] (2026-09-25T13:01Z) Completed the three-pass preflight and prepared the commit and pull request handoff.
 
 ## Surprises & Discoveries
 
-- Observation: `execute_agent_turn` currently collapses pre-send setup errors and terminal-record write errors into the same `anyhow::Error`. Evidence: `?` on `session_start`, `user_prompt_submit`, record emission, and `handle_agent_turn_result` all return from the same function in `src/main.rs`.
+- Observation: Before this change, `execute_agent_turn` collapsed pre-send setup errors and terminal-record write errors into the same `anyhow::Error`. Evidence: the original `?` calls on `session_start`, `user_prompt_submit`, record emission, and `handle_agent_turn_result` all returned from the same function in `src/main.rs`.
 - Observation: `task_complete` last is an existing stream/session ordering contract even though `SessionEnd` is conceptually last. Evidence: the completed append-only session-management ExecPlan requires both sinks to receive `task_complete` last, and current stream tests inspect the final record.
 - Observation: A failed turn in stream-json mode normally exits 0, so `SessionEnd` must report the turn's `error` reason rather than infer the reason from the process exit code. Evidence: `CliOutputSink::stream_json_exit_result` suppresses ordinary in-stream errors.
 - Observation: The second-interrupt handler is an intentional hard-exit escape hatch and can bypass a hung `SessionEnd` subprocess. Evidence: `handle_interrupt` spawns a task that calls `std::process::exit(130)` on the next interrupt.
+- Observation: The existing `main_tests.rs` and `hooks_tests.rs` modules were already over the repository's 800-test-line guidance. Evidence: `just lint-module-size` reported 1,405 lines in `main_tests.rs` and 1,133 in `hooks_tests.rs` before the focused tests were moved.
 
 ## Decision Log
 
@@ -39,6 +40,16 @@ How to verify it works:
 - Decision: Limit the runtime guarantee to paths where Cake has loaded a valid hook set and reaches graceful cleanup. Rationale: malformed hook configuration cannot execute reliably, and `SIGKILL`, crashes, and the second-interrupt hard exit are outside an in-process hook's control. Date/Author: 2026-09-25 / Codex.
 
 ## Outcomes & Retrospective
+
+The change delivers the issue's user-visible outcome: `SessionEnd` is a recognized, matcher-free command hook with a typed `reason` of `success`, `error`, or `interrupted`. Root agent invocations dispatch it after the send result or setup failure is known and before the terminal `task_complete` record. Success, cut-off, limit, and provider error paths preserve their existing Stop or ErrorOccurred behavior; graceful SIGINT and SIGTERM preserve the interrupted task record and exit 130.
+
+`HookRunner` still performs normal command parsing, tracing, and hook-event recording, while the CLI ignores the final hook's result. Focused tests prove that a nonzero fail-closed command and non-JSON stdout leave both successful and failed task outcomes unchanged. The payload test verifies all common identity and location fields plus the stable reason. A temporary local provider run observed exit codes 0 for success, 1 for a provider failure, and 130 for SIGTERM; each run appended exactly one payload with the expected reason. Separate failing and non-JSON final-hook runs both exited 0.
+
+Documentation now covers configuration, protocol ordering, unavoidable hard-exit cases, and the Herdr `release-agent` command. ADR 037 records why the event is post-result, best-effort, and placed before `task_complete`. No external dependency, persisted record type, matcher grammar, or sandbox boundary changed.
+
+The delivered branch passed `cargo test session_end`, `cargo test handle_agent_turn`, `cargo test handle_interrupt`, `just cc-check`, `just docs-check`, strict Clippy, and the full `just check` gate. The completed preflight ran all three L-scale passes for this cross-module public hook protocol, reviewed the root instructions, issue 542, this ExecPlan, integration and configuration contracts, ADR 005, ADR 011, ADR 037, and the Herdr guide, and moved the new tests into `src/session_end_tests.rs` rather than growing already-oversized test modules.
+
+Nothing remains within issue 542's implementation scope. As documented, process crashes, `SIGKILL`, malformed hook configuration, and the second-interrupt hard exit cannot guarantee an in-process `SessionEnd` command.
 
 ## Context and Orientation
 
@@ -88,7 +99,7 @@ Idempotence and Recovery: These are additive enum and method changes. Re-running
 
 Overview: At the end of this milestone, one configured `SessionEnd` command runs for a successful send, a failed send, a pre-send setup failure, and a first graceful interrupt. It runs before `task_complete`, and its own failure cannot change the result.
 
-Plan of Work: Wrap pre-send setup in `execute_agent_turn`; on setup error, invoke a best-effort `run_session_end_hook` with `Error` and return the original error. After `Agent::send` resolves, classify the send result and invoke the same helper before Stop or ErrorOccurred so `SessionEnd` remains the final lifecycle hook before `task_complete`. Pass the hook runner into an async `handle_interrupt` and invoke the helper with `Interrupted` before the interrupted task record. The helper logs any runner error and returns no result.
+Plan of Work: Wrap pre-send setup in `execute_agent_turn`; on setup error, invoke a best-effort `run_session_end_hook` with `Error` and return the original error. After `Agent::send` resolves, classify the send result and invoke the same helper after Stop or ErrorOccurred but before the terminal `task_complete` record, so `SessionEnd` remains the final lifecycle hook while task-complete-last ordering stays unchanged. Pass the hook runner into an async `handle_interrupt` and invoke the helper with `Interrupted` before the interrupted task record. The helper logs any runner error and returns no result.
 
 Add focused tests with a capturing hook-event sink. Prove success and failed send each produce one `SessionEnd`; a `SessionStart` failure produces one error event; `handle_interrupt` produces one interrupted event; and invalid JSON or a failing fail-closed final hook still leaves the normal task outcome intact.
 

@@ -214,6 +214,8 @@ refusals, malformed verdicts, and semantic backend parse failures are never retr
 
 Hook commands receive one versioned JSON object on stdin. Common fields include `session_id`, `task_id`, `transcript_path`, `cwd`, `hook_event_name`, `model`, and `timestamp`. Tool events also carry tool identity and input; post-tool events carry the result.
 
+`SessionEnd` runs once for a root agent invocation after the send result or an early setup failure is known. Its payload adds `reason`, which is `success` when the send succeeds, `error` when setup or the turn fails, and `interrupted` after the first SIGINT or SIGTERM begins graceful shutdown. It runs before the terminal `task_complete` record, preserving task-complete-last ordering, and does not run for subcommands or failures that occur before a valid hook set is loaded. Process crashes, `SIGKILL`, and the second-interrupt hard exit can bypass an in-process hook.
+
 For tool events, `tool_input` is the parsed arguments object a `PreToolUse` decision gates: after Cake's conservative JSON repair pass for tools whose registry entry declares argument repair (Edit, Write, and toolbox tools; the input those executors act on), strict for every other tool, including unregistered names. Repair only escapes raw control characters inside JSON strings when the complete result is valid JSON; it never discards trailing data such as extra objects, braces, or provider markup. `tool_input_json` is the raw argument string as issued. `tool_input` is `{}` only when parsing fails; such a call fails rather than executing.
 
 Exit status and stdout determine behavior:
@@ -237,7 +239,7 @@ Decision JSON may use:
 
 `continue: false` stops and has highest priority. `permission` takes priority over `decision`; `deny`, `block`, and `ask` block because Cake has no interactive ask flow. `PreToolUse` may return one `updated_input` object, which is revalidated by the tool. Any event may return `additional_context`.
 
-Pre-request failures may abort the invocation. Post-result hooks are best-effort so they cannot replace an existing model or tool outcome. Hook stdout and stderr stored in events are bounded.
+Pre-request failures may abort the invocation. Post-result hooks are best-effort so they cannot replace an existing model or tool outcome. `SessionEnd` is always best-effort: a nonzero exit, invalid JSON, block decision, timeout, or `fail_closed: true` is logged but cannot change the task result, output, or process exit code. Hook stdout and stderr stored in events are bounded.
 
 The [Herdr integration guide](integrations/herdr.md) is a worked example of driving an external lifecycle reporter from these hooks.
 

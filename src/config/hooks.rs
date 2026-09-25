@@ -53,6 +53,7 @@ pub enum HookEvent {
     PostToolUseFailure,
     Stop,
     ErrorOccurred,
+    SessionEnd,
 }
 
 impl HookEvent {
@@ -72,6 +73,7 @@ impl HookEvent {
             Self::PostToolUseFailure => "PostToolUseFailure",
             Self::Stop => "Stop",
             Self::ErrorOccurred => "ErrorOccurred",
+            Self::SessionEnd => "SessionEnd",
         }
     }
 }
@@ -94,6 +96,7 @@ impl std::str::FromStr for HookEvent {
             "PostToolUseFailure" => Ok(Self::PostToolUseFailure),
             "Stop" => Ok(Self::Stop),
             "ErrorOccurred" => Ok(Self::ErrorOccurred),
+            "SessionEnd" => Ok(Self::SessionEnd),
             _ => Err(()),
         }
     }

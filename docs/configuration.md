@@ -322,7 +322,9 @@ Files are appended in that order and must declare `"version": 1`. Missing files 
 }
 ```
 
-Supported events are `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Stop`, and `ErrorOccurred`. Matchers are accepted only for `SessionStart`, `PreToolUse`, `PostToolUse`, and `PostToolUseFailure`; omit the field for the other events. For matcher-capable events, a missing matcher or `"*"` matches all supported sources, and `|` separates exact matches.
+Supported events are `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Stop`, `ErrorOccurred`, and `SessionEnd`. Matchers are accepted only for `SessionStart`, `PreToolUse`, `PostToolUse`, and `PostToolUseFailure`; omit the field for the other events. For matcher-capable events, a missing matcher or `"*"` matches all supported sources, and `|` separates exact matches.
+
+`SessionEnd` is the final best-effort lifecycle event for a root agent invocation. It runs once with `reason` set to `success`, `error`, or `interrupted`; a failing or non-JSON `SessionEnd` hook never changes the invocation outcome.
 
 Hook commands run outside the model tool sandbox with the project root as their working directory. Their input and decision protocol is documented in [Integrations](integrations.md).
 

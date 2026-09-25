@@ -31,7 +31,7 @@ use crate::config::{
     ReasoningEffort, ResolvedModelConfig, Session, SettingsLoader, SkillCatalog, discover_skills,
     discover_skills_with_paths, parse_skill_path_list, read_agents_files, worktree,
 };
-use crate::hooks::{HookContext, HookRunner};
+use crate::hooks::{HookContext, HookRunner, SessionEndReason};
 
 use crate::session_telemetry::{SessionTelemetryRecord, SessionTelemetryWriter};
 
@@ -997,19 +997,27 @@ impl CodingAssistant {
     ) -> anyhow::Result<TurnResult> {
         let start = Instant::now();
 
-        if let Some(runner) = hook_runner {
-            let contexts = runner.session_start(&session_start_source, content).await?;
-            client.append_developer_context(contexts);
-            let contexts = runner.user_prompt_submit(content).await?;
-            client.append_developer_context(contexts);
+        let setup_result: anyhow::Result<()> = async {
+            if let Some(runner) = hook_runner {
+                let contexts = runner.session_start(&session_start_source, content).await?;
+                client.append_developer_context(contexts);
+                let contexts = runner.user_prompt_submit(content).await?;
+                client.append_developer_context(contexts);
+            }
+            client.append_output_schema_context();
+            client.emit_prompt_context_records()?;
+            client.emit_task_start_record()?;
+            // After task_start so the invocation's first record still opens the
+            // stream, and before send() so the repaired history is what the
+            // provider receives.
+            client.emit_history_repair_records()?;
+            Ok(())
         }
-        client.append_output_schema_context();
-        client.emit_prompt_context_records()?;
-        client.emit_task_start_record()?;
-        // After task_start so the invocation's first record still opens the
-        // stream, and before send() so the repaired history is what the
-        // provider receives.
-        client.emit_history_repair_records()?;
+        .await;
+        if let Err(error) = setup_result {
+            Self::run_session_end_hook(hook_runner, SessionEndReason::Error).await;
+            return Err(error);
+        }
 
         let result = client.send(content.to_string()).await;
         let duration_ms = start.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
@@ -1060,6 +1068,7 @@ impl CodingAssistant {
         duration_ms: u64,
     ) -> anyhow::Result<()> {
         Self::run_stop_hook(hook_runner, response_text).await;
+        Self::run_session_end_hook(hook_runner, SessionEndReason::Success).await;
         client.emit_task_complete_record(
             TaskOutcome::Success {
                 result: Some(response_text.to_string()),
@@ -1075,6 +1084,7 @@ impl CodingAssistant {
         duration_ms: u64,
     ) -> anyhow::Result<()> {
         Self::run_error_hook(hook_runner, error).await;
+        Self::run_session_end_hook(hook_runner, SessionEndReason::Error).await;
         client.emit_task_complete_record(Self::task_outcome_for_error(error), duration_ms)
     }
 
@@ -1085,6 +1095,7 @@ impl CodingAssistant {
         duration_ms: u64,
     ) -> anyhow::Result<()> {
         Self::run_stop_hook(hook_runner, &cutoff.detail).await;
+        Self::run_session_end_hook(hook_runner, SessionEndReason::Error).await;
         client.emit_task_complete_record(
             TaskOutcome::CutOff {
                 detail: cutoff.detail.clone(),
@@ -1114,6 +1125,20 @@ impl CodingAssistant {
         };
         if let Err(hook_error) = runner.error_occurred(&sink_safe_error_text(error)).await {
             tracing::warn!(target: "cake::hooks", error = %hook_error, "error_occurred hook failed (best-effort)");
+        }
+    }
+
+    async fn run_session_end_hook(hook_runner: Option<&Arc<HookRunner>>, reason: SessionEndReason) {
+        let Some(runner) = hook_runner else {
+            return;
+        };
+        if let Err(error) = runner.session_end(reason).await {
+            tracing::warn!(
+                target: "cake::hooks",
+                reason = reason.as_str(),
+                error = %error,
+                "SessionEnd hook failed (best-effort)"
+            );
         }
     }
 
@@ -1280,7 +1305,7 @@ impl CmdRunner for CodingAssistant {
         };
 
         if interrupted.load(Ordering::SeqCst) {
-            return Self::handle_interrupt(&mut client, turn_start);
+            return Self::handle_interrupt(&mut client, hook_runner.as_ref(), turn_start).await;
         }
 
         // The turn is over; a SIGTERM during rendering or teardown should
@@ -1375,7 +1400,11 @@ impl CodingAssistant {
     /// the telemetry summary, and returns an `Interrupted` error that
     /// `main()` maps to exit code 130. Worktree cleanup is handled by
     /// [`WorktreeGuard`]'s `Drop`.
-    fn handle_interrupt(client: &mut Agent, turn_start: Instant) -> anyhow::Result<()> {
+    async fn handle_interrupt(
+        client: &mut Agent,
+        hook_runner: Option<&Arc<HookRunner>>,
+        turn_start: Instant,
+    ) -> anyhow::Result<()> {
         // Listen for a second interrupt that force-exits immediately in
         // case the graceful shutdown hangs. Once a SIGTERM handler is
         // installed the default termination is gone, so a second SIGTERM
@@ -1392,6 +1421,8 @@ impl CodingAssistant {
             .as_millis()
             .try_into()
             .unwrap_or(u64::MAX);
+
+        Self::run_session_end_hook(hook_runner, SessionEndReason::Interrupted).await;
 
         // Emit a TaskComplete record with interrupted outcome so the
         // session file always has a matching end for the TaskStart.
@@ -1546,6 +1577,8 @@ async fn main() -> std::process::ExitCode {
     finish_run(args.run(&data_dir, &options).await)
 }
 
+#[cfg(test)]
+mod session_end_tests;
 #[cfg(test)]
 #[path = "main_tests.rs"]
 mod tests;

@@ -42,6 +42,23 @@ pub struct HookContext {
     pub model: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionEndReason {
+    Success,
+    Error,
+    Interrupted,
+}
+
+impl SessionEndReason {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Success => "success",
+            Self::Error => "error",
+            Self::Interrupted => "interrupted",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum ToolHookPlan {
     Execute {
@@ -416,6 +433,13 @@ impl HookRunner {
             }),
         );
         self.run_and_aggregate(HookEvent::ErrorOccurred, &HookSource::None, payload, None)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn session_end(&self, reason: SessionEndReason) -> anyhow::Result<()> {
+        let payload = self.payload(HookEvent::SessionEnd, json!({ "reason": reason.as_str() }));
+        self.run_and_aggregate(HookEvent::SessionEnd, &HookSource::None, payload, None)
             .await?;
         Ok(())
     }
