@@ -27,7 +27,7 @@ The Bash tool currently treats `timeout` as a kill deadline, capped at 600 secon
 
 ## Decision Outcome
 
-Choose an in-run session for every Bash command. `timeout` retains its name, unit, default, and range but becomes a yield window. An optional `background: true` yields immediately. A new `BashSession` tool reads new output, kills a process group, and lists live or recently exited sessions. Sessions are shared across `ToolContext` clones, kept only for the Cake run, and inaccessible under the read-only tool policy.
+Choose an in-run session for every Bash command. `timeout` retains its name, unit, and 60-second default but becomes a yield window capped at 60 seconds. An optional `background: true` yields immediately. A new `BashSession` tool reads new output, kills a process group, and lists live or recently exited sessions. Sessions are shared across `ToolContext` clones, kept only for the Cake run, and inaccessible under the read-only tool policy.
 
 The session owner retains the sandbox guard and process-group guard until the child and its descendants are finished or terminated. It kills the group on explicit kill, a hard wall clock, Cake exit, Ctrl-C, or SIGTERM, escalating from SIGTERM to SIGKILL. Cancelling a Bash call before it returns the ID kills the group. A cancelled `BashSession` read leaves the process running. The judge runs once, before spawn, on the exact command that executes; a simple trailing `&` is removed before that preflight. Polling does not run the judge again.
 
@@ -37,8 +37,7 @@ Session-managed Bash commands no longer use the existing `bash_read_cap` kill th
 
 ### Consequences
 
-- Commands longer than the yield window can finish without blocking the agent turn.
-- `Bash.timeout` changes from a kill deadline to a yield window, a deliberate model-visible compatibility break.
+- Commands longer than the 60-second foreground yield can finish without blocking the agent turn. `Bash.timeout` changes from a kill deadline to a yield window, a deliberate model-visible compatibility break; the separate `bash_session_max_seconds` hard wall defaults to 3,600 seconds.
 - `bash_read_cap` no longer kills a Bash process; output beyond the session journal's unread-byte cap is dropped and reported instead. A fast command with more output than the old read cap therefore need not return exactly its former result.
 - Removing Bash's read-safe capability removes **Bash itself** from `--sandbox read-only`, including shell-based `rg`, `find`, and `ls` exploration. `BashSession` is also unavailable there. The implementation must update `docs/security.md` and the read-only tool-selection tests to reflect this availability break.
 - Judge authorization lasts for the process lifetime, potentially much longer than one tool call. The OS sandbox continues to enforce filesystem policy throughout that lifetime; the hard wall clock bounds the exposure.

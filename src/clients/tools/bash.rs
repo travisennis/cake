@@ -45,13 +45,16 @@ const EMPTY_SEARCH_NO_MATCH_ANNOTATION: &str = "(no matches)";
 #[cfg(test)]
 pub(super) const BASH_OUTPUT_MAX_BYTES: usize = DEFAULT_BASH_OUTPUT_MAX_BYTES as usize;
 
+/// Default foreground yield window in seconds.
+const BASH_TIMEOUT_DEFAULT_SECS: u64 = 60;
+
 /// Floor for the model-supplied Bash timeout in seconds. A `0` timeout would
 /// fail instantly, so requests below the floor are raised to it.
 const BASH_TIMEOUT_MIN_SECS: u64 = 1;
 
-/// Ceiling for the model-supplied Bash timeout in seconds. Larger values are
-/// capped so a runaway command cannot pin the process for an unbounded time.
-const BASH_TIMEOUT_MAX_SECS: u64 = 600;
+/// Ceiling for the model-supplied foreground yield window in seconds. Larger
+/// values yield to a controllable Bash session instead of blocking the agent.
+const BASH_TIMEOUT_MAX_SECS: u64 = 60;
 
 /// Bounded grace period granted to a Bash child after `SIGTERM` before the
 /// process group is force-killed on timeout. Long enough for a well-behaved
@@ -110,7 +113,7 @@ impl BashExecutionArgs {
             command: args.command,
             timeout: args
                 .timeout
-                .unwrap_or(60)
+                .unwrap_or(BASH_TIMEOUT_DEFAULT_SECS)
                 .clamp(BASH_TIMEOUT_MIN_SECS, BASH_TIMEOUT_MAX_SECS),
             background: args.background,
             policy,
@@ -220,7 +223,7 @@ pub(super) fn bash_tool() -> super::Tool {
                 },
                 "timeout": {
                     "type": "number",
-                    "description": "Seconds to wait before yielding a running session (default: 60; range 1-600)"
+                    "description": "Seconds to wait before yielding a running session (default: 60; range 1-60)"
                 },
                 "background": {
                     "type": "boolean",

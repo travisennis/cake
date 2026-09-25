@@ -133,6 +133,9 @@ fn truncate_output_passes_through_small_output() {
 
 #[test]
 fn bash_timeout_argument_is_clamped() {
+    assert_eq!(BASH_TIMEOUT_DEFAULT_SECS, 60);
+    assert_eq!(BASH_TIMEOUT_MAX_SECS, 60);
+
     let policy = crate::clients::tools::sandbox::SandboxPolicy::DangerFullAccess;
 
     // Below the floor: a `0` timeout would fail instantly.
@@ -145,14 +148,45 @@ fn bash_timeout_argument_is_clamped() {
         BashExecutionArgs::from_json(r#"{"command": "true", "timeout": 999999}"#, policy).unwrap();
     assert_eq!(args.timeout, BASH_TIMEOUT_MAX_SECS);
 
-    // Missing timeout keeps the documented default of 60 seconds.
+    // Missing timeout keeps the documented default yield window.
     let args = BashExecutionArgs::from_json(r#"{"command": "true"}"#, policy).unwrap();
-    assert_eq!(args.timeout, 60);
+    assert_eq!(args.timeout, BASH_TIMEOUT_DEFAULT_SECS);
 
     // In-range values pass through untouched.
     let args =
         BashExecutionArgs::from_json(r#"{"command": "true", "timeout": 42}"#, policy).unwrap();
     assert_eq!(args.timeout, 42);
+}
+
+#[test]
+fn legacy_six_hundred_second_timeout_clamps_to_foreground_yield() {
+    let policy = crate::clients::tools::sandbox::SandboxPolicy::DangerFullAccess;
+    let args =
+        BashExecutionArgs::from_json(r#"{"command": "true", "timeout": 600}"#, policy).unwrap();
+    assert_eq!(args.timeout, 60);
+    assert_eq!(args.timeout, BASH_TIMEOUT_MAX_SECS);
+}
+
+#[test]
+fn bash_timeout_schema_and_guidance_direct_polling_to_a_background_session() {
+    let tool = bash_tool();
+    let schema_description = tool.parameters["properties"]["timeout"]["description"]
+        .as_str()
+        .unwrap();
+    assert!(schema_description.contains("default: 60; range 1-60"));
+
+    // Issue #654 observed a model choosing a long foreground wait for a watch
+    // command. The safe session handoff must be the explicit choice.
+    for phrase in [
+        "polling or watch commands",
+        "`background: true`",
+        "use BashSession rather than a long foreground wait",
+    ] {
+        assert!(
+            tool.description.contains(phrase),
+            "Bash description must direct polling to a background session ({phrase:?})"
+        );
+    }
 }
 
 #[test]
