@@ -53,6 +53,7 @@ pub enum HookEvent {
     PostToolUseFailure,
     Stop,
     ErrorOccurred,
+    SessionEnd,
 }
 
 impl HookEvent {
@@ -72,6 +73,7 @@ impl HookEvent {
             Self::PostToolUseFailure => "PostToolUseFailure",
             Self::Stop => "Stop",
             Self::ErrorOccurred => "ErrorOccurred",
+            Self::SessionEnd => "SessionEnd",
         }
     }
 }
@@ -94,6 +96,7 @@ impl std::str::FromStr for HookEvent {
             "PostToolUseFailure" => Ok(Self::PostToolUseFailure),
             "Stop" => Ok(Self::Stop),
             "ErrorOccurred" => Ok(Self::ErrorOccurred),
+            "SessionEnd" => Ok(Self::SessionEnd),
             _ => Err(()),
         }
     }
@@ -338,6 +341,29 @@ mod tests {
     fn write(path: &Path, content: &str) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, content).unwrap();
+    }
+
+    #[test]
+    fn hook_event_names_round_trip() {
+        let events = [
+            HookEvent::SessionStart,
+            HookEvent::UserPromptSubmit,
+            HookEvent::PreToolUse,
+            HookEvent::PostToolUse,
+            HookEvent::PostToolUseFailure,
+            HookEvent::Stop,
+            HookEvent::ErrorOccurred,
+            HookEvent::SessionEnd,
+        ];
+
+        // `as_str` and `from_str` are the wire names for `hooks.json` keys and
+        // hook payloads, so every variant has to survive the round trip.
+        for event in events {
+            let name = event.as_str();
+            assert_eq!(name.parse::<HookEvent>().unwrap(), event);
+            assert_eq!(event.to_string(), name);
+        }
+        assert_eq!("NotAnEvent".parse::<HookEvent>(), Err(()));
     }
 
     #[test]

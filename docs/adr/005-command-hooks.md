@@ -62,3 +62,4 @@ Hook activity is recorded through tracing and appended to session JSONL as `hook
 - `src/hooks.rs` - Hook runner, payloads, decisions, and session records
 - `src/clients/agent/agent_loop.rs` - Tool-loop integration for pre-tool and post-tool hooks
 - `src/main.rs` - Session lifecycle hook integration
+- [ADR 037](037-session-end-hook.md) - Partially supersedes this record by adding the matcher-free `SessionEnd` lifecycle event

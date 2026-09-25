@@ -1,6 +1,6 @@
 # Integrating Herdr with Cake Hooks
 
-Use this integration guide to report Cake's lifecycle to [Herdr](https://herdr.dev) so a Cake pane shows `working` while a turn runs and settles when the process finishes. The integration is configuration only: a reporter script plus `hooks.json` entries. No Cake code changes are required. The same pattern works for any host that reports agent state from lifecycle hooks.
+Use this integration guide to report Cake's lifecycle to [Herdr](https://herdr.dev) so a Cake pane shows `working` while a turn runs, settles when the turn finishes, and releases its lifecycle authority before the one-shot process exits. The integration is configuration only: a reporter script plus `hooks.json` entries. No Cake code changes are required. The same pattern works for any host that reports agent state from lifecycle hooks.
 
 This guide targets Unix-like systems (macOS and Linux). Cake does not currently support Windows as a built or tested target, so this guide intentionally provides no Windows configuration.
 
@@ -25,12 +25,13 @@ Cake supplies what the report needs. Hook commands inherit the pane environment,
 
 ## Lifecycle Mapping
 
-  | Cake hook event    | Herdr action                   | Why                                                                    |
-  | ------------------ | ------------------------------ | ---------------------------------------------------------------------- |
-  | `SessionStart`     | `report-agent --state working` | The turn is starting.                                                  |
-  | `UserPromptSubmit` | `report-agent --state working` | The agent is processing the prompt.                                    |
-  | `Stop`             | `report-agent --state idle`    | A successful or cut-off turn finished; this is not an exit event.      |
-  | `ErrorOccurred`    | `report-agent --state idle`    | A provider/turn error occurred after send; early failures may skip it. |
+  | Cake hook event    | Herdr action                   | Why                                                                      |
+  | ------------------ | ------------------------------ | ------------------------------------------------------------------------ |
+  | `SessionStart`     | `report-agent --state working` | The turn is starting.                                                    |
+  | `UserPromptSubmit` | `report-agent --state working` | The agent is processing the prompt.                                      |
+  | `Stop`             | `report-agent --state idle`    | A successful or cut-off turn finished.                                   |
+  | `ErrorOccurred`    | `report-agent --state idle`    | A provider or turn error occurred after send.                            |
+  | `SessionEnd`       | `release-agent`                | The one-shot invocation reached a graceful success, error, or interrupt. |
 
 `PreToolUse`/`PostToolUse` are not needed because `working` already covers the whole turn. Cake never reports `blocked`: it has no interactive permission or ask flow ([Integration contracts](../integrations.md)), so it never pauses mid-turn for a user decision.
 
@@ -62,6 +63,7 @@ Save as `herdr-cake-report.sh` (or `.cake/hooks/herdr-cake-report.sh` for a proj
 #   UserPromptSubmit -> working
 #   Stop             -> idle
 #   ErrorOccurred    -> idle
+#   SessionEnd       -> release
 #
 # Outside a Herdr pane every action is a silent no-op, so the hook never
 # changes Cake behavior on a normal terminal.
@@ -69,7 +71,7 @@ set -u
 
 action="${1:-}"
 case "$action" in
-  working|idle) ;;
+  working|idle|release) ;;
   *) exit 0 ;;
 esac
 
@@ -81,19 +83,23 @@ SOURCE="custom:cake"
 AGENT="cake"
 
 if [ -n "${HERDR_CAKE_LOG:-}" ]; then
-  printf '%s action=%s pane=%s state=%s\n' \
-    "$(date -u +%FT%TZ)" "$action" "${HERDR_PANE_ID}" "$action" \
+  printf '%s action=%s pane=%s\n' \
+    "$(date -u +%FT%TZ)" "$action" "${HERDR_PANE_ID}" \
     >>"$HERDR_CAKE_LOG" 2>/dev/null || true
 fi
 
 run() { "$HERDR_BIN_PATH" "$@" >/dev/null 2>&1 || true; }
-run pane report-agent "$HERDR_PANE_ID" --source "$SOURCE" --agent "$AGENT" \
-  --state "$action"
+if [ "$action" = "release" ]; then
+  run pane release-agent "$HERDR_PANE_ID" --source "$SOURCE" --agent "$AGENT"
+else
+  run pane report-agent "$HERDR_PANE_ID" --source "$SOURCE" --agent "$AGENT" \
+    --state "$action"
+fi
 
 exit 0
 ```
 
-The script emits no stdout and always exits `0`, which matters because Cake parses `SessionStart`/`UserPromptSubmit` stdout as a hook decision and treats exit code `2` as a block. Set `HERDR_CAKE_LOG=/path/to/log` to have it append each action it received.
+The script emits no stdout and always exits `0`, which matters because Cake parses lifecycle-hook stdout as a decision and treats exit code `2` as a block. Set `HERDR_CAKE_LOG=/path/to/log` to have it append each action it received.
 
 ## hooks.json
 
@@ -129,6 +135,13 @@ The script emits no stdout and always exits `0`, which matters because Cake pars
           { "type": "command", "command": "\"${XDG_CONFIG_HOME:-$HOME/.config}/cake/hooks/herdr-cake-report.sh\" idle", "timeout": 10 }
         ]
       }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          { "type": "command", "command": "\"${XDG_CONFIG_HOME:-$HOME/.config}/cake/hooks/herdr-cake-report.sh\" release", "timeout": 10 }
+        ]
+      }
     ]
   }
 }
@@ -139,14 +152,14 @@ For a project install, replace the command with the path to the project copy, fo
 ## Verify
 
 1. Open a Herdr pane and run a Cake turn, such as `cake "run sleep 5"`.
-2. In another shell, `herdr agent list` should show the pane with `agent: cake`, moving `working` to `idle` and then `done` once the process exits.
+2. In another shell, `herdr agent list` should show the pane with `agent: cake`, moving `working` to `idle` and then releasing the custom lifecycle source as the process exits.
 3. `herdr agent explain <pane>` reports screen-manifest detection only; a custom source does not appear there.
 
 If no state appears, re-run with `HERDR_CAKE_LOG` set and confirm the pane exports `HERDR_ENV=1` and `HERDR_PANE_ID`.
 
 ## Limitations
 
-- **No exit event.** Cake has no `SessionEnd` hook, so the reporter cannot call `herdr pane release-agent` on process exit (tracked in [#542](https://github.com/travisennis/cake/issues/542)). `Stop` and `ErrorOccurred` are best-effort turn-boundary hooks: a pre-request hook that fails or blocks before `client.send()` can skip both after the reporter has reported `working`, and an interrupt or crash can also bypass them. Herdr marks the pane `done` once the one-shot Cake process exits, but Cake cannot reliably release the lifecycle authority at that boundary.
+- **Hard exits bypass hooks.** A process crash, `SIGKILL`, or Cake's second-interrupt hard exit cannot run `SessionEnd`. An interrupt that lands while the release command is still running kills that subprocess, and Cake then runs the command once more with an `interrupted` payload. Herdr still observes the one-shot process exit, but a different host may retain stale custom lifecycle authority.
 - **No native session identity.** Cake's `session_id` and transcript path are available in hook payloads, but current Herdr only retains session references for registered integrations; `custom:cake` is not one. This guide reports lifecycle state only.
 - **One-shot agent.** Cake runs one agent turn per process, so `idle` means the process is about to exit, not that it is waiting for the next prompt.
 - **`blocked` is unreachable.** Cake has no mid-turn user decision, so only `working` and `idle` are ever reported.
