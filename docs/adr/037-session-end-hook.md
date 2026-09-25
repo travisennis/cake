@@ -38,11 +38,13 @@ The event has no matcher. Its JSON payload contains the existing common fields a
 - `error` when setup fails before send, or when the provider turn fails, is cut off, or reaches another error outcome;
 - `interrupted` when the first SIGINT or SIGTERM starts graceful shutdown.
 
-Cake dispatches `SessionEnd` once after the send result is known and before the terminal `task_complete` record. A setup failure dispatches it before returning the setup error. The first graceful interrupt dispatches it before the interrupted `task_complete` record. This ordering keeps `task_complete` as the final task record for stream and session consumers while still running the external cleanup command before process exit.
+Cake dispatches `SessionEnd` after the send result is known and before the terminal `task_complete` record. A setup failure dispatches it before returning the setup error. The first graceful interrupt dispatches it before the interrupted `task_complete` record. This ordering keeps `task_complete` as the final task record for stream and session consumers while still running the external cleanup command before process exit.
+
+The event runs at most once per invocation. The hook runner records a *completed* dispatch, so the interrupt path cannot re-run a command that already finished. One case stays imperfect: a signal that lands while the `SessionEnd` command is still running drops the turn, which kills that subprocess, and the interrupt path then dispatches `SessionEnd` again with `interrupted`. A hook can therefore observe one partial invocation followed by one completed one.
 
 Hook subprocess output is parsed through the existing command-hook machinery for transcript and tracing consistency, but the result is ignored. A nonzero exit, invalid JSON, block decision, timeout, or `fail_closed: true` on `SessionEnd` is logged as a best-effort failure and cannot change the turn result, exit code, or output. A second interrupt remains the existing hard-exit escape hatch and may bypass a slow or hung final hook, as may termination that Cake cannot intercept.
 
-The event is emitted only after hook loading succeeds and a `SessionEnd` command is configured. Input, configuration, or hook-file failures that occur before a runnable hook set exists cannot invoke a hook from that same invalid configuration.
+The event is emitted only after hook loading succeeds and a `SessionEnd` command is configured. Input, configuration, or hook-file failures that occur before a runnable hook set exists cannot invoke a hook from that same invalid configuration. A setup failure that happens before the task-start record is written leaves a `hook_event` record in a session and stream that carry no `task_start` and no `task_complete`; the command ran, so it is recorded.
 
 ### Consequences
 
@@ -51,6 +53,7 @@ The event is emitted only after hook loading succeeds and a `SessionEnd` command
 - Good, because final hook failure cannot mask the outcome being reported.
 - Good, because existing stream and session consumers continue to see `task_complete` last.
 - Bad, because process crashes, `SIGKILL`, and a forced second interrupt cannot run an in-process cleanup hook.
+- Bad, because an interrupt that lands during a `SessionEnd` command can leave one partial invocation before the completed `interrupted` dispatch.
 - Bad, because the event adds another trusted, potentially slow subprocess before terminal task persistence and output rendering.
 
 ## More Information

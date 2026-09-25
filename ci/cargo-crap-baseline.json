@@ -373,10 +373,10 @@
     {
       "file": "./src/config/hooks.rs",
       "function": "HookEvent::from_str",
-      "line": 88,
-      "cyclomatic": 9.0,
+      "line": 90,
+      "cyclomatic": 10.0,
       "coverage": 100.0,
-      "crap": 9.0
+      "crap": 10.0
     },
     {
       "file": "./src/clients/tools/edit.rs",
@@ -405,10 +405,10 @@
     {
       "file": "./src/config/hooks.rs",
       "function": "HookEvent::as_str",
-      "line": 66,
-      "cyclomatic": 8.0,
-      "coverage": 80.0,
-      "crap": 8.512
+      "line": 67,
+      "cyclomatic": 9.0,
+      "coverage": 100.0,
+      "crap": 9.0
     },
     {
       "file": "./src/hooks.rs",

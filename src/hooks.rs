@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
@@ -27,6 +28,10 @@ pub struct HookRunner {
     /// Per-hook stdout/stderr byte cap from `[limits] hook_output_limit`;
     /// `None` means unlimited.
     output_limit: Option<usize>,
+    /// Whether a `SessionEnd` dispatch has run to completion for this
+    /// invocation. Shared across clones because the runner reaches both the
+    /// normal turn path and the interrupt path.
+    session_end_dispatched: Arc<AtomicBool>,
 }
 
 #[derive(Clone)]
@@ -258,6 +263,7 @@ impl HookRunner {
             context,
             hook_semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_AGENT_OPERATIONS)),
             output_limit: Some(DEFAULT_HOOK_OUTPUT_LIMIT as usize),
+            session_end_dispatched: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -437,11 +443,33 @@ impl HookRunner {
         Ok(())
     }
 
+    /// Dispatch `SessionEnd` at most once per invocation.
+    ///
+    /// The flag records a *completed* dispatch, not a started one, and is set
+    /// only after `run_and_aggregate` returns. A signal that wins the CLI's
+    /// interrupt race drops the turn future, which kills any hook subprocess
+    /// already running and leaves the flag unset, so the interrupt path can
+    /// still dispatch the cleanup event. Setting the flag before the dispatch
+    /// would lose that cleanup entirely.
+    ///
+    /// Ordering is safe without a compare-exchange: `tokio::select!` drops the
+    /// losing future before it runs the winning branch's handler, so the
+    /// interrupt path always observes the outcome of the turn's own dispatch.
     pub async fn session_end(&self, reason: SessionEndReason) -> anyhow::Result<()> {
+        if self.session_end_dispatched.load(Ordering::SeqCst) {
+            tracing::debug!(
+                target: "cake::hooks",
+                reason = reason.as_str(),
+                "SessionEnd already dispatched for this invocation"
+            );
+            return Ok(());
+        }
         let payload = self.payload(HookEvent::SessionEnd, json!({ "reason": reason.as_str() }));
-        self.run_and_aggregate(HookEvent::SessionEnd, &HookSource::None, payload, None)
-            .await?;
-        Ok(())
+        let result = self
+            .run_and_aggregate(HookEvent::SessionEnd, &HookSource::None, payload, None)
+            .await;
+        self.session_end_dispatched.store(true, Ordering::SeqCst);
+        result.map(|_| ())
     }
 
     async fn run_and_aggregate(

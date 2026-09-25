@@ -21,7 +21,7 @@ We add command hooks configured with JSON files loaded from global, project, and
 
 Each hook file declares `version: 1`. Hooks are appended in load order, validate event names, and can use exact-match or `|`-separated matchers for supported events. Hook commands run through the platform shell with the project root as the working directory.
 
-Hooks receive a JSON event payload on stdin and may return JSON on stdout. Supported lifecycle events are `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Stop`, and `ErrorOccurred`. [ADR 037](037-session-end-hook.md) later added `SessionEnd` for one-shot invocation cleanup.
+Hooks receive a JSON event payload on stdin and may return JSON on stdout. Supported lifecycle events are `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Stop`, and `ErrorOccurred`.
 
 `PreToolUse` hooks can allow, deny, or update a tool call before execution. Session and post-tool hooks can return additional context for the model. Hook failures are fail-open by default, with per-command `fail_closed` support when policy enforcement requires blocking behavior.
 
@@ -62,3 +62,4 @@ Hook activity is recorded through tracing and appended to session JSONL as `hook
 - `src/hooks.rs` - Hook runner, payloads, decisions, and session records
 - `src/clients/agent/agent_loop.rs` - Tool-loop integration for pre-tool and post-tool hooks
 - `src/main.rs` - Session lifecycle hook integration
+- [ADR 037](037-session-end-hook.md) - Partially supersedes this record by adding the matcher-free `SessionEnd` lifecycle event

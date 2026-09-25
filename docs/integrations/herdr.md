@@ -159,7 +159,7 @@ If no state appears, re-run with `HERDR_CAKE_LOG` set and confirm the pane expor
 
 ## Limitations
 
-- **Hard exits bypass hooks.** A process crash, `SIGKILL`, or Cake's second-interrupt hard exit cannot run `SessionEnd`. Herdr still observes the one-shot process exit, but a different host may retain stale custom lifecycle authority.
+- **Hard exits bypass hooks.** A process crash, `SIGKILL`, or Cake's second-interrupt hard exit cannot run `SessionEnd`. An interrupt that lands while the release command is still running kills that subprocess, and Cake then runs the command once more with an `interrupted` payload. Herdr still observes the one-shot process exit, but a different host may retain stale custom lifecycle authority.
 - **No native session identity.** Cake's `session_id` and transcript path are available in hook payloads, but current Herdr only retains session references for registered integrations; `custom:cake` is not one. This guide reports lifecycle state only.
 - **One-shot agent.** Cake runs one agent turn per process, so `idle` means the process is about to exit, not that it is waiting for the next prompt.
 - **`blocked` is unreachable.** Cake has no mid-turn user decision, so only `working` and `idle` are ever reported.

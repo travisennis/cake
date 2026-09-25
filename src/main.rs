@@ -997,9 +997,39 @@ impl CodingAssistant {
     ) -> anyhow::Result<TurnResult> {
         let start = Instant::now();
 
-        let setup_result: anyhow::Result<()> = async {
+        Self::prepare_agent_turn(client, hook_runner, &session_start_source, content).await?;
+
+        let result = client.send(content.to_string()).await;
+        let duration_ms = start.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+
+        Self::handle_agent_turn_result(client, hook_runner, &result, duration_ms).await?;
+
+        // Cut-offs stay Err so each render mode and the telemetry summary
+        // report them as failures; the TaskOutcome::CutOff record was already
+        // emitted by handle_agent_turn_result.
+        Ok(TurnResult {
+            result,
+            duration_ms,
+        })
+    }
+
+    /// Run everything that precedes `client.send()`: the session-start and
+    /// prompt-submit hooks, the output-schema and prompt-context records, the
+    /// task-start record, and history repair.
+    ///
+    /// A setup failure dispatches a best-effort `SessionEnd` with `Error`
+    /// before returning the original error, so a reporter that saw `working`
+    /// still gets a cleanup boundary. Extracted from `execute_agent_turn` so
+    /// the turn itself stays under the complexity ceiling.
+    async fn prepare_agent_turn(
+        client: &mut Agent,
+        hook_runner: Option<&Arc<HookRunner>>,
+        session_start_source: &HookSource,
+        content: &str,
+    ) -> anyhow::Result<()> {
+        let setup: anyhow::Result<()> = async {
             if let Some(runner) = hook_runner {
-                let contexts = runner.session_start(&session_start_source, content).await?;
+                let contexts = runner.session_start(session_start_source, content).await?;
                 client.append_developer_context(contexts);
                 let contexts = runner.user_prompt_submit(content).await?;
                 client.append_developer_context(contexts);
@@ -1014,23 +1044,12 @@ impl CodingAssistant {
             Ok(())
         }
         .await;
-        if let Err(error) = setup_result {
+
+        if let Err(error) = setup {
             Self::run_session_end_hook(hook_runner, SessionEndReason::Error).await;
             return Err(error);
         }
-
-        let result = client.send(content.to_string()).await;
-        let duration_ms = start.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
-
-        Self::handle_agent_turn_result(client, hook_runner, &result, duration_ms).await?;
-
-        // Cut-offs stay Err so each render mode and the telemetry summary
-        // report them as failures; the TaskOutcome::CutOff record was already
-        // emitted by handle_agent_turn_result.
-        Ok(TurnResult {
-            result,
-            duration_ms,
-        })
+        Ok(())
     }
 
     /// Handle the result of `client.send()`: invoke stop/error hooks and emit the

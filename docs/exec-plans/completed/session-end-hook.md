@@ -6,7 +6,7 @@ This ExecPlan is a living document, maintained per `docs/workflow/exec-plans.md`
 
 Cake's existing `Stop` and `ErrorOccurred` hooks run only after the provider send resolves. A project that reports `working` from `SessionStart` or `UserPromptSubmit` therefore has no reliable lifecycle cleanup event when prompt processing fails before send or when a turn is interrupted. This change adds a final `SessionEnd` command hook with a small, stable reason so an external host can release authority on every graceful Cake invocation path.
 
-After this work, a project can configure a `SessionEnd` hook that runs once with `reason` set to `success`, `error`, or `interrupted`. The command receives the same common identity and location fields as other lifecycle hooks, and a broken final reporter cannot change the result Cake already produced.
+After this work, a project can configure a `SessionEnd` hook that runs at most once with `reason` set to `success`, `error`, or `interrupted`. The command receives the same common identity and location fields as other lifecycle hooks, and a broken final reporter cannot change the result Cake already produced.
 
 How to verify it works:
 
@@ -23,6 +23,8 @@ How to verify it works:
 - [x] (2026-09-25T12:59Z) Updated hook protocol, configuration, and Herdr integration documentation.
 - [x] (2026-09-25T13:00Z) Passed focused tests, manual process checks, `just check`, and `just cc-check`.
 - [x] (2026-09-25T13:01Z) Completed the three-pass preflight and prepared the commit and pull request handoff.
+- [x] (2026-09-25T14:10Z) Review fix: extracted `CodingAssistant::prepare_agent_turn` so `execute_agent_turn` returns to its pre-change complexity, and guarded `HookRunner::session_end` with a completed-dispatch flag. Covered both with focused tests.
+- [x] (2026-09-25T14:25Z) Review fix: documented the at-most-once guarantee and the pre-send `hook_event` shape, and regenerated `ci/cargo-crap-baseline.json` from `just change-risk-baseline`.
 
 ## Surprises & Discoveries
 
@@ -31,6 +33,8 @@ How to verify it works:
 - Observation: A failed turn in stream-json mode normally exits 0, so `SessionEnd` must report the turn's `error` reason rather than infer the reason from the process exit code. Evidence: `CliOutputSink::stream_json_exit_result` suppresses ordinary in-stream errors.
 - Observation: The second-interrupt handler is an intentional hard-exit escape hatch and can bypass a hung `SessionEnd` subprocess. Evidence: `handle_interrupt` spawns a task that calls `std::process::exit(130)` on the next interrupt.
 - Observation: The existing `main_tests.rs` and `hooks_tests.rs` modules were already over the repository's 800-test-line guidance. Evidence: `just lint-module-size` reported 1,405 lines in `main_tests.rs` and 1,133 in `hooks_tests.rs` before the focused tests were moved.
+- Observation: The CRAP regression gate, not the CC gate, is what rejects adding an arm to a fully covered match. Evidence: CI run 36138770391 reported `HookEvent::from_str CRAP=10.0 (Δ+1.0)` and `HookEvent::as_str CRAP=9.1 (Δ+0.5)`, while the same run's CC gate passed with 0 functions over their allowed value. `just check` cannot see this, because it composes `cc-check` (CC only); only `just check-coverage` computes CRAP.
+- Observation: `tokio::select!` drops the branches that did not complete before it evaluates the winning branch's handler. Evidence: the tokio 1.53 macro polls inside an inner scope that ends before the `match` on the branch output, so the interrupt path observes the turn's own `SessionEnd` outcome without extra synchronization.
 
 ## Decision Log
 
@@ -38,6 +42,9 @@ How to verify it works:
 - Decision: Dispatch `SessionEnd` after the send result or setup failure is known, but before the terminal `task_complete` record. Rationale: this is post-result and still before process exit, while preserving the established rule that `task_complete` is the final task record. Date/Author: 2026-09-25 / Codex.
 - Decision: Keep normal `fail_closed` parsing and tracing inside `HookRunner`, but have the CLI ignore the returned `SessionEnd` error. Rationale: final reporters observe and release external state; they must not replace the turn outcome they are reporting. Date/Author: 2026-09-25 / Codex.
 - Decision: Limit the runtime guarantee to paths where Cake has loaded a valid hook set and reaches graceful cleanup. Rationale: malformed hook configuration cannot execute reliably, and `SIGKILL`, crashes, and the second-interrupt hard exit are outside an in-process hook's control. Date/Author: 2026-09-25 / Codex.
+- Decision: Extract `CodingAssistant::prepare_agent_turn` and guard `HookRunner::session_end` with a completed-dispatch flag, instead of raising the baseline for `execute_agent_turn` or narrowing when interrupts are honored. Rationale: extraction is what the complexity guardrail prescribes for a function that grew, the flag keeps the interrupt path's cleanup dispatch while removing the duplicate, and narrowing the interrupt race would change ADR 011 behavior. Date/Author: 2026-09-25 / Cake.
+- Decision: Set the dispatch flag after the command completes rather than before it starts. Rationale: a signal that drops the turn kills an in-flight hook subprocess, so setting the flag first would suppress the interrupt path's dispatch and lose the cleanup entirely. Date/Author: 2026-09-25 / Cake.
+- Decision: Record the pre-send `hook_event` shape in `docs/integrations.md` instead of suppressing the record. Rationale: the command ran, so an audit record omitting it would misrepresent the invocation. Date/Author: 2026-09-25 / Cake.
 
 ## Outcomes & Retrospective
 
@@ -50,6 +57,8 @@ Documentation now covers configuration, protocol ordering, unavoidable hard-exit
 The delivered branch passed `cargo test session_end`, `cargo test handle_agent_turn`, `cargo test handle_interrupt`, `just cc-check`, `just docs-check`, strict Clippy, and the full `just check` gate. The completed preflight ran all three L-scale passes for this cross-module public hook protocol, reviewed the root instructions, issue 542, this ExecPlan, integration and configuration contracts, ADR 005, ADR 011, ADR 037, and the Herdr guide, and moved the new tests into `src/session_end_tests.rs` rather than growing already-oversized test modules.
 
 Nothing remains within issue 542's implementation scope. As documented, process crashes, `SIGKILL`, malformed hook configuration, and the second-interrupt hard exit cannot guarantee an in-process `SessionEnd` command.
+
+Review follow-up after the pull request's first CI run. The CRAP ratchet, not the CC gate, caught the complexity the change added. `CodingAssistant::prepare_agent_turn` now owns pre-send setup and its `SessionEnd` dispatch, which returns `execute_agent_turn` to its prior complexity; `HookRunner::session_end` records a completed dispatch so the interrupt path cannot run a finished command twice; and `ci/cargo-crap-baseline.json` was regenerated for `HookEvent::from_str` (CC 9 to 10, the documented reason) and `HookEvent::as_str` (coverage-driven, after a round-trip test over every event name). A `prepare_agent_turn` test covers both the hooked and unhooked paths and asserts that `task_start` opens the stream. A follow-up issue tracks replacing the two hand-rolled event-name matches with a lookup table, because `HookEvent::from_str` now sits exactly at the CC target and the next event would exceed it.
 
 ## Context and Orientation
 

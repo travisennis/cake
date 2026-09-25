@@ -283,6 +283,96 @@ async fn session_end_emits_once_for_pre_send_failure() {
 
 #[tokio::test]
 #[cfg(unix)]
+async fn prepare_agent_turn_emits_task_start_and_succeeds() {
+    for with_hooks in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("prompt-submit-ran");
+        let records = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let records_clone = records.clone();
+        let mut agent = test_agent().with_streaming_json(move |json| {
+            records_clone.lock().unwrap().push(json.to_string());
+        });
+        let runner = with_hooks.then(|| {
+            hook_runner_for_events(
+                vec![
+                    (HookEvent::SessionStart, "exit 0".to_string(), false),
+                    (
+                        HookEvent::UserPromptSubmit,
+                        format!("touch '{}'", marker.display()),
+                        false,
+                    ),
+                ],
+                &std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            )
+        });
+
+        CodingAssistant::prepare_agent_turn(
+            &mut agent,
+            runner.as_ref(),
+            &crate::config::hooks::HookSource::SessionStart("startup".to_string()),
+            "test prompt",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            marker.exists(),
+            with_hooks,
+            "UserPromptSubmit hook did not run"
+        );
+        let records = records.lock().unwrap();
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| record.contains("\"task_start\""))
+                .count(),
+            1
+        );
+        // The comment on the task-start emission claims the record opens the
+        // stream, so nothing else may precede it.
+        let first: serde_json::Value = serde_json::from_str(&records[0]).unwrap();
+        assert_eq!(first["type"], "task_start");
+        drop(records);
+    }
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn session_end_dispatches_at_most_once_per_invocation() {
+    let dir = tempfile::tempdir().unwrap();
+    let payload_path = dir.path().join("session-end.json");
+    let hook_events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let runner = hook_runner_for_events(
+        vec![(
+            HookEvent::SessionEnd,
+            format!("cat >> '{}'", payload_path.display()),
+            false,
+        )],
+        &hook_events,
+    );
+
+    runner.session_end(SessionEndReason::Success).await.unwrap();
+    // The interrupt path can reach `session_end` after the turn's own dispatch
+    // already completed, because a signal drops the turn future. It must not
+    // run the command a second time.
+    runner
+        .session_end(SessionEndReason::Interrupted)
+        .await
+        .unwrap();
+
+    let captured = std::fs::read_to_string(&payload_path).unwrap();
+    let payloads: Vec<serde_json::Value> = captured
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(payloads.len(), 1, "SessionEnd ran more than once");
+    assert_eq!(payloads[0]["reason"], "success");
+    assert_eq!(session_end_event_count(&hook_events), 1);
+}
+
+#[tokio::test]
+#[cfg(unix)]
 async fn handle_interrupt_emits_one_session_end_before_task_complete() {
     let dir = tempfile::tempdir().unwrap();
     let payload_path = dir.path().join("session-end.json");

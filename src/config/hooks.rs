@@ -344,6 +344,29 @@ mod tests {
     }
 
     #[test]
+    fn hook_event_names_round_trip() {
+        let events = [
+            HookEvent::SessionStart,
+            HookEvent::UserPromptSubmit,
+            HookEvent::PreToolUse,
+            HookEvent::PostToolUse,
+            HookEvent::PostToolUseFailure,
+            HookEvent::Stop,
+            HookEvent::ErrorOccurred,
+            HookEvent::SessionEnd,
+        ];
+
+        // `as_str` and `from_str` are the wire names for `hooks.json` keys and
+        // hook payloads, so every variant has to survive the round trip.
+        for event in events {
+            let name = event.as_str();
+            assert_eq!(name.parse::<HookEvent>().unwrap(), event);
+            assert_eq!(event.to_string(), name);
+        }
+        assert_eq!("NotAnEvent".parse::<HookEvent>(), Err(()));
+    }
+
+    #[test]
     fn missing_hook_files_load_empty() {
         let tmp = tempfile::TempDir::new().unwrap();
         let loaded = HooksLoader::load_from_paths([tmp.path().join("missing.json")].iter())
