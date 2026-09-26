@@ -65,6 +65,10 @@ impl HookEvent {
     }
 
     pub const fn as_str(self) -> &'static str {
+        // The discriminant comparison stands in for `==`: `PartialEq::eq` is not
+        // `const`, so `self == event` cannot be used in a `const fn`. `HookEvent`
+        // declares no explicit discriminants, so each variant's discriminant is
+        // unique and identifies it here.
         let mut index = 0;
         while index < HOOK_EVENT_NAMES.len() {
             let (event, name) = HOOK_EVENT_NAMES[index];
@@ -374,6 +378,17 @@ mod tests {
             let name = event.as_str();
             assert_eq!(name.parse::<HookEvent>().unwrap(), event);
             assert_eq!(event.to_string(), name);
+            // The round trip alone cannot see a variant listed twice: both
+            // directions take the first matching entry. Count entries so the
+            // table cannot grow a duplicate that the first-match lookup hides.
+            let entries = HOOK_EVENT_NAMES
+                .iter()
+                .filter(|(entry, _)| *entry == event)
+                .count();
+            assert_eq!(
+                entries, 1,
+                "expected one HOOK_EVENT_NAMES entry for {event:?}"
+            );
         }
         assert_eq!("NotAnEvent".parse::<HookEvent>(), Err(()));
     }
