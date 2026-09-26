@@ -69,7 +69,7 @@
     {
       "file": "./src/config/hooks.rs",
       "function": "HooksLoader::load_from_paths",
-      "line": 247,
+      "line": 251,
       "cyclomatic": 12.0,
       "coverage": 84.84848484848484,
       "crap": 12.500876533934386
@@ -2117,7 +2117,7 @@
     {
       "file": "./src/config/hooks.rs",
       "function": "HookSource::parse_for_event",
-      "line": 148,
+      "line": 152,
       "cyclomatic": 4.0,
       "coverage": 88.88888888888889,
       "crap": 4.021947873799726
@@ -2621,7 +2621,7 @@
     {
       "file": "./src/config/hooks.rs",
       "function": "HookSource::as_display_str",
-      "line": 137,
+      "line": 141,
       "cyclomatic": 4.0,
       "coverage": 100.0,
       "crap": 4.0
@@ -3757,7 +3757,7 @@
     {
       "file": "./src/config/hooks.rs",
       "function": "HookEvent::from_str",
-      "line": 107,
+      "line": 111,
       "cyclomatic": 3.0,
       "coverage": 100.0,
       "crap": 3.0
@@ -3765,7 +3765,7 @@
     {
       "file": "./src/config/hooks.rs",
       "function": "HookMatcher::parse",
-      "line": 172,
+      "line": 176,
       "cyclomatic": 3.0,
       "coverage": 100.0,
       "crap": 3.0
@@ -3773,7 +3773,7 @@
     {
       "file": "./src/config/hooks.rs",
       "function": "HookMatcher::matches",
-      "line": 193,
+      "line": 197,
       "cyclomatic": 3.0,
       "coverage": 100.0,
       "crap": 3.0
@@ -8669,7 +8669,7 @@
     {
       "file": "./src/config/hooks.rs",
       "function": "HookEvent::fmt",
-      "line": 99,
+      "line": 103,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -8677,7 +8677,7 @@
     {
       "file": "./src/config/hooks.rs",
       "function": "HooksLoader::load",
-      "line": 237,
+      "line": 241,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
