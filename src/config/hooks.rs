@@ -44,7 +44,7 @@ pub struct HookGroup {
     pub hooks: Vec<HookCommand>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HookEvent {
     SessionStart,
     UserPromptSubmit,
@@ -65,18 +65,35 @@ impl HookEvent {
     }
 
     pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::SessionStart => "SessionStart",
-            Self::UserPromptSubmit => "UserPromptSubmit",
-            Self::PreToolUse => "PreToolUse",
-            Self::PostToolUse => "PostToolUse",
-            Self::PostToolUseFailure => "PostToolUseFailure",
-            Self::Stop => "Stop",
-            Self::ErrorOccurred => "ErrorOccurred",
-            Self::SessionEnd => "SessionEnd",
+        let mut index = 0;
+        while index < HOOK_EVENT_NAMES.len() {
+            let (event, name) = HOOK_EVENT_NAMES[index];
+            if event as u8 == self as u8 {
+                return name;
+            }
+            index += 1;
         }
+        panic!("every HookEvent variant needs an entry in HOOK_EVENT_NAMES")
     }
 }
+
+/// Wire names for [`HookEvent`], used as `hooks.json` keys and in hook payloads.
+///
+/// Single source of truth for both directions: `as_str` and `from_str` read
+/// this table, so a new event costs one entry instead of two match arms. The
+/// `hook_event_names_round_trip` test enumerates every variant and fails if an
+/// entry goes missing, which is what replaces the exhaustiveness check a match
+/// would have provided.
+const HOOK_EVENT_NAMES: [(HookEvent, &str); 8] = [
+    (HookEvent::SessionStart, "SessionStart"),
+    (HookEvent::UserPromptSubmit, "UserPromptSubmit"),
+    (HookEvent::PreToolUse, "PreToolUse"),
+    (HookEvent::PostToolUse, "PostToolUse"),
+    (HookEvent::PostToolUseFailure, "PostToolUseFailure"),
+    (HookEvent::Stop, "Stop"),
+    (HookEvent::ErrorOccurred, "ErrorOccurred"),
+    (HookEvent::SessionEnd, "SessionEnd"),
+];
 
 impl fmt::Display for HookEvent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -88,17 +105,12 @@ impl std::str::FromStr for HookEvent {
     type Err = ();
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value {
-            "SessionStart" => Ok(Self::SessionStart),
-            "UserPromptSubmit" => Ok(Self::UserPromptSubmit),
-            "PreToolUse" => Ok(Self::PreToolUse),
-            "PostToolUse" => Ok(Self::PostToolUse),
-            "PostToolUseFailure" => Ok(Self::PostToolUseFailure),
-            "Stop" => Ok(Self::Stop),
-            "ErrorOccurred" => Ok(Self::ErrorOccurred),
-            "SessionEnd" => Ok(Self::SessionEnd),
-            _ => Err(()),
+        for (event, name) in HOOK_EVENT_NAMES {
+            if name == value {
+                return Ok(event);
+            }
         }
+        Err(())
     }
 }
 
