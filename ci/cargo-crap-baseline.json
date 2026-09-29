@@ -605,7 +605,7 @@
     {
       "file": "./src/clients/judge.rs",
       "function": "find_git_head",
-      "line": 964,
+      "line": 930,
       "cyclomatic": 7.0,
       "coverage": 88.88888888888889,
       "crap": 7.06721536351166
@@ -1029,7 +1029,7 @@
     {
       "file": "./src/clients/judge.rs",
       "function": "refusal_error",
-      "line": 775,
+      "line": 741,
       "cyclomatic": 6.0,
       "coverage": 93.33333333333333,
       "crap": 6.010666666666666
@@ -1357,7 +1357,7 @@
     {
       "file": "./src/clients/judge.rs",
       "function": "JudgeError::error_class",
-      "line": 156,
+      "line": 154,
       "cyclomatic": 5.0,
       "coverage": 71.42857142857143,
       "crap": 5.5830903790087465
@@ -1765,7 +1765,7 @@
     {
       "file": "./src/clients/judge.rs",
       "function": "parse_verdict",
-      "line": 811,
+      "line": 777,
       "cyclomatic": 5.0,
       "coverage": 100.0,
       "crap": 5.0
@@ -1773,7 +1773,7 @@
     {
       "file": "./src/clients/judge.rs",
       "function": "validate_verdict_codes",
-      "line": 835,
+      "line": 801,
       "cyclomatic": 5.0,
       "coverage": 100.0,
       "crap": 5.0
@@ -2461,7 +2461,7 @@
     {
       "file": "./src/clients/judge.rs",
       "function": "JudgeDecision::as_str",
-      "line": 101,
+      "line": 99,
       "cyclomatic": 4.0,
       "coverage": 100.0,
       "crap": 4.0
@@ -2469,7 +2469,7 @@
     {
       "file": "./src/clients/judge.rs",
       "function": "repo_state_digest",
-      "line": 948,
+      "line": 914,
       "cyclomatic": 4.0,
       "coverage": 100.0,
       "crap": 4.0
@@ -3589,7 +3589,7 @@
     {
       "file": "./src/clients/judge.rs",
       "function": "evaluate_command_observed",
-      "line": 353,
+      "line": 320,
       "cyclomatic": 3.0,
       "coverage": 100.0,
       "crap": 3.0
@@ -4133,7 +4133,7 @@
     {
       "file": "./src/clients/judge.rs",
       "function": "read_user_rubric",
-      "line": 591,
+      "line": 558,
       "cyclomatic": 2.0,
       "coverage": 57.14285714285714,
       "crap": 2.314868804664723
@@ -4157,7 +4157,7 @@
     {
       "file": "./src/clients/judge.rs",
       "function": "validate_warn_code",
-      "line": 874,
+      "line": 840,
       "cyclomatic": 2.0,
       "coverage": 75.0,
       "crap": 2.0625
@@ -4229,7 +4229,7 @@
     {
       "file": "./src/clients/judge.rs",
       "function": "resolve_judge_client_config",
-      "line": 569,
+      "line": 536,
       "cyclomatic": 2.0,
       "coverage": 84.61538461538461,
       "crap": 2.014565316340464
@@ -5101,7 +5101,7 @@
     {
       "file": "./src/clients/judge.rs",
       "function": "fast_approval_probability",
-      "line": 78,
+      "line": 76,
       "cyclomatic": 2.0,
       "coverage": 100.0,
       "crap": 2.0
@@ -5109,7 +5109,7 @@
     {
       "file": "./src/clients/judge.rs",
       "function": "judge_is_enabled",
-      "line": 295,
+      "line": 293,
       "cyclomatic": 2.0,
       "coverage": 100.0,
       "crap": 2.0
@@ -5117,7 +5117,7 @@
     {
       "file": "./src/clients/judge.rs",
       "function": "evaluate_cascade",
-      "line": 396,
+      "line": 363,
       "cyclomatic": 2.0,
       "coverage": 100.0,
       "crap": 2.0
@@ -5125,7 +5125,7 @@
     {
       "file": "./src/clients/judge.rs",
       "function": "cascade_observation",
-      "line": 438,
+      "line": 405,
       "cyclomatic": 2.0,
       "coverage": 100.0,
       "crap": 2.0
@@ -5133,7 +5133,7 @@
     {
       "file": "./src/clients/judge.rs",
       "function": "JudgeClient::typesafe_observed",
-      "line": 674,
+      "line": 641,
       "cyclomatic": 2.0,
       "coverage": 100.0,
       "crap": 2.0
@@ -5141,7 +5141,7 @@
     {
       "file": "./src/clients/judge.rs",
       "function": "validate_block_code",
-      "line": 853,
+      "line": 819,
       "cyclomatic": 2.0,
       "coverage": 100.0,
       "crap": 2.0
@@ -5749,7 +5749,7 @@
     {
       "file": "./src/clients/judge.rs",
       "function": "JudgeContext::judge_client",
-      "line": 533,
+      "line": 500,
       "cyclomatic": 1.0,
       "coverage": 83.33333333333334,
       "crap": 1.0046296296296295
@@ -7757,7 +7757,7 @@
     {
       "file": "./src/clients/judge.rs",
       "function": "JudgeRequest::new",
-      "line": 204,
+      "line": 202,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -7765,7 +7765,7 @@
     {
       "file": "./src/clients/judge.rs",
       "function": "JudgeRequest::with_repo_digest",
-      "line": 218,
+      "line": 216,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -7773,15 +7773,7 @@
     {
       "file": "./src/clients/judge.rs",
       "function": "JudgeRequest::with_call_id",
-      "line": 224,
-      "cyclomatic": 1.0,
-      "coverage": 100.0,
-      "crap": 1.0
-    },
-    {
-      "file": "./src/clients/judge.rs",
-      "function": "evaluate_command",
-      "line": 318,
+      "line": 222,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -7789,7 +7781,7 @@
     {
       "file": "./src/clients/judge.rs",
       "function": "judge_outcome",
-      "line": 457,
+      "line": 424,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -7797,7 +7789,7 @@
     {
       "file": "./src/clients/judge.rs",
       "function": "JudgeClient::new",
-      "line": 637,
+      "line": 604,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -7805,7 +7797,7 @@
     {
       "file": "./src/clients/judge.rs",
       "function": "JudgeClient::with_user_rubric",
-      "line": 651,
+      "line": 618,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -7813,7 +7805,7 @@
     {
       "file": "./src/clients/judge.rs",
       "function": "JudgeClient::with_typesafe",
-      "line": 662,
+      "line": 629,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -7821,7 +7813,7 @@
     {
       "file": "./src/clients/judge.rs",
       "function": "JudgeClient::api_key",
-      "line": 693,
+      "line": 660,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -7829,7 +7821,7 @@
     {
       "file": "./src/clients/judge.rs",
       "function": "JudgeClient::provider_header_values",
-      "line": 700,
+      "line": 667,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -7837,7 +7829,7 @@
     {
       "file": "./src/clients/judge.rs",
       "function": "JudgeClient::judge",
-      "line": 736,
+      "line": 702,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -7845,7 +7837,7 @@
     {
       "file": "./src/clients/judge.rs",
       "function": "JudgeClient::judge_observed",
-      "line": 741,
+      "line": 707,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -7853,7 +7845,7 @@
     {
       "file": "./src/clients/judge.rs",
       "function": "judge_retry_policy",
-      "line": 755,
+      "line": 721,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -7861,7 +7853,7 @@
     {
       "file": "./src/clients/judge.rs",
       "function": "assistant_message",
-      "line": 794,
+      "line": 760,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -7869,7 +7861,7 @@
     {
       "file": "./src/clients/judge.rs",
       "function": "build_judge_history",
-      "line": 899,
+      "line": 865,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -7877,7 +7869,7 @@
     {
       "file": "./src/clients/judge.rs",
       "function": "strip_markdown_fences",
-      "line": 993,
+      "line": 959,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
