@@ -15,8 +15,7 @@
 //! the allowlist override and the emergency bypass. [`evaluate_command_observed`]
 //! is now the sole policy pipeline — the bypass check, the bounded call, and
 //! the exact-match allowlist override, returning a [`JudgeOutcome`] — shared
-//! by every caller, including `cake bash check`. `Milestone 5`
-//! adds
+//! by every caller, including `cake bash check`. `Milestone 5` adds
 //! [`JudgeContext`] — the per-run judge configuration carried on the
 //! [`crate::clients::tools::ToolContext`] so the Bash preflight and the agent
 //! loop share one resolution — and [`resolve_judge_client_config`], the shared
