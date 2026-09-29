@@ -13,8 +13,8 @@ use futures::StreamExt;
 use serde::Deserialize;
 
 use crate::clients::judge::{
-    JudgeClient, JudgeDecision, JudgeOutcome, JudgeRequest, evaluate_command, judge_is_enabled,
-    read_user_rubric, repo_state_digest, resolve_judge_client_config,
+    JudgeClient, JudgeDecision, JudgeOutcome, JudgeRequest, evaluate_command_observed,
+    judge_is_enabled, read_user_rubric, repo_state_digest, resolve_judge_client_config,
 };
 use crate::clients::judge_rubric::VerdictCode;
 use crate::clients::typesafe::TypeSafeClient;
@@ -604,8 +604,9 @@ async fn observe(
     bypass_env: Option<&str>,
     request: JudgeRequest,
 ) -> Result<Observation, String> {
-    let outcome = evaluate_command(client, settings, request, bypass_env)
+    let outcome = evaluate_command_observed(client, settings, request, bypass_env, false)
         .await
+        .outcome
         .map_err(|error| error.to_string())?;
     match outcome {
         JudgeOutcome::Verdict { verdict, .. } => Ok(Observation {
