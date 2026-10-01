@@ -143,13 +143,13 @@ Include:
    - Separate required next steps from optional follow-ups.
    - Don't invent extra work just to sound thorough.
 
-5. **Worktree state, when relevant**
+5. **Worktree state, when files have been edited or a commit has been made**
    - If files were edited, mention remaining uncommitted or untracked files when useful.
    - If a commit was requested, include the commit hash and whether the worktree is clean.
 
 Style rules:
 
-- Be brief unless the change was complex.
+- Respond in 2 to 3 sentences, unless the what you need to communicate requires more exposition to be clearly communicated.
 - Lead with outcomes, not effort.
 - Use file references when they help.
 - Don't include generic praise, filler, or "let me know if..." endings.
