@@ -41,12 +41,12 @@ import sys
 from pathlib import Path
 
 # Policy cap on AGENTS.md in prose words. AGENTS.md is the one document loaded
-# into every session, so its size is a per-session cost: 1200 words is roughly
-# 1.6k tokens, about 1.2% of a 128k-token context. The number is policy, not
-# derived from the document's current size; there is no raise-by-comment path.
-# Contract documentation belongs in the on-demand documents, which are not
-# capped.
-AGENTS_CAP = 1200
+# into every session, so its size is a per-session cost: 1250 words is roughly
+# 1.7k tokens, about 1.3% of a 128k-token context. The number is policy, not
+# derived from the document's current size; it moves only by a deliberate change
+# to this value, not by a comment on a pull request. Contract documentation
+# belongs in the on-demand documents, which are not capped.
+AGENTS_CAP = 1250
 
 # Directories walked recursively for Markdown instructions, relative to the
 # repo root. Excluded by omission: docs/adr and docs/exec-plans hold records
