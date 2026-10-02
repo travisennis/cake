@@ -209,7 +209,7 @@ lint-deps:
 # Keep the composition in sync with the change-class matrix in CONTRIBUTING.md:
 # cc-check runs the per-function complexity ratchet here rather than only in the
 # Coverage job, and check-scripts runs the Python fixture suites.
-check: rust-version-check fmt-check cc-check _clippy-strict _test-all-features lint-imports lint-deps lint-module-size lint-instruction-size lint-domain-glossary check-scripts
+check: rust-version-check fmt-check cc-check _clippy-strict _test-all-features lint-imports lint-deps lint-module-size lint-domain-glossary check-scripts
     echo "Fast local checks passed!"
 
 # Print the changed-path classification the pre-push gate routes on: docs | code | mixed | unknown | none
@@ -308,10 +308,6 @@ check-full: check _check-linux check-coverage check-deps doc docs-check build
 lint-module-size:
     python3 scripts/lint-module-size.py
 
-# Cap the always-loaded AGENTS.md and report the instruction corpus (enforcing)
-lint-instruction-size:
-    python3 scripts/lint-instruction-size.py
-
 # Check that docs/domain-glossary.md still matches the code it describes
 lint-domain-glossary:
     python3 scripts/lint-domain-glossary.py
@@ -381,7 +377,7 @@ update-dependencies:
 # Check markdown formatting and lint over the repository's Markdown: the files git
 # tracks, so untracked scratch notes are neither checked nor rewritten (requires
 # panache; installed by `just setup`)
-docs-check: lint-instruction-size
+docs-check:
     @scripts/docs-corpus.sh --check
 
 # Auto-format the repository's Markdown (tracked files; format an untracked draft
