@@ -269,7 +269,7 @@ cake debug skills --catalog-budget 8000 --description-budget 400
 
 The report counts the rendered XML, including escaping and locations, in UTF-8 bytes and Unicode characters. Its token estimate is characters divided by four, rounded up; it is not a provider token count. It lists descriptions largest first and warns above the advisory defaults of 8,000 catalog characters and 400 description characters. These are configurable review thresholds, not model limits or measurements of instruction quality. Warnings exit successfully and never truncate descriptions or remove skills. Select fewer skills with `skills.only`, a profile, or `--no-skills` when appropriate.
 
-The report measures the selected catalog, not the complete prompt; an agent run includes the catalog only when the run can read a `SKILL.md` (see above). Discovery precedence and profile filtering match an agent run. Place `--skills` and `--no-skills` after `debug skills` for this report. To include it in the repository's existing instruction report after building Cake, run `python3 scripts/lint-instruction-size.py --skill-catalog target/debug/cake`.
+The report measures the selected catalog, not the complete prompt; an agent run includes the catalog only when the run can read a `SKILL.md` (see above). Discovery precedence and profile filtering match an agent run. Place `--skills` and `--no-skills` after `debug skills` for this report.
 
 ## Instructions and system prompts
 
