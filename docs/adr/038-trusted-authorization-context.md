@@ -13,7 +13,7 @@ The LLM judge is the only command-safety gate above the OS sandbox (ADR-018), an
 
 The cost is observable. Two identical `gh issue close` invocations in one session were split between `allow` and `block` because closure sits in the judgment gray zone. A user-authorized branch cleanup the user had explicitly requested was repeatedly blocked because the judge could not see the request (issue #315). The rubric itself concedes the hole for its own classes: "Whether a user authorized a specific transfer is trusted context the judge does not receive, so an authorized upload of a reviewed file can be a false block."
 
-This record covers a near-term policy step and the durable mechanism. The near-term step, tracked by issue #681, removes reversible remote mutations from the gray zone: the project rubric permits issue close/reopen and issue or pull-request metadata edits as routine mutations, like additive comments, because they are reversible and carry no payload. That step changes no trust boundary. The durable mechanism is a bounded, host-authenticated projection of the current invocation's user authorization, so the judge can recognize a requested effect without gaining the facts it still must not assume.
+This record covers a near-term policy step and the durable mechanism. The near-term step, tracked by issue #681, removes reversible remote state changes from the gray zone: the project rubric permits them as routine mutations, like additive comments, because they are reversible and carry no payload, and it defines the class by properties (reversible, state and metadata only, payload-free) rather than by tool, so an issue close/reopen, a label or title edit, and the same shape in another CLI are all covered. That step changes no trust boundary. The durable mechanism is a bounded, host-authenticated projection of the current invocation's user authorization, so the judge can recognize a requested effect without gaining the facts it still must not assume.
 
 ## Decision Drivers
 
@@ -25,7 +25,7 @@ This record covers a near-term policy step and the durable mechanism. The near-t
 
 ## Considered Options
 
-- **Broaden the rubric's routine-mutation allowance only (near-term, chosen).** Move reversible remote mutations (issue close/reopen, issue or pull-request metadata edits) into the allowed set beside additive comments. Cheap, removes the observed false blocks, and changes no trust boundary. It does not help destructive or egress effects whose safety depends on authorization.
+- **Broaden the rubric's routine-mutation allowance only (near-term, chosen).** Move reversible remote state changes (an issue close/reopen, a label, assignee, milestone, or title edit, and the same shape in another tool) into the allowed set beside additive comments. Cheap, removes the observed false blocks, and changes no trust boundary. It does not help destructive or egress effects whose safety depends on authorization.
 - **Forward the conversation transcript to the judge.** Rejected. It is unbounded, adds token, latency, and privacy cost to the hottest tool, and lets repository-controlled text inside pasted or quoted content become authorization.
 - **A bounded, host-authenticated user-intent projection (durable, chosen).** Cake projects the current invocation's user turn, with provenance labels, into the judge request. The judge gains a trusted channel for "was this requested" while remaining blind to unverifiable facts and fail-closed when the projection is absent.
 
