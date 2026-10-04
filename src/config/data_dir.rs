@@ -135,6 +135,24 @@ impl DataDir {
             .join(format!("{id}.ndjson"))
     }
 
+    /// Roots Cake grants sandboxed commands and the in-process path checks
+    /// read-only access to by default.
+    ///
+    /// Session analysis and debugging skills read Cake's own state --- session
+    /// files, telemetry sidecars, and daily logs --- so those roots are granted
+    /// read-only for every run. Returns the cache/data directory and the
+    /// sessions directory, deduplicated when `CAKE_DATA_DIR` collapses them
+    /// under one root. The config directory is deliberately excluded: it holds
+    /// credentials and trusted executables. See `docs/security.md`.
+    #[must_use]
+    pub fn sandbox_read_dirs(&self) -> Vec<PathBuf> {
+        let mut dirs = vec![self.data_dir.clone()];
+        if self.sessions_dir != self.data_dir {
+            dirs.push(self.sessions_dir.clone());
+        }
+        dirs
+    }
+
     /// Saves a session to disk as a new JSONL file.
     ///
     /// The session is saved to `~/.local/share/cake/sessions/{session_id}.jsonl`.
@@ -362,6 +380,26 @@ mod tests {
             sessions_dir: tmp.path().join("sessions"),
         };
         (dd, tmp)
+    }
+
+    #[test]
+    fn sandbox_read_dirs_returns_cache_and_sessions() {
+        let (dd, _tmp) = test_data_dir();
+        assert_eq!(
+            dd.sandbox_read_dirs(),
+            vec![dd.get_cache_dir(), dd.sessions_dir()]
+        );
+    }
+
+    #[test]
+    fn sandbox_read_dirs_collapses_when_data_dir_covers_sessions() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        let dd = DataDir {
+            data_dir: root.clone(),
+            sessions_dir: root.clone(),
+        };
+        assert_eq!(dd.sandbox_read_dirs(), vec![root]);
     }
 
     #[test]

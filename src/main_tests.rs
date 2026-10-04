@@ -386,6 +386,25 @@ fn test_resolve_additional_dirs_non_existent_filtered() {
 }
 
 #[test]
+fn test_read_only_dirs_merge_cli_settings_and_cake_state() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data_dir = DataDir::new_in_dir(dir.path());
+    let cli_grant = dir.path().join("cli-grant");
+    let settings_grant = dir.path().join("settings-grant");
+
+    let dirs = CodingAssistant::read_only_dirs(
+        vec![cli_grant.clone()],
+        vec![settings_grant.clone()],
+        &data_dir,
+    );
+
+    assert!(dirs.contains(&cli_grant));
+    assert!(dirs.contains(&settings_grant));
+    assert!(dirs.contains(&data_dir.get_cache_dir()));
+    assert!(dirs.contains(&data_dir.sessions_dir()));
+}
+
+#[test]
 fn test_cli_parsing_no_skills() {
     let args = CodingAssistant::parse_from(["cake", "--no-skills", "test prompt"]);
     assert!(args.no_skills);

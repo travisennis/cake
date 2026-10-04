@@ -233,6 +233,8 @@ writable = ["~/.claude", "~/.cache/claude"]  # read + write + execute
 
 `read_only` entries may be files or directories and grant read plus execute access (enough to run a single binary such as `~/.local/bin/claude` without opening its whole directory). `writable` entries grant read, write, and execute access. Both keys accept absolute paths, relative paths, and `~` expansion, and merge as a union across global settings, project settings, and the selected profile; the merged list is deduplicated and sorted, so resolved grants are stable across runs. Entries that do not exist are ignored with a warning in the log file. Under `--sandbox read-only`, `writable` entries are demoted to read-only, matching `directories`.
 
+On top of those grants, Cake always grants read-only access to its own state: the data/cache directory (daily logs and session telemetry) and the sessions directory (or their `CAKE_DATA_DIR` equivalents). Session analysis and debugging skills read these inputs, so they work without a manual grant. The config directory is deliberately not granted; it holds credentials and trusted hooks and tools.
+
 `directories = ["~/shared"]` also expands `~` (historically the path was ignored).
 
 `--add-dir <PATH>` grants additional read-only access for one invocation and may be repeated. `--sandbox` selects `read-only`, `workspace-write`, or `danger-full-access`.
