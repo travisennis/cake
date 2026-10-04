@@ -577,6 +577,7 @@ impl CodingAssistant {
     async fn load_run_resources(
         &self,
         current_dir: &Path,
+        data_dir: &DataDir,
         additional_dirs: Vec<PathBuf>,
         toolbox_dirs: &[PathBuf],
     ) -> anyhow::Result<RunResources> {
@@ -622,10 +623,11 @@ impl CodingAssistant {
             .collect();
 
         let settings_dirs = Self::valid_settings_dirs(&loaded);
-        // `[sandbox].read_only` grants join `--add-dir` entries as read-only
-        // sandbox paths; both are consumed identically downstream.
-        let mut additional_dirs = additional_dirs;
-        additional_dirs.extend(Self::valid_sandbox_read_only_dirs(&loaded));
+        let additional_dirs = Self::read_only_dirs(
+            additional_dirs,
+            Self::valid_sandbox_read_only_dirs(&loaded),
+            data_dir,
+        );
         let sandbox_policy = resolve_sandbox_policy(self.sandbox);
         let tool_context = ToolContext::new(
             current_dir.to_path_buf(),
@@ -735,6 +737,24 @@ impl CodingAssistant {
                 }
             })
             .collect()
+    }
+
+    /// Build the read-only path grant list for a run.
+    ///
+    /// `--add-dir` entries and `[sandbox].read_only` settings grants join
+    /// Cake's own state roots (session files, telemetry, and logs) so the
+    /// session analysis and debugging skills can read their inputs without a
+    /// manual grant. The list feeds both the OS sandbox and the in-process
+    /// Read/Edit/Write/Grep path checks. See [`DataDir::sandbox_read_dirs`].
+    fn read_only_dirs(
+        additional_dirs: Vec<PathBuf>,
+        settings_read_only: Vec<PathBuf>,
+        data_dir: &DataDir,
+    ) -> Vec<PathBuf> {
+        let mut dirs = additional_dirs;
+        dirs.extend(settings_read_only);
+        dirs.extend(data_dir.sandbox_read_dirs());
+        dirs
     }
 
     fn log_skill_diagnostics(skill_catalog: &SkillCatalog) {
@@ -1220,6 +1240,7 @@ impl CmdRunner for CodingAssistant {
         let resources = self
             .load_run_resources(
                 &prepared.current_dir,
+                data_dir,
                 prepared.additional_dirs.clone(),
                 &prepared.toolbox_dirs,
             )
