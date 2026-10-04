@@ -18,6 +18,16 @@ just setup
 
 `mise install` also provides `sccache` and points `RUSTC_WRAPPER` at it, so a newly created worktree reuses already-compiled dependencies instead of rebuilding the graph from cold. Without mise, install `sccache` and export `RUSTC_WRAPPER=sccache` yourself.
 
+The user-facing cake skills --- `analyzing-cake-sessions`, `debugging-cake`, `debugging-cake-sandbox`, and `configuring-cake` --- ship in the separate [cake-skills](https://github.com/travisennis/cake-skills) repository, not here. [AGENTS.md](AGENTS.md) routes to them by name, so install them into your user-level skills directory once per machine:
+
+```bash
+git clone https://github.com/travisennis/cake-skills.git ~/Projects/cake-skills
+mkdir -p ~/.agents/skills
+cp -R ~/Projects/cake-skills/skills/. ~/.agents/skills/
+```
+
+Symlink them instead of copying (`cd ~/Projects/cake-skills && just link`) to pick up edits on the next run. `just link` skips a destination that already exists as a real directory, so remove any copied skill directories before linking. Project skills in a repository's `.agents/skills/` still take precedence. Verify with `cake debug skills`.
+
 Binary-size audits additionally require `cargo-bloat`:
 
 ```bash

@@ -68,7 +68,7 @@ Collection is deliberately incomplete: interpreter flags (including `+` options)
 
 Sandbox availability errors fail closed, including on platforms without a supported OS sandbox. Under the default `workspace-write` or explicit `read-only` policy, Cake reports the unavailable sandbox before Bash spawns; users must explicitly select `danger-full-access` (or set `CAKE_SANDBOX=off`) to run without an OS filesystem sandbox. On macOS, a process already inside Seatbelt may receive the recognized nested-profile `sandbox_apply: Operation not permitted` failure. In that one case Cake warns and relies on the inherited parent sandbox. The parent policy may be more or less restrictive than Cake's selected policy.
 
-For operational diagnosis and platform-specific recovery, follow the [Debugging Sandbox Denials runbook](runbooks/debugging-sandbox.md).
+For operational diagnosis and platform-specific recovery, use the `debugging-cake-sandbox` skill.
 
 ## What the sandbox does not restrict
 

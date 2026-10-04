@@ -32,7 +32,7 @@ We implement a skills system with the following design:
    - A **runbook** owns a repeatable repository operation, including branches, safety, evidence, and recovery.
    - A **reference** records stable formats, commands, and diagnostic interpretation.
 
-   Runbooks live under `docs/runbooks/` and are routed from `AGENTS.md`. A converted skill may remain in the skill catalog as a pointer stub, but the runbook owns the procedure.
+   Runbooks live under `docs/runbooks/` and are routed from `AGENTS.md`. A converted skill may remain in the skill catalog as a pointer stub, but the runbook owns the procedure. User-facing cake procedures may instead live in the separate `cake-skills` repository; `AGENTS.md` routes to those by skill name, and this repository keeps neither a runbook copy nor a pointer stub for them.
 
 ## Rationale
 
@@ -66,6 +66,8 @@ We implement a skills system with the following design:
 2026-07-29: Decision point 7 established the skill / runbook / reference content model. Repeatable repository procedures move to `docs/runbooks/` and are routed from `AGENTS.md`; catalog compatibility may be preserved with a pointer-only `SKILL.md`. See task 300.
 
 2026-09-19: Decision point 4 changed from a `Read`-only activation path to a reader capability. A run whose tool selection omits `Read`, such as `--tools Bash`, now receives the catalog plus Bash-appropriate `<skill_instructions>`; a run with neither reader, such as `--no-tools`, receives none. `SkillActivated` telemetry stays `Read`-only: the `Read` tool carries one path argument, while matching a known `SKILL.md` path inside arbitrary shell text is a heuristic that could misattribute activation. See task 546.
+
+2026-10-04: Decision point 7 extended so user-facing cake procedures may live in the separate `cake-skills` repository instead of `docs/runbooks/`. `AGENTS.md` routes to those skills by name, and this repository no longer keeps a runbook copy or pointer stub for them; runbooks here remain for repository operations. See PR #684.
 
 ## References
 

@@ -170,7 +170,7 @@ Live `function_call` and `function_call_output` records may carry an optional `r
 
 Serialization snapshots under `src/types/snapshots/` provide canonical record examples.
 
-For evidence-backed review of a persisted session, see the [Analyzing Cake Sessions runbook](runbooks/analyzing-cake-sessions/index.md). For reactive triage of a recent failed run, see the [Debugging Failed Cake Runs runbook](runbooks/debugging-cake.md).
+For evidence-backed review of a persisted session, use the `analyzing-cake-sessions` skill. For reactive triage of a recent failed run, use the `debugging-cake` skill.
 
 ## Telemetry sidecars
 
