@@ -51,7 +51,7 @@ Sandbox policies, allowed paths, command policy, trusted hook and toolbox execut
 
 - [Security and trust boundaries](docs/security.md), the authority for the trust boundary.
 - [Integration contracts](docs/integrations.md), for the hook and toolbox wire protocols.
-- [Debugging sandbox denials](docs/runbooks/debugging-sandbox.md), for denials in practice.
+- Use the `debugging-cake-sandbox` skill for denials in practice.
 
 Sandboxing is default-on and fails closed. Security-boundary work requires that document's impact analysis and platform verification.
 
@@ -60,7 +60,7 @@ Sandboxing is default-on and fails closed. Security-boundary work requires that 
 Backends, wire formats, retries, headers, interrupts, and agent-loop control flow.
 
 - [ARCHITECTURE.md](ARCHITECTURE.md), for the conversation and backend boundary.
-- [Debugging failed runs](docs/runbooks/debugging-cake.md), for agent-loop failure triage.
+- Use the `debugging-cake` skill for agent-loop failure triage.
 - `src/clients/` and its snapshots, which are the authority for wire examples.
 
 ### Settings, profiles, skills, and prompt construction
@@ -75,7 +75,7 @@ Settings keys and precedence, profiles, model selection, skills, AGENTS.md disco
 Session JSONL, record semantics, resume, and telemetry sidecars.
 
 - [Integration contracts](docs/integrations.md), for layout and record semantics.
-- [Analyzing sessions](docs/runbooks/analyzing-cake-sessions/index.md), for reviewing a session.
+- Use the `analyzing-cake-sessions` skill for reviewing a session.
 - `src/types/session.rs` and its snapshots, which are the authority for serialized records.
 
 ### Documentation and agent instructions

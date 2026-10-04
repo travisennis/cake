@@ -14,12 +14,6 @@ The following runbooks are available here or planned for migration into this cat
 
 Audit a release binary and identify its principal size contributors.
 
-### Debugging Sandbox Denials
-
-[Debugging Sandbox Denials](debugging-sandbox.md)
-
-Diagnose sandbox failures using the platform-appropriate Seatbelt or Landlock path.
-
 ### Profiling Cake
 
 [Profiling Cake](profiling-cake.md)
@@ -31,18 +25,6 @@ Record and compare a deterministic agent-loop CPU profile without production API
 [Working on Branches and Worktrees](parallel-worktrees.md)
 
 Carry a change from a branch to a merged pull request, and run several changes at once in linked worktrees.
-
-### Analyzing Cake Sessions
-
-[Analyzing Cake Sessions](analyzing-cake-sessions/index.md)
-
-Analyze persisted session records, with supporting references loaded only when needed.
-
-### Debugging Failed Cake Runs
-
-[Debugging Failed Cake Runs](debugging-cake.md)
-
-Triage a recent failed, interrupted, empty, or truncated cake run.
 
 ### CI Runner Images and Required Checks
 
