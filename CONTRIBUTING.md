@@ -26,7 +26,7 @@ mkdir -p ~/.agents/skills
 cp -R ~/Projects/cake-skills/skills/. ~/.agents/skills/
 ```
 
-Symlink them instead of copying (`cd ~/Projects/cake-skills && just link`) to pick up edits on the next run. Project skills in a repository's `.agents/skills/` still take precedence. Verify with `cake debug skills`.
+Symlink them instead of copying (`cd ~/Projects/cake-skills && just link`) to pick up edits on the next run. `just link` skips a destination that already exists as a real directory, so remove any copied skill directories before linking. Project skills in a repository's `.agents/skills/` still take precedence. Verify with `cake debug skills`.
 
 Binary-size audits additionally require `cargo-bloat`:
 
