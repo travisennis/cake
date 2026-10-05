@@ -139,8 +139,10 @@ pub(crate) struct CodingAssistant {
     pub toolbox: Vec<PathBuf>,
 
     /// Select the sandbox policy for model-generated shell commands
-    /// (read-only, workspace-write, danger-full-access). Default:
-    /// workspace-write. Takes precedence over `CAKE_SANDBOX`.
+    /// (read-only, workspace-write, interactive-write, danger-full-access).
+    /// Default: workspace-write. `interactive-write` adds the macOS
+    /// capabilities that let a command launch and automate other
+    /// applications. Takes precedence over `CAKE_SANDBOX`.
     #[arg(short, long, value_enum, value_name = "POLICY")]
     pub sandbox: Option<SandboxPolicy>,
 

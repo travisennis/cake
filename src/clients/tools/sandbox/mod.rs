@@ -38,7 +38,9 @@ pub(super) use linux::LandlockSandbox;
 /// read-only access to system and config paths. `ReadOnly` is strictly more
 /// restrictive: the project directory and toolchain caches become read-only,
 /// while temp directories stay read-write so commands can still produce
-/// intermediate output. `DangerFullAccess` skips the sandbox entirely.
+/// intermediate output. `InteractiveWrite` keeps those path grants and adds
+/// the macOS capabilities that let a command launch and automate other
+/// applications. `DangerFullAccess` skips the sandbox entirely.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
 pub enum SandboxPolicy {
     /// Read-only: deny writes to the workspace and toolchain dirs.
@@ -46,8 +48,25 @@ pub enum SandboxPolicy {
     /// Read-write workspace with toolchain caches (current default).
     #[default]
     WorkspaceWrite,
+    /// Workspace-write access plus macOS app launching and automation, for
+    /// interactive sessions.
+    InteractiveWrite,
     /// No sandbox restrictions.
     DangerFullAccess,
+}
+
+impl SandboxPolicy {
+    /// Whether model-generated commands may launch and automate other
+    /// applications.
+    ///
+    /// Only `InteractiveWrite` grants the macOS `lsopen` and
+    /// `appleevent-send` primitives. They are platform capabilities rather
+    /// than filesystem grants, so they never appear in [`SandboxConfig`]'s
+    /// path lists; this predicate is the single place that decides whether a
+    /// platform strategy emits them.
+    pub(super) const fn allows_app_interaction(self) -> bool {
+        matches!(self, Self::InteractiveWrite)
+    }
 }
 
 /// Resolve the effective sandbox policy from an optional CLI `--sandbox`
@@ -79,7 +98,7 @@ pub(super) struct SandboxConfig {
     pub read_execute: Vec<PathBuf>,
     /// The sandbox policy this config was built for. Platform strategies use
     /// this to adjust rules that are not derived purely from the path lists
-    /// (e.g. macOS Keychain file grants).
+    /// (e.g. macOS Keychain file grants and app-launching capabilities).
     pub policy: SandboxPolicy,
     /// Directories the user granted directly --- `settings_dirs`,
     /// `additional_dirs`, and `skill_dirs` --- in lexical and canonical form.
@@ -183,8 +202,10 @@ impl SandboxConfig {
         let (writable, read_execute) = if policy == SandboxPolicy::ReadOnly {
             Self::partition_read_only(&writable, temp_dirs, read_execute)
         } else {
-            // WorkspaceWrite and DangerFullAccess use the same config; only
-            // DangerFullAccess skips applying the sandbox entirely.
+            // WorkspaceWrite, InteractiveWrite, and DangerFullAccess use the
+            // same path sets; InteractiveWrite differs only in the macOS
+            // capability rules, and DangerFullAccess skips applying the
+            // sandbox entirely.
             (writable, read_execute)
         };
 
@@ -1038,6 +1059,44 @@ mod tests {
                 super::resolve_sandbox_policy(None),
                 SandboxPolicy::WorkspaceWrite
             );
+        });
+    }
+
+    #[test]
+    fn interactive_write_keeps_workspace_write_path_sets() {
+        temp_env::with_var("HOME", Some("/tmp/cake-sandbox-interactive-home"), || {
+            let workspace = tempfile::tempdir().unwrap();
+            let settings_dir = tempfile::tempdir().unwrap();
+            let add_dir = tempfile::tempdir().unwrap();
+            let skill_dir = tempfile::tempdir().unwrap();
+
+            let build = |policy| {
+                SandboxConfig::build_with_policy(
+                    policy,
+                    workspace.path(),
+                    &[],
+                    &[add_dir.path().to_path_buf()],
+                    &[settings_dir.path().to_path_buf()],
+                    &[skill_dir.path().to_path_buf()],
+                )
+            };
+
+            let workspace_write = build(SandboxPolicy::WorkspaceWrite);
+            let interactive_write = build(SandboxPolicy::InteractiveWrite);
+
+            // The new policy changes capability rules only: its path grants
+            // must match workspace-write exactly, and the workspace must stay
+            // writable rather than being demoted the way read-only demotes it.
+            assert_eq!(interactive_write.writable, workspace_write.writable);
+            assert_eq!(interactive_write.read_execute, workspace_write.read_execute);
+            assert!(
+                interactive_write
+                    .writable
+                    .contains(&workspace.path().to_path_buf()),
+                "the workspace stays writable under interactive-write"
+            );
+            assert!(!SandboxPolicy::WorkspaceWrite.allows_app_interaction());
+            assert!(SandboxPolicy::InteractiveWrite.allows_app_interaction());
         });
     }
 
