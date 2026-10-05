@@ -92,7 +92,7 @@ cake --output-schema result.schema.json "Return structured findings"
 
 ### Sandboxing
 
-Model-generated Bash commands use `workspace-write` sandboxing by default. Select `read-only`, `workspace-write`, or `danger-full-access` with `--sandbox`.
+Model-generated Bash commands use `workspace-write` sandboxing by default. Select `read-only`, `workspace-write`, `interactive-write` (macOS app launching and automation), or `danger-full-access` with `--sandbox`.
 
 The sandbox is a filesystem boundary, not a network boundary. Hooks and toolbox executables are trusted extensions and run outside the Bash sandbox. Read [Security](docs/security.md) before changing permissions or enabling extensions.
 
