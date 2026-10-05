@@ -145,7 +145,7 @@ impl MacOsSandbox {
     }
 
     /// Append the app-launching and automation capabilities granted only to
-    /// `InteractiveWrite`.
+    /// `WorkspaceWriteInteractive`.
     ///
     /// The two primitives let a command hand work to another application.
     /// They are platform capabilities, not filesystem grants, so they are
@@ -734,11 +734,11 @@ mod tests {
     }
 
     #[test]
-    fn interactive_write_profile_grants_app_interaction() {
+    fn workspace_write_interactive_profile_grants_app_interaction() {
         let config = SandboxConfig {
             writable: vec![PathBuf::from("/workspace")],
             read_execute: vec![PathBuf::from("/usr")],
-            policy: SandboxPolicy::InteractiveWrite,
+            policy: SandboxPolicy::WorkspaceWriteInteractive,
             user_grants: Vec::new(),
         };
 

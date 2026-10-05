@@ -222,10 +222,14 @@ fn test_cli_parsing_sandbox_short_flag() {
 }
 
 #[test]
-fn test_cli_parsing_sandbox_interactive_write() {
-    let args =
-        CodingAssistant::parse_from(["cake", "--sandbox", "interactive-write", "test prompt"]);
-    assert_eq!(args.sandbox, Some(SandboxPolicy::InteractiveWrite));
+fn test_cli_parsing_sandbox_workspace_write_interactive() {
+    let args = CodingAssistant::parse_from([
+        "cake",
+        "--sandbox",
+        "workspace-write-interactive",
+        "test prompt",
+    ]);
+    assert_eq!(args.sandbox, Some(SandboxPolicy::WorkspaceWriteInteractive));
 }
 
 #[test]
