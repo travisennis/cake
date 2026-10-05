@@ -144,6 +144,26 @@ impl MacOsSandbox {
         profile.blank();
     }
 
+    /// Append the app-launching and automation capabilities granted only to
+    /// `InteractiveWrite`.
+    ///
+    /// The two primitives let a command hand work to another application.
+    /// They are platform capabilities, not filesystem grants, so they are
+    /// absent from `SandboxConfig`'s path lists. Without `lsopen`,
+    /// `LaunchServices` rejects `open` with `_LSOpenURLsWithCompletionHandler()
+    /// ... error -54` (`permErr`); without `appleevent-send`, `osascript`
+    /// rejects a message to another application the same way. The launched
+    /// application runs outside cake's sandbox.
+    fn append_interactive_rules(profile: &mut SeatbeltProfileBuilder, policy: SandboxPolicy) {
+        if !policy.allows_app_interaction() {
+            return;
+        }
+        profile.comment("Interactive sessions: launch and automate other applications");
+        profile.allow("lsopen");
+        profile.allow("appleevent-send");
+        profile.blank();
+    }
+
     /// Append git configuration read-only rules to the profile
     fn append_git_rules(profile: &mut SeatbeltProfileBuilder) {
         profile.comment("Git configuration (read-only)");
@@ -241,19 +261,7 @@ impl MacOsSandbox {
         profile.allow("mach-lookup");
         profile.blank();
 
-        // Interactive sessions only: the two primitives that let a command
-        // hand work to another application. These are platform capabilities,
-        // not filesystem grants, so they are absent from `SandboxConfig`'s
-        // path lists. Without `lsopen`, LaunchServices rejects `open` with
-        // `_LSOpenURLsWithCompletionHandler() ... error -54` (`permErr`);
-        // without `appleevent-send`, `osascript` rejects a message to another
-        // application the same way.
-        if config.policy.allows_app_interaction() {
-            profile.comment("Interactive sessions: launch and automate other applications");
-            profile.allow("lsopen");
-            profile.allow("appleevent-send");
-            profile.blank();
-        }
+        Self::append_interactive_rules(&mut profile, config.policy);
 
         // Sysctl reads (needed by many tools)
         profile.comment("Allow sysctl reads");
