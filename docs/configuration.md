@@ -237,7 +237,7 @@ On top of those grants, Cake always grants read-only access to its own state: th
 
 `directories = ["~/shared"]` also expands `~` (historically the path was ignored).
 
-`--add-dir <PATH>` grants additional read-only access for one invocation and may be repeated. `--sandbox` selects `read-only`, `workspace-write`, or `danger-full-access`.
+`--add-dir <PATH>` grants additional read-only access for one invocation and may be repeated. `--sandbox` selects `read-only`, `workspace-write`, `workspace-write-interactive`, or `danger-full-access`. `workspace-write-interactive` is `workspace-write` plus the macOS `lsopen` and `appleevent-send` capabilities, so model-generated commands can launch and automate other applications; on Linux it behaves as `workspace-write`.
 
 These are security decisions. See [Security](security.md) before expanding access.
 

@@ -144,6 +144,26 @@ impl MacOsSandbox {
         profile.blank();
     }
 
+    /// Append the app-launching and automation capabilities granted only to
+    /// `WorkspaceWriteInteractive`.
+    ///
+    /// The two primitives let a command hand work to another application.
+    /// They are platform capabilities, not filesystem grants, so they are
+    /// absent from `SandboxConfig`'s path lists. Without `lsopen`,
+    /// `LaunchServices` rejects `open` with `_LSOpenURLsWithCompletionHandler()
+    /// ... error -54` (`permErr`); without `appleevent-send`, `osascript`
+    /// rejects a message to another application the same way. The launched
+    /// application runs outside cake's sandbox.
+    fn append_interactive_rules(profile: &mut SeatbeltProfileBuilder, policy: SandboxPolicy) {
+        if !policy.allows_app_interaction() {
+            return;
+        }
+        profile.comment("Interactive sessions: launch and automate other applications");
+        profile.allow("lsopen");
+        profile.allow("appleevent-send");
+        profile.blank();
+    }
+
     /// Append git configuration read-only rules to the profile
     fn append_git_rules(profile: &mut SeatbeltProfileBuilder) {
         profile.comment("Git configuration (read-only)");
@@ -240,6 +260,8 @@ impl MacOsSandbox {
         profile.comment("Allow mach lookups (needed for basic process operation)");
         profile.allow("mach-lookup");
         profile.blank();
+
+        Self::append_interactive_rules(&mut profile, config.policy);
 
         // Sysctl reads (needed by many tools)
         profile.comment("Allow sysctl reads");
@@ -709,6 +731,46 @@ mod tests {
 
         assert!(profile.contains("(allow file-read* (subpath \"/usr\"))"));
         assert!(profile.contains("(allow file-read* (subpath \"/etc\"))"));
+    }
+
+    #[test]
+    fn workspace_write_interactive_profile_grants_app_interaction() {
+        let config = SandboxConfig {
+            writable: vec![PathBuf::from("/workspace")],
+            read_execute: vec![PathBuf::from("/usr")],
+            policy: SandboxPolicy::WorkspaceWriteInteractive,
+            user_grants: Vec::new(),
+        };
+
+        let profile = MacOsSandbox::generate_profile(&config);
+
+        assert!(profile.contains("(allow lsopen)"));
+        assert!(profile.contains("(allow appleevent-send)"));
+    }
+
+    #[test]
+    fn applied_non_interactive_profiles_deny_app_interaction() {
+        // The two policies that apply a profile at all must keep the
+        // deny-default treatment of LaunchServices and Apple Events.
+        for policy in [SandboxPolicy::WorkspaceWrite, SandboxPolicy::ReadOnly] {
+            let config = SandboxConfig {
+                writable: vec![PathBuf::from("/workspace")],
+                read_execute: vec![PathBuf::from("/usr")],
+                policy,
+                user_grants: Vec::new(),
+            };
+
+            let profile = MacOsSandbox::generate_profile(&config);
+
+            assert!(
+                !profile.contains("lsopen"),
+                "{policy:?} must not grant lsopen"
+            );
+            assert!(
+                !profile.contains("appleevent-send"),
+                "{policy:?} must not grant appleevent-send"
+            );
+        }
     }
 
     #[test]
