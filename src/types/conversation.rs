@@ -158,6 +158,20 @@ impl<'de> Deserialize<'de> for ReasoningContentKind {
 // Conversation Item Enum (for Responses API input/output)
 // =============================================================================
 
+/// One inline image attached to a message or a function-call output.
+///
+/// The bytes are carried as standard base64 with no data-URL prefix so the
+/// internal representation stays backend-agnostic: each backend builds the
+/// shape its API expects. Empty on every text-only item, so records written
+/// before images existed load unchanged.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImagePart {
+    /// The image's MIME type, for example `image/png`.
+    pub media_type: String,
+    /// The image bytes encoded as standard base64.
+    pub data_base64: String,
+}
+
 /// Represents a single item in the conversation history, mapping directly to
 /// the Responses API input/output array format.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -173,6 +187,10 @@ pub enum ConversationItem {
         /// Timestamp when this item was created
         #[serde(skip_serializing_if = "Option::is_none")]
         timestamp: Option<DateTime<Utc>>,
+        /// Inline images attached to this message. Empty for text-only
+        /// messages; serialization skips the field when empty.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<ImagePart>,
     },
     FunctionCall {
         id: String,
@@ -189,6 +207,10 @@ pub enum ConversationItem {
         /// Timestamp when this item was created
         #[serde(skip_serializing_if = "Option::is_none")]
         timestamp: Option<DateTime<Utc>>,
+        /// Inline images attached to this tool result. Empty for text-only
+        /// outputs; serialization skips the field when empty.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<ImagePart>,
     },
     Reasoning {
         id: String,
@@ -303,6 +325,7 @@ mod tests {
                 id: None,
                 status: None,
                 timestamp: None,
+                images: Vec::new(),
             },
             ConversationItem::FunctionCall {
                 id: "fc".to_string(),
@@ -315,6 +338,7 @@ mod tests {
                 call_id: "call".to_string(),
                 output: "out".to_string(),
                 timestamp: None,
+                images: Vec::new(),
             },
             ConversationItem::Reasoning {
                 id: "r".to_string(),

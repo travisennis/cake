@@ -79,6 +79,7 @@ pub(super) async fn execute(
         },
         Action::List => Ok(super::ToolResult {
             output: format_list(registry),
+            images: Vec::new(),
             compensation_events: Vec::new(),
             permission_denials: Vec::new(),
         }),
@@ -124,6 +125,7 @@ pub(super) fn format_read(
         .map_or(String::new(), |why| format!("\n[Session {why}.]"));
     super::ToolResult {
         output: format!("{output}\n\n{footer}{gap}{termination}"),
+        images: Vec::new(),
         compensation_events: events,
         permission_denials: Vec::new(),
     }

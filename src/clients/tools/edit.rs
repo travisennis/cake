@@ -200,6 +200,7 @@ pub(super) fn execute_edit(
         );
         return Ok(super::ToolResult {
             output: result,
+            images: Vec::new(),
             compensation_events: Vec::new(),
             permission_denials: Vec::new(),
         });
@@ -237,6 +238,7 @@ pub(super) fn execute_edit(
 
     Ok(super::ToolResult {
         output: result,
+        images: Vec::new(),
         compensation_events: Vec::new(),
         permission_denials: Vec::new(),
     })

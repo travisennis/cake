@@ -47,6 +47,7 @@ fn session_with_skill_records() -> Session {
             output: "echoed text: Skill 'fake-skill' activated".to_string(),
             replay: None,
             timestamp: None,
+            images: Vec::new(),
         }),
         SessionRecord::SkillActivated {
             session_id: session.id.to_string(),

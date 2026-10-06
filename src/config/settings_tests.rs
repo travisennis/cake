@@ -2077,6 +2077,25 @@ hook_output_limit = 1024
 }
 
 #[test]
+fn read_image_max_bytes_resolves_and_accepts_unlimited() {
+    let overlay: LimitsSettingsOverlay = toml::from_str("read_image_max_bytes = 30000").unwrap();
+    assert_eq!(
+        overlay.resolve().tool_limits.read_image_max_bytes,
+        Some(30000)
+    );
+
+    let overlay: LimitsSettingsOverlay =
+        toml::from_str("read_image_max_bytes = \"unlimited\"").unwrap();
+    assert_eq!(overlay.resolve().tool_limits.read_image_max_bytes, None);
+
+    let overlay: LimitsSettingsOverlay = toml::from_str("").unwrap();
+    assert_eq!(
+        overlay.resolve().tool_limits.read_image_max_bytes,
+        Some(DEFAULT_READ_IMAGE_MAX_BYTES as usize)
+    );
+}
+
+#[test]
 fn test_limits_output_budgets_default_to_compiled_values() {
     let dir = create_project_settings(
         r#"

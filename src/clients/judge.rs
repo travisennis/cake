@@ -886,6 +886,7 @@ fn build_judge_history(request: &JudgeRequest, user_rubric: Option<&str>) -> Vec
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
         ConversationItem::Message {
             role: Role::User,
@@ -893,6 +894,7 @@ fn build_judge_history(request: &JudgeRequest, user_rubric: Option<&str>) -> Vec
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
     ]
 }

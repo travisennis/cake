@@ -33,7 +33,7 @@ use std::sync::Arc;
 use crate::clients::judge::JudgeContext;
 use crate::config::settings::ToolLimits;
 use crate::session_telemetry::{CompensationEventTelemetry, CompensationKind};
-use crate::types::ReplaySafety;
+use crate::types::{ImagePart, ReplaySafety};
 
 mod bash_session;
 mod bash_session_core;
@@ -213,6 +213,7 @@ mod bash;
 mod edit;
 mod json_repair;
 mod read;
+mod read_image;
 mod scheduling;
 mod script_evidence;
 mod secure_temp_dir;
@@ -642,6 +643,9 @@ pub(super) const fn decode_utf8(bytes: &[u8]) -> Result<&str, std::str::Utf8Erro
 #[derive(Debug)]
 pub struct ToolResult {
     pub output: String,
+    /// Inline images produced by the tool (for example a file the model asked
+    /// to see). Empty for every text-only result.
+    pub images: Vec<ImagePart>,
     pub compensation_events: Vec<CompensationEventTelemetry>,
     /// Stable labels for policy denials observed after a tool was allowed to run.
     /// The agent prefixes each label with the tool and call identity before it
@@ -1294,6 +1298,19 @@ fn execute_read_tool(context: Arc<ToolContext>, _call_id: String, arguments: Str
     })
 }
 
+fn execute_read_image_tool(
+    context: Arc<ToolContext>,
+    _call_id: String,
+    arguments: String,
+) -> ToolFuture {
+    Box::pin(async move {
+        tokio::task::spawn_blocking(move || read_image::execute_read_image(&context, &arguments))
+            .await
+            .map_err(|e| ToolError::new(format!("Task join error: {e}")))?
+            .map_err(ToolError::from)
+    })
+}
+
 fn execute_write_tool(
     context: Arc<ToolContext>,
     _call_id: String,
@@ -1428,6 +1445,9 @@ pub(super) fn default_tool_registry() -> ToolRegistry {
             .repairs_arguments()
             .mutates_path(edit::mutating_target),
         ToolEntry::new(read::read_tool(), execute_read_tool)
+            .read_safe()
+            .replay_safe(),
+        ToolEntry::new(read_image::read_image_tool(), execute_read_image_tool)
             .read_safe()
             .replay_safe(),
         ToolEntry::new(write::write_tool(), execute_write_tool)
@@ -2037,13 +2057,14 @@ mod tests {
                 "BashSession",
                 "Edit",
                 "Read",
+                "ReadImage",
                 "Write",
                 "tb__run_tests"
             ]
         );
         registry.retain_read_safe_tools();
-        assert_eq!(registry.names(), vec!["Read"]);
-        assert_eq!(registry.definitions().len(), 1);
+        assert_eq!(registry.names(), vec!["Read", "ReadImage"]);
+        assert_eq!(registry.definitions().len(), 2);
     }
 
     #[test]

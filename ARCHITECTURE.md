@@ -14,7 +14,7 @@ Agent loop -----> API backend -----> OpenAI-compatible provider
    |
    +-----> tool registry
               |
-              +-----> Read / Edit / Write path validation
+              +-----> Read / ReadImage / Edit / Write path validation
               +-----> Bash LLM-judge preflight and OS sandbox
               +-----> toolbox executables (trusted extensions)
    |

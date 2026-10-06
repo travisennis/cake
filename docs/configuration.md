@@ -140,6 +140,7 @@ bash_session_exited_ttl_seconds = 600    # Retention after exit
 read_default_end_line = 200     # Read default window (lines; default 200)
 read_max_output_bytes = 100000  # Read output and Edit input cap (bytes; default 100000)
 read_max_line_bytes = 10000     # Read per-line cap (bytes; default 10000)
+read_image_max_bytes = 5242880  # ReadImage image cap (bytes; default 5 MiB)
 hook_output_limit = 65536       # Hook stdout/stderr cap per hook (bytes; default 65536)
 ```
 
@@ -152,6 +153,7 @@ hook_output_limit = 65536       # Hook stdout/stderr cap per hook (bytes; defaul
 - `read_default_end_line`: default Read window in lines when the model omits `end_line`. `"unlimited"` reads to the end of the file.
 - `read_max_output_bytes`: maximum bytes of Read output before truncation at a UTF-8 boundary and maximum bytes of an input file Edit will read. `"unlimited"` disables both caps.
 - `read_max_line_bytes`: maximum bytes delivered for a single Read line before it is truncated with a marker at a UTF-8 boundary. The cap bounds memory for newline-free giant lines. `"unlimited"` re-enables reading a whole line into memory, which can starve memory for such a file.
+- `read_image_max_bytes`: maximum bytes of an image the ReadImage tool will read and send to the provider. A larger file is rejected with a model-visible error, and the read itself stops at the cap. `"unlimited"` disables the cap.
 - `hook_output_limit`: maximum bytes of hook stdout and stderr captured per hook invocation. `"unlimited"` disables truncation.
 
 When a project overrides a global budget back to no cap, `"unlimited"` is the explicit value that does so.

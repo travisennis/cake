@@ -1083,6 +1083,7 @@ fn parse_output_items(api_response: &ApiResponse) -> anyhow::Result<Vec<Conversa
                     id: output.id.clone(),
                     status: output.status.clone(),
                     timestamp: Some(timestamp),
+                    images: Vec::new(),
                 });
             },
             unknown_type => {

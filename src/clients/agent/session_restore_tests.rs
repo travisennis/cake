@@ -78,6 +78,7 @@ fn message(role: Role, content: &str, offset: i64) -> SessionRecord {
         id: None,
         status: None,
         timestamp: Some(time(offset)),
+        images: Vec::new(),
     })
 }
 
@@ -99,6 +100,7 @@ fn function_call_output(call_id: &str, output: &str, offset: i64) -> SessionReco
         output: output.to_string(),
         replay: None,
         timestamp: Some(time(offset)),
+        images: Vec::new(),
     })
 }
 
@@ -421,12 +423,14 @@ fn persist_repairs_and_reload(
                 call_id,
                 output,
                 timestamp,
+                ..
             } if output.starts_with("not executed:") => {
                 Some(SessionRecord::FunctionCallOutput(FunctionCallOutputData {
                     call_id: call_id.clone(),
                     output: output.clone(),
                     replay: None,
                     timestamp: *timestamp,
+                    images: Vec::new(),
                 }))
             },
             _ => None,

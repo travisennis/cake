@@ -49,7 +49,7 @@ fn read_only_tool_context_removes_edit_and_write() {
     )
     .with_tool_context(Arc::new(context));
 
-    assert_eq!(agent.tool_names(), vec!["Read"]);
+    assert_eq!(agent.tool_names(), vec!["Read", "ReadImage"]);
 }
 
 #[test]
@@ -144,7 +144,7 @@ fn workspace_write_tool_context_keeps_all_tools() {
 
     assert_eq!(
         agent.tool_names(),
-        vec!["Bash", "BashSession", "Edit", "Read", "Write"]
+        vec!["Bash", "BashSession", "Edit", "Read", "ReadImage", "Write"]
     );
 }
 
@@ -177,6 +177,7 @@ fn toolbox_tools_register_after_builtins() {
             "BashSession",
             "Edit",
             "Read",
+            "ReadImage",
             "Write",
             "tb__run_tests"
         ]
@@ -196,7 +197,7 @@ fn read_only_tool_context_skips_toolbox_tools_regardless_of_order() {
     )
     .with_tool_context(Arc::clone(&context))
     .with_toolbox_tools(vec![test_toolbox_tool()]);
-    assert_eq!(agent.tool_names(), vec!["Read"]);
+    assert_eq!(agent.tool_names(), vec!["Read", "ReadImage"]);
 
     // Read-only context applied second: registered entries are stripped.
     let agent = Agent::new(
@@ -205,7 +206,7 @@ fn read_only_tool_context_skips_toolbox_tools_regardless_of_order() {
     )
     .with_toolbox_tools(vec![test_toolbox_tool()])
     .with_tool_context(context);
-    assert_eq!(agent.tool_names(), vec!["Read"]);
+    assert_eq!(agent.tool_names(), vec!["Read", "ReadImage"]);
 }
 
 #[test]
@@ -612,6 +613,7 @@ fn history_repair_records_persist_and_stream() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
         ConversationItem::FunctionCall {
             id: "fc-1".to_string(),
@@ -699,6 +701,7 @@ fn history_repair_records_are_absent_for_matched_history() {
             call_id: "call-1".to_string(),
             output: "ok".to_string(),
             timestamp: None,
+            images: Vec::new(),
         },
     ];
 
@@ -729,6 +732,7 @@ fn stream_item_emits_function_call_output() {
         call_id: "call-1".to_string(),
         output: "hello world".to_string(),
         timestamp: None,
+        images: Vec::new(),
     };
 
     agent.stream_item(&item).unwrap();
@@ -1375,6 +1379,7 @@ mod error_tests {
                 id: None,
                 status: None,
                 timestamp: None,
+                images: Vec::new(),
             },
             ConversationItem::Message {
                 role: Role::Assistant,
@@ -1382,6 +1387,7 @@ mod error_tests {
                 id: None,
                 status: None,
                 timestamp: None,
+                images: Vec::new(),
             },
         ];
         let mock_server = MockServer::start().await;
@@ -1775,6 +1781,97 @@ printf 'completed:%s' "$index"
         );
     }
 
+    /// A valid 1x1 red PNG, generated with Python `zlib`.
+    const TINY_PNG: &[u8] = &[
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90,
+        0x77, 0x53, 0xde, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0xf8,
+        0xcf, 0xc0, 0x00, 0x00, 0x03, 0x01, 0x01, 0x00, 0xf7, 0x03, 0x41, 0x43, 0x00, 0x00, 0x00,
+        0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+
+    /// A `ReadImage` call returns image bytes that reach both the conversation
+    /// history and the persisted `function_call_output` record.
+    #[tokio::test]
+    async fn read_image_output_reaches_history_and_session_records() {
+        let mock_server = MockServer::start().await;
+        let dir = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+        let image_path = dir.path().join("red.png");
+        std::fs::write(&image_path, TINY_PNG).unwrap();
+
+        let arguments = serde_json::json!({ "path": image_path }).to_string();
+        let read_image_response = serde_json::json!({
+            "id": "resp-tool",
+            "output": [
+                {
+                    "type": "function_call",
+                    "id": "fc-1",
+                    "call_id": "call-1",
+                    "name": "ReadImage",
+                    "arguments": arguments
+                }
+            ],
+            "usage": { "input_tokens": 1, "output_tokens": 1, "total_tokens": 2 }
+        });
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(read_image_response))
+            .up_to_n_times(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(loop_final_response()))
+            .mount(&mock_server)
+            .await;
+
+        let persisted = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let persisted_clone = persisted.clone();
+        let mut agent = test_agent_with_url(&mock_server.uri())
+            .with_tools(crate::clients::tools::default_tool_registry())
+            .with_persist_callback(move |record| {
+                persisted_clone.lock().unwrap().push(record.clone());
+                Ok(())
+            });
+
+        assert_eq!(
+            agent.send("describe the image".to_string()).await.unwrap(),
+            "done"
+        );
+
+        let images: Vec<&crate::types::ImagePart> = agent
+            .history()
+            .iter()
+            .filter_map(|item| match item {
+                ConversationItem::FunctionCallOutput { images, .. } => Some(images.iter()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        assert_eq!(images.len(), 1, "history should carry the tool image");
+        assert_eq!(images[0].media_type, "image/png");
+        assert!(!images[0].data_base64.is_empty());
+
+        let record = {
+            let persisted = persisted.lock().unwrap();
+            persisted
+                .iter()
+                .find_map(|record| match record {
+                    SessionRecord::FunctionCallOutput(data) if data.call_id == "call-1" => {
+                        Some(data.clone())
+                    },
+                    _ => None,
+                })
+                .expect("the tool output record should be persisted")
+        };
+        assert_eq!(
+            record.images.len(),
+            1,
+            "session record should carry the image"
+        );
+        assert_eq!(record.images[0].media_type, "image/png");
+    }
+
     #[tokio::test]
     async fn pre_tool_hook_denies_tool_execution() {
         let mock_server = MockServer::start().await;
@@ -2091,6 +2188,7 @@ printf 'completed:%s' "$index"
                 id: None,
                 status: None,
                 timestamp: None,
+                images: Vec::new(),
             },
             ConversationItem::Message {
                 role: Role::Assistant,
@@ -2098,6 +2196,7 @@ printf 'completed:%s' "$index"
                 id: Some("msg-prior".to_string()),
                 status: Some("completed".to_string()),
                 timestamp: None,
+                images: Vec::new(),
             },
         ]
     }
@@ -2817,6 +2916,7 @@ printf 'completed:%s' "$index"
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         });
 
         let mut turn = Box::pin(agent.complete_turn(false));
@@ -2912,6 +3012,7 @@ printf 'completed:%s' "$index"
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         });
 
         let mut turn = Box::pin(agent.complete_turn(false));
@@ -2962,6 +3063,7 @@ printf 'completed:%s' "$index"
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         });
 
         let result = agent.complete_turn(false).await;
@@ -2992,6 +3094,7 @@ printf 'completed:%s' "$index"
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         });
 
         let result = agent.complete_turn(false).await;
@@ -3022,6 +3125,7 @@ printf 'completed:%s' "$index"
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         });
 
         let result = agent.complete_turn(false).await;
@@ -3052,6 +3156,7 @@ printf 'completed:%s' "$index"
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         });
 
         let result = agent.complete_turn(false).await;
@@ -3095,6 +3200,7 @@ printf 'completed:%s' "$index"
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         });
 
         let result = agent.complete_turn(false).await;
@@ -3136,6 +3242,7 @@ printf 'completed:%s' "$index"
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         });
 
         let start = Instant::now();
@@ -3177,6 +3284,7 @@ printf 'completed:%s' "$index"
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         });
 
         let result = agent.complete_turn(false).await;
@@ -3214,6 +3322,7 @@ printf 'completed:%s' "$index"
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         });
 
         let result = agent.complete_turn(false).await;
@@ -3251,6 +3360,7 @@ printf 'completed:%s' "$index"
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         });
 
         let result = agent.complete_turn(false).await;
@@ -3290,6 +3400,7 @@ printf 'completed:%s' "$index"
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         });
 
         let result = agent.complete_turn(false).await;
@@ -3325,6 +3436,7 @@ printf 'completed:%s' "$index"
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         });
 
         let result = agent.complete_turn(false).await;
@@ -3360,6 +3472,7 @@ printf 'completed:%s' "$index"
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         });
 
         let result = agent.complete_turn(false).await;
@@ -3397,6 +3510,7 @@ printf 'completed:%s' "$index"
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         });
 
         let result = agent.complete_turn(false).await;
@@ -3426,6 +3540,7 @@ printf 'completed:%s' "$index"
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         });
 
         let result = agent.complete_turn(false).await;
@@ -3477,6 +3592,7 @@ printf 'completed:%s' "$index"
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         });
 
         let result = agent.complete_turn(false).await;
@@ -3680,6 +3796,7 @@ printf 'completed:%s' "$index"
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         });
 
         // Turn 1: the first request is reset (stale-connection recovery), then
@@ -3727,6 +3844,7 @@ printf 'completed:%s' "$index"
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         });
 
         let result = agent.complete_turn(false).await;
@@ -3854,6 +3972,7 @@ printf 'completed:%s' "$index"
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         });
     }
 
@@ -4238,6 +4357,7 @@ printf 'completed:%s' "$index"
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         });
 
         let result = agent.complete_turn(false).await;
@@ -4275,6 +4395,7 @@ printf 'completed:%s' "$index"
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         });
 
         let result = agent.complete_turn(false).await;
@@ -4302,6 +4423,7 @@ printf 'completed:%s' "$index"
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         });
 
         let result = agent.complete_turn(false).await;
@@ -4338,6 +4460,7 @@ printf 'completed:%s' "$index"
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         });
 
         let result = agent.complete_turn(false).await;

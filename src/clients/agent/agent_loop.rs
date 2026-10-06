@@ -18,7 +18,7 @@ use crate::session_telemetry::{
     AgentRunnerTelemetryEvent, CompensationEventTelemetry, CompensationKind,
     RetryScheduledTelemetry, TerminationClassification, ToolCallTelemetry,
 };
-use crate::types::{ConversationItem, CutOffError, LimitExceededError, SessionRecord};
+use crate::types::{ConversationItem, CutOffError, ImagePart, LimitExceededError, SessionRecord};
 
 /// Maximum number of corrective turns after a final message fails
 /// output-schema validation.
@@ -62,6 +62,8 @@ impl TurnMode {
 struct ToolRunResult {
     call_id: String,
     output: String,
+    /// Inline images returned by the tool, empty for text-only results.
+    images: Vec<ImagePart>,
     skill_activation: Option<SkillActivation>,
     telemetry: ToolCallTelemetry,
     compensation_events: Vec<CompensationEventTelemetry>,
@@ -122,6 +124,7 @@ fn immediate_tool_error_result(
         },
         call_id: call_id.to_string(),
         output,
+        images: Vec::new(),
         skill_activation: None,
         compensation_events: Vec::new(),
         permission_denials: Vec::new(),
@@ -307,7 +310,9 @@ impl Agent {
         for (call_id, name, _) in function_calls {
             let output =
                 format!("not executed: correction turn offers no tools for {name}({call_id})");
-            let item = self.conversation.push_tool_output(call_id.clone(), output);
+            let item = self
+                .conversation
+                .push_tool_output(call_id.clone(), output, Vec::new());
             self.stream_item(&item)?;
         }
         if *turn_mode == TurnMode::SchemaCorrection {
@@ -568,11 +573,13 @@ impl Agent {
                 .await;
 
                 let was_error = result.is_err();
-                let (mut compensation_events, permission_denials, mut output) = match result {
+                let (mut compensation_events, permission_denials, mut output, images) = match result
+                {
                     Ok(result) => (
                         result.compensation_events,
                         result.permission_denials,
                         result.output,
+                        result.images,
                     ),
                     Err(error) => {
                         // Tool errors carry the events observed while the tool
@@ -582,6 +589,7 @@ impl Agent {
                             error.compensation_events,
                             Vec::new(),
                             format!("Error: {}", error.message),
+                            Vec::new(),
                         )
                     },
                 };
@@ -635,6 +643,7 @@ impl Agent {
                     },
                     call_id,
                     output,
+                    images,
                     skill_activation,
                     compensation_events,
                     permission_denials,
@@ -668,9 +677,9 @@ impl Agent {
                 };
                 self.persist_record(&record)?;
             }
-            let item = self
-                .conversation
-                .push_tool_output(result.call_id, result.output);
+            let item =
+                self.conversation
+                    .push_tool_output(result.call_id, result.output, result.images);
             self.stream_item_with_replay(&item, replay)?;
         }
         Ok(())
@@ -1441,6 +1450,7 @@ mod helper_tests {
         let runner = hook_runner(HookEvent::PreToolUse, "exit 1", true);
         let result = ToolResult {
             output: "tool output".to_string(),
+            images: Vec::new(),
             compensation_events: Vec::new(),
             permission_denials: Vec::new(),
         };
@@ -1513,6 +1523,7 @@ mod helper_tests {
             },
             compensation_events,
             permission_denials: Vec::new(),
+            images: Vec::new(),
         }
     }
 

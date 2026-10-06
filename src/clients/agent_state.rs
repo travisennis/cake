@@ -1,4 +1,4 @@
-use crate::types::{ConversationItem, Role, Usage};
+use crate::types::{ConversationItem, ImagePart, Role, Usage};
 
 #[derive(Debug)]
 pub(super) struct ConversationState {
@@ -20,6 +20,7 @@ impl ConversationState {
                     id: None,
                     status: None,
                     timestamp: Some(timestamp),
+                    images: Vec::new(),
                 })
                 .collect(),
             pending_repairs: Vec::new(),
@@ -42,6 +43,7 @@ impl ConversationState {
                 id: None,
                 status: None,
                 timestamp: Some(timestamp),
+                images: Vec::new(),
             });
         }
     }
@@ -96,6 +98,7 @@ impl ConversationState {
             id: None,
             status: None,
             timestamp: Some(chrono::Utc::now()),
+            images: Vec::new(),
         };
         self.history.push(item.clone());
         item
@@ -105,11 +108,17 @@ impl ConversationState {
         self.history.extend(items);
     }
 
-    pub(super) fn push_tool_output(&mut self, call_id: String, output: String) -> ConversationItem {
+    pub(super) fn push_tool_output(
+        &mut self,
+        call_id: String,
+        output: String,
+        images: Vec<ImagePart>,
+    ) -> ConversationItem {
         let item = ConversationItem::FunctionCallOutput {
             call_id,
             output,
             timestamp: Some(chrono::Utc::now()),
+            images,
         };
         self.history.push(item.clone());
         item
@@ -202,6 +211,7 @@ fn repair_items_for_incomplete_calls(
             call_id: call_id.to_string(),
             output: incomplete_tool_call_repair_output(name, call_id),
             timestamp: Some(timestamp),
+            images: Vec::new(),
         })
         .collect())
 }
@@ -235,6 +245,7 @@ mod tests {
             id: Some("msg-1".to_string()),
             status: Some("completed".to_string()),
             timestamp: None,
+            images: Vec::new(),
         }];
         let content = resolve_assistant_message(&items);
         assert_eq!(content, Some("Hello!".to_string()));
@@ -267,6 +278,7 @@ mod tests {
             id: Some("msg-1".to_string()),
             status: Some("completed".to_string()),
             timestamp: None,
+            images: Vec::new(),
         }
     }
 
@@ -309,6 +321,7 @@ mod tests {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         }
     }
 
@@ -327,6 +340,7 @@ mod tests {
             call_id: call_id.to_string(),
             output: output.to_string(),
             timestamp: None,
+            images: Vec::new(),
         }
     }
 

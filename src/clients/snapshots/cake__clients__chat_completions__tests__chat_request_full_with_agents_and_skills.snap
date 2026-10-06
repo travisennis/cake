@@ -5,7 +5,7 @@ expression: value
 {
   "messages": [
     {
-      "content": "You are cake. You are running as a coding agent in a CLI on the user's computer.\n\n## Available tools\n\n- **Bash**: Execute a shell command in the host machine's terminal.\n- **BashSession**: Read, list, or kill Bash commands still running in this Cake run.\n- **Edit**: Edit text in files using literal search-and-replace.\n- **Read**: Read a file's contents.\n- **Write**: Create a new file or overwrite an existing one with the given content.\n\nOnly these tools are available. There is no Glob, Grep, or LS tool.",
+      "content": "You are cake. You are running as a coding agent in a CLI on the user's computer.\n\n## Available tools\n\n- **Bash**: Execute a shell command in the host machine's terminal.\n- **BashSession**: Read, list, or kill Bash commands still running in this Cake run.\n- **Edit**: Edit text in files using literal search-and-replace.\n- **Read**: Read a file's contents.\n- **ReadImage**: Read an image file and return it to you as an image you can actually see.\n- **Write**: Create a new file or overwrite an existing one with the given content.\n\nOnly these tools are available. There is no Glob, Grep, or LS tool.",
       "role": "system"
     },
     {
@@ -158,6 +158,25 @@ expression: value
             "start_line": {
               "description": "First line to read (1-indexed, inclusive). Default: 1",
               "type": "integer"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Read an image file and return it to you as an image you can actually see. Supports PNG, JPEG, GIF, and WebP.\n\nBehavior:\n- Requires an absolute path to a file inside the working directory, a temp directory, or a directory added with --add-dir.\n- Detects the format from the file's leading bytes, not its extension. Files that are not images are rejected with a message pointing at Read for text files.\n- Rejects files larger than the configured read_image_max_bytes cap (default 5 MiB) with a clear error instead of sending them, so an oversized image never reaches the provider.\n- Returns the image inline as a base64 data URL; there is no upload step and no transcoding.\n\nGuidance:\n- Use ReadImage when a screenshot, diagram, chart, or photo is part of the question; Read rejects binary files.\n- Prefer the smallest image that answers the question; a cropped region costs far fewer tokens than a full screenshot.\n",
+        "name": "ReadImage",
+        "parameters": {
+          "properties": {
+            "path": {
+              "description": "Absolute path to the image file to read (PNG, JPEG, GIF, or WebP)",
+              "type": "string"
             }
           },
           "required": [

@@ -517,6 +517,7 @@ fn parse_choices(response: &ChatResponse) -> anyhow::Result<Vec<ConversationItem
             id: Some(response_id.clone()),
             status: Some("completed".to_string()),
             timestamp: Some(timestamp),
+            images: Vec::new(),
         });
     }
 
@@ -548,6 +549,7 @@ fn parse_choices(response: &ChatResponse) -> anyhow::Result<Vec<ConversationItem
             id: Some(response_id),
             status: Some("completed".to_string()),
             timestamp: Some(timestamp),
+            images: Vec::new(),
         });
     }
 

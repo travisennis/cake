@@ -674,6 +674,7 @@ mod tests {
             id: Some("msg-interrupted".to_string()),
             status: None,
             timestamp: None,
+            images: Vec::new(),
         }))
         .unwrap();
         for prefix_len in [1, 2, fragment.len() / 2, fragment.len() - 1] {
@@ -724,6 +725,7 @@ mod tests {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         }))
         .unwrap();
         let (session, path) = write_session_with_raw_tail(&dir, "unterminated.jsonl", &fragment);
@@ -897,6 +899,7 @@ mod tests {
                 id: None,
                 status: None,
                 timestamp: None,
+                images: Vec::new(),
             }),
         )
         .unwrap();
@@ -908,6 +911,7 @@ mod tests {
                 id: Some("msg-1".to_string()),
                 status: Some("completed".to_string()),
                 timestamp: None,
+                images: Vec::new(),
             }),
         )
         .unwrap();
@@ -939,6 +943,7 @@ mod tests {
                 id: None,
                 status: None,
                 timestamp: None,
+                images: Vec::new(),
             }),
         )
         .unwrap();
@@ -977,6 +982,7 @@ mod tests {
                 id: None,
                 status: None,
                 timestamp: None,
+                images: Vec::new(),
             }),
             SessionRecord::FunctionCall(FunctionCallData {
                 id: "fc-1".to_string(),
@@ -992,6 +998,7 @@ mod tests {
                 output: "file.txt".to_string(),
                 replay: None,
                 timestamp: None,
+                images: Vec::new(),
             }),
             SessionRecord::Reasoning(ReasoningData {
                 id: "r-1".to_string(),
@@ -1025,6 +1032,7 @@ mod tests {
                     output: "echoed text: Skill 'not-real' activated".to_string(),
                     replay: None,
                     timestamp: None,
+                    images: Vec::new(),
                 }),
                 SessionRecord::SkillActivated {
                     session_id: session.id.to_string(),
@@ -1116,6 +1124,7 @@ mod tests {
                 id: None,
                 status: None,
                 timestamp: None,
+                images: Vec::new(),
             }),
         )
         .unwrap();

@@ -162,6 +162,7 @@ mod tests {
                 id: None,
                 status: None,
                 timestamp: None,
+                images: Vec::new(),
             }),
         )
         .expect("append handle should remain writable");

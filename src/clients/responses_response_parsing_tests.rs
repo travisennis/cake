@@ -342,6 +342,7 @@ fn to_api_input_user_message() {
         id: None,
         status: None,
         timestamp: None,
+        images: Vec::new(),
     };
     let json = to_api_input_json(&item);
     assert_eq!(json["type"], "message");
@@ -358,6 +359,7 @@ fn to_api_input_assistant_message_uses_output_text() {
         id: Some("msg-1".to_string()),
         status: Some("completed".to_string()),
         timestamp: None,
+        images: Vec::new(),
     };
     let json = to_api_input_json(&item);
     assert_eq!(json["role"], "assistant");
@@ -375,6 +377,7 @@ fn to_api_input_system_message() {
         id: None,
         status: None,
         timestamp: None,
+        images: Vec::new(),
     };
     let json = to_api_input_json(&item);
     assert_eq!(json["role"], "system");
@@ -389,6 +392,7 @@ fn to_api_input_tool_message() {
         id: None,
         status: None,
         timestamp: None,
+        images: Vec::new(),
     };
     let json = to_api_input_json(&item);
     assert_eq!(json["role"], "tool");
@@ -418,6 +422,7 @@ fn to_api_input_function_call_output() {
         call_id: "call-1".to_string(),
         output: "file.txt".to_string(),
         timestamp: None,
+        images: Vec::new(),
     };
     let json = to_api_input_json(&item);
     assert_eq!(json["type"], "function_call_output");
@@ -532,6 +537,7 @@ fn snapshot_user_message() {
         id: None,
         status: None,
         timestamp: None,
+        images: Vec::new(),
     };
     insta::assert_json_snapshot!("to_api_input_user_message", to_api_input_json(&item));
 }
@@ -544,6 +550,7 @@ fn snapshot_assistant_message_with_id_and_status() {
         id: Some("msg-1".to_string()),
         status: Some("completed".to_string()),
         timestamp: None,
+        images: Vec::new(),
     };
     insta::assert_json_snapshot!(
         "to_api_input_assistant_message_with_id_and_status",
@@ -559,6 +566,7 @@ fn snapshot_system_message() {
         id: None,
         status: None,
         timestamp: None,
+        images: Vec::new(),
     };
     insta::assert_json_snapshot!("to_api_input_system_message", to_api_input_json(&item));
 }
@@ -581,6 +589,7 @@ fn snapshot_function_call_output() {
         call_id: "call-1".to_string(),
         output: "file.txt\nother.txt".to_string(),
         timestamp: None,
+        images: Vec::new(),
     };
     insta::assert_json_snapshot!(
         "to_api_input_function_call_output",
