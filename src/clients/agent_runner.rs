@@ -624,9 +624,9 @@ impl AgentRunner {
                 ));
                 AttemptResult::RetryNeeded
             },
-            retry::RetryDecision::DoNotRetry => AttemptResult::Terminal(
-                api_error_from_failure(&config.model_config.model, &failure).into(),
-            ),
+            retry::RetryDecision::DoNotRetry => {
+                AttemptResult::Terminal(api_error_from_failure(config, &failure).into())
+            },
         }
     }
 
@@ -879,13 +879,39 @@ async fn wait_for_retry(status: &RetryStatus, turn_index: u32) -> RetryWaitTelem
     }
 }
 
-fn api_error_from_failure(model: &str, failure: &HttpFailure) -> crate::exit_code::ApiError {
+fn api_error_from_failure(
+    config: &ResolvedModelConfig,
+    failure: &HttpFailure,
+) -> crate::exit_code::ApiError {
     debug!(target: "cake", "{}", failure.body);
+
+    let mut body = format_api_error_body(&config.model_config.model, &failure.body);
+    if let Some(remedy) = codex_auth_remedy(&config.model_config.base_url, failure) {
+        body.push_str("\n\n");
+        body.push_str(remedy);
+    }
 
     crate::exit_code::ApiError {
         status: failure.status,
-        body: format_api_error_body(model, &failure.body),
+        body,
     }
+}
+
+/// Remedy sentence for a rejected `ChatGPT` credential on the first-party Codex backend.
+///
+/// The access token in the Codex credential store expires periodically and cake
+/// never refreshes it, so the provider's `token_expired` body alone leaves the
+/// user without an action. Every other failure keeps its current text.
+fn codex_auth_remedy(base_url: &str, failure: &HttpFailure) -> Option<&'static str> {
+    if failure.status != 401 || !crate::auth::is_chatgpt_codex_backend(base_url) {
+        return None;
+    }
+
+    Some(if failure.body.contains("token_expired") {
+        "The ChatGPT access token in ~/.codex/auth.json has expired. Run the Codex CLI to refresh it (for example `codex login`), then retry."
+    } else {
+        "The Codex backend rejected the stored ChatGPT credential in ~/.codex/auth.json. Run the Codex CLI to re-authenticate (for example `codex login`), then retry."
+    })
 }
 
 fn format_api_error_body(model: &str, error_text: &str) -> String {
@@ -896,3 +922,7 @@ fn format_api_error_body(model: &str, error_text: &str) -> String {
     }
     format!("{model}\n\n{error_text}")
 }
+
+#[cfg(test)]
+#[path = "agent_runner_tests.rs"]
+mod tests;
