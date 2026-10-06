@@ -21,7 +21,7 @@ How to verify it works, at the highest level:
 ## Progress
 
 - [x] (2026-10-06) Investigated the current conversation model, both backends, tool plumbing, and persistence; opened issue #689 and created branch `feat/read-image-support`.
-- [ ] Milestone 1: prove the Responses API behavior for images inside a function-call output and record the finding in the Decision Log.
+- [x] (2026-10-06) Milestone 1: proved the native image-bearing `function_call_output` on the configured gateway's Responses endpoint (red and blue fixtures both answered correctly) and recorded the finding in the Decision Log and Artifacts and Notes. The Codex backend itself answered HTTP 401 `token_expired` because the stored Codex access token is stale; re-run that probe after the Codex CLI refreshes `~/.codex/auth.json`.
 - [ ] Milestone 2: add the typed image part, the `ReadImage` tool, and additive persistence so a tool can produce an image and a session can store and reload it.
 - [ ] Milestone 3: translate images for the Chat Completions backend end to end.
 - [ ] Milestone 4: translate images for the Responses backend end to end.
@@ -31,7 +31,8 @@ How to verify it works, at the highest level:
 ## Surprises & Discoveries
 
 - Observation: cake is text-only at every layer, not just in the tool layer. Evidence: `ConversationItem::Message { content: String }` and `ConversationItem::FunctionCallOutput { output: String }` in `src/types/conversation.rs`; `ChatMessage.content: Option<Cow<str>>` in `src/clients/chat_types.rs`; `ResponsesApiInputItem::FunctionCallOutput { output: &str }` in `src/clients/responses_types.rs`; `ToolResult.output: String` in `src/clients/tools/mod.rs`; `MessageData.content: String` and `FunctionCallOutputData.output: String` in `src/types/session.rs`. Any image feature must touch all of these.
-- Observation: the Chat Completions API cannot carry an image in a tool-role message; images are only accepted in user-role message content arrays. Evidence: the tool result is emitted as a plain string tool message in `src/clients/chat_completions.rs` (`push_function_call_output`), and the API's tool message content is text-only. This forces the synthetic-user-message design in Milestone 3.
+- Observation: the Chat Completions specification restricts a tool-role message's content to text parts, but at least one OpenAI-compatible gateway is more permissive. Evidence: the configured gateway (`https://opencode.ai/zen/go/v1/chat/completions`, model `deepseek-v4.1-flash`) accepted a `tool` message whose content array carried an `image_url` part and answered correctly about the image, while the tool result is emitted as a plain string tool message in `src/clients/chat_completions.rs` (`push_function_call_output`). The synthetic-user-message design in Milestone 3 is therefore the conservative shape that also works on strict providers, not the only shape that works at all. Probes 3 and 4 in Artifacts and Notes.
+- Observation: the Codex credential store holds an expired access token and cake never refreshes it. Evidence: a hand-built Responses request to `https://chatgpt.com/backend-api/codex/responses` returned HTTP 401 `token_expired`, and `src/auth.rs` only reads `~/.codex/auth.json` (`ChatGptAuth::load`) with no refresh path, so codex-backed models fail until the Codex CLI rewrites that file.
 - Observation: the dependencies needed for image work already exist. Evidence: `Cargo.toml` lists `base64` and `infer`; `infer` is already used for MIME detection in `src/clients/tools/bash.rs` (`detect_mime_type`).
 
 ## Decision Log
@@ -41,6 +42,7 @@ How to verify it works, at the highest level:
 - Decision: Persist image bytes inline as base64 in the session JSONL, bounded by a per-image size cap, rather than in a content-addressed blob store. Rationale: cake's session files are append-only, self-contained, and must replay identically on resume and fork; inline data keeps that guarantee with no new store to create, back up, or garbage-collect. A blob store can be a later optimization if session size becomes a problem. Date/Author: 2026-10-06, cake.
 - Decision: Prefer the Responses API's native image-bearing `function_call_output`; fall back to the synthetic-user-message shape everywhere if provider verification fails. Rationale: the native path keeps history clean and avoids a synthetic message, but its availability varies across OpenAI-compatible gateways. Milestone 1 settles this before other work depends on it. Date/Author: 2026-10-06, cake.
 - Decision: Gate `ReadImage` on a new per-model capability setting, default off. Rationale: sending an image to a text-only model produces a provider error; an opt-in capability avoids that class of failure and keeps the default tool set unchanged. Date/Author: 2026-10-06, cake.
+- Decision: Adopt the native Responses form (`function_call_output.output` as an array of a text block plus an `input_image` block) and keep the synthetic-user-message design for Chat Completions. Rationale: the configured gateway's Responses endpoint (`https://opencode.ai/zen/go/v1/responses`, model `gpt-6-luna`) accepted the native array and answered correctly about both the red and the blue 16x16 PNG, which meets the promotion criterion; the same gateway also accepted an image part inside a `tool` message, but the Chat Completions specification allows only text parts there, so the synthetic user message remains the shape that works on strict providers too. The Codex backend could not be probed because its stored token is expired (HTTP 401 `token_expired`); re-verify it after a Codex CLI refresh, before Milestone 6. Date/Author: 2026-10-06, cake.
 
 ## Outcomes & Retrospective
 
@@ -93,6 +95,8 @@ Result at the end: a recorded finding that says, for each backend, whether tool-
 
 Proof: the recorded response, including any error code and message, plus a one-paragraph recommendation for the Responses strategy. Promotion criterion: if the provider accepts and reasons about the image, adopt the native `function_call_output` array for Responses. Discard criterion: if it rejects or drops the image, use the synthetic-user-message path for Responses as well, and note that this makes the two backends converge.
 
+Outcome (2026-10-06): the promotion criterion was met on the configured gateway's Responses endpoint --- the native array returned HTTP 200 and the model named the fixture color correctly for both the red and the blue PNG. The Codex backend probe returned HTTP 401 `token_expired` (stale local token, not a shape rejection), so it stays unverified until the Codex CLI refreshes the credential. The full record is in Artifacts and Notes.
+
 ### Milestone 2: Domain model, `ReadImage` tool, and additive persistence
 
 At the end of this milestone, a `ReadImage` call produces image bytes in the internal representation, a session can store and reload them, and every existing text test still passes. No provider request carries an image yet.
@@ -117,6 +121,8 @@ Proof: a focused test builds a history with a function call, a function-call out
 ### Milestone 4: Responses translation
 
 At the end of this milestone, a Responses request built from a history containing a tool image carries the image, using the strategy chosen in Milestone 1, and reasoning and message inputs are unchanged for text.
+
+Milestone 1 selected the native path (see the Decision Log); the synthetic fallback below is retained only if a target provider later rejects the native form.
 
 Work: if the native path was chosen, extend `src/clients/responses_types.rs` so `ResponsesMessageContent` can be a text block or an image block (`{"type":"input_image","image_url":"data:..."}`) and so `ResponsesApiInputItem::FunctionCallOutput`'s `output` can be a string or an array of those blocks; update the `From<&ConversationItem>` conversion in `src/clients/responses.rs` accordingly. If the fallback path was chosen, keep `function_call_output` text-only and insert a synthetic user `message` item after the output, mirroring Milestone 3. Also support user messages that carry images directly, since a future CLI attachment path would reuse them.
 
@@ -225,6 +231,16 @@ All read, test, and snapshot commands are safe to repeat. Adding fields to recor
 Issue: https://github.com/travisennis/cake/issues/689
 
 Record here, as they occur: the Milestone 1 responses verbatim; the produced Chat Completions and Responses request fragments; and the live end-to-end session id with the model's answer.
+
+### Milestone 1 probes (2026-10-06)
+
+Fixture: 16x16 solid PNGs generated with Python `zlib` and inlined as `data:image/png;base64,...` (79-byte red, 78-byte blue). Requests were sent by hand with the endpoint's own auth (Codex auth file or bearer env var); base64 payloads are elided below.
+
+1. Gateway Responses, native tool-output image --- `POST https://opencode.ai/zen/go/v1/responses`, model `gpt-6-luna`, input `message(user, input_text)`, `function_call(ReadImage)`, then `{"type":"function_call_output","call_id":"call_m1","output":[{"type":"input_text","text":"ReadImage red.png (16x16, image/png)"},{"type":"input_image","image_url":"data:image/png;base64,<elided>"}]}`. Result: HTTP 200, SSE ending in `response.completed` with `output_text` `"Red"`; the blue fixture returned `"Blue"`; no `error` event.
+2. Gateway Responses, synthetic user message --- the same items with a text-only `function_call_output` followed by `message(user, [input_text, input_image])`. Result: HTTP 200, `"Red"`, status `completed`.
+3. Gateway Chat Completions, user-message image --- `POST https://opencode.ai/zen/go/v1/chat/completions`, model `deepseek-v4.1-flash`, `messages: [{role:user, content:[{type:text,...},{type:image_url,image_url:{url:"data:image/png;base64,<elided>"}}]}]`. Result: HTTP 200, content `"Red"`.
+4. Gateway Chat Completions, tool-message image --- assistant `tool_calls` plus a `tool` message whose `content` is an array with a text part and an `image_url` part. Result: HTTP 200, content `"Red"` for the red fixture and `"Blue"` for the blue fixture. The gateway accepts this shape, but the Chat Completions specification restricts tool-message content to text parts, so Milestone 3 keeps the synthetic user message.
+5. Codex backend, native tool-output image --- `POST https://chatgpt.com/backend-api/codex/responses`, model `gpt-6-luna`, same input as probe 1. Result: HTTP 401, body `{"error":{"message":"Provided authentication token is expired. Please try signing in again.","type":"invalid_request_error","code":"token_expired","param":null},...}`. The access token in `~/.codex/auth.json` is stale; `codex login status` still reports `Logged in using ChatGPT`, and the Codex CLI refreshes the file on its next authenticated run. Re-run probe 5 afterwards.
 
 ## Interfaces and Dependencies
 
