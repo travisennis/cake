@@ -885,16 +885,21 @@ fn api_error_from_failure(
 ) -> crate::exit_code::ApiError {
     debug!(target: "cake", "{}", failure.body);
 
+    crate::exit_code::ApiError {
+        status: failure.status,
+        body: api_error_body(config, failure),
+    }
+}
+
+/// Builds the user-visible body: the provider's own text, plus the Codex credential
+/// remedy when the failure is a rejected `ChatGPT` credential on that backend.
+fn api_error_body(config: &ResolvedModelConfig, failure: &HttpFailure) -> String {
     let mut body = format_api_error_body(&config.model_config.model, &failure.body);
     if let Some(remedy) = codex_auth_remedy(&config.model_config.base_url, failure) {
         body.push_str("\n\n");
         body.push_str(remedy);
     }
-
-    crate::exit_code::ApiError {
-        status: failure.status,
-        body,
-    }
+    body
 }
 
 /// Remedy sentence for a rejected `ChatGPT` credential on the first-party Codex backend.
