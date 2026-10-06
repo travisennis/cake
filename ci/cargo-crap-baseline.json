@@ -4,19 +4,19 @@
   "entries": [
     {
       "file": "./src/config/skills.rs",
+      "function": "Skill::parse_frontmatter_fallback",
+      "line": 209,
+      "cyclomatic": 14.0,
+      "coverage": 0.0,
+      "crap": 210.0
+    },
+    {
+      "file": "./src/config/skills.rs",
       "function": "scan_directory",
       "line": 589,
       "cyclomatic": 13.0,
       "coverage": 60.65573770491803,
       "crap": 23.29273815870051
-    },
-    {
-      "file": "./src/config/skills.rs",
-      "function": "Skill::parse_frontmatter_fallback",
-      "line": 209,
-      "cyclomatic": 14.0,
-      "coverage": 66.0377358490566,
-      "crap": 21.6779623447544
     },
     {
       "file": "./src/types/conversation.rs",
@@ -1467,6 +1467,14 @@
       "crap": 5.029158769499927
     },
     {
+      "file": "./src/config/skills.rs",
+      "function": "Skill::parse_frontmatter_yaml",
+      "line": 177,
+      "cyclomatic": 5.0,
+      "coverage": 90.0,
+      "crap": 5.025
+    },
+    {
       "file": "./src/clients/tools/bash.rs",
       "function": "prepare_bash_command",
       "line": 962,
@@ -1838,14 +1846,6 @@
       "file": "./src/config/toolbox.rs",
       "function": "parse_text_parameter",
       "line": 764,
-      "cyclomatic": 5.0,
-      "coverage": 100.0,
-      "crap": 5.0
-    },
-    {
-      "file": "./src/config/skills.rs",
-      "function": "Skill::parse_frontmatter_yaml",
-      "line": 177,
       "cyclomatic": 5.0,
       "coverage": 100.0,
       "crap": 5.0
