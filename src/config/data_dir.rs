@@ -12,6 +12,41 @@ use crate::config::session_jsonl::SessionFramer;
 use crate::config::{Session, git, session::CURRENT_FORMAT_VERSION};
 use crate::types::{GitState, SessionRecord};
 
+/// A data-directory preparation failure.
+///
+/// These are user-environment problems (a data root that is inaccessible or
+/// cannot be created), so they classify as input/config errors (exit 3) rather
+/// than agent errors. The io error is the [`std::error::Error::source`], so
+/// chain-formatting (anyhow's `{error:#}`) renders the path, the hint, and the
+/// underlying io error without duplication.
+#[derive(Debug, thiserror::Error)]
+pub enum DataDirError {
+    /// The path could not be stat'd (`NotFound` excluded). Under a sandbox that
+    /// denies stat on an existing directory this is the failure that used to
+    /// surface as a misleading `File exists (os error 17)`.
+    #[error(
+        "data directory '{path}' is not accessible (it may be denied by the current sandbox or filesystem permissions; set CAKE_DATA_DIR to a writable directory or grant it via [sandbox].writable)"
+    )]
+    NotAccessible {
+        /// The data or sessions directory path that could not be accessed.
+        path: PathBuf,
+        /// The underlying stat error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// The path was missing but could not be created.
+    #[error(
+        "failed to create data directory '{path}' (set CAKE_DATA_DIR to a writable directory or grant it via [sandbox].writable)"
+    )]
+    CreateFailed {
+        /// The data or sessions directory path that could not be created.
+        path: PathBuf,
+        /// The underlying create error.
+        #[source]
+        source: std::io::Error,
+    },
+}
+
 /// Manages the data directory for session storage.
 ///
 /// The cache directory defaults to `~/.cache/cake/` and contains cache data,
@@ -60,16 +95,11 @@ impl DataDir {
     /// Otherwise, cache defaults to `~/.cache/cake/` and sessions to
     /// `~/.local/share/cake/sessions/`. Directories are created if they do not exist.
     ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// let data_dir = DataDir::new()?;
-    /// ```
-    ///
     /// # Errors
     ///
-    /// Returns an error if the home directory cannot be determined (when
-    /// `CAKE_DATA_DIR` is not set), or if directories cannot be created.
+    /// Returns [`DataDirError`] when a data root cannot be stat'd or created
+    /// (for example, when a sandbox denies access to the default home paths),
+    /// and an untyped error when the home directory cannot be determined.
     pub fn new() -> anyhow::Result<Self> {
         let (data_dir, sessions_dir) = if let Ok(custom) = std::env::var("CAKE_DATA_DIR") {
             let custom = PathBuf::from(custom);
@@ -89,12 +119,8 @@ impl DataDir {
             }
         };
 
-        if !data_dir.exists() {
-            fs::create_dir_all(&data_dir)?;
-        }
-        if !sessions_dir.exists() {
-            fs::create_dir_all(&sessions_dir)?;
-        }
+        ensure_dir(&data_dir)?;
+        ensure_dir(&sessions_dir)?;
 
         Ok(Self {
             data_dir,
@@ -325,6 +351,29 @@ fn read_session_header(path: &Path) -> anyhow::Result<SessionFileHeader> {
         );
     }
     Ok(header)
+}
+
+/// Ensures `path` exists, distinguishing a denied stat from a missing path.
+///
+/// `Path::exists()` reports every stat error as "missing", so under a sandbox
+/// that denies stat on an existing directory the previous
+/// `if !path.exists() { create_dir_all(path) }` flow called `mkdir` on the
+/// existing path and surfaced a misleading `AlreadyExists (os error 17)`.
+/// Here a stat failure that is not `NotFound` reports the path as
+/// inaccessible instead of attempting creation.
+fn ensure_dir(path: &Path) -> Result<(), DataDirError> {
+    match fs::metadata(path) {
+        Ok(_) => Ok(()),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => fs::create_dir_all(path)
+            .map_err(|source| DataDirError::CreateFailed {
+                path: path.to_path_buf(),
+                source,
+            }),
+        Err(source) => Err(DataDirError::NotAccessible {
+            path: path.to_path_buf(),
+            source,
+        }),
+    }
 }
 
 fn session_meta_record(session: &Session, tools: Vec<String>) -> SessionRecord {
@@ -608,5 +657,125 @@ mod tests {
 
         assert_eq!(dd.data_dir, custom_path);
         assert!(custom_path.exists());
+    }
+
+    #[test]
+    fn ensure_dir_accepts_existing_directory() {
+        let tmp = TempDir::new().unwrap();
+        ensure_dir(tmp.path()).unwrap();
+    }
+
+    #[test]
+    fn ensure_dir_creates_missing_directory() {
+        let tmp = TempDir::new().unwrap();
+        let missing = tmp.path().join("nested/data");
+
+        ensure_dir(&missing).unwrap();
+
+        assert!(missing.is_dir());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn ensure_dir_reports_inaccessible_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // Root ignores permission bits, so the denial cannot be simulated.
+        // SAFETY: geteuid is always safe to call.
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+
+        // A parent with no permission bits denies stat on the child: the
+        // sandbox-denial shape that used to surface as
+        // `File exists (os error 17)` from `create_dir_all`.
+        let tmp = TempDir::new().unwrap();
+        let sealed = tmp.path().join("sealed");
+        std::fs::create_dir(&sealed).unwrap();
+        let mut perms = std::fs::metadata(&sealed).unwrap().permissions();
+        perms.set_mode(0o000);
+        std::fs::set_permissions(&sealed, perms).unwrap();
+        let child = sealed.join("child");
+
+        let err = ensure_dir(&child).unwrap_err();
+
+        // Restore before the TempDir drops so cleanup can unlink the child.
+        let mut perms = std::fs::metadata(&sealed).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&sealed, perms).unwrap();
+
+        match &err {
+            DataDirError::NotAccessible { path, .. } => assert_eq!(path, &child),
+            other @ DataDirError::CreateFailed { .. } => {
+                panic!("expected NotAccessible, got {other:?}")
+            },
+        }
+        let text = err.to_string();
+        assert!(
+            text.contains("not accessible"),
+            "unexpected message: {text}"
+        );
+        assert!(text.contains("CAKE_DATA_DIR"), "unexpected message: {text}");
+    }
+
+    #[test]
+    fn new_reports_inaccessible_data_dir_with_path_and_remedy() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // Root ignores permission bits, so the denial cannot be simulated.
+        // SAFETY: geteuid is always safe to call.
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+
+        let tmp = TempDir::new().unwrap();
+        let sealed = tmp.path().join("sealed");
+        std::fs::create_dir(&sealed).unwrap();
+        let mut perms = std::fs::metadata(&sealed).unwrap().permissions();
+        perms.set_mode(0o000);
+        std::fs::set_permissions(&sealed, perms).unwrap();
+        let root = sealed.join("cake");
+
+        let result = temp_env::with_var("CAKE_DATA_DIR", Some(root.as_os_str()), DataDir::new);
+
+        // Restore before the TempDir drops so cleanup can unlink the child.
+        let mut perms = std::fs::metadata(&sealed).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&sealed, perms).unwrap();
+
+        let err = result.unwrap_err();
+        assert!(
+            err.downcast_ref::<DataDirError>().is_some(),
+            "expected a typed DataDirError, got: {err:#}"
+        );
+        let text = format!("{err:#}");
+        assert!(
+            text.contains("is not accessible"),
+            "unexpected message: {text}"
+        );
+        assert!(text.contains("cake"), "unexpected message: {text}");
+        assert!(text.contains("CAKE_DATA_DIR"), "unexpected message: {text}");
+    }
+
+    #[test]
+    fn data_dir_error_chain_names_path_remedy_and_cause() {
+        let err: anyhow::Error = DataDirError::NotAccessible {
+            path: PathBuf::from("/Users/me/.cache/cake"),
+            source: std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "operation not permitted",
+            ),
+        }
+        .into();
+
+        let text = format!("{err:#}");
+        assert!(text.contains("/Users/me/.cache/cake"), "unexpected: {text}");
+        assert!(text.contains("not accessible"), "unexpected: {text}");
+        assert!(text.contains("CAKE_DATA_DIR"), "unexpected: {text}");
+        assert!(
+            text.contains("operation not permitted"),
+            "unexpected: {text}"
+        );
+        assert!(!text.contains("File exists"), "unexpected: {text}");
     }
 }

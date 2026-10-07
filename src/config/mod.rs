@@ -32,7 +32,7 @@ pub use agents::{AgentsFile, read_agents_files};
 #[doc(inline)]
 pub use config_dir::config_dir;
 #[doc(inline)]
-pub use data_dir::DataDir;
+pub use data_dir::{DataDir, DataDirError};
 #[doc(inline)]
 pub use hooks::{HookSource, HooksLoader};
 #[doc(inline)]
