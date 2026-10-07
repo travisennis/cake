@@ -92,6 +92,13 @@ fn classify_typed_error(err: &anyhow::Error) -> Option<u8> {
         return Some(code::INPUT_ERROR);
     }
 
+    // Data-directory preparation failures are user-environment problems (an
+    // inaccessible or uncreatable data root, e.g. denied by a sandbox), not
+    // agent errors.
+    if err.downcast_ref::<crate::config::DataDirError>().is_some() {
+        return Some(code::INPUT_ERROR);
+    }
+
     // `cake replay` maps each failure category to its documented exit code
     // (see `ReplayError::exit_code`); the same mapping drives the
     // `replay_error` stream record's `exit_code` field.
@@ -357,6 +364,19 @@ mod tests {
             "Environment variable 'OPENCODE_ZEN_API_TOKEN' is not set. \
              Please set it to your API key: environment variable not found"
         );
+        assert_eq!(classify_to_u8(&err), code::INPUT_ERROR);
+    }
+
+    #[test]
+    fn classify_data_dir_error_as_input_error() {
+        let err: anyhow::Error = crate::config::DataDirError::NotAccessible {
+            path: "/Users/me/.cache/cake".into(),
+            source: std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "operation not permitted",
+            ),
+        }
+        .into();
         assert_eq!(classify_to_u8(&err), code::INPUT_ERROR);
     }
 
