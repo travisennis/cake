@@ -65,10 +65,9 @@ pub(super) fn execute_read_image(
     let bytes = read_bounded(&path, context.limits.read_image_max_bytes)?;
 
     let Some(media_type) = detect_image_media_type(&bytes) else {
-        return Err(format!(
-            "Not an image file: {} (detected {}); use Read to read text files.",
-            path.display(),
-            detect_mime_type(&bytes).unwrap_or("an unknown format")
+        return Err(unsupported_image_error(
+            &path,
+            detect_mime_type(&bytes).unwrap_or("an unknown format"),
         ));
     };
 
@@ -115,14 +114,42 @@ fn read_bounded(path: &Path, cap: Option<usize>) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
+/// Image formats `ReadImage` sends to the provider.
+///
+/// `infer` recognizes many more `image/*` types (TIFF, BMP, ICO, AVIF, and
+/// others) than the vision-capable backends accept, so the accepted set is an
+/// explicit allowlist that matches the tool description rather than an
+/// `image/` prefix test.
+const SUPPORTED_IMAGE_MEDIA_TYPES: &[&str] =
+    &["image/png", "image/jpeg", "image/gif", "image/webp"];
+
 /// Detect the MIME type of raw file bytes using content-based detection.
 fn detect_mime_type(data: &[u8]) -> Option<&'static str> {
     infer::get(data).map(|kind| kind.mime_type())
 }
 
-/// Return the MIME type only when the bytes are a recognized image format.
+/// Return the MIME type only when the bytes are in a supported image format.
 fn detect_image_media_type(data: &[u8]) -> Option<&'static str> {
-    detect_mime_type(data).filter(|media_type| media_type.starts_with("image/"))
+    detect_mime_type(data).filter(|media_type| SUPPORTED_IMAGE_MEDIA_TYPES.contains(media_type))
+}
+
+/// Model-visible error for a file `ReadImage` will not send.
+///
+/// A recognized-but-unsupported image format is distinguished from a non-image
+/// so the model learns the file is an image of an unsupported type rather than
+/// text it should read with `Read`.
+fn unsupported_image_error(path: &Path, detected: &str) -> String {
+    if detected.starts_with("image/") {
+        format!(
+            "Unsupported image format: {} (detected {detected}); ReadImage supports PNG, JPEG, GIF, and WebP.",
+            path.display()
+        )
+    } else {
+        format!(
+            "Not an image file: {} (detected {detected}); use Read to read text files.",
+            path.display()
+        )
+    }
 }
 
 #[cfg(test)]
@@ -190,6 +217,20 @@ mod tests {
 
         assert!(err.contains("an unknown format"), "{err}");
         assert!(err.contains("use Read"), "{err}");
+    }
+
+    #[test]
+    fn read_image_rejects_unsupported_image_format() {
+        // BMP is a real image format that `infer` detects but that the vision
+        // backends, and therefore this tool, do not support.
+        let (_temp_dir, path) = write_fixture("scan.bmp", b"BM\x00\x00\x00\x00");
+        let args = serde_json::json!({ "path": path }).to_string();
+
+        let err = execute_read_image(&ToolContext::from_current_process(), &args).unwrap_err();
+
+        assert!(err.contains("Unsupported image format"), "{err}");
+        assert!(err.contains("detected image/bmp"), "{err}");
+        assert!(err.contains("PNG, JPEG, GIF, and WebP"), "{err}");
     }
 
     #[test]
