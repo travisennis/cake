@@ -65,18 +65,6 @@ pub struct DataDir {
 }
 
 impl DataDir {
-    /// Creates a new data directory instance for session storage.
-    ///
-    /// If `CAKE_DATA_DIR` is set, uses that path for both cache and sessions.
-    /// Otherwise, cache defaults to `~/.cache/cake/` and sessions to
-    /// `~/.local/share/cake/sessions/`. Directories are created if they do not exist.
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// let data_dir = DataDir::new()?;
-    /// ```
-    ///
     /// Create a `DataDir` at an arbitrary path (for testing).
     ///
     /// This avoids filesystem access and environment dependencies,
