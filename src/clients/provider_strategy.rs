@@ -191,6 +191,7 @@ mod tests {
     ) -> ResolvedModelConfig {
         ResolvedModelConfig {
             model_config: ModelConfig {
+                supports_images: false,
                 model: model.to_string(),
                 api_type: ApiType::ChatCompletions,
                 base_url: base_url.to_string(),

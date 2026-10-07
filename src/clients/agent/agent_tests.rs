@@ -6,6 +6,7 @@ use crate::types::{InputTokensDetails, OutputTokensDetails, ReasoningSummary};
 fn test_resolved_model_config(api_type: ApiType, base_url: &str) -> ResolvedModelConfig {
     ResolvedModelConfig {
         model_config: crate::config::model::ModelConfig {
+            supports_images: true,
             model: "test-model".to_string(),
             api_type,
             base_url: base_url.to_string(),
@@ -207,6 +208,47 @@ fn read_only_tool_context_skips_toolbox_tools_regardless_of_order() {
     .with_toolbox_tools(vec![test_toolbox_tool()])
     .with_tool_context(context);
     assert_eq!(agent.tool_names(), vec!["Read", "ReadImage"]);
+}
+
+#[test]
+fn text_only_model_does_not_register_read_image() {
+    let mut config =
+        test_resolved_model_config(ApiType::ChatCompletions, "https://api.example.com");
+    config.model_config.supports_images = false;
+    let agent = Agent::new(config, &[(Role::System, "test system prompt".to_string())])
+        .with_tool_context(Arc::new(ToolContext::from_current_process()));
+
+    assert_eq!(
+        agent.tool_names(),
+        vec!["Bash", "BashSession", "Edit", "Read", "Write"]
+    );
+}
+
+#[test]
+fn image_capable_model_registers_read_image() {
+    let agent = Agent::new(
+        test_resolved_model_config(ApiType::ChatCompletions, "https://api.example.com"),
+        &[(Role::System, "test system prompt".to_string())],
+    )
+    .with_tool_context(Arc::new(ToolContext::from_current_process()));
+
+    assert!(agent.tool_names().contains(&"ReadImage".to_string()));
+}
+
+#[test]
+fn enabled_tool_selection_cannot_re_add_a_gated_tool() {
+    let mut config =
+        test_resolved_model_config(ApiType::ChatCompletions, "https://api.example.com");
+    config.model_config.supports_images = false;
+    let enabled = vec!["ReadImage".to_string()];
+    let agent = Agent::new(config, &[(Role::System, "test system prompt".to_string())])
+        .with_tool_context(Arc::new(ToolContext::from_current_process()))
+        .with_enabled_tools(Some(&enabled));
+
+    assert!(
+        agent.tool_names().is_empty(),
+        "--tools ReadImage must not bypass the model capability gate"
+    );
 }
 
 #[test]
@@ -1946,6 +1988,7 @@ printf 'completed:%s' "$index"
         use std::collections::HashMap;
 
         let model_config = ModelConfig {
+            supports_images: false,
             model: "judge/model".to_string(),
             api_type: ApiType::ChatCompletions,
             base_url: mock_server.uri(),

@@ -269,6 +269,7 @@ fn assert_repair_matches_file(agent: &Agent, expected_repairs: &[String], contex
 fn session_restore_model_config() -> ResolvedModelConfig {
     ResolvedModelConfig {
         model_config: crate::config::model::ModelConfig {
+            supports_images: false,
             model: "test-model".to_string(),
             api_type: crate::config::model::ApiType::ChatCompletions,
             base_url: "https://example.invalid/v1".to_string(),

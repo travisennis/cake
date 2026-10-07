@@ -1742,6 +1742,7 @@ mod deterministic {
     /// Build a `JudgeClient` pointed at a wiremock server with a short timeout.
     pub(super) fn bench_client(base_url: String, timeout: Duration) -> JudgeClient {
         let model_config = ModelConfig {
+            supports_images: false,
             model: "bench/model".to_string(),
             api_type: ApiType::ChatCompletions,
             base_url,

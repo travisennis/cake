@@ -108,6 +108,11 @@ pub struct ModelConfig {
     pub reasoning_max_tokens: Option<u32>,
     /// Provider routing hints
     pub providers: Vec<String>,
+    /// Whether this model can accept image input, which gates the `ReadImage`
+    /// tool. Defaults to false: a model that has not declared image support
+    /// never sees `ReadImage` in its tool list or request, so cake cannot send
+    /// pixels to a text-only model.
+    pub supports_images: bool,
 }
 
 /// A `ModelConfig` with the API key resolved from the environment.
@@ -197,6 +202,7 @@ mod tests {
     /// Helper to create a minimal `ModelConfig` for tests.
     fn test_config(overrides: impl FnOnce(&mut ModelConfig)) -> ModelConfig {
         let mut config = ModelConfig {
+            supports_images: false,
             model: "test/model".to_string(),
             api_type: ApiType::ChatCompletions,
             base_url: "https://api.example.com".to_string(),

@@ -225,20 +225,13 @@ impl crate::CodingAssistant {
         loaded_system_prompt: Option<&str>,
         judge: &JudgeSettings,
     ) -> anyhow::Result<RunSession> {
-        let initial_messages = build_initial_prompt_messages_with_enabled_tools(
-            &current_dir,
-            config_dir,
-            self.system_prompt.as_deref().map(std::path::Path::new),
-            loaded_system_prompt.map(std::path::Path::new),
-            agents_files,
-            skill_catalog,
-            tool_context.sandbox_policy,
-            toolbox_tools,
-            enabled_tools,
-        );
         let inputs = RunInputs {
             current_dir,
-            initial_messages,
+            config_dir,
+            cli_system_prompt: self.system_prompt.as_deref().map(std::path::Path::new),
+            settings_system_prompt: loaded_system_prompt.map(std::path::Path::new),
+            agents_files,
+            skill_catalog,
             skill_locations: skill_locations(skill_catalog),
             models,
             default_model,
@@ -276,13 +269,14 @@ impl crate::CodingAssistant {
             restored.model.as_deref(),
             restored.model_config.as_deref(),
         )?;
+        let initial_messages = inputs.initial_messages(resolved.model_config.supports_images);
         let tool_context =
             attach_judge(inputs.tool_context, &resolved, inputs.judge, inputs.models);
         Self::restored_client_and_session(
             restored,
             resolved,
             model_config_name,
-            &inputs.initial_messages,
+            &initial_messages,
             &inputs.skill_locations,
             tool_context,
             inputs.toolbox_tools.to_vec(),
@@ -321,6 +315,7 @@ impl crate::CodingAssistant {
             restored.model.as_deref(),
             restored.model_config.as_deref(),
         )?;
+        let initial_messages = inputs.initial_messages(resolved.model_config.supports_images);
         let tool_context =
             attach_judge(inputs.tool_context, &resolved, inputs.judge, inputs.models);
         Self::forked_client_and_session(
@@ -328,7 +323,7 @@ impl crate::CodingAssistant {
             resolved,
             model_config_name,
             inputs.current_dir.clone(),
-            &inputs.initial_messages,
+            &initial_messages,
             inputs.skill_locations.clone(),
             tool_context,
             inputs.toolbox_tools.to_vec(),
@@ -346,11 +341,12 @@ impl crate::CodingAssistant {
         let (config, model_config_name) =
             self.resolve_model_config(inputs.models, inputs.default_model)?;
         let resolved = ResolvedModelConfig::resolve(config)?;
+        let initial_messages = inputs.initial_messages(resolved.model_config.supports_images);
         Ok(Self::new_client_and_session(
             resolved.clone(),
             model_config_name,
             inputs.current_dir.clone(),
-            &inputs.initial_messages,
+            &initial_messages,
             inputs.skill_locations.clone(),
             attach_judge(inputs.tool_context, &resolved, inputs.judge, inputs.models),
             inputs.toolbox_tools.to_vec(),
@@ -364,7 +360,11 @@ impl crate::CodingAssistant {
 /// Construction inputs every run-mode step shares.
 struct RunInputs<'a> {
     current_dir: PathBuf,
-    initial_messages: Vec<(crate::types::Role, String)>,
+    config_dir: &'a Path,
+    cli_system_prompt: Option<&'a Path>,
+    settings_system_prompt: Option<&'a Path>,
+    agents_files: &'a [AgentsFile],
+    skill_catalog: &'a SkillCatalog,
     skill_locations: HashMap<PathBuf, Skill>,
     models: &'a HashMap<String, ModelDefinition>,
     default_model: Option<&'a str>,
@@ -373,6 +373,28 @@ struct RunInputs<'a> {
     tools_enabled: Option<&'a [String]>,
     task_id: uuid::Uuid,
     judge: &'a JudgeSettings,
+}
+
+impl RunInputs<'_> {
+    /// Build the initial prompt messages for a resolved model.
+    ///
+    /// The tool list is built after the model is resolved so it can reflect
+    /// model capabilities: a model that does not accept image input never
+    /// advertises `ReadImage`.
+    fn initial_messages(&self, supports_images: bool) -> Vec<(crate::types::Role, String)> {
+        build_initial_prompt_messages_with_enabled_tools(
+            &self.current_dir,
+            self.config_dir,
+            self.cli_system_prompt,
+            self.settings_system_prompt,
+            self.agents_files,
+            self.skill_catalog,
+            self.tool_context.sandbox_policy,
+            self.toolbox_tools,
+            self.tools_enabled,
+            supports_images,
+        )
+    }
 }
 
 /// Load the prior session a fork starts from.
@@ -432,6 +454,7 @@ mod tests {
     fn test_resolved_model_config() -> ResolvedModelConfig {
         ResolvedModelConfig {
             model_config: crate::config::model::ModelConfig {
+                supports_images: false,
                 model: "test".to_string(),
                 api_type: crate::config::model::ApiType::ChatCompletions,
                 base_url: "https://example.invalid/v1".to_string(),
@@ -491,6 +514,7 @@ mod tests {
             let models = HashMap::from([(
                 "test".to_string(),
                 ModelDefinition {
+                    supports_images: false,
                     name: "test".to_string(),
                     model: "glm-5.1".to_string(),
                     base_url: "https://example.invalid/v1".to_string(),
@@ -575,6 +599,7 @@ mod tests {
 
         let resolved = ResolvedModelConfig {
             model_config: crate::config::model::ModelConfig {
+                supports_images: false,
                 model: "test".to_string(),
                 api_type: crate::config::model::ApiType::ChatCompletions,
                 base_url: "https://example.invalid/v1".to_string(),
@@ -687,6 +712,7 @@ mod tests {
         HashMap::from([(
             "test".to_string(),
             ModelDefinition {
+                supports_images: false,
                 name: "test".to_string(),
                 model: "glm-5.1".to_string(),
                 base_url: "https://example.invalid/v1".to_string(),

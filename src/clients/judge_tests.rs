@@ -8,6 +8,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 /// Minimal model config pointed at a wiremock server.
 fn test_config(base_url: String) -> ResolvedModelConfig {
     let model_config = crate::config::model::ModelConfig {
+        supports_images: false,
         model: "agent/model".to_string(),
         api_type: crate::config::model::ApiType::ChatCompletions,
         base_url,
@@ -224,6 +225,7 @@ async fn judge_model_override_uses_named_model_full_config() {
     // A named `[[models]]` entry's full configuration, resolved the same way
     // `default_model` resolves a name.
     let definition = crate::config::settings::ModelDefinition {
+        supports_images: false,
         name: "judge-model-v2".to_string(),
         model: "judge-model-v2".to_string(),
         api_type: crate::config::model::ApiType::ChatCompletions,

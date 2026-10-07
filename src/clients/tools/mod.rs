@@ -717,6 +717,10 @@ pub(super) struct ToolCapabilities {
     /// Resolves the canonical path this call would mutate when the tool
     /// mutates a resolvable path; drives same-file serialization (ADR-013).
     pub(super) mutating_target: Option<MutationTargetFn>,
+    /// The tool sends image bytes to the provider, so it is only offered to a
+    /// model that declares image support. A text-only model would otherwise
+    /// receive a tool whose output the provider rejects.
+    pub(super) requires_image_support: bool,
 }
 
 impl ToolCapabilities {
@@ -726,6 +730,7 @@ impl ToolCapabilities {
             read_safe: false,
             replay_safety: ReplaySafety::Never,
             mutating_target: None,
+            requires_image_support: false,
         }
     }
 }
@@ -782,6 +787,13 @@ impl ToolEntry {
         self
     }
 
+    /// Declare that the tool sends image bytes to the provider, so it is
+    /// registered only for a model that declares image support.
+    const fn requires_images(mut self) -> Self {
+        self.capabilities.requires_image_support = true;
+        self
+    }
+
     /// Attach the resolver for the canonical path this tool's call would
     /// mutate, enabling same-file serialization in scheduling.
     fn mutates_path(
@@ -835,6 +847,20 @@ impl ToolRegistry {
     /// for the whole agent, not just shell commands.
     pub(super) fn retain_read_safe_tools(&mut self) {
         self.entries.retain(|entry| entry.capabilities.read_safe);
+        self.refresh_definitions();
+    }
+
+    /// Remove every tool that needs a capability the model does not have.
+    ///
+    /// A tool whose output the provider cannot accept must never reach the
+    /// model: rather than registering it and failing at request time, the
+    /// registry omits it, so the prompt tool list and the request tools array
+    /// agree with what the model can actually use.
+    pub(super) fn retain_model_supported_tools(&mut self, supports_images: bool) {
+        if !supports_images {
+            self.entries
+                .retain(|entry| !entry.capabilities.requires_image_support);
+        }
         self.refresh_definitions();
     }
 
@@ -1337,13 +1363,17 @@ fn execute_write_tool(
 /// is its first sentence (up to the first `.`).
 /// The optional `enabled_tools` list is an exact-name allowlist. `None` keeps
 /// every tool that survives the sandbox and toolbox rules; an empty list keeps
-/// none.
+/// none. `supports_images` reports whether the resolved model accepts image
+/// input; a tool that sends pixels (such as `ReadImage`) is omitted when it is
+/// false, so the prompt never advertises a tool the model cannot use.
 pub fn format_tool_list_section(
     sandbox_policy: SandboxPolicy,
     toolbox_tools: &[crate::config::toolbox::ToolboxTool],
     enabled_tools: Option<&[String]>,
+    supports_images: bool,
 ) -> String {
     let mut registry = default_tool_registry();
+    registry.retain_model_supported_tools(supports_images);
     if sandbox_policy == SandboxPolicy::ReadOnly {
         registry.retain_read_safe_tools();
     }
@@ -1392,7 +1422,7 @@ fn append_tool_availability_footer(s: &mut String, has_tools: bool) {
     }
 }
 
-const BUILTIN_TOOL_NAMES: &[&str] = &["Bash", "BashSession", "Read", "Edit", "Write"];
+const BUILTIN_TOOL_NAMES: &[&str] = &["Bash", "BashSession", "Read", "ReadImage", "Edit", "Write"];
 
 fn filter_builtin_description(
     tool_name: &str,
@@ -1401,7 +1431,7 @@ fn filter_builtin_description(
 ) -> String {
     // BashSession describes Bash output and IDs, but never recommends calling
     // Bash. Those lines are essential even in a BashSession-only selection.
-    if !["Bash", "Read", "Edit", "Write"].contains(&tool_name) {
+    if !["Bash", "Read", "ReadImage", "Edit", "Write"].contains(&tool_name) {
         return description.to_string();
     }
 
@@ -1418,8 +1448,26 @@ fn filter_builtin_description(
 
     description
         .split_inclusive('\n')
-        .filter(|line| !unavailable_names.iter().any(|name| line.contains(name)))
+        .filter(|line| {
+            !unavailable_names
+                .iter()
+                .any(|name| mentions_tool(line, name))
+        })
         .collect()
+}
+
+/// Whether `line` names the tool `name` as a whole word.
+///
+/// Built-in names share prefixes --- `Read`/`ReadImage` and `Bash`/`BashSession`
+/// --- so a plain substring test would treat a reference to `ReadImage` as a
+/// reference to `Read` and drop a line that is still accurate.
+fn mentions_tool(line: &str, name: &str) -> bool {
+    line.split(|c: char| !is_tool_name_char(c))
+        .any(|word| word == name)
+}
+
+const fn is_tool_name_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
 }
 
 fn apply_enabled_tool_selection(registry: &mut ToolRegistry, enabled_tools: Option<&[String]>) {
@@ -1449,7 +1497,8 @@ pub(super) fn default_tool_registry() -> ToolRegistry {
             .replay_safe(),
         ToolEntry::new(read_image::read_image_tool(), execute_read_image_tool)
             .read_safe()
-            .replay_safe(),
+            .replay_safe()
+            .requires_images(),
         ToolEntry::new(write::write_tool(), execute_write_tool)
             .repairs_arguments()
             .mutates_path(write::mutating_target),
@@ -1623,6 +1672,7 @@ mod tests {
             SandboxPolicy::WorkspaceWrite,
             &[fixture_toolbox_tool()],
             Some(&enabled),
+            true,
         );
 
         assert!(result.contains("- **Read**:"));
@@ -1638,6 +1688,7 @@ mod tests {
             SandboxPolicy::WorkspaceWrite,
             &[fixture_toolbox_tool()],
             Some(&[]),
+            true,
         );
 
         assert!(!result.contains("- **Bash**:"));
@@ -2001,7 +2052,7 @@ mod tests {
 
     #[test]
     fn format_tool_list_section_includes_all_tools() {
-        let result = format_tool_list_section(SandboxPolicy::WorkspaceWrite, &[], None);
+        let result = format_tool_list_section(SandboxPolicy::WorkspaceWrite, &[], None, true);
         assert!(result.starts_with("## Available tools"));
         assert!(result.contains("- **Bash**:"));
         assert!(result.contains("- **BashSession**:"));
@@ -2018,14 +2069,19 @@ mod tests {
             SandboxPolicy::WorkspaceWrite,
             &[fixture_toolbox_tool()],
             None,
+            true,
         );
         assert!(result.contains("- **tb__run_tests**: Run the test suite.\n"));
     }
 
     #[test]
     fn format_tool_list_section_read_only_excludes_mutating_tools() {
-        let result =
-            format_tool_list_section(SandboxPolicy::ReadOnly, &[fixture_toolbox_tool()], None);
+        let result = format_tool_list_section(
+            SandboxPolicy::ReadOnly,
+            &[fixture_toolbox_tool()],
+            None,
+            true,
+        );
         assert!(!result.contains("- **Bash**:"));
         assert!(!result.contains("- **BashSession**:"));
         assert!(result.contains("- **Read**:"));
@@ -2041,6 +2097,58 @@ mod tests {
             !result.contains("tb__run_tests"),
             "read-only prompt must not advertise toolbox tools"
         );
+    }
+
+    #[test]
+    fn format_tool_list_section_gates_read_image_on_model_capability() {
+        let with_images = format_tool_list_section(SandboxPolicy::WorkspaceWrite, &[], None, true);
+        assert!(with_images.contains("- **ReadImage**:"));
+
+        let without_images =
+            format_tool_list_section(SandboxPolicy::WorkspaceWrite, &[], None, false);
+        assert!(
+            !without_images.contains("- **ReadImage**:"),
+            "a text-only model must not see ReadImage"
+        );
+        assert!(
+            without_images.contains("- **Read**:"),
+            "the gate removes only the image tool"
+        );
+    }
+
+    #[test]
+    fn enabled_selection_cannot_re_add_a_gated_tool() {
+        let enabled = vec!["ReadImage".to_string()];
+        let result =
+            format_tool_list_section(SandboxPolicy::WorkspaceWrite, &[], Some(&enabled), false);
+
+        assert!(!result.contains("- **ReadImage**:"));
+        assert!(
+            result.contains("No tools are available."),
+            "--tools ReadImage alone must not bypass the model capability gate"
+        );
+    }
+
+    #[test]
+    fn model_capability_filter_removes_read_image_from_registry() {
+        let mut gated = default_tool_registry();
+        gated.retain_model_supported_tools(false);
+        assert!(!gated.names().contains(&"ReadImage".to_string()));
+        assert!(gated.names().contains(&"Read".to_string()));
+
+        let mut capable = default_tool_registry();
+        capable.retain_model_supported_tools(true);
+        assert!(capable.names().contains(&"ReadImage".to_string()));
+    }
+
+    #[test]
+    fn mentions_tool_matches_whole_words_only() {
+        assert!(mentions_tool("Use Read for text files", "Read"));
+        assert!(mentions_tool("Use Read.", "Read"));
+        assert!(!mentions_tool("Use ReadImage for images", "Read"));
+        assert!(mentions_tool("Use ReadImage for images", "ReadImage"));
+        assert!(!mentions_tool("BashSession keeps IDs", "Bash"));
+        assert!(mentions_tool("BashSession keeps IDs", "BashSession"));
     }
 
     #[test]

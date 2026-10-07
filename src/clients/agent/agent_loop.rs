@@ -1319,6 +1319,7 @@ mod helper_tests {
         Agent::new(
             ResolvedModelConfig {
                 model_config: ModelConfig {
+                    supports_images: false,
                     model: "test-model".to_string(),
                     api_type: ApiType::ChatCompletions,
                     base_url: "https://api.example.com".to_string(),

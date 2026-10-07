@@ -75,13 +75,15 @@ Run `codex login` first. For this exact `base_url`, Cake reads the access token 
 
 This uses an internal Codex backend and is intended for experimentation rather than a stable provider integration. The backend may require a currently supported Codex model and Responses API request shape.
 
-Optional model fields are `api_type` (`chat_completions` or `responses`), `provider`, `provider_headers`, `temperature`, `top_p`, `max_output_tokens`, `context_window`, `reasoning_effort`, `reasoning_summary`, `reasoning_max_tokens`, and `providers`.
+Optional model fields are `api_type` (`chat_completions` or `responses`), `provider`, `provider_headers`, `temperature`, `top_p`, `max_output_tokens`, `context_window`, `reasoning_effort`, `reasoning_summary`, `reasoning_max_tokens`, `providers`, and `supports_images`.
 
 ### Provider-specific behavior
 
 `provider` selects provider-specific request behavior: `"openrouter"` sends configurable `provider_headers` attribution (`http_referer` as `HTTP-Referer`, `x_title` as `X-Title`), while `"opencode"` targets OpenCode Zen and sends `x-opencode-session` with the run's session UUID on every provider POST (both Chat Completions and Responses APIs, including judge calls, which each mint their own fresh ID). When `provider` is omitted, Cake infers OpenRouter from an `openrouter.ai` base URL and OpenCode from an `opencode.ai` base URL (for example `https://opencode.ai/zen`). The session ID is not secret and is never redacted.
 
 `context_window` is the model's input-token budget in tokens. When set, Cake logs the remaining budget each turn: window minus the last request's input tokens (the full request: system prompt, tools, history). The next request adds output and client-added tool outputs, which Cake does not tokenize; reserve a buffer. Absent means the window is unknown and Cake keeps current behavior (recovering from provider context-limit errors by parsing their message text).
+
+`supports_images` (default `false`) declares that the model accepts image input. It gates the `ReadImage` tool: a model without it never sees `ReadImage` in its prompt tool list or request tools array, so Cake cannot send pixels to a text-only model. Set `supports_images = true` on a vision-capable entry to enable the tool. Because the flag belongs to the `[[models]]` entry, a resumed or forked session uses the entry it was pinned to, and `--tools ReadImage` narrows the tool set but cannot re-add a tool the model's capability gate removed.
 
 Set the selected model explicitly with `--model`, through a selected `--profile`, or with `default_model`. Reasoning and output-token CLI flags override the resolved model for one invocation.
 

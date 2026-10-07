@@ -109,6 +109,7 @@ async fn session_end_payload_has_common_fields_and_reason() {
 fn test_model_config() -> ResolvedModelConfig {
     ResolvedModelConfig {
         model_config: ModelConfig {
+            supports_images: false,
             model: "test-model".to_string(),
             api_type: ApiType::ChatCompletions,
             base_url: "https://api.example.com".to_string(),

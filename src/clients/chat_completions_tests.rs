@@ -39,6 +39,7 @@ fn full_prompt_history() -> Vec<ConversationItem> {
         SandboxPolicy::WorkspaceWrite,
         &[],
         None,
+        true,
     )
     .into_iter()
     .map(|(role, content)| ConversationItem::Message {
@@ -1936,6 +1937,7 @@ mod response_parsing_tests {
 fn build_request_json_preserves_f32_sampling_fields_on_the_wire() {
     let config = ResolvedModelConfig {
         model_config: ModelConfig {
+            supports_images: false,
             model: "openai/gpt-5".to_string(),
             api_type: ApiType::ChatCompletions,
             base_url: "https://api.example.com/v1".to_string(),
@@ -2000,6 +2002,7 @@ fn build_request_json_preserves_f32_sampling_fields_on_the_wire() {
 fn request_config(base_url: &str, api_type: ApiType) -> ResolvedModelConfig {
     ResolvedModelConfig {
         model_config: ModelConfig {
+            supports_images: false,
             model: "test-model".to_string(),
             api_type,
             base_url: base_url.to_string(),

@@ -788,6 +788,10 @@ pub struct ModelDefinition {
     /// Provider routing hints
     #[serde(default)]
     pub providers: Vec<String>,
+    /// Whether this model accepts image input. Gates the `ReadImage` tool so
+    /// cake never sends pixels to a text-only model. Defaults to false.
+    #[serde(default)]
+    pub supports_images: bool,
 }
 
 impl ModelDefinition {
@@ -838,6 +842,7 @@ impl ModelDefinition {
     /// ```
     pub fn to_model_config(&self) -> ModelConfig {
         ModelConfig {
+            supports_images: self.supports_images,
             model: self.model.clone(),
             api_type: self.api_type,
             base_url: self.base_url.clone(),

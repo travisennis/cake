@@ -12,6 +12,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn test_config(base_url: String) -> ResolvedModelConfig {
     let model_config = crate::config::model::ModelConfig {
+        supports_images: false,
         model: "agent/model".to_string(),
         api_type: ApiType::ChatCompletions,
         base_url,
@@ -54,6 +55,7 @@ fn chat_response(content: &str) -> serde_json::Value {
 
 fn model_definition(name: &str, base_url: &str) -> ModelDefinition {
     ModelDefinition {
+        supports_images: false,
         name: name.to_string(),
         model: format!("provider/{name}"),
         base_url: base_url.to_string(),

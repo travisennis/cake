@@ -47,6 +47,7 @@ fn full_prompt_history() -> Vec<ConversationItem> {
         SandboxPolicy::WorkspaceWrite,
         &[],
         None,
+        true,
     )
     .into_iter()
     .map(|(role, content)| ConversationItem::Message {
@@ -955,6 +956,7 @@ fn snapshot_responses_request_full_with_agents_and_skills() {
 fn build_request_disables_storage_for_codex_backend() {
     let config = ResolvedModelConfig {
         model_config: ModelConfig {
+            supports_images: false,
             model: "gpt-5.6-luna".to_string(),
             api_type: ApiType::Responses,
             base_url: "https://chatgpt.com/backend-api/codex".to_string(),
@@ -1040,6 +1042,7 @@ fn build_request_preserves_optional_tools_with_explicit_openai_strictness() {
     ] {
         let config = ResolvedModelConfig {
             model_config: ModelConfig {
+                supports_images: false,
                 model: "test-model".to_string(),
                 api_type: ApiType::Responses,
                 base_url: base_url.to_string(),
@@ -1773,6 +1776,7 @@ fn parse_output_items_reasoning_content_fallback_to_summary() {
 fn request_config(base_url: &str, api_type: ApiType) -> ResolvedModelConfig {
     ResolvedModelConfig {
         model_config: ModelConfig {
+            supports_images: false,
             model: "test-model".to_string(),
             api_type,
             base_url: base_url.to_string(),

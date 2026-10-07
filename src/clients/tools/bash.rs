@@ -1807,6 +1807,7 @@ fn bypassed_judge_context() -> std::sync::Arc<JudgeContext> {
     use std::collections::HashMap;
 
     let model_config = ModelConfig {
+        supports_images: false,
         model: "bypass/model".to_string(),
         api_type: ApiType::ChatCompletions,
         base_url: "http://127.0.0.1:9".to_string(),
