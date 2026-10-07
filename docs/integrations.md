@@ -53,6 +53,8 @@ A redirected stream is an event feed, not a resumable session file. Consumers sh
 
 Malformed model tool arguments remain visible on the `function_call` record and produce a corresponding error output instead of making the stream invalid.
 
+A `message` or `function_call_output` record carries the additive `images` array when the item holds image bytes; text-only records omit the field, so consumers that ignore unknown optional fields are unaffected.
+
 An automatic semantic continuation is visible as the provider's partial conversation records followed by one Cake-authored user continuation message. The invocation still emits exactly one final `task_complete`; recovery does not create another task boundary.
 
 ## Diagnostic JSON
@@ -153,15 +155,15 @@ Before an existing session file is opened for append, Cake restores a record bou
 
 An interrupted task can leave a `function_call` whose `function_call_output` was never written. Resume and fork close each such call by appending an ordinary `function_call_output` that records the call as not executed, so the restored history stays valid for providers. That call-pairing repair appends only; prior bytes are never rewritten, and a history whose pairing is ambiguous fails with a diagnostic instead of being guessed at. Repair does not yet consult replay declarations or re-execute calls.
 
-Live `function_call` and `function_call_output` records may carry an optional `replay` field with the execution-time tool declaration, either `"safe"` or `"never"`. Read is declared `safe`; Bash, BashSession, Edit, and Write are `never`; toolbox tools default to `never` and may opt into `safe` through their describe manifest. Missing declarations in historical records and synthetic repair outputs are treated as `"never"`. A call is eligible for a future automatic replay only when both its persisted snapshot and the current registry declaration are `"safe"`; this release only records the declaration and does not change repair behavior.
+Live `function_call` and `function_call_output` records may carry an optional `replay` field with the execution-time tool declaration, either `"safe"` or `"never"`. Read and ReadImage are declared `safe`; Bash, BashSession, Edit, and Write are `never`; toolbox tools default to `never` and may opt into `safe` through their describe manifest. Missing declarations in historical records and synthetic repair outputs are treated as `"never"`. A call is eligible for a future automatic replay only when both its persisted snapshot and the current registry declaration are `"safe"`; this release only records the declaration and does not change repair behavior.
 
 ### Record semantics
 
 - `session_meta`: version, session identity, creation context, tools, optional model/system prompt, optional model-config entry name, and Git state. `model` is the provider model ID; `model_config` is the `[[models]]` entry name the session was created with and is the preferred resume identity when several entries share one ID.
 - `task_start`: task identity and timestamp for one CLI invocation.
 - `prompt_context`: mutable developer context used by that invocation.
-- `message`: typed user, assistant, or tool text.
-- `function_call` and `function_call_output`: provider tool request and result, joined by `call_id`.
+- `message`: typed user, assistant, or tool text, plus an optional `images` array of `{media_type, data_base64}` objects. The field is absent on text-only records and on records written before image support existed; a loader treats an absent field as no images.
+- `function_call` and `function_call_output`: provider tool request and result, joined by `call_id`. A `function_call_output` may carry the same optional `images` array when the tool returned image bytes.
 - `reasoning`: provider reasoning data retained for round trips. Its `summary` array uses typed objects with `type` and `text`; loaders accept historical string entries and normalize them to `summary_text` objects.
 - `skill_activated`: first observed read of a known skill in a session.
 - `hook_event`: hook execution, decision, timing, and bounded diagnostics.

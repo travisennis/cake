@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 
 use crate::config::ReasoningEffort;
-use crate::types::Role;
+use crate::types::{ImagePart, Role};
 
 // =============================================================================
 // Chat Completions API Request DTOs (serialization only - can borrow)
@@ -52,13 +52,81 @@ pub(super) struct ResponseFormatJsonSchema<'a> {
 #[derive(Serialize, Clone, Debug)]
 pub(super) struct ChatMessage<'a> {
     pub(super) role: Role,
-    pub(super) content: Option<Cow<'a, str>>,
+    pub(super) content: Option<ChatContent<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) reasoning_content: Option<Cow<'a, str>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) tool_calls: Option<Vec<ChatToolCallRef<'a>>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) tool_call_id: Option<Cow<'a, str>>,
+}
+
+impl ChatMessage<'_> {
+    /// This message's content as plain text, or `None` when the message is
+    /// content-free or carries a multi-part content array.
+    ///
+    /// Test-only: assertions compare the text of text-only messages, which the
+    /// request builder itself never needs to read back.
+    #[cfg(test)]
+    pub(super) fn text(&self) -> Option<&str> {
+        match self.content.as_ref()? {
+            ChatContent::Text(text) => Some(text),
+            ChatContent::Parts(_) => None,
+        }
+    }
+}
+
+/// A request message's content: a bare string for every text-only message, or
+/// an array of parts when the message carries images.
+///
+/// Serialization is untagged so a plain string stays byte-identical to the
+/// pre-image wire format and existing request snapshots do not change.
+#[derive(Serialize, Clone, Debug)]
+#[serde(untagged)]
+pub(super) enum ChatContent<'a> {
+    Text(Cow<'a, str>),
+    Parts(Vec<ChatContentPart<'a>>),
+}
+
+impl<'a> ChatContent<'a> {
+    /// A content array that leads with `text` and then carries each image.
+    ///
+    /// The leading text names the tool result the images came from, so the
+    /// message still reads as that tool's output even though a tool-role
+    /// message cannot carry images.
+    pub(super) fn with_images(text: &'a str, images: &[ImagePart]) -> Self {
+        let mut parts = Vec::with_capacity(images.len() + 1);
+        parts.push(ChatContentPart::Text {
+            text: Cow::Borrowed(text),
+        });
+        parts.extend(images.iter().map(|image| ChatContentPart::ImageUrl {
+            image_url: ChatImageUrl {
+                url: Cow::Owned(image.data_url()),
+            },
+        }));
+        Self::Parts(parts)
+    }
+}
+
+impl<'a> From<&'a str> for ChatContent<'a> {
+    fn from(text: &'a str) -> Self {
+        Self::Text(Cow::Borrowed(text))
+    }
+}
+
+/// One piece of a multi-part message content array.
+#[derive(Serialize, Clone, Debug)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub(super) enum ChatContentPart<'a> {
+    Text { text: Cow<'a, str> },
+    ImageUrl { image_url: ChatImageUrl<'a> },
+}
+
+/// The `image_url` payload of a [`ChatContentPart::ImageUrl`] part.
+#[derive(Serialize, Clone, Debug)]
+pub(super) struct ChatImageUrl<'a> {
+    /// An inline `data:<media_type>;base64,<data>` URL.
+    pub(super) url: Cow<'a, str>,
 }
 
 /// Borrowed tool wrapper for request serialization. Borrows the name,

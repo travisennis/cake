@@ -11,7 +11,7 @@ mod usage;
 
 #[doc(inline)]
 pub use conversation::{
-    ConversationItem, ReasoningContent, ReasoningContentKind, ReasoningSummary, Role,
+    ConversationItem, ImagePart, ReasoningContent, ReasoningContentKind, ReasoningSummary, Role,
 };
 #[doc(inline)]
 pub use session::{

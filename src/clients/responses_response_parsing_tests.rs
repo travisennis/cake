@@ -1,13 +1,24 @@
 //! Tests for parsing raw HTTP responses.
 
 use super::*;
-use crate::types::{ReasoningSummary, UsagePresence};
+use crate::types::{ImagePart, ReasoningSummary, UsagePresence};
 use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn to_api_input_json(item: &ConversationItem) -> serde_json::Value {
     serde_json::to_value(ResponsesApiInputItem::from(item))
         .expect("Responses API input DTO serialization should be infallible")
+}
+
+/// The 1x1 red PNG from the `ReadImage` tool tests, as standard base64.
+const TINY_PNG_BASE64: &str =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR42mP4z8AAAAMBAQD3A0FDAAAAAElFTkSuQmCC";
+
+fn tiny_png_image() -> ImagePart {
+    ImagePart {
+        media_type: "image/png".to_string(),
+        data_base64: TINY_PNG_BASE64.to_string(),
+    }
 }
 
 /// Create a minimal valid response JSON
@@ -342,6 +353,7 @@ fn to_api_input_user_message() {
         id: None,
         status: None,
         timestamp: None,
+        images: Vec::new(),
     };
     let json = to_api_input_json(&item);
     assert_eq!(json["type"], "message");
@@ -358,6 +370,7 @@ fn to_api_input_assistant_message_uses_output_text() {
         id: Some("msg-1".to_string()),
         status: Some("completed".to_string()),
         timestamp: None,
+        images: Vec::new(),
     };
     let json = to_api_input_json(&item);
     assert_eq!(json["role"], "assistant");
@@ -375,6 +388,7 @@ fn to_api_input_system_message() {
         id: None,
         status: None,
         timestamp: None,
+        images: Vec::new(),
     };
     let json = to_api_input_json(&item);
     assert_eq!(json["role"], "system");
@@ -389,6 +403,7 @@ fn to_api_input_tool_message() {
         id: None,
         status: None,
         timestamp: None,
+        images: Vec::new(),
     };
     let json = to_api_input_json(&item);
     assert_eq!(json["role"], "tool");
@@ -418,11 +433,65 @@ fn to_api_input_function_call_output() {
         call_id: "call-1".to_string(),
         output: "file.txt".to_string(),
         timestamp: None,
+        images: Vec::new(),
     };
     let json = to_api_input_json(&item);
     assert_eq!(json["type"], "function_call_output");
     assert_eq!(json["call_id"], "call-1");
     assert_eq!(json["output"], "file.txt");
+}
+
+#[test]
+fn to_api_input_function_call_output_with_images() {
+    let item = ConversationItem::FunctionCallOutput {
+        call_id: "call-1".to_string(),
+        output: "ReadImage shot.png (69 bytes, image/png)".to_string(),
+        timestamp: None,
+        images: vec![tiny_png_image()],
+    };
+    let json = to_api_input_json(&item);
+    assert_eq!(json["type"], "function_call_output");
+    assert_eq!(json["call_id"], "call-1");
+    let output = json["output"]
+        .as_array()
+        .expect("an image-bearing tool output is a content array");
+    assert_eq!(output.len(), 2);
+    assert_eq!(output[0]["type"], "input_text");
+    assert_eq!(
+        output[0]["text"],
+        "ReadImage shot.png (69 bytes, image/png)"
+    );
+    assert_eq!(output[1]["type"], "input_image");
+    assert_eq!(
+        output[1]["image_url"],
+        format!("data:image/png;base64,{TINY_PNG_BASE64}")
+    );
+}
+
+#[test]
+fn to_api_input_user_message_with_images() {
+    let item = ConversationItem::Message {
+        role: Role::User,
+        content: "What is in this picture?".to_string(),
+        id: None,
+        status: None,
+        timestamp: None,
+        images: vec![tiny_png_image()],
+    };
+    let json = to_api_input_json(&item);
+    assert_eq!(json["type"], "message");
+    assert_eq!(json["role"], "user");
+    let content = json["content"]
+        .as_array()
+        .expect("message content is always a content array");
+    assert_eq!(content.len(), 2);
+    assert_eq!(content[0]["type"], "input_text");
+    assert_eq!(content[0]["text"], "What is in this picture?");
+    assert_eq!(content[1]["type"], "input_image");
+    assert_eq!(
+        content[1]["image_url"],
+        format!("data:image/png;base64,{TINY_PNG_BASE64}")
+    );
 }
 
 #[test]
@@ -532,6 +601,7 @@ fn snapshot_user_message() {
         id: None,
         status: None,
         timestamp: None,
+        images: Vec::new(),
     };
     insta::assert_json_snapshot!("to_api_input_user_message", to_api_input_json(&item));
 }
@@ -544,6 +614,7 @@ fn snapshot_assistant_message_with_id_and_status() {
         id: Some("msg-1".to_string()),
         status: Some("completed".to_string()),
         timestamp: None,
+        images: Vec::new(),
     };
     insta::assert_json_snapshot!(
         "to_api_input_assistant_message_with_id_and_status",
@@ -559,6 +630,7 @@ fn snapshot_system_message() {
         id: None,
         status: None,
         timestamp: None,
+        images: Vec::new(),
     };
     insta::assert_json_snapshot!("to_api_input_system_message", to_api_input_json(&item));
 }
@@ -581,9 +653,40 @@ fn snapshot_function_call_output() {
         call_id: "call-1".to_string(),
         output: "file.txt\nother.txt".to_string(),
         timestamp: None,
+        images: Vec::new(),
     };
     insta::assert_json_snapshot!(
         "to_api_input_function_call_output",
+        to_api_input_json(&item)
+    );
+}
+
+#[test]
+fn snapshot_function_call_output_with_images() {
+    let item = ConversationItem::FunctionCallOutput {
+        call_id: "call-1".to_string(),
+        output: "ReadImage shot.png (69 bytes, image/png)".to_string(),
+        timestamp: None,
+        images: vec![tiny_png_image()],
+    };
+    insta::assert_json_snapshot!(
+        "to_api_input_function_call_output_with_images",
+        to_api_input_json(&item)
+    );
+}
+
+#[test]
+fn snapshot_user_message_with_images() {
+    let item = ConversationItem::Message {
+        role: Role::User,
+        content: "What is in this picture?".to_string(),
+        id: None,
+        status: None,
+        timestamp: None,
+        images: vec![tiny_png_image()],
+    };
+    insta::assert_json_snapshot!(
+        "to_api_input_user_message_with_images",
         to_api_input_json(&item)
     );
 }

@@ -8,10 +8,12 @@
 //! Conversion between the domain `ConversationItem` and the API
 //! `ResponsesApiInputItem` lives in [`crate::clients::responses`].
 
+use std::borrow::Cow;
+
 use serde::{Deserialize, Serialize};
 
 use crate::config::ReasoningEffort;
-use crate::types::{ReasoningContent, ReasoningSummary};
+use crate::types::{ImagePart, ReasoningContent, ReasoningSummary};
 
 /// Typed Responses API input item serialized into the request `input` array.
 ///
@@ -39,7 +41,7 @@ pub(super) enum ResponsesApiInputItem<'a> {
     },
     FunctionCallOutput {
         call_id: &'a str,
-        output: &'a str,
+        output: ResponsesFunctionCallOutput<'a>,
     },
     Reasoning {
         id: &'a str,
@@ -51,20 +53,74 @@ pub(super) enum ResponsesApiInputItem<'a> {
     },
 }
 
-/// Content block used by Responses API message input.
+/// Content block used by Responses API message input and by an image-bearing
+/// `function_call_output`: either a text block or an inline image block.
 ///
 /// **Construction boundary:** Instances are built only through the
-/// [`From<&ConversationItem>`] impl on [`ResponsesApiInputItem`]. Do not
-/// construct by hand.
+/// [`From<&ConversationItem>`] impl on [`ResponsesApiInputItem`] (via
+/// [`Self::text`] and [`Self::image`]). Do not construct by hand.
 ///
 /// [`From<&ConversationItem>`]: core::convert::From
 #[derive(Debug, Serialize)]
-pub(super) struct ResponsesMessageContent<'a> {
+#[serde(untagged)]
+pub(super) enum ResponsesMessageContent<'a> {
+    Text(ResponsesTextContent<'a>),
+    Image(ResponsesImageContent<'a>),
+}
+
+impl<'a> ResponsesMessageContent<'a> {
+    /// A `input_text`/`output_text` block.
+    pub(super) const fn text(
+        content_type: &'static str,
+        text: &'a str,
+        annotations: Option<Vec<serde_json::Value>>,
+    ) -> Self {
+        Self::Text(ResponsesTextContent {
+            content_type,
+            text,
+            annotations,
+        })
+    }
+
+    /// An `input_image` block carrying an inline `data:` URL.
+    pub(super) fn image(image: &'a ImagePart) -> Self {
+        Self::Image(ResponsesImageContent {
+            content_type: "input_image",
+            image_url: Cow::Owned(image.data_url()),
+        })
+    }
+}
+
+/// A text content block: `{"type": "input_text", "text": "..."}`.
+#[derive(Debug, Serialize)]
+pub(super) struct ResponsesTextContent<'a> {
     #[serde(rename = "type")]
     pub(super) content_type: &'static str,
     pub(super) text: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) annotations: Option<Vec<serde_json::Value>>,
+}
+
+/// An inline image content block:
+/// `{"type": "input_image", "image_url": "data:<media_type>;base64,<data>"}`.
+#[derive(Debug, Serialize)]
+pub(super) struct ResponsesImageContent<'a> {
+    #[serde(rename = "type")]
+    pub(super) content_type: &'static str,
+    pub(super) image_url: Cow<'a, str>,
+}
+
+/// The `output` field of a `function_call_output` input item: a bare string, or
+/// an array of content blocks when the tool result carries images.
+///
+/// Serialization is untagged so a text-only output stays a bare string,
+/// byte-identical to the pre-image wire format, and existing snapshots do not
+/// change.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub(super) enum ResponsesFunctionCallOutput<'a> {
+    Text(&'a str),
+    Parts(Vec<ResponsesMessageContent<'a>>),
 }
 
 /// Summary block used by Responses API reasoning input.

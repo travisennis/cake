@@ -7,6 +7,7 @@ use crate::types::session::{FunctionCallData, FunctionCallOutputData};
 fn test_resolved_model_config() -> ResolvedModelConfig {
     ResolvedModelConfig {
         model_config: ModelConfig {
+            supports_images: false,
             model: "test-model".to_string(),
             api_type: ApiType::ChatCompletions,
             base_url: "https://api.example.com".to_string(),
@@ -47,6 +48,7 @@ fn session_with_skill_records() -> Session {
             output: "echoed text: Skill 'fake-skill' activated".to_string(),
             replay: None,
             timestamp: None,
+            images: Vec::new(),
         }),
         SessionRecord::SkillActivated {
             session_id: session.id.to_string(),
@@ -464,6 +466,7 @@ fn test_resolve_model_config_default_model() {
     models.insert(
         "zen".to_string(),
         ModelDefinition {
+            supports_images: false,
             name: "zen".to_string(),
             model: "glm-5.1".to_string(),
             base_url: "https://opencode.ai/zen/go/v1/".to_string(),
@@ -519,6 +522,7 @@ fn test_resolve_model_config_from_settings() {
     models.insert(
         "claude".to_string(),
         ModelDefinition {
+            supports_images: false,
             name: "claude".to_string(),
             model: "anthropic/claude-3-sonnet".to_string(),
             base_url: "https://openrouter.ai/api/v1/".to_string(),
@@ -553,6 +557,7 @@ fn test_resolve_model_config_model_flag_overrides_default_model() {
     models.insert(
         "zen".to_string(),
         ModelDefinition {
+            supports_images: false,
             name: "zen".to_string(),
             model: "glm-5.1".to_string(),
             base_url: "https://example.com".to_string(),
@@ -573,6 +578,7 @@ fn test_resolve_model_config_model_flag_overrides_default_model() {
     models.insert(
         "claude".to_string(),
         ModelDefinition {
+            supports_images: false,
             name: "claude".to_string(),
             model: "anthropic/claude-3-sonnet".to_string(),
             base_url: "https://openrouter.ai/api/v1/".to_string(),
@@ -964,6 +970,7 @@ fn session_test_models() -> HashMap<String, ModelDefinition> {
     models.insert(
         "my-alias".to_string(),
         ModelDefinition {
+            supports_images: false,
             name: "my-alias".to_string(),
             model: "deepseek-v4-pro".to_string(),
             base_url: "https://api.example.com".to_string(),
@@ -994,6 +1001,7 @@ fn duplicate_id_test_models() -> HashMap<String, ModelDefinition> {
         models.insert(
             name.to_string(),
             ModelDefinition {
+                supports_images: false,
                 name: name.to_string(),
                 model: "gpt-5.6-luna".to_string(),
                 base_url: base_url.to_string(),

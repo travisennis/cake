@@ -170,16 +170,20 @@ pub struct Agent {
 impl Agent {
     /// Creates a new agent with the given configuration and initial prompt messages.
     ///
-    /// The agent is initialized with five default tools: Bash, `BashSession`, Read, Edit, and Write.
-    /// Attaching a read-only tool context via [`Self::with_tool_context`] retains
-    /// only Read. A new session ID is generated automatically.
+    /// The agent is initialized with the default built-in tools (Bash, `BashSession`,
+    /// Read, Edit, and Write), plus `ReadImage` when the model declares image
+    /// support. Attaching a read-only tool context via [`Self::with_tool_context`]
+    /// retains only the read-safe tools. A new session ID is generated
+    /// automatically.
     pub fn new(config: ResolvedModelConfig, initial_messages: &[(Role, String)]) -> Self {
+        let mut tools = default_tool_registry();
+        tools.retain_model_supported_tools(config.model_config.supports_images);
         Self {
             runner: AgentRunner::new(Backend::from_api_type(config.model_config.api_type)),
             config,
             observer: AgentObserver::default(),
             conversation: ConversationState::new(initial_messages),
-            tools: default_tool_registry(),
+            tools,
             enabled_tool_names: None,
             tool_context: Arc::new(ToolContext::from_current_process()),
             session_id: uuid::Uuid::new_v4(),

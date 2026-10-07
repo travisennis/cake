@@ -110,6 +110,7 @@ pub(super) fn execute_write(
 
     Ok(super::ToolResult {
         output: result,
+        images: Vec::new(),
         compensation_events: Vec::new(),
         permission_denials: Vec::new(),
     })

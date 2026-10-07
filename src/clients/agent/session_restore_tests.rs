@@ -78,6 +78,7 @@ fn message(role: Role, content: &str, offset: i64) -> SessionRecord {
         id: None,
         status: None,
         timestamp: Some(time(offset)),
+        images: Vec::new(),
     })
 }
 
@@ -99,6 +100,7 @@ fn function_call_output(call_id: &str, output: &str, offset: i64) -> SessionReco
         output: output.to_string(),
         replay: None,
         timestamp: Some(time(offset)),
+        images: Vec::new(),
     })
 }
 
@@ -267,6 +269,7 @@ fn assert_repair_matches_file(agent: &Agent, expected_repairs: &[String], contex
 fn session_restore_model_config() -> ResolvedModelConfig {
     ResolvedModelConfig {
         model_config: crate::config::model::ModelConfig {
+            supports_images: false,
             model: "test-model".to_string(),
             api_type: crate::config::model::ApiType::ChatCompletions,
             base_url: "https://example.invalid/v1".to_string(),
@@ -421,12 +424,14 @@ fn persist_repairs_and_reload(
                 call_id,
                 output,
                 timestamp,
+                ..
             } if output.starts_with("not executed:") => {
                 Some(SessionRecord::FunctionCallOutput(FunctionCallOutputData {
                     call_id: call_id.clone(),
                     output: output.clone(),
                     replay: None,
                     timestamp: *timestamp,
+                    images: Vec::new(),
                 }))
             },
             _ => None,

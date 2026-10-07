@@ -1,6 +1,6 @@
 use serde::Deserialize;
 use std::fmt::Write as _;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 
 use crate::clients::tools::{ToolContext, contains_null_byte, decode_utf8, validate_path_in_cwd};
@@ -88,6 +88,7 @@ pub(super) fn execute_read(
 
     // Handle file
     read_file(&path, args.start_line, args.end_line, &context.limits)
+        .map_err(|error| append_image_hint(error, &path))
 }
 
 /// Resolve the 0-indexed end line from the model's `start_line`/`end_line`
@@ -254,6 +255,7 @@ fn read_from_reader<R: BufRead>(
 
     Ok(super::ToolResult {
         output,
+        images: Vec::new(),
         compensation_events,
         permission_denials: Vec::new(),
     })
@@ -502,6 +504,35 @@ fn binary_file_error(path: &Path) -> String {
     )
 }
 
+/// Append the `ReadImage` hint to a rejected file's read error when its
+/// leading bytes look like an image, so the model learns which tool can
+/// deliver it. Covers both binary-rejection paths: a null byte in decodable
+/// text and a line that is not valid UTF-8 (where real PNG, JPEG, and WebP
+/// files land).
+fn append_image_hint(error: String, path: &Path) -> String {
+    match probe_image_media_type(path) {
+        Some(media_type) => format!("{error} (looks like {media_type}; use ReadImage)"),
+        None => error,
+    }
+}
+
+/// Leading bytes examined when probing a rejected binary file for an image
+/// signature.
+const IMAGE_HINT_PROBE_BYTES: usize = 8192;
+
+/// Detect an image MIME type from the leading bytes of `path`.
+///
+/// The `infer` dependency is compiled without its `std` feature, so the file
+/// is read here and the bytes are handed to the buffer-based detector.
+fn probe_image_media_type(path: &Path) -> Option<&'static str> {
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut header = [0u8; IMAGE_HINT_PROBE_BYTES];
+    let read = file.read(&mut header).ok()?;
+    infer::get(&header[..read])
+        .map(|kind| kind.mime_type())
+        .filter(|media_type| media_type.starts_with("image/"))
+}
+
 /// Reject a consumed line when it contains a null byte.
 fn reject_binary_line(line: &BoundedLine<'_>, path: &Path) -> Result<(), String> {
     if line.contains_null_byte {
@@ -518,6 +549,7 @@ fn no_content_result(path: &Path, total_lines: usize) -> super::ToolResult {
             "File: {}\n{total_lines} lines total\n(start_line > end_line, no content to show)",
             path.display()
         ),
+        images: Vec::new(),
         compensation_events: Vec::new(),
         permission_denials: Vec::new(),
     }
@@ -1008,6 +1040,52 @@ mod tests {
         assert!(err.contains("Cannot read binary file"), "{err}");
         assert!(err.contains("detected null bytes"), "{err}");
         assert!(err.ends_with("(detected null bytes)"), "{err}");
+    }
+
+    #[test]
+    fn binary_image_file_hint_points_at_read_image() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("red.png");
+        // The PNG signature, which is invalid UTF-8, so Read rejects the file
+        // before it can report a null byte. `infer` detects PNG from the first
+        // four bytes, which is exactly what the hint probes.
+        fs::write(&file_path, b"\x89PNG\r\n\x1a\n").unwrap();
+
+        let args = serde_json::json!({ "path": file_path.to_str().unwrap() }).to_string();
+        let err = execute_read(&ToolContext::from_current_process(), &args).unwrap_err();
+
+        assert!(err.contains("stream did not contain valid UTF-8"), "{err}");
+        assert!(err.contains("looks like image/png"), "{err}");
+        assert!(err.contains("use ReadImage"), "{err}");
+    }
+
+    #[test]
+    fn null_byte_image_file_hint_points_at_read_image() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("loop.gif");
+        // GIF's signature is valid UTF-8, so this file reaches the null-byte
+        // rejection instead of the UTF-8 one.
+        fs::write(&file_path, b"GIF89a\0").unwrap();
+
+        let args = serde_json::json!({ "path": file_path.to_str().unwrap() }).to_string();
+        let err = execute_read(&ToolContext::from_current_process(), &args).unwrap_err();
+
+        assert!(err.contains("detected null bytes"), "{err}");
+        assert!(err.contains("looks like image/gif"), "{err}");
+        assert!(err.contains("use ReadImage"), "{err}");
+    }
+
+    #[test]
+    fn binary_text_file_hint_omits_read_image() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("notes.bin");
+        fs::write(&file_path, b"hello\0world").unwrap();
+
+        let args = serde_json::json!({ "path": file_path.to_str().unwrap() }).to_string();
+        let err = execute_read(&ToolContext::from_current_process(), &args).unwrap_err();
+
+        assert!(err.contains("Cannot read binary file"), "{err}");
+        assert!(!err.contains("ReadImage"), "{err}");
     }
 
     // --- [limits] overrides ---

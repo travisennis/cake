@@ -277,6 +277,7 @@ mod tests {
 
     fn model(name: &str, api_type: ApiType) -> ModelDefinition {
         ModelDefinition {
+            supports_images: false,
             name: name.to_string(),
             model: format!("provider/{name}"),
             base_url: format!("https://{name}.example.com/v1"),

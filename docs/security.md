@@ -35,7 +35,7 @@ Project-level `.cake/settings.toml` is fully trusted by design, the same trust m
 
 ## Enforcement layers
 
-Read, Edit, and Write validate target paths in-process. Bash runs every command through the LLM judge before spawn, then runs under an OS filesystem sandbox:
+Read, ReadImage, Edit, and Write validate target paths in-process. Bash runs every command through the LLM judge before spawn, then runs under an OS filesystem sandbox:
 
 - macOS uses Seatbelt through `sandbox-exec`;
 - Linux uses Landlock and requires a kernel capable of fully enforcing the configured ruleset.

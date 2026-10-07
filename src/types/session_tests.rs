@@ -461,6 +461,7 @@ fn stream_record_json_message() {
         id: None,
         status: None,
         timestamp: None,
+        images: Vec::new(),
     };
     let json = stream_json_for(&item);
     assert_eq!(json["type"], "message");
@@ -475,6 +476,7 @@ fn stream_record_json_message_with_id_and_status() {
         id: Some("msg-123".to_string()),
         status: Some("completed".to_string()),
         timestamp: None,
+        images: Vec::new(),
     };
     let json = stream_json_for(&item);
     assert_eq!(json["id"], "msg-123");
@@ -677,6 +679,7 @@ fn stream_record_json_function_call_output() {
         call_id: "call-1".to_string(),
         output: "result".to_string(),
         timestamp: None,
+        images: Vec::new(),
     };
     let json = stream_json_for(&item);
     assert_eq!(json["type"], "function_call_output");
@@ -692,6 +695,7 @@ fn conversation_items_roundtrip_through_stream_and_session_records() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
         ConversationItem::Message {
             role: Role::Assistant,
@@ -699,6 +703,7 @@ fn conversation_items_roundtrip_through_stream_and_session_records() {
             id: Some("msg-assistant-1".to_string()),
             status: Some("completed".to_string()),
             timestamp: Some(timestamp_at("2026-05-10T00:00:00Z")),
+            images: Vec::new(),
         },
         ConversationItem::Message {
             role: Role::System,
@@ -706,6 +711,7 @@ fn conversation_items_roundtrip_through_stream_and_session_records() {
             id: Some("msg-system-1".to_string()),
             status: Some("completed".to_string()),
             timestamp: Some(timestamp_at("2026-05-10T00:00:01Z")),
+            images: Vec::new(),
         },
         ConversationItem::FunctionCall {
             id: "fc-1".to_string(),
@@ -718,6 +724,7 @@ fn conversation_items_roundtrip_through_stream_and_session_records() {
             call_id: "call-1".to_string(),
             output: "file.txt".to_string(),
             timestamp: Some(timestamp_at("2026-05-10T00:00:03Z")),
+            images: Vec::new(),
         },
         ConversationItem::Reasoning {
             id: "reasoning-encrypted".to_string(),
@@ -791,6 +798,7 @@ fn snapshot_stream_record_json_message_with_id_and_status() {
         id: Some("msg-123".to_string()),
         status: Some("completed".to_string()),
         timestamp: None,
+        images: Vec::new(),
     };
     insta::assert_json_snapshot!(
         "stream_record_json_message_with_id_and_status",
@@ -834,11 +842,92 @@ fn snapshot_stream_record_json_function_call_output() {
         call_id: "call-1".to_string(),
         output: "result".to_string(),
         timestamp: None,
+        images: Vec::new(),
     };
     insta::assert_json_snapshot!(
         "stream_record_json_function_call_output",
         stream_json_for(&item)
     );
+}
+
+#[test]
+fn image_parts_roundtrip_through_stream_and_session_records() {
+    let image = ImagePart {
+        media_type: "image/png".to_string(),
+        data_base64: "iVBORw0KGgo=".to_string(),
+    };
+    let message = ConversationItem::Message {
+        role: Role::User,
+        content: "what is in this image?".to_string(),
+        id: None,
+        status: None,
+        timestamp: Some(timestamp_at("2026-05-10T00:00:00Z")),
+        images: vec![image.clone()],
+    };
+    let output = ConversationItem::FunctionCallOutput {
+        call_id: "call-1".to_string(),
+        output: "ReadImage /tmp/red.png (69 bytes, image/png)".to_string(),
+        timestamp: Some(timestamp_at("2026-05-10T00:00:01Z")),
+        images: vec![image],
+    };
+
+    assert_conversation_item_stream_session_roundtrip(&message);
+    assert_conversation_item_stream_session_roundtrip(&output);
+
+    let message_json = session_json_for(&message);
+    assert_eq!(message_json["images"][0]["media_type"], "image/png");
+    assert_eq!(message_json["images"][0]["data_base64"], "iVBORw0KGgo=");
+    let output_json = session_json_for(&output);
+    assert_eq!(output_json["images"][0]["media_type"], "image/png");
+}
+
+#[test]
+fn text_only_records_omit_images_field() {
+    let message = ConversationItem::Message {
+        role: Role::User,
+        content: "plain".to_string(),
+        id: None,
+        status: None,
+        timestamp: None,
+        images: Vec::new(),
+    };
+    let output = ConversationItem::FunctionCallOutput {
+        call_id: "call-1".to_string(),
+        output: "result".to_string(),
+        timestamp: None,
+        images: Vec::new(),
+    };
+
+    assert!(session_json_for(&message).get("images").is_none());
+    assert!(session_json_for(&output).get("images").is_none());
+}
+
+#[test]
+fn records_without_images_field_load_as_text_only() {
+    // Sessions written before images existed have no `images` key.
+    let message: ConversationItem = serde_json::from_value(serde_json::json!({
+        "type": "message",
+        "role": "user",
+        "content": "plain",
+        "id": null,
+        "status": null,
+    }))
+    .unwrap();
+    let output: ConversationItem = serde_json::from_value(serde_json::json!({
+        "type": "function_call_output",
+        "call_id": "call-1",
+        "output": "result",
+    }))
+    .unwrap();
+
+    assert!(matches!(
+        message,
+        ConversationItem::Message { ref images, .. } if images.is_empty()
+    ));
+    assert!(matches!(
+        output,
+        ConversationItem::FunctionCallOutput { ref images, .. } if images.is_empty()
+    ));
 }
 
 #[test]
@@ -862,6 +951,7 @@ fn snapshot_session_json_function_call_output_with_replay() {
         call_id: "call-1".to_string(),
         output: "result".to_string(),
         timestamp: Some(timestamp_at("2026-05-10T00:00:00Z")),
+        images: Vec::new(),
     };
     insta::assert_json_snapshot!(
         "session_json_function_call_output_with_replay",
@@ -877,6 +967,7 @@ fn snapshot_session_json_message_with_id_and_status() {
         id: Some("msg-123".to_string()),
         status: Some("completed".to_string()),
         timestamp: Some(timestamp_at("2026-05-10T00:00:00Z")),
+        images: Vec::new(),
     };
     insta::assert_json_snapshot!(
         "session_json_message_with_id_and_status",
@@ -920,6 +1011,7 @@ fn snapshot_session_json_function_call_output() {
         call_id: "call-1".to_string(),
         output: "result".to_string(),
         timestamp: Some(timestamp_at("2026-05-10T00:00:00Z")),
+        images: Vec::new(),
     };
     insta::assert_json_snapshot!("session_json_function_call_output", session_json_for(&item));
 }

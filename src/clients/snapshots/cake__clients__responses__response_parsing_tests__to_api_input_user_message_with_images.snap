@@ -1,0 +1,18 @@
+---
+source: src/clients/responses_response_parsing_tests.rs
+expression: to_api_input_json(&item)
+---
+{
+  "content": [
+    {
+      "text": "What is in this picture?",
+      "type": "input_text"
+    },
+    {
+      "image_url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR42mP4z8AAAAMBAQD3A0FDAAAAAElFTkSuQmCC",
+      "type": "input_image"
+    }
+  ],
+  "role": "user",
+  "type": "message"
+}

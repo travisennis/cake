@@ -1,13 +1,15 @@
 use super::*;
 use crate::clients::chat_types::{
-    ChatChoice, ChatFunctionCall, ChatResponse, ChatResponseMessage, ChatToolCall,
+    ChatChoice, ChatContentPart, ChatFunctionCall, ChatResponse, ChatResponseMessage, ChatToolCall,
 };
 use crate::clients::tools::{SandboxPolicy, default_tool_registry};
 use crate::config::model::{ApiType, ModelConfig};
 use crate::config::skills::{Skill, SkillScope};
 use crate::config::{AgentsFile, SkillCatalog};
 use crate::prompts::build_initial_prompt_messages_with_enabled_tools;
-use crate::types::{ReasoningContent, ReasoningContentKind, ReasoningSummary, UsagePresence};
+use crate::types::{
+    ImagePart, ReasoningContent, ReasoningContentKind, ReasoningSummary, UsagePresence,
+};
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
@@ -37,6 +39,7 @@ fn full_prompt_history() -> Vec<ConversationItem> {
         SandboxPolicy::WorkspaceWrite,
         &[],
         None,
+        true,
     )
     .into_iter()
     .map(|(role, content)| ConversationItem::Message {
@@ -45,6 +48,7 @@ fn full_prompt_history() -> Vec<ConversationItem> {
         id: None,
         status: None,
         timestamp: None,
+        images: Vec::new(),
     })
     .collect::<Vec<_>>();
     history.push(ConversationItem::Message {
@@ -53,6 +57,7 @@ fn full_prompt_history() -> Vec<ConversationItem> {
         id: None,
         status: None,
         timestamp: None,
+        images: Vec::new(),
     });
     history
 }
@@ -79,6 +84,7 @@ fn build_messages_simple_conversation() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
         ConversationItem::Message {
             role: Role::User,
@@ -86,14 +92,15 @@ fn build_messages_simple_conversation() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
     ];
     let msgs = build_messages(&history);
     assert_eq!(msgs.len(), 2);
     assert_eq!(msgs[0].role, Role::System);
-    assert_eq!(msgs[0].content.as_deref(), Some("You are helpful."));
+    assert_eq!(msgs[0].text(), Some("You are helpful."));
     assert_eq!(msgs[1].role, Role::User);
-    assert_eq!(msgs[1].content.as_deref(), Some("Hello"));
+    assert_eq!(msgs[1].text(), Some("Hello"));
 }
 
 #[test]
@@ -105,6 +112,7 @@ fn build_messages_preserves_developer_messages_separately() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
         ConversationItem::Message {
             role: Role::Developer,
@@ -112,6 +120,7 @@ fn build_messages_preserves_developer_messages_separately() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
         ConversationItem::Message {
             role: Role::Developer,
@@ -119,6 +128,7 @@ fn build_messages_preserves_developer_messages_separately() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
         ConversationItem::Message {
             role: Role::User,
@@ -126,19 +136,20 @@ fn build_messages_preserves_developer_messages_separately() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
     ];
 
     let msgs = build_messages(&history);
     assert_eq!(msgs.len(), 4);
     assert_eq!(msgs[0].role, Role::System);
-    assert_eq!(msgs[0].content.as_deref(), Some("You are cake."));
+    assert_eq!(msgs[0].text(), Some("You are cake."));
     assert_eq!(msgs[1].role, Role::Developer);
-    assert_eq!(msgs[1].content.as_deref(), Some("AGENTS.md context"));
+    assert_eq!(msgs[1].text(), Some("AGENTS.md context"));
     assert_eq!(msgs[2].role, Role::Developer);
-    assert_eq!(msgs[2].content.as_deref(), Some("Environment context"));
+    assert_eq!(msgs[2].text(), Some("Environment context"));
     assert_eq!(msgs[3].role, Role::User);
-    assert_eq!(msgs[3].content.as_deref(), Some("Hello"));
+    assert_eq!(msgs[3].text(), Some("Hello"));
 }
 
 #[test]
@@ -150,6 +161,7 @@ fn build_messages_keeps_developer_messages_before_assistant() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
         ConversationItem::Message {
             role: Role::Assistant,
@@ -157,6 +169,7 @@ fn build_messages_keeps_developer_messages_before_assistant() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
         ConversationItem::Message {
             role: Role::User,
@@ -164,17 +177,18 @@ fn build_messages_keeps_developer_messages_before_assistant() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
     ];
 
     let msgs = build_messages(&history);
     assert_eq!(msgs.len(), 3);
     assert_eq!(msgs[0].role, Role::Developer);
-    assert_eq!(msgs[0].content.as_deref(), Some("Project context"));
+    assert_eq!(msgs[0].text(), Some("Project context"));
     assert_eq!(msgs[1].role, Role::Assistant);
-    assert_eq!(msgs[1].content.as_deref(), Some("Ready."));
+    assert_eq!(msgs[1].text(), Some("Ready."));
     assert_eq!(msgs[2].role, Role::User);
-    assert_eq!(msgs[2].content.as_deref(), Some("Start now"));
+    assert_eq!(msgs[2].text(), Some("Start now"));
 }
 
 #[test]
@@ -186,6 +200,7 @@ fn build_messages_flushes_pending_tool_calls_before_user_message() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
         ConversationItem::FunctionCall {
             id: "fc-1".to_string(),
@@ -200,6 +215,7 @@ fn build_messages_flushes_pending_tool_calls_before_user_message() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
     ];
 
@@ -207,10 +223,10 @@ fn build_messages_flushes_pending_tool_calls_before_user_message() {
     assert_eq!(msgs.len(), 3);
     assert_eq!(msgs[0].role, Role::User);
     assert_eq!(msgs[1].role, Role::Assistant);
-    assert!(msgs[1].content.is_none());
+    assert!(msgs[1].text().is_none());
     assert_eq!(msgs[1].tool_calls.as_ref().unwrap().len(), 1);
     assert_eq!(msgs[2].role, Role::User);
-    assert_eq!(msgs[2].content.as_deref(), Some("Actually stop"));
+    assert_eq!(msgs[2].text(), Some("Actually stop"));
 }
 
 #[test]
@@ -225,6 +241,7 @@ fn build_messages_pairs_repaired_tool_call_before_next_user_message() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
         ConversationItem::FunctionCall {
             id: "fc-1".to_string(),
@@ -237,6 +254,7 @@ fn build_messages_pairs_repaired_tool_call_before_next_user_message() {
             call_id: "call-1".to_string(),
             output: "not executed: the previous cake process ended".to_string(),
             timestamp: None,
+            images: Vec::new(),
         },
         ConversationItem::Message {
             role: Role::User,
@@ -244,6 +262,7 @@ fn build_messages_pairs_repaired_tool_call_before_next_user_message() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
     ];
 
@@ -257,11 +276,11 @@ fn build_messages_pairs_repaired_tool_call_before_next_user_message() {
     assert_eq!(msgs[2].role, Role::Tool);
     assert_eq!(msgs[2].tool_call_id.as_deref(), Some("call-1"));
     assert_eq!(
-        msgs[2].content.as_deref(),
+        msgs[2].text(),
         Some("not executed: the previous cake process ended")
     );
     assert_eq!(msgs[3].role, Role::User);
-    assert_eq!(msgs[3].content.as_deref(), Some("carry on"));
+    assert_eq!(msgs[3].text(), Some("carry on"));
 }
 
 #[test]
@@ -273,6 +292,7 @@ fn build_messages_groups_consecutive_function_calls() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
         ConversationItem::FunctionCall {
             id: "fc-1".to_string(),
@@ -292,11 +312,13 @@ fn build_messages_groups_consecutive_function_calls() {
             call_id: "call-1".to_string(),
             output: "file.txt".to_string(),
             timestamp: None,
+            images: Vec::new(),
         },
         ConversationItem::FunctionCallOutput {
             call_id: "call-2".to_string(),
             output: "contents".to_string(),
             timestamp: None,
+            images: Vec::new(),
         },
     ];
     let msgs = build_messages(&history);
@@ -308,7 +330,7 @@ fn build_messages_groups_consecutive_function_calls() {
 
     // Second: assistant with grouped tool_calls
     assert_eq!(msgs[1].role, Role::Assistant);
-    assert!(msgs[1].content.is_none());
+    assert!(msgs[1].text().is_none());
     assert!(msgs[1].reasoning_content.is_none());
     let tcs = msgs[1].tool_calls.as_ref().unwrap();
     assert_eq!(tcs.len(), 2);
@@ -331,6 +353,7 @@ fn build_messages_preserves_reasoning_content_for_assistant_messages() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
         ConversationItem::Reasoning {
             id: "r-1".to_string(),
@@ -348,6 +371,7 @@ fn build_messages_preserves_reasoning_content_for_assistant_messages() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
     ];
     let msgs = build_messages(&history);
@@ -369,6 +393,7 @@ fn build_messages_drops_unpaired_reasoning_before_semantic_recovery_prompt() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
         ConversationItem::Reasoning {
             id: "r-incomplete".to_string(),
@@ -386,6 +411,7 @@ fn build_messages_drops_unpaired_reasoning_before_semantic_recovery_prompt() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
         ConversationItem::Message {
             role: Role::Assistant,
@@ -393,6 +419,7 @@ fn build_messages_drops_unpaired_reasoning_before_semantic_recovery_prompt() {
             id: Some("msg-recovered".to_string()),
             status: Some("completed".to_string()),
             timestamp: None,
+            images: Vec::new(),
         },
         ConversationItem::Message {
             role: Role::User,
@@ -400,6 +427,7 @@ fn build_messages_drops_unpaired_reasoning_before_semantic_recovery_prompt() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
     ];
 
@@ -408,18 +436,15 @@ fn build_messages_drops_unpaired_reasoning_before_semantic_recovery_prompt() {
     assert_eq!(msgs.len(), 4);
     assert_eq!(msgs[0].role, Role::User);
     assert_eq!(msgs[1].role, Role::User);
-    assert_eq!(
-        msgs[1].content.as_deref(),
-        Some("provide the final answer now")
-    );
+    assert_eq!(msgs[1].text(), Some("provide the final answer now"));
     assert!(
         msgs.iter()
             .all(|message| message.reasoning_content.is_none())
     );
     assert_eq!(msgs[2].role, Role::Assistant);
-    assert_eq!(msgs[2].content.as_deref(), Some("recovered answer"));
+    assert_eq!(msgs[2].text(), Some("recovered answer"));
     assert_eq!(msgs[3].role, Role::User);
-    assert_eq!(msgs[3].content.as_deref(), Some("next question"));
+    assert_eq!(msgs[3].text(), Some("next question"));
 }
 
 #[test]
@@ -431,6 +456,7 @@ fn build_messages_preserves_reasoning_content_for_assistant_tool_calls() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
         ConversationItem::Reasoning {
             id: "r-1".to_string(),
@@ -470,6 +496,7 @@ fn build_messages_combines_tool_calls_with_assistant_text() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
         ConversationItem::FunctionCall {
             id: "fc-1".to_string(),
@@ -484,18 +511,20 @@ fn build_messages_combines_tool_calls_with_assistant_text() {
             id: Some("msg-1".to_string()),
             status: Some("completed".to_string()),
             timestamp: None,
+            images: Vec::new(),
         },
         ConversationItem::FunctionCallOutput {
             call_id: "call-1".to_string(),
             output: "files".to_string(),
             timestamp: None,
+            images: Vec::new(),
         },
     ];
 
     let msgs = build_messages(&history);
     assert_eq!(msgs.len(), 3);
     assert_eq!(msgs[1].role, Role::Assistant);
-    assert_eq!(msgs[1].content.as_deref(), Some("Let me check that."));
+    assert_eq!(msgs[1].text(), Some("Let me check that."));
     assert!(msgs[1].tool_calls.is_some());
     assert_eq!(msgs[2].role, Role::Tool);
 }
@@ -509,6 +538,7 @@ fn strategy_adds_reasoning_placeholder_to_tool_call_messages() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
         ConversationItem::FunctionCall {
             id: "fc-1".to_string(),
@@ -536,6 +566,7 @@ fn strategy_preserves_existing_reasoning_content() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
         ConversationItem::Reasoning {
             id: "r-1".to_string(),
@@ -573,6 +604,7 @@ fn strategy_does_not_affect_messages_without_tool_calls() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
         ConversationItem::Message {
             role: Role::Assistant,
@@ -580,6 +612,7 @@ fn strategy_does_not_affect_messages_without_tool_calls() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
     ];
 
@@ -735,6 +768,7 @@ fn snapshot_simple_conversation() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
         ConversationItem::Message {
             role: Role::User,
@@ -742,6 +776,7 @@ fn snapshot_simple_conversation() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
     ];
     let msgs = build_messages(&history);
@@ -757,6 +792,7 @@ fn snapshot_grouped_function_calls() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
         ConversationItem::FunctionCall {
             id: "fc-1".to_string(),
@@ -776,11 +812,13 @@ fn snapshot_grouped_function_calls() {
             call_id: "call-1".to_string(),
             output: "file.txt".to_string(),
             timestamp: None,
+            images: Vec::new(),
         },
         ConversationItem::FunctionCallOutput {
             call_id: "call-2".to_string(),
             output: "contents".to_string(),
             timestamp: None,
+            images: Vec::new(),
         },
     ];
     let msgs = build_messages(&history);
@@ -796,6 +834,7 @@ fn snapshot_reasoning_with_assistant_text() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
         ConversationItem::Reasoning {
             id: "r-1".to_string(),
@@ -813,6 +852,7 @@ fn snapshot_reasoning_with_assistant_text() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
     ];
     let msgs = build_messages(&history);
@@ -828,6 +868,7 @@ fn snapshot_reasoning_with_tool_calls() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
         ConversationItem::Reasoning {
             id: "r-1".to_string(),
@@ -862,6 +903,7 @@ fn snapshot_assistant_text_with_tool_calls_legacy_order() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
         ConversationItem::FunctionCall {
             id: "fc-1".to_string(),
@@ -876,11 +918,13 @@ fn snapshot_assistant_text_with_tool_calls_legacy_order() {
             id: Some("msg-1".to_string()),
             status: Some("completed".to_string()),
             timestamp: None,
+            images: Vec::new(),
         },
         ConversationItem::FunctionCallOutput {
             call_id: "call-1".to_string(),
             output: "files".to_string(),
             timestamp: None,
+            images: Vec::new(),
         },
     ];
     let msgs = build_messages(&history);
@@ -898,6 +942,7 @@ fn snapshot_assistant_text_with_tool_calls_new_order() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
         ConversationItem::Message {
             role: Role::Assistant,
@@ -905,6 +950,7 @@ fn snapshot_assistant_text_with_tool_calls_new_order() {
             id: Some("msg-1".to_string()),
             status: Some("completed".to_string()),
             timestamp: None,
+            images: Vec::new(),
         },
         ConversationItem::FunctionCall {
             id: "fc-1".to_string(),
@@ -917,6 +963,7 @@ fn snapshot_assistant_text_with_tool_calls_new_order() {
             call_id: "call-1".to_string(),
             output: "files".to_string(),
             timestamp: None,
+            images: Vec::new(),
         },
     ];
     let msgs = build_messages(&history);
@@ -934,6 +981,7 @@ fn snapshot_assistant_text_with_multiple_tool_calls_new_order() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
         ConversationItem::Message {
             role: Role::Assistant,
@@ -941,6 +989,7 @@ fn snapshot_assistant_text_with_multiple_tool_calls_new_order() {
             id: Some("msg-1".to_string()),
             status: Some("completed".to_string()),
             timestamp: None,
+            images: Vec::new(),
         },
         ConversationItem::FunctionCall {
             id: "fc-1".to_string(),
@@ -960,11 +1009,13 @@ fn snapshot_assistant_text_with_multiple_tool_calls_new_order() {
             call_id: "call-1".to_string(),
             output: "file.txt".to_string(),
             timestamp: None,
+            images: Vec::new(),
         },
         ConversationItem::FunctionCallOutput {
             call_id: "call-2".to_string(),
             output: "contents".to_string(),
             timestamp: None,
+            images: Vec::new(),
         },
     ];
     let msgs = build_messages(&history);
@@ -972,6 +1023,190 @@ fn snapshot_assistant_text_with_multiple_tool_calls_new_order() {
         "build_messages_assistant_text_with_multiple_tool_calls_new",
         msgs
     );
+}
+
+/// The 1x1 red PNG from the `ReadImage` tool tests, as standard base64.
+const TINY_PNG_BASE64: &str =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR42mP4z8AAAAMBAQD3A0FDAAAAAElFTkSuQmCC";
+
+fn tiny_png_image() -> ImagePart {
+    ImagePart {
+        media_type: "image/png".to_string(),
+        data_base64: TINY_PNG_BASE64.to_string(),
+    }
+}
+
+/// The parts of a message's content array, panicking when the message carries a
+/// bare string instead.
+fn content_parts<'a>(message: &'a ChatMessage<'a>) -> &'a [ChatContentPart<'a>] {
+    match message.content.as_ref().expect("message has content") {
+        ChatContent::Parts(parts) => parts,
+        ChatContent::Text(text) => panic!("expected content parts, found text {text:?}"),
+    }
+}
+
+#[test]
+fn build_messages_pairs_a_tool_image_with_a_following_user_message() {
+    let history = vec![
+        ConversationItem::Message {
+            role: Role::User,
+            content: "Describe the screenshot.".to_string(),
+            id: None,
+            status: None,
+            timestamp: None,
+            images: Vec::new(),
+        },
+        ConversationItem::FunctionCall {
+            id: "fc-1".to_string(),
+            call_id: "call-1".to_string(),
+            name: "ReadImage".to_string(),
+            arguments: r#"{"path":"shot.png"}"#.to_string(),
+            timestamp: None,
+        },
+        ConversationItem::FunctionCallOutput {
+            call_id: "call-1".to_string(),
+            output: "ReadImage shot.png (69 bytes, image/png)".to_string(),
+            timestamp: None,
+            images: vec![tiny_png_image()],
+        },
+    ];
+
+    let msgs = build_messages(&history);
+
+    let roles: Vec<Role> = msgs.iter().map(|message| message.role).collect();
+    assert_eq!(
+        roles,
+        vec![Role::User, Role::Assistant, Role::Tool, Role::User]
+    );
+
+    // The tool message is still the immediate reply to the tool call, so the
+    // call/output pairing stays valid.
+    assert_eq!(msgs[2].tool_call_id.as_deref(), Some("call-1"));
+    assert_eq!(
+        msgs[2].text(),
+        Some("ReadImage shot.png (69 bytes, image/png)")
+    );
+
+    // The image rides in a synthetic user message with no tool call id.
+    assert!(msgs[3].tool_call_id.is_none());
+    let parts = content_parts(&msgs[3]);
+    assert_eq!(parts.len(), 2);
+    assert!(matches!(
+        &parts[0],
+        ChatContentPart::Text { text } if text == "ReadImage shot.png (69 bytes, image/png)"
+    ));
+    let expected_url = format!("data:image/png;base64,{TINY_PNG_BASE64}");
+    assert!(matches!(
+        &parts[1],
+        ChatContentPart::ImageUrl { image_url } if image_url.url == expected_url
+    ));
+}
+
+#[test]
+fn build_messages_keeps_tool_messages_adjacent_when_an_image_result_is_not_last() {
+    let history = vec![
+        ConversationItem::FunctionCall {
+            id: "fc-1".to_string(),
+            call_id: "call-1".to_string(),
+            name: "ReadImage".to_string(),
+            arguments: r#"{"path":"shot.png"}"#.to_string(),
+            timestamp: None,
+        },
+        ConversationItem::FunctionCall {
+            id: "fc-2".to_string(),
+            call_id: "call-2".to_string(),
+            name: "Read".to_string(),
+            arguments: r#"{"path":"notes.txt"}"#.to_string(),
+            timestamp: None,
+        },
+        ConversationItem::FunctionCallOutput {
+            call_id: "call-1".to_string(),
+            output: "ReadImage shot.png (69 bytes, image/png)".to_string(),
+            timestamp: None,
+            images: vec![tiny_png_image()],
+        },
+        ConversationItem::FunctionCallOutput {
+            call_id: "call-2".to_string(),
+            output: "notes.txt".to_string(),
+            timestamp: None,
+            images: Vec::new(),
+        },
+    ];
+
+    let msgs = build_messages(&history);
+
+    // A strict provider rejects a user message between an assistant tool call
+    // and its tool replies, so both tool messages stay adjacent and the image
+    // rides in a user message after the run of tool messages.
+    let roles: Vec<Role> = msgs.iter().map(|message| message.role).collect();
+    assert_eq!(
+        roles,
+        vec![Role::Assistant, Role::Tool, Role::Tool, Role::User]
+    );
+    assert_eq!(msgs[1].tool_call_id.as_deref(), Some("call-1"));
+    assert_eq!(msgs[2].tool_call_id.as_deref(), Some("call-2"));
+    assert!(msgs[3].tool_call_id.is_none());
+    let parts = content_parts(&msgs[3]);
+    assert_eq!(parts.len(), 2);
+    assert!(matches!(&parts[1], ChatContentPart::ImageUrl { .. }));
+}
+
+#[test]
+fn build_messages_carries_user_message_images_as_content_parts() {
+    let history = vec![ConversationItem::Message {
+        role: Role::User,
+        content: "What is in this picture?".to_string(),
+        id: None,
+        status: None,
+        timestamp: None,
+        images: vec![tiny_png_image(), tiny_png_image()],
+    }];
+
+    let msgs = build_messages(&history);
+
+    assert_eq!(msgs.len(), 1);
+    assert_eq!(msgs[0].role, Role::User);
+    let parts = content_parts(&msgs[0]);
+    assert_eq!(parts.len(), 3);
+    assert!(matches!(
+        &parts[0],
+        ChatContentPart::Text { text } if text == "What is in this picture?"
+    ));
+    assert!(
+        parts[1..]
+            .iter()
+            .all(|part| matches!(part, ChatContentPart::ImageUrl { .. }))
+    );
+}
+
+#[test]
+fn snapshot_tool_image_parts() {
+    let history = vec![
+        ConversationItem::Message {
+            role: Role::User,
+            content: "Describe the screenshot.".to_string(),
+            id: None,
+            status: None,
+            timestamp: None,
+            images: Vec::new(),
+        },
+        ConversationItem::FunctionCall {
+            id: "fc-1".to_string(),
+            call_id: "call-1".to_string(),
+            name: "ReadImage".to_string(),
+            arguments: r#"{"path":"shot.png"}"#.to_string(),
+            timestamp: None,
+        },
+        ConversationItem::FunctionCallOutput {
+            call_id: "call-1".to_string(),
+            output: "ReadImage shot.png (69 bytes, image/png)".to_string(),
+            timestamp: None,
+            images: vec![tiny_png_image()],
+        },
+    ];
+
+    let msgs = build_messages(&history);
+    insta::assert_json_snapshot!("build_messages_tool_image_parts", msgs);
 }
 
 #[test]
@@ -989,6 +1224,7 @@ fn snapshot_reasoning_placeholder_injection() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
         ConversationItem::FunctionCall {
             id: "fc-1".to_string(),
@@ -1013,6 +1249,7 @@ fn snapshot_chat_request_kimi_tool_calls() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
         ConversationItem::FunctionCall {
             id: "fc-1".to_string(),
@@ -1062,6 +1299,7 @@ fn snapshot_chat_request_with_output_schema_constraint() {
         id: None,
         status: None,
         timestamp: None,
+        images: Vec::new(),
     }];
     let schema = serde_json::json!({
         "type": "object",
@@ -1748,6 +1986,7 @@ mod response_parsing_tests {
 fn build_request_json_preserves_f32_sampling_fields_on_the_wire() {
     let config = ResolvedModelConfig {
         model_config: ModelConfig {
+            supports_images: false,
             model: "openai/gpt-5".to_string(),
             api_type: ApiType::ChatCompletions,
             base_url: "https://api.example.com/v1".to_string(),
@@ -1771,6 +2010,7 @@ fn build_request_json_preserves_f32_sampling_fields_on_the_wire() {
         id: None,
         status: None,
         timestamp: None,
+        images: Vec::new(),
     }];
     let bytes = super::build_request_json(
         &config,
@@ -1811,6 +2051,7 @@ fn build_request_json_preserves_f32_sampling_fields_on_the_wire() {
 fn request_config(base_url: &str, api_type: ApiType) -> ResolvedModelConfig {
     ResolvedModelConfig {
         model_config: ModelConfig {
+            supports_images: false,
             model: "test-model".to_string(),
             api_type,
             base_url: base_url.to_string(),

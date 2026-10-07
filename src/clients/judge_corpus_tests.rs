@@ -797,6 +797,7 @@ fn judge_corpus_pair_requires_matching_verdicts() {
 fn corpus_loaded_settings() -> LoadedSettings {
     fn definition(name: &str, api_key_env: &str) -> ModelDefinition {
         ModelDefinition {
+            supports_images: false,
             name: name.to_string(),
             model: name.to_string(),
             api_type: ApiType::ChatCompletions,

@@ -7,16 +7,16 @@ use crate::config::model::ResolvedModelConfig;
 use crate::clients::agent::TurnResult;
 use crate::clients::backend::{FinalOutputConstraint, ResponseDecodeError, ResponseParseError};
 use crate::clients::chat_types::{
-    ChatFunction, ChatFunctionCallRef, ChatMessage, ChatRequest, ChatResponse, ChatTool,
-    ChatToolCallRef, ChatUsage, ResponseFormat, ResponseFormatJsonSchema,
+    ChatContent, ChatFunction, ChatFunctionCallRef, ChatMessage, ChatRequest, ChatResponse,
+    ChatTool, ChatToolCallRef, ChatUsage, ResponseFormat, ResponseFormatJsonSchema,
 };
 use crate::clients::provider_strategy::ProviderStrategy;
 use crate::clients::retry::RequestOverrides;
 use crate::clients::tools::Tool;
 use crate::session_telemetry::{ProviderTermination, TerminationClassification};
 use crate::types::{
-    ConversationItem, InputTokensDetails, OutputTokensDetails, ReasoningContentKind, ReportedUsage,
-    Role, Usage, UsagePresence,
+    ConversationItem, ImagePart, InputTokensDetails, OutputTokensDetails, ReasoningContentKind,
+    ReportedUsage, Role, Usage, UsagePresence,
 };
 
 // =============================================================================
@@ -320,6 +320,9 @@ struct ChatMessageBuilder<'a> {
     messages: Vec<ChatMessage<'a>>,
     pending_tool_calls: Vec<ChatToolCallRef<'a>>,
     pending_reasoning_content: Option<Cow<'a, str>>,
+    /// Synthetic user messages carrying image tool results, held until the run
+    /// of tool messages ends so a turn's tool messages stay adjacent.
+    pending_image_messages: Vec<ChatMessage<'a>>,
 }
 
 impl<'a> ChatMessageBuilder<'a> {
@@ -328,13 +331,24 @@ impl<'a> ChatMessageBuilder<'a> {
             messages: Vec::new(),
             pending_tool_calls: Vec::new(),
             pending_reasoning_content: None,
+            pending_image_messages: Vec::new(),
         }
     }
 
     fn push_item(&mut self, item: &'a ConversationItem) {
+        // A turn's tool messages must stay adjacent to the assistant's tool
+        // call, so the synthetic image messages queued by an earlier tool
+        // output are emitted only once the run of tool outputs ends. Every arm
+        // but the tool output flushes the queue first.
         match item {
-            ConversationItem::Message { role, content, .. } => {
-                self.push_message(*role, content);
+            ConversationItem::Message {
+                role,
+                content,
+                images,
+                ..
+            } => {
+                self.flush_pending_image_messages();
+                self.push_message(*role, content, images);
             },
             ConversationItem::FunctionCall {
                 call_id,
@@ -342,23 +356,30 @@ impl<'a> ChatMessageBuilder<'a> {
                 arguments,
                 ..
             } => {
+                self.flush_pending_image_messages();
                 self.push_function_call(call_id, name, arguments);
             },
             ConversationItem::FunctionCallOutput {
-                call_id, output, ..
+                call_id,
+                output,
+                images,
+                ..
             } => {
-                self.push_function_call_output(call_id, output);
+                self.push_function_call_output(call_id, output, images);
             },
             ConversationItem::Reasoning { content, .. } => {
+                self.flush_pending_image_messages();
                 self.remember_reasoning(content.as_deref());
             },
         }
     }
 
-    fn push_message(&mut self, role: Role, content: &'a str) {
+    fn push_message(&mut self, role: Role, content: &'a str, images: &'a [ImagePart]) {
+        let content = content_for_message(content, images);
+
         if matches!(role, Role::Assistant) && !self.pending_tool_calls.is_empty() {
             let tool_calls = self.take_pending_tool_calls();
-            self.push_assistant_message(Some(Cow::Borrowed(content)), Some(tool_calls));
+            self.push_assistant_message(Some(content), Some(tool_calls));
             return;
         }
 
@@ -372,7 +393,7 @@ impl<'a> ChatMessageBuilder<'a> {
             .flatten();
         self.messages.push(ChatMessage {
             role,
-            content: Some(Cow::Borrowed(content)),
+            content: Some(content),
             reasoning_content,
             tool_calls: None,
             tool_call_id: None,
@@ -406,17 +427,53 @@ impl<'a> ChatMessageBuilder<'a> {
         self.pending_tool_calls.push(tool_call);
     }
 
-    fn push_function_call_output(&mut self, call_id: &'a str, output: &'a str) {
+    fn push_function_call_output(
+        &mut self,
+        call_id: &'a str,
+        output: &'a str,
+        images: &'a [ImagePart],
+    ) {
         self.flush_pending_tool_calls();
         self.pending_reasoning_content = None;
 
         self.messages.push(ChatMessage {
             role: Role::Tool,
-            content: Some(Cow::Borrowed(output)),
+            content: Some(ChatContent::from(output)),
             reasoning_content: None,
             tool_calls: None,
             tool_call_id: Some(Cow::Borrowed(call_id)),
         });
+
+        // A tool-role message's content is text only, so an image result is
+        // carried by a synthetic user message. It is queued rather than pushed
+        // so every tool message of this turn stays adjacent to the assistant's
+        // tool call; the queue flushes once the run of tool messages ends.
+        self.queue_image_result_message(output, images);
+    }
+
+    /// Queue the synthetic user message that carries an image-bearing result.
+    ///
+    /// A tool-role message's content is text only, so the image parts ride in a
+    /// following user message whose text names the tool result. It is queued,
+    /// not pushed, so a turn with several tool calls keeps all of its tool
+    /// messages together --- a strict provider rejects a user message placed
+    /// between them --- and flushes after the last tool message. A text-only
+    /// result queues nothing.
+    fn queue_image_result_message(&mut self, output: &'a str, images: &'a [ImagePart]) {
+        if images.is_empty() {
+            return;
+        }
+        self.pending_image_messages.push(ChatMessage {
+            role: Role::User,
+            content: Some(ChatContent::with_images(output, images)),
+            reasoning_content: None,
+            tool_calls: None,
+            tool_call_id: None,
+        });
+    }
+
+    fn flush_pending_image_messages(&mut self) {
+        self.messages.append(&mut self.pending_image_messages);
     }
 
     fn remember_reasoning(&mut self, content: Option<&'a [crate::types::ReasoningContent]>) {
@@ -434,7 +491,7 @@ impl<'a> ChatMessageBuilder<'a> {
 
     fn push_assistant_message(
         &mut self,
-        content: Option<Cow<'a, str>>,
+        content: Option<ChatContent<'a>>,
         tool_calls: Option<Vec<ChatToolCallRef<'a>>>,
     ) {
         self.messages.push(ChatMessage {
@@ -451,6 +508,7 @@ impl<'a> ChatMessageBuilder<'a> {
     }
 
     fn finish(mut self) -> Vec<ChatMessage<'a>> {
+        self.flush_pending_image_messages();
         self.flush_pending_tool_calls();
         self.messages
     }
@@ -458,6 +516,16 @@ impl<'a> ChatMessageBuilder<'a> {
 
 fn extract_reasoning_content(content: Option<&[crate::types::ReasoningContent]>) -> Option<&str> {
     content.and_then(|items| items.iter().find_map(|item| item.text.as_deref()))
+}
+
+/// Wire content for one message: a bare string for a text-only message, or a
+/// text part plus one image part per image when the message carries images.
+fn content_for_message<'a>(content: &'a str, images: &[ImagePart]) -> ChatContent<'a> {
+    if images.is_empty() {
+        ChatContent::from(content)
+    } else {
+        ChatContent::with_images(content, images)
+    }
 }
 
 /// Convert internal tool definitions to Chat Completions format. The returned
@@ -517,6 +585,7 @@ fn parse_choices(response: &ChatResponse) -> anyhow::Result<Vec<ConversationItem
             id: Some(response_id.clone()),
             status: Some("completed".to_string()),
             timestamp: Some(timestamp),
+            images: Vec::new(),
         });
     }
 
@@ -548,6 +617,7 @@ fn parse_choices(response: &ChatResponse) -> anyhow::Result<Vec<ConversationItem
             id: Some(response_id),
             status: Some("completed".to_string()),
             timestamp: Some(timestamp),
+            images: Vec::new(),
         });
     }
 

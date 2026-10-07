@@ -152,6 +152,7 @@ const DEBUG_MODELS_GOLDEN: &str = r#"{
         "reasoning_effort": null,
         "reasoning_max_tokens": null,
         "reasoning_summary": null,
+        "supports_images": false,
         "temperature": null,
         "top_p": null
       }

@@ -7,8 +7,8 @@ use crate::clients::backend::{FinalOutputConstraint, ResponseDecodeError, Respon
 use crate::clients::provider_strategy::ProviderStrategy;
 use crate::clients::responses_types::{
     ApiResponse, ApiResponseEnvelope, ApiUsage, OutputContent, OutputMessage, ReasoningConfig,
-    Request, ResponsesApiInputItem, ResponsesMessageContent, ResponsesReasoningSummary,
-    ResponsesTool, TextConfig, TextFormat,
+    Request, ResponsesApiInputItem, ResponsesFunctionCallOutput, ResponsesMessageContent,
+    ResponsesReasoningSummary, ResponsesTool, TextConfig, TextFormat,
 };
 use crate::clients::retry::RequestOverrides;
 use crate::clients::tools::Tool;
@@ -16,7 +16,7 @@ use crate::session_telemetry::{
     ProviderTermination, ResponsesFailedMetadata, TerminationClassification,
 };
 use crate::types::{
-    ConversationItem, InputTokensDetails, OutputTokensDetails, ReasoningContentKind,
+    ConversationItem, ImagePart, InputTokensDetails, OutputTokensDetails, ReasoningContentKind,
     ReasoningSummary, ReportedUsage, Role, Usage, UsagePresence,
 };
 
@@ -936,6 +936,7 @@ impl<'a> From<&'a ConversationItem> for ResponsesApiInputItem<'a> {
                 content,
                 id,
                 status,
+                images,
                 ..
             } => {
                 let content_type = if matches!(role, Role::Assistant) {
@@ -951,13 +952,20 @@ impl<'a> From<&'a ConversationItem> for ResponsesApiInputItem<'a> {
                 let annotations =
                     matches!(role, Role::Assistant).then(Vec::<serde_json::Value>::new);
 
+                // A message that carries images leads with its text block and
+                // follows with one inline image block per image, so a user
+                // message can hand pixels to the provider directly.
+                let mut blocks = Vec::with_capacity(images.len() + 1);
+                blocks.push(ResponsesMessageContent::text(
+                    content_type,
+                    content,
+                    annotations,
+                ));
+                blocks.extend(images.iter().map(ResponsesMessageContent::image));
+
                 Self::Message {
                     role: role.as_str(),
-                    content: vec![ResponsesMessageContent {
-                        content_type,
-                        text: content,
-                        annotations,
-                    }],
+                    content: blocks,
                     id: id.as_deref(),
                     status: status.as_deref(),
                 }
@@ -975,8 +983,14 @@ impl<'a> From<&'a ConversationItem> for ResponsesApiInputItem<'a> {
                 arguments,
             },
             ConversationItem::FunctionCallOutput {
-                call_id, output, ..
-            } => Self::FunctionCallOutput { call_id, output },
+                call_id,
+                output,
+                images,
+                ..
+            } => Self::FunctionCallOutput {
+                call_id,
+                output: function_call_output(output, images),
+            },
             ConversationItem::Reasoning {
                 id,
                 summary,
@@ -1007,6 +1021,24 @@ impl<'a> From<&'a ConversationItem> for ResponsesApiInputItem<'a> {
             },
         }
     }
+}
+
+/// The `output` value of a `function_call_output` input item.
+///
+/// A text-only result stays a bare string; one carrying images becomes an
+/// array of a text block plus one image block per image (the native shape
+/// verified in Milestone 1).
+fn function_call_output<'a>(
+    output: &'a str,
+    images: &'a [ImagePart],
+) -> ResponsesFunctionCallOutput<'a> {
+    if images.is_empty() {
+        return ResponsesFunctionCallOutput::Text(output);
+    }
+    let mut parts = Vec::with_capacity(images.len() + 1);
+    parts.push(ResponsesMessageContent::text("input_text", output, None));
+    parts.extend(images.iter().map(ResponsesMessageContent::image));
+    ResponsesFunctionCallOutput::Parts(parts)
 }
 
 /// Parse the output items from an API response into `ConversationItem` values.
@@ -1083,6 +1115,7 @@ fn parse_output_items(api_response: &ApiResponse) -> anyhow::Result<Vec<Conversa
                     id: output.id.clone(),
                     status: output.status.clone(),
                     timestamp: Some(timestamp),
+                    images: Vec::new(),
                 });
             },
             unknown_type => {

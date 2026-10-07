@@ -17,6 +17,7 @@ fn failure(status: u16, body: &str) -> HttpFailure {
 fn config(base_url: &str) -> ResolvedModelConfig {
     ResolvedModelConfig {
         model_config: ModelConfig {
+            supports_images: false,
             model: "test-model".to_string(),
             api_type: ApiType::Responses,
             base_url: base_url.to_string(),

@@ -191,6 +191,7 @@ mod tests {
     ) -> ResolvedModelConfig {
         ResolvedModelConfig {
             model_config: ModelConfig {
+                supports_images: false,
                 model: model.to_string(),
                 api_type: ApiType::ChatCompletions,
                 base_url: base_url.to_string(),
@@ -661,28 +662,28 @@ mod tests {
         let mut messages = vec![
             ChatMessage {
                 role: Role::System,
-                content: Some(Cow::Borrowed("system")),
+                content: Some("system".into()),
                 reasoning_content: None,
                 tool_calls: None,
                 tool_call_id: None,
             },
             ChatMessage {
                 role: Role::Developer,
-                content: Some(Cow::Borrowed("AGENTS.md context")),
+                content: Some("AGENTS.md context".into()),
                 reasoning_content: None,
                 tool_calls: None,
                 tool_call_id: None,
             },
             ChatMessage {
                 role: Role::Developer,
-                content: Some(Cow::Borrowed("Environment context")),
+                content: Some("Environment context".into()),
                 reasoning_content: None,
                 tool_calls: None,
                 tool_call_id: None,
             },
             ChatMessage {
                 role: Role::User,
-                content: Some(Cow::Borrowed("Hello")),
+                content: Some("Hello".into()),
                 reasoning_content: None,
                 tool_calls: None,
                 tool_call_id: None,
@@ -695,11 +696,11 @@ mod tests {
         assert_eq!(messages.len(), 4);
         assert_eq!(messages[0].role, Role::System);
         assert_eq!(messages[1].role, Role::User);
-        assert_eq!(messages[1].content.as_deref(), Some("AGENTS.md context"));
+        assert_eq!(messages[1].text(), Some("AGENTS.md context"));
         assert_eq!(messages[2].role, Role::User);
-        assert_eq!(messages[2].content.as_deref(), Some("Environment context"));
+        assert_eq!(messages[2].text(), Some("Environment context"));
         assert_eq!(messages[3].role, Role::User);
-        assert_eq!(messages[3].content.as_deref(), Some("Hello"));
+        assert_eq!(messages[3].text(), Some("Hello"));
     }
 
     #[test]
@@ -707,14 +708,14 @@ mod tests {
         let mut messages = vec![
             ChatMessage {
                 role: Role::Developer,
-                content: Some(Cow::Borrowed("context")),
+                content: Some("context".into()),
                 reasoning_content: None,
                 tool_calls: None,
                 tool_call_id: None,
             },
             ChatMessage {
                 role: Role::Assistant,
-                content: Some(Cow::Borrowed("response")),
+                content: Some("response".into()),
                 reasoning_content: None,
                 tool_calls: None,
                 tool_call_id: None,
@@ -725,7 +726,7 @@ mod tests {
 
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].role, Role::User);
-        assert_eq!(messages[0].content.as_deref(), Some("context"));
+        assert_eq!(messages[0].text(), Some("context"));
     }
 
     #[test]
@@ -733,14 +734,14 @@ mod tests {
         let mut messages = vec![
             ChatMessage {
                 role: Role::System,
-                content: Some(Cow::Borrowed("system")),
+                content: Some("system".into()),
                 reasoning_content: None,
                 tool_calls: None,
                 tool_call_id: None,
             },
             ChatMessage {
                 role: Role::User,
-                content: Some(Cow::Borrowed("Hello")),
+                content: Some("Hello".into()),
                 reasoning_content: None,
                 tool_calls: None,
                 tool_call_id: None,

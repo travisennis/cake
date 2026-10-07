@@ -520,6 +520,11 @@ pub struct LimitsSettingsOverlay {
     /// newline-free giant line.
     #[serde(default)]
     pub read_max_line_bytes: Option<Limit>,
+    /// Maximum bytes of an image the `ReadImage` tool will read and send to the
+    /// provider. Absent uses the compiled default of 5 MiB; `"unlimited"`
+    /// disables the cap.
+    #[serde(default)]
+    pub read_image_max_bytes: Option<Limit>,
     /// Maximum bytes of hook stdout and stderr captured per hook invocation.
     /// Absent uses the compiled default of 64 KiB; `"unlimited"` disables
     /// truncation.
@@ -563,6 +568,8 @@ pub struct ToolLimits {
     pub read_max_output_bytes: Option<usize>,
     /// Maximum bytes delivered for a single Read line (default 10,000).
     pub read_max_line_bytes: Option<usize>,
+    /// Maximum bytes of an image `ReadImage` will read (default 5 MiB).
+    pub read_image_max_bytes: Option<usize>,
     /// Maximum bytes of hook stdout/stderr captured per hook (default 64 KiB).
     pub hook_output_limit: Option<usize>,
 }
@@ -584,6 +591,10 @@ pub const DEFAULT_READ_MAX_OUTPUT_BYTES: u32 = 100_000;
 /// Compiled default for [`ToolLimits::read_max_line_bytes`], matching the
 /// constant it replaced in `src/clients/tools/read.rs`.
 pub const DEFAULT_READ_MAX_LINE_BYTES: u32 = 10_000;
+/// Compiled default for [`ToolLimits::read_image_max_bytes`]: 5 MiB, large
+/// enough for a screenshot and small enough to keep the inline base64 request
+/// body bounded.
+pub const DEFAULT_READ_IMAGE_MAX_BYTES: u32 = 5 * 1024 * 1024;
 /// Compiled default for [`ToolLimits::hook_output_limit`].
 pub const DEFAULT_HOOK_OUTPUT_LIMIT: u32 = 64 * 1024;
 
@@ -601,6 +612,7 @@ impl ToolLimits {
             read_default_end_line: Some(DEFAULT_READ_DEFAULT_END_LINE as usize),
             read_max_output_bytes: Some(DEFAULT_READ_MAX_OUTPUT_BYTES as usize),
             read_max_line_bytes: Some(DEFAULT_READ_MAX_LINE_BYTES as usize),
+            read_image_max_bytes: Some(DEFAULT_READ_IMAGE_MAX_BYTES as usize),
             hook_output_limit: Some(DEFAULT_HOOK_OUTPUT_LIMIT as usize),
         }
     }
@@ -653,6 +665,10 @@ impl LimitsSettingsOverlay {
                 read_max_line_bytes: resolve_tool_limit(
                     self.read_max_line_bytes,
                     DEFAULT_READ_MAX_LINE_BYTES,
+                ),
+                read_image_max_bytes: resolve_tool_limit(
+                    self.read_image_max_bytes,
+                    DEFAULT_READ_IMAGE_MAX_BYTES,
                 ),
                 hook_output_limit: resolve_tool_limit(
                     self.hook_output_limit,
@@ -772,6 +788,10 @@ pub struct ModelDefinition {
     /// Provider routing hints
     #[serde(default)]
     pub providers: Vec<String>,
+    /// Whether this model accepts image input. Gates the `ReadImage` tool so
+    /// cake never sends pixels to a text-only model. Defaults to false.
+    #[serde(default)]
+    pub supports_images: bool,
 }
 
 impl ModelDefinition {
@@ -822,6 +842,7 @@ impl ModelDefinition {
     /// ```
     pub fn to_model_config(&self) -> ModelConfig {
         ModelConfig {
+            supports_images: self.supports_images,
             model: self.model.clone(),
             api_type: self.api_type,
             base_url: self.base_url.clone(),
@@ -1193,29 +1214,28 @@ impl SettingsLoader {
         Self::merge_session_limits(&limits, acc);
     }
 
+    /// Overlay a present limit onto the accumulator.
+    ///
+    /// An absent overlay value leaves the lower-precedence accumulator value
+    /// untouched, so precedence is preserved without a branch per field.
+    const fn merge_limit(acc: &mut Option<Limit>, incoming: Option<Limit>) {
+        if incoming.is_some() {
+            *acc = incoming;
+        }
+    }
+
     /// Merge the output-budget `[limits]` fields into the accumulator,
     /// keeping [`Self::merge_limits`] at baseline complexity. Absent keys
     /// keep lower-precedence values; an explicit `"unlimited"` overrides
     /// back to no cap.
     const fn merge_output_budgets(limits: &LimitsSettingsOverlay, acc: &mut SettingsAccumulator) {
-        if limits.bash_output_max_bytes.is_some() {
-            acc.bash_output_max_bytes = limits.bash_output_max_bytes;
-        }
-        if limits.bash_read_cap.is_some() {
-            acc.bash_read_cap = limits.bash_read_cap;
-        }
-        if limits.read_default_end_line.is_some() {
-            acc.read_default_end_line = limits.read_default_end_line;
-        }
-        if limits.read_max_output_bytes.is_some() {
-            acc.read_max_output_bytes = limits.read_max_output_bytes;
-        }
-        if limits.read_max_line_bytes.is_some() {
-            acc.read_max_line_bytes = limits.read_max_line_bytes;
-        }
-        if limits.hook_output_limit.is_some() {
-            acc.hook_output_limit = limits.hook_output_limit;
-        }
+        Self::merge_limit(&mut acc.bash_output_max_bytes, limits.bash_output_max_bytes);
+        Self::merge_limit(&mut acc.bash_read_cap, limits.bash_read_cap);
+        Self::merge_limit(&mut acc.read_default_end_line, limits.read_default_end_line);
+        Self::merge_limit(&mut acc.read_max_output_bytes, limits.read_max_output_bytes);
+        Self::merge_limit(&mut acc.read_max_line_bytes, limits.read_max_line_bytes);
+        Self::merge_limit(&mut acc.read_image_max_bytes, limits.read_image_max_bytes);
+        Self::merge_limit(&mut acc.hook_output_limit, limits.hook_output_limit);
     }
 
     const fn merge_session_limits(limits: &LimitsSettingsOverlay, acc: &mut SettingsAccumulator) {
@@ -1409,6 +1429,7 @@ struct SettingsAccumulator {
     read_default_end_line: Option<Limit>,
     read_max_output_bytes: Option<Limit>,
     read_max_line_bytes: Option<Limit>,
+    read_image_max_bytes: Option<Limit>,
     hook_output_limit: Option<Limit>,
     warnings: Vec<String>,
 }
@@ -1464,6 +1485,7 @@ impl SettingsAccumulator {
             read_default_end_line: self.read_default_end_line,
             read_max_output_bytes: self.read_max_output_bytes,
             read_max_line_bytes: self.read_max_line_bytes,
+            read_image_max_bytes: self.read_image_max_bytes,
             hook_output_limit: self.hook_output_limit,
         };
         LoadedSettings {

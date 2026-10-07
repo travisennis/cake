@@ -162,6 +162,12 @@ fn read_prompt_override(path: &Path, source: PromptSource) -> Option<String> {
 /// The first readable file found wins. Empty files are valid (intentional blank prompt).
 /// Unreadable files produce a warning and are skipped. The optional `enabled_tools`
 /// list filters the built-in available-tools section by exact registered name.
+/// `supports_images` reports whether the resolved model accepts image input; it
+/// gates tools such as `ReadImage` that send pixels to the provider.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "prompt resolution naturally requires many inputs"
+)]
 pub fn resolve_system_prompt(
     working_dir: &Path,
     config_dir: &Path,
@@ -170,6 +176,7 @@ pub fn resolve_system_prompt(
     sandbox_policy: SandboxPolicy,
     toolbox_tools: &[ToolboxTool],
     enabled_tools: Option<&[String]>,
+    supports_images: bool,
 ) -> String {
     // 1. --system-prompt CLI flag
     if let Some(path) = cli_system_prompt
@@ -206,7 +213,12 @@ pub fn resolve_system_prompt(
     if builtin.contains("{{AVAILABLE_TOOLS}}") {
         builtin.replace(
             "{{AVAILABLE_TOOLS}}",
-            &format_tool_list_section(sandbox_policy, toolbox_tools, enabled_tools),
+            &format_tool_list_section(
+                sandbox_policy,
+                toolbox_tools,
+                enabled_tools,
+                supports_images,
+            ),
         )
     } else {
         builtin
@@ -219,7 +231,8 @@ pub fn resolve_system_prompt(
 /// AGENTS.md contents, available skills, and environment context is emitted as
 /// separate developer messages so it is not tied to the system prompt. The
 /// optional exact-name tool allowlist narrows which tools are advertised to the
-/// model; `None` preserves the full registry.
+/// model; `None` preserves the full registry. `supports_images` gates tools that
+/// send image input to the provider.
 #[expect(
     clippy::too_many_arguments,
     reason = "prompt construction naturally requires many inputs"
@@ -234,6 +247,7 @@ pub fn build_initial_prompt_messages_with_enabled_tools(
     sandbox_policy: SandboxPolicy,
     toolbox_tools: &[ToolboxTool],
     enabled_tools: Option<&[String]>,
+    supports_images: bool,
 ) -> Vec<(Role, String)> {
     let mut messages = vec![(
         Role::System,
@@ -245,6 +259,7 @@ pub fn build_initial_prompt_messages_with_enabled_tools(
             sandbox_policy,
             toolbox_tools,
             enabled_tools,
+            supports_images,
         ),
     )];
     let context = format_agents_context(agents_files);
@@ -350,6 +365,40 @@ mod tests {
     // --- resolve_system_prompt tests ---
 
     #[test]
+    fn resolve_builtin_gates_read_image_on_model_capability() {
+        let dir = TempDir::new().unwrap();
+        let config_dir = TempDir::new().unwrap();
+
+        let capable = resolve_system_prompt(
+            dir.path(),
+            config_dir.path(),
+            None,
+            None,
+            SandboxPolicy::WorkspaceWrite,
+            &[],
+            None,
+            true,
+        );
+        assert!(capable.contains("- **ReadImage**:"));
+
+        let text_only = resolve_system_prompt(
+            dir.path(),
+            config_dir.path(),
+            None,
+            None,
+            SandboxPolicy::WorkspaceWrite,
+            &[],
+            None,
+            false,
+        );
+        assert!(
+            !text_only.contains("- **ReadImage**:"),
+            "a text-only model's prompt must not list ReadImage"
+        );
+        assert!(text_only.contains("- **Read**:"));
+    }
+
+    #[test]
     fn resolve_builtin_filters_enabled_tools() {
         let dir = TempDir::new().unwrap();
         let config_dir = TempDir::new().unwrap();
@@ -362,6 +411,7 @@ mod tests {
             SandboxPolicy::WorkspaceWrite,
             &[],
             Some(&enabled),
+            true,
         );
 
         assert!(prompt.contains("- **Read**:"));
@@ -385,6 +435,7 @@ mod tests {
             SandboxPolicy::WorkspaceWrite,
             &[],
             None,
+            true,
         );
 
         assert_eq!(prompt, "CLI prompt");
@@ -405,6 +456,7 @@ mod tests {
             SandboxPolicy::WorkspaceWrite,
             &[],
             None,
+            true,
         );
 
         assert_eq!(prompt, "Settings prompt");
@@ -425,6 +477,7 @@ mod tests {
             SandboxPolicy::WorkspaceWrite,
             &[],
             None,
+            true,
         );
 
         assert_eq!(prompt, "User prompt");
@@ -444,6 +497,7 @@ mod tests {
             SandboxPolicy::WorkspaceWrite,
             &[],
             None,
+            true,
         );
 
         assert!(prompt.starts_with("You are cake."));
@@ -466,6 +520,7 @@ mod tests {
             SandboxPolicy::WorkspaceWrite,
             &[],
             None,
+            true,
         );
         assert_eq!(prompt, "Project prompt");
     }
@@ -485,6 +540,7 @@ mod tests {
             SandboxPolicy::WorkspaceWrite,
             &[],
             None,
+            true,
         );
         assert_eq!(prompt, "User prompt");
     }
@@ -507,6 +563,7 @@ mod tests {
             SandboxPolicy::WorkspaceWrite,
             &[],
             None,
+            true,
         );
         assert_eq!(prompt, "Project prompt");
     }
@@ -528,6 +585,7 @@ mod tests {
             SandboxPolicy::WorkspaceWrite,
             &[],
             None,
+            true,
         );
         assert_eq!(prompt, "");
     }
@@ -549,6 +607,7 @@ mod tests {
             SandboxPolicy::WorkspaceWrite,
             &[],
             None,
+            true,
         );
         assert_eq!(prompt, "");
     }
@@ -580,6 +639,7 @@ mod tests {
             SandboxPolicy::WorkspaceWrite,
             &[],
             None,
+            true,
         );
 
         #[cfg(unix)]
@@ -631,6 +691,7 @@ mod tests {
             SandboxPolicy::WorkspaceWrite,
             &[],
             None,
+            true,
         );
 
         #[cfg(unix)]
@@ -680,6 +741,7 @@ mod tests {
             SandboxPolicy::WorkspaceWrite,
             &[],
             None,
+            true,
         );
         let prompt = render_messages(&messages);
         assert!(prompt.contains("## Additional Context"));
@@ -712,6 +774,7 @@ mod tests {
             SandboxPolicy::WorkspaceWrite,
             &[],
             None,
+            true,
         );
         let prompt = render_messages(&messages);
         // Should not include Project Context section since all files are empty
@@ -755,6 +818,7 @@ mod tests {
             SandboxPolicy::WorkspaceWrite,
             &[],
             Some(enabled),
+            true,
         );
         render_messages(&messages)
     }
@@ -835,6 +899,7 @@ mod tests {
             SandboxPolicy::WorkspaceWrite,
             &[],
             None,
+            true,
         );
         assert_prompt_snapshot("prompt_empty", &messages);
     }
@@ -856,6 +921,7 @@ mod tests {
             SandboxPolicy::WorkspaceWrite,
             &[],
             None,
+            true,
         );
         assert_prompt_snapshot("prompt_with_project_agents", &messages);
     }
@@ -883,6 +949,7 @@ mod tests {
             SandboxPolicy::WorkspaceWrite,
             &[],
             None,
+            true,
         );
         assert_prompt_snapshot("prompt_with_user_and_project_agents", &messages);
     }
@@ -908,6 +975,7 @@ mod tests {
             SandboxPolicy::WorkspaceWrite,
             &[],
             None,
+            true,
         );
         assert_prompt_snapshot("prompt_with_skill_catalog", &messages);
     }
@@ -934,6 +1002,7 @@ mod tests {
             SandboxPolicy::WorkspaceWrite,
             &[],
             Some(&enabled),
+            true,
         );
         assert_prompt_snapshot("prompt_with_bash_only_skill_catalog", &messages);
     }
@@ -963,6 +1032,7 @@ mod tests {
             SandboxPolicy::WorkspaceWrite,
             &[],
             None,
+            true,
         );
         assert_prompt_snapshot("prompt_with_agents_and_skills", &messages);
     }

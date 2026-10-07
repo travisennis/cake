@@ -2940,6 +2940,7 @@ fn judge_context(mock_server: &MockServer) -> std::sync::Arc<JudgeContext> {
     use std::collections::HashMap;
 
     let model_config = ModelConfig {
+        supports_images: false,
         model: "judge/model".to_string(),
         api_type: ApiType::ChatCompletions,
         base_url: mock_server.uri(),

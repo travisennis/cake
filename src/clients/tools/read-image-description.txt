@@ -1,0 +1,11 @@
+Read an image file and return it to you as an image you can actually see. Supports PNG, JPEG, GIF, and WebP.
+
+Behavior:
+- Requires an absolute path to a file inside the working directory, a temp directory, or a directory added with --add-dir.
+- Detects the format from the file's leading bytes, not its extension. Files that are not images are rejected with a message pointing at Read for text files.
+- Rejects files larger than the configured read_image_max_bytes cap (default 5 MiB) with a clear error instead of sending them, so an oversized image never reaches the provider.
+- Returns the image inline as a base64 data URL; there is no upload step and no transcoding.
+
+Guidance:
+- Use ReadImage when a screenshot, diagram, chart, or photo is part of the question; Read rejects binary files.
+- Prefer the smallest image that answers the question; a cropped region costs far fewer tokens than a full screenshot.

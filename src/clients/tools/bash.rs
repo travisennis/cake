@@ -1246,6 +1246,7 @@ fn format_yielded(
     let result = format!("{output}\n\n{footer}{gap}{note}\n{instruction}");
     super::ToolResult {
         output: prepend_safety_warnings(result, &preflight.warnings),
+        images: Vec::new(),
         compensation_events: events,
         permission_denials: Vec::new(),
     }
@@ -1327,6 +1328,7 @@ fn format_completed(
         .map_or(String::new(), |why| format!("\n[Session {why}.]"));
     Ok(super::ToolResult {
         output: prepend_safety_warnings(format!("{result}{termination}"), &preflight.warnings),
+        images: Vec::new(),
         compensation_events: events,
         permission_denials: denials
             .iter()
@@ -1356,6 +1358,7 @@ fn format_completed_binary(
     push_truncation_event_if(&mut events, "Bash", read.output.dropped_bytes > 0, spilled);
     super::ToolResult {
         output: prepend_safety_warnings(result, warnings),
+        images: Vec::new(),
         compensation_events: events,
         permission_denials: Vec::new(),
     }
@@ -1804,6 +1807,7 @@ fn bypassed_judge_context() -> std::sync::Arc<JudgeContext> {
     use std::collections::HashMap;
 
     let model_config = ModelConfig {
+        supports_images: false,
         model: "bypass/model".to_string(),
         api_type: ApiType::ChatCompletions,
         base_url: "http://127.0.0.1:9".to_string(),

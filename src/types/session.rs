@@ -10,7 +10,9 @@ use std::path::PathBuf;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::types::conversation::{ConversationItem, ReasoningContent, ReasoningSummary, Role};
+use crate::types::conversation::{
+    ConversationItem, ImagePart, ReasoningContent, ReasoningSummary, Role,
+};
 use crate::types::usage::{Usage, UsagePresence};
 
 /// Snapshot of git repository state captured when a session file is created.
@@ -311,6 +313,10 @@ pub struct MessageData {
     pub status: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<DateTime<Utc>>,
+    /// Inline images attached to this message. Absent on text-only messages
+    /// and on records written before images existed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ImagePart>,
 }
 
 /// Declared safety of replaying a tool call after an interrupted execution.
@@ -383,6 +389,10 @@ pub struct FunctionCallOutputData {
     pub replay: Option<ReplaySafety>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<DateTime<Utc>>,
+    /// Inline images returned by the tool. Absent on text-only outputs and on
+    /// records written before images existed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ImagePart>,
 }
 
 /// Shared data for `Reasoning` records in both `StreamRecord` and `SessionRecord`.
@@ -841,12 +851,14 @@ impl StreamRecord {
                 id,
                 status,
                 timestamp,
+                images,
             } => Self::Message(MessageData {
                 role: *role,
                 content: content.clone(),
                 id: id.clone(),
                 status: status.clone(),
                 timestamp: *timestamp,
+                images: images.clone(),
             }),
             ConversationItem::FunctionCall {
                 id,
@@ -869,11 +881,13 @@ impl StreamRecord {
                 call_id,
                 output,
                 timestamp,
+                images,
             } => Self::FunctionCallOutput(FunctionCallOutputData {
                 call_id: call_id.clone(),
                 output: output.clone(),
                 replay,
                 timestamp: *timestamp,
+                images: images.clone(),
             }),
             ConversationItem::Reasoning {
                 id,
@@ -923,12 +937,14 @@ impl SessionRecord {
                 id,
                 status,
                 timestamp,
+                images,
             }) => Some(ConversationItem::Message {
                 role: *role,
                 content: content.clone(),
                 id: id.clone(),
                 status: status.clone(),
                 timestamp: *timestamp,
+                images: images.clone(),
             }),
             Self::FunctionCall(FunctionCallData {
                 id,
@@ -950,10 +966,12 @@ impl SessionRecord {
                 output,
                 replay: _,
                 timestamp,
+                images,
             }) => Some(ConversationItem::FunctionCallOutput {
                 call_id: call_id.clone(),
                 output: output.clone(),
                 timestamp: *timestamp,
+                images: images.clone(),
             }),
             Self::Reasoning(ReasoningData {
                 id,

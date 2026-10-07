@@ -47,6 +47,7 @@ fn full_prompt_history() -> Vec<ConversationItem> {
         SandboxPolicy::WorkspaceWrite,
         &[],
         None,
+        true,
     )
     .into_iter()
     .map(|(role, content)| ConversationItem::Message {
@@ -55,6 +56,7 @@ fn full_prompt_history() -> Vec<ConversationItem> {
         id: None,
         status: None,
         timestamp: None,
+        images: Vec::new(),
     })
     .collect::<Vec<_>>();
     history.push(ConversationItem::Message {
@@ -63,6 +65,7 @@ fn full_prompt_history() -> Vec<ConversationItem> {
         id: None,
         status: None,
         timestamp: None,
+        images: Vec::new(),
     });
     history
 }
@@ -203,6 +206,7 @@ fn extract_instructions_with_system_message() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
         ConversationItem::Message {
             role: Role::User,
@@ -210,6 +214,7 @@ fn extract_instructions_with_system_message() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
     ];
     let (instructions, remaining) = extract_instructions(&history).unwrap();
@@ -233,6 +238,7 @@ fn extract_instructions_keeps_developer_messages_in_input() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
         ConversationItem::Message {
             role: Role::Developer,
@@ -240,6 +246,7 @@ fn extract_instructions_keeps_developer_messages_in_input() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
         ConversationItem::Message {
             role: Role::User,
@@ -247,6 +254,7 @@ fn extract_instructions_keeps_developer_messages_in_input() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
     ];
 
@@ -268,6 +276,7 @@ fn extract_instructions_without_system_message() {
         id: None,
         status: None,
         timestamp: None,
+        images: Vec::new(),
     }];
     let (instructions, remaining) = extract_instructions(&history).unwrap();
     assert!(instructions.is_none());
@@ -283,6 +292,7 @@ fn extract_instructions_system_message_non_first_position_errors() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
         ConversationItem::Message {
             role: Role::System,
@@ -290,6 +300,7 @@ fn extract_instructions_system_message_non_first_position_errors() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
         ConversationItem::Message {
             role: Role::Assistant,
@@ -297,6 +308,7 @@ fn extract_instructions_system_message_non_first_position_errors() {
             id: Some("msg-1".to_string()),
             status: Some("completed".to_string()),
             timestamp: None,
+            images: Vec::new(),
         },
     ];
     let err = extract_instructions(&history).unwrap_err();
@@ -315,6 +327,7 @@ fn build_input_converts_history() {
         id: None,
         status: None,
         timestamp: None,
+        images: Vec::new(),
     }];
     let input = input_json(&history);
     assert_eq!(input.len(), 1);
@@ -330,6 +343,7 @@ fn build_input_keeps_native_reasoning_before_semantic_recovery_prompt() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
         ConversationItem::Reasoning {
             id: "r-incomplete".to_string(),
@@ -344,6 +358,7 @@ fn build_input_keeps_native_reasoning_before_semantic_recovery_prompt() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
     ];
 
@@ -378,6 +393,7 @@ fn build_input_orders_repaired_tool_call_before_next_user_message() {
             call_id: "call-1".to_string(),
             output: "not executed: the previous cake process ended".to_string(),
             timestamp: None,
+            images: Vec::new(),
         },
         ConversationItem::Message {
             role: Role::User,
@@ -385,6 +401,7 @@ fn build_input_orders_repaired_tool_call_before_next_user_message() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
     ];
 
@@ -762,6 +779,7 @@ fn snapshot_responses_request_minimal() {
         id: None,
         status: None,
         timestamp: None,
+        images: Vec::new(),
     }];
     let request = Request {
         model: "openai/gpt-4.1",
@@ -794,6 +812,7 @@ fn snapshot_responses_request_with_tools_provider_and_reasoning() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
         ConversationItem::Message {
             role: Role::User,
@@ -801,6 +820,7 @@ fn snapshot_responses_request_with_tools_provider_and_reasoning() {
             id: None,
             status: None,
             timestamp: None,
+            images: Vec::new(),
         },
         ConversationItem::FunctionCall {
             id: "fc-1".to_string(),
@@ -813,6 +833,7 @@ fn snapshot_responses_request_with_tools_provider_and_reasoning() {
             call_id: "call-1".to_string(),
             output: "Cargo.toml\nsrc".to_string(),
             timestamp: None,
+            images: Vec::new(),
         },
     ];
     let tools = vec![Tool {
@@ -864,6 +885,7 @@ fn snapshot_responses_request_with_output_schema_constraint() {
         id: None,
         status: None,
         timestamp: None,
+        images: Vec::new(),
     }];
     let schema = serde_json::json!({
         "type": "object",
@@ -934,6 +956,7 @@ fn snapshot_responses_request_full_with_agents_and_skills() {
 fn build_request_disables_storage_for_codex_backend() {
     let config = ResolvedModelConfig {
         model_config: ModelConfig {
+            supports_images: false,
             model: "gpt-5.6-luna".to_string(),
             api_type: ApiType::Responses,
             base_url: "https://chatgpt.com/backend-api/codex".to_string(),
@@ -957,6 +980,7 @@ fn build_request_disables_storage_for_codex_backend() {
         id: None,
         status: None,
         timestamp: None,
+        images: Vec::new(),
     }];
 
     let bytes = super::build_request_json(
@@ -1018,6 +1042,7 @@ fn build_request_preserves_optional_tools_with_explicit_openai_strictness() {
     ] {
         let config = ResolvedModelConfig {
             model_config: ModelConfig {
+                supports_images: false,
                 model: "test-model".to_string(),
                 api_type: ApiType::Responses,
                 base_url: base_url.to_string(),
@@ -1751,6 +1776,7 @@ fn parse_output_items_reasoning_content_fallback_to_summary() {
 fn request_config(base_url: &str, api_type: ApiType) -> ResolvedModelConfig {
     ResolvedModelConfig {
         model_config: ModelConfig {
+            supports_images: false,
             model: "test-model".to_string(),
             api_type,
             base_url: base_url.to_string(),

@@ -286,6 +286,34 @@ context_window = 200000
     assert_eq!(def.reasoning_effort, None);
     assert_eq!(def.reasoning_summary, None);
     assert_eq!(def.reasoning_max_tokens, None);
+    assert!(
+        !def.supports_images,
+        "image support defaults off so a text-only model never sees ReadImage"
+    );
+}
+
+#[test]
+fn test_supports_images_parses_and_propagates() {
+    let dir = create_project_settings(
+        r#"
+[[models]]
+name = "vision"
+model = "test/vision"
+base_url = "https://example.com"
+api_key_env = "MY_KEY"
+supports_images = true
+"#,
+    );
+
+    let home = create_home_dir();
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load(Some(dir.path()))
+    })
+    .unwrap();
+    let def = loaded.models.get("vision").unwrap();
+
+    assert!(def.supports_images);
+    assert!(def.to_model_config().supports_images);
 }
 
 #[test]
@@ -309,6 +337,7 @@ fn test_validate_name_invalid() {
 #[test]
 fn test_to_model_config() {
     let def = ModelDefinition {
+        supports_images: false,
         name: "test".to_string(),
         model: "test/model".to_string(),
         base_url: "https://example.com".to_string(),
@@ -2074,6 +2103,25 @@ hook_output_limit = 1024
     assert_eq!(tool.read_max_output_bytes, Some(20000));
     assert_eq!(tool.read_max_line_bytes, Some(15000));
     assert_eq!(tool.hook_output_limit, Some(1024));
+}
+
+#[test]
+fn read_image_max_bytes_resolves_and_accepts_unlimited() {
+    let overlay: LimitsSettingsOverlay = toml::from_str("read_image_max_bytes = 30000").unwrap();
+    assert_eq!(
+        overlay.resolve().tool_limits.read_image_max_bytes,
+        Some(30000)
+    );
+
+    let overlay: LimitsSettingsOverlay =
+        toml::from_str("read_image_max_bytes = \"unlimited\"").unwrap();
+    assert_eq!(overlay.resolve().tool_limits.read_image_max_bytes, None);
+
+    let overlay: LimitsSettingsOverlay = toml::from_str("").unwrap();
+    assert_eq!(
+        overlay.resolve().tool_limits.read_image_max_bytes,
+        Some(DEFAULT_READ_IMAGE_MAX_BYTES as usize)
+    );
 }
 
 #[test]

@@ -1,0 +1,44 @@
+---
+source: src/clients/chat_completions_tests.rs
+expression: msgs
+---
+[
+  {
+    "role": "user",
+    "content": "Describe the screenshot."
+  },
+  {
+    "role": "assistant",
+    "content": null,
+    "tool_calls": [
+      {
+        "id": "call-1",
+        "type": "function",
+        "function": {
+          "name": "ReadImage",
+          "arguments": "{\"path\":\"shot.png\"}"
+        }
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "content": "ReadImage shot.png (69 bytes, image/png)",
+    "tool_call_id": "call-1"
+  },
+  {
+    "role": "user",
+    "content": [
+      {
+        "type": "text",
+        "text": "ReadImage shot.png (69 bytes, image/png)"
+      },
+      {
+        "type": "image_url",
+        "image_url": {
+          "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR42mP4z8AAAAMBAQD3A0FDAAAAAElFTkSuQmCC"
+        }
+      }
+    ]
+  }
+]
