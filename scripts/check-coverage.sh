@@ -56,6 +56,12 @@ echo "=== Total Coverage Gate ==="
 # The summary below and the LCOV export for gates 2 and 3 both derive
 # from that single run.
 #
+# Measurement runs through scripts/hermetic-coverage.sh, which points HOME at a
+# scratch directory so a test that reads the developer's home (the skill loader
+# scans ~/.agents/skills, for example) cannot move this run's coverage away from
+# what the CI runner measures. That keeps the committed CRAP baseline
+# reproducible on any machine (#699).
+#
 # Profile data from an earlier run is removed before measuring, and the gate does
 # not delegate that removal to the tool: no `cargo llvm-cov clean` mode removes
 # everything, so the strongest clean cannot stand alone. `scripts/coverage-clean.sh`
@@ -67,9 +73,9 @@ echo "=== Coverage Artifact Guard ==="
 scripts/coverage-clean.sh || exit 1
 
 echo ""
-cargo llvm-cov --no-report
+scripts/hermetic-coverage.sh --no-report
 
-output="$(cargo llvm-cov report)"
+output="$(scripts/hermetic-coverage.sh report)"
 printf '%s\n' "$output"
 
 coverage="$(printf '%s\n' "$output" | grep "^TOTAL" | grep -oE '[0-9]+\.[0-9]+%' | tail -1 | tr -d '%' || true)"
@@ -96,7 +102,7 @@ echo "=== CRAP Regression Gate ==="
 # excluded from CRAP scoring via `--exclude '**/*_tests.rs'` in
 # scripts/cargo-crap.sh (task 226). Use --ignore-filename-regex to
 # suppress the warning for these expected cases.
-cargo llvm-cov report --lcov --output-path lcov.info --ignore-filename-regex '_tests\.rs$'
+scripts/hermetic-coverage.sh report --lcov --output-path lcov.info --ignore-filename-regex '_tests\.rs$'
 python3 scripts/coverage-guard.py --lcov lcov.info || exit 1
 
 echo "CRAP regression epsilon: ${crap_epsilon}"

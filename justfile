@@ -292,7 +292,7 @@ fixture-isolation-check:
 
 # Run the Python script fixture suites: the same suites the `changes` job in CI runs.
 # Stdlib only and no credentials; nothing here calls a model provider or the network.
-check-scripts: dependency-sweep-check profile-check binary-size-baseline-check test-classify-changes test-just-pr eval-check session-metrics-check coverage-guard-check docs-corpus-check fixture-isolation-check cc-check-fixture
+check-scripts: dependency-sweep-check profile-check binary-size-baseline-check test-classify-changes test-just-pr eval-check session-metrics-check coverage-guard-check docs-corpus-check fixture-isolation-check cc-check-fixture hermetic-coverage-check
     echo "Script fixture suites passed!"
 
 # Run the Linux compatibility check corresponding to GitHub Actions
@@ -342,6 +342,10 @@ cc-check:
 cc-check-fixture:
     @scripts/test-check-cc.sh
 
+# Run fixture tests for the hermetic coverage wrapper (no coverage pass; stubs cargo).
+hermetic-coverage-check:
+    @scripts/test-hermetic-coverage.sh
+
 # Run coverage and open report
 coverage-open:
     cargo llvm-cov --html --open
@@ -355,10 +359,12 @@ coverage-lcov:
 # Run this after intentional code or test changes alter coverage/complexity, then commit ci/cargo-crap-baseline.json with the change.
 # The same clean-and-guard policy as `check-coverage` runs first, so a stale artifact
 # or a duplicated source root cannot bake a wrong per-function baseline into the ratchet.
+# Measurement runs under a scratch HOME (scripts/hermetic-coverage.sh), so the result
+# never reflects the developer's home directory and matches the CI Coverage job.
 change-risk-baseline:
     scripts/coverage-clean.sh
     mkdir -p ci
-    cargo llvm-cov --lcov --output-path lcov.info
+    scripts/hermetic-coverage.sh --lcov --output-path lcov.info
     python3 scripts/coverage-guard.py --lcov lcov.info
     scripts/cargo-crap.sh --lcov lcov.info --format json --output ci/cargo-crap-baseline.json
 
@@ -367,7 +373,7 @@ change-risk-baseline:
 # artifacts from an earlier checkout state.
 change-risk-report:
     scripts/coverage-clean.sh
-    cargo llvm-cov --lcov --output-path lcov.info
+    scripts/hermetic-coverage.sh --lcov --output-path lcov.info
     python3 scripts/coverage-guard.py --lcov lcov.info
     scripts/cargo-crap.sh --lcov lcov.info --baseline ci/cargo-crap-baseline.json --format markdown
 
