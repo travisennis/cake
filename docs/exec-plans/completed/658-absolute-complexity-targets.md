@@ -25,28 +25,46 @@ How to verify it works:
 
 ## Progress
 
-- [x] (2026-10-07T00:00:00Z) Wrote ADR 039 recording the decision to retire the CRAP delta ratchet for absolute targets.
-- [x] (2026-10-07T00:00:00Z) Created this ExecPlan from issue #658 and the current scripts, justfile, baseline, and guardrail.
-- [ ] Milestone 1: retire the delta comparison and add an absolute CRAP gate.
-- [ ] Milestone 2: shrink `ci/cargo-crap-baseline.json` and update every consumer of it.
-- [ ] Milestone 3: update the guardrail, `CONTRIBUTING.md`, the justfile comments, and the Coverage CI step.
-- [ ] Milestone 4: prove acceptance --- the enum-arm case passes, regeneration is a no-op, and a bloated function fails.
+- [x] (2026-10-07T17:30:00Z) Wrote ADR 039 recording the decision to retire the CRAP delta ratchet for absolute targets.
+- [x] (2026-10-07T17:30:00Z) Created this ExecPlan from issue #658 and the current scripts, justfile, baseline, and guardrail.
+- [x] (2026-10-07T18:10:00Z) Milestone 1: retired the delta comparison and added an absolute CRAP gate (`scripts/check-crap.sh` plus `scripts/test-check-crap.sh`).
+- [x] (2026-10-07T18:20:00Z) Milestone 2: shrank `ci/cargo-crap-baseline.json` from 1,181 to 12 entries and updated its consumers (prune step in `just change-risk-baseline`, `scripts/check-cc.sh` wording, `just change-risk-report`).
+- [x] (2026-10-07T18:35:00Z) Milestone 3: updated the guardrail, `CONTRIBUTING.md`, the justfile comments, and the Coverage CI step.
+- [x] (2026-10-07T18:50:00Z) Milestone 4: proved acceptance --- the enum-arm case passes, a clean regeneration is a no-op, the file holds only grandfathers, and a bloated function fails.
 
 ## Surprises & Discoveries
 
 - Observation: `cargo-crap` 0.2.2 already supports the failing half of the absolute gate directly. Evidence: `cargo crap --help` lists `--threshold <THRESHOLD>` (score above which a function is "crappy", default 30) and `--fail-above` (exit non-zero if any function exceeds the threshold). It has no warn tier and no per-function allowance, so the full gate still needs a small wrapper, but the failure comparison does not need to be hand-rolled from scratch.
 - Observation: the baseline today is 1,181 entries; 1,169 are at CC ≤ 10 and 12 are above it. The only entry above CRAP 30 is `Skill::parse_frontmatter_fallback` (CRAP 210.0, CC 14, 0% coverage). The only two entries above CRAP 15 with CC ≤ 10 are `ReasoningContentKind::from` (CRAP 20.0, CC 4) and `Skill::read_frontmatter` (CRAP 16.6, CC 10). Evidence: computed from `ci/cargo-crap-baseline.json` with `scripts/check-cc.sh`'s `(file, function)` keying. These match the counts in #658, so its evidence is current.
 - Observation: the fast local gate never runs the CRAP comparison, so this failure class is first seen in CI. Evidence: `just check` runs `cc-check` (coverage-independent) but not `check-coverage`; `CONTRIBUTING.md` routes code changes to `just check`.
+- Observation: carrying `crap` allowances forward from the *committed* baseline cannot perform the first shrink, because the pre-change `ci/cargo-crap-baseline.json` records a `crap` value on all 1,181 entries, so every entry would look like a grandfather and survive. The one-time shrink was therefore produced by running `scripts/prune-crap-baseline.py` against the old report with only the deliberate grandfather supplied as the allowance source; from the shrunk file onward, regeneration does carry forward and is a no-op. Evidence: the recipe now prints `Pruned baseline: 12 entries (1 CRAP grandfathers)` and reproduces the committed file byte-for-byte.
+- Observation: the `scripts/coverage-guard.py` re-audit found nothing to remove. Its only two checks are residual profile artifacts and duplicate source roots, and its docstring/logic never referenced the committed baseline. Evidence: `grep -n baseline scripts/coverage-guard.py` returns nothing on `master`.
+- Observation: shrinking the baseline made `scripts/check-cc.sh` report "1,170 new", because nearly every function is now unlisted. The allowed ceiling is unchanged, but "new" was misleading, so the summary label became "grandfathered"/"unlisted". Evidence: `just cc-check` now prints `CC gate: 1183 functions checked, 13 grandfathered, 0 over allowed`.
+- Observation: neither `cc-check-fixture` nor the new `check-crap-fixture` runs in CI's `changes` job, which invokes the other fixtures by name; they run only through `just check-scripts` (and thus `just check`). This is pre-existing for `cc-check-fixture` and left as-is to keep the diff narrow.
 
 ## Decision Log
 
 - Decision: retire the CRAP regression comparison and enforce absolute targets (fail above CRAP 30, warn above CRAP 15 for CC ≤ 10). Rationale: the delta gate contradicts the CC guardrail and depends on a machine-specific snapshot. Date/Author: 2026-10-07, recorded in [ADR 039](../adr/039-absolute-complexity-targets.md).
 - Decision: keep the CRAP check in `scripts/check-coverage.sh` as its own gate rather than replacing it with `cargo crap --threshold 30 --fail-above`. Rationale: the warn tier is conditioned on CC ≤ 10 and the grandfather is per-function, neither of which `cargo-crap`'s single-threshold interface can express; a small wrapper mirrors `scripts/check-cc.sh` and stays testable with a fixture. Date/Author: 2026-10-07.
 - Decision: shrink the baseline to `{file, function, cyclomatic}` entries plus one `crap` allowance on the grandfathered function. Rationale: `line`, `coverage`, and the per-entry `crap` value are the churn and cross-machine sources; `scripts/check-cc.sh` already reads only `file`, `function`, and `cyclomatic`. Date/Author: 2026-10-07.
+- Decision: repoint `just change-risk-report` (drop `--baseline`) instead of retiring it. Rationale: it still provides the per-function CRAP detail `CONTRIBUTING.md` points at, and the markdown delta it used to print is meaningless once the committed file no longer records CRAP. Date/Author: 2026-10-07.
+- Decision: keep the `ci/cargo-crap-baseline.json` merge-conflict rule in `CONTRIBUTING.md` (and the matching rule in `AGENTS.md`). Rationale: the file is still generated and committed, so two branches that both cross the CC target can still conflict; regeneration remains the safe resolution even though it is now rare. Date/Author: 2026-10-07.
+- Decision: change the `scripts/check-cc.sh` summary wording from "N new" to "N grandfathered". Rationale: with the shrunk baseline almost every function is unlisted, so "new" no longer describes the count; the allowed ceiling per function is unchanged. Date/Author: 2026-10-07.
 
 ## Outcomes & Retrospective
 
-Not yet started. This section is filled in before the implementing pull request opens, per the ExecPlan workflow.
+Delivered as planned. The delta ratchet is gone: `scripts/check-coverage.sh` now runs `scripts/check-crap.sh`, which fails a function above CRAP 30 and warns (without failing) above CRAP 15 for a function at CC 10 or lower. `ci/cargo-crap-baseline.json` fell from 1,181 entries to 12 --- one per function above the CC target --- with a single `crap` allowance on `Skill::parse_frontmatter_fallback` and no `line` or `coverage` fields anywhere. The CC gate is unchanged in behavior; only its summary wording changed. Documentation, `CONTRIBUTING.md`, the justfile comments, and the Coverage CI step describe the enforced rules.
+
+Acceptance, all observed on 2026-10-07:
+
+- A one-branch growth on a fully covered function passes every gate with no baseline edit. Growing `SettingsLoader::merge_output_budgets` (the function PR #703 tripped on) by one condition kept `just check-coverage` green: `CRAP gate: 1183 functions checked, 1 grandfathered, 2 warned, 0 over allowed` and `PASS: All coverage gates passed`. The temporary edit was reverted; the test suite stayed green under it.
+- `just change-risk-baseline` on the shrunk file reproduces it byte-for-byte; the recipe prints `Pruned baseline: 12 entries (1 CRAP grandfathers)` and the committed file is unchanged.
+- The file holds 12 entries with keys `{file, function, cyclomatic}` plus `crap` on exactly one entry.
+- The fixture case for a bloated function (CC 10 at 20% coverage, CRAP 61.2) fails the gate and names the function.
+- `just check-coverage` passes on the unmodified tree: 95.55% coverage, the two expected stretch warnings, and no exceedance.
+- The guardrail now states the enforced rules and the accepted tradeoff.
+
+What remains, by design: the CRAP grandfather for `Skill::parse_frontmatter_fallback` is temporary and must be removed once its malformed-frontmatter fallback is covered or deleted (#659), and no per-change signal replaces the ratchet's within-target sensitivity (#660). The lesson worth keeping: a gate that measures against a committed snapshot of every function will drift from the guardrail it claims to enforce, and a machine-independent artifact should record only the facts that change a verdict.
 
 ## Context and Orientation
 

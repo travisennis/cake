@@ -146,4 +146,4 @@ just check-deps
 
 Use `just check-full` when the change needs complete local validation, including coverage, all CI fixtures, documentation, and a release build.
 
-`just check` is the fast local gate. If a check cannot run, record the exact reason and the narrower checks that did run. GitHub CI remains authoritative for platform tests and coverage/change risk. The report and fixture suite require no provider credentials or network access; only the live Rust channel acquisition requires network access. The `changes` job in `.github/workflows/ci.yml` runs the fixture suite, and maintainers can run it locally with `just check-full`.
+`just check` is the fast local gate. If a check cannot run, record the exact reason and the narrower checks that did run. GitHub CI remains authoritative for platform tests and the coverage and complexity gates. The report and fixture suite require no provider credentials or network access; only the live Rust channel acquisition requires network access. The `changes` job in `.github/workflows/ci.yml` runs the fixture suite, and maintainers can run it locally with `just check-full`.

@@ -292,7 +292,7 @@ fixture-isolation-check:
 
 # Run the Python script fixture suites: the same suites the `changes` job in CI runs.
 # Stdlib only and no credentials; nothing here calls a model provider or the network.
-check-scripts: dependency-sweep-check profile-check binary-size-baseline-check test-classify-changes test-just-pr eval-check session-metrics-check coverage-guard-check docs-corpus-check fixture-isolation-check cc-check-fixture hermetic-coverage-check
+check-scripts: dependency-sweep-check profile-check binary-size-baseline-check test-classify-changes test-just-pr eval-check session-metrics-check coverage-guard-check docs-corpus-check fixture-isolation-check cc-check-fixture check-crap-fixture hermetic-coverage-check
     echo "Script fixture suites passed!"
 
 # Run the Linux compatibility check corresponding to GitHub Actions
@@ -300,7 +300,7 @@ _check-linux:
     cargo check --all-features
 
 # Run the full local validation suite: the fast gate above, then the Linux compatibility
-# check, coverage/change risk, dependency advisories, documentation, and a release build.
+# check, coverage and complexity gates, dependency advisories, documentation, and a release build.
 check-full: check _check-linux check-coverage check-deps doc docs-check build
     echo "Full check suite passed!"
 
@@ -328,8 +328,7 @@ coverage:
 coverage-summary:
     cargo llvm-cov --summary-only
 
-# Check coverage threshold and untested-complexity regression.
-# CRAP_REGRESSION_EPSILON defaults to 0.5 in scripts/cargo-crap.sh to absorb rounding-level coverage noise.
+# Check coverage, absolute CRAP, and per-function cyclomatic-complexity gates.
 check-coverage:
     scripts/check-coverage.sh
 
@@ -341,6 +340,10 @@ cc-check:
 # Run fixture tests for the per-function complexity ceiling without coverage or a Rust build.
 cc-check-fixture:
     @scripts/test-check-cc.sh
+
+# Run fixture tests for the absolute CRAP gate without coverage or a Rust build.
+check-crap-fixture:
+    @scripts/test-check-crap.sh
 
 # Run fixture tests for the hermetic coverage wrapper (no coverage pass; stubs cargo).
 hermetic-coverage-check:
@@ -355,10 +358,14 @@ coverage-open:
 coverage-lcov:
     cargo llvm-cov --lcov --output-path lcov.info
 
-# Regenerate the macOS cargo-crap baseline from current coverage.
-# Run this after intentional code or test changes alter coverage/complexity, then commit ci/cargo-crap-baseline.json with the change.
+# Regenerate the CC grandfather baseline from current coverage.
+# Run this only when a function's CC legitimately crosses the target, or to drop an entry
+# after a reduction lands; it is a no-op on a clean tree. The recipe prunes the fresh cargo-crap
+# report to the functions above the CC target (scripts/prune-crap-baseline.py) and carries
+# forward any deliberate CRAP grandfather, so the committed file records only verdict-changing
+# entries and nothing machine-specific.
 # The same clean-and-guard policy as `check-coverage` runs first, so a stale artifact
-# or a duplicated source root cannot bake a wrong per-function baseline into the ratchet.
+# or a duplicated source root cannot bake a wrong baseline into the gates.
 # Measurement runs under a scratch HOME (scripts/hermetic-coverage.sh), so the result
 # never reflects the developer's home directory and matches the CI Coverage job.
 change-risk-baseline:
@@ -366,16 +373,18 @@ change-risk-baseline:
     mkdir -p ci
     scripts/hermetic-coverage.sh --lcov --output-path lcov.info
     python3 scripts/coverage-guard.py --lcov lcov.info
-    scripts/cargo-crap.sh --lcov lcov.info --format json --output ci/cargo-crap-baseline.json
+    @set -eu; report="$$(mktemp "$${TMPDIR:-/tmp}/cargo-crap-report.XXXXXX.json")"; trap 'rm -f "$$report"' EXIT; \
+        scripts/cargo-crap.sh --lcov lcov.info --format json --output "$$report"; \
+        python3 scripts/prune-crap-baseline.py --report "$$report" --baseline ci/cargo-crap-baseline.json --output ci/cargo-crap-baseline.json
 
-# Print a reviewer-friendly macOS cargo-crap regression report.
+# Print a reviewer-friendly per-function CRAP report.
 # Cleaned and guarded like `change-risk-baseline`, so the report cannot describe
 # artifacts from an earlier checkout state.
 change-risk-report:
     scripts/coverage-clean.sh
     scripts/hermetic-coverage.sh --lcov --output-path lcov.info
     python3 scripts/coverage-guard.py --lcov lcov.info
-    scripts/cargo-crap.sh --lcov lcov.info --baseline ci/cargo-crap-baseline.json --format markdown
+    scripts/cargo-crap.sh --lcov lcov.info --format markdown
 
 update-dependencies:
     cargo upgrade -i allow && cargo update    
