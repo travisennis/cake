@@ -7,16 +7,16 @@ use crate::config::model::ResolvedModelConfig;
 use crate::clients::agent::TurnResult;
 use crate::clients::backend::{FinalOutputConstraint, ResponseDecodeError, ResponseParseError};
 use crate::clients::chat_types::{
-    ChatFunction, ChatFunctionCallRef, ChatMessage, ChatRequest, ChatResponse, ChatTool,
-    ChatToolCallRef, ChatUsage, ResponseFormat, ResponseFormatJsonSchema,
+    ChatContent, ChatFunction, ChatFunctionCallRef, ChatMessage, ChatRequest, ChatResponse,
+    ChatTool, ChatToolCallRef, ChatUsage, ResponseFormat, ResponseFormatJsonSchema,
 };
 use crate::clients::provider_strategy::ProviderStrategy;
 use crate::clients::retry::RequestOverrides;
 use crate::clients::tools::Tool;
 use crate::session_telemetry::{ProviderTermination, TerminationClassification};
 use crate::types::{
-    ConversationItem, InputTokensDetails, OutputTokensDetails, ReasoningContentKind, ReportedUsage,
-    Role, Usage, UsagePresence,
+    ConversationItem, ImagePart, InputTokensDetails, OutputTokensDetails, ReasoningContentKind,
+    ReportedUsage, Role, Usage, UsagePresence,
 };
 
 // =============================================================================
@@ -333,8 +333,13 @@ impl<'a> ChatMessageBuilder<'a> {
 
     fn push_item(&mut self, item: &'a ConversationItem) {
         match item {
-            ConversationItem::Message { role, content, .. } => {
-                self.push_message(*role, content);
+            ConversationItem::Message {
+                role,
+                content,
+                images,
+                ..
+            } => {
+                self.push_message(*role, content, images);
             },
             ConversationItem::FunctionCall {
                 call_id,
@@ -345,9 +350,12 @@ impl<'a> ChatMessageBuilder<'a> {
                 self.push_function_call(call_id, name, arguments);
             },
             ConversationItem::FunctionCallOutput {
-                call_id, output, ..
+                call_id,
+                output,
+                images,
+                ..
             } => {
-                self.push_function_call_output(call_id, output);
+                self.push_function_call_output(call_id, output, images);
             },
             ConversationItem::Reasoning { content, .. } => {
                 self.remember_reasoning(content.as_deref());
@@ -355,10 +363,12 @@ impl<'a> ChatMessageBuilder<'a> {
         }
     }
 
-    fn push_message(&mut self, role: Role, content: &'a str) {
+    fn push_message(&mut self, role: Role, content: &'a str, images: &'a [ImagePart]) {
+        let content = content_for_message(content, images);
+
         if matches!(role, Role::Assistant) && !self.pending_tool_calls.is_empty() {
             let tool_calls = self.take_pending_tool_calls();
-            self.push_assistant_message(Some(Cow::Borrowed(content)), Some(tool_calls));
+            self.push_assistant_message(Some(content), Some(tool_calls));
             return;
         }
 
@@ -372,7 +382,7 @@ impl<'a> ChatMessageBuilder<'a> {
             .flatten();
         self.messages.push(ChatMessage {
             role,
-            content: Some(Cow::Borrowed(content)),
+            content: Some(content),
             reasoning_content,
             tool_calls: None,
             tool_call_id: None,
@@ -406,17 +416,36 @@ impl<'a> ChatMessageBuilder<'a> {
         self.pending_tool_calls.push(tool_call);
     }
 
-    fn push_function_call_output(&mut self, call_id: &'a str, output: &'a str) {
+    fn push_function_call_output(
+        &mut self,
+        call_id: &'a str,
+        output: &'a str,
+        images: &'a [ImagePart],
+    ) {
         self.flush_pending_tool_calls();
         self.pending_reasoning_content = None;
 
         self.messages.push(ChatMessage {
             role: Role::Tool,
-            content: Some(Cow::Borrowed(output)),
+            content: Some(ChatContent::from(output)),
             reasoning_content: None,
             tool_calls: None,
             tool_call_id: Some(Cow::Borrowed(call_id)),
         });
+
+        // A tool-role message's content is text only, so an image result is
+        // carried by a synthetic user message that follows the tool message.
+        // The call/output pairing stays valid because the tool message is
+        // still the immediate reply to the assistant's tool call.
+        if !images.is_empty() {
+            self.messages.push(ChatMessage {
+                role: Role::User,
+                content: Some(ChatContent::with_images(output, images)),
+                reasoning_content: None,
+                tool_calls: None,
+                tool_call_id: None,
+            });
+        }
     }
 
     fn remember_reasoning(&mut self, content: Option<&'a [crate::types::ReasoningContent]>) {
@@ -434,7 +463,7 @@ impl<'a> ChatMessageBuilder<'a> {
 
     fn push_assistant_message(
         &mut self,
-        content: Option<Cow<'a, str>>,
+        content: Option<ChatContent<'a>>,
         tool_calls: Option<Vec<ChatToolCallRef<'a>>>,
     ) {
         self.messages.push(ChatMessage {
@@ -458,6 +487,16 @@ impl<'a> ChatMessageBuilder<'a> {
 
 fn extract_reasoning_content(content: Option<&[crate::types::ReasoningContent]>) -> Option<&str> {
     content.and_then(|items| items.iter().find_map(|item| item.text.as_deref()))
+}
+
+/// Wire content for one message: a bare string for a text-only message, or a
+/// text part plus one image part per image when the message carries images.
+fn content_for_message<'a>(content: &'a str, images: &[ImagePart]) -> ChatContent<'a> {
+    if images.is_empty() {
+        ChatContent::from(content)
+    } else {
+        ChatContent::with_images(content, images)
+    }
 }
 
 /// Convert internal tool definitions to Chat Completions format. The returned

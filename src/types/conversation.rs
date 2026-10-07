@@ -172,6 +172,17 @@ pub struct ImagePart {
     pub data_base64: String,
 }
 
+impl ImagePart {
+    /// This image as an inline data URL, `data:<media_type>;base64,<data>`.
+    ///
+    /// Both API backends carry an image to the provider as a data URL, so the
+    /// exact encoding lives with the type instead of in each backend's
+    /// translation.
+    pub fn data_url(&self) -> String {
+        format!("data:{};base64,{}", self.media_type, self.data_base64)
+    }
+}
+
 /// Represents a single item in the conversation history, mapping directly to
 /// the Responses API input/output array format.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -260,6 +271,16 @@ mod tests {
         assert_eq!(Role::Assistant.as_str(), "assistant");
         assert_eq!(Role::User.as_str(), "user");
         assert_eq!(Role::Tool.as_str(), "tool");
+    }
+
+    #[test]
+    fn image_part_builds_an_inline_data_url() {
+        let image = ImagePart {
+            media_type: "image/png".to_string(),
+            data_base64: "QUJD".to_string(),
+        };
+
+        assert_eq!(image.data_url(), "data:image/png;base64,QUJD");
     }
 
     #[test]
