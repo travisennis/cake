@@ -24,7 +24,7 @@ How to verify it works, at the highest level:
 - [x] (2026-10-06) Milestone 1: proved the native image-bearing `function_call_output` on the configured gateway's Responses endpoint and on the Codex backend (red and blue fixtures both answered correctly on each) and recorded the finding in the Decision Log and Artifacts and Notes. The Codex probe first returned HTTP 401 `token_expired` and passed once the Codex CLI refreshed `~/.codex/auth.json`.
 - [x] (2026-10-06) Milestone 2: added `ImagePart` and the additive `images` fields to the conversation items and session records, added the `ReadImage` tool with its `read_image_max_bytes` `[limits]` cap, threaded tool images through the agent loop into history and persistence, and added the Read binary-rejection image hint. `cargo test` passes (1673 tests plus the integration binaries); the snapshot changes are the new tool's entries in the prompt and request snapshots.
 - [x] (2026-10-07) Milestone 3: translated images for the Chat Completions backend. `ChatMessage.content` is now an untagged `ChatContent` enum (a bare string, or a parts array), and a `FunctionCallOutput` carrying images emits the usual text `tool` message followed by a synthetic user message whose content array holds a text part naming the tool result plus one `image_url` part per image. User messages that carry images use the same parts array. Text-only histories serialize byte-identically, so no existing request snapshot changed; the new `build_messages_tool_image_parts` snapshot pins the image shape and matches probe 5.
-- [ ] Milestone 4: translate images for the Responses backend end to end.
+- [x] (2026-10-07) Milestone 4: translated images for the Responses backend. `ResponsesMessageContent` is now an untagged enum (a text block or an `input_image` block), `FunctionCallOutput.output` is an untagged enum (a bare string or a parts array), and the `From<&ConversationItem>` conversion emits an `input_text` block plus one `input_image` block per image for both tool outputs and user messages. Text-only inputs serialize byte-identically, so no existing snapshot changed; two new snapshots (`to_api_input_function_call_output_with_images`, `to_api_input_user_message_with_images`) pin the native shape from probe 1. `cargo test` passes (1688 tests).
 - [ ] Milestone 5: gate `ReadImage` on a model capability, surface it in the prompt tool list, and document the setting.
 - [ ] Milestone 6: run the full gate, complete documentation and snapshots, and prepare the pull request.
 
@@ -51,6 +51,7 @@ How to verify it works, at the highest level:
 - Decision: Register `ReadImage` unconditionally in Milestone 2 and add the model-capability gate in Milestone 5. Rationale: the gate needs the new `ModelConfig` field that Milestone 5 introduces, and keeping the milestones separate keeps each change reviewable. Consequence: the prompt and request snapshots list the tool between the two milestones and are updated again when the gate lands. Date/Author: 2026-10-06, cake.
 - Decision: Model a request message's content as an untagged `ChatContent` enum (a bare string or a parts array) rather than adding a second parts field or letting the tool message carry images. Rationale: the untagged enum makes an image-free message serialize exactly as before, so no existing request snapshot moves and the text path keeps its old bytes; a second field would need a serde alias to reuse the `content` key; and the Chat Completions specification restricts a tool-role message to text parts, so the image has to ride in a separate user message regardless of the content type. Date/Author: 2026-10-07, cake.
 - Decision: Reuse the tool result's own text as the synthetic user message's leading text part instead of a fixed label. Rationale: the output string already names the file, its size, and its media type, so the model can tie the image to the call without cake inventing new model-visible vocabulary, and the message keeps a text part next to its images. Date/Author: 2026-10-07, cake.
+- Decision: Model a Responses content block and a `function_call_output.output` value as untagged enums (a text block/string, or a parts array) rather than adding a second image field. Rationale: the untagged enums make a text-only item serialize exactly as before, so no existing Responses request snapshot moves and the text path keeps its old bytes; the native image-bearing `function_call_output` array is the shape Milestone 1 verified, and a user message reuses the same block list for its own images. Date/Author: 2026-10-07, cake.
 
 ## Outcomes & Retrospective
 
@@ -142,6 +143,9 @@ Work: if the native path was chosen, extend `src/clients/responses_types.rs` so 
 Result at the end: the Responses request carries the image in the shape the provider accepts.
 
 Proof: focused tests and snapshots for a tool image and for a user message with an image, asserting the exact JSON, plus the existing `to_api_input_*` snapshots unchanged for text. If the native path is used, a live call against the target provider returns an answer that describes the image.
+
+Outcome (2026-10-07): implemented. `src/clients/responses_types.rs` gains `ResponsesMessageContent` as an untagged enum over `ResponsesTextContent` (the former struct) and `ResponsesImageContent` (`{"type":"input_image","image_url":"data:..."}`), plus `ResponsesFunctionCallOutput` as an untagged enum over a borrowed string and a parts array; `ResponsesApiInputItem::FunctionCallOutput.output` now uses the latter, and helpers `ResponsesMessageContent::text`/`::image` build blocks. The `From<&ConversationItem>` conversion in `src/clients/responses.rs` emits a text block followed by one image block per image for a message, and a bare string for a text-only tool output or a `[input_text, input_image, ...]` array when the output carries images. Because both enums are untagged, every existing `to_api_input_*` request snapshot is unchanged and only the two new snapshots were added; the shape matches probe 1. `ImagePart::data_url()` supplies the inline URL, so no new dependency is needed.
+Focused tests: `cargo test clients::responses` (97 tests), plus the full `cargo test` suite (1688 tests). Live check: a cake run on the Codex Responses backend (`--model codex-luna-none`) called `ReadImage` and answered about the image, and the persisted `function_call_output` record carries the `images` array (session `b706bb8f-16dd-4a5f-b5ac-1b4ac462abc2`; see Artifacts and Notes).
 
 ### Milestone 5: Capability gate, prompt list, and configuration docs
 
@@ -272,6 +276,30 @@ Produced by `build_messages` for a history of `Message(user)`, `FunctionCall(Rea
   ]}
 ]
 ```
+
+### Milestone 4 request fragments (2026-10-07)
+
+Produced by the `From<&ConversationItem>` conversion for the Responses `input` array, using the 69-byte PNG from the tool tests; pinned by the `to_api_input_function_call_output_with_images` and `to_api_input_user_message_with_images` snapshots and matching probe 1's native shape. The tool output leads with an `input_text` block and follows with one `input_image` block:
+
+```json
+{"type":"function_call_output","call_id":"call-1",
+ "output":[
+   {"type":"input_text","text":"ReadImage shot.png (69 bytes, image/png)"},
+   {"type":"input_image","image_url":"data:image/png;base64,<elided>"}
+ ]}
+```
+
+A user message that carries an image uses the same text-then-image block list:
+
+```json
+{"type":"message","role":"user",
+ "content":[
+   {"type":"input_text","text":"What is in this picture?"},
+   {"type":"input_image","image_url":"data:image/png;base64,<elided>"}
+ ]}
+```
+
+Live end-to-end against the native path (2026-10-07): a 32x32 PNG (a green right triangle with a blue top-left corner) in `/tmp/cake-m4`, run from that directory as `cake --model codex-luna-none --reasoning-effort none --output-format json "Describe any images in this directory, including colors and shapes."`. The model ran `Bash` (`find`), then `ReadImage /private/tmp/cake-m4/shape.png`, and answered "It shows a green square with a dark-blue diagonal stripe running from the upper-left corner to the lower-right." Session `b706bb8f-16dd-4a5f-b5ac-1b4ac462abc2`. The answer names both actual colors, so the pixels reached the model through the image-bearing `function_call_output` (its persisted record carries the `images` array).
 
 ## Interfaces and Dependencies
 
