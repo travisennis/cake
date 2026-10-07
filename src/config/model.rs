@@ -58,6 +58,8 @@ pub enum ReasoningEffort {
     High,
     /// Use extra-high reasoning effort.
     Xhigh,
+    /// Use the maximum reasoning effort the provider exposes.
+    Max,
 }
 
 /// Configuration for a model provider.
@@ -97,7 +99,7 @@ pub struct ModelConfig {
     /// Absent means the window is unknown and cake keeps current behavior.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u32>,
-    /// Reasoning effort level (none, low, medium, high, xhigh)
+    /// Reasoning effort level (none, low, medium, high, xhigh, max)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<ReasoningEffort>,
     /// Reasoning summary mode (concise, detailed, auto) - Responses API only
@@ -232,6 +234,12 @@ mod tests {
 
         let effort: ReasoningEffort = serde_json::from_str(r#""xhigh""#).unwrap();
         assert_eq!(effort, ReasoningEffort::Xhigh);
+
+        let json = serde_json::to_string(&ReasoningEffort::Max).unwrap();
+        assert_eq!(json, r#""max""#);
+
+        let effort: ReasoningEffort = serde_json::from_str(r#""max""#).unwrap();
+        assert_eq!(effort, ReasoningEffort::Max);
     }
 
     #[test]

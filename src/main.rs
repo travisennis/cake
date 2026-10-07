@@ -120,7 +120,7 @@ pub(crate) struct CodingAssistant {
     #[arg(long, value_name = "NAME")]
     pub profile: Option<String>,
 
-    /// Override reasoning effort level (none, low, medium, high, xhigh)
+    /// Override reasoning effort level (none, low, medium, high, xhigh, max)
     #[arg(long, value_name = "EFFORT")]
     pub reasoning_effort: Option<ReasoningEffort>,
 

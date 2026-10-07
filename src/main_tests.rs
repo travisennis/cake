@@ -201,6 +201,9 @@ fn test_cli_parsing_no_model_flag() {
 fn test_cli_parsing_reasoning_effort() {
     let args = CodingAssistant::parse_from(["cake", "--reasoning-effort", "xhigh", "test prompt"]);
     assert_eq!(args.reasoning_effort, Some(ReasoningEffort::Xhigh));
+
+    let args = CodingAssistant::parse_from(["cake", "--reasoning-effort", "max", "test prompt"]);
+    assert_eq!(args.reasoning_effort, Some(ReasoningEffort::Max));
 }
 
 #[test]
