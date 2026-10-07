@@ -85,7 +85,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::resolve_explicit_session_model",
-      "line": 363,
+      "line": 366,
       "cyclomatic": 8.0,
       "coverage": 60.0,
       "crap": 12.096
@@ -125,7 +125,7 @@
     {
       "file": "./src/clients/tools/sandbox/mod.rs",
       "function": "resolve_linked_worktree_dirs",
-      "line": 862,
+      "line": 883,
       "cyclomatic": 9.0,
       "coverage": 69.56521739130434,
       "crap": 11.28347168570724
@@ -133,7 +133,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::resolve_model_config",
-      "line": 257,
+      "line": 260,
       "cyclomatic": 11.0,
       "coverage": 87.09677419354838,
       "crap": 11.259944278473364
@@ -157,7 +157,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::log_skill_diagnostics",
-      "line": 740,
+      "line": 763,
       "cyclomatic": 7.0,
       "coverage": 59.09090909090909,
       "crap": 10.354714500375657
@@ -205,10 +205,10 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::run",
-      "line": 1214,
+      "line": 1237,
       "cyclomatic": 10.0,
-      "coverage": 98.18181818181819,
-      "crap": 10.000601051840722
+      "coverage": 98.1981981981982,
+      "crap": 10.00058495310504
     },
     {
       "file": "./src/clients/responses.rs",
@@ -341,7 +341,7 @@
     {
       "file": "./src/clients/tools/sandbox/macos.rs",
       "function": "MacOsSandbox::generate_profile",
-      "line": 219,
+      "line": 239,
       "cyclomatic": 9.0,
       "coverage": 100.0,
       "crap": 9.0
@@ -413,7 +413,7 @@
     {
       "file": "./src/main.rs",
       "function": "WorktreeGuard::drop",
-      "line": 1504,
+      "line": 1528,
       "cyclomatic": 6.0,
       "coverage": 61.53846153846154,
       "crap": 8.048247610377787
@@ -469,7 +469,7 @@
     {
       "file": "./src/clients/tools/sandbox/macos.rs",
       "function": "SeatbeltProfileBuilder::escape_char",
-      "line": 515,
+      "line": 537,
       "cyclomatic": 8.0,
       "coverage": 100.0,
       "crap": 8.0
@@ -549,7 +549,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::prepare_agent_turn",
-      "line": 1024,
+      "line": 1047,
       "cyclomatic": 8.0,
       "coverage": 100.0,
       "crap": 8.0
@@ -581,7 +581,7 @@
     {
       "file": "./src/clients/tools/sandbox/mod.rs",
       "function": "resolve_worktree_commondir",
-      "line": 954,
+      "line": 975,
       "cyclomatic": 7.0,
       "coverage": 84.0,
       "crap": 7.200704
@@ -861,7 +861,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::handle_agent_turn_result",
-      "line": 1058,
+      "line": 1081,
       "cyclomatic": 7.0,
       "coverage": 100.0,
       "crap": 7.0
@@ -941,7 +941,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::resolve_model_for_session",
-      "line": 332,
+      "line": 335,
       "cyclomatic": 6.0,
       "coverage": 85.71428571428571,
       "crap": 6.104956268221574
@@ -949,7 +949,7 @@
     {
       "file": "./src/config/data_dir.rs",
       "function": "read_session_header",
-      "line": 286,
+      "line": 304,
       "cyclomatic": 5.0,
       "coverage": 64.70588235294117,
       "crap": 6.099124771015673
@@ -957,7 +957,7 @@
     {
       "file": "./src/main.rs",
       "function": "main",
-      "line": 1557,
+      "line": 1581,
       "cyclomatic": 6.0,
       "coverage": 86.95652173913044,
       "crap": 6.079888222240487
@@ -971,20 +971,20 @@
       "crap": 6.0553026854802
     },
     {
-      "file": "./src/main.rs",
-      "function": "CodingAssistant::load_run_resources",
-      "line": 577,
-      "cyclomatic": 6.0,
-      "coverage": 90.625,
-      "crap": 6.0296630859375
-    },
-    {
       "file": "./src/exit_code.rs",
       "function": "classify_judge_error",
       "line": 135,
       "cyclomatic": 6.0,
       "coverage": 90.9090909090909,
       "crap": 6.027047332832457
+    },
+    {
+      "file": "./src/main.rs",
+      "function": "CodingAssistant::load_run_resources",
+      "line": 580,
+      "cyclomatic": 6.0,
+      "coverage": 91.04477611940298,
+      "crap": 6.025854244039326
     },
     {
       "file": "./src/clients/tools/bash.rs",
@@ -1141,7 +1141,7 @@
     {
       "file": "./src/clients/tools/sandbox/mod.rs",
       "function": "SandboxConfig::partition_read_only",
-      "line": 212,
+      "line": 233,
       "cyclomatic": 6.0,
       "coverage": 100.0,
       "crap": 6.0
@@ -1317,7 +1317,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::build_content",
-      "line": 233,
+      "line": 236,
       "cyclomatic": 6.0,
       "coverage": 100.0,
       "crap": 6.0
@@ -1397,7 +1397,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::load_output_schema",
-      "line": 977,
+      "line": 1000,
       "cyclomatic": 4.0,
       "coverage": 58.333333333333336,
       "crap": 5.1574074074074066
@@ -1413,7 +1413,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::attach_session_telemetry",
-      "line": 823,
+      "line": 846,
       "cyclomatic": 5.0,
       "coverage": 82.5,
       "crap": 5.133984375
@@ -1429,7 +1429,7 @@
     {
       "file": "./src/config/data_dir.rs",
       "function": "DataDir::load_latest_session",
-      "line": 206,
+      "line": 224,
       "cyclomatic": 5.0,
       "coverage": 85.18518518518519,
       "crap": 5.0812884214804654
@@ -1509,7 +1509,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::read_stdin_content",
-      "line": 206,
+      "line": 209,
       "cyclomatic": 5.0,
       "coverage": 93.33333333333333,
       "crap": 5.007407407407407
@@ -1549,7 +1549,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::resolve_legacy_session_model",
-      "line": 419,
+      "line": 422,
       "cyclomatic": 5.0,
       "coverage": 95.83333333333334,
       "crap": 5.001808449074074
@@ -1661,7 +1661,7 @@
     {
       "file": "./src/clients/tools/sandbox/mod.rs",
       "function": "deduplicated_with_canonical",
-      "line": 672,
+      "line": 693,
       "cyclomatic": 5.0,
       "coverage": 100.0,
       "crap": 5.0
@@ -1941,7 +1941,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::prepare_run",
-      "line": 523,
+      "line": 526,
       "cyclomatic": 5.0,
       "coverage": 100.0,
       "crap": 5.0
@@ -1949,7 +1949,7 @@
     {
       "file": "./src/main.rs",
       "function": "finish_run",
-      "line": 1540,
+      "line": 1564,
       "cyclomatic": 5.0,
       "coverage": 100.0,
       "crap": 5.0
@@ -1965,7 +1965,7 @@
     {
       "file": "./src/clients/tools/sandbox/mod.rs",
       "function": "is_sandbox_disabled",
-      "line": 829,
+      "line": 850,
       "cyclomatic": 4.0,
       "coverage": 70.0,
       "crap": 4.432
@@ -1997,7 +1997,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::apply_cli_overrides",
-      "line": 460,
+      "line": 463,
       "cyclomatic": 4.0,
       "coverage": 75.0,
       "crap": 4.25
@@ -2085,7 +2085,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::task_outcome_for_error",
-      "line": 1164,
+      "line": 1187,
       "cyclomatic": 4.0,
       "coverage": 85.71428571428571,
       "crap": 4.0466472303206995
@@ -2109,7 +2109,7 @@
     {
       "file": "./src/clients/tools/sandbox/mod.rs",
       "function": "push_dirs_with_canonical",
-      "line": 658,
+      "line": 679,
       "cyclomatic": 4.0,
       "coverage": 88.88888888888889,
       "crap": 4.021947873799726
@@ -2173,7 +2173,7 @@
     {
       "file": "./src/clients/tools/sandbox/macos.rs",
       "function": "MacOsSandbox::write_profile_to_temp",
-      "line": 337,
+      "line": 359,
       "cyclomatic": 4.0,
       "coverage": 93.33333333333333,
       "crap": 4.004740740740741
@@ -2349,7 +2349,7 @@
     {
       "file": "./src/clients/tools/sandbox/macos.rs",
       "function": "MacOsSandbox::apply",
-      "line": 383,
+      "line": 405,
       "cyclomatic": 4.0,
       "coverage": 100.0,
       "crap": 4.0
@@ -2357,7 +2357,7 @@
     {
       "file": "./src/clients/tools/sandbox/mod.rs",
       "function": "detect_macos_platform",
-      "line": 789,
+      "line": 810,
       "cyclomatic": 4.0,
       "coverage": 100.0,
       "crap": 4.0
@@ -2589,7 +2589,7 @@
     {
       "file": "./src/config/data_dir.rs",
       "function": "git_output",
-      "line": 340,
+      "line": 358,
       "cyclomatic": 4.0,
       "coverage": 100.0,
       "crap": 4.0
@@ -2861,7 +2861,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::setup_worktree",
-      "line": 474,
+      "line": 477,
       "cyclomatic": 4.0,
       "coverage": 100.0,
       "crap": 4.0
@@ -2869,7 +2869,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::validate_run_inputs",
-      "line": 558,
+      "line": 561,
       "cyclomatic": 4.0,
       "coverage": 100.0,
       "crap": 4.0
@@ -2877,7 +2877,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::load_settings",
-      "line": 568,
+      "line": 571,
       "cyclomatic": 4.0,
       "coverage": 100.0,
       "crap": 4.0
@@ -2885,7 +2885,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::run_stop_hook",
-      "line": 1126,
+      "line": 1149,
       "cyclomatic": 4.0,
       "coverage": 100.0,
       "crap": 4.0
@@ -2909,7 +2909,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::attach_hooks",
-      "line": 876,
+      "line": 899,
       "cyclomatic": 3.0,
       "coverage": 66.66666666666666,
       "crap": 3.333333333333334
@@ -2941,7 +2941,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::hook_event_sink",
-      "line": 900,
+      "line": 923,
       "cyclomatic": 3.0,
       "coverage": 77.27272727272727,
       "crap": 3.1056536438767846
@@ -2989,7 +2989,7 @@
     {
       "file": "./src/clients/tools/sandbox/macos.rs",
       "function": "MacOsSandbox::append_keychain_rules",
-      "line": 194,
+      "line": 214,
       "cyclomatic": 3.0,
       "coverage": 86.66666666666667,
       "crap": 3.021333333333333
@@ -2997,7 +2997,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::interrupt_signal",
-      "line": 1373,
+      "line": 1397,
       "cyclomatic": 3.0,
       "coverage": 87.5,
       "crap": 3.017578125
@@ -3053,7 +3053,7 @@
     {
       "file": "./src/clients/tools/sandbox/macos.rs",
       "function": "MacOsSandbox::append_ssh_agent_rules",
-      "line": 164,
+      "line": 184,
       "cyclomatic": 3.0,
       "coverage": 93.33333333333333,
       "crap": 3.002666666666667
@@ -3085,7 +3085,7 @@
     {
       "file": "./src/clients/tools/sandbox/mod.rs",
       "function": "SandboxConfig::extend_with_toolchain_paths",
-      "line": 258,
+      "line": 279,
       "cyclomatic": 3.0,
       "coverage": 99.16317991631799,
       "crap": 3.000005273983826
@@ -3301,7 +3301,7 @@
     {
       "file": "./src/clients/tools/sandbox/mod.rs",
       "function": "resolve_sandbox_policy",
-      "line": 59,
+      "line": 78,
       "cyclomatic": 3.0,
       "coverage": 100.0,
       "crap": 3.0
@@ -3309,7 +3309,7 @@
     {
       "file": "./src/clients/tools/sandbox/mod.rs",
       "function": "SandboxConfig::build_with_policy",
-      "line": 125,
+      "line": 144,
       "cyclomatic": 3.0,
       "coverage": 100.0,
       "crap": 3.0
@@ -3709,7 +3709,7 @@
     {
       "file": "./src/config/data_dir.rs",
       "function": "DataDir::save_session",
-      "line": 156,
+      "line": 174,
       "cyclomatic": 3.0,
       "coverage": 100.0,
       "crap": 3.0
@@ -4109,7 +4109,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::execute_agent_turn",
-      "line": 992,
+      "line": 1015,
       "cyclomatic": 3.0,
       "coverage": 100.0,
       "crap": 3.0
@@ -4285,7 +4285,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::run_session_end_hook",
-      "line": 1150,
+      "line": 1173,
       "cyclomatic": 2.0,
       "coverage": 87.5,
       "crap": 2.0078125
@@ -4301,7 +4301,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::run_subcommand",
-      "line": 1356,
+      "line": 1380,
       "cyclomatic": 2.0,
       "coverage": 90.0,
       "crap": 2.004
@@ -4349,7 +4349,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::handle_interrupt",
-      "line": 1422,
+      "line": 1446,
       "cyclomatic": 2.0,
       "coverage": 90.9090909090909,
       "crap": 2.0030052592036065
@@ -4437,7 +4437,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::validate_subcommand_options",
-      "line": 933,
+      "line": 956,
       "cyclomatic": 2.0,
       "coverage": 96.66666666666667,
       "crap": 2.0001481481481482
@@ -4780,8 +4780,16 @@
     },
     {
       "file": "./src/clients/tools/sandbox/macos.rs",
+      "function": "MacOsSandbox::append_interactive_rules",
+      "line": 157,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/clients/tools/sandbox/macos.rs",
       "function": "MacOsSandbox::append_git_rules",
-      "line": 148,
+      "line": 168,
       "cyclomatic": 2.0,
       "coverage": 100.0,
       "crap": 2.0
@@ -4789,7 +4797,7 @@
     {
       "file": "./src/clients/tools/sandbox/macos.rs",
       "function": "MacOsSandbox::allow_path_access",
-      "line": 328,
+      "line": 350,
       "cyclomatic": 2.0,
       "coverage": 100.0,
       "crap": 2.0
@@ -4797,7 +4805,7 @@
     {
       "file": "./src/clients/tools/sandbox/mod.rs",
       "function": "SandboxConfig::get_read_execute_paths",
-      "line": 528,
+      "line": 549,
       "cyclomatic": 2.0,
       "coverage": 100.0,
       "crap": 2.0
@@ -4805,7 +4813,7 @@
     {
       "file": "./src/clients/tools/sandbox/mod.rs",
       "function": "SandboxConfig::is_path_writable",
-      "line": 606,
+      "line": 627,
       "cyclomatic": 2.0,
       "coverage": 100.0,
       "crap": 2.0
@@ -4813,7 +4821,7 @@
     {
       "file": "./src/clients/tools/sandbox/mod.rs",
       "function": "is_standard_writable_device",
-      "line": 641,
+      "line": 662,
       "cyclomatic": 2.0,
       "coverage": 100.0,
       "crap": 2.0
@@ -4821,7 +4829,7 @@
     {
       "file": "./src/clients/tools/sandbox/mod.rs",
       "function": "SandboxGuard::empty",
-      "line": 718,
+      "line": 739,
       "cyclomatic": 1.0,
       "coverage": 0.0,
       "crap": 2.0
@@ -4829,7 +4837,7 @@
     {
       "file": "./src/clients/tools/sandbox/mod.rs",
       "function": "can_enforce_platform_sandbox",
-      "line": 845,
+      "line": 866,
       "cyclomatic": 2.0,
       "coverage": 100.0,
       "crap": 2.0
@@ -5252,8 +5260,16 @@
     },
     {
       "file": "./src/config/data_dir.rs",
+      "function": "DataDir::sandbox_read_dirs",
+      "line": 148,
+      "cyclomatic": 2.0,
+      "coverage": 100.0,
+      "crap": 2.0
+    },
+    {
+      "file": "./src/config/data_dir.rs",
       "function": "DataDir::load_session",
-      "line": 259,
+      "line": 277,
       "cyclomatic": 2.0,
       "coverage": 100.0,
       "crap": 2.0
@@ -5261,7 +5277,7 @@
     {
       "file": "./src/config/data_dir.rs",
       "function": "git_state",
-      "line": 331,
+      "line": 349,
       "cyclomatic": 2.0,
       "coverage": 100.0,
       "crap": 2.0
@@ -5653,7 +5669,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::resolve_stored_config_model",
-      "line": 399,
+      "line": 402,
       "cyclomatic": 2.0,
       "coverage": 100.0,
       "crap": 2.0
@@ -5661,7 +5677,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::warn_unavailable_tools",
-      "line": 799,
+      "line": 822,
       "cyclomatic": 2.0,
       "coverage": 100.0,
       "crap": 2.0
@@ -5669,7 +5685,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::attach_persistence",
-      "line": 805,
+      "line": 828,
       "cyclomatic": 2.0,
       "coverage": 100.0,
       "crap": 2.0
@@ -5677,7 +5693,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::run_error_hook",
-      "line": 1141,
+      "line": 1164,
       "cyclomatic": 2.0,
       "coverage": 100.0,
       "crap": 2.0
@@ -5685,7 +5701,7 @@
     {
       "file": "./src/main.rs",
       "function": "Interrupted::fmt",
-      "line": 1477,
+      "line": 1501,
       "cyclomatic": 1.0,
       "coverage": 0.0,
       "crap": 2.0
@@ -5693,7 +5709,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::valid_settings_dirs",
-      "line": 684,
+      "line": 689,
       "cyclomatic": 1.0,
       "coverage": 45.45454545454545,
       "crap": 1.1622839969947407
@@ -5717,7 +5733,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::valid_sandbox_read_only_dirs",
-      "line": 720,
+      "line": 725,
       "cyclomatic": 1.0,
       "coverage": 60.0,
       "crap": 1.064
@@ -6525,7 +6541,7 @@
     {
       "file": "./src/clients/tools/sandbox/macos.rs",
       "function": "SandboxProfileProbe::available",
-      "line": 367,
+      "line": 389,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -6533,7 +6549,7 @@
     {
       "file": "./src/clients/tools/sandbox/macos.rs",
       "function": "SandboxProfileProbe::unavailable",
-      "line": 374,
+      "line": 396,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -6541,7 +6557,7 @@
     {
       "file": "./src/clients/tools/sandbox/macos.rs",
       "function": "home_dir",
-      "line": 434,
+      "line": 456,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -6549,7 +6565,7 @@
     {
       "file": "./src/clients/tools/sandbox/macos.rs",
       "function": "SeatbeltProfileBuilder::new",
-      "line": 443,
+      "line": 465,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -6557,7 +6573,7 @@
     {
       "file": "./src/clients/tools/sandbox/macos.rs",
       "function": "SeatbeltProfileBuilder::version",
-      "line": 447,
+      "line": 469,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -6565,7 +6581,7 @@
     {
       "file": "./src/clients/tools/sandbox/macos.rs",
       "function": "SeatbeltProfileBuilder::deny_default",
-      "line": 451,
+      "line": 473,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -6573,7 +6589,7 @@
     {
       "file": "./src/clients/tools/sandbox/macos.rs",
       "function": "SeatbeltProfileBuilder::comment",
-      "line": 455,
+      "line": 477,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -6581,7 +6597,7 @@
     {
       "file": "./src/clients/tools/sandbox/macos.rs",
       "function": "SeatbeltProfileBuilder::blank",
-      "line": 459,
+      "line": 481,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -6589,7 +6605,7 @@
     {
       "file": "./src/clients/tools/sandbox/macos.rs",
       "function": "SeatbeltProfileBuilder::allow",
-      "line": 463,
+      "line": 485,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -6597,7 +6613,7 @@
     {
       "file": "./src/clients/tools/sandbox/macos.rs",
       "function": "SeatbeltProfileBuilder::allow_with_target",
-      "line": 467,
+      "line": 489,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -6605,7 +6621,7 @@
     {
       "file": "./src/clients/tools/sandbox/macos.rs",
       "function": "SeatbeltProfileBuilder::allow_raw",
-      "line": 472,
+      "line": 494,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -6613,7 +6629,7 @@
     {
       "file": "./src/clients/tools/sandbox/macos.rs",
       "function": "SeatbeltProfileBuilder::allow_literal",
-      "line": 476,
+      "line": 498,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -6621,7 +6637,7 @@
     {
       "file": "./src/clients/tools/sandbox/macos.rs",
       "function": "SeatbeltProfileBuilder::allow_prefix",
-      "line": 480,
+      "line": 502,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -6629,30 +6645,6 @@
     {
       "file": "./src/clients/tools/sandbox/macos.rs",
       "function": "SeatbeltProfileBuilder::allow_subpath",
-      "line": 484,
-      "cyclomatic": 1.0,
-      "coverage": 100.0,
-      "crap": 1.0
-    },
-    {
-      "file": "./src/clients/tools/sandbox/macos.rs",
-      "function": "SeatbeltProfileBuilder::allow_regex",
-      "line": 488,
-      "cyclomatic": 1.0,
-      "coverage": 100.0,
-      "crap": 1.0
-    },
-    {
-      "file": "./src/clients/tools/sandbox/macos.rs",
-      "function": "SeatbeltProfileBuilder::allow_path",
-      "line": 493,
-      "cyclomatic": 1.0,
-      "coverage": 100.0,
-      "crap": 1.0
-    },
-    {
-      "file": "./src/clients/tools/sandbox/macos.rs",
-      "function": "SeatbeltProfileBuilder::escape_path",
       "line": 506,
       "cyclomatic": 1.0,
       "coverage": 100.0,
@@ -6660,8 +6652,40 @@
     },
     {
       "file": "./src/clients/tools/sandbox/macos.rs",
+      "function": "SeatbeltProfileBuilder::allow_regex",
+      "line": 510,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/clients/tools/sandbox/macos.rs",
+      "function": "SeatbeltProfileBuilder::allow_path",
+      "line": 515,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/clients/tools/sandbox/macos.rs",
+      "function": "SeatbeltProfileBuilder::escape_path",
+      "line": 528,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/clients/tools/sandbox/macos.rs",
       "function": "SeatbeltProfileBuilder::finish",
-      "line": 527,
+      "line": 549,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/clients/tools/sandbox/mod.rs",
+      "function": "SandboxPolicy::allows_app_interaction",
+      "line": 67,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -6669,7 +6693,7 @@
     {
       "file": "./src/clients/tools/sandbox/mod.rs",
       "function": "SandboxConfig::build",
-      "line": 108,
+      "line": 127,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -6677,7 +6701,7 @@
     {
       "file": "./src/clients/tools/sandbox/mod.rs",
       "function": "SandboxConfig::is_path_allowed",
-      "line": 594,
+      "line": 615,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -6685,7 +6709,7 @@
     {
       "file": "./src/clients/tools/sandbox/mod.rs",
       "function": "SandboxConfig::is_path_selectable",
-      "line": 631,
+      "line": 652,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -6693,7 +6717,7 @@
     {
       "file": "./src/clients/tools/sandbox/mod.rs",
       "function": "dedup_vec",
-      "line": 691,
+      "line": 712,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -6701,7 +6725,7 @@
     {
       "file": "./src/clients/tools/sandbox/mod.rs",
       "function": "SandboxGuard::new",
-      "line": 723,
+      "line": 744,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -6709,7 +6733,7 @@
     {
       "file": "./src/clients/tools/sandbox/mod.rs",
       "function": "detect_platform",
-      "line": 762,
+      "line": 783,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -8421,7 +8445,7 @@
     {
       "file": "./src/config/data_dir.rs",
       "function": "DataDir::create_session_file",
-      "line": 169,
+      "line": 187,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -8429,7 +8453,7 @@
     {
       "file": "./src/config/data_dir.rs",
       "function": "DataDir::open_session_for_append",
-      "line": 180,
+      "line": 198,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -8437,7 +8461,7 @@
     {
       "file": "./src/config/data_dir.rs",
       "function": "session_meta_record",
-      "line": 312,
+      "line": 330,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -9341,7 +9365,15 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::resolve_additional_dirs",
-      "line": 499,
+      "line": 502,
+      "cyclomatic": 1.0,
+      "coverage": 100.0,
+      "crap": 1.0
+    },
+    {
+      "file": "./src/main.rs",
+      "function": "CodingAssistant::read_only_dirs",
+      "line": 752,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -9349,7 +9381,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::unavailable_tool_names",
-      "line": 782,
+      "line": 805,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -9357,7 +9389,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::output_sink",
-      "line": 968,
+      "line": 991,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -9365,7 +9397,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::emit_successful_agent_turn",
-      "line": 1083,
+      "line": 1106,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -9373,7 +9405,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::emit_failed_agent_turn",
-      "line": 1099,
+      "line": 1122,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -9381,7 +9413,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::emit_cut_off_agent_turn",
-      "line": 1110,
+      "line": 1133,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -9389,7 +9421,7 @@
     {
       "file": "./src/main.rs",
       "function": "is_output_schema_exhaustion",
-      "line": 1189,
+      "line": 1212,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -9397,7 +9429,7 @@
     {
       "file": "./src/main.rs",
       "function": "sink_safe_error_text",
-      "line": 1202,
+      "line": 1225,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -9405,7 +9437,7 @@
     {
       "file": "./src/main.rs",
       "function": "CodingAssistant::restore_post_turn_signal_state",
-      "line": 1405,
+      "line": 1429,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
@@ -9413,7 +9445,7 @@
     {
       "file": "./src/main.rs",
       "function": "WorktreeGuard::new",
-      "line": 1495,
+      "line": 1519,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0
