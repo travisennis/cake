@@ -23,7 +23,7 @@ How to verify it works, at the highest level:
 - [x] (2026-10-06) Investigated the current conversation model, both backends, tool plumbing, and persistence; opened issue #689 and created branch `feat/read-image-support`.
 - [x] (2026-10-06) Milestone 1: proved the native image-bearing `function_call_output` on the configured gateway's Responses endpoint and on the Codex backend (red and blue fixtures both answered correctly on each) and recorded the finding in the Decision Log and Artifacts and Notes. The Codex probe first returned HTTP 401 `token_expired` and passed once the Codex CLI refreshed `~/.codex/auth.json`.
 - [x] (2026-10-06) Milestone 2: added `ImagePart` and the additive `images` fields to the conversation items and session records, added the `ReadImage` tool with its `read_image_max_bytes` `[limits]` cap, threaded tool images through the agent loop into history and persistence, and added the Read binary-rejection image hint. `cargo test` passes (1673 tests plus the integration binaries); the snapshot changes are the new tool's entries in the prompt and request snapshots.
-- [ ] Milestone 3: translate images for the Chat Completions backend end to end.
+- [x] (2026-10-07) Milestone 3: translated images for the Chat Completions backend. `ChatMessage.content` is now an untagged `ChatContent` enum (a bare string, or a parts array), and a `FunctionCallOutput` carrying images emits the usual text `tool` message followed by a synthetic user message whose content array holds a text part naming the tool result plus one `image_url` part per image. User messages that carry images use the same parts array. Text-only histories serialize byte-identically, so no existing request snapshot changed; the new `build_messages_tool_image_parts` snapshot pins the image shape and matches probe 5.
 - [ ] Milestone 4: translate images for the Responses backend end to end.
 - [ ] Milestone 5: gate `ReadImage` on a model capability, surface it in the prompt tool list, and document the setting.
 - [ ] Milestone 6: run the full gate, complete documentation and snapshots, and prepare the pull request.
@@ -49,6 +49,8 @@ How to verify it works, at the highest level:
   2026-10-06, cake.
 - Decision: Bound `ReadImage` with a new `read_image_max_bytes` `[limits]` key, default 5 MiB. Rationale: image bytes are sent inline as base64, so an unbounded file would inflate both memory and the request body; 5 MiB covers a full-size screenshot while keeping the encoded body under about 7 MB, and `"unlimited"` stays available for a user who wants no cap. An oversized file is rejected before it is read and before any provider request. Date/Author: 2026-10-06, cake.
 - Decision: Register `ReadImage` unconditionally in Milestone 2 and add the model-capability gate in Milestone 5. Rationale: the gate needs the new `ModelConfig` field that Milestone 5 introduces, and keeping the milestones separate keeps each change reviewable. Consequence: the prompt and request snapshots list the tool between the two milestones and are updated again when the gate lands. Date/Author: 2026-10-06, cake.
+- Decision: Model a request message's content as an untagged `ChatContent` enum (a bare string or a parts array) rather than adding a second parts field or letting the tool message carry images. Rationale: the untagged enum makes an image-free message serialize exactly as before, so no existing request snapshot moves and the text path keeps its old bytes; a second field would need a serde alias to reuse the `content` key; and the Chat Completions specification restricts a tool-role message to text parts, so the image has to ride in a separate user message regardless of the content type. Date/Author: 2026-10-07, cake.
+- Decision: Reuse the tool result's own text as the synthetic user message's leading text part instead of a fixed label. Rationale: the output string already names the file, its size, and its media type, so the model can tie the image to the call without cake inventing new model-visible vocabulary, and the message keeps a text part next to its images. Date/Author: 2026-10-07, cake.
 
 ## Outcomes & Retrospective
 
@@ -126,6 +128,8 @@ Work: extend `src/clients/chat_types.rs` with a content type that serializes as 
 Result at the end: a synthetic user message carries the image after the tool result.
 
 Proof: a focused test builds a history with a function call, a function-call output carrying an image, and asserts the produced messages are `[assistant(tool_calls), tool(text), user(content array with image_url)]`; a snapshot pins the exact JSON. An unmodified text history produces byte-identical output to today.
+
+Outcome (2026-10-07): implemented. `src/clients/chat_types.rs` gains `ChatContent<'a>` (`Text(Cow<str>)` or `Parts(Vec<ChatContentPart>)`, `#[serde(untagged)]` so a text message still serializes as a bare string), `ChatContentPart` (`Text` and `ImageUrl` variants), and `ChatImageUrl`; `ImagePart::data_url()` in `src/types/conversation.rs` builds the `data:<media_type>;base64,<data>` URL both backends need. `ChatMessageBuilder::push_function_call_output` now takes the output's images, keeps the text tool message, and appends the synthetic user message; `push_message` carries a user message's own images the same way. Because the untagged enum serializes text-only messages exactly as before, every existing request snapshot is unchanged and only the new `build_messages_tool_image_parts` snapshot was added. Two tests cover the tool-image sequence and a user message with two images, and a third pins the JSON.
 
 ### Milestone 4: Responses translation
 
@@ -252,6 +256,22 @@ Fixture: 16x16 solid PNGs generated with Python `zlib` and inlined as `data:imag
 5. Gateway Chat Completions, planned Milestone 3 shape --- assistant `tool_calls`, a text-only `tool` message, then `message(user, [input_text, input_image])`. Result: HTTP 200, content `"Red"`, so the synthetic user message keeps the tool call/output pairing valid on the configured endpoint.
 6. Codex backend, native tool-output image --- `POST https://chatgpt.com/backend-api/codex/responses`, model `gpt-6-luna`, same input as probe 1 plus `store: false` and `stream: true` as `build_request_json` sends for this backend. First attempt with the stale token: HTTP 401, body `{"error":{"message":"Provided authentication token is expired. Please try signing in again.","type":"invalid_request_error","code":"token_expired","param":null},...}`. After a Codex CLI refresh: HTTP 200, SSE ending in `response.completed` with `output_text` `"Red"`, and `"Blue"` for the blue fixture; no `error` event. Without `store: false` the same request returns HTTP 400 `{"detail":"Store must be set to false"}`, which cake already satisfies.
 7. Codex backend, synthetic user message --- probe 2's input with `store: false` and `stream: true`. Result: HTTP 200, `"Red"`, status `completed`.
+
+### Milestone 3 request fragment (2026-10-07)
+
+Produced by `build_messages` for a history of `Message(user)`, `FunctionCall(ReadImage)`, `FunctionCallOutput` carrying the 69-byte PNG from the tool tests; pinned by the `build_messages_tool_image_parts` snapshot. Role `tool` carries the text result, then a role `user` message carries the image, matching probe 5's verified shape.
+
+```json
+[
+  {"role":"user","content":"Describe the screenshot."},
+  {"role":"assistant","content":null,"tool_calls":[{"id":"call-1","type":"function","function":{"name":"ReadImage","arguments":"{\"path\":\"shot.png\"}"}}]},
+  {"role":"tool","content":"ReadImage shot.png (69 bytes, image/png)","tool_call_id":"call-1"},
+  {"role":"user","content":[
+    {"type":"text","text":"ReadImage shot.png (69 bytes, image/png)"},
+    {"type":"image_url","image_url":{"url":"data:image/png;base64,<elided>"}}
+  ]}
+]
+```
 
 ## Interfaces and Dependencies
 
