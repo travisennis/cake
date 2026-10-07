@@ -1103,6 +1103,55 @@ fn build_messages_pairs_a_tool_image_with_a_following_user_message() {
 }
 
 #[test]
+fn build_messages_keeps_tool_messages_adjacent_when_an_image_result_is_not_last() {
+    let history = vec![
+        ConversationItem::FunctionCall {
+            id: "fc-1".to_string(),
+            call_id: "call-1".to_string(),
+            name: "ReadImage".to_string(),
+            arguments: r#"{"path":"shot.png"}"#.to_string(),
+            timestamp: None,
+        },
+        ConversationItem::FunctionCall {
+            id: "fc-2".to_string(),
+            call_id: "call-2".to_string(),
+            name: "Read".to_string(),
+            arguments: r#"{"path":"notes.txt"}"#.to_string(),
+            timestamp: None,
+        },
+        ConversationItem::FunctionCallOutput {
+            call_id: "call-1".to_string(),
+            output: "ReadImage shot.png (69 bytes, image/png)".to_string(),
+            timestamp: None,
+            images: vec![tiny_png_image()],
+        },
+        ConversationItem::FunctionCallOutput {
+            call_id: "call-2".to_string(),
+            output: "notes.txt".to_string(),
+            timestamp: None,
+            images: Vec::new(),
+        },
+    ];
+
+    let msgs = build_messages(&history);
+
+    // A strict provider rejects a user message between an assistant tool call
+    // and its tool replies, so both tool messages stay adjacent and the image
+    // rides in a user message after the run of tool messages.
+    let roles: Vec<Role> = msgs.iter().map(|message| message.role).collect();
+    assert_eq!(
+        roles,
+        vec![Role::Assistant, Role::Tool, Role::Tool, Role::User]
+    );
+    assert_eq!(msgs[1].tool_call_id.as_deref(), Some("call-1"));
+    assert_eq!(msgs[2].tool_call_id.as_deref(), Some("call-2"));
+    assert!(msgs[3].tool_call_id.is_none());
+    let parts = content_parts(&msgs[3]);
+    assert_eq!(parts.len(), 2);
+    assert!(matches!(&parts[1], ChatContentPart::ImageUrl { .. }));
+}
+
+#[test]
 fn build_messages_carries_user_message_images_as_content_parts() {
     let history = vec![ConversationItem::Message {
         role: Role::User,

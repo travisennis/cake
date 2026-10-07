@@ -320,6 +320,9 @@ struct ChatMessageBuilder<'a> {
     messages: Vec<ChatMessage<'a>>,
     pending_tool_calls: Vec<ChatToolCallRef<'a>>,
     pending_reasoning_content: Option<Cow<'a, str>>,
+    /// Synthetic user messages carrying image tool results, held until the run
+    /// of tool messages ends so a turn's tool messages stay adjacent.
+    pending_image_messages: Vec<ChatMessage<'a>>,
 }
 
 impl<'a> ChatMessageBuilder<'a> {
@@ -328,10 +331,15 @@ impl<'a> ChatMessageBuilder<'a> {
             messages: Vec::new(),
             pending_tool_calls: Vec::new(),
             pending_reasoning_content: None,
+            pending_image_messages: Vec::new(),
         }
     }
 
     fn push_item(&mut self, item: &'a ConversationItem) {
+        // A turn's tool messages must stay adjacent to the assistant's tool
+        // call, so the synthetic image messages queued by an earlier tool
+        // output are emitted only once the run of tool outputs ends. Every arm
+        // but the tool output flushes the queue first.
         match item {
             ConversationItem::Message {
                 role,
@@ -339,6 +347,7 @@ impl<'a> ChatMessageBuilder<'a> {
                 images,
                 ..
             } => {
+                self.flush_pending_image_messages();
                 self.push_message(*role, content, images);
             },
             ConversationItem::FunctionCall {
@@ -347,6 +356,7 @@ impl<'a> ChatMessageBuilder<'a> {
                 arguments,
                 ..
             } => {
+                self.flush_pending_image_messages();
                 self.push_function_call(call_id, name, arguments);
             },
             ConversationItem::FunctionCallOutput {
@@ -358,6 +368,7 @@ impl<'a> ChatMessageBuilder<'a> {
                 self.push_function_call_output(call_id, output, images);
             },
             ConversationItem::Reasoning { content, .. } => {
+                self.flush_pending_image_messages();
                 self.remember_reasoning(content.as_deref());
             },
         }
@@ -434,28 +445,35 @@ impl<'a> ChatMessageBuilder<'a> {
         });
 
         // A tool-role message's content is text only, so an image result is
-        // carried by a synthetic user message that follows the tool message.
-        // The call/output pairing stays valid because the tool message is
-        // still the immediate reply to the assistant's tool call.
-        self.push_image_result_message(output, images);
+        // carried by a synthetic user message. It is queued rather than pushed
+        // so every tool message of this turn stays adjacent to the assistant's
+        // tool call; the queue flushes once the run of tool messages ends.
+        self.queue_image_result_message(output, images);
     }
 
-    /// Carry an image-bearing tool result in a synthetic user message.
+    /// Queue the synthetic user message that carries an image-bearing result.
     ///
-    /// A tool-role message's content is text only, so the image parts ride in
-    /// a following user message whose text names the tool result. A text-only
-    /// result adds no message.
-    fn push_image_result_message(&mut self, output: &'a str, images: &'a [ImagePart]) {
+    /// A tool-role message's content is text only, so the image parts ride in a
+    /// following user message whose text names the tool result. It is queued,
+    /// not pushed, so a turn with several tool calls keeps all of its tool
+    /// messages together --- a strict provider rejects a user message placed
+    /// between them --- and flushes after the last tool message. A text-only
+    /// result queues nothing.
+    fn queue_image_result_message(&mut self, output: &'a str, images: &'a [ImagePart]) {
         if images.is_empty() {
             return;
         }
-        self.messages.push(ChatMessage {
+        self.pending_image_messages.push(ChatMessage {
             role: Role::User,
             content: Some(ChatContent::with_images(output, images)),
             reasoning_content: None,
             tool_calls: None,
             tool_call_id: None,
         });
+    }
+
+    fn flush_pending_image_messages(&mut self) {
+        self.messages.append(&mut self.pending_image_messages);
     }
 
     fn remember_reasoning(&mut self, content: Option<&'a [crate::types::ReasoningContent]>) {
@@ -490,6 +508,7 @@ impl<'a> ChatMessageBuilder<'a> {
     }
 
     fn finish(mut self) -> Vec<ChatMessage<'a>> {
+        self.flush_pending_image_messages();
         self.flush_pending_tool_calls();
         self.messages
     }
