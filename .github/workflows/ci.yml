@@ -202,8 +202,8 @@ jobs:
           tool: cargo-llvm-cov@0.9.0
       - run: cargo install cargo-crap --version 0.2.2 --locked
 
-      - name: Check coverage and change-risk regression
-        run: scripts/check-coverage.sh --cargo-crap-format github
+      - name: Check coverage and complexity gates
+        run: scripts/check-coverage.sh
 
       - name: Upload to Codecov
         uses: codecov/codecov-action@v7

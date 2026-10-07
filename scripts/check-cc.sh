@@ -4,11 +4,12 @@ set -euo pipefail
 # Cyclomatic-complexity (CC) gate.
 #
 # Enforces the complexity targets in docs/guardrails/complexity-targets.md:
-#   - A function absent from the baseline (new) may not exceed the CC target.
-#   - A function present in the baseline (existing) may not exceed the greater
-#     of the CC target and the CC it had when the baseline was generated
+#   - A function not listed in the baseline may not exceed the CC target.
+#   - A function listed in the baseline (a grandfather) may not exceed the
+#     greater of the CC target and the CC it had when the baseline was generated
 #     (ratchet; reductions are tracked in the per-function reduction tasks, see
-#     the guardrails doc).
+#     the guardrails doc). The committed baseline lists only the grandfathers,
+#     because for a function at or below the target both ceilings are the target.
 #
 # Cyclomatic complexity is coverage-independent, so this check runs without a
 # coverage pass (`just cc-check`). scripts/check-coverage.sh reuses the lcov
@@ -112,17 +113,17 @@ for entry in baseline.get("entries", []):
     baseline_cc[key] = max(baseline_cc.get(key, 0.0), float(entry["cyclomatic"]))
 
 failed = 0
-new_count = 0
+grandfathered = 0
 for entry in report.get("entries", []):
     key = (entry["file"], entry["function"])
     cc = float(entry["cyclomatic"])
     if key in baseline_cc:
         allowed = max(float(target), baseline_cc[key])
-        status = "regressed"
+        status = "grandfathered"
+        grandfathered += 1
     else:
         allowed = float(target)
-        status = "new"
-        new_count += 1
+        status = "unlisted"
     if cc > allowed:
         failed += 1
         print(
@@ -132,7 +133,7 @@ for entry in report.get("entries", []):
         )
 
 total = len(report.get("entries", []))
-print(f"CC gate: {total} functions checked, {new_count} new, {failed} over allowed")
+print(f"CC gate: {total} functions checked, {grandfathered} grandfathered, {failed} over allowed")
 
 if failed:
     print(

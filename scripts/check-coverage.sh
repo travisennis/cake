@@ -1,29 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-format="summary"
-
 usage() {
     cat <<'EOF'
-Usage: scripts/check-coverage.sh [--cargo-crap-format summary|github]
+Usage: scripts/check-coverage.sh
 
-Runs the local/GitHub coverage, cargo-crap change-risk, and per-function
-cyclomatic-complexity gates.
+Runs the coverage, absolute CRAP, and per-function cyclomatic-complexity gates
+from one instrumented run.
 Set COVERAGE_THRESHOLD to override the default threshold of 90.
-Set CRAP_REGRESSION_EPSILON to override the default CRAP regression tolerance of 0.5.
 EOF
 }
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --cargo-crap-format)
-            if [ "$#" -lt 2 ]; then
-                echo "ERROR: --cargo-crap-format requires a value" >&2
-                exit 2
-            fi
-            format="$2"
-            shift 2
-            ;;
         -h|--help)
             usage
             exit 0
@@ -36,16 +25,7 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
-case "$format" in
-    summary|github) ;;
-    *)
-        echo "ERROR: unsupported cargo-crap format: $format" >&2
-        exit 2
-        ;;
-esac
-
 threshold="${COVERAGE_THRESHOLD:-90}"
-crap_epsilon="${CRAP_REGRESSION_EPSILON:-0.5}"
 
 failed=0
 
@@ -59,8 +39,7 @@ echo "=== Total Coverage Gate ==="
 # Measurement runs through scripts/hermetic-coverage.sh, which points HOME at a
 # scratch directory so a test that reads the developer's home (the skill loader
 # scans ~/.agents/skills, for example) cannot move this run's coverage away from
-# what the CI runner measures. That keeps the committed CRAP baseline
-# reproducible on any machine (#699).
+# what the CI runner measures (#699).
 #
 # Profile data from an earlier run is removed before measuring, and the gate does
 # not delegate that removal to the tool: no `cargo llvm-cov clean` mode removes
@@ -92,9 +71,9 @@ else
     echo "PASS: Total coverage (${coverage}%) meets threshold (${threshold}%)"
 fi
 
-# === Gate 2: CRAP Regression ===
+# === Gate 2: Absolute CRAP ===
 echo ""
-echo "=== CRAP Regression Gate ==="
+echo "=== CRAP Gate ==="
 
 # Extracted test modules (*_tests.rs) have no LCOV entries because they
 # contain only test-only code with no instrumented coverage data. The
@@ -105,28 +84,18 @@ echo "=== CRAP Regression Gate ==="
 scripts/hermetic-coverage.sh report --lcov --output-path lcov.info --ignore-filename-regex '_tests\.rs$'
 python3 scripts/coverage-guard.py --lcov lcov.info || exit 1
 
-echo "CRAP regression epsilon: ${crap_epsilon}"
-
+# scripts/check-crap.sh enforces the absolute CRAP targets in
+# docs/guardrails/complexity-targets.md (fail above CRAP 30, warn above 15 for
+# CC 10 or lower, grandfather allowances from the baseline). It replaced the
+# per-function CRAP delta ratchet, which contradicted the CC gate (#658).
 crap_exit=0
-if [ "$format" = "summary" ]; then
-    scripts/cargo-crap.sh \
-        --lcov lcov.info \
-        --baseline ci/cargo-crap-baseline.json \
-        --fail-regression \
-        --summary || crap_exit=$?
-else
-    scripts/cargo-crap.sh \
-        --lcov lcov.info \
-        --baseline ci/cargo-crap-baseline.json \
-        --fail-regression \
-        --format "$format" || crap_exit=$?
-fi
+scripts/check-crap.sh --lcov lcov.info --baseline ci/cargo-crap-baseline.json || crap_exit=$?
 
 if [ "$crap_exit" -ne 0 ]; then
-    echo "FAIL: CRAP regression detected (exit code ${crap_exit})"
+    echo "FAIL: CRAP gate failed (exit code ${crap_exit})"
     failed=1
 else
-    echo "PASS: No CRAP regression detected"
+    echo "PASS: No CRAP exceedance"
 fi
 
 # === Gate 3: Cyclomatic Complexity ===
