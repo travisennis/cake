@@ -1214,32 +1214,28 @@ impl SettingsLoader {
         Self::merge_session_limits(&limits, acc);
     }
 
+    /// Overlay a present limit onto the accumulator.
+    ///
+    /// An absent overlay value leaves the lower-precedence accumulator value
+    /// untouched, so precedence is preserved without a branch per field.
+    const fn merge_limit(acc: &mut Option<Limit>, incoming: Option<Limit>) {
+        if incoming.is_some() {
+            *acc = incoming;
+        }
+    }
+
     /// Merge the output-budget `[limits]` fields into the accumulator,
     /// keeping [`Self::merge_limits`] at baseline complexity. Absent keys
     /// keep lower-precedence values; an explicit `"unlimited"` overrides
     /// back to no cap.
     const fn merge_output_budgets(limits: &LimitsSettingsOverlay, acc: &mut SettingsAccumulator) {
-        if limits.bash_output_max_bytes.is_some() {
-            acc.bash_output_max_bytes = limits.bash_output_max_bytes;
-        }
-        if limits.bash_read_cap.is_some() {
-            acc.bash_read_cap = limits.bash_read_cap;
-        }
-        if limits.read_default_end_line.is_some() {
-            acc.read_default_end_line = limits.read_default_end_line;
-        }
-        if limits.read_max_output_bytes.is_some() {
-            acc.read_max_output_bytes = limits.read_max_output_bytes;
-        }
-        if limits.read_max_line_bytes.is_some() {
-            acc.read_max_line_bytes = limits.read_max_line_bytes;
-        }
-        if limits.read_image_max_bytes.is_some() {
-            acc.read_image_max_bytes = limits.read_image_max_bytes;
-        }
-        if limits.hook_output_limit.is_some() {
-            acc.hook_output_limit = limits.hook_output_limit;
-        }
+        Self::merge_limit(&mut acc.bash_output_max_bytes, limits.bash_output_max_bytes);
+        Self::merge_limit(&mut acc.bash_read_cap, limits.bash_read_cap);
+        Self::merge_limit(&mut acc.read_default_end_line, limits.read_default_end_line);
+        Self::merge_limit(&mut acc.read_max_output_bytes, limits.read_max_output_bytes);
+        Self::merge_limit(&mut acc.read_max_line_bytes, limits.read_max_line_bytes);
+        Self::merge_limit(&mut acc.read_image_max_bytes, limits.read_image_max_bytes);
+        Self::merge_limit(&mut acc.hook_output_limit, limits.hook_output_limit);
     }
 
     const fn merge_session_limits(limits: &LimitsSettingsOverlay, acc: &mut SettingsAccumulator) {
