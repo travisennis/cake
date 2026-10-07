@@ -31,6 +31,10 @@ The clippy cognitive-complexity ceiling is a separate, complementary signal: `co
 
 The committed baseline currently has no functions at or above the ≤ 15 dispatch-heavy allowance. Functions at CC 11--14 are within that allowance and remain ratcheted by `max(CC 10, baseline CC)`; the current highest entries are `Skill::parse_frontmatter_fallback`, `ensure_secure_temp_dir`, `run_command_hook`, and `TaskOutcome::deserialize` at CC 14, followed by `scan_directory` and `escape_control_chars_in_strings` at CC 13. Functions below CC 10 use the default target as their ceiling, so the baseline does not permit growth through the target.
 
+### CRAP baseline regeneration
+
+`just change-risk-baseline` writes `ci/cargo-crap-baseline.json`, the reference the CRAP regression gate compares against, and the regeneration must match what the CI runner measures. Some tests read files outside the checkout --- the skill loader scans `~/.agents/skills`, for example --- so the same source can measure differently on a developer machine than on a clean runner. To keep the two in step, `scripts/check-coverage.sh` and the change-risk recipes run `cargo llvm-cov` through `scripts/hermetic-coverage.sh`, which points `HOME` at an empty scratch directory for the duration of the run while leaving `CARGO_HOME` and `RUSTUP_HOME` on the real install. A new test should still avoid reading the developer's home directly; the wrapper makes a stray dependency harmless to the committed baseline, but a plain `cargo test` does not run under it.
+
 ## Coverage-first refactoring workflow
 
 When reducing complexity in an existing function:

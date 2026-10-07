@@ -731,7 +731,13 @@ mod tests {
         )
         .unwrap();
 
-        let catalog = discover_skills(working_dir);
+        // Discover under a scratch HOME. `discover_skills` also scans the user's
+        // `~/.agents/skills`, and reading the developer's real home would make this
+        // test's coverage --- and the CRAP baseline it feeds --- depend on the
+        // machine (#699). The empty scratch home matches a clean CI runner.
+        let home = TempDir::new().unwrap();
+        let catalog =
+            temp_env::with_var("HOME", Some(home.path()), || discover_skills(working_dir));
         assert!(catalog.skills.iter().any(|skill| skill.name == "debugging"));
         catalog
     }

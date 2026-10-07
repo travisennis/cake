@@ -61,6 +61,9 @@ jobs:
       - name: Classifier fixture tests
         shell: bash
         run: scripts/test-classify-changes.sh
+      - name: Hermetic-coverage fixture tests
+        shell: bash
+        run: scripts/test-hermetic-coverage.sh
       - name: Fixture isolation tests
         shell: bash
         run: scripts/test-fixture-isolation.sh
