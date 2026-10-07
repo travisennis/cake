@@ -16,7 +16,7 @@ use crate::session_telemetry::{
     ProviderTermination, ResponsesFailedMetadata, TerminationClassification,
 };
 use crate::types::{
-    ConversationItem, InputTokensDetails, OutputTokensDetails, ReasoningContentKind,
+    ConversationItem, ImagePart, InputTokensDetails, OutputTokensDetails, ReasoningContentKind,
     ReasoningSummary, ReportedUsage, Role, Usage, UsagePresence,
 };
 
@@ -989,17 +989,7 @@ impl<'a> From<&'a ConversationItem> for ResponsesApiInputItem<'a> {
                 ..
             } => Self::FunctionCallOutput {
                 call_id,
-                // A text-only result stays a bare string; one carrying images
-                // becomes an array of a text block plus one image block per
-                // image (the native shape verified in Milestone 1).
-                output: if images.is_empty() {
-                    ResponsesFunctionCallOutput::Text(output)
-                } else {
-                    let mut parts = Vec::with_capacity(images.len() + 1);
-                    parts.push(ResponsesMessageContent::text("input_text", output, None));
-                    parts.extend(images.iter().map(ResponsesMessageContent::image));
-                    ResponsesFunctionCallOutput::Parts(parts)
-                },
+                output: function_call_output(output, images),
             },
             ConversationItem::Reasoning {
                 id,
@@ -1031,6 +1021,24 @@ impl<'a> From<&'a ConversationItem> for ResponsesApiInputItem<'a> {
             },
         }
     }
+}
+
+/// The `output` value of a `function_call_output` input item.
+///
+/// A text-only result stays a bare string; one carrying images becomes an
+/// array of a text block plus one image block per image (the native shape
+/// verified in Milestone 1).
+fn function_call_output<'a>(
+    output: &'a str,
+    images: &'a [ImagePart],
+) -> ResponsesFunctionCallOutput<'a> {
+    if images.is_empty() {
+        return ResponsesFunctionCallOutput::Text(output);
+    }
+    let mut parts = Vec::with_capacity(images.len() + 1);
+    parts.push(ResponsesMessageContent::text("input_text", output, None));
+    parts.extend(images.iter().map(ResponsesMessageContent::image));
+    ResponsesFunctionCallOutput::Parts(parts)
 }
 
 /// Parse the output items from an API response into `ConversationItem` values.

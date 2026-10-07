@@ -437,15 +437,25 @@ impl<'a> ChatMessageBuilder<'a> {
         // carried by a synthetic user message that follows the tool message.
         // The call/output pairing stays valid because the tool message is
         // still the immediate reply to the assistant's tool call.
-        if !images.is_empty() {
-            self.messages.push(ChatMessage {
-                role: Role::User,
-                content: Some(ChatContent::with_images(output, images)),
-                reasoning_content: None,
-                tool_calls: None,
-                tool_call_id: None,
-            });
+        self.push_image_result_message(output, images);
+    }
+
+    /// Carry an image-bearing tool result in a synthetic user message.
+    ///
+    /// A tool-role message's content is text only, so the image parts ride in
+    /// a following user message whose text names the tool result. A text-only
+    /// result adds no message.
+    fn push_image_result_message(&mut self, output: &'a str, images: &'a [ImagePart]) {
+        if images.is_empty() {
+            return;
         }
+        self.messages.push(ChatMessage {
+            role: Role::User,
+            content: Some(ChatContent::with_images(output, images)),
+            reasoning_content: None,
+            tool_calls: None,
+            tool_call_id: None,
+        });
     }
 
     fn remember_reasoning(&mut self, content: Option<&'a [crate::types::ReasoningContent]>) {
