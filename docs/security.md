@@ -31,6 +31,8 @@ The OS sandbox represents ordinary filesystem grants with two effective path cla
 
 Project-level `.cake/settings.toml` is fully trusted by design, the same trust model as the rest of project `.cake/` configuration. There is no deny-list and no trust prompt: any path a project declares in `[sandbox]` becomes accessible to model-generated commands. Treat a cloned repository's `.cake/settings.toml` the way you treat its hooks.
 
+During writable agent-run initialization, trusted `directories` and `[sandbox].writable` settings also authorize Cake to create absent directory targets and their missing parents before the tool sandbox is applied. Only the configured target is granted writable access; parents and siblings gain no grant. Read-only runs and settings inspection never provision configured targets. Creation is logged, errors stop initialization, and partial parent creation may remain after a failure. A typo can therefore create a stray directory under Cake's ambient authority. See [ADR 040](adr/040-bootstrap-writable-sandbox-grants.md).
+
 `cake init` stays inside this trust model: its `.cake/settings.toml` is commented and behavior-preserving, with no sandbox grants, judge allowlist entries, or model selection; its `.cake/hooks.json.example` is inert because Cake never loads `.example` files.
 
 ## Enforcement layers

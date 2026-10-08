@@ -625,13 +625,17 @@ impl CodingAssistant {
             .map(|s| s.base_directory.clone())
             .collect();
 
-        let settings_dirs = Self::valid_settings_dirs(&loaded);
+        let sandbox_policy = resolve_sandbox_policy(self.sandbox);
+        let settings_dirs = crate::cli::prepare_writable_dirs(
+            &loaded.directories,
+            &loaded.sandbox.writable,
+            sandbox_policy,
+        )?;
         let additional_dirs = Self::read_only_dirs(
             additional_dirs,
             Self::valid_sandbox_read_only_dirs(&loaded),
             data_dir,
         );
-        let sandbox_policy = resolve_sandbox_policy(self.sandbox);
         let tool_context = ToolContext::new(
             current_dir.to_path_buf(),
             additional_dirs,
@@ -682,39 +686,6 @@ impl CodingAssistant {
             toolbox_tools,
             tools_enabled,
         })
-    }
-
-    /// Resolve the persistent read-write sandbox directories from settings:
-    /// the `directories` key plus `[sandbox].writable` paths.
-    fn valid_settings_dirs(loaded: &LoadedSettings) -> Vec<PathBuf> {
-        let mut dirs: Vec<PathBuf> = loaded
-            .directories
-            .iter()
-            .map(PathBuf::from)
-            .filter(|p| {
-                if p.exists() && p.is_dir() {
-                    true
-                } else {
-                    tracing::warn!(
-                        "settings.toml directory '{}' does not exist or is not a directory, ignoring",
-                        p.display()
-                    );
-                    false
-                }
-            })
-            .collect();
-        dirs.extend(loaded.sandbox.writable.iter().map(PathBuf::from).filter(|p| {
-            if p.exists() && p.is_dir() {
-                true
-            } else {
-                tracing::warn!(
-                    "settings.toml [sandbox].writable path '{}' does not exist or is not a directory, ignoring",
-                    p.display()
-                );
-                false
-            }
-        }));
-        dirs
     }
 
     /// Resolve `[sandbox].read_only` paths for read-only sandbox access.
