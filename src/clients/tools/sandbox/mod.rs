@@ -13,6 +13,9 @@ use std::path::{Path, PathBuf};
 
 use crate::clients::tools::ToolContext;
 
+#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+mod grants_tests;
+
 // =============================================================================
 // Platform-specific implementations
 // =============================================================================

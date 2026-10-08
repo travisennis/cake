@@ -15,6 +15,7 @@ mod output;
 mod persistence;
 mod replay;
 mod run_mode;
+mod sandbox_grants;
 mod session_factory;
 mod sessions;
 
@@ -33,6 +34,7 @@ pub use replay::{ReplayCommand, ReplayError};
 pub use sessions::SessionsCommand;
 
 pub use run_mode::{RunMode, SessionPersistencePlan};
+pub use sandbox_grants::{SandboxGrantError, prepare_writable_dirs};
 
 /// A root agent-run option was supplied alongside a subcommand.
 #[derive(Debug, thiserror::Error)]

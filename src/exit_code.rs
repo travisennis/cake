@@ -110,8 +110,11 @@ fn classify_typed_error(err: &anyhow::Error) -> Option<u8> {
 }
 
 fn is_cli_input_error(err: &anyhow::Error) -> bool {
-    err.downcast_ref::<crate::cli::InvalidSubcommandOptions>()
+    err.downcast_ref::<crate::cli::SandboxGrantError>()
         .is_some()
+        || err
+            .downcast_ref::<crate::cli::InvalidSubcommandOptions>()
+            .is_some()
         || matches!(
             err.downcast_ref::<crate::cli::InitError>(),
             Some(crate::cli::InitError::Conflict(_))
