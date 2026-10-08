@@ -59,12 +59,12 @@ async fn provisioned_grant_allows_writes_without_granting_parent_or_sibling() {
     let mut command = tokio::process::Command::new("bash");
     command.current_dir(&context.cwd).args([
         "-c",
-        "cat \"$1\" && ! touch \"$1\"",
+        "cat \"$1\" && ! printf changed >> \"$1\"",
         "cake-read-only-grant-test",
         nested.to_str().unwrap(),
     ]);
     let _guard = strategy.apply(&mut command, &config).unwrap();
     let output = command.output().await.unwrap();
     assert!(output.status.success(), "{output:?}");
-    assert_eq!(output.stdout, b"first");
+    assert_eq!(std::fs::read_to_string(&nested).unwrap(), "first");
 }

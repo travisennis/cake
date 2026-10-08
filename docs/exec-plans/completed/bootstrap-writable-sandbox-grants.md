@@ -16,7 +16,7 @@ A user who grants a new state or cache directory can write there on the first ag
 
 ## Surprises & Discoveries
 
-Linux's `LandlockSandbox::prepare_rule_paths` discards absent paths. Retaining settings entries alone cannot solve bootstrap without creating an existing object or widening authority to a parent, which this plan rejects. Empty configured paths must stay ignored because recursive directory creation can succeed without creating an object for an empty path. Preparation errors need a typed configuration error to preserve exit code `3`.
+Linux's `LandlockSandbox::prepare_rule_paths` discards absent paths. Retaining settings entries alone cannot solve bootstrap without creating an existing object or widening authority to a parent, which this plan rejects. Empty configured paths must stay ignored because recursive directory creation can succeed without creating an object for an empty path. Preparation errors need a typed configuration error to preserve exit code `3`. The first Linux CI run failed because the read-only probe used `touch` on an existing file, which updates timestamps that Landlock does not restrict. The corrected test attempts a content append and verifies unchanged contents; production enforcement is unchanged.
 
 ## Decision Log
 
