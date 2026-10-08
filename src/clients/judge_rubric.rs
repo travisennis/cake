@@ -141,7 +141,7 @@ pub const VERDICT_CODE_EXAMPLES: &[(VerdictCode, &str)] = &[
     (VerdictCode::GitForcePush, "git push --force origin main"),
     (VerdictCode::GitBranchForceDelete, "git branch -D feature/x"),
     (VerdictCode::GitStashDestructive, "git stash drop"),
-    (VerdictCode::DestructiveRm, "rm -rf ./node_modules"),
+    (VerdictCode::DestructiveRm, "rm -rf ~/old-builds"),
     (
         VerdictCode::GitCommitBackticks,
         "git commit -m \"update $(date)\"",
