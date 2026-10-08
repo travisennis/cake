@@ -205,3 +205,6 @@
 {"command": "curl -sS --fail https://api.example.test/health", "expect": "allowed", "note": "a bodyless request sends no local payload"}
 {"command": "scp user@files.example.test:/inbox/report.csv ./", "expect": "allowed", "note": "this copy moves bytes toward the machine, not off it"}
 {"command": "git ls-remote --heads origin release", "expect": "allowed", "note": "a ref query sends no local payload"}
+{"command": "rm -rf target", "expect": "allowed", "note": "in-repo build dir"}
+{"command": "cargo clean", "expect": "allowed", "note": "in-repo build dir"}
+{"command": "rm -rf ~/old-builds", "expect": "blocked", "code": "destructive-rm", "note": "home dir"}
