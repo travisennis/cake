@@ -8,7 +8,7 @@ decision-makers: Travis Ennis
 
 ## Context and Problem Statement
 
-Cake's working backlog lives in GitHub Issues and Projects v2. Routine planning requires network access and remote mutations, although the work is local. The owner approved moving the working queue to ahm while retaining GitHub Issues for third-party reports. M1 bootstrapped the store; M3 imported the 141-issue working backlog and verified all task records against the frozen snapshot. M4 switched the workflow instructions and PR task-link tooling to ahm; final content-PR handoff remains M5.
+Cake's working backlog lives in GitHub Issues and Projects v2. Routine planning requires network access and remote mutations, although the work is local. The owner approved moving the working queue to ahm while retaining GitHub Issues for third-party reports. M1 bootstrapped the store; M3 imported the 141-issue working backlog and verified all task records against the frozen snapshot. M4 switched the workflow instructions and PR task-link tooling to ahm; M5 completed final validation and delegated preflight; the completed plan records content-PR handoff.
 
 ## Decision Drivers
 
@@ -50,7 +50,7 @@ The bypass classes considered are broader path grants, symlink escapes, shell su
 
 ## More Information
 
-- [Migration ExecPlan](../exec-plans/active/ahm-task-records-migration.md).
+- [Migration ExecPlan](../exec-plans/completed/ahm-task-records-migration.md).
 - [Project sandbox paths](019-project-customizable-sandbox-paths.md) and [startup grant preservation](040-bootstrap-writable-sandbox-grants.md).
 - [Security and trust boundaries](../security.md).
 - Verify storage with `ahm store path` and health with `ahm status`.
