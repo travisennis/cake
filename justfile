@@ -290,9 +290,13 @@ docs-corpus-check:
 fixture-isolation-check:
     @scripts/test-fixture-isolation.sh
 
+# Validate the GitHub-to-ahm conversion offline (stdlib only; no network)
+ahm-import-check:
+    @python3 scripts/test-import-gh-issues-to-ahm.py -v
+
 # Run the Python script fixture suites: the same suites the `changes` job in CI runs.
 # Stdlib only and no credentials; nothing here calls a model provider or the network.
-check-scripts: dependency-sweep-check profile-check binary-size-baseline-check test-classify-changes test-just-pr eval-check session-metrics-check coverage-guard-check docs-corpus-check fixture-isolation-check cc-check-fixture check-crap-fixture hermetic-coverage-check
+check-scripts: ahm-import-check dependency-sweep-check profile-check binary-size-baseline-check test-classify-changes test-just-pr eval-check session-metrics-check coverage-guard-check docs-corpus-check fixture-isolation-check cc-check-fixture check-crap-fixture hermetic-coverage-check
     echo "Script fixture suites passed!"
 
 # Run the Linux compatibility check corresponding to GitHub Actions

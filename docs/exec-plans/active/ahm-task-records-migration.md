@@ -19,8 +19,8 @@ The work is delivered as two pull requests: infrastructure (Milestone 1) and con
 - [x] (2026-10-09) Wrote this ExecPlan; formatted with panache; committed.
 - [x] (2026-10-09) M1 infrastructure implemented: initialized the home store, committed configuration prepared with strict acceptance, generated index ignored, classifier fixtures added, ADR 041 written, rubric and sandbox grant added, task 001 accepted and started. `ahm status`, classifier fixtures, `just docs-check`, and `just check-scripts` pass.
 - [x] (2026-10-09) M1 routed gate and three-pass preflight complete. `just check` passed outside the outer sandbox; the focused macOS writable-grant allow/deny test passed.
-- [ ] M1 handoff: commit and open the infrastructure pull request.
-- [ ] M2: write `scripts/import-gh-issues-to-ahm.py`; validate with `ahm --dry-run task import`.
+- [x] (2026-10-09) M1 handoff: PR #715 merged as `3d2deb4`; all CI checks passed. Continued on the owner-requested current branch `chore/ahm-task-records-content`.
+- [x] (2026-10-09) M2: wrote `scripts/import-gh-issues-to-ahm.py`, offline fixtures and `just ahm-import-check`; live fetch and ahm dry run accepted all 141 records without refusals.
 - [ ] M3: freeze the baseline, run the import, verify, close the migrated issues, preserve the snapshot.
 - [ ] M4: rewrite the workflow surface; delete the GitHub-issue machinery; add `just pr task=`.
 - [ ] M5: run the routed gates and preflight; open the content pull request; move this plan to `docs/exec-plans/completed/`.
@@ -38,6 +38,8 @@ The work is delivered as two pull requests: infrastructure (Milestone 1) and con
 - `gh api repos/travisennis/cake/issues/<n>/parent` returns the sub-issue parent (verified against issue 634 → 322), so the import script can read parentage per issue rather than hard-coding the tracker list.
 
 ## Decision Log
+
+- M2 exposes only fetch/replay and always invokes the importer with `--dry-run`; real import and issue closure are deferred to M3. `--save-snapshot` preserves source data for offline replay. Historical leading `../` link prefixes are resolved from the repository root, retaining the five known docs links; unresolved targets become plain labels with baseline findings. (2026-10-09)
 
 These decisions were made by Travis Ennis across 2026-10-05 and 2026-10-09 and are not to be revisited without asking.
 
@@ -168,6 +170,14 @@ M1 acceptance: `ahm status` exits 0 in the checkout; `just test-classify-changes
 
 ## Artifacts and Notes
 
+M2 snapshot at `2026-10-10T01:18:09Z` (2026-10-09 local): 141 open / 243 closed issues, board counts Ready 64 / Blocked 45 / Backlog 32; 7 trackers with 32 open children; 56 comments. The import plans Pending 64 / Blocked 44 / Open 26 / Tracking 7. All 141 report `outcome: planned` and empty errors; the first top-level record is issue 46 → task 002. Five historical relative documentation links become absolute GitHub links. Dependency #46 → #60 is dropped and flagged for manual review because #60 was closed as not planned. Snapshot counts are illustrative until M3 refreshes the baseline.
+
+M2 verification: `just ahm-import-check` passed nine offline fixtures; `just check-scripts` passed; `just check` passed outside the outer sandbox after the restricted run failed on localhost mock-server and filesystem permission denials; `just docs-check` passed outside the outer sandbox after its git invocation was denied; `git diff --check` passed. No Rust compatibility surface changed. Coverage, release build, and Linux runtime checks were not repeated for this script prototype; the full migration gate remains M5.
+
+M2 preflight used three sequential passes for an external-integration change, including both new scripts in the review target. Context: root AGENTS.md (no nested instructions), task 001, this ExecPlan, task and ExecPlan workflows, CONTRIBUTING.md, ADR 041, and ahm's actual import implementation. Rules review kept M2 preview-only and left the plan active; correctness review fixed historical docs links and checked status, tracker, label-string, dependency and comment mappings against the import contract; simplification review kept a stdlib-only script without a second importer. Added regression fixtures for API errors and preview enforcement. No further in-scope findings remain; M3 must review the cancelled dependency and refresh the snapshot.
+
+M2 artifacts live outside git: `/tmp/ahm-snapshot.json` (raw fetch), `/tmp/ahm-import.json`, `/tmp/ahm-baseline.json`, and `/tmp/ahm-dry-run.json` (ahm's structured allocation report). Replay with `python3 scripts/import-gh-issues-to-ahm.py --snapshot /tmp/ahm-snapshot.json --output /tmp/ahm-import.json --baseline /tmp/ahm-baseline.json`. The script rejects artifact paths within the checkout and distinct artifacts sharing a path. M3 must refresh and preserve these temporary artifacts with the store backup before importing; no task records or GitHub issues were mutated by M2.
+
 M1 health verification on 2026-10-09: `ahm store path` resolved to `~/.ahm/projects/cake-d8f8727b/tasks`; `ahm status` exited 0 with home records, strict acceptance enabled, task 001 In Progress, and no validation findings. `git check-ignore docs/adr/index.md` confirmed the generated index is ignored. `just test-classify-changes`, `just docs-check`, and `just check-scripts` passed.
 
 `just check` passed with elevated execution after the restricted attempt failed. A focused `bash_check_renders_allow_verdict` rerun identified a localhost mock-server bind denial (`Operation not permitted`). The successful gate passed 1710 unit tests (2 ignored), integration suites, Clippy, formatting, complexity, and script gates. `cargo test --all-features provisioned_grant_allows_writes_without_granting_parent_or_sibling -- --nocapture` also passed outside the outer sandbox, exercising macOS writes inside the grant, denial at parent and sibling paths, and read-only denial. Linux platform execution and the broader `just check-full` suite were not run locally; Linux coverage remains CI's responsibility. No Rust implementation changed.
@@ -194,6 +204,8 @@ The measured backlog numbers used in this plan (141 open, 64/32/45 board, 39/62/
 
 ## Outcomes & Retrospective
 
-M1 has bootstrapped a healthy home store and the migration's task 001. The infrastructure keeps task records out of git, requires acceptance evidence, and routes `.ahm/` through code checks. The overall migration remains active: M2--M5 and completion of task 001 wait for the infrastructure integration.
+M1 has bootstrapped a healthy home store and the migration's task 001. The infrastructure keeps task records out of git, requires acceptance evidence, and routes `.ahm/` through code checks. M1 is integrated and M2 has produced a validated import prototype with offline regression fixtures. M3--M5 and completion of task 001 remain; the backlog has not moved yet.
 
 Revision note (2026-10-09): Recorded M1 implementation, local health and script verification, preflight corrections, and the infrastructure source pin. Corrected task creation and the accept-before-start sequence against the installed CLI.
+
+Revision note (2026-10-09, M2): Added the live snapshot and dry-run evidence, offline fixture gate, milestone-scoped preview decision, and three-pass preflight results. M3--M5 remain.
