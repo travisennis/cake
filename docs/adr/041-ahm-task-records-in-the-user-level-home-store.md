@@ -8,7 +8,7 @@ decision-makers: Travis Ennis
 
 ## Context and Problem Statement
 
-Cake's working backlog lives in GitHub Issues and Projects v2. Routine planning requires network access and remote mutations, although the work is local. The owner approved moving the working queue to ahm while retaining GitHub Issues for third-party reports. This infrastructure milestone bootstraps the store; the existing queue remains on GitHub until the subsequent content migration.
+Cake's working backlog lives in GitHub Issues and Projects v2. Routine planning requires network access and remote mutations, although the work is local. The owner approved moving the working queue to ahm while retaining GitHub Issues for third-party reports. M1 bootstrapped the store; M3 imported the 141-issue working backlog and verified all task records against the frozen snapshot. Workflow instructions still await M4.
 
 ## Decision Drivers
 
@@ -29,7 +29,7 @@ Chosen option: ahm's user-level home store, because local task transitions do no
 
 A fresh checkout without its store exits 1 with `store_dir_unreadable` until `ahm init` runs. Initialization reconciles a partial store and generates indexes. ADR records remain committed under `docs/adr/`; `docs/adr/index.md` is generated and gitignored, unlike cake-repl's committed index.
 
-The source-build pin for this infrastructure is ahm commit `020071747be4cda34e1783a30e97b49b7d9079a1`. Build that revision with `go build -o ~/go/bin/ahm ./cmd/ahm` from the ahm checkout. Reconfirm the pin at move time and document contributor setup in the content milestone.
+The source-build pin at move time is ahm commit `e3dcacc0ac53ba416c8a09f8facde9ed6bc24457` (M1 used `020071747be4cda34e1783a30e97b49b7d9079a1`). Build that revision with `go build -o ~/go/bin/ahm ./cmd/ahm` from the ahm checkout. The installed binary was rebuilt from that clean source revision before the import; contributor setup will be documented in the workflow-rewrite milestone.
 
 After the move, GitHub Issues remains intake. Accepted reports become ahm tasks with the issue URL as `external_ref`, and the original issue is closed with a linking comment. Task completion happens on the feature branch before the implementing commit; integration into `master` makes delivery true. An abandoned pull request reopens the task or returns it to `Pending`. Pull requests reference tasks explicitly; there is no automatic task closure.
 
@@ -43,7 +43,7 @@ The bypass classes considered are broader path grants, symlink escapes, shell su
 
 - Good, because routine backlog operations work offline and local worktrees use one queue.
 - Good, because acceptance notes are required for completion: absent notes, `TODO` placeholders, and unchecked acceptance items refuse completion unless explicitly overridden with `--force`.
-- Bad, because records are not versioned or synchronized by git. Back up `~/.ahm` together with the import JSON and imported issue-number list outside git. Restore from that backup, re-import the saved JSON into an empty store, or re-fetch those issues by number; closed GitHub issues remain readable.
+- Bad, because records are not versioned or synchronized by git. Back up `~/.ahm` together with the import JSON and imported issue-number list outside git. The M3 snapshot, import JSON, issue-number list, actual allocation report, verification and closure logs are preserved in `~/.ahm/backups/cake-migration-20261010T0130/` alongside the before/after store archives. Restore from that backup, re-import the saved JSON into an empty store, or re-fetch those issues by number; closed GitHub issues remain readable. Never replay an import into a store that already contains that batch, because successful imports allocate new records.
 - Bad, because imported tasks without acceptance sections need notes added before completion or an explicit `--force`. Import normalization only removes acceptance checkboxes; it cannot supply missing evidence.
 - Accepted limitation: imported Blocked tasks without reasons produce expected `task_blocked_missing_reason` warnings. Health checks must exit 0 with no errors; these warnings are compared against the import baseline.
 - Accepted limitation: CI never exercises ahm or the machine-local backlog. Initialization and health verification remain local contributor checks.

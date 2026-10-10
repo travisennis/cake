@@ -21,12 +21,14 @@ The work is delivered as two pull requests: infrastructure (Milestone 1) and con
 - [x] (2026-10-09) M1 routed gate and three-pass preflight complete. `just check` passed outside the outer sandbox; the focused macOS writable-grant allow/deny test passed.
 - [x] (2026-10-09) M1 handoff: PR #715 merged as `3d2deb4`; all CI checks passed. Continued on the owner-requested current branch `chore/ahm-task-records-content`.
 - [x] (2026-10-09) M2: wrote `scripts/import-gh-issues-to-ahm.py`, offline fixtures and `just ahm-import-check`; live fetch and ahm dry run accepted all 141 records without refusals.
-- [ ] M3: freeze the baseline, run the import, verify, close the migrated issues, preserve the snapshot.
+- [x] (2026-10-09) M3: froze and preserved the 141-issue baseline, imported and verified every record, closed all 141 issues with actual task references, and verified all remote comments and closures. Before/after store backups are preserved outside git.
 - [ ] M4: rewrite the workflow surface; delete the GitHub-issue machinery; add `just pr task=`.
 - [ ] M5: run the routed gates and preflight; open the content pull request; move this plan to `docs/exec-plans/completed/`.
 
 ## Surprises & Discoveries
 
+- M3 resolved the cancelled prerequisite before freezing the snapshot: owner-approved issue #46 now has Ready status and no dependency on cancelled #60. The refreshed batch has 65 Ready / 44 Blocked / 32 Backlog and no remaining manual-review dependency findings.
+- ahm strips a leading body heading equal to the title during import. Verification of issue #708 → task 108 initially reported this as a body mismatch; inspection of `task_import.go` and `stripHeading` confirmed the intended normalization. The check now accounts for that heading and CRLF normalization while comparing all remaining content.
 - The installed ahm binary was built from `36050bfde66a053e99dbbe8dd672f80ced0ca0ca`, behind source HEAD `020071747be4cda34e1783a30e97b49b7d9079a1`; rebuilt and installed HEAD for M1. Evidence: `go version -m ~/go/bin/ahm` and `git rev-parse HEAD` in the ahm checkout.
 - Task creation takes a positional title, not `--title`, and defaults to `Open`; `task start` only accepts `Pending`. M1 used `task accept 001` before `task start 001`; both transitions succeeded. The concrete steps now reflect the actual CLI.
 - The backlog moves continuously. On 2026-10-05 the repository had 155 open issues with board counts 70 Ready / 53 Blocked / 32 Backlog; on 2026-10-09 it had 141 open issues with 64 / 45 / 32. All counts in this plan are illustrative; the move-time baseline is the verification target. Evidence: `gh issue list --state open` and `gh project item-list 1 --owner travisennis --format json`.
@@ -141,13 +143,17 @@ ahm --dry-run task import --from-file /tmp/ahm-import.json
 
 M3:
 
+The archive directory for this execution is `~/.ahm/backups/cake-migration-20261010T0130/`. Preserve the pre-import store, refresh the snapshot with `--fetch --save-snapshot`, review the baseline and dry-run report, then invoke the actual ahm importer once:
+
 ```
-python3 scripts/import-gh-issues-to-ahm.py --import --output /tmp/ahm-import.json --report /tmp/ahm-import-report.json
-ahm status
-ahm task list --status Blocked | wc -l
-ahm task ready | wc -l
-python3 scripts/import-gh-issues-to-ahm.py --close-issues --report /tmp/ahm-import-report.json
+migration_dir="$HOME/.ahm/backups/cake-migration-20261010T0130"
+ahm --json task import --from-file "$migration_dir/import.json" > "$migration_dir/import-report.json"
+ahm --json status
+ahm --json doctor
+ahm --json task ready
 ```
+
+The direct importer invocation replaces the illustrative `--import` flag, which was never added to the M2 prototype. M3 uses ahm's existing transaction and actual allocation report rather than introducing a second importer. Do not repeat the import after success. The archived `verify-migration.py` verifies every task against the batch and emits `verification.json`; `close-migrated-issues.py` refuses dry-run or unsuccessful reports, checks both artifact hashes and the local destination records, then adds a marked migration comment and closes only that frozen batch. Both helpers are one-time execution evidence outside git, not installed commands. Closure records a JSONL progress log and can resume without duplicating a marked comment. Issue closure uses `not_planned` because migration does not mean the underlying work was delivered. M3 recovery resumes the archived closure helper after inspecting the actual report and store; it never reruns the importer.
 
 M4:
 
@@ -160,7 +166,7 @@ just pre-push
 
 ## Validation and Acceptance
 
-M3 verification formula (counts captured in the same hour on both sides): Ready_after = gh_ready; Blocked_after = gh_blocked − trackers currently Blocked (1 on 2026-10-09); Open_after = gh_backlog − trackers currently Backlog (6 on 2026-10-09); the seven trackers import as `Tracking`. `ahm status` exits 0 and reports no errors; it is expected to warn with `task_blocked_missing_reason` for each imported Blocked task (\~44 on 2026-10-09), and that count is compared against the baseline. No `markdown_link_missing` findings appear. The seven trackers show lettered children (`322a`, `343a`, ...), and `ahm task ready` excludes a tracker while its children are open. Every migrated issue is closed on GitHub with a comment naming its ahm task, and each task's `external_ref` points back at the issue URL.
+M3 verification formula (counts captured in the same hour on both sides): Ready_after = gh_ready; Blocked_after = gh_blocked − trackers currently Blocked (1 on 2026-10-09); Open_after = gh_backlog − trackers currently Backlog (6 on 2026-10-09); the seven trackers import as `Tracking`. `ahm status` exits 0 and reports no errors; it is expected to warn with `task_blocked_missing_reason` for each imported Blocked task (\~44 on 2026-10-09), and that count is compared against the baseline. No `markdown_link_missing` findings appear. The seven trackers show lettered children under their allocated ahm IDs (resolve issue-number refs through `import-report.json`, rather than treating GitHub issue numbers as ahm IDs), and `ahm task ready` excludes a tracker while its children are open. Every migrated issue is closed on GitHub with a comment naming its ahm task, and each task's `external_ref` points back at the issue URL.
 
 M1 acceptance: `ahm status` exits 0 in the checkout; `just test-classify-changes` passes with the `.ahm/*` fixture; `docs/adr/index.md` exists in the working tree and is ignored by git; the rubric contains the ahm allowance; `.cake/settings.toml` lists `~/.ahm`; `just docs-check` and `just check-scripts` pass. M4 acceptance: the `rg` sweep above finds no workflow instruction that treats GitHub Issues as the task authority; `just pr task=N` comments the pull request URL on task N, exercised by `scripts/test-just-pr.sh`.
 
@@ -169,6 +175,12 @@ M1 acceptance: `ahm status` exits 0 in the checkout; `just test-classify-changes
 `ahm init` reconciles and is safe to re-run. The classifier, fixture, ADR, and rubric edits are ordinary file edits. The import is all-or-nothing: exit 2 means malformed input, exit 1 means a semantic refusal with nothing written, and an ordinary write failure rolls back. Re-running a *successful* import creates duplicate records, because ahm has no delete command; recovery is deleting the duplicate record files under `~/.ahm/projects/cake-d8f8727b/tasks/` and running `ahm index`. Issue closure happens only after verification, and closing is reversible by reopening. If the store is lost, restore by re-importing the saved JSON or by re-fetching the imported issues by number (closed issues remain readable). The migration task (001) and its record are not in git; that is intended.
 
 ## Artifacts and Notes
+
+M3 frozen baseline at `2026-10-10T01:32:36Z`: 141 open / 243 closed issues, board Ready 65 / Blocked 44 / Backlog 32. Import verified Pending 65 / Blocked 43 / Open 26 / Tracking 7, plus migration task 001 In Progress. All 32 children have the correct allocated parent; GitHub tracker refs map 322 → 033, 343 → 034, 438 → 049, 439 → 050, 440 → 051, 507 → 077, 653 → 091. `ahm task ready` contains 65 tasks and excludes every tracker. `ahm --json status` and `ahm --json doctor` exit 0 with zero errors, no missing Markdown links, and exactly 43 `task_blocked_missing_reason` warnings. Every imported title, status, priority, effort, label set, timestamp, body, external reference, parent, and dependency matches the batch after ahm's title-heading normalization.
+
+M3 remote acceptance: all 141 imported GitHub issues were read back as closed with exactly one marked migration comment containing their actual `ahm task show <id>` command; no open issues remain. Ordinary issue #46 → task 002 and tracker #322 → task 033 were independently spot-checked. Closures use `not_planned` with an explicit administrative-migration explanation, leaving the underlying ahm tasks active. The machine-readable closure verification and progress log are archived with the import report.
+
+M3 recovery artifacts are preserved in `~/.ahm/backups/cake-migration-20261010T0130/`: source snapshot, baseline, import JSON, issue-number list, dry-run and real allocation reports, artifact hashes, local verification, closure progress and recovery helpers, before/after store archives, and installed ahm build information. The installed pin is the clean ahm source HEAD `e3dcacc0ac53ba416c8a09f8facde9ed6bc24457`. The 17 dropped dependency references all point to completed closed issues; the owner-resolved #46 → #60 reference is absent. Five documentation links retain their absolute repository targets. `just ahm-import-check` passes nine fixtures; the M3 repository edits are documentation-only, so the Rust gate is not repeated. M4--M5 remain.
 
 M2 snapshot at `2026-10-10T01:18:09Z` (2026-10-09 local): 141 open / 243 closed issues, board counts Ready 64 / Blocked 45 / Backlog 32; 7 trackers with 32 open children; 56 comments. The import plans Pending 64 / Blocked 44 / Open 26 / Tracking 7. All 141 report `outcome: planned` and empty errors; the first top-level record is issue 46 → task 002. Five historical relative documentation links become absolute GitHub links. Dependency #46 → #60 is dropped and flagged for manual review because #60 was closed as not planned. Snapshot counts are illustrative until M3 refreshes the baseline.
 
@@ -204,8 +216,10 @@ The measured backlog numbers used in this plan (141 open, 64/32/45 board, 39/62/
 
 ## Outcomes & Retrospective
 
-M1 has bootstrapped a healthy home store and the migration's task 001. The infrastructure keeps task records out of git, requires acceptance evidence, and routes `.ahm/` through code checks. M1 is integrated and M2 has produced a validated import prototype with offline regression fixtures. M3--M5 and completion of task 001 remain; the backlog has not moved yet.
+M1 has bootstrapped a healthy home store and the migration's task 001. The infrastructure keeps task records out of git, requires acceptance evidence, and routes `.ahm/` through code checks. M1 is integrated and M2 has produced a validated import prototype with offline regression fixtures. M3 imported and verified the working backlog and closed all migrated GitHub issues with task-reference comments; M4--M5 and completion of task 001 remain. The workflow rewrite and final content pull request are still pending.
 
 Revision note (2026-10-09): Recorded M1 implementation, local health and script verification, preflight corrections, and the infrastructure source pin. Corrected task creation and the accept-before-start sequence against the installed CLI.
 
 Revision note (2026-10-09, M2): Added the live snapshot and dry-run evidence, offline fixture gate, milestone-scoped preview decision, and three-pass preflight results. M3--M5 remain.
+
+Revision note (2026-10-09, M3): Recorded the owner-approved prerequisite correction, refreshed baseline, actual import and closure verification, before/after backups, source pin and recovery procedure. The migration remains active for M4--M5.
