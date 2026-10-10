@@ -1,109 +1,78 @@
 ---
 name: grooming-backlog
-description: Go through Backlog, Ready, and Blocked issues in the GitHub backlog and make sure all decisions are made, dependencies are correct, and no open questions remain. The goal is to get issues into a ready state for work.
+description: Groom Open, Pending, and Blocked ahm tasks so decisions, dependencies, and acceptance criteria are clear enough for work.
 ---
 
 # Grooming Backlog
 
-Use this skill when the backlog needs a grooming pass. Grooming moves issues from ambiguous, underspecified, or stale states into a ready state where an agent can pick them up and work them without needing additional decisions or clarification.
+Use this skill for a grooming pass over Cake's local ahm backlog. [Task workflow](../../../docs/workflow/tasks.md) owns task lifecycle and storage; GitHub Issues remains intake.
 
 ## Goals
 
-- Every untriaged (Backlog) issue is either Ready (ready to work), Blocked (blocker documented), or has a clear next action.
-- Every Ready issue has all product and design decisions recorded.
-- Every Blocked issue documents what it is blocked on and what would unblock it.
-- Dependencies (the `## Depends on` body section) and ExecPlan links are accurate and complete.
-- Issue bodies are self-contained --- no open questions in the body or comments.
-- No generated indexes to maintain; the board and the issue list are the index.
+- Every Open task has a clear next action or is triaged into Pending or Blocked.
+- Every Pending task has the decisions and acceptance scope needed for implementation.
+- Every Blocked task records its reason and what would unblock it.
+- Front-matter dependencies and ExecPlan references are accurate.
+- Task bodies are self-contained; resolved questions are recorded in the body.
+- Generated indexes remain CLI-owned views, not files to edit.
 
-## When to groom
+## When To Groom
 
-- Before a sprint or work cycle planning.
-- When the backlog has accumulated stale Backlog or Blocked issues.
-- After a block of implementation work (to rebalance the queue).
-- Any time an agent reports an issue is too vague to work.
+Groom before a work cycle, after implementation changes the queue, when Open or Blocked tasks have gone stale, or when an agent reports insufficient scope.
 
 ## Workflow
 
-### 1. Inspect the queue
+### 1. Inspect The Queue
 
 ```bash
-# Quick ready queue — Cake Backlog project (project 1)
-gh project item-list 1 --owner travisennis --query 'status:Ready' --limit 200
-
-# Active issues not ready
-gh project item-list 1 --owner travisennis --query 'status:Blocked' --limit 200
-gh project item-list 1 --owner travisennis --query 'status:Backlog' --limit 200
-
-# Full open list with labels
-gh issue list --state open
-
-# Label vocabulary
-cat .github/labels.yml
+ahm prime
+ahm task list --status Open,Pending,Blocked,Tracking
+ahm task ready
+ahm task blocked
+ahm task labels
 ```
 
-GitHub issue search does not index Projects v2 Status fields, so query the project with `gh project item-list` rather than `gh issue list --search 'status:...'`.
+Use `.github/labels.yml` for Cake's allowed labels; `task labels` lists observed labels. Read each task with `ahm task show <id>`. Include Pending tasks with unmet dependencies: they appear in the blocked view even though their recorded status is Pending.
 
-### 2. For each open issue, audit
+### 2. Audit Each Task
 
-**Field invariants (Projects v2 on the Cake Backlog project):**
+Check priority P0--P4, effort XS--XL, one type label and at least one area label from Cake's vocabulary. Add risk labels only where they affect routing. Inspect dependency ids with `ahm task dep tree <id>`; dependencies represent blockers, not merely related work. Confirm that L/XL tasks have a current ExecPlan before implementation.
 
-- `Status` is one of: `Backlog`, `Ready`, `In Progress`, `Blocked`.
-- `Priority` is set and uses the project's priority scale (`P0`-`P4`).
-- `Effort` is set and uses the project's effort scale (`XS`-`XL`).
-- Labels include at least one `type:*` and one `area:*` label, from the vocabulary in `.github/labels.yml`.
-- `## Depends on` references real issue numbers. An issue only depends on another if the dependency is genuinely blocking --- not just "related to."
-- Issues with `Effort` `L` or `XL` link an ExecPlan (in `docs/exec-plans/active/`) or document that no plan is needed.
+Resolve stale references to files, commands and settled decisions. Record established choices and their evidence, and flag alternatives that still need a product or architecture decision. Check that acceptance criteria are concrete and useful, without TODO questions; actual completion evidence belongs in Acceptance Notes when work is done. Respect the distinction between Open scope needing triage, an explicit Blocked decision, and Pending work waiting on an incomplete dependency.
 
-**Decision completeness:**
+Check trackers and their children together. A Tracking parent is a planning record; work its children, and report a ready tracker for completion when all children are completed or cancelled. Inspect dependent tasks when a prerequisite was cancelled: cancellation alone does not mean its required work was delivered.
 
-- If the issue presents alternatives (e.g., "use X or Y"), record which alternative was chosen and why. If none is chosen yet, set Status to `Blocked` and document what decision is needed.
-- If the issue references external inputs (issues, design docs, conversations) that have since been resolved, capture the resolution in the issue body.
-- If the issue is `L` or `XL` without an ExecPlan, flag it.
+### 3. Apply Authorized Corrections
 
-**Body quality:**
+An explicit grooming request authorizes mechanical corrections to documented invariants, including stale metadata, invalid paths, and dependency references. It does not authorize inventing unresolved product or architecture decisions, creating additional tasks, or cancelling tasks without explicit approval. For an audit/report request, do not mutate records.
 
-- Acceptance criteria should not contain `TODO` placeholders or unchecked items that should have been decided before work begins.
-- Relevant files, modules, and commands listed in the issue are still valid (paths exist, modules still in use).
-- The issue body does not contain "ask the user" or "decide later" phrasing without a corresponding `Blocked` status and blocker note.
+Use the CLI:
 
-**Dependency graph:**
+```bash
+ahm task edit <id> --priority P2 --effort S
+ahm task edit <id> --add-label area:tools --remove-label area:cli
+ahm task edit <id> --section "Decision" --body-file <path>
+ahm task dep add <id> <dependency-id>
+ahm task dep remove <id> <dependency-id>
+ahm task accept <id>
+ahm task block <id> --reason <text>
+ahm task unblock <id>
+```
 
-- For each `## Depends on` entry, check that the dependency exists and is not itself Blocked or Backlog. If a dependency is blocked, the depending issue should also be `Blocked` with a note referencing the dependency.
-- For each issue that other issues depend on, check that its status reflects that it is a dependency (e.g., if #102 and #103 depend on #101, #101 should not be closed without unblocking or updating #102 and #103).
+Use `task edit` for body sections and supported metadata, preserving CLI-owned Comments and Cancellation Reason. Do not replace the record's status by editing front matter. For an already Blocked task whose reason needs correction, `task block` is a no-op; unblock and block it again with the established reason, preserving its dependencies. Propose cancellation of obsolete work and wait for explicit approval before `ahm task cancel <id> --reason <text>`.
 
-### 3. Fix what you can directly
+### 4. Record Unresolved Decisions
 
-An explicit request to groom authorizes mechanical corrections to documented issue invariants, such as stale labels, effort fields, invalid paths, and dependency references. It does not authorize choosing unresolved product, design, or architecture alternatives, creating issues, or recording a decision that is not already established. Do not close an issue without explicit user approval. If the user requested an audit or report rather than grooming updates, make no GitHub mutations.
-
-- Set the Projects v2 `Status` field to move issues between `Backlog`, `Ready`, and `Blocked` (`gh project item-edit` or the web UI).
-- Update priority, effort, and labels with `gh issue edit`.
-- Edit the `## Depends on` section in the issue body with `gh issue edit`.
-- Record decisions in the issue body (add a `## Decision` section when recording a resolved choice).
-- Remove stale `TODO` placeholders from acceptance criteria when the question has been answered.
-- If an issue is superseded, obsolete, or no longer relevant, report the proposed closure and wait for explicit user approval before using `gh issue close <n> --reason "not planned"`. Include a comment explaining why when approved.
-
-### 4. Flag what needs human input
-
-When an issue needs a product, design, or architecture decision that an agent cannot make alone:
-
-1. Set the Projects v2 `Status` field to `Blocked`.
-
-2. Add or update the blocker note at the top of the issue body:
-   ```
-   ## Blocker
-   Awaiting decision on [describe what]. See [reference].
-   ```
-
-3. Do not leave the issue `Ready` with undocumented open questions.
+For a decision that prevents implementation, record the question in the task and use `ahm task block <id> --reason <text>`, with `--ref <url>` for an external reference when applicable. Keep unfinished scoping work Open with a next action. Do not leave an unresolved implementation decision in the ready queue.
 
 ### 5. Verify
 
-For every issue in the requested queues, record one outcome: `Ready`, `Blocked`, or `Backlog` with a documented next action. Report any issue that was skipped, inaccessible, or unchanged and why. The grooming pass is complete only after the requested queues have been exhausted or the remaining items are explicitly listed as unresolved.
-
-No index regeneration is needed. Confirm the board reflects the changes:
+For every task in the requested queues, report its outcome: Pending, Blocked, Open with a next action, or Tracking with its child state. List anything skipped, inaccessible or unresolved and why. Continue until the requested queues are exhausted or the remaining items are explicitly listed.
 
 ```bash
-gh project item-list 1 --owner travisennis --query 'status:Blocked' --limit 200
-gh project item-list 1 --owner travisennis --query 'status:Ready' --limit 200
+ahm task ready
+ahm task blocked
+ahm status
 ```
+
+Normal CLI mutations regenerate indexes. Body-only edits need no regeneration; run `ahm index` after unavoidable manual metadata/linkage changes. Distinguish the migration's accepted missing-blocked-reason warnings from new errors or unexplained warnings.

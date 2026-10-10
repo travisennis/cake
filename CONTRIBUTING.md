@@ -28,6 +28,20 @@ cp -R ~/Projects/cake-skills/skills/. ~/.agents/skills/
 
 Symlink them instead of copying (`cd ~/Projects/cake-skills && just link`) to pick up edits on the next run. `just link` skips a destination that already exists as a real directory, so remove any copied skill directories before linking. Project skills in a repository's `.agents/skills/` still take precedence. Verify with `cake debug skills`.
 
+Managed work uses ahm's local home store. Build the pinned source revision from [ADR 041](docs/adr/041-ahm-task-records-in-the-user-level-home-store.md) with Go installed:
+
+```bash
+git clone https://github.com/travisennis/ahm.git ~/Projects/ahm
+git -C ~/Projects/ahm checkout e3dcacc0ac53ba416c8a09f8facde9ed6bc24457
+mkdir -p ~/go/bin
+(cd ~/Projects/ahm && go build -o ~/go/bin/ahm ./cmd/ahm)
+export PATH="$HOME/go/bin:$PATH"
+ahm init
+ahm status
+```
+
+Run the final two commands from the Cake checkout. Initialization creates an empty local store; task records are not downloaded or committed. Local clones and worktrees share the backlog derived from `origin`; another machine needs its own records or a restored backup. `.cake/settings.toml` grants `~/.ahm` as writable so sandboxed Cake can initialize and maintain it. That grant covers other projects' stores too; [Task workflow](docs/workflow/tasks.md) describes the lifecycle and fallback. The imported backlog has the accepted missing-blocked-reason warnings recorded in the migration baseline.
+
 Binary-size audits additionally require `cargo-bloat`:
 
 ```bash
@@ -45,7 +59,7 @@ Follow the [Auditing Binary Size runbook](docs/runbooks/auditing-binary-size.md)
 5. Run a focused test or check while iterating.
 6. Format changed code and run the applicable final gate.
 7. Review the diff for compatibility, security, and unnecessary complexity.
-8. Push the branch and open a pull request with `just pr`. Pass `labels="type:...,area:..."`, `body=<file>`, `title=<text>` (default: HEAD commit subject), and `issue=<number>` to apply labels, use a body file, set the title, and comment the PR URL back on the managed issue; without a body the recipe fills from commits. Opening the pull request is the default handoff; wait for explicit user approval before merging, enabling auto-merge, closing the PR or issue, or deleting the remote branch.
+8. Push the branch and open a pull request with `just pr`. Pass `labels="type:...,area:..."`, `body=<file>`, `title=<text>` (default: HEAD commit subject), and `task=<id>` to apply labels, use a body file, set the title, and comment the PR URL on the managed ahm task; without a body the recipe fills from commits. Opening the pull request is the default handoff; wait for explicit user approval before merging, enabling auto-merge, closing the PR, or deleting the remote branch.
 
 The crate has no library target. Do not use `cargo test --lib`.
 
@@ -130,7 +144,7 @@ These files are already over the production threshold, which is what makes them 
 
 ## Managed work
 
-Issues, research notes, ExecPlans, and ADRs are managed records; follow the issue lifecycle in [docs/workflow/tasks.md](docs/workflow/tasks.md).
+Tasks, research notes, ExecPlans, and ADRs are managed records; follow the task lifecycle in [docs/workflow/tasks.md](docs/workflow/tasks.md).
 
 ## Git and commits
 
@@ -158,10 +172,10 @@ Scopes are optional and at most one, from the `scopes` allowlist in `cog.toml`, 
 agent  cli  config  extensions  prompts  providers  sandbox  session  tools
 ```
 
-The vocabulary names the architecture domain that owns the change; the file or tool belongs in the subject. It is coarser than `.ahm` `area:*` labels, and cross-cutting changes stay unscoped. Adding a scope is a vocabulary change proposed in the PR that updates the allowlist; history predates the allowlist, so `cog check` is not a gate, and amended messages must comply.
+The vocabulary names the architecture domain that owns the change; the file or tool belongs in the subject. It is coarser than the task and PR `area:*` labels, and cross-cutting changes stay unscoped. Adding a scope is a vocabulary change proposed in the PR that updates the allowlist; history predates the allowlist, so `cog check` is not a gate, and amended messages must comply.
 
 ## Pull requests
 
-Explain the user-visible or maintainer-visible outcome, notable design choices, compatibility or security impact, and exact verification. Link the managed task or ADR when one exists. Open the pull request only when the change is ready for review: acceptance notes, verification, documentation assessment, and any ExecPlan archival must already be complete. The pull request is then handed off for review; do not merge or enable auto-merge without explicit user approval. Use `Closes #<number>` for the managed issue; GitHub closes it when the pull request reaches `master`, after which the issue may receive its final delivered/verified summary. Update documentation only when its authority is affected.
+Explain the user-visible or maintainer-visible outcome, notable design choices, compatibility or security impact, and exact verification. Link the managed task or ADR when one exists. Open the pull request only when the change is ready for review: acceptance notes, verification, documentation assessment, and any ExecPlan archival must already be complete. The pull request is then handed off for review; do not merge or enable auto-merge without explicit user approval. Reference the managed ahm task id; run `ahm task complete <id>` before the final implementing commit and record the PR URL with `just pr task=<id>`. GitHub closing keywords do not complete local tasks. After authorized integration, record the delivered/verified summary on the task. Update documentation only when its authority is affected.
 
 Use a Conventional Commit subject for the pull request title too, for example `feat(session): show timing breakdown`. Cake configures GitHub to use the PR title as the default squash-commit subject, including for one-commit pull requests. The required `Conventional PR Title` check reruns when a title changes; review any manually edited squash message in the merge dialog as well.

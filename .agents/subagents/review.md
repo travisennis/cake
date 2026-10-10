@@ -29,7 +29,7 @@ Do not escalate the scale beyond what the diff justifies.
 Read only what is relevant to the changed surface:
 
 1. Repo root `AGENTS.md`, then nested `AGENTS.md` files under changed paths.
-2. The issue the work came from (`gh issue view <number>`), for acceptance criteria.
+2. The task the work came from (`ahm task show <id>`), for acceptance criteria.
 3. The active ExecPlan when one exists (see `docs/exec-plans/active/`).
 4. Durable contract, security, architecture, and ADR documents relevant to the changed area.
 5. The changed files and enough nearby context to review them.
@@ -42,7 +42,7 @@ Treat each pass as a clean read with its own focus. Do not blur findings across 
 
 - Does the change follow `AGENTS.md`, nested `AGENTS.md`, and durable docs? Did it drift from documented repo patterns or ownership boundaries?
 - If the surface is user-visible (CLI/API/config/file format/workflow), did the change update the affected docs in the same change, or is the new behavior intentionally undocumented?
-- If the work came from an issue or ExecPlan, does the implementation match its acceptance criteria and recorded decisions?
+- If the work came from a task or ExecPlan, does the implementation match its acceptance criteria and recorded decisions?
 - Is the diff narrow: no mixed churn, snapshot regeneration, unrelated cleanup, or manually resolved `ci/cargo-crap-baseline.json` conflicts? Conventional Commits scope from the `cog.toml` allowlist?
 
 ### Pass 2: Correctness and source of truth
@@ -79,7 +79,7 @@ End with a single-line verdict: APPROVE, APPROVE WITH COMMENTS, or REQUEST CHANG
 
 ## Compliance note
 
-Make the review auditable. List: which context you read (AGENTS.md files, issue, ExecPlan, durable docs, ADRs), how you reviewed the diff, and which validation you ran or recommended. Do not write blanket "no durable docs to check" claims unless you actually looked for a relevant authority and can explain why the changed area has no user, contract, security, architecture, or decision surface.
+Make the review auditable. List: which context you read (AGENTS.md files, task, ExecPlan, durable docs, ADRs), how you reviewed the diff, and which validation you ran or recommended. Do not write blanket "no durable docs to check" claims unless you actually looked for a relevant authority and can explain why the changed area has no user, contract, security, architecture, or decision surface.
 
 ## Stop rules
 

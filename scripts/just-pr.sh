@@ -4,7 +4,7 @@ set -euo pipefail
 labels=""
 body_file=""
 title=""
-issue=""
+task=""
 # Target branch for the pull request. A stacked pull request targets the branch
 # below it rather than master, so `base=` overrides this; the `changes` job in
 # ci.yml is deliberately unfiltered by base branch for the same reason.
@@ -16,9 +16,10 @@ for option in "$@"; do
         labels=*) labels="${option#labels=}" ;;
         body=*)   body_file="${option#body=}" ;;
         title=*)  title="${option#title=}" ;;
-        issue=*)  issue="${option#issue=}" ;;
+        task=*)   task="${option#task=}"
+                  [[ -n "$task" ]] || { echo "ERROR: task= requires an ahm task ID" >&2; exit 1; } ;;
         base=*)   base="${option#base=}" ;;
-        *) echo "ERROR: unknown option '$option' (expected labels=..., body=<file>, title=..., issue=<number>, base=<ref>)" >&2; exit 1 ;;
+        *) echo "ERROR: unknown option '$option' (expected labels=..., body=<file>, title=..., task=<id>, base=<ref>)" >&2; exit 1 ;;
     esac
 done
 
@@ -55,11 +56,14 @@ fi
 if [[ -n "$title" ]]; then
     args+=(--title "$title")
 fi
-if [[ -n "$issue" ]]; then
-    [[ "$issue" =~ ^[0-9]+$ ]] || { echo "ERROR: issue must be a number, got: $issue" >&2; exit 1; }
+if [[ -n "$task" ]]; then
+    ahm task show -- "$task" >/dev/null
 fi
 url=$(gh pr create "${args[@]}")
 printf '%s\n' "$url"
-if [[ -n "$issue" ]]; then
-    gh issue comment "$issue" --body "PR: $url"
+if [[ -n "$task" ]]; then
+    ahm task comment -- "$task" "PR: $url" || {
+        echo "ERROR: PR created at $url, but task comment failed; retry ahm task comment $task with that URL" >&2
+        exit 1
+    }
 fi

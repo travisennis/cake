@@ -8,7 +8,7 @@ Large or cross-cutting work requires one. So does smaller work that is substanti
 
 In-progress plans live in `docs/exec-plans/active/`. When a plan is complete and its `Outcomes & Retrospective` is filled in, move it to `docs/exec-plans/completed/` with `git mv`. The directories are the index; no separate listing is maintained.
 
-When a plan completes an issue, follow the lifecycle in [tasks.md](tasks.md). Before opening the pull request, fill the issue's acceptance notes, update the plan's `Outcomes & Retrospective`, and move the plan to the completed bucket. If the issue body links to the plan, update that link after the pull request merges.
+When a plan completes a task, follow the lifecycle in [tasks.md](tasks.md). Before task completion and the final implementing commit, fill the task's Acceptance Notes, update the plan's `Outcomes & Retrospective`, and move the plan to the completed bucket. Update the task's plan reference to the completed path; reference the task id in any implementing pull request.
 
 ## Requirements
 

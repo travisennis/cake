@@ -2,7 +2,7 @@
 
 This document explains how research artifacts are handled in this repository. When you are asked to create, update, organize, or use research, read this document first, then use the Notion Research database as the map and open the relevant notes directly.
 
-Research is evidence, not an authoritative decision or implementation contract. Architectural decisions belong in ADRs, actionable scope belongs in GitHub issues, and broad implementation guidance belongs in ExecPlans.
+Research is evidence, not an authoritative decision or implementation contract. Architectural decisions belong in ADRs, actionable scope belongs in ahm tasks, and broad implementation guidance belongs in ExecPlans.
 
 ## Research Storage
 
@@ -28,26 +28,26 @@ Notes moved from the repository carry a provenance footer (`Source: docs/researc
 
 Put rough, untriaged material in `Inbox` unless the user or context clearly identifies a better location. Prefer a short, descriptive title.
 
-Create durable research (investigation, source, or topic notes) when factual or technical investigation should survive the current session, needs to inform more than one task, plan, or ADR, or supplies evidence for an architectural decision or cross-cutting implementation guidance. Keep brief, task-specific code reading and implementation observations in the issue or ExecPlan rather than creating research note churn; not every question during implementation needs a durable record.
+Create durable research (investigation, source, or topic notes) when factual or technical investigation should survive the current session, needs to inform more than one task, plan, or ADR, or supplies evidence for an architectural decision or cross-cutting implementation guidance. Keep brief, task-specific code reading and implementation observations in the task or ExecPlan rather than creating research note churn; not every question during implementation needs a durable record.
 
 Set these database properties on durable research notes. Raw inbox notes may leave them unset.
 
-  | Property                      | Values                                           |
-  | ----------------------------- | ------------------------------------------------ |
-  | Type                          | Inbox, Investigations, Sources, Topics, Archived |
-  | Status                        | inbox, active, synthesized, superseded, archived |
-  | Confidence                    | low, medium, high                                |
-  | Created / Updated             | ISO dates                                        |
-  | Related tasks / Related plans | Free text linking issues or ExecPlans            |
+  | Property                      | Values                                              |
+  | ----------------------------- | --------------------------------------------------- |
+  | Type                          | Inbox, Investigations, Sources, Topics, Archived    |
+  | Status                        | inbox, active, synthesized, superseded, archived    |
+  | Confidence                    | low, medium, high                                   |
+  | Created / Updated             | ISO dates                                           |
+  | Related tasks / Related plans | Free text referencing task ids or linking ExecPlans |
 
 ## Using Research
 
 Research is not automatically authoritative. Before using a research note to justify implementation work, check its status, date, confidence, evidence, and whether a newer task, ADR, ExecPlan, or source file supersedes it.
 
-Research evidence feeds architectural decisions (ADRs), actionable work (issues), or broad implementation guidance (ExecPlans). Route research findings according to their nature:
+Research evidence feeds architectural decisions (ADRs), actionable work (ahm tasks), or broad implementation guidance (ExecPlans). Route research findings according to their nature:
 
 - **ADRs** are authoritative for architectural decisions. Feed evidence to an ADR when a finding shapes a durable design choice, security boundary, configuration contract, or other architecturally significant decision.
-- **Issues** are authoritative for actionable scope. Create or link an issue when a finding implies concrete, scoped work.
+- **Tasks** are authoritative for actionable scope. Create or reference an ahm task when a finding implies concrete, scoped work.
 - **ExecPlans** are authoritative for implementation plans. Promote broad or cross-cutting findings to an ExecPlan.
 
 Research itself is evidence, not a decision or contract. Preserve uncertainty and open questions in research notes rather than presenting guesses as settled facts.
@@ -55,10 +55,10 @@ Research itself is evidence, not a decision or contract. Preserve uncertainty an
 Research should usually flow from rough capture to durable project work:
 
 ```text
-inbox note -> investigation/source/topic synthesis -> ADR, issue, or ExecPlan -> completed artifact
+inbox note -> investigation/source/topic synthesis -> ADR, task, or ExecPlan -> completed artifact
 ```
 
-Inbox notes must eventually receive a disposition. When reviewing notes with Type = Inbox, choose one of these outcomes for each stale note: promote useful synthesis to `Topics`, create an issue for actionable work, or delete material that has no continuing value. Reviews report age and staleness but never choose or apply the disposition automatically.
+Inbox notes must eventually receive a disposition. When reviewing notes with Type = Inbox, choose one of these outcomes for each stale note: promote useful synthesis to `Topics`, create an ahm task for actionable work, or delete material that has no continuing value. Reviews report age and staleness but never choose or apply the disposition automatically.
 
 ## Updating Research
 
