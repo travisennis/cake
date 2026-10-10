@@ -110,7 +110,7 @@ if [ -n "$changed" ]; then
 '
     for file in $changed; do
         case "$file" in
-            src/*|tests/*|Cargo.toml|Cargo.lock|rust-toolchain.toml|.cargo/*|.github/workflows/*|justfile|scripts/*|ci/*)
+            src/*|tests/*|Cargo.toml|Cargo.lock|rust-toolchain.toml|.cargo/*|.ahm/*|.github/workflows/*|justfile|scripts/*|ci/*)
                 code=1
                 ;;
             *.md|*.markdown)

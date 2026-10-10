@@ -21,3 +21,6 @@ scripts/judge-bench/results/
 
 # cargo-mutants generated reports
 mutants.out/
+
+# Generated ahm ADR index
+docs/adr/index.md

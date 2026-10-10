@@ -6,6 +6,12 @@ This supplemental policy permits the routine operations below. Apply the default
 
 Creating a file, appending a finding, or adding an issue comment is not destructive merely because it changes persistent state. A path outside the repository, a durable file, or a remote side effect is not by itself grounds for a block. `unknown-destructive` is a verdict *code* carried on a `block` verdict, never a verdict on its own; when no more specific code fits, reserve it for a concrete destructive effect and not as a catch-all for ordinary writes. Name the actual harmful effect when blocking.
 
+## Local task-store mutations
+
+Allow routine ahm initialization, task creation, comments, imports, index regeneration, and reversible task lifecycle or metadata changes in the local `~/.ahm` store. These operations are ordinary development bookkeeping, including when clones and worktrees share a project store. A home-store path or persistent record mutation alone is not grounds for a block. Task completion can be undone by reopening the task or returning it to `Pending`.
+
+This allowance does not authorize deleting the store, discarding records, disclosing credentials, or uploading local data. Assess the effects of the whole command, including substitutions and chained operations; an ahm command does not authorize a destructive companion operation.
+
 ## Issue comments
 
 Allow ordinary development findings, progress reports, and review notes added with `gh issue comment <issue> --body ...` or `--body-file ...` to the repository being worked on. A normal additive comment does not need the mergeability or merged-state guards used for destructive remote Git operations. Do not block it solely because it publishes text or changes remote state.
