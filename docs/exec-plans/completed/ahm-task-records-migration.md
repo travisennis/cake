@@ -24,7 +24,7 @@ The work is delivered as two pull requests: infrastructure (Milestone 1) and con
 - [x] (2026-10-09) M3: froze and preserved the 141-issue baseline, imported and verified every record, closed all 141 issues with actual task references, and verified all remote comments and closures. Before/after store backups are preserved outside git.
 - [x] (2026-10-09) M4: rewrote the task authority and contributor/agent workflows for ahm; removed GitHub queue scripts and recipes; added option-safe `just pr task=<id>` validation/comment-back with offline fixtures.
 - [x] (2026-10-09) M5 implementation readiness: full local gate, delegated three-pass preflight and final migration verification passed; archived this plan and completed task 001 with acceptance evidence before the final implementing commit.
-- [ ] M5 publication: push the validated content branch and open its pull request with task 001.
+- [x] (2026-10-09) M5 publication: normal push hooks passed and content [PR #716](https://github.com/travisennis/cake/pull/716) opened against `master`; `just pr task=001` recorded the URL on the Completed migration task.
 
 ## Surprises & Discoveries
 
@@ -226,7 +226,7 @@ The measured backlog numbers used in this plan (141 open, 64/32/45 board, 39/62/
 ## Outcomes & Retrospective
 
 M1 has bootstrapped a healthy home store and the migration's task 001. The infrastructure keeps task records out of git, requires acceptance evidence, and routes `.ahm/` through code checks. M1 is integrated and M2 has produced a validated import prototype with offline regression fixtures. M3 imported and verified the working backlog and closed all migrated GitHub issues with task-reference comments; M4 has replaced the working-queue instructions and tooling with ahm. M5 implementation validation is complete: `just check-full` passed, including 95.86% line coverage, CRAP and cyclomatic-complexity gates, dependency advisories, Rust/Markdown documentation and the release build. A delegated XL preflight performed three sequential passes and found no code defect; the original queue and file inventory above are explicitly historical. Final read-only verification matched all 141 imported records and their dependency/parent graphs to the frozen baseline, confirmed 65 ready tasks and zero
-health errors with exactly 43 accepted blocked-reason warnings, and found zero open GitHub issues. This plan is archived and task 001 is Completed with acceptance evidence, before the final implementing commit. Content-PR publication follows that commit; integration into `master` remains the delivery step.
+health errors with exactly 43 accepted blocked-reason warnings, and found zero open GitHub issues. This plan is archived and task 001 is Completed with acceptance evidence, before the final implementing commit. The normal push hooks passed, and content [PR #716](https://github.com/travisennis/cake/pull/716) is open against `master` with task 001, valid type/area/risk labels and the actual checks recorded. `just pr task=001` recorded its URL on the Completed task. All five milestones are complete; PR review and integration into `master` remain the delivery step.
 
 Revision note (2026-10-09): Recorded M1 implementation, local health and script verification, preflight corrections, and the infrastructure source pin. Corrected task creation and the accept-before-start sequence against the installed CLI.
 
@@ -236,4 +236,4 @@ Revision note (2026-10-09, M3): Recorded the owner-approved prerequisite correct
 
 Revision note (2026-10-09, M4): Recorded the ahm lifecycle/setup rewrite, native CLI corrections, retired queue machinery, PR task-link fixtures, checks and three-pass preflight. The plan stays active for M5.
 
-Revision note (2026-10-09, M5): Recorded the full final gate, delegated preflight, final baseline/health verification, historical-context clarification, and plan archival. Publication evidence will be added after the content PR is created.
+Revision note (2026-10-09, M5): Recorded the full final gate, delegated preflight, final baseline/health verification, historical-context clarification, and plan archival. Recorded successful routed push hooks and actual content PR #716/task comment-back. The pull request remains open for review; no merge or branch deletion was performed.
