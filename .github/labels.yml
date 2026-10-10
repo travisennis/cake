@@ -13,8 +13,8 @@
 # manual "prune" dispatch. Labels not listed here are out of vocabulary.
 #
 # Notes:
-# - The `type:`, `area:`, and `risk:` vocabulary maps to the former ahm task
-#   labels. Priority, effort, and status are Projects v2 fields, not labels.
+# - The `type:`, `area:`, and `risk:` vocabulary is shared with ahm task
+#   labels. Priority, effort, and status are ahm metadata, not labels.
 # - `dependencies`, `github_actions`, and `rust` are applied automatically by
 #   Dependabot and must not be removed.
 # - `bug` and `enhancement` (GitHub defaults) and the repo's `documentation`
