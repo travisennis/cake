@@ -17,7 +17,9 @@ The work is delivered as two pull requests: infrastructure (Milestone 1) and con
 - [x] (2026-10-09) Owner approved the plan review's recommendations: dangling dependencies, native blocked-by links, strict acceptance, blocked-reason warnings, ahm pin, `just pr task=`, snapshot handling, contributor sandbox grant.
 - [x] (2026-10-09) Created `chore/ahm-task-records` from an up-to-date `master`.
 - [x] (2026-10-09) Wrote this ExecPlan; formatted with panache; committed.
-- [ ] M1: `ahm init`, `strict_acceptance: true`, `.gitignore`, classifier arm and fixture, ADR 041, judge-rubric section, repository sandbox grant, migration task 001; open the infrastructure pull request.
+- [x] (2026-10-09) M1 infrastructure implemented: initialized the home store, committed configuration prepared with strict acceptance, generated index ignored, classifier fixtures added, ADR 041 written, rubric and sandbox grant added, task 001 accepted and started. `ahm status`, classifier fixtures, `just docs-check`, and `just check-scripts` pass.
+- [x] (2026-10-09) M1 routed gate and three-pass preflight complete. `just check` passed outside the outer sandbox; the focused macOS writable-grant allow/deny test passed.
+- [ ] M1 handoff: commit and open the infrastructure pull request.
 - [ ] M2: write `scripts/import-gh-issues-to-ahm.py`; validate with `ahm --dry-run task import`.
 - [ ] M3: freeze the baseline, run the import, verify, close the migrated issues, preserve the snapshot.
 - [ ] M4: rewrite the workflow surface; delete the GitHub-issue machinery; add `just pr task=`.
@@ -25,6 +27,8 @@ The work is delivered as two pull requests: infrastructure (Milestone 1) and con
 
 ## Surprises & Discoveries
 
+- The installed ahm binary was built from `36050bfde66a053e99dbbe8dd672f80ced0ca0ca`, behind source HEAD `020071747be4cda34e1783a30e97b49b7d9079a1`; rebuilt and installed HEAD for M1. Evidence: `go version -m ~/go/bin/ahm` and `git rev-parse HEAD` in the ahm checkout.
+- Task creation takes a positional title, not `--title`, and defaults to `Open`; `task start` only accepts `Pending`. M1 used `task accept 001` before `task start 001`; both transitions succeeded. The concrete steps now reflect the actual CLI.
 - The backlog moves continuously. On 2026-10-05 the repository had 155 open issues with board counts 70 Ready / 53 Blocked / 32 Backlog; on 2026-10-09 it had 141 open issues with 64 / 45 / 32. All counts in this plan are illustrative; the move-time baseline is the verification target. Evidence: `gh issue list --state open` and `gh project item-list 1 --owner travisennis --format json`.
 - `ahm task import` does not set a parent's status. Neither import nor `task create --parent` moves a parent to `Tracking`, so the import document must carry `status: "Tracking"` for the seven parent trackers. Evidence: `internal/ahm/task_import.go` and `internal/ahm/task_create.go` in the ahm checkout.
 - Imported `Blocked` tasks without a `blocked_reason` produce warning-tier `task_blocked_missing_reason` findings from `ahm status` and `ahm doctor`; warnings never change exit codes, and the import format has no field for the reason. Evidence: `internal/ahm/validation_deps.go`.
@@ -120,8 +124,9 @@ just check-scripts
 Create and start the migration task:
 
 ```
-ahm task create --title "Migrate task tracking from GitHub Issues to ahm" \
+ahm task create "Migrate task tracking from GitHub Issues to ahm" \
   --labels "type:chore,area:config,area:docs" --priority P1 --effort XL
+ahm task accept 001
 ahm task start 001
 ```
 
@@ -163,6 +168,12 @@ M1 acceptance: `ahm status` exits 0 in the checkout; `just test-classify-changes
 
 ## Artifacts and Notes
 
+M1 health verification on 2026-10-09: `ahm store path` resolved to `~/.ahm/projects/cake-d8f8727b/tasks`; `ahm status` exited 0 with home records, strict acceptance enabled, task 001 In Progress, and no validation findings. `git check-ignore docs/adr/index.md` confirmed the generated index is ignored. `just test-classify-changes`, `just docs-check`, and `just check-scripts` passed.
+
+`just check` passed with elevated execution after the restricted attempt failed. A focused `bash_check_renders_allow_verdict` rerun identified a localhost mock-server bind denial (`Operation not permitted`). The successful gate passed 1710 unit tests (2 ignored), integration suites, Clippy, formatting, complexity, and script gates. `cargo test --all-features provisioned_grant_allows_writes_without_granting_parent_or_sibling -- --nocapture` also passed outside the outer sandbox, exercising macOS writes inside the grant, denial at parent and sibling paths, and read-only denial. Linux platform execution and the broader `just check-full` suite were not run locally; Linux coverage remains CI's responsibility. No Rust implementation changed.
+
+Preflight reviewed the existing branch plan and all M1 files in three sequential passes: rules and documentation, correctness and source-of-truth, and simplification. Context included root AGENTS.md (no nested instructions), this plan, task 001, CONTRIBUTING.md, the security authority, ADR guidance, and ADRs 019/040/041. Useful findings were corrected: the ADR 040 link, actual ahm CLI syntax and lifecycle, and binary/source pin mismatch. The shared writable store is an intentional approved grant; no additional parser, corpus cases, or workflow rewrite was added. Contributor workflow replacement remains M4.
+
 The dry-run report has this shape (illustrative):
 
 ```
@@ -180,3 +191,9 @@ The measured backlog numbers used in this plan (141 open, 64/32/45 board, 39/62/
 ## Interfaces and Dependencies
 
 `ahm` (source build; the pin moves to the ahm HEAD at move time) provides `init`, `status`, `doctor`, `prime`, `task …`, `adr create`, `index`, and `store path`; its import contract is ADR 025 in `/Users/travisennis/Projects/ahm/docs/adr/025-import-task-batches-with-prevalidation-and-rollback.md`. `gh` provides issue, project, and REST access for the import and the closure step. `panache` formats and lints git-tracked Markdown. `scripts/classify-changes.sh` provides the docs/code classification consumed by the pre-push gate and CI, and `.github/workflows/ci.yml` runs it together with `scripts/test-classify-changes.sh`. No Rust code, tool schema, or protocol shape changes; the only non-documentation configuration is `.ahm/config.json`, `.gitignore`, `.cake/settings.toml`, and the two scripts.
+
+## Outcomes & Retrospective
+
+M1 has bootstrapped a healthy home store and the migration's task 001. The infrastructure keeps task records out of git, requires acceptance evidence, and routes `.ahm/` through code checks. The overall migration remains active: M2--M5 and completion of task 001 wait for the infrastructure integration.
+
+Revision note (2026-10-09): Recorded M1 implementation, local health and script verification, preflight corrections, and the infrastructure source pin. Corrected task creation and the accept-before-start sequence against the installed CLI.

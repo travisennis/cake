@@ -94,6 +94,14 @@ commit_files scripts-1 scripts/helper.sh "helper"
 expect_class scripts-1 code
 expect_files scripts-1 ""
 
+# ahm configuration and nested Markdown take the code route, including --files.
+commit_files ahm-config .ahm/config.json '{"tasks_location":"home"}'
+expect_class ahm-config code
+expect_files ahm-config ""
+commit_files ahm-markdown .ahm/nested/state.md "local state"
+expect_class ahm-markdown code
+expect_files ahm-markdown ""
+
 # Offline tooling sources and fixtures must take the code route so CI runs
 # eval-check and session-metrics-check, including nested fixture paths.
 commit_files eval-source scripts/evals/run_eval.py "source"
