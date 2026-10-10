@@ -70,25 +70,13 @@ worktree-rm name: (_check-branch-name name)
 worktrees:
     @git worktree list
 
-# Claim a backlog issue by moving its board Status to In Progress (see docs/workflow/tasks.md)
-claim n:
-    @scripts/claim-issue.sh {{ quote(n) }}
-
-# Hand a claimed issue back by moving its Status to Ready (In Progress -> Ready)
-unclaim n:
-    @scripts/claim-issue.sh --unclaim {{ quote(n) }}
-
-# List the Ready queue of the Cake Backlog board, highest priority first
-ready-queue:
-    @scripts/list-ready-issues.sh
-
 # Open a pull request for the current branch (branch must be pushed).
 # Pass up to four key=value options, in any order:
-#   just pr labels="type:feature,area:cli" body=path/to/body.md issue=123
+#   just pr labels="type:feature,area:cli" body=path/to/body.md task=001
 #   labels  comma-separated labels, checked against .github/labels.yml
 #   body    pull request description file (default: fill title/body from commits)
 #   title   pull request title (default: HEAD commit subject; wins over --fill)
-# issue   comment the pull request URL back on this issue number
+# task    comment the pull request URL on this ahm task ID
 # base    target branch (default: master); pass the branch below for a stacked pull request
 pr option1="" option2="" option3="" option4="":
     #!/usr/bin/env bash

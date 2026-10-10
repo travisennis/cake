@@ -90,7 +90,7 @@ For a Cake-assisted run, create this prompt and invoke Cake from the clean check
 
 ```
 cat > /tmp/cake-dependency-prompt.txt <<'PROMPT'
-You are Cake's dependency-maintenance role. Read docs/automations/dependency-sweep.md, docs/dependencies.md, and /tmp/cake-dependency-report.json before taking action. The report is authoritative for this run's discovered surfaces and status. If its status is no-work, stop. If its status is review-required, do not edit; summarize the missing evidence or decision and prepare a GitHub issue using the normal issue workflow. If its status is actionable, review the exact upstream source diff for each finding before editing. Preserve Dependabot ownership of Cargo and GitHub Actions. Keep changes within the documented domain and count bounds, run the required checks, prepare a reviewable pull request, and never merge or automerge. Every automation-authored issue or pull request comment must start with: Cake automation note:
+You are Cake's dependency-maintenance role. Read docs/automations/dependency-sweep.md, docs/dependencies.md, and /tmp/cake-dependency-report.json before taking action. The report is authoritative for this run's discovered surfaces and status. If its status is no-work, stop. If its status is review-required, do not edit; summarize the missing evidence or decision and prepare a GitHub intake issue with the report and missing decision. If its status is actionable, review the exact upstream source diff for each finding before editing. Preserve Dependabot ownership of Cargo and GitHub Actions. Keep changes within the documented domain and count bounds, run the required checks, prepare a reviewable pull request, and never merge or automerge. Every automation-authored issue or pull request comment must start with: Cake automation note:
 PROMPT
 cake --sandbox workspace-write - < /tmp/cake-dependency-prompt.txt
 ```
@@ -107,9 +107,9 @@ For a Rust toolchain update, change `rust-toolchain.toml` first, update its `.mi
 
 ## Pull requests and issues
 
-Known safe work produces a normal reviewable pull request. The body must include the report, exact upstream compare links, the reason the cooldown passed or the security evidence, the files changed, and the checks run. Use a conventional title, the required `type:*` and `area:*` labels from `.github/labels.yml`, and `Closes #<number>` when the work belongs to a managed issue. Do not merge or automerge the pull request.
+Known safe work produces a normal reviewable pull request. The body must include the report, exact upstream compare links, the reason the cooldown passed or the security evidence, the files changed, and the checks run. Use a conventional title, the required `type:*` and `area:*` labels from `.github/labels.yml`, and the ahm task id when the work belongs to a managed task. Do not merge or automerge the pull request.
 
-Ambiguous or high-risk work produces an issue or remains stopped for manual review. Use the normal GitHub issue workflow and include the report, failed or missing evidence, affected domain, and a concrete next decision. Automation-authored issue and pull request comments must start with the exact prefix `Cake automation note:`. Treat that prefix as automation state, not as maintainer guidance. Human feedback remains an ordinary issue or pull request comment without that prefix.
+Ambiguous or high-risk work produces an issue or remains stopped for manual review. Use GitHub intake and include the report, failed or missing evidence, affected domain, and a concrete next decision. An operator converts an accepted report into an ahm task with its issue URL as `external_ref`, following [Task workflow](../workflow/tasks.md). CI never mutates the local store. Automation-authored issue and pull request comments must start with the exact prefix `Cake automation note:`. Treat that prefix as automation state, not as maintainer guidance. Human feedback remains an ordinary issue or pull request comment without that prefix.
 
 ## Existing scheduled checks
 

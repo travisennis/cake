@@ -24,7 +24,7 @@ The recipe fetches `origin` and creates the branch from `origin/master`, not fro
 
 `just branch`, `just worktree`, and `just worktree-rm` reject a name outside that shape. `just` interpolates a recipe argument into shell source, so a name Git would accept, such as `feat/x$(...)`, would otherwise run as a command before Git saw it. Names are restricted to letters, digits, dot, underscore, hyphen, and `/`, and every interpolation is shell-quoted.
 
-Managed work starts here too: set the GitHub issue's Status to In Progress on the branch (see [docs/workflow/tasks.md](../workflow/tasks.md)), so the issue and its implementation travel together.
+Managed work starts here too: run `ahm task start <id>` (see [Task workflow](../workflow/tasks.md)). Task records live in the home store shared by local clones and worktrees.
 
 ### 2. Work and verify
 
@@ -38,17 +38,17 @@ The gate covers the checked-out branch rather than the branch being pushed. The 
 
 ### 3. Open the pull request
 
-Open the pull request only after the change is ready to merge. Complete the acceptance notes, routed verification, documentation assessment, and any ExecPlan archival first. Use the pull request template, include `Closes #<number>` for the managed issue, and leave the issue open for review; the issue closes when the merged pull request reaches `master`.
+Open the pull request only after the change is ready to merge. Complete the acceptance notes, routed verification, documentation assessment, and any ExecPlan archival first. Use the pull request template, complete the ahm task before the final implementing commit, and reference its id in the body. The local task lifecycle is independent of GitHub closing keywords.
 
 ```bash
 git push -u origin HEAD
-# Labels and a body file; issue comments the PR URL back on #<number>:
-just pr labels="type:feature,area:cli" body=pr-body.md issue=215
+# Labels and a body file; task records the PR URL on the local ahm task:
+just pr labels="type:feature,area:cli" body=pr-body.md task=001
 # Or plain, which fills title and body from the commits:
 just pr
 ```
 
-`just pr` runs `gh pr create --base master`, with `--label`, `--body-file`, `--title`, or `--fill` added from its arguments. It checks labels against `.github/labels.yml` before creating. With no body file, gh fills from commits; confirm that the generated PR body still contains the closing keyword. CI runs the same checks the ruleset requires. Merge once review and checks are complete; after merge, add the delivered/verified summary to the closed issue and update its completed-plan link if needed.
+`just pr` runs `gh pr create --base master`, with `--label`, `--body-file`, `--title`, or `--fill` added from its arguments. It checks labels against `.github/labels.yml` before creating. With no body file, gh fills from commits; confirm that the generated PR body references the task id. CI runs the same checks the ruleset requires. Merge only after explicit user approval and successful review/checks; after integration, record the delivered/verified summary with `ahm task comment <id> <text>`.
 
 ### 4. Clean up
 
@@ -111,9 +111,9 @@ just change-risk-baseline
 
 ExecPlan and research records are committed markdown under `docs/`, so parallel branches never conflict on them; a merge of moved files is a plain rename.
 
-## Coordinating which agent takes which issue
+## Coordinating Which Agent Takes Which Task
 
-GitHub issue state (Status field, assignee) is shared across worktrees. Claim an issue by setting Status to In Progress and assigning yourself before starting; two agents should not claim the same issue. Confirm the assignment before starting parallel work.
+All local clones and worktrees share the ahm store keyed by the remote. Coordinate task ids before parallel work and inspect `ahm task show <id>` before `ahm task start <id>`. An existing In Progress task is resumed only at the user's request; starting it again does not provide exclusive ownership. Keep each task on its own branch/worktree and record progress on the shared task.
 
 ## Recovery
 

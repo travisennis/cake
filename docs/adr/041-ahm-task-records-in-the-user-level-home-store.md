@@ -8,7 +8,7 @@ decision-makers: Travis Ennis
 
 ## Context and Problem Statement
 
-Cake's working backlog lives in GitHub Issues and Projects v2. Routine planning requires network access and remote mutations, although the work is local. The owner approved moving the working queue to ahm while retaining GitHub Issues for third-party reports. M1 bootstrapped the store; M3 imported the 141-issue working backlog and verified all task records against the frozen snapshot. Workflow instructions still await M4.
+Cake's working backlog lives in GitHub Issues and Projects v2. Routine planning requires network access and remote mutations, although the work is local. The owner approved moving the working queue to ahm while retaining GitHub Issues for third-party reports. M1 bootstrapped the store; M3 imported the 141-issue working backlog and verified all task records against the frozen snapshot. M4 switched the workflow instructions and PR task-link tooling to ahm; final content-PR handoff remains M5.
 
 ## Decision Drivers
 
@@ -29,7 +29,7 @@ Chosen option: ahm's user-level home store, because local task transitions do no
 
 A fresh checkout without its store exits 1 with `store_dir_unreadable` until `ahm init` runs. Initialization reconciles a partial store and generates indexes. ADR records remain committed under `docs/adr/`; `docs/adr/index.md` is generated and gitignored, unlike cake-repl's committed index.
 
-The source-build pin at move time is ahm commit `e3dcacc0ac53ba416c8a09f8facde9ed6bc24457` (M1 used `020071747be4cda34e1783a30e97b49b7d9079a1`). Build that revision with `go build -o ~/go/bin/ahm ./cmd/ahm` from the ahm checkout. The installed binary was rebuilt from that clean source revision before the import; contributor setup will be documented in the workflow-rewrite milestone.
+The source-build pin at move time is ahm commit `e3dcacc0ac53ba416c8a09f8facde9ed6bc24457` (M1 used `020071747be4cda34e1783a30e97b49b7d9079a1`). Build that revision with `go build -o ~/go/bin/ahm ./cmd/ahm` from the ahm checkout. The installed binary was rebuilt from that clean source revision before the import; contributor setup is documented in [CONTRIBUTING.md](../../CONTRIBUTING.md).
 
 After the move, GitHub Issues remains intake. Accepted reports become ahm tasks with the issue URL as `external_ref`, and the original issue is closed with a linking comment. Task completion happens on the feature branch before the implementing commit; integration into `master` makes delivery true. An abandoned pull request reopens the task or returns it to `Pending`. Pull requests reference tasks explicitly; there is no automatic task closure.
 

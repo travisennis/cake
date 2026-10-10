@@ -1,121 +1,107 @@
-# Task Workflow (GitHub Issues)
+# Task Workflow
 
-Use this reference to choose, prepare, work, and close tasks. Tasks live in GitHub Issues on this repository; `gh` is the primary interface. Issue identity, labels, Projects v2 fields (Priority, Effort, Status), and close state are owned by GitHub. This reference focuses on the decisions and order of work that GitHub cannot determine.
-
-For the first task in a session, inspect the specific issue with `gh issue view <number>`. Reread this document when you need to refresh the workflow.
+Use this reference to choose, prepare, work, and close tasks. `ahm task ...` owns task identity, front matter, storage, lifecycle transitions, and index regeneration. This project-owned document describes the decisions and order of work that the CLI cannot determine. GitHub Issues is intake; the working backlog lives in ahm.
 
 ## Choose And Inspect Work
 
-If the user names an issue number or title, use that issue even if another issue is higher in the queue:
+Start a managed-work session with `ahm prime`. If the user names a task id or title, inspect that task even if another task is higher in the queue:
 
 ```bash
-gh issue view <number>
+ahm task show <id>
 ```
 
-If the user asks for the next task, list the ready queue. Use the Projects v2 Status field (Backlog, Ready, In Progress, Blocked) to segment the board, and the `type:`, `area:`, and `risk:` labels to filter by category:
+For the next task, run `ahm task next`. Inspect the broader queue with:
 
 ```bash
-# Ready queue (triaged, workable) — Cake Backlog project (project 1)
-gh project item-list 1 --owner travisennis --query 'status:Ready' --limit 200
-
-# Blocked issues
-gh project item-list 1 --owner travisennis --query 'status:Blocked' --limit 200
-
-# Issues in a particular area
-gh issue list --state open --label 'area:clients'
+ahm task ready
+ahm task blocked
+ahm task list --status Open
+ahm task ready --label area:tools
 ```
-
-`just ready-queue` prints the Ready queue with the board's Priority field applied (P0 first, one issue per line).
-
-GitHub issue search does not index Projects v2 Status fields, so query the project with `gh project item-list` rather than `gh issue list --search 'status:...'`.
-
-The committed vocabulary in `.github/labels.yml` is the single source of truth for labels; verify it with `just labels-check-file`.
 
 When choosing from the queue:
 
 1. Work lower priority numbers first: `P0`, then `P1` through `P4`.
-2. Start only `Ready` issues. `Backlog` issues need triage, and `Blocked` issues are not directly workable. Resume an `In Progress` issue only when the user asks.
-3. Check dependencies before starting. Work an incomplete dependency first or explain why the requested issue is blocked. Dependencies are recorded in a `## Depends on` body section as `#<number>` links.
-4. Treat parent issues as planning records and work their sub-issues in the stated order. Parents use GitHub sub-issues; do not invent a separate tracker status.
-5. Use label filters when the user asks for work in a particular area or risk category.
+2. Start only `Pending` tasks whose dependencies are complete. `Open` tasks need triage; `Blocked` tasks need their blocker resolved. Resume an `In Progress` task only when the user asks.
+3. Inspect dependencies before starting. A Pending task with incomplete dependencies appears in `ahm task blocked`, not `ahm task ready`.
+4. Treat `Tracking` parents as planning records and work their children in the stated order. A tracker enters the ready queue when all its children are completed or cancelled and its own dependencies are complete; complete the tracker rather than starting implementation work on it.
+5. Use `--label` filters for an area or risk category. `.github/labels.yml` is Cake's label vocabulary; `ahm task labels` lists labels currently in use.
 
-Before editing, read the full issue and inspect the relevant repository state. If the issue is vague, stale, or conflicts with the current implementation, record the discovery or ask for the missing product decision before proceeding.
+Before editing, read the full task and inspect the relevant repository state. If the task is vague, stale, or conflicts with the implementation, record the discovery or obtain the missing product decision before proceeding.
 
-## Create And Triage Issues
+## Create And Triage Tasks
 
-Create issues through the CLI:
-
-```bash
-gh issue create --title "Short imperative title" --label "type:...,area:..." --body-file <path>
-```
-
-The body should give a future worker enough context to understand:
-
-- the problem and why it matters;
-- the relevant files, commands, modules, or observed behavior;
-- useful implementation direction without unnecessarily prescribing the fix;
-- concrete acceptance criteria and expected verification.
-
-Use the `## Depends on` body section to record issue dependencies as `#<number>` links. Keep the Projects v2 fields current: Priority runs from `P0` for urgent blockers to `P4` for deferred work; Effort `XS` and `S` are localized, `M` is moderate, and `L` or `XL` requires an ExecPlan before implementation. Status starts at Backlog (untriaged) or Ready when the issue is fully scoped.
-
-Every issue should have stable `type:*` and `area:*` labels. Add `risk:*` labels only when they affect routing or verification.
-
-## Work An Issue
-
-Follow this procedure for every implementation issue, whether or not it has an ExecPlan:
-
-1. Run `gh issue view <number>`. Confirm that the issue still matches the repository, is ready to work, and has no incomplete dependencies. During this inspection, consult `docs/workflow/research.md` if resolving material uncertainty requires evidence that should survive the session or inform multiple artifacts. Keep brief issue-local code reading in the issue rather than creating research note churn. Leave the issue `Backlog` while material research questions prevent clear scope or acceptance.
-
-2. Claim the issue: `just claim <number>` moves the board Status field to `In Progress`; `scripts/claim-issue.sh --assign <number>` also assigns the claimer. If the user explicitly asks to resume an existing `In Progress` issue, continue it without restarting the lifecycle.
-
-3. Before implementation, route any required decision or planning work:
-   - Consult `docs/workflow/research.md` when factual or technical uncertainty requires durable evidence that may feed an ADR, issue, or ExecPlan. Research is evidence, not a decision or implementation contract.
-   - Consult `docs/adr/README.md` when the issue introduces or changes a durable architectural decision, including persisted state, configuration, security boundaries, migrations, breaking behavior, or major dependencies.
-   - Consult `docs/workflow/exec-plans.md` for `L` and `XL` issues, and for smaller work that is cross-cutting or substantially uncertain. Create or update the ExecPlan and link it from the issue before changing code.
-
-   When all three apply, work in conceptual order: research evidence, architectural decision, then execution planning. Do not require research records or documentation changes for every issue.
-
-4. Implement only the issue's problem and acceptance scope. Preserve unrelated worktree changes, and commit as you go on the branch.
-
-5. Before opening the pull request, run the repository's routed verification commands. Record material results in an issue comment and update the acceptance notes so the record explains how the outcome was verified. Opening the pull request is the contributor's assertion that the implementation is ready for review; review may still require changes.
-
-6. Before opening the pull request, assess documentation impact. Documentation is an ordinary project deliverable, so follow the project's own documentation guidance when durable user or contributor knowledge may have changed. Record the documents checked and updated, or the reason no update was needed, in the issue. Do not require documentation changes for every issue.
-
-7. If the issue has an ExecPlan, complete its repository records before opening the pull request: update the ExecPlan Outcomes & Retrospective and move it to the completed plan bucket with `git mv`. If the issue body links to the plan, update that link after the pull request merges so the completed path is present on `master`.
-
-8. Open the pull request only after steps 5-7 are complete. Reference the issue with `Closes #<number>` in the pull request body. The issue stays open during review. Opening the pull request is the handoff point, not merge authorization; stop and wait for explicit user approval before merging, enabling auto-merge, closing the PR or issue, or deleting the remote branch. After an authorized merge, add the delivered/verified summary and reconcile the issue's completed-plan link if needed.
-
-For an issue without an ExecPlan, skip step 7. The inspection, start, implementation, verification, documentation assessment, and handoff steps remain the same.
-
-### Issue lifecycle: definition of done
-
-This section is the single source of truth for the issue lifecycle. [AGENTS.md](../../AGENTS.md), [CONTRIBUTING.md](../../CONTRIBUTING.md), and [docs/workflow/exec-plans.md](exec-plans.md) reference it instead of restating the rule. The lifecycle has two checkpoints and one post-merge record update:
-
-- **Pull request opened (ready-for-review checkpoint)** --- all implementation work, routed verification, acceptance notes, documentation assessment, and ExecPlan repository records are complete. The issue stays open during review. Include `Closes #<number>` in the pull request body so the issue is linked for automatic closure. This is the default agent handoff; it does not authorize merging.
-- **Pull request merged to the default branch (`master`)** --- GitHub closes the linked issue automatically. This is the repository's definition of done because the implementation is now in `master`; it is not permission for an agent to merge or otherwise advance the PR or issue lifecycle. Merge only after explicit user approval.
-- **After merge** --- add the delivered/verified summary to the closed issue, update its link to the completed ExecPlan path if that link was not updated earlier, and set the issue's Projects v2 Status field to `Done`. A normal merged pull request does not need a separate `gh issue close` command. The Cake Backlog board's Projects v2 "Item closed" automation sets Status to `Done` automatically when an issue closes; the agent-side step is the backstop for closes the automation does not cover.
-
-A pushed branch without an open pull request is not a lifecycle checkpoint. If a pull request is closed without merging, leave the issue open and either continue the work in a new pull request or close it separately as not planned.
-
-## Change Or Close An Issue
-
-Use `gh` commands for lifecycle and queue metadata:
+Create tasks through the CLI with explicit labels from `.github/labels.yml`; ahm's default labels are not Cake's vocabulary:
 
 ```bash
-gh issue edit <number> --add-label <label>       # retriage / accept
-gh issue edit <number> --body-file <path>        # rewrite body (deps, scope)
-gh issue comment <number> --body <text>          # progress, acceptance notes, or post-merge summary
-gh issue close <number>                          # fallback only after a merged PR lacked a closing keyword
-gh issue close <number> --reason "not planned"   # cancel (with a comment explaining why)
-gh issue reopen <number>                         # reopen
-just claim <number>                              # Ready -> In Progress (claim)
-just unclaim <number>                            # In Progress -> Ready (hand back)
+ahm task create "Short imperative title" --labels "type:task,area:tools" --body-file <path>
 ```
 
-Set the Projects v2 Status field to reflect queue state: Backlog (untriaged), Ready (accepted, workable), In Progress (claimed), Blocked (waiting on a dependency or decision), Done (merged to the default branch and closed).
+The command allocates the id, writes front matter, places the task in the active bucket, and regenerates indexes. Use `--description` for a concise summary or `--body-file` for a detailed record. Include the problem, why it matters, relevant files and behavior, implementation direction, and concrete acceptance criteria with expected verification.
 
-Cancellation requires a reason: close with `--reason "not planned"` and add a comment recording why.
+New tasks default to `Open`. Accept fully scoped work with `ahm task accept <id>` to move it to `Pending`, or create it with `--status Pending`. Leave unresolved scope, product choices, evidence, or planning in Open; record a known blocker with `ahm task block <id> --reason <text>`.
 
-## Parents And Sub-Issues
+Priority runs from `P0` to `P4`; effort runs from `XS` to `XL`. Every task has one `type:*` and at least one `area:*` label; add `risk:*` labels when they affect routing or verification. `L` and `XL` work requires an ExecPlan before implementation. Record real blocking dependencies with `--depends-on <ids>` at creation or `ahm task dep add <id> <dependency-id>`, not a prose dependency list. Create children with `--parent <id>`; they receive lettered ids. A parent planning record uses `Tracking` status.
 
-Parent issues (trackers) use GitHub sub-issues. A parent whose sub-issues are all closed is complete; close the parent itself instead of starting implementation work on it. Do not invent a separate "tracking" status.
+## Work A Task
+
+Follow this procedure for each implementation task:
+
+1. Run `ahm task show <id>`. Confirm that the task matches the repository, has clear scope and acceptance, and has no incomplete dependencies.
+2. Run `ahm task start <id>`. If the user explicitly resumes an In Progress task, continue it without restarting the lifecycle.
+3. Settle required decision and planning work before implementation. Use [Research workflow](research.md) for durable evidence, [ADR guidance](../adr/README.md) for architectural decisions, and [ExecPlan workflow](exec-plans.md) for L/XL, cross-cutting, or substantially uncertain work. Keep brief task-local observations in the task; leave it Open while material uncertainty prevents clear scope.
+4. Create the branch before the first repository edit with `just branch <type>/<slug>`, or `just worktree <type>/<slug>` beside another agent. Implement only the task's scope, preserve unrelated work, and commit freely on the feature branch.
+5. Run the routed checks in [CONTRIBUTING.md](../../CONTRIBUTING.md) and preflight the change. Record material results and replace placeholder or unchecked Acceptance Notes with the actual outcome and verification.
+6. Assess documentation impact. Record the documents checked and updated, or explain why no update is needed. Do not require documentation changes for every task.
+7. If an ExecPlan applies, complete its Outcomes & Retrospective and move it to `docs/exec-plans/completed/` when the whole plan is complete. Update the task's plan reference for the completed path.
+8. Run `ahm task complete <id>` before the handoff commit that finalizes the task. Work-in-progress commits are expected; completion is required before the final implementing commit, not every intermediate commit. Follow the lifecycle below for integration and handoff.
+
+## Task Lifecycle: Definition Of Done
+
+Task completion and repository integration are separate facts. `ahm task complete <id>` records completed and verified work on the feature branch; integration into `master` makes delivery true. The acceptance notes, documentation assessment, and applicable ExecPlan archival are finished before that final implementing commit. Read-only reports need no task unless persistence was requested.
+
+When a pull request is the handoff, open it after those records and routed checks are complete. Reference the ahm task id in its body and use `just pr task=<id>` to record the URL on the task. A task in the home store has no repository-relative link, and GitHub closing keywords do not complete it. Do not merge, enable auto-merge, close the PR, or delete the remote branch without explicit user approval. If the implementing branch or pull request is abandoned, use `ahm task reopen <id>` and return the task to Open for triage or accept it back into Pending as appropriate.
+
+After authorized integration, record the delivered commit or PR and final verification with `ahm task comment <id> <text>`. Task records and their completion state remain local; they are not synchronized by GitHub or CI. The current branch protections still require pull requests for remote integration; this lifecycle does not change those protections.
+
+## Change Or Close A Task
+
+Use commands for metadata and lifecycle whenever one exists:
+
+```bash
+ahm task edit <id> --priority P1 --effort S
+ahm task edit <id> --section "Acceptance Notes" --body-file <path>
+ahm task dep add <id> <dependency-id>
+ahm task dep remove <id> <dependency-id>
+ahm task block <id> --reason <text>
+ahm task unblock <id>
+ahm task comment <id> <text>
+ahm task complete <id>
+ahm task cancel <id> --reason <text>
+ahm task reopen <id>
+```
+
+`task edit` refuses status and dependency changes; use the lifecycle and dependency commands. Comments and Cancellation Reason are owned by their commands, so body edits must preserve them. Direct body edits are a fallback for working context; avoid manual front-matter or bucket changes.
+
+Cake sets `strict_acceptance: true` in `.ahm/config.json`. Completion refuses missing Acceptance Notes, TODO placeholders, or unchecked acceptance items unless explicitly overridden with `--force`. Replace them with the actual outcome and checks rather than bypassing the gate. Some migrated tasks have no acceptance section and need one added before completion. Task completion moves the record, updates eligible dependents, and regenerates indexes. Cancellation requires a reason; it records that reason and moves the record to the cancelled bucket.
+
+## Storage And Manual Fallback
+
+Task source records live outside git in `~/.ahm/projects/cake-d8f8727b/tasks/`, with `active/`, `completed/`, and `cancelled/` buckets. Run `ahm store path` for the resolved paths. The key derives from the origin remote, so local clones and worktrees share one backlog. Another machine needs its own initialized store and records; a changed remote can resolve to another store. See [ADR 041](../adr/041-ahm-task-records-in-the-user-level-home-store.md) for the decision, approved sandbox grant, source pin, and backup/restore procedure.
+
+The repository commits `.ahm/config.json` and `.ahm/.gitignore`, not task records. A fresh checkout without its home store exits 1 with `store_dir_unreadable` until `ahm init` creates the directories and indexes. Initialization creates an empty local backlog; it does not download tasks. Back up `~/.ahm` and preserve the migration import JSON and issue-number list outside git.
+
+`tasks/index.md` and the bucket indexes are generated views; never edit them directly. Normal task mutations regenerate them. Run `ahm index` after unavoidable manual metadata, location, or linkage changes; body-only edits do not need it. `docs/adr/index.md` is also generated and gitignored. Reference a task by id and `ahm task show <id>`, not a relative link to its home-store file.
+
+If ahm is unavailable, inspect the source records and generated indexes as a fallback. Preserve ids, filenames and matching buckets, and regenerate indexes once the CLI is available. Imported Blocked tasks may produce the accepted `task_blocked_missing_reason` warnings; status and doctor must still exit 0 without errors, and those warnings are recorded against the migration baseline.
+
+## GitHub Intake
+
+GitHub Issues remains available for new reports and scheduled CI failures. It is not the working queue. Converting an accepted report is an explicit operator-owned action:
+
+```bash
+gh issue view <number>
+ahm task create "Accepted report title" --external-ref <issue-url> --labels "type:bug,area:tools" --body-file <path>
+```
+
+Preserve the report's context and acceptance scope in the task. The operator comments the new task id and `ahm task show <id>` command on the issue, then closes it with an explanation that work continues in ahm. Do not automatically synchronize GitHub state with the local store. Scheduled checks continue creating their rolling intake issue because CI cannot mutate this machine's backlog; an accepted fix becomes an ahm task through the same triage step.

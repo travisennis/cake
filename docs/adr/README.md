@@ -6,11 +6,11 @@ Browse decisions by reading the numbered files in this directory (`NNN-short-dec
 
 ## When To Write An ADR
 
-Write or update an ADR before implementation when an issue introduces or changes an architectural decision.
+Write or update an ADR before implementation when a task introduces or changes an architectural decision.
 
 ADR-required triggers:
 
-- `type:feature` issues that introduce or change user-visible behavior, persisted state, tool behavior, model-provider behavior, sandbox behavior, configuration shape, or another durable architectural contract.
+- `type:feature` tasks that introduce or change user-visible behavior, persisted state, tool behavior, model-provider behavior, sandbox behavior, configuration shape, or another durable architectural contract.
 - Security-sensitive changes, including command execution, filesystem access, network access, secrets, auth headers, logging redaction, sandbox boundaries, or permission escalation.
 - Breaking changes, deprecations, migrations, compatibility changes, or changed default behavior.
 - New major runtime dependencies that affect behavior, security posture, binary size, licensing, or platform support.
@@ -19,11 +19,11 @@ ADR-required triggers:
 
 ADRs are usually optional for localized bug fixes, tests, docs, small refactors, and implementation-only follow-through that does not create a new durable decision. When in doubt, prefer a short ADR over leaving an important decision implicit.
 
-## Relationship To Issues And ExecPlans
+## Relationship To Tasks And ExecPlans
 
 - Create or update the ADR before code changes begin.
-- Reference the ADR from the issue body or implementation notes.
-- If the same issue requires an ExecPlan, the ExecPlan should cite the ADR and describe how it will implement the accepted decision.
+- Reference the ADR from the task body or implementation notes.
+- If the same task requires an ExecPlan, the ExecPlan should cite the ADR and describe how it will implement the accepted decision.
 - If implementation discovers that the decision needs to change, update the ADR before continuing.
 
 ## Numbering And Naming
@@ -34,7 +34,7 @@ Use the next available three-digit number and a short kebab-case title:
 docs/adr/NNN-short-decision-title.md
 ```
 
-Allocate the next number from the highest existing ADR number. Keep existing numbers stable. Do not renumber ADRs after they are created or referenced.
+Use `ahm adr create "Decision title" --body-file <path>` to allocate the next number and regenerate the generated index. If ahm is unavailable, allocate the next number from the highest existing ADR number. Keep existing numbers stable. Do not renumber ADRs after they are created or referenced.
 
 ## Status
 
@@ -60,7 +60,7 @@ Create a new ADR when:
 
 - A later decision reverses, replaces, or materially changes an accepted architectural boundary.
 - The old decision was correct when made, but new requirements, constraints, or implementation evidence changed the tradeoff.
-- Multiple issues or future contributors need a durable explanation of why the decision changed.
+- Multiple tasks or future contributors need a durable explanation of why the decision changed.
 
 Update an existing ADR when:
 
@@ -85,7 +85,7 @@ status: proposed
 date: YYYY-MM-DD
 decision-makers: Name, Name
 consulted: Name
-informed: issue NNN
+informed: task NNN
 ---
 # Short Decision Title
 
@@ -116,6 +116,6 @@ Chosen option: TODO, because TODO.
 - TODO
 ```
 
-Create a new ADR by copying the template above into `docs/adr/NNN-short-decision-title.md`, filling the front matter and body, and adding the `status: proposed` record. ADR body prose is author-owned and is not rewritten by lifecycle tooling.
+Create a new ADR by preparing the template's body sections in a temporary file and running `ahm adr create "Decision title" --body-file <path> --decision-makers "Name"`. The CLI allocates the number, writes proposed front matter, and regenerates the gitignored index; fill additional scalar metadata in the allocated file. If ahm is unavailable, copy the complete template to the next numbered filename. ADR body prose is author-owned and is not rewritten by lifecycle tooling.
 
 Current user behavior and compatibility semantics belong in [Configuration](../configuration.md), [Integrations](../integrations.md), [Security](../security.md), and [Architecture](../../ARCHITECTURE.md).

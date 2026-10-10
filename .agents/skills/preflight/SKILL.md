@@ -41,7 +41,7 @@ Required context items, in priority order:
 
 - repo root `AGENTS.md`
 - nested `AGENTS.md` files for the changed areas
-- `gh issue view <number>` for the issue when the work came from an issue (see `docs/workflow/tasks.md`)
+- `ahm task show <id>` for the task when the work came from an ahm task (see `docs/workflow/tasks.md`)
 - the relevant active exec plan when one exists for the current work (see `docs/exec-plans/active/`)
 - `docs/workflow/exec-plans.md` for L/XL changes
 - any durable user, contract, security, architecture, or ADR document directly relevant to the changed area
@@ -56,8 +56,8 @@ Treat each pass as a clean read with its own focus. Do not blur findings across 
 - Are we following `AGENTS.md`, nested `AGENTS.md`, and the relevant durable documentation?
 - Did we drift from documented repo patterns or ownership boundaries?
 - If the changed surface is user-visible CLI/API/config/file-format/workflow behavior, did we update the affected docs in the same change or record why the behavior is intentionally undocumented?
-- If the work came from an issue or ExecPlan, does the implementation match its acceptance criteria and recorded decisions?
-- Did we update the issue, ExecPlan, authoritative documentation, or ADR notes when the change discovered something durable?
+- If the work came from a task or ExecPlan, does the implementation match its acceptance criteria and recorded decisions?
+- Did we update the task, ExecPlan, authoritative documentation, or ADR notes when the change discovered something durable?
 
 ### Pass 2: Correctness and source of truth
 

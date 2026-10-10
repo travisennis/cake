@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # test-just-pr.sh — fixture tests for the `just pr` recipe.
 #
-# Stubs `gh` on PATH and drives the real recipe through `just`, asserting the
+# Stubs `gh` and `ahm` on PATH and drives the real recipe through `just`, asserting the
 # exact argv each stubbed call receives: fail-fast ordering before creation,
 # label normalization into the single CSV element gh parses, the title/--fill
 # interaction (explicit title wins; body file falls back to the HEAD subject),
 # the base default and the `base=` override for stacked pull requests, and the
-# issue comment-back. Run locally via `just test-just-pr` and in CI via the
+# task comment-back. Run locally via `just test-just-pr` and in CI via the
 # `changes` job in .github/workflows/ci.yml.
 
 set -euo pipefail
@@ -37,11 +37,33 @@ for arg in "$@"; do
 done
 printf '\n' >> "$GH_LOG"
 if [ "${1:-} ${2:-}" = "pr create" ]; then
+    if [[ " $* " == *" fail-create "* ]]; then
+        echo "remote creation failed" >&2
+        exit 1
+    fi
     printf 'https://example.com/pr/1\n'
 fi
 exit 0
 EOF
 chmod +x "$stub_dir/gh"
+
+# ahm shares the call log so fixtures pin validation/create/comment ordering.
+cat > "$stub_dir/ahm" <<'EOF'
+#!/usr/bin/env bash
+for arg in "$@"; do
+    printf '%s\037' "$arg" >> "$GH_LOG"
+done
+printf '\n' >> "$GH_LOG"
+if [ "${1:-} ${2:-} ${4:-}" = "task show missing" ]; then
+    echo "task not found: missing" >&2
+    exit 1
+fi
+if [ "${1:-} ${2:-} ${4:-}" = "task comment fail-comment" ]; then
+    echo "store write failed" >&2
+    exit 1
+fi
+EOF
+chmod +x "$stub_dir/ahm"
 
 run_pr() { # <option>... — run `just pr` from the repository root with the stub on PATH
     : > "$GH_LOG"; : > "$OUT_LOG"; : > "$ERR_LOG"
@@ -56,7 +78,7 @@ show_args() { printf '%s' "$1" | tr '\037' '|'; }
 expect_invocation() { # <index> <expected argv, sep-separated>
     actual="$(sed -n "${1}p" "$GH_LOG")"
     if [ "$actual" != "$2" ]; then
-        fail "gh invocation $1: expected '$(show_args "$2")', got '$(show_args "$actual")'"
+        fail "tool invocation $1: expected '$(show_args "$2")', got '$(show_args "$actual")'"
     fi
 }
 
@@ -129,15 +151,44 @@ run_pr "body=$tmp/nope.md"
 expect_failure "missing body file" "body file not found"
 expect_no_creation
 
-# issue comments the created URL back after creation
-run_pr "issue=123"
-[ "$rc" -eq 0 ] || fail "issue link: expected success, got $rc: $(cat "$ERR_LOG")"
-[ "$(invocations)" -eq 2 ] || fail "issue link: expected two gh invocations"
-expect_invocation 2 "issue${sep}comment${sep}123${sep}--body${sep}PR: https://example.com/pr/1${sep}"
+# task validates the destination before creation and comments the resulting URL.
+for task_id in 001 033a; do
+    run_pr "task=$task_id"
+    [ "$rc" -eq 0 ] || fail "task link: expected success, got $rc: $(cat "$ERR_LOG")"
+    [ "$(invocations)" -eq 3 ] || fail "task link: expected three tool invocations"
+    expect_invocation 1 "task${sep}show${sep}--${sep}${task_id}${sep}"
+    expect_invocation 2 "pr${sep}create${sep}--base${sep}master${sep}--fill${sep}"
+    expect_invocation 3 "task${sep}comment${sep}--${sep}${task_id}${sep}PR: https://example.com/pr/1${sep}"
+done
 
-# Non-numeric issue fails before creation
-run_pr "issue=abc"
-expect_failure "non-numeric issue" "must be a number"
+# Missing tasks stop before remote creation.
+run_pr "task=missing"
+expect_failure "missing task" "task not found"
+[ "$(invocations)" -eq 1 ] || fail "missing task: expected only ahm validation"
+expect_invocation 1 "task${sep}show${sep}--${sep}missing${sep}"
+
+run_pr "task="
+expect_failure "empty task" "requires an ahm task ID"
+expect_no_creation
+
+# A failed comment-back retains the PR URL and gives a recovery instruction.
+run_pr "task=fail-comment"
+expect_failure "comment failure" "PR created at"
+[ "$(invocations)" -eq 3 ] || fail "comment failure: expected create and comment attempt"
+grep -q "https://example.com/pr/1" "$OUT_LOG" || fail "comment failure: PR URL missing"
+
+# Failed PR creation never comments on the task.
+run_pr "task=001" "title=fail-create"
+expect_failure "create failure" "remote creation failed"
+[ "$(invocations)" -eq 2 ] || fail "create failure: expected validation and creation attempt only"
+
+# Flag-shaped input remains an operand for ahm validation, not an option.
+run_pr "task=--help"
+expect_invocation 1 "task${sep}show${sep}--${sep}--help${sep}"
+
+# The retired issue option cannot silently create an unlinked PR.
+run_pr "issue=123"
+expect_failure "retired issue option" "unknown option"
 expect_no_creation
 
 echo "test-just-pr: all pr recipe cases passed"

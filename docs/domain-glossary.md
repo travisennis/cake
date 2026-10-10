@@ -2,7 +2,7 @@
 
 This document records concepts whose names collide with other concepts in Cake. It exists to prevent one specific mistake: treating two code paths as duplicate implementations of one idea when they answer different questions.
 
-It is a glossary and nothing else. It is not a specification, not a design record, and not a place for open questions --- those belong in GitHub issues. Decisions belong in [ADRs](adr/README.md); this document records only what a term means and what it is confused with.
+It is a glossary and nothing else. It is not a specification, not a design record, and not a place for open questions --- those belong in ahm tasks. Decisions belong in [ADRs](adr/README.md); this document records only what a term means and what it is confused with.
 
 ## When to read it
 
@@ -10,7 +10,7 @@ Read an entry before reporting that two functions, types, or code paths duplicat
 
 ## When to add an entry
 
-Add one only when a specific decision needed it, and cite that issue or pull request in the entry. An entry written speculatively has not prevented anything and costs context in every session that loads this file. Two terms that merely sound similar do not qualify; the bar is that someone actually conflated them and was wrong.
+Add one only when a specific decision needed it, and cite that task id or pull request in the entry. An entry written speculatively has not prevented anything and costs context in every session that loads this file. Two terms that merely sound similar do not qualify; the bar is that someone actually conflated them and was wrong.
 
 Each entry names the code symbols it describes under **Anchors**. `just lint-domain-glossary` verifies those symbols still exist, so an entry cannot silently outlive the code it explains.
 

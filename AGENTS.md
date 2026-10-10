@@ -8,13 +8,13 @@ Users depend on CLI shape and exit behavior, machine-readable output, tool and s
 
 ## Operating loop
 
-1. Classify the change, pick the route below, and load only that route's documents.
+1. Run `ahm prime` for managed work, then classify the change, pick the route below, and load only that route's documents.
 2. Decide whether the task edits repository files. Read-only audits, research, recommendations, and backlog inspection stay on the current branch with no branch, commit, GitHub, or pull-request side effects unless requested. If edits are needed, create the branch immediately before the first edit: `just branch <type>/<slug>`, or `just worktree <type>/<slug>` beside another agent.
 3. Read the smallest relevant code and tests. [ARCHITECTURE.md](ARCHITECTURE.md) names the code authority for each surface.
 4. Keep the diff narrow: no mixing behavior changes, dependency updates, formatting, snapshot regeneration, or unrelated cleanup. Churn hides the change a reviewer needs to see.
 5. Run checks proportionate to the risk, per [CONTRIBUTING.md](CONTRIBUTING.md), and preflight before handoff.
-6. Track implementation or requested managed records in a GitHub issue per [docs/workflow/tasks.md](docs/workflow/tasks.md). Read-only reports stay in the response unless persistence is requested.
-7. Open a pull request when edits are complete and the task calls for one; then stop and hand off. Do not merge, auto-merge, close the PR or issue, or delete the remote branch without explicit user approval.
+6. Track implementation or requested managed records in an ahm task per [docs/workflow/tasks.md](docs/workflow/tasks.md): start with `ahm task start <id>` and complete with `ahm task complete <id>` before the final implementing commit. Read-only reports stay in the response unless persistence is requested.
+7. Open a pull request when edits are complete and the task calls for one; then stop and hand off. Do not merge, auto-merge, close the PR, or delete the remote branch without explicit user approval.
 
 Implementation work follows the ExecPlan thresholds in [docs/workflow/tasks.md](docs/workflow/tasks.md); read-only audits, recommendations, and small documentation or skill edits do not require one unless requested.
 
@@ -22,11 +22,11 @@ Implementation work follows the ExecPlan thresholds in [docs/workflow/tasks.md](
 
 Load the matching route. Each document named is its surface's authority and links the decisions behind it.
 
-### Managed work: issues, ExecPlans, ADRs, research
+### Managed work: tasks, ExecPlans, ADRs, research
 
 Choosing, preparing, and closing work; execution plans; research evidence; architecture decisions.
 
-- [Task workflow](docs/workflow/tasks.md), for the issue lifecycle.
+- [Task workflow](docs/workflow/tasks.md), for the task lifecycle.
 - [ExecPlan workflow](docs/workflow/exec-plans.md), [ADR README](docs/adr/README.md), and [Research workflow](docs/workflow/research.md), for authoring each record.
 
 ### CLI, output formats, and exit behavior
@@ -110,7 +110,7 @@ Complexity targets, CRAP scores, coverage, and the coverage-first refactoring wo
 - Preserve unrelated user changes; never clean or revert them.
 - Never resolve a merge conflict in `ci/cargo-crap-baseline.json` by hand. Take `master`'s copy, then regenerate it with `just change-risk-baseline`.
 - Use Conventional Commits, scoped only from the `cog.toml` allowlist; verified by the commit-msg hook. See [CONTRIBUTING.md](CONTRIBUTING.md) for scope selection.
-- Future work and unresolved questions belong in GitHub issues, not durable docs.
+- Future work and unresolved questions belong in ahm tasks, not durable docs.
 
 ## Pull requests
 
