@@ -24,7 +24,7 @@ This ADR is proposed. It records a reviewable design; it does not assert that co
 - Handle one tool-heavy task, not only conversations with many user messages.
 - Keep provider calls, memory, summary input, summary output, and recovery bounded.
 - Preserve the configured provider, model, and reasoning effort; account for failed summary attempts without confusing cost with context size.
-- Make new session and stream records explicit compatibility changes, with fail-closed validation.
+- Make the new session and stream records self-versioning and fail-closed, without changing the file format version.
 - Keep prompts, permissions, sandbox policy, skills, and live BashSession state outside generated memory's authority.
 
 ## Considered Options
@@ -41,7 +41,7 @@ Chosen option: append a self-contained checkpoint, preserve raw history, and pro
 
 ### Checkpoint and projection
 
-Add a `compaction` session record with a checkpoint version, checkpoint UUID, session/task identity, timestamp, trigger (`manual`, `threshold`, or `overflow`), summary text, retained conversation records, configured model identity, and estimated input sizes before and after. Record sizes as estimates, with their basis, rather than presenting them as provider measurements. Store the resolved summary instruction's version for provenance.
+Add a `compaction` session record with a checkpoint version, checkpoint UUID, session/task identity, timestamp, trigger (`manual`, `threshold`, or `overflow`), summary text, retained conversation records, configured model identity, and estimated input sizes before and after. It is one more record kind in the existing version-4 JSONL stream: the session header and its `format_version` do not change, and the record carries its own version so a reader can validate it. Record sizes as estimates, with their basis, rather than presenting them as provider measurements. Store the resolved summary instruction's version for provenance.
 
 The retained records form a restricted typed union of existing message, reasoning, function-call, and function-call-output payloads. They preserve IDs, timestamps, images, and execution-time replay declarations. They cannot contain another checkpoint, prompt-context records, task boundaries, hook audit, or usage records. This avoids recursively nested checkpoints and a second provider conversation schema.
 
@@ -53,6 +53,8 @@ Cut only between complete provider exchanges: an assistant response's associated
 
 Only the latest checkpoint contributes a summary. The next summary incorporates the previous summary and newly retired context; it does not repeatedly re-read all raw history. Prompt-context records remain audit data, and each invocation rebuilds current instructions as it does today.
 
+The retired boundary is positional, not a stored index: the latest `compaction` record's place in the append-only stream marks the cut. Every conversation record before that point is represented by the checkpoint --- its summary and its retained tail --- and every record after it is sent as-is. A stored raw index would be a pointer into history, which the append-only and fork semantics cannot keep stable, while a record's position always can. Matching retired records by content or call ID is rejected for the same reason: provider call IDs repeat after completed exchanges. Fork re-envelops the latest checkpoint at its original position among the copied records so the same boundary is reconstructed under the new session identity.
+
 ### Initial policy and sizing
 
 Add a profile-aware `[compaction]` settings overlay with `enabled = false`, `threshold_percent = 80`, `keep_recent_tokens = 20000`, and `summary_tokens = 4096`. Validate positive token settings and a threshold from 10 through 80. Explicit manual compaction remains available with automatic policy disabled. The feature is opt-in while continuation quality is evaluated.
@@ -60,6 +62,8 @@ Add a profile-aware `[compaction]` settings overlay with `enabled = false`, `thr
 Automatic checks require a known configured input window `W` and run immediately before every logical provider request, after tool results and other context additions are settled. The trigger is estimated input at or above `floor(W * threshold_percent / 100)`. Retained-tail and summary targets are clamped to `min(keep_recent_tokens, floor(W / 4))` and `min(summary_tokens, floor(W / 16))`; a zero target is an invalid effective budget. The input-window setting retains its current meaning: do not subtract output allowance a second time. The provider's output cap and any provider-specific total-window constraints remain separate.
 
 Prefer complete, positive main-request input usage tied to the exact projection and model that produced it, plus estimates of all subsequently added content. Fall back to estimating the complete request, including prompts, tool schemas, images, and replay content, when usage is missing, zero, partial, or invalidated by compaction, changed prompts/tools, or model changes. Cake's current partial marker does not prove which input counters were present. Cache token details are not added again to normalized input tokens. Estimates are heuristics, not hard provider guarantees; use a conservative margin and the bounded overflow path.
+
+Estimate unmeasured content with one pure function that assigns a fixed characters-per-token ratio by content class: prose, JSON and code text, and base64 or opaque replay bytes each converts more densely than plain prose, and each inline image carries a conservative flat token cost because its provider cost tracks its dimensions rather than its base64 length. Apply a documented safety margin (for example one quarter above the raw estimate) so the estimate errs toward triggering early. Keep the ratios and margin in one place, and treat every value computed this way as an estimate with a recorded basis. The measured `input_tokens` of the last main request is the anchor and is never re-derived by this function; Cake ships no tokenizer and downloads none.
 
 A candidate must be smaller than its source projection and, with a known window, fit below the trigger after including fresh prompts, exact pinned inputs, summary, retained tail, and tool schemas. Shrink the tail only by whole exchanges. If fixed context or pinned input prevents progress, report no fit. Invalidate the old usage basis after activation and use the candidate estimate until a new main request reports usage. Never use a summary request's usage as that basis.
 
@@ -89,19 +93,19 @@ Keep transport retries bounded by their existing policy. Preserve the current `T
 
 ### Compatibility, fork, and output
 
-Newly created sessions use format version 5. New Cake readers support both version 4 and version 5 through one shared format-support check; unknown versions and checkpoint versions are rejected. Version-4 sessions remain replayable and resumable with automatic compaction disabled. They are never relabeled or rewritten. Enabling automatic compaction on a v4 resume, or manually compacting a v4 session, fails before task append or model work with guidance to make an explicit `--fork` into v5. Forking is an existing user-authorized operation; compaction never silently changes session identity.
+The session file format stays version 4. A checkpoint is one additional, self-versioned record kind appended to the existing stream, so no header changes and no format migration occurs. Readers validate the checkpoint record's own version and reject unknown checkpoint versions. Because `SessionRecord` is internally tagged by `type`, a reader that predates this record kind fails loudly on a checkpoint-bearing file instead of misreading it; older binaries are simply not a supported reader for such files, and the file need not advertise that. Compaction appends in place on any format-4 session, subject to the writer lock. It never rewrites earlier bytes and never changes session identity.
 
-Fork creates a new v5 file and preserves copied raw conversation and replay metadata, activation metadata, and the latest self-contained checkpoint when present. Later records retain their order, checkpoint envelopes name the new session, and no checkpoint points into the source file. Reconstruct the same effective context under fresh prompts, with fresh usage estimation rather than copied pre-compaction measurements. Interrupted-call repairs still execute no tools.
+Fork creates a new file and preserves copied raw conversation and replay metadata, activation metadata, and the latest self-contained checkpoint when present. It re-envelopes that checkpoint for the new session at its original position among the copied records, so the same positional boundary is reconstructed. Later records retain their order, checkpoint envelopes name the new session, and no checkpoint points into the source file. Reconstruct the same effective context under fresh prompts, with fresh usage estimation rather than copied pre-compaction measurements. Interrupted-call repairs still execute no tools.
 
 Add `compaction_start` and `compaction_end` live stream events with bounded status/trigger/size metadata. Successful live ordering is start, checkpoint commit, checkpoint stream emission, then end. Persist start/end as audit metadata, without sending them to the provider. Replay emits the checkpoint once in physical order, never expanding its copied tail into duplicate message/tool events. Session-only usage records remain absent from stream-json. A failed prepare operation emits failure end metadata and no checkpoint; an interrupted process may leave start without end. Text progress goes to stderr. Normal task JSON keeps its established fields; manual command JSON reports its checkpoint identity and estimates explicitly, without interleaving stream events.
 
-Manual entry point: `cake sessions compact <UUID> [--instructions TEXT] [--json]`. It obtains the session writer lock before loading mutable state, resolves model identity and fresh prompts by the existing session rules, appends a normal task boundary for the operation, runs only compaction, and exits without a continuation or tool execution. It requires v5 and reports an explicit no-op when nothing is safely compactable. JSON uses the existing diagnostic document envelope. Input/identity errors exit 3, operational failures exit 1, success/no-op exits 0, and interruption exits 130.
+Manual entry point: `cake sessions compact <UUID> [--instructions TEXT] [--json]`. It obtains the session writer lock before loading mutable state, resolves model identity and fresh prompts by the existing session rules, appends a normal task boundary for the operation, runs only compaction, and exits without a continuation or tool execution. It compacts in place and reports an explicit no-op when nothing is safely compactable. JSON uses the existing diagnostic document envelope. Input/identity errors exit 3, operational failures exit 1, success/no-op exits 0, and interruption exits 130.
 
 ### Trust and scope
 
 Summary content never changes tool allowlists, sandbox grants, permission decisions, hook configuration, skill activation state, or the BashSession process registry. Summarization does not read archived output files on its own. Existing output paths may be cited, but compaction grants no new archive access and promises no retention beyond existing spill-file lifetime. A full archive retrieval tool and fx-style ledgers require separate tasks.
 
-This decision partially replaces ADR 004's v4-only reader/new-file policy and extends ADR 021's stream vocabulary, ADR 025/030's usage attribution, and ADR 026's preservation requirement to checkpoint tails. It preserves append-only transcript storage, conservative interrupted-call repair, and ordinary tool execution semantics.
+This decision extends ADR 004's record vocabulary within format version 4 and extends ADR 021's stream vocabulary, ADR 025/030's usage attribution, and ADR 026's preservation requirement to checkpoint tails. It preserves append-only transcript storage, conservative interrupted-call repair, and ordinary tool execution semantics.
 
 ### Consequences
 
@@ -110,7 +114,7 @@ This decision partially replaces ADR 004's v4-only reader/new-file policy and ex
 - Good, because explicit cost attribution and operation bounds respect the user's configured model and quota.
 - Bad, because summaries can omit or distort information; exact current input and recent evidence reduce but do not eliminate that risk.
 - Bad, because retained records duplicate bounded transcript data, and checkpoint sync adds latency.
-- Bad, because older Cake binaries cannot read v5 files, and existing v4 sessions need an explicit fork before using compaction.
+- Bad, because a session that contains a checkpoint is no longer readable by an older Cake binary, and the unchanged file-format version does not advertise that.
 - Bad, because fixed prompts, oversized pinned input, opaque content, provider limits, or summary failure can still stop a task; this feature does not promise unlimited context.
 
 ## More Information
