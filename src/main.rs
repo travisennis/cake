@@ -8,6 +8,7 @@ mod config;
 mod exit_code;
 mod hooks;
 mod logger;
+mod program_status;
 mod prompts;
 mod session_telemetry;
 mod time_format;
@@ -32,6 +33,7 @@ use crate::config::{
     discover_skills_with_paths, parse_skill_path_list, read_agents_files, worktree,
 };
 use crate::hooks::{HookContext, HookRunner, SessionEndReason};
+use crate::program_status::{BlockedKind, State};
 
 use crate::session_telemetry::{SessionTelemetryRecord, SessionTelemetryWriter};
 
@@ -213,6 +215,13 @@ impl CodingAssistant {
             return Ok(None);
         }
 
+        // Input is connected to a pipe, so cake cannot continue until the
+        // writer finishes. Report the wait rather than an unexplained pause.
+        program_status::report(
+            State::Blocked(BlockedKind::Question),
+            Some("Waiting for prompt input on stdin"),
+        );
+
         let mut stdin = std::io::stdin().take(Self::MAX_STDIN_SIZE + 1);
         let mut buf = String::new();
         stdin.read_to_string(&mut buf)?;
@@ -224,6 +233,9 @@ impl CodingAssistant {
                 Self::MAX_STDIN_SIZE / (1024 * 1024)
             );
         }
+
+        // The wait is over; the run is working again.
+        program_status::report(State::Working, None);
 
         if buf.is_empty() {
             Ok(None)
@@ -1178,6 +1190,21 @@ impl CodingAssistant {
             }
         }
     }
+
+    /// Report the turn's result as the run's final terminal state.
+    ///
+    /// The turn result, not the process exit code, is the authority: JSON and
+    /// stream-json runs report a failed turn in their own output and still exit
+    /// `0`, and a terminal showing `done` for them would be wrong. `msg`
+    /// carries the same sink-safe error text the run prints on stderr.
+    fn report_turn_outcome(result: &Result<String, anyhow::Error>) {
+        match result {
+            Ok(_) => program_status::report(State::Done, None),
+            Err(error) => {
+                program_status::report(State::Error, Some(&sink_safe_error_text(error)));
+            },
+        }
+    }
 }
 
 fn is_output_schema_exhaustion(error: &anyhow::Error) -> bool {
@@ -1284,6 +1311,9 @@ impl CmdRunner for CodingAssistant {
         let output = self.output_sink();
         let mut client = output.attach_callbacks(client);
 
+        // The agent turn is about to run; everything before this was setup.
+        program_status::report(State::Working, None);
+
         // Race interrupt signals (Ctrl-C, and SIGTERM on Unix) against the
         // agent turn so we can emit a clean TaskComplete record even when
         // interrupted.
@@ -1304,6 +1334,11 @@ impl CmdRunner for CodingAssistant {
                 Ok(t) => t,
                 Err(e) => {
                     Self::restore_post_turn_signal_state();
+                    // The turn began and failed before it produced a result ---
+                    // a session-start hook that failed, or a completion record
+                    // that could not be written. Report the failure instead of
+                    // leaving the terminal on `working` until the process exits.
+                    program_status::report(State::Error, Some(&sink_safe_error_text(&e)));
                     return Err(e);
                 },
             },
@@ -1332,6 +1367,7 @@ impl CmdRunner for CodingAssistant {
             turn.duration_ms,
             turn.result.as_ref().err().map(sink_safe_error_text),
         );
+        Self::report_turn_outcome(&turn.result);
         output.render_turn(
             turn,
             &client,
@@ -1410,10 +1446,10 @@ impl CodingAssistant {
 
     /// Handle a user interrupt (Ctrl-C or SIGTERM) during an agent turn.
     ///
-    /// Emits a `TaskComplete` record with an `Interrupted` outcome, writes
-    /// the telemetry summary, and returns an `Interrupted` error that
-    /// `main()` maps to exit code 130. Worktree cleanup is handled by
-    /// [`WorktreeGuard`]'s `Drop`.
+    /// Reports `idle`, emits a `TaskComplete` record with an `Interrupted`
+    /// outcome, writes the telemetry summary, and returns an `Interrupted`
+    /// error that `main()` maps to exit code 130. Worktree cleanup is handled
+    /// by [`WorktreeGuard`]'s `Drop`.
     async fn handle_interrupt(
         client: &mut Agent,
         hook_runner: Option<&Arc<HookRunner>>,
@@ -1429,6 +1465,10 @@ impl CodingAssistant {
             Self::interrupt_signal().await;
             std::process::exit(exit_code::code::INTERRUPTED.into());
         });
+
+        // The protocol asks for `idle` when the user interrupts or cancels a
+        // program, rather than an `error` the process did not hit itself.
+        program_status::report(State::Idle, Some("Interrupted by user"));
 
         let elapsed: u64 = turn_start
             .elapsed()

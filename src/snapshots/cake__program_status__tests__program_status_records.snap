@@ -1,0 +1,9 @@
+---
+source: src/program_status.rs
+expression: all_records()
+---
+ESC]7501;state=working:app=cakeESC\
+ESC]7501;state=done:app=cakeESC\
+ESC]7501;state=idle:app=cake:msg=SW50ZXJydXB0ZWQgYnkgdXNlcg==ESC\
+ESC]7501;state=error:app=cake:msg=YXBpIGZhaWx1cmU6IGNvbm5lY3Rpb24gcmVzZXQ=ESC\
+ESC]7501;state=blocked:kind=question:app=cake:msg=V2FpdGluZyBmb3IgcHJvbXB0IGlucHV0IG9uIHN0ZGluESC\
