@@ -68,6 +68,8 @@ fn task_start(task_id: &str, offset: i64) -> SessionRecord {
         session_id: SESSION_ID.to_string(),
         task_id: task_id.to_string(),
         timestamp: time(offset),
+        model: None,
+        model_config: None,
     })
 }
 

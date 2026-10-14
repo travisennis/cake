@@ -503,15 +503,38 @@ fn judge_denial_label_maps_only_real_denials() {
 fn emit_task_start_record() {
     let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let captured_clone = captured.clone();
-    let mut agent = test_agent().with_streaming_json(move |json| {
-        *captured_clone.lock().unwrap() = json.to_string();
-    });
+    let mut agent = test_agent()
+        .with_model_config_name("test-entry".to_string())
+        .with_streaming_json(move |json| {
+            *captured_clone.lock().unwrap() = json.to_string();
+        });
     agent.emit_task_start_record().unwrap();
     drop(agent);
     let json: serde_json::Value = serde_json::from_str(&captured.lock().unwrap()).unwrap();
     assert_eq!(json["type"], "task_start");
     assert_eq!(json["session_id"], "550e8400-e29b-41d4-a716-446655440000");
     assert_eq!(json["task_id"], "550e8400-e29b-41d4-a716-446655440001");
+    // The resolved identity rides the first live record so a stream consumer
+    // can name the model actually serving the run.
+    assert_eq!(json["model"], "test-model");
+    assert_eq!(json["model_config"], "test-entry");
+}
+
+#[test]
+fn emit_task_start_record_omits_an_unresolved_entry_name() {
+    // A live run always resolves a provider model ID; the `[[models]]` entry
+    // name is absent when no entry produced the run. Absence stays absent
+    // rather than being synthesized from the model ID.
+    let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let captured_clone = captured.clone();
+    let mut agent = test_agent().with_streaming_json(move |json| {
+        *captured_clone.lock().unwrap() = json.to_string();
+    });
+    agent.emit_task_start_record().unwrap();
+    drop(agent);
+    let json: serde_json::Value = serde_json::from_str(&captured.lock().unwrap()).unwrap();
+    assert_eq!(json["model"], "test-model");
+    assert!(json.get("model_config").is_none(), "{json}");
 }
 
 #[test]
@@ -522,6 +545,7 @@ fn task_records_fan_out_to_persist_and_stream() {
     let streamed_clone = streamed.clone();
 
     let mut agent = test_agent()
+        .with_model_config_name("test-entry".to_string())
         .with_persist_callback(move |record| {
             persisted_clone.lock().unwrap().push(record.clone());
             Ok(())
@@ -541,10 +565,11 @@ fn task_records_fan_out_to_persist_and_stream() {
         .unwrap();
 
     let persisted = persisted.lock().unwrap();
-    assert!(matches!(
-        persisted.first(),
-        Some(SessionRecord::TaskStart { .. })
-    ));
+    let Some(SessionRecord::TaskStart(data)) = persisted.first() else {
+        panic!("first persisted record must be task_start: {persisted:?}");
+    };
+    assert_eq!(data.model.as_deref(), Some("test-model"));
+    assert_eq!(data.model_config.as_deref(), Some("test-entry"));
     assert!(matches!(
         persisted.last(),
         Some(SessionRecord::TaskComplete { .. })
@@ -556,6 +581,8 @@ fn task_records_fan_out_to_persist_and_stream() {
     let last: serde_json::Value = serde_json::from_str(&streamed[1]).unwrap();
     drop(streamed);
     assert_eq!(first["type"], "task_start");
+    assert_eq!(first["model"], "test-model");
+    assert_eq!(first["model_config"], "test-entry");
     assert_eq!(last["type"], "task_complete");
 }
 

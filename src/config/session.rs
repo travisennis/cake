@@ -514,6 +514,8 @@ mod tests {
             session_id: session.id.to_string(),
             task_id: task_id.to_string(),
             timestamp: chrono::Utc::now(),
+            model: None,
+            model_config: None,
         })
     }
 
@@ -926,6 +928,45 @@ mod tests {
         assert_eq!(loaded.model_config, session.model_config);
         assert_eq!(loaded.records.len(), 5);
         assert_eq!(loaded.messages().len(), 2);
+    }
+
+    #[test]
+    fn task_start_model_identity_round_trips_and_stays_optional() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("session.jsonl");
+
+        let session = make_test_session();
+        let mut file = Session::create_on_disk(&path, &meta_record(&session)).unwrap();
+        Session::append_record(
+            &mut file,
+            &SessionRecord::TaskStart(TaskStartData {
+                session_id: session.id.to_string(),
+                task_id: "task-1".to_string(),
+                timestamp: chrono::Utc::now(),
+                model: Some("test-model".to_string()),
+                model_config: Some("test-config".to_string()),
+            }),
+        )
+        .unwrap();
+        // Serializing an unknown identity omits the fields, so this appends
+        // the same bytes a v4 line written before they existed carries.
+        Session::append_record(&mut file, &task_start(&session, "task-2")).unwrap();
+        drop(file);
+
+        let loaded = Session::load(&path).unwrap();
+        let starts: Vec<_> = loaded
+            .records
+            .iter()
+            .filter_map(|record| match record {
+                SessionRecord::TaskStart(data) => Some(data),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(starts.len(), 2);
+        assert_eq!(starts[0].model.as_deref(), Some("test-model"));
+        assert_eq!(starts[0].model_config.as_deref(), Some("test-config"));
+        assert!(starts[1].model.is_none());
+        assert!(starts[1].model_config.is_none());
     }
 
     #[test]

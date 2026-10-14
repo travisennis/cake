@@ -300,6 +300,16 @@ pub struct TaskStartData {
     pub session_id: String,
     pub task_id: String,
     pub timestamp: DateTime<Utc>,
+    /// The provider model ID cake resolved for this task. Absent when the
+    /// identity is unknown, such as a record replayed from a session file
+    /// written before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// The `[[models]]` entry name cake resolved for this task; the preferred
+    /// identity when several entries share one provider model ID. Absent in
+    /// the same cases as `model`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_config: Option<String>,
 }
 
 /// Shared data for `Message` records in both `StreamRecord` and `SessionRecord`.

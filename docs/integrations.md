@@ -55,6 +55,8 @@ Progress and retry rendering are suppressed so stdout remains parseable. The exa
 
 `--output-format stream-json` emits newline-delimited JSON records for the current invocation as events occur. It includes task boundaries, conversation items, hook events, and task completion. It does not emit session metadata, skill-activation metadata, or prior tasks.
 
+The first record is `task_start`, and it reports the resolved model identity serving the run: `model` is the provider model ID and `model_config` is the `[[models]]` entry name, the same split as `session_meta`. Both fields are absent when the identity is unknown; a consumer must tolerate their absence and must not substitute the raw `--model` value.
+
 A redirected stream is an event feed, not a resumable session file. Consumers should process records by their top-level `type`, preserve order, ignore unknown optional fields, and use `call_id` to associate tool calls, outputs, and hook events.
 
 Malformed model tool arguments remain visible on the `function_call` record and produce a corresponding error output instead of making the stream invalid.
@@ -113,7 +115,7 @@ failed, or came in below the cutoff. Its `outcome` is `absent` when no request w
 
 ## Session replay
 
-`cake --output-format stream-json replay <uuid>` re-emits an existing session transcript as stream-json without running a prompt, reading the file read-only (no lock, no append, no network) and preserving record order. Replay is the only stream-json mode that emits `session_meta`, `prompt_context`, and `skill_activated`; live invocations never do.
+`cake --output-format stream-json replay <uuid>` re-emits an existing session transcript as stream-json without running a prompt, reading the file read-only (no lock, no append, no network) and preserving record order. Replay is the only stream-json mode that emits `session_meta`, `prompt_context`, and `skill_activated`; live invocations never do. It re-emits stored records verbatim, so a replayed `task_start` carries the identity the file records; a file written before the identity fields existed replays without them.
 
 Replay skips a trailing partial record from an interrupted writer, matching the session loader's tolerance, and treats a `session_meta` whose `session_id` does not match the requested UUID as `corrupt`.
 
@@ -166,7 +168,7 @@ Live `function_call` and `function_call_output` records may carry an optional `r
 ### Record semantics
 
 - `session_meta`: version, session identity, creation context, tools, optional model/system prompt, optional model-config entry name, and Git state. `model` is the provider model ID; `model_config` is the `[[models]]` entry name the session was created with and is the preferred resume identity when several entries share one ID.
-- `task_start`: task identity and timestamp for one CLI invocation.
+- `task_start`: task identity and timestamp for one CLI invocation, plus the resolved model identity when it is known: `model` is the provider model ID and `model_config` is the `[[models]]` entry name, with the same split as `session_meta`. Both fields are absent when the identity is unknown --- a record replayed from a session file written before they existed, or one built without a resolved model --- and absence is never filled in from the raw `--model` argument.
 - `prompt_context`: mutable developer context used by that invocation.
 - `message`: typed user, assistant, or tool text, plus an optional `images` array of `{media_type, data_base64}` objects. The field is absent on text-only records and on records written before image support existed; a loader treats an absent field as no images.
 - `function_call` and `function_call_output`: provider tool request and result, joined by `call_id`. A `function_call_output` may carry the same optional `images` array when the tool returned image bytes.

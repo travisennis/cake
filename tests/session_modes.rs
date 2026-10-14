@@ -185,3 +185,38 @@ async fn fork_creates_new_session_and_reaches_provider() {
         "fork should persist a new session beside the seeded one"
     );
 }
+
+/// The live stream's first record reports the model identity the run resolved,
+/// so a streaming consumer never has to guess from `--model` or read settings.
+#[tokio::test]
+async fn resume_stream_task_start_reports_the_resolved_model_identity() {
+    let env = TestEnv::new("cake-resume-identity-test");
+    let mock_server = MockServer::start().await;
+    write_responses_settings(&env, &mock_server.uri());
+    write_session_fixture(&env, &minimal_records(&env));
+
+    let output = run_mode(
+        &env,
+        &mock_server,
+        &[
+            "--output-format",
+            "stream-json",
+            "--resume",
+            SESSION_ID,
+            "carry on",
+        ],
+    )
+    .await;
+    assert!(
+        output.status.success(),
+        "resume should succeed. stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stream = String::from_utf8(output.stdout).expect("stream-json should be UTF-8");
+    let first_line = stream.lines().next().expect("the stream should start");
+    let first: serde_json::Value = serde_json::from_str(first_line).expect("valid first record");
+    assert_eq!(first["type"], "task_start");
+    assert_eq!(first["model"], "glm-5.1");
+    assert_eq!(first["model_config"], "test");
+}
