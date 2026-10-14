@@ -55,7 +55,7 @@ Progress and retry rendering are suppressed so stdout remains parseable. The exa
 
 `--output-format stream-json` emits newline-delimited JSON records for the current invocation as events occur. It includes task boundaries, conversation items, hook events, and task completion. It does not emit session metadata, skill-activation metadata, or prior tasks.
 
-The first record is `task_start`, and it reports the resolved model identity serving the run: `model` is the provider model ID and `model_config` is the `[[models]]` entry name, the same split as `session_meta`. Both fields are absent when the identity is unknown; a consumer must tolerate their absence and must not substitute the raw `--model` value.
+The `task_start` record that opens a task reports the resolved model identity serving the run: `model` is the provider model ID and `model_config` is the `[[models]]` entry name, the same split as `session_meta`. Both fields are absent when the identity is unknown; a consumer must tolerate their absence and must not substitute the raw `--model` value.
 
 A redirected stream is an event feed, not a resumable session file. Consumers should process records by their top-level `type`, preserve order, ignore unknown optional fields, and use `call_id` to associate tool calls, outputs, and hook events.
 

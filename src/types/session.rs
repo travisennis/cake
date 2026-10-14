@@ -300,9 +300,9 @@ pub struct TaskStartData {
     pub session_id: String,
     pub task_id: String,
     pub timestamp: DateTime<Utc>,
-    /// The provider model ID cake resolved for this task. Absent when the
-    /// identity is unknown, such as a record replayed from a session file
-    /// written before the field existed.
+    /// The provider model ID cake resolved for this task. A live run always
+    /// resolves one; the field is absent on a record loaded from a session
+    /// file written before it existed, or built without a resolved model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     /// The `[[models]]` entry name cake resolved for this task; the preferred
