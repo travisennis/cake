@@ -612,3 +612,57 @@ api_key_env = "NO_SESSION_TEST_KEY"
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[test]
+fn captured_stderr_carries_no_program_status_report() {
+    // Program status reporting is terminal-only. A run that reaches the agent
+    // turn --- here failing on an unreachable provider --- and the piped-stdin
+    // path that reports `blocked` while it waits must leave a captured stderr
+    // free of OSC 7501 sequences.
+    let env = cake_env();
+    env.write_project_settings(
+        r#"
+default_model = "test"
+
+[[models]]
+name = "test"
+model = "glm-5.1"
+base_url = "not-a-url"
+api_key_env = "PROGRAM_STATUS_TEST_KEY"
+"#,
+    );
+
+    let mut child = env
+        .command()
+        .arg("--no-session")
+        .arg("-")
+        .env("PROGRAM_STATUS_TEST_KEY", "test-token")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("Failed to spawn command");
+
+    child
+        .stdin
+        .take()
+        .expect("stdin should be piped")
+        .write_all(b"a prompt from a pipe")
+        .expect("failed to write stdin");
+
+    let output = child
+        .wait_with_output()
+        .expect("Failed to wait for command");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(!output.status.success(), "the run should fail: {stderr}");
+    assert!(
+        !stderr.contains("\u{1b}]7501;"),
+        "captured stderr must not carry a program status report: {stderr:?}"
+    );
+    assert!(
+        !stdout.contains("\u{1b}]7501;"),
+        "stdout stays machine-readable: {stdout:?}"
+    );
+}

@@ -21,6 +21,12 @@ For `stream-json`, validation failures before a task stream starts still use the
 
 Interruption follows one graceful path for both Ctrl-C (SIGINT) and, on Unix, SIGTERM --- the signal process supervisors use to cancel a run. The active task closes with an interrupted `task_complete` record and the telemetry summary is flushed before the process exits `130`.
 
+## Terminal status reports (OSC 7501)
+
+A prompt run reports its own state with the [Program Status Protocol](https://www.superlogical.com/rex/docs/build/program-status), so a terminal or an agent inbox can show what cake is doing without window-title heuristics or a per-tool integration. Reports go to stderr, only when stderr is a terminal, and only from a prompt run: a piped, redirected, or captured stderr never carries a sequence, and stdout, session records, stream-json events, hook payloads, and the model-visible conversation never carry one at all. Reporting needs no setting, because a terminal that does not know the sequence ignores it.
+
+Each report replaces cake's root record: no `id`, `app=cake` on every report. `working` starts an agent turn, `done` ends a turn whose result is ready to be seen, `error` ends a turn that failed and carries the run's error text as `msg`, `idle` reports a user interruption, and `blocked` with `kind=question` reports the wait for a prompt on piped stdin. A failure before the agent turn --- input validation, configuration, or worktree setup --- reports nothing, and the terminal drops the transient record it was showing when the process exits. `msg` values are single-line, control characters collapsed to spaces, and shortened to the protocol's decoded limit. A failed write is ignored, and no report changes an exit code. Cake never sends `clear`: a process exit already drops a `working` or `blocked` record, and a `done` or `error` record is left behind for the user to find. See [ADR 042](adr/042-report-run-state-with-the-osc-7501-program-status-protocol.md).
+
 ## Provider tool schemas
 
 For Responses requests to `api.openai.com` and the ChatGPT Codex backend, Cake sends function tools with explicit `strict: false`. This opts out of automatic strict-schema normalization and preserves the original parameter schemas and optional fields. Tool calling remains best-effort; executors still validate arguments. Other Responses providers and Chat Completions keep their existing tool serialization. This setting does not change strict final-output constraints from `--output-schema`.

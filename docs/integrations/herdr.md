@@ -2,6 +2,8 @@
 
 Use this integration guide to report Cake's lifecycle to [Herdr](https://herdr.dev) so a Cake pane shows `working` while a turn runs, settles when the turn finishes, and releases its lifecycle authority before the one-shot process exits. The integration is configuration only: a reporter script plus `hooks.json` entries. No Cake code changes are required. The same pattern works for any host that reports agent state from lifecycle hooks.
 
+A host that consumes Cake's own [terminal status reports](../integrations.md#terminal-status-reports-osc-7501) needs no hook integration for state. This guide remains for hosts that read state from hooks instead.
+
 This guide targets Unix-like systems (macOS and Linux). Cake does not currently support Windows as a built or tested target, so this guide intentionally provides no Windows configuration.
 
 ## When to Use It
@@ -33,7 +35,7 @@ Cake supplies what the report needs. Hook commands inherit the pane environment,
   | `ErrorOccurred`    | `report-agent --state idle`    | A provider or turn error occurred after send.                            |
   | `SessionEnd`       | `release-agent`                | The one-shot invocation reached a graceful success, error, or interrupt. |
 
-`PreToolUse`/`PostToolUse` are not needed because `working` already covers the whole turn. Cake never reports `blocked`: it has no interactive permission or ask flow ([Integration contracts](../integrations.md)), so it never pauses mid-turn for a user decision.
+`PreToolUse`/`PostToolUse` are not needed because `working` already covers the whole turn. The hooks never carry `blocked`: Cake has no interactive permission or ask flow ([Integration contracts](../integrations.md)), so it never pauses mid-turn for a user decision, and its own terminal reporting reserves `blocked` for the wait on piped stdin.
 
 ## Install
 
@@ -162,7 +164,7 @@ If no state appears, re-run with `HERDR_CAKE_LOG` set and confirm the pane expor
 - **Hard exits bypass hooks.** A process crash, `SIGKILL`, or Cake's second-interrupt hard exit cannot run `SessionEnd`. An interrupt that lands while the release command is still running kills that subprocess, and Cake then runs the command once more with an `interrupted` payload. Herdr still observes the one-shot process exit, but a different host may retain stale custom lifecycle authority.
 - **No native session identity.** Cake's `session_id` and transcript path are available in hook payloads, but current Herdr only retains session references for registered integrations; `custom:cake` is not one. This guide reports lifecycle state only.
 - **One-shot agent.** Cake runs one agent turn per process, so `idle` means the process is about to exit, not that it is waiting for the next prompt.
-- **`blocked` is unreachable.** Cake has no mid-turn user decision, so only `working` and `idle` are ever reported.
+- **`blocked` has no hook event.** Cake has no mid-turn user decision, so a hook-driven host never sees `blocked`. Cake's own terminal reporting uses it only while a run waits for a prompt on piped stdin ([Integration contracts](../integrations.md)).
 
 ## References
 
