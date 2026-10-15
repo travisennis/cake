@@ -8,7 +8,7 @@
 //! |------|---------------|----------------------------------------------------------|
 //! | `0`  | Success       | The agent completed and produced a response               |
 //! | `1`  | Agent error   | The model or a tool encountered an error during execution|
-//! | `2`  | API error     | Rate limit, auth failure, or network error               |
+//! | `2`  | API error     | Rate limit, auth, network, or request-timeout error      |
 //! | `3`  | Input error   | No prompt provided, invalid flags, missing API key       |
 //! | `130`| Interrupted   | User interrupted the run with Ctrl-C                     |
 
@@ -23,7 +23,7 @@ pub mod code {
     pub const SUCCESS: u8 = 0;
     /// Agent or tool error during execution.
     pub const AGENT_ERROR: u8 = 1;
-    /// API error (rate limit, auth failure, network error).
+    /// API error (rate limit, auth, network, or request-timeout failure).
     pub const API_ERROR: u8 = 2;
     /// Input error (no prompt, invalid flags, missing API key).
     pub const INPUT_ERROR: u8 = 3;
@@ -80,8 +80,8 @@ fn classify_typed_error(err: &anyhow::Error) -> Option<u8> {
 
     // Judge failures are provider/agent errors: a timeout or transport
     // failure is an API/network error, while a malformed verdict or refusal
-    // is a judge (agent) error. Matches the ApiError convention: auth and
-    // rate-limit HTTP statuses are API errors.
+    // is a judge (agent) error. Matches the ApiError convention: auth,
+    // rate-limit, and request-timeout HTTP statuses are API errors.
     if let Some(judge_err) = err.downcast_ref::<crate::clients::judge::JudgeError>() {
         return Some(classify_judge_error(judge_err));
     }
@@ -122,9 +122,20 @@ fn is_cli_input_error(err: &anyhow::Error) -> bool {
 }
 
 /// Classify a structured [`ApiError`]'s HTTP status.
+///
+/// Class 2 is the provider-failure class: authentication (`401`, `403`), rate
+/// limiting (`429`), and request timeouts (`408`). A `408` is the status
+/// counterpart of the client-side timeouts that already map here ---
+/// `reqwest::Error::is_timeout()` and the typed judge timeout --- so the same
+/// provider failure exits the same way whichever layer observed it.
+///
+/// Retryability is a separate transport-recovery concern and does not decide
+/// the class: `409` (lock timeout), `5xx`, and `529` are retried but stay agent
+/// errors, because the provider answered. A tool-level timeout (a Bash tool
+/// waiting on its own overrides) is a tool error for the same reason.
 const fn classify_api_error_status(status: u16) -> u8 {
     match status {
-        401 | 403 | 429 => code::API_ERROR,
+        401 | 403 | 408 | 429 => code::API_ERROR,
         _ => code::AGENT_ERROR,
     }
 }
@@ -139,9 +150,9 @@ const fn classify_schema_error(error: &crate::config::OutputSchemaError) -> u8 {
     }
 }
 
-/// Classify a judge failure: timeouts and network/auth/rate-limit transport
-/// failures are API errors; other HTTP failures, malformed verdicts, and
-/// refusals are judge errors.
+/// Classify a judge failure: timeouts and network/auth/rate-limit/request-timeout
+/// transport failures are API errors; other HTTP failures, malformed verdicts,
+/// and refusals are judge errors.
 fn classify_judge_error(error: &crate::clients::judge::JudgeError) -> u8 {
     match error {
         crate::clients::judge::JudgeError::Timeout(_) => code::API_ERROR,
@@ -194,9 +205,10 @@ pub fn classify(err: &anyhow::Error) -> ExitCode {
 
 /// Check if a `reqwest::Error` represents an API-level failure.
 fn is_reqwest_api_error(req_err: &reqwest::Error) -> bool {
-    // Auth failures and rate limiting (401/403/429)
+    // Status-classified failures defer to `classify_api_error_status`, so the
+    // status policy (auth, rate limit, request timeout) lives in one place.
     if let Some(status) = req_err.status()
-        && matches!(status.as_u16(), 401 | 403 | 429)
+        && classify_api_error_status(status.as_u16()) == code::API_ERROR
     {
         return true;
     }
@@ -542,12 +554,37 @@ mod tests {
     }
 
     #[test]
+    fn classify_request_timeout_via_api_error() {
+        let err = anyhow::Error::new(ApiError {
+            status: 408,
+            body: "glm-5\n\nRequest timeout".to_string(),
+        });
+        assert_eq!(classify_to_u8(&err), code::API_ERROR);
+    }
+
+    #[test]
     fn classify_server_error_via_api_error() {
         let err = anyhow::Error::new(ApiError {
             status: 500,
             body: "glm-5\n\nInternal server error".to_string(),
         });
         assert_eq!(classify_to_u8(&err), code::AGENT_ERROR);
+    }
+
+    #[test]
+    fn classify_retried_statuses_stay_agent_errors() {
+        // Retryability is separate from the exit class: these statuses are
+        // retried by the transport-recovery policy, but each one is an answer
+        // from the provider rather than a timeout-adjacent provider failure, so
+        // the exhausted retries exit `1`. `504` is the gateway's own timeout
+        // and stays here with the rest of `5xx`.
+        for status in [400, 404, 409, 500, 502, 503, 504, 529] {
+            let err = anyhow::Error::new(ApiError {
+                status,
+                body: format!("glm-5\n\nHTTP {status}"),
+            });
+            assert_eq!(classify_to_u8(&err), code::AGENT_ERROR, "status {status}");
+        }
     }
 
     // --- API error classification via network patterns ---
@@ -594,6 +631,17 @@ mod tests {
         let err = anyhow::Error::new(crate::clients::judge::JudgeError::Transport {
             status: None,
             detail: "error sending request: connection refused".to_string(),
+        });
+        assert_eq!(classify_to_u8(&err), code::API_ERROR);
+    }
+
+    #[test]
+    fn classify_judge_request_timeout_transport_as_api_error() {
+        // The judge path shares `classify_api_error_status`, so a `408` is the
+        // API class here too.
+        let err = anyhow::Error::new(crate::clients::judge::JudgeError::Transport {
+            status: Some(408),
+            detail: "request timeout".to_string(),
         });
         assert_eq!(classify_to_u8(&err), code::API_ERROR);
     }
