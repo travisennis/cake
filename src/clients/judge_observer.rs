@@ -10,7 +10,6 @@ use crate::clients::retry::{self, HttpFailure, RequestOverrides, RetryReason};
 use crate::config::model::ApiType;
 use crate::session_telemetry::{
     JudgeAttemptTelemetry, JudgeAttemptTerminalClass, ProviderTermination, RetryReasonSnapshot,
-    digest_identifier,
 };
 use crate::types::{ConversationItem, Role};
 
@@ -623,25 +622,12 @@ fn initial_attempt(
         tool_count: 0,
         tool_choice: None,
         status_code: None,
-        call_id: digest_optional_identifier(request.call_id.as_deref()),
+        call_id: request.call_id.clone().filter(|id| !id.is_empty()),
         provider_request_id: None,
         terminal_class: JudgeAttemptTerminalClass::Transport,
         usage: None,
         termination: None,
     }
-}
-
-/// The attempt-side linkage value: the originating tool call id, persisted only
-/// as its one-way digest.
-///
-/// The raw identifier is provider-controlled text and never enters the attempt,
-/// so every path out of the observer carries the digest by construction —
-/// including a request-build failure, which returns the attempt without passing
-/// through `finish`. An absent or empty id attaches nothing.
-fn digest_optional_identifier(value: Option<&str>) -> Option<String> {
-    value
-        .filter(|value| !value.is_empty())
-        .map(digest_identifier)
 }
 
 fn initial_diagnostic(
@@ -743,18 +729,16 @@ fn redact_termination(mut termination: ProviderTermination, secret: &str) -> Pro
 }
 
 /// Strictly bound the provider-controlled attempt fields against a boundary
-/// that does not depend on substring matching: provider identifiers are
-/// persisted only as one-way digests, and termination status/reason must be a
-/// known provider vocabulary value. Anything else is omitted, so a provider
+/// that does not depend on substring matching: termination status/reason must be
+/// a known provider vocabulary value. Anything else is omitted, so a provider
 /// echoing command, reason, cwd, digest, or rubric fragments cannot get them
 /// into telemetry.
 ///
-/// The originating tool call id is deliberately absent here: it is digested
-/// when the attempt is built (`digest_optional_identifier`), so no exit path
-/// from the observer depends on reaching this function. Sanitizing it here
-/// would miss the request-build-failure path, which never reaches `finish`.
+/// The identifiers are deliberately absent here: `call_id` and
+/// `provider_request_id` serialize only as one-way digests (see
+/// [`crate::session_telemetry::digest_identifier`]), so no exit path out of the
+/// observer depends on reaching this function to keep them out of a record.
 fn sanitize_attempt_provider_fields(attempt: &mut JudgeAttemptTelemetry) {
-    digest_provider_identifier(&mut attempt.provider_request_id);
     if let Some(termination) = &mut attempt.termination {
         if !termination
             .provider_status
@@ -797,20 +781,6 @@ fn is_safe_termination_value(value: &str) -> bool {
     )
 }
 
-/// Persist a provider-controlled identifier only as a one-way digest, so the
-/// sidecar never carries raw provider text. Consumers correlate an attempt
-/// with the provider or session by hashing the known raw value with the same
-/// function; an empty identifier is omitted.
-fn digest_provider_identifier(id: &mut Option<String>) {
-    if let Some(value) = id {
-        if value.is_empty() {
-            *id = None;
-        } else {
-            *value = digest_identifier(value);
-        }
-    }
-}
-
 fn elapsed_ms(started: Instant) -> u64 {
     duration_ms(started.elapsed())
 }
@@ -822,6 +792,7 @@ fn duration_ms(duration: Duration) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session_telemetry::SessionTelemetryRecord;
     use sha2::{Digest, Sha256};
 
     /// The linkage digest computed from the documented rule, independently of
@@ -833,34 +804,52 @@ mod tests {
     }
 
     #[test]
-    fn attempt_linkage_is_born_as_a_digest() {
-        // The attempt holds the digest from construction, so a request-build
-        // failure --- which returns the attempt without reaching `finish` ---
-        // cannot persist the raw identifier either.
-        let linked = digest_optional_identifier(Some("call_abc")).expect("linked attempt");
-        assert_eq!(linked, call_id_digest("call_abc"));
-        assert!(!linked.contains("call_abc"));
+    fn attempt_identifiers_serialize_only_as_digests() {
+        // The attempt carries the raw identifiers in memory, so a
+        // request-build failure --- which returns the attempt without reaching
+        // `finish` --- behaves like every other exit path: the serialization
+        // boundary hashes the value and the raw provider-controlled text never
+        // reaches a record.
+        let mut attempt = attempt_with_provider_request_id("req-opaque-123");
+        attempt.call_id = Some("call_abc".to_string());
+        let serialized = serde_json::to_string(&SessionTelemetryRecord::JudgeAttempt {
+            session_id: "session".to_string(),
+            invocation_id: "invocation".to_string(),
+            timestamp: chrono::Utc::now(),
+            attempt,
+        })
+        .expect("judge attempt record serializes");
 
-        // An absent or empty identifier attaches nothing rather than a digest
-        // of nothing, matching the compensation event's linkage rule.
-        assert_eq!(digest_optional_identifier(None), None);
-        assert_eq!(digest_optional_identifier(Some("")), None);
+        assert!(
+            serialized.contains(&call_id_digest("call_abc")),
+            "{serialized}"
+        );
+        assert!(
+            serialized.contains(&call_id_digest("req-opaque-123")),
+            "{serialized}"
+        );
+        assert!(!serialized.contains("call_abc"), "{serialized}");
+        assert!(!serialized.contains("req-opaque-123"), "{serialized}");
     }
 
     #[test]
-    fn provider_request_identifier_is_digested_at_the_attempt_boundary() {
-        // The provider request id is only known after the response arrives, so
-        // it is digested by the boundary rather than at construction.
-        let mut attempt = attempt_with_provider_request_id("req-opaque-123");
-        sanitize_attempt_provider_fields(&mut attempt);
-        assert_eq!(
-            attempt.provider_request_id.as_deref(),
-            Some(call_id_digest("req-opaque-123").as_str())
-        );
+    fn empty_attempt_identifiers_serialize_as_no_value() {
+        // An empty identifier is no identifier: it must not serialize as the
+        // digest of nothing, which every id-less attempt would share.
+        let attempt = attempt_with_provider_request_id("");
+        let serialized = serde_json::to_string(&SessionTelemetryRecord::JudgeAttempt {
+            session_id: "session".to_string(),
+            invocation_id: "invocation".to_string(),
+            timestamp: chrono::Utc::now(),
+            attempt,
+        })
+        .expect("judge attempt record serializes");
 
-        let mut empty = attempt_with_provider_request_id("");
-        sanitize_attempt_provider_fields(&mut empty);
-        assert_eq!(empty.provider_request_id, None);
+        assert!(
+            serialized.contains("\"provider_request_id\":null"),
+            "{serialized}"
+        );
+        assert!(!serialized.contains(&call_id_digest("")), "{serialized}");
     }
 
     /// A minimal attempt carrying only the provider request id under test.

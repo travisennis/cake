@@ -2,7 +2,7 @@
 //!
 //! The session-metrics suite pairs a transcript Bash call with its judge
 //! outcome by hashing the transcript's raw `call_id` with SHA-256. These tests
-//! pin the producer side of that contract: every judge event carries the
+//! pin the producer side of that contract: every judge event serializes the
 //! digest of the call it judged, and the raw identifier never reaches
 //! telemetry.
 
@@ -18,6 +18,13 @@ fn call_id_digest(raw_call_id: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(raw_call_id.as_bytes());
     hex::encode(hasher.finalize())
+}
+
+/// The linkage value a sidecar receives. The event holds the raw identifier in
+/// memory and digests it at the serialization boundary, so the contract is
+/// asserted on the serialized form.
+fn linked_call_id(event: &CompensationEventTelemetry) -> serde_json::Value {
+    serde_json::to_value(event).expect("compensation event serializes")["call_id"].clone()
 }
 
 /// A verdict outcome for `decision` with no allowlist override.
@@ -63,8 +70,8 @@ fn every_judge_decision_records_the_linked_transcript_call() {
         assert_eq!(events.len(), 1, "{detail} must record one judge event");
         assert_eq!(events[0].detail.as_deref(), Some(detail));
         assert_eq!(
-            events[0].call_id.as_deref(),
-            Some(call_id_digest("call-linkage").as_str()),
+            linked_call_id(&events[0]),
+            serde_json::Value::String(call_id_digest("call-linkage")),
             "{detail} must carry the digest of the call it judged"
         );
     }
@@ -80,8 +87,8 @@ fn bypass_and_fail_closed_record_the_linked_transcript_call() {
         CompensationKind::JudgeBypass
     );
     assert_eq!(
-        bypassed.compensation_events[0].call_id.as_deref(),
-        Some(call_id_digest("call-linkage").as_str())
+        linked_call_id(&bypassed.compensation_events[0]),
+        serde_json::Value::String(call_id_digest("call-linkage"))
     );
 
     let denied = fail_closed_tool_error("timeout", "judge timed out", Some("call-linkage"));
@@ -91,8 +98,8 @@ fn bypass_and_fail_closed_record_the_linked_transcript_call() {
         CompensationKind::JudgeFailClosed
     );
     assert_eq!(
-        denied.compensation_events[0].call_id.as_deref(),
-        Some(call_id_digest("call-linkage").as_str())
+        linked_call_id(&denied.compensation_events[0]),
+        serde_json::Value::String(call_id_digest("call-linkage"))
     );
 }
 
@@ -120,8 +127,8 @@ async fn bash_execution_attributes_judge_events_to_the_transcript_call() {
         Some("missing_context")
     );
     assert_eq!(
-        error.compensation_events[0].call_id.as_deref(),
-        Some(call_id_digest("call-linkage").as_str())
+        linked_call_id(&error.compensation_events[0]),
+        serde_json::Value::String(call_id_digest("call-linkage"))
     );
 
     // A bypassed judge runs the command and still records the linkage.
@@ -144,8 +151,8 @@ async fn bash_execution_attributes_judge_events_to_the_transcript_call() {
         "bypassed call must record one judge_bypass event"
     );
     assert_eq!(
-        bypasses[0].call_id.as_deref(),
-        Some(call_id_digest("call-linkage").as_str())
+        linked_call_id(bypasses[0]),
+        serde_json::Value::String(call_id_digest("call-linkage"))
     );
     let serialized = serde_json::to_string(&result.compensation_events).unwrap();
     assert!(

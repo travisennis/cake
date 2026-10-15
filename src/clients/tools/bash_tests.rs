@@ -3536,10 +3536,8 @@ async fn cascade_fast_approval_executes_and_records_the_fast_path() {
     assert_eq!(event.kind, CompensationKind::JudgeVerdict);
     assert_eq!(event.detail.as_deref(), Some("allow"));
     assert_eq!(event.overridden, None);
-    assert_eq!(
-        event.call_id.as_deref(),
-        Some(call_digest("call-cascade").as_str())
-    );
+    let serialized_event = serde_json::to_value(event).expect("event serializes");
+    assert_eq!(serialized_event["call_id"], call_digest("call-cascade"));
 
     let records = recorded_telemetry(&path);
     assert_eq!(

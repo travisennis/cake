@@ -114,7 +114,7 @@ fn immediate_tool_error_result(
     ToolRunResult {
         telemetry: ToolCallTelemetry {
             turn_index,
-            call_id: call_id.to_string(),
+            call_id: (!call_id.is_empty()).then(|| call_id.to_string()),
             name: name.to_string(),
             duration_ms: 0,
             started_at: Some(now),
@@ -632,7 +632,7 @@ impl Agent {
                 ToolRunResult {
                     telemetry: ToolCallTelemetry {
                         turn_index,
-                        call_id: call_id.clone(),
+                        call_id: (!call_id.is_empty()).then(|| call_id.clone()),
                         name,
                         duration_ms,
                         started_at: Some(started_at),
@@ -1404,7 +1404,7 @@ mod helper_tests {
             .await;
         assert!(!success.telemetry.was_error);
         assert_eq!(success.telemetry.turn_index, 4);
-        assert_eq!(success.telemetry.call_id, "call-success");
+        assert_eq!(success.telemetry.call_id.as_deref(), Some("call-success"));
         assert!(success.output.starts_with("prefix notice\n"));
         assert!(success.output.contains("tool output"));
         assert!(success.output.contains("post context"));
@@ -1513,7 +1513,7 @@ mod helper_tests {
             skill_activation,
             telemetry: ToolCallTelemetry {
                 turn_index: 1,
-                call_id: "call-1".to_string(),
+                call_id: Some("call-1".to_string()),
                 name: "Read".to_string(),
                 duration_ms: 1,
                 started_at: None,

@@ -129,6 +129,14 @@ fn only_file_in(dir: &std::path::Path) -> std::path::PathBuf {
 }
 
 fn telemetry_records(env: &TestEnv) -> Vec<serde_json::Value> {
+    telemetry_contents(env)
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("telemetry line should be valid JSON"))
+        .collect()
+}
+
+/// The sidecar exactly as written, for assertions about what must not appear.
+fn telemetry_contents(env: &TestEnv) -> String {
     let session_file = only_file_in(&env.data_dir.join("sessions"));
     let session_id = session_file
         .file_stem()
@@ -138,13 +146,23 @@ fn telemetry_records(env: &TestEnv) -> Vec<serde_json::Value> {
         .data_dir
         .join("session-telemetry")
         .join(format!("{session_id}.ndjson"));
-    let contents =
-        fs::read_to_string(&telemetry_file).expect("telemetry sidecar should be readable");
+    fs::read_to_string(&telemetry_file).expect("telemetry sidecar should be readable")
+}
 
-    contents
-        .lines()
-        .map(|line| serde_json::from_str(line).expect("telemetry line should be valid JSON"))
-        .collect()
+/// Assert a sidecar field carries a digest-shaped value rather than the raw
+/// identifier it was derived from: 64 lowercase hex characters, never the
+/// input. The exact digest is pinned against an independent SHA-256
+/// implementation by the unit tests in `src/session_telemetry.rs`.
+fn assert_digest(value: &serde_json::Value, raw: &str) {
+    let digest = value.as_str().expect("a serialized identifier digest");
+    assert_eq!(digest.len(), 64, "{digest}");
+    assert!(
+        digest
+            .chars()
+            .all(|character| character.is_ascii_digit() || ('a'..='f').contains(&character)),
+        "{digest}"
+    );
+    assert_ne!(digest, raw);
 }
 
 #[tokio::test]
@@ -238,7 +256,7 @@ async fn provider_attempt_records_provider_identity_and_usage_presence() {
         .expect("a successful attempt should be recorded");
     assert_eq!(attempt["model"], "glm-5.1");
     assert_eq!(attempt["response_model"], "glm-5.1");
-    assert_eq!(attempt["provider_request_id"], "resp-123");
+    assert_digest(&attempt["provider_request_id"], "resp-123");
     assert_eq!(attempt["usage_presence"], "complete");
     assert_eq!(attempt["usage"]["total_tokens"], 15);
     assert!(
@@ -519,7 +537,7 @@ async fn response_failed_server_error_retries_and_recovers() {
         .find(|record| record["error"].as_str().is_some())
         .expect("expected a failed attempt");
     assert_eq!(failed["terminal_class"], "response_failed");
-    assert_eq!(failed["provider_request_id"], "resp-fail");
+    assert_digest(&failed["provider_request_id"], "resp-fail");
     assert_eq!(failed["responses_failed"]["code"], "server_error");
     assert_eq!(failed["responses_failed"]["type"], "server_error");
     assert!(
@@ -1215,4 +1233,129 @@ async fn sigterm_during_retry_keeps_settled_attempt_telemetry() {
         .find(|record| record["type"] == "session_summary")
         .expect("telemetry should contain a session_summary");
     assert_eq!(summary["usage"]["total_tokens"], 18);
+}
+
+/// A sidecar is bounded metadata end to end: provider-assigned identifiers
+/// reach it only as one-way digests, provider text is bounded with a truncation
+/// marker, and a new init record carries no absolute working directory.
+#[tokio::test]
+async fn sidecar_minimizes_provider_identifiers_paths_and_error_text() {
+    let env = TestEnv::new("cake-session-telemetry-minimization-test");
+    let mock_server = MockServer::start().await;
+    write_responses_settings(&env, &mock_server.uri());
+
+    let call_id = "call-canary-callid";
+    let request_id = "resp-canary-reqid";
+    let tail_canary = "canary-error-tail";
+
+    // Turn 1: a Bash call whose provider-assigned identifiers are canaries.
+    let tool_call_response = serde_json::json!({
+        "id": request_id,
+        "output": [
+            {
+                "type": "function_call",
+                "id": "fc-1",
+                "call_id": call_id,
+                "name": "Bash",
+                "arguments": serde_json::json!({"command": "echo minimized"}).to_string(),
+            },
+        ],
+        "usage": { "input_tokens": 10, "output_tokens": 5, "total_tokens": 15 },
+    });
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(tool_call_response))
+        .expect(1)
+        .up_to_n_times(1)
+        .mount(&mock_server)
+        .await;
+
+    // Turn 2: a terminal provider failure whose error text is far longer than
+    // the metadata bound and ends in a canary, so the test proves the tail is
+    // cut rather than stored.
+    let long_message = format!("{} {tail_canary}", "P".repeat(8_192));
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(response_failed_body(
+                request_id,
+                "invalid_request_error",
+                &long_message,
+            )),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let output = env
+        .command()
+        .arg("--output-format")
+        .arg("json")
+        .arg("test prompt")
+        .env("SESSION_TELEMETRY_TEST_KEY", "test-token")
+        // The judge is enabled by default and this run configures no judge
+        // model; bypassing it lets the call execute and record its telemetry.
+        .env("CAKE_JUDGE", "off")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute cake");
+
+    assert!(
+        !output.status.success(),
+        "a terminal provider failure exits nonzero"
+    );
+
+    let contents = telemetry_contents(&env);
+    for canary in [call_id, request_id, tail_canary, "test-token"] {
+        assert!(
+            !contents.contains(canary),
+            "sidecar leaked {canary}: {contents}"
+        );
+    }
+    assert!(
+        !contents.contains("working_directory"),
+        "a new init record carries no absolute working directory: {contents}"
+    );
+
+    let records = telemetry_records(&env);
+    let tool_call = records
+        .iter()
+        .find(|record| record["type"] == "tool_call")
+        .expect("the executed tool call is recorded");
+    assert_digest(&tool_call["call_id"], call_id);
+    let digest = tool_call["call_id"]
+        .as_str()
+        .expect("the tool call carries a digest");
+
+    // The judge-bypass event for the same call carries the same digest, which
+    // is what makes the session-metrics join deterministic (#404).
+    let bypass = records
+        .iter()
+        .find(|record| record["type"] == "compensation" && record["kind"] == "judge_bypass")
+        .expect("the bypassed judge records one event");
+    assert_eq!(bypass["call_id"], digest);
+
+    let attempt = records
+        .iter()
+        .find(|record| {
+            record["type"] == "api_attempt" && record["terminal_class"] == "response_failed"
+        })
+        .expect("the terminal attempt is recorded");
+    let error = attempt["error"]
+        .as_str()
+        .expect("the failed attempt carries error text");
+    assert!(error.len() <= 1_024, "{}", error.len());
+    assert!(error.ends_with("...[truncated]"), "{error}");
+    assert_digest(&attempt["provider_request_id"], request_id);
+
+    let init = records
+        .iter()
+        .find(|record| record["type"] == "telemetry_init")
+        .expect("the sidecar starts with an init record");
+    assert_eq!(
+        init["settings"]["base_url"],
+        format!("{}/", mock_server.uri()),
+        "the endpoint is retained in its parsed, credential-free form"
+    );
 }
