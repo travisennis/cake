@@ -79,3 +79,4 @@ Command behavior under the document:
 - Related: #433 took the `--fail-on-error` half of the same problem statement; #308 (`cake doctor`) and #432 (`cake debug config`) consume this contract.
 - Extends the introspection pattern of [ADR-009](./009-debug-models-cli-introspection.md) (load merged settings, print to stdout, exit before agent/session setup) to a documented output contract.
 - Current durable authority for the contract: [Integrations](../integrations.md); the Rust types in `src/cli/diagnostic.rs` and the CLI-level tests in `tests/diagnostic_json.rs` are the field-level authority.
+- Related: [ADR 044](./044-classify-settings-failures-as-input-errors.md) settles the one class this decision left as a nonzero exit, so an `error` document's code and `status` now agree for a settings failure.
