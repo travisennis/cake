@@ -7,17 +7,89 @@
 //! - 1 — agent/tool error
 //! - 2 — API error (rate limit, auth failure, network error, request timeout)
 //! - 3 — input error (no prompt, invalid flags, bad configuration, missing API key)
+//!
+//! The `--fail-on-error` runs use an unroutable `127.0.0.1:1` endpoint so they
+//! need no provider: the connection is refused after retry backoff, which
+//! costs several seconds per run. Keep the number of those runs small.
 
 #![expect(clippy::expect_used, reason = "test code uses expect for assertions")]
 
 mod support;
 
-use std::process::Stdio;
+use std::io::{BufRead, BufReader};
+use std::process::{Child, ChildStdout, Stdio};
 
 use support::TestEnv;
 
 fn cake_env() -> TestEnv {
     TestEnv::new("cake-exit-test")
+}
+
+/// The env var the fixture model reads its API key from.
+const FAIL_ON_ERROR_KEY: &str = "FAIL_ON_ERROR_TEST_KEY";
+
+/// A port nothing listens on, so every connect is refused after retry backoff.
+const UNREACHABLE_BASE_URL: &str = "http://127.0.0.1:1";
+
+/// Provider settings that point the fixture model at `base_url`.
+fn provider_settings(base_url: &str) -> String {
+    format!(
+        r#"
+default_model = "test"
+
+[[models]]
+name = "test"
+model = "test-model"
+base_url = "{base_url}"
+api_key_env = "{FAIL_ON_ERROR_KEY}"
+api_type = "responses"
+"#
+    )
+}
+
+/// Spawn a `stream-json` run against `base_url`, optionally with the strict
+/// exit-code flag.
+fn spawn_stream_json(env: &TestEnv, base_url: &str, fail_on_error: bool) -> Child {
+    env.write_project_settings(&provider_settings(base_url));
+    let mut command = env.command();
+    command
+        .args(["--output-format", "stream-json"])
+        .args(["--no-session"])
+        .env(FAIL_ON_ERROR_KEY, "test-token")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if fail_on_error {
+        command.arg("--fail-on-error");
+    }
+    command.arg("hello");
+    command.spawn().expect("failed to spawn cake")
+}
+
+/// Read every remaining `stream-json` record from `reader`.
+fn read_records(reader: &mut impl BufRead) -> Vec<serde_json::Value> {
+    let mut records = Vec::new();
+    for line in reader.lines() {
+        let line = line.expect("stream line should be readable");
+        if line.trim().is_empty() {
+            continue;
+        }
+        records.push(serde_json::from_str(&line).expect("stream-json records must be JSON"));
+    }
+    records
+}
+
+/// The final `task_complete` record's `subtype` and `is_error` fields. The
+/// record is the run's outcome channel, so it must be the last record written.
+fn task_complete_outcome(records: &[serde_json::Value]) -> (String, bool) {
+    let record = records.last().expect("stream-json run must emit records");
+    assert_eq!(
+        record["type"], "task_complete",
+        "the final record must be task_complete: {record}"
+    );
+    (
+        record["subtype"].as_str().unwrap_or_default().to_string(),
+        record["is_error"].as_bool().unwrap_or(false),
+    )
 }
 
 // --- Exit code 0: success ---
@@ -336,5 +408,136 @@ fn test_no_session_and_restore_mode_conflict_exits_three() {
     assert!(
         stderr.contains("cannot be used with"),
         "Error should mention the flag conflict. Stderr: {stderr}"
+    );
+}
+
+// --- Exit codes for --fail-on-error with stream-json ---
+
+#[test]
+fn test_fail_on_error_with_subcommand_exits_three() {
+    let env = cake_env();
+    let output = env
+        .command()
+        .args([
+            "--output-format",
+            "stream-json",
+            "--fail-on-error",
+            "ignored prompt",
+            "sessions",
+            "list",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("Failed to execute command");
+
+    let code = output.status.code().unwrap_or(-1);
+    assert_eq!(
+        code, 3,
+        "--fail-on-error is a run-only option and should exit 3, got {code}"
+    );
+    assert!(output.stdout.is_empty(), "rejected input must not dispatch");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--fail-on-error"), "Stderr: {stderr}");
+}
+
+#[test]
+fn test_stream_json_failure_exits_zero_without_fail_on_error() {
+    let env = cake_env();
+    let child = spawn_stream_json(&env, UNREACHABLE_BASE_URL, false);
+    let output = child.wait_with_output().expect("failed to wait for cake");
+
+    let records = read_records(&mut output.stdout.as_slice());
+    let (subtype, is_error) = task_complete_outcome(&records);
+    assert_eq!(subtype, "error_during_execution");
+    assert!(is_error, "provider failure must be an error outcome");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "the default stream-json contract reports the failure in the stream and exits 0"
+    );
+}
+
+#[test]
+fn test_fail_on_error_stream_json_network_failure_exits_two() {
+    let env = cake_env();
+    let child = spawn_stream_json(&env, UNREACHABLE_BASE_URL, true);
+    let output = child.wait_with_output().expect("failed to wait for cake");
+
+    // The stream is unchanged: the failure is still the final task_complete.
+    let records = read_records(&mut output.stdout.as_slice());
+    let (subtype, is_error) = task_complete_outcome(&records);
+    assert_eq!(subtype, "error_during_execution");
+    assert!(is_error, "provider failure must be an error outcome");
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "a refused connection is the API/network class: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn test_fail_on_error_stream_json_broken_pipe_exits_zero() {
+    let env = cake_env();
+    let mut child = spawn_stream_json(&env, UNREACHABLE_BASE_URL, true);
+
+    // Model a `head -1` consumer: closing stdout is its choice, not a failure.
+    drop(child.stdout.take());
+    let output = child.wait_with_output().expect("failed to wait for cake");
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "closed output should still exit 0: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("Broken pipe") && !stderr.contains("panicked"),
+        "closed output must not panic or report a broken pipe: {stderr}"
+    );
+}
+
+/// A provider that accepts the request and never answers keeps the agent turn
+/// in flight, so the interrupt cannot race the run's setup. Accepting the
+/// connection proves the request left cake and the signal handler is installed.
+#[cfg(unix)]
+#[test]
+fn test_fail_on_error_stream_json_interrupt_exits_130() {
+    use std::net::TcpListener;
+
+    let env = cake_env();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("fixture listener should bind");
+    let base_url = format!(
+        "http://{}",
+        listener
+            .local_addr()
+            .expect("listener should have an address")
+    );
+    let mut child = spawn_stream_json(&env, &base_url, true);
+    let stdout: ChildStdout = child.stdout.take().expect("stdout should be piped");
+    let mut reader = BufReader::new(stdout);
+
+    let (_request, _peer) = listener.accept().expect("cake should reach the provider");
+
+    // SAFETY: `child.id()` is the cake process this test just spawned.
+    unsafe {
+        libc::kill(
+            i32::try_from(child.id()).expect("pid must fit in an i32"),
+            libc::SIGINT,
+        );
+    }
+
+    let status = child.wait().expect("failed to wait for cake");
+    let records = read_records(&mut reader);
+    let (subtype, is_error) = task_complete_outcome(&records);
+    assert_eq!(subtype, "interrupted");
+    assert!(is_error, "an interrupted task is an error outcome");
+    assert_eq!(
+        status.code(),
+        Some(130),
+        "interruption keeps 130 with --fail-on-error"
     );
 }
