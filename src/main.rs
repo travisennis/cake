@@ -1213,10 +1213,11 @@ impl CodingAssistant {
 
     /// Report the turn's result as the run's final terminal state.
     ///
-    /// The turn result, not the process exit code, is the authority: JSON and
-    /// stream-json runs report a failed turn in their own output and still exit
-    /// `0`, and a terminal showing `done` for them would be wrong. `msg`
-    /// carries the same sink-safe error text the run prints on stderr.
+    /// The turn result, not the process exit code, is the authority: JSON runs
+    /// and stream-json runs without `--fail-on-error` report a failed turn in
+    /// their own output and still exit `0`, and a terminal showing `done` for
+    /// them would be wrong. `msg` carries the same sink-safe error text the run
+    /// prints on stderr.
     fn report_turn_outcome(result: &Result<String, anyhow::Error>) {
         match result {
             Ok(_) => program_status::report(State::Done, None),
