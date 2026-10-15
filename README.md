@@ -85,10 +85,11 @@ Cake removes an unchanged worktree when the task finishes and retains one with u
 ```bash
 cake --output-format json "Summarize this repository" | jq '.result'
 cake --output-format stream-json "Run the tests" | jq -c '.type'
+cake --fail-on-error --output-format stream-json "Run the tests" | jq -c '.type'
 cake --output-schema result.schema.json "Return structured findings"
 ```
 
-`json` emits one completion object. `stream-json` emits newline-delimited task events as they happen. `--output-schema` constrains only the final model response.
+`json` emits one completion object. `stream-json` emits newline-delimited task events as they happen. `--output-schema` constrains only the final model response. `--fail-on-error` makes a `stream-json` run exit nonzero when the task failed, so a pipeline can act on `$?` alone; see [Integrations](docs/integrations.md).
 
 ### Sandboxing
 
