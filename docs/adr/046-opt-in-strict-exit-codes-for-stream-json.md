@@ -29,7 +29,7 @@ Concretely:
 
 - The flag is a `bool` on the root run, accepted for any output format but meaningful only for `stream-json`; text and JSON already exit nonzero on a failed run. It is rejected with exit `3` when combined with a subcommand, like `--output-schema`.
 - Without the flag, behavior is unchanged byte for byte: an in-stream failure exits `0`, a broken pipe exits `0`, and an interruption exits `130`.
-- With the flag, the run's final outcome decides the status. `CliOutputSink` propagates the turn error instead of swallowing it, and `finish_run` --- the single classifier that already serves every output mode --- maps it: `1` for an agent, provider, tool, cut-off, or limit outcome, `2` for an authentication, rate-limit, or network failure, and `3` for an input error. No second exit-code path is introduced.
+- With the flag, the run's final outcome decides the status. `CliOutputSink` propagates the turn error instead of swallowing it, and `finish_run` --- the single classifier that already serves every output mode --- maps it: `1` for an agent, tool, cut-off, or limit outcome and for a provider failure that is none of the classes below (`5xx`, for example), `2` for an authentication, rate-limit, or network failure, and `3` for an input error. No second exit-code path is introduced.
 - Broken-pipe cancellation still exits `0`, because `finish_run` maps the closed-output error to success, and interruption still exits `130` on the interrupt path that precedes rendering.
 - The stream is unchanged in both modes: the final `task_complete` record remains the outcome channel, so a consumer can observe the failure and the exit code from one run.
 
