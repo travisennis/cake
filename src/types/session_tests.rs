@@ -1059,9 +1059,53 @@ fn snapshot_session_json_task_start() {
         session_id: fixed_session_id(),
         task_id: fixed_task_id(),
         timestamp: fixed_timestamp(),
+        model: Some("gpt-5.4".to_string()),
+        model_config: Some("test".to_string()),
     });
 
     insta::assert_json_snapshot!("session_json_task_start", session_record_json(record));
+}
+
+#[test]
+fn task_start_identity_fields_are_optional_on_both_record_types() {
+    // An unresolved identity is omitted, never invented: a consumer reads
+    // absence, not a placeholder.
+    let data = TaskStartData {
+        session_id: fixed_session_id(),
+        task_id: fixed_task_id(),
+        timestamp: fixed_timestamp(),
+        model: None,
+        model_config: None,
+    };
+    let session_json = session_record_json(SessionRecord::TaskStart(data.clone()));
+    let stream_json = serde_json::to_value(StreamRecord::TaskStart(data)).unwrap();
+
+    for json in [session_json, stream_json] {
+        assert_eq!(json["type"], "task_start");
+        assert!(json.get("model").is_none(), "{json}");
+        assert!(json.get("model_config").is_none(), "{json}");
+    }
+}
+
+#[test]
+fn task_start_loads_a_record_without_model_identity() {
+    // A v4 `task_start` written before the identity fields existed stays
+    // loadable; the missing fields read as unknown.
+    let record: SessionRecord = serde_json::from_value(serde_json::json!({
+        "type": "task_start",
+        "session_id": fixed_session_id(),
+        "task_id": fixed_task_id(),
+        "timestamp": "2026-05-10T12:34:56Z"
+    }))
+    .unwrap();
+
+    match record {
+        SessionRecord::TaskStart(data) => {
+            assert!(data.model.is_none());
+            assert!(data.model_config.is_none());
+        },
+        other => panic!("expected task_start, got {other:?}"),
+    }
 }
 
 #[test]
@@ -1372,6 +1416,22 @@ fn snapshot_stream_record_json_session_meta() {
 }
 
 #[test]
+fn snapshot_stream_record_json_task_start() {
+    let record = StreamRecord::TaskStart(TaskStartData {
+        session_id: fixed_session_id(),
+        task_id: fixed_task_id(),
+        timestamp: fixed_timestamp(),
+        model: Some("gpt-5.4".to_string()),
+        model_config: Some("test".to_string()),
+    });
+
+    insta::assert_json_snapshot!(
+        "stream_record_json_task_start",
+        serde_json::to_value(record).unwrap()
+    );
+}
+
+#[test]
 fn snapshot_stream_record_json_prompt_context() {
     let record = StreamRecord::PromptContext {
         session_id: fixed_session_id(),
@@ -1452,6 +1512,8 @@ fn session_record_to_stream_record_preserves_json() {
             session_id: fixed_session_id(),
             task_id: fixed_task_id(),
             timestamp: fixed_timestamp(),
+            model: Some("gpt-5.4".to_string()),
+            model_config: Some("test".to_string()),
         }),
         SessionRecord::PromptContext {
             session_id: fixed_session_id(),

@@ -293,6 +293,9 @@ mod tests {
             session_id: SESSION_ID.to_string(),
             task_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
             timestamp: chrono::Utc::now(),
+            // A record written before the identity fields existed.
+            model: None,
+            model_config: None,
         }))
         .unwrap()
     }

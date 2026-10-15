@@ -127,6 +127,9 @@ pub struct Agent {
     session_id: uuid::Uuid,
     /// Task ID for the current CLI invocation.
     task_id: uuid::Uuid,
+    /// The `[[models]]` entry name this run resolved to, reported on the
+    /// `task_start` record. `None` when no entry name was resolved.
+    model_config_name: Option<String>,
     /// Accumulated usage across all reported provider attempts
     total_usage: Usage,
     /// Usage reported by the most recent provider attempt. The basis for
@@ -188,6 +191,7 @@ impl Agent {
             tool_context: Arc::new(ToolContext::from_current_process()),
             session_id: uuid::Uuid::new_v4(),
             task_id: uuid::Uuid::new_v4(),
+            model_config_name: None,
             total_usage: Usage::default(),
             last_usage: None,
             turn_count: 0,
@@ -408,6 +412,14 @@ impl Agent {
     /// Sets the task ID for the current invocation.
     pub const fn with_task_id(mut self, id: uuid::Uuid) -> Self {
         self.task_id = id;
+        self
+    }
+
+    /// Sets the resolved `[[models]]` entry name for this run, reported on the
+    /// `task_start` record so a live stream consumer can name the model
+    /// serving the run.
+    pub fn with_model_config_name(mut self, name: String) -> Self {
+        self.model_config_name = Some(name);
         self
     }
 
@@ -644,6 +656,8 @@ impl Agent {
             session_id: self.session_id.to_string(),
             task_id: self.task_id.to_string(),
             timestamp: chrono::Utc::now(),
+            model: Some(self.config.model_config.model.clone()),
+            model_config: self.model_config_name.clone(),
         });
 
         self.stream_record(record)

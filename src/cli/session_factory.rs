@@ -84,6 +84,7 @@ impl crate::CodingAssistant {
         let agent = Agent::new(resolved.clone(), initial_messages)
             .with_session_id(restored.id)
             .with_task_id(task_id)
+            .with_model_config_name(model_config_name.clone())
             .with_tool_context(tool_context)
             .with_toolbox_tools(toolbox_tools)
             .with_enabled_tools(enabled_tools)
@@ -123,6 +124,7 @@ impl crate::CodingAssistant {
     ) -> RunSession {
         let agent = Agent::new(resolved.clone(), initial_messages)
             .with_task_id(task_id)
+            .with_model_config_name(model_config_name.clone())
             .with_tool_context(tool_context)
             .with_toolbox_tools(toolbox_tools)
             .with_enabled_tools(enabled_tools)
@@ -159,6 +161,7 @@ impl crate::CodingAssistant {
     ) -> anyhow::Result<RunSession> {
         let agent = Agent::new(resolved.clone(), initial_messages)
             .with_task_id(task_id)
+            .with_model_config_name(model_config_name.clone())
             .with_tool_context(tool_context)
             .with_toolbox_tools(toolbox_tools)
             .with_enabled_tools(enabled_tools)
@@ -922,6 +925,67 @@ mod tests {
                 .expect("ephemeral run should assemble");
 
             assert!(run.persistence.is_none());
+        });
+    }
+
+    /// Emit the live `task_start` record of a run's agent and return it.
+    fn emitted_task_start(agent: Agent) -> serde_json::Value {
+        let captured = Arc::new(std::sync::Mutex::new(String::new()));
+        let written = Arc::clone(&captured);
+        let mut agent = agent.with_streaming_json(move |json| {
+            *written.lock().expect("capture lock") = json.to_string();
+        });
+        agent
+            .emit_task_start_record()
+            .expect("task_start should emit");
+        serde_json::from_str(&captured.lock().expect("capture lock"))
+            .expect("task_start should be valid JSON")
+    }
+
+    #[test]
+    fn new_session_task_start_reports_the_resolved_model_identity() {
+        temp_env::with_var("SESSION_FACTORY_TEST_KEY", Some("test-key"), || {
+            let cli = crate::CodingAssistant::parse_from(["cake"]);
+            let data_dir_dir = tempfile::tempdir().expect("temp data dir");
+            let data_dir = DataDir::new_in_dir(data_dir_dir.path());
+            let working_dir = tempfile::tempdir().expect("temp working dir");
+
+            let run = build_for_mode(&cli, &RunMode::NewSession, &data_dir, working_dir.path())
+                .expect("new run should assemble");
+
+            let task_start = emitted_task_start(run.agent);
+            assert_eq!(task_start["type"], "task_start");
+            assert_eq!(task_start["model"], "glm-5.1");
+            assert_eq!(task_start["model_config"], "test");
+        });
+    }
+
+    #[test]
+    fn resumed_session_task_start_reports_the_resolved_model_identity() {
+        temp_env::with_var("SESSION_FACTORY_TEST_KEY", Some("test-key"), || {
+            let cli = crate::CodingAssistant::parse_from(["cake"]);
+            let data_dir_dir = tempfile::tempdir().expect("temp data dir");
+            let data_dir = DataDir::new_in_dir(data_dir_dir.path());
+            let working_dir = tempfile::tempdir().expect("temp working dir");
+            let saved = saved_session(&data_dir, working_dir.path());
+
+            let run = build_for_mode(
+                &cli,
+                &RunMode::Resume {
+                    session_id: saved.id,
+                },
+                &data_dir,
+                working_dir.path(),
+            )
+            .expect("resume should succeed");
+
+            // The fixture predates `model_config`, so the entry name is
+            // resolved from the stored provider model ID. The record reports
+            // the identity this run actually uses, as a new session does.
+            let task_start = emitted_task_start(run.agent);
+            assert_eq!(task_start["type"], "task_start");
+            assert_eq!(task_start["model"], "glm-5.1");
+            assert_eq!(task_start["model_config"], "test");
         });
     }
 }
