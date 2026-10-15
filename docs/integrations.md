@@ -4,12 +4,14 @@ This document describes Cake's stable shell-facing and machine-facing contracts.
 
 ## Exit codes
 
-  | Code | Meaning                                                     |
-  | ---- | ----------------------------------------------------------- |
-  | `0`  | successful task                                             |
-  | `1`  | agent or tool execution error                               |
-  | `2`  | authentication, rate-limit, or network error                |
-  | `3`  | invalid input, flags, configuration, or missing credentials |
+  | Code | Meaning                                                       |
+  | ---- | ------------------------------------------------------------- |
+  | `0`  | successful task                                               |
+  | `1`  | agent or tool execution error                                 |
+  | `2`  | authentication, rate-limit, network, or request-timeout error |
+  | `3`  | invalid input, flags, configuration, or missing credentials   |
+
+Class `2` is the provider-failure class: authentication (`401`, `403`), rate limiting (`429`), request timeouts (`408`), and transport failures such as connect errors or client timeouts. Retryability is a separate transport-recovery concern and does not decide the class: `409` (lock timeout), `5xx`, and `529` are retried but exit `1`, because the provider answered the request. A tool-level timeout --- a Bash tool that times out waiting on its own overrides --- is a tool error, `1`. See [ADR 045](adr/045-classify-request-timeouts-as-api-errors.md).
 
 Human diagnostics go to stderr. Machine-readable stdout must contain only its declared JSON format.
 
@@ -283,6 +285,8 @@ Toolbox executables are trusted and run outside the Bash sandbox. Their calls ma
 Changes to session versioning, record names or required fields, stream ordering, exit-code meaning, hook decisions, toolbox framing, or machine-readable stdout are compatibility changes. They require focused serialization or integration tests, migration analysis where applicable, and an update to this document's semantics.
 
 `debug models --json` and `sessions list --json` emitted a bare JSON array before the diagnostic document above; they now emit the document, and `bash check` gained `--json` ([ADR 029](adr/029-diagnostic-json-document.md)). Consumers that parsed the bare array read `data.models` or `data.sessions` instead. No default behavior changed: the affected flags are explicitly opt-in.
+
+An exhausted HTTP `408` request timeout from a provider now exits `2` instead of `1`, matching the client-side timeouts that already did ([ADR 045](adr/045-classify-request-timeouts-as-api-errors.md)). Scripts that branch on `$?` must treat `2` as the request-timeout class. The mapping depends on the status code the provider supplies, and every other status stays where it was: `400`, `404`, `409`, `5xx`, and `529` still exit `1`.
 
 ## Related decisions
 
