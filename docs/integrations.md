@@ -103,7 +103,7 @@ Consumers switch on `id`, ignore unknown ids, and tolerate added fields and adde
 
 Machine stdout contains the document and nothing else: one pretty-printed object followed by a newline. A command that reports configuration findings in machine mode keeps them out of stderr, so a consumer reads the document for findings and never needs stderr. Human diagnostics, including a failure the command cannot report as a document, stay on stderr. The one machine-mode path that writes no document --- a `bash check --json` judge error --- keeps its findings on stderr rather than dropping them.
 
-Exit behavior follows the codes above: `ok` and `warning` exit `0`; `error` reports a problem the command can carry in the document and exits nonzero with the same message on stderr. A failure the command cannot render as a document writes only to stderr, exits nonzero, and leaves stdout empty. `bash check --json` keeps its documented judge-failure classification (see [Bash tool and command-safety checks](#bash-tool-and-command-safety-checks)) and renders verdict outcomes as documents.
+Exit behavior follows the codes above: `ok` and `warning` exit `0`; `error` reports a problem the command can carry in the document and exits nonzero with the same message on stderr. `error` is not a code of its own: the process exits with the documented class of the failure the finding reports. `settings.load_failed` is a configuration defect and exits `3`; `sessions.directory_unreadable` is a failed directory read and exits `1`; `settings.unknown_key` is a warning and never changes the code. A failure the command cannot render as a document writes only to stderr, exits nonzero, and leaves stdout empty. `bash check --json` keeps its documented judge-failure classification (see [Bash tool and command-safety checks](#bash-tool-and-command-safety-checks)) and renders verdict outcomes as documents.
 
 ### Diagnostic payloads
 
@@ -284,6 +284,8 @@ Toolbox executables are trusted and run outside the Bash sandbox. Their calls ma
 
 Changes to session versioning, record names or required fields, stream ordering, exit-code meaning, hook decisions, toolbox framing, or machine-readable stdout are compatibility changes. They require focused serialization or integration tests, migration analysis where applicable, and an update to this document's semantics.
 
+A settings file that cannot be loaded or parsed exited `1`; it now exits `3`, the class this document already assigns to invalid configuration. `cake <prompt>`, `cake debug models`, `cake debug models --json`, and `cake bash check --json` all report the failure with that code. A script that branched on `1` for a broken settings file must branch on `3` instead; the stderr diagnostic is unchanged. See [ADR 044](adr/044-classify-settings-failures-as-input-errors.md).
+
 `debug models --json` and `sessions list --json` emitted a bare JSON array before the diagnostic document above; they now emit the document, and `bash check` gained `--json` ([ADR 029](adr/029-diagnostic-json-document.md)). Consumers that parsed the bare array read `data.models` or `data.sessions` instead. No default behavior changed: the affected flags are explicitly opt-in.
 
 An exhausted HTTP `408` request timeout from a provider now exits `2` instead of `1`, matching the client-side timeouts that already did ([ADR 045](adr/045-classify-request-timeouts-as-api-errors.md)). Scripts that branch on `$?` must treat `2` as the request-timeout class. The mapping depends on the status code the provider supplies, and every other status stays where it was: `400`, `404`, `409`, `5xx`, and `529` still exit `1`.
@@ -296,3 +298,4 @@ An exhausted HTTP `408` request timeout from a provider now exits `2` instead of
 - [ADR 017](adr/017-trusted-executable-toolbox-tools.md), trusted toolbox executables.
 - [ADR 021](adr/021-session-transcript-replay.md), session transcript replay.
 - [ADR 029](adr/029-diagnostic-json-document.md), the diagnostic JSON document.
+- [ADR 044](adr/044-classify-settings-failures-as-input-errors.md), the exit class for a settings load or parse failure.

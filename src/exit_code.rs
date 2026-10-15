@@ -9,10 +9,12 @@
 //! | `0`  | Success       | The agent completed and produced a response               |
 //! | `1`  | Agent error   | The model or a tool encountered an error during execution|
 //! | `2`  | API error     | Rate limit, auth, network, or request-timeout error      |
-//! | `3`  | Input error   | No prompt provided, invalid flags, missing API key       |
+//! | `3`  | Input error   | No prompt, invalid flags, bad configuration, missing key |
 //! | `130`| Interrupted   | User interrupted the run with Ctrl-C                     |
 
 use std::process::ExitCode;
+
+use crate::config::settings::SettingsError;
 
 /// Exit code constants for cake.
 ///
@@ -25,7 +27,7 @@ pub mod code {
     pub const AGENT_ERROR: u8 = 1;
     /// API error (rate limit, auth, network, or request-timeout failure).
     pub const API_ERROR: u8 = 2;
-    /// Input error (no prompt, invalid flags, missing API key).
+    /// Input error (no prompt, invalid flags, bad configuration, missing API key).
     pub const INPUT_ERROR: u8 = 3;
     /// Interrupted by user (Ctrl-C).
     pub const INTERRUPTED: u8 = 130;
@@ -76,6 +78,13 @@ fn classify_typed_error(err: &anyhow::Error) -> Option<u8> {
     // errors; a run that cannot satisfy the schema is an agent error.
     if let Some(schema_err) = err.downcast_ref::<crate::config::OutputSchemaError>() {
         return Some(classify_schema_error(schema_err));
+    }
+
+    // Settings load and parse failures are configuration defects: the file the
+    // user supplied is the input cake rejected, so they are input errors rather
+    // than agent errors.
+    if let Some(settings_err) = err.downcast_ref::<SettingsError>() {
+        return Some(classify_settings_error(settings_err));
     }
 
     // Judge failures are provider/agent errors: a timeout or transport
@@ -147,6 +156,27 @@ const fn classify_schema_error(error: &crate::config::OutputSchemaError) -> u8 {
         | crate::config::OutputSchemaError::InvalidJson { .. }
         | crate::config::OutputSchemaError::InvalidSchema { .. } => code::INPUT_ERROR,
         crate::config::OutputSchemaError::Unsatisfied { .. } => code::AGENT_ERROR,
+    }
+}
+
+/// Classify a settings load or parse failure.
+///
+/// Every variant is a defect in the configuration input --- an unreadable,
+/// unparsable, or self-contradictory settings file --- so all of them are input
+/// errors. The match is exhaustive with no wildcard arm, so a new variant must
+/// state its class here instead of inheriting one by accident.
+const fn classify_settings_error(error: &SettingsError) -> u8 {
+    match error {
+        SettingsError::InvalidModelName { .. }
+        | SettingsError::DuplicateModelName { .. }
+        | SettingsError::InvalidProfileName { .. }
+        | SettingsError::ProfileModelsUnsupported { .. }
+        | SettingsError::UnknownProfile { .. }
+        | SettingsError::DefaultModelNotFound { .. }
+        | SettingsError::JudgeModelNotFound { .. }
+        | SettingsError::ParseError(_)
+        | SettingsError::SerializeError(_)
+        | SettingsError::IoError(_) => code::INPUT_ERROR,
     }
 }
 
@@ -492,6 +522,77 @@ mod tests {
             source,
         });
         assert_eq!(classify_to_u8(&err), code::INPUT_ERROR);
+    }
+
+    // --- Settings error classification ---
+
+    #[test]
+    fn classify_settings_errors_as_input_errors() {
+        let cases = [
+            (
+                "invalid model name",
+                SettingsError::InvalidModelName {
+                    name: "Bad Name!".to_string(),
+                    reason: "names must contain only lowercase letters".to_string(),
+                },
+            ),
+            (
+                "duplicate model name",
+                SettingsError::DuplicateModelName {
+                    name: "dup".to_string(),
+                },
+            ),
+            (
+                "invalid profile name",
+                SettingsError::InvalidProfileName {
+                    name: "Bad_Profile".to_string(),
+                    reason: "names must contain only lowercase letters".to_string(),
+                },
+            ),
+            (
+                "profile models unsupported",
+                SettingsError::ProfileModelsUnsupported {
+                    name: "fast".to_string(),
+                },
+            ),
+            (
+                "unknown profile",
+                SettingsError::UnknownProfile {
+                    name: "missing".to_string(),
+                    available: ": fast, slow".to_string(),
+                },
+            ),
+            (
+                "default model not found",
+                SettingsError::DefaultModelNotFound {
+                    name: "missing".to_string(),
+                },
+            ),
+            (
+                "judge model not found",
+                SettingsError::JudgeModelNotFound {
+                    name: "missing".to_string(),
+                },
+            ),
+            (
+                "unparsable settings file",
+                SettingsError::ParseError(
+                    toml::from_str::<toml::Value>("not valid toml = [").unwrap_err(),
+                ),
+            ),
+            (
+                "unreadable settings file",
+                SettingsError::IoError(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "denied",
+                )),
+            ),
+        ];
+
+        for (name, error) in cases {
+            let err = anyhow::Error::new(error);
+            assert_eq!(classify_to_u8(&err), code::INPUT_ERROR, "{name}");
+        }
     }
 
     #[test]

@@ -6,7 +6,7 @@
 //! - 0 — success
 //! - 1 — agent/tool error
 //! - 2 — API error (rate limit, auth failure, network error, request timeout)
-//! - 3 — input error (no prompt, invalid flags, missing API key)
+//! - 3 — input error (no prompt, invalid flags, bad configuration, missing API key)
 
 #![expect(clippy::expect_used, reason = "test code uses expect for assertions")]
 
@@ -153,6 +153,29 @@ fn test_no_model_configured_exits_three() {
     assert!(
         stderr.contains("No model specified"),
         "Error message should mention missing model config. Stderr: {stderr}"
+    );
+}
+
+#[test]
+fn test_unparsable_project_settings_exits_three() {
+    let env = cake_env();
+    env.write_project_settings("not valid toml = [");
+
+    let output = env
+        .command()
+        .arg("test prompt")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("Failed to execute command");
+
+    let code = output.status.code().unwrap_or(-1);
+    assert_eq!(code, 3, "Unparsable settings should exit 3, got {code}");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Failed to parse settings file"),
+        "Error message should name the settings parse failure. Stderr: {stderr}"
     );
 }
 
