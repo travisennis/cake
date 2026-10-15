@@ -74,6 +74,12 @@ Examples:
         .args(["resume", "fork", "no_session"])
         .multiple(false)
 ))]
+// Clap derives one `bool` per flag; grouping the no-* switches into enums
+// would change the CLI shape that consumers depend on.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "command-line flags are inherently boolean"
+)]
 pub(crate) struct CodingAssistant {
     /// The prompt to send to the AI (use `-` to read from stdin)
     #[arg(value_name = "PROMPT")]
@@ -86,6 +92,19 @@ pub(crate) struct CodingAssistant {
     /// Output format for the response (text, json, or stream-json)
     #[arg(long, value_enum, default_value = "text")]
     pub output_format: OutputFormat,
+
+    /// Exit nonzero when the run fails
+    ///
+    /// Only meaningful for `--output-format stream-json`, which reports a
+    /// failed task in its final `task_complete` record and exits `0` by
+    /// default. With this flag the exit code carries the failure class: `1`
+    /// for an agent, tool, or limit failure, `2` for an authentication,
+    /// rate-limit, or network failure, and `3` for an input error. A consumer
+    /// that closes stdout early still exits `0`, and an interruption still
+    /// exits `130`. Text and JSON output already exit nonzero on failure, so
+    /// this flag changes nothing there.
+    #[arg(long)]
+    pub fail_on_error: bool,
 
     /// Constrain the final response to a JSON document valid against
     /// this JSON Schema file (draft 2020-12). Only the final response
@@ -943,6 +962,7 @@ impl CodingAssistant {
 
         let invalid = [
             (self.prompt.is_some(), "prompt"),
+            (self.fail_on_error, "--fail-on-error"),
             (self.max_tokens.is_some(), "--max-tokens"),
             (self.output_schema.is_some(), "--output-schema"),
             (self.resume.is_some(), "--resume"),
@@ -972,7 +992,7 @@ impl CodingAssistant {
     }
 
     const fn output_sink(&self) -> CliOutputSink {
-        CliOutputSink::new(self.output_format)
+        CliOutputSink::new(self.output_format, self.fail_on_error)
     }
 
     /// Load and compile the `--output-schema` file, if given.

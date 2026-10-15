@@ -137,6 +137,32 @@ fn test_cli_rejects_tool_selection_flags_with_subcommand() {
 }
 
 #[test]
+fn test_cli_rejects_fail_on_error_with_subcommand() {
+    let args = CodingAssistant::parse_from([
+        "cake",
+        "--output-format",
+        "stream-json",
+        "--fail-on-error",
+        "ignored prompt",
+        "replay",
+        "550e8400-e29b-41d4-a716-446655440000",
+    ]);
+
+    let error = args
+        .validate_subcommand_options()
+        .expect_err("--fail-on-error must be rejected with a subcommand");
+    assert!(error.to_string().contains("--fail-on-error"));
+}
+
+#[test]
+fn test_cli_accepts_fail_on_error_for_a_run() {
+    let args = CodingAssistant::parse_from(["cake", "--fail-on-error", "test prompt"]);
+
+    assert!(args.fail_on_error);
+    assert!(args.validate_subcommand_options().is_ok());
+}
+
+#[test]
 fn test_cli_preserves_options_shared_with_subcommands() {
     let args = CodingAssistant::parse_from([
         "cake",
@@ -890,6 +916,69 @@ fn output_sink_builds_limit_exceeded_json() {
         assert_eq!(json["subtype"], "limit_exceeded");
         assert_eq!(json["result"], "partial work");
     });
+}
+
+#[test]
+fn fail_on_error_exit_codes_follow_the_documented_classes() {
+    // The strict contract publishes the failure's documented class, not a
+    // hardcoded 1. `finish_run` is the only classifier, so a propagated
+    // in-stream error lands on the same code it would in any output mode.
+    type ExitClassCase = (&'static str, fn() -> anyhow::Error, u8);
+    let cases: [ExitClassCase; 4] = [
+        (
+            "limit outcome",
+            || {
+                LimitExceededError::new(
+                    "max_turns".to_string(),
+                    "max_turns limit exceeded after 5 turns".to_string(),
+                    None,
+                )
+                .into()
+            },
+            exit_code::code::AGENT_ERROR,
+        ),
+        (
+            "agent error",
+            || anyhow::anyhow!("tool failed"),
+            exit_code::code::AGENT_ERROR,
+        ),
+        (
+            "api error",
+            || {
+                exit_code::ApiError {
+                    status: 429,
+                    body: "rate limit exceeded".to_string(),
+                }
+                .into()
+            },
+            exit_code::code::API_ERROR,
+        ),
+        (
+            "input error",
+            || anyhow::anyhow!("No input provided"),
+            exit_code::code::INPUT_ERROR,
+        ),
+    ];
+
+    for (name, error, expected) in cases {
+        assert_eq!(
+            finish_run(Err(error())),
+            std::process::ExitCode::from(expected),
+            "{name} must exit with its documented class"
+        );
+    }
+
+    // Interruption keeps 130; broken-pipe cancellation still exits 0 through
+    // the `is_closed_output` arm and is covered by the CLI broken-pipe test.
+    assert_eq!(
+        finish_run(Err(Interrupted.into())),
+        std::process::ExitCode::from(exit_code::code::INTERRUPTED)
+    );
+    assert_eq!(
+        finish_run(Ok(())),
+        std::process::ExitCode::from(exit_code::code::SUCCESS),
+        "the flag must not change a successful run"
+    );
 }
 
 #[test]
