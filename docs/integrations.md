@@ -21,6 +21,14 @@ Root agent-run inputs, including a prompt and run-only flags such as `--output-s
 
 For `stream-json`, validation failures before a task stream starts still use the codes above. Once streaming begins, ordinary agent, provider, and tool failures are represented by the final `task_complete` record and the process exits `0`. An unsatisfied output schema remains nonzero, and interruption exits `130`. A hit `max_turns` or `max_tool_calls` limit is an in-stream outcome: stream-json exits `0`, text and JSON modes exit `1`. If a consumer closes stdout early (for example, `head -1`), Cake treats the resulting broken pipe as normal consumer cancellation in every output mode, emits no broken-pipe diagnostic, and exits `0`.
 
+`cake --fail-on-error` opts a `stream-json` run into a strict version of that contract, so a pipeline can act on `$?` alone ([ADR 046](adr/046-opt-in-strict-exit-codes-for-stream-json.md)). Without the flag nothing changes. With it, the run's own outcome decides the status:
+
+- An error or limit `task_complete` exits with the class of that failure: `1` for an agent, provider, tool, cut-off, or `max_turns`/`max_tool_calls` limit outcome; `2` for an authentication, rate-limit, or network failure; and `3` for an input error. An unsatisfied output schema stays `1` with or without the flag.
+- A broken pipe from a consumer that closes stdout still exits `0`, and an interruption still exits `130`.
+- The stream itself is unchanged: the final `task_complete` record remains the outcome channel.
+
+The flag is a root agent-run option, like `--output-schema`: combining it with a subcommand is invalid usage and exits `3`. It is accepted but inert with `--output-format text` and `--output-format json`, which already exit nonzero on a failed run.
+
 Interruption follows one graceful path for both Ctrl-C (SIGINT) and, on Unix, SIGTERM --- the signal process supervisors use to cancel a run. The active task closes with an interrupted `task_complete` record and the telemetry summary is flushed before the process exits `130`.
 
 ## Terminal status reports (OSC 7501)
@@ -289,6 +297,8 @@ A settings file that cannot be loaded or parsed exited `1`; it now exits `3`, th
 `debug models --json` and `sessions list --json` emitted a bare JSON array before the diagnostic document above; they now emit the document, and `bash check` gained `--json` ([ADR 029](adr/029-diagnostic-json-document.md)). Consumers that parsed the bare array read `data.models` or `data.sessions` instead. No default behavior changed: the affected flags are explicitly opt-in.
 
 An exhausted HTTP `408` request timeout from a provider now exits `2` instead of `1`, matching the client-side timeouts that already did ([ADR 045](adr/045-classify-request-timeouts-as-api-errors.md)). Scripts that branch on `$?` must treat `2` as the request-timeout class. The mapping depends on the status code the provider supplies, and every other status stays where it was: `400`, `404`, `409`, `5xx`, and `529` still exit `1`.
+
+`cake --fail-on-error` adds an opt-in strict exit contract for `stream-json` ([ADR 046](adr/046-opt-in-strict-exit-codes-for-stream-json.md)). Exit-code meaning grows, but no default behavior changes: without the flag, an in-stream agent, provider, or tool failure still exits `0`, so every existing consumer keeps working. A consumer that adopts the flag reads a nonzero exit where it previously read `0`, which is the point of opting in.
 
 ## Related decisions
 
