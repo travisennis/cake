@@ -17,21 +17,25 @@ You can see it working by running a session against a mock provider whose respon
 
 ## Progress
 
-- [ ] (2026-10-15T00:00Z) Branch `fix/telemetry-data-minimization` cut from `origin/master`.
-- [ ] Add serialization-boundary helpers to `src/session_telemetry.rs` and apply the serde attributes.
-- [ ] Remove construction-time digesting from `src/clients/judge_observer.rs`; update its tests.
-- [ ] Change `ToolCallTelemetry.call_id` to `Option<String>` and update the three construction sites.
-- [ ] Remove `working_directory` from the `telemetry_init` record and its `attach_session_telemetry` parameter.
-- [ ] Unit tests: digest, bound, endpoint, and cwd canaries.
-- [ ] Integration tests in `tests/session_telemetry.rs` with canaries end to end.
-- [ ] Update `scripts/session-metrics` (cwd fallback, `tool_call.call_id` digest) and its tests.
-- [ ] Update `docs/integrations.md`, `docs/security.md`, `scripts/session-metrics/README.md`.
-- [ ] Run `just check` and the focused test commands; preflight; open the pull request.
+- [x] (2026-10-15T13:05Z) Branch `fix/telemetry-data-minimization` cut from `origin/master`; task 077d accepted and started.
+- [x] Add serialization-boundary helpers to `src/session_telemetry.rs` and apply the serde attributes.
+- [x] Remove construction-time digesting from `src/clients/judge_observer.rs`; update its tests.
+- [x] Change `ToolCallTelemetry.call_id` to `Option<String>` and update the three construction sites.
+- [x] Remove `working_directory` from the `telemetry_init` record and its `attach_session_telemetry` parameter.
+- [x] Unit tests: digest, bound, endpoint, and cwd canaries.
+- [x] Integration tests in `tests/session_telemetry.rs` with canaries end to end.
+- [x] Update `scripts/session-metrics` (cwd fallback, `tool_call.call_id` digest) and its tests.
+- [x] Update `docs/integrations.md`, `docs/security.md`, `scripts/session-metrics/README.md`.
+- [x] (2026-10-15T14:40Z) `just check` and `just check-coverage` pass; preflight passes 1-3 run; commits `d1e8e02`, `50a95fd`, `5d1ac33`.
+- [ ] Open the pull request and hand off.
 
 ## Surprises & Discoveries
 
-- The recorded task evidence pointed at `src/clients/judge_observer.rs:765-783` for `digest_identifier`; the function actually lives in `src/session_telemetry.rs:504` and the judge observer only calls it. Evidence: `rg -n "fn digest_identifier" src/session_telemetry.rs`.
+- The recorded task evidence pointed at `src/clients/judge_observer.rs:765-783` for `digest_identifier`; the function actually lives in `src/session_telemetry.rs` and the judge observer only calls it. Evidence: `rg -n "fn digest_identifier" src/session_telemetry.rs`.
 - `ResponsesFailedMetadata` is dual-purpose: the same struct instance feeds the user-visible error text (`ResponsesStreamFailed::Display`) and telemetry, so truncating the value at construction would silently shorten user-facing errors. This is the strongest argument for enforcing at the serialization boundary instead.
+- Field-level `serialize_with` works under `#[serde(flatten)]` on the record enum's payload structs, which the approach depends on. Evidence: `clients::judge::observer::tests::attempt_identifiers_serialize_only_as_digests` passes, serializing a `SessionTelemetryRecord::JudgeAttempt` whose payload fields are flattened.
+- A `serialize_with` adapter cannot make a field *absent*: serde evaluates `skip_serializing_if` against the field value before the adapter runs, so a present-but-empty or unparsable value serializes as `null`. The docs state that shape rather than promising omission, and the empty-identifier construction sites filter the value themselves when absence is the intent.
+- The previous implementation decided the policy by hand at each boundary (build time for the judge attempt's call id, `finish` time for its provider id, not at all for a tool call); the drift those paths had already accumulated is why the identifiers are now hashed at one boundary instead. `sanitize_attempt_provider_fields` stays for the termination vocabulary check, which is a separate policy (reject unknown values rather than transform them).
 
 ## Decision Log
 
@@ -39,12 +43,18 @@ You can see it working by running a session against a mock provider whose respon
 - Decision: `ToolCallTelemetry.call_id` becomes `Option<String>` and the key is omitted for an empty identifier. Rationale: matches the existing `judge_attempt`, `compensation`, and `type_safe_shadow` convention ("an absent or empty identifier attaches nothing") and avoids persisting the digest of an empty string, which would collide across id-less calls. Date/Author: 2026-10-15, cake.
 - Decision: delete `telemetry_init.working_directory` rather than replace it, and let `scripts/session-metrics` source project identity from the transcript's `session_meta.working_directory` (the transcript is the documented sensitive artifact and already carries the same path). Rationale: the task forbids another raw absolute path, and the alternatives (basename, path digest) either still disclose the project name or lose the documented `--project` substring filter. Date/Author: 2026-10-15, cake.
 - Decision: truncation marker is the ASCII string `...[truncated]`, counted inside the 1,024-byte budget; the reaper walks back to a UTF-8 boundary. Rationale: ASCII keeps the byte budget and `jq`/`grep` handling trivial, and a clear marker beats the bare `...` used for human-facing output elsewhere. Date/Author: 2026-10-15, cake.
-- Decision: endpoint metadata strips userinfo, query, and fragment with `reqwest::Url`, then applies the same byte bound; a `base_url` that fails to parse is omitted entirely. Rationale: fail closed, because an unparseable string may still embed a credential. Date/Author: 2026-10-15, cake.
+- Decision: endpoint metadata strips userinfo, query, and fragment with `reqwest::Url`, then applies the same byte bound; a `base_url` that is not a parsable URL, or whose userinfo cannot be cleared, serializes as `null` rather than the raw string. Rationale: fail closed, because an unparsable value cannot be proven credential-free; the adapter cannot omit a field, so `null` is the absent shape. Date/Author: 2026-10-15, cake. (Revised 2026-10-15: the original entry said "omitted entirely"; the implemented behavior is `null`, and the docs now say so.)
 - Decision: widen the bound from the three named fields to every unbounded provider-controlled string in telemetry: `responses_failed` `type`/`code`/`param`, `compensation.detail`, and `session_summary.error`. Rationale: identical adversarial shape and a one-attribute fix; in-memory values (retry classification by `code`) are untouched. Out of scope: provider identity values that downstream analysis matches exactly (`api_attempt.response_model`, `provider`, and `termination` vocabulary), where a silent truncation would create wrong matches; the judge path's vocabulary allowlist owns those, and task #202 owns judge-diagnostic breadth. Date/Author: 2026-10-15, cake.
 
 ## Outcomes & Retrospective
 
-To be completed before the task is completed.
+Delivered. Every telemetry record now crosses one data-minimization boundary, and a reviewer can see it in three places: the unit tests in `src/session_telemetry.rs` (`metadata_bound_is_utf8_safe_and_marked`, `provider_text_fields_serialize_bounded`, `provider_identifiers_serialize_only_as_digests`, `telemetry_init_omits_working_directory_and_sanitizes_endpoint`), the end-to-end canary test `sidecar_minimizes_provider_identifiers_paths_and_error_text`, and the documented policy in `docs/integrations.md` with `docs/security.md`.
+
+Against the purpose: a sidecar written by this build carries provider identifiers only as digests, bounds every provider-supplied string to 1,024 bytes with the `...[truncated]` marker, keeps the endpoint without userinfo, query, or fragment, and has no `working_directory` key. The session-metrics suite still reports the same tables and filters, taking project identity from the transcript; historical sidecars keep working, which its tests cover (`test_invocation_borrows_transcript_working_directory`, `test_digested_tool_call_id_joins_its_judge_attempt`).
+
+What changed against the plan: the bound widened from the three named fields to every unbounded provider-controlled string (recorded in the Decision Log), the endpoint's unparsable case is `null` rather than omitted, and `--diagnostic` turned out to render attempt metadata through the same `Serialize` implementation, so it keeps showing digests and no raw identifier appears on that surface either. Nothing remains from the original scope; the follow-up worth its own task is bounding provider *identity* strings (`response_model`, `provider`, `termination` vocabulary), which this change deliberately left alone because truncating a value that downstream analysis matches exactly would create silent mismatches.
+
+Lessons: enforcing at the serializer removed the need to reason about every exit path, and the tests that asserted in-memory digests had to move to serialized assertions -- the cost of the design, paid once. The `#[expect(clippy::ref_option)]` attributes are the visible price of serde's `serialize_with` signature.
 
 ## Context and Orientation
 
@@ -107,9 +117,40 @@ Every step is a source edit plus a test run, so re-running is harmless. Nothing 
 
 ## Artifacts and Notes
 
-To be filled with the canary test output and the `just check` tail.
+`cargo test --test session_telemetry sidecar_minimizes`:
+
+```
+running 1 test
+test sidecar_minimizes_provider_identifiers_paths_and_error_text ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 17 filtered out
+```
+
+`just check` tail:
+
+```
+Script fixture suites passed!
+Fast local checks passed!
+```
+
+`just check-coverage` tail:
+
+```
+session_telemetry.rs  1520  31  97.96%  ...
+Coverage: 95.76%
+PASS: Total coverage (95.76%) meets threshold (90%)
+CRAP gate: 1224 functions checked, 1 grandfathered, 2 warned, 0 over allowed
+CC gate: 1224 functions checked, 13 grandfathered, 0 over allowed
+PASS: All coverage gates passed
+```
+
+The end-to-end canary run also proves the transcript side is untouched: `turn_usage.provider_request_id` still names the raw provider response, which is what the transcript is for.
 
 ## Interfaces and Dependencies
 
-New in `crate::session_telemetry`: `pub const METADATA_MAX_BYTES: usize`, `const METADATA_TRUNCATION_MARKER: &str`, `pub fn bound_metadata(value: &str) -> String`, `pub fn sanitize_endpoint(value: &str) -> Option<String>`, and the private serde adapters `serialize_bounded_optional`, `serialize_bounded_required`, `serialize_digested_optional`; `pub fn digest_identifier(value: &str) -> String` stays as the single hash. `reqwest::Url` (already a dependency, re-exporting the `url` crate) does URL parsing; `serde` field attributes `serialize_with` and `skip_serializing_if` carry the policy; no new dependency is added. `ToolCallTelemetry.call_id` changes type to `Option<String>`, which is the only public field-type change; `SessionTelemetryRecord::TelemetryInit` loses `working_directory`, which is the only removed field. `scripts/session-metrics/cakelib.py` gains `Invocation.transcript_working_directory: str | None` and an extra `load_telemetry` parameter with a default, so the module stays
-importable by the standalone scripts.
+New in `crate::session_telemetry`: `pub const METADATA_MAX_BYTES: usize`, `const METADATA_TRUNCATION_MARKER: &str`, `pub fn bound_metadata(value: &str) -> String`, `pub fn sanitize_endpoint(value: &str) -> Option<String>`, and the private serde adapters `serialize_bounded_optional`, `serialize_bounded_required`, `serialize_digested_optional`, `serialize_endpoint_optional`; `pub fn digest_identifier(value: &str) -> String` stays as the single hash. `reqwest::Url` (already a dependency, re-exporting the `url` crate) does URL parsing; `serde` field attributes `serialize_with` and `skip_serializing_if` carry the policy; no new dependency is added. `ToolCallTelemetry.call_id` changes type to `Option<String>`, which is the only field-type change; `SessionTelemetryRecord::TelemetryInit` loses `working_directory`, which is the only removed field. `scripts/session-metrics/cakelib.py` gains `Invocation.transcript_working_directory: str | None` and an extra `load_telemetry` parameter with a
+default, so the module stays importable by the standalone scripts.
+
+## Revision Notes
+
+- 2026-10-15: recorded the `#[serde(flatten)]` and `null`-versus-absent discoveries, corrected the endpoint decision to match the implemented behavior, and filled in Outcomes, Artifacts, and Progress before task completion.

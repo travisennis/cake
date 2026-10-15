@@ -1235,6 +1235,62 @@ async fn sigterm_during_retry_keeps_settled_attempt_telemetry() {
     assert_eq!(summary["usage"]["total_tokens"], 18);
 }
 
+/// Mount the two provider turns the minimization test drives: a Bash call with
+/// canary identifiers and command text, then a terminal `response.failed`
+/// whose error text is longer than the metadata bound and ends in a canary.
+async fn mount_minimization_turns(
+    mock_server: &MockServer,
+    call_id: &str,
+    request_id: &str,
+    command: &str,
+    tail_canary: &str,
+) {
+    let tool_call_response = serde_json::json!({
+        "id": request_id,
+        "output": [
+            {
+                "type": "function_call",
+                "id": "fc-1",
+                "call_id": call_id,
+                "name": "Bash",
+                "arguments": serde_json::json!({"command": command}).to_string(),
+            },
+        ],
+        "usage": { "input_tokens": 10, "output_tokens": 5, "total_tokens": 15 },
+    });
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(tool_call_response))
+        .expect(1)
+        .up_to_n_times(1)
+        .mount(mock_server)
+        .await;
+
+    let long_message = format!("{} {tail_canary}", "P".repeat(8_192));
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(response_failed_body(
+                request_id,
+                "invalid_request_error",
+                &long_message,
+            )),
+        )
+        .expect(1)
+        .mount(mock_server)
+        .await;
+}
+
+/// Assert none of the canary strings appears anywhere in the sidecar.
+fn assert_no_canaries(contents: &str, canaries: &[&str]) {
+    for canary in canaries {
+        assert!(
+            !contents.contains(canary),
+            "sidecar leaked {canary}: {contents}"
+        );
+    }
+}
+
 /// A sidecar is bounded metadata end to end: provider-assigned identifiers
 /// reach it only as one-way digests, provider text is bounded with a truncation
 /// marker, and a new init record carries no absolute working directory.
@@ -1247,51 +1303,22 @@ async fn sidecar_minimizes_provider_identifiers_paths_and_error_text() {
     let call_id = "call-canary-callid";
     let request_id = "resp-canary-reqid";
     let tail_canary = "canary-error-tail";
-
-    // Turn 1: a Bash call whose provider-assigned identifiers are canaries.
-    let tool_call_response = serde_json::json!({
-        "id": request_id,
-        "output": [
-            {
-                "type": "function_call",
-                "id": "fc-1",
-                "call_id": call_id,
-                "name": "Bash",
-                "arguments": serde_json::json!({"command": "echo minimized"}).to_string(),
-            },
-        ],
-        "usage": { "input_tokens": 10, "output_tokens": 5, "total_tokens": 15 },
-    });
-    Mock::given(method("POST"))
-        .and(path("/responses"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(tool_call_response))
-        .expect(1)
-        .up_to_n_times(1)
-        .mount(&mock_server)
-        .await;
-
-    // Turn 2: a terminal provider failure whose error text is far longer than
-    // the metadata bound and ends in a canary, so the test proves the tail is
-    // cut rather than stored.
-    let long_message = format!("{} {tail_canary}", "P".repeat(8_192));
-    Mock::given(method("POST"))
-        .and(path("/responses"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_string(response_failed_body(
-                request_id,
-                "invalid_request_error",
-                &long_message,
-            )),
-        )
-        .expect(1)
-        .mount(&mock_server)
-        .await;
+    let prompt_canary = "canary-prompt-text";
+    let command_canary = "canary-command-text";
+    mount_minimization_turns(
+        &mock_server,
+        call_id,
+        request_id,
+        &format!("echo {command_canary}"),
+        tail_canary,
+    )
+    .await;
 
     let output = env
         .command()
         .arg("--output-format")
         .arg("json")
-        .arg("test prompt")
+        .arg(prompt_canary)
         .env("SESSION_TELEMETRY_TEST_KEY", "test-token")
         // The judge is enabled by default and this run configures no judge
         // model; bypassing it lets the call execute and record its telemetry.
@@ -1307,12 +1334,17 @@ async fn sidecar_minimizes_provider_identifiers_paths_and_error_text() {
     );
 
     let contents = telemetry_contents(&env);
-    for canary in [call_id, request_id, tail_canary, "test-token"] {
-        assert!(
-            !contents.contains(canary),
-            "sidecar leaked {canary}: {contents}"
-        );
-    }
+    assert_no_canaries(
+        &contents,
+        &[
+            call_id,
+            request_id,
+            tail_canary,
+            "test-token",
+            prompt_canary,
+            command_canary,
+        ],
+    );
     assert!(
         !contents.contains("working_directory"),
         "a new init record carries no absolute working directory: {contents}"
