@@ -138,6 +138,24 @@ class TimeBreakdownTest(unittest.TestCase):
             "parallel activity": 150, "unobserved": 50,
         })
 
+    def test_digested_tool_call_id_joins_its_judge_attempt(self):
+        # The current build writes `tool_call.call_id` already digested, so it
+        # joins the judge attempt directly rather than being hashed twice.
+        inv = invocation(wall_ms=1000)
+        inv.summary["timestamp"] = stamp(1000)
+        digest = cakelib.call_id_digest("call-1")
+        inv.tool_calls = [{
+            "name": "Bash", "call_id": digest,
+            "started_at": stamp(0), "completed_at": stamp(300),
+        }]
+        inv.judge_attempts = [{"call_id": digest, "total_ms": 80}]
+
+        totals, missing = time_breakdown.invocation_timeline(inv)
+
+        self.assertEqual(missing, {})
+        self.assertEqual(round(totals["Bash safety models"]), 80)
+        self.assertEqual(round(totals["Bash remaining"]), 220)
+
     def test_old_tool_record_is_unknown_instead_of_counted_as_zero(self):
         inv = invocation(wall_ms=1000, tool_durations=[800])
         inv.summary["timestamp"] = stamp(1000)

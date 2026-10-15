@@ -95,7 +95,13 @@ def invocation_timeline(inv: cakelib.Invocation) -> tuple[dict[str, float], dict
         if name == "tb__subagent":
             add(start, stop, "delegated agent")
         elif name == "Bash":
-            digest = cakelib.call_id_digest(tool.get("call_id", ""))
+            # A sidecar written by the current build records `call_id` as the
+            # one-way digest the judge attempt and the shadow observation
+            # carry, so it joins directly. A historical sidecar records the raw
+            # provider id, which is digested here to join the same way.
+            digest = tool.get("call_id") or ""
+            if digest not in judge_ms and digest not in shadow_ms:
+                digest = cakelib.call_id_digest(digest)
             safety = min(stop - start, max(judge_ms[digest], shadow_ms[digest]))
             add(start, start + safety, "Bash safety models")
             add(start + safety, stop, "Bash remaining")

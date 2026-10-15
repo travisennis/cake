@@ -286,6 +286,10 @@ class Invocation:
     summary: dict | None = None
     other: list[dict] = field(default_factory=list)
     mtime: datetime | None = None
+    # The transcript's working directory, filled in by `load_telemetry`.
+    # Telemetry init records stopped carrying the absolute path, so an
+    # invocation without one borrows the value from its session's transcript.
+    transcript_working_directory: str | None = None
 
     @property
     def model(self) -> str:
@@ -293,7 +297,14 @@ class Invocation:
 
     @property
     def working_directory(self) -> str:
-        return (self.init or {}).get("working_directory", "unknown")
+        """Project identity: the init record's value when present (historical
+        sidecars and anything that still writes it), otherwise the session
+        transcript's value, otherwise the unknown placeholder."""
+        return (
+            (self.init or {}).get("working_directory")
+            or self.transcript_working_directory
+            or "unknown"
+        )
 
     @property
     def last_activity(self) -> datetime | None:
@@ -359,7 +370,13 @@ def load(ns: argparse.Namespace) -> Dataset:
     telemetry_dir = resolve_telemetry_dir(ns)
 
     sessions, session_errors = load_sessions(sessions_dir, cutoff, ns.model, ns.project)
-    invocations, telemetry_errors = load_telemetry(telemetry_dir, cutoff, ns.model, ns.project)
+    invocations, telemetry_errors = load_telemetry(
+        telemetry_dir,
+        cutoff,
+        ns.model,
+        ns.project,
+        {session.id: session.working_directory for session in sessions},
+    )
     if ns.session:
         sessions = [s for s in sessions if s.id == ns.session]
         invocations = [inv for inv in invocations if inv.session_id == ns.session]
@@ -442,7 +459,17 @@ def load_telemetry(
     cutoff: datetime | None,
     model_filter: str | None = None,
     project_filter: str | None = None,
+    session_working_directories: dict[str, str] | None = None,
 ) -> tuple[list[Invocation], int]:
+    """Load telemetry sidecars into invocations.
+
+    `session_working_directories` maps a session id to the working directory
+    its transcript records. Telemetry init records no longer carry the absolute
+    path, so an invocation borrows the transcript value for project filters and
+    per-project reports; a sidecar that carries its own value (historical
+    records) keeps it.
+    """
+    session_working_directories = session_working_directories or {}
     grouped: dict[tuple[str, str], Invocation] = {}
     parse_errors = 0
 
@@ -485,6 +512,8 @@ def load_telemetry(
 
     invocations = []
     for inv in grouped.values():
+        if not (inv.init or {}).get("working_directory"):
+            inv.transcript_working_directory = session_working_directories.get(inv.session_id)
         if model_filter and model_filter not in inv.model:
             continue
         if project_filter and project_filter not in inv.working_directory:
