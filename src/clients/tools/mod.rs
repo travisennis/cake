@@ -690,11 +690,20 @@ impl<T: Into<String>> From<T> for ToolError {
 type ToolFuture = Pin<Box<dyn Future<Output = Result<ToolResult, ToolError>> + Send>>;
 type ToolExecutor = Arc<dyn Fn(Arc<ToolContext>, String, String) -> ToolFuture + Send + Sync>;
 
-/// Extracts the canonical path a mutating tool would write from its
+/// Extracts the canonical path a tool's call targets for scheduling from its
 /// arguments.
-type MutationTargetFn = Arc<dyn Fn(&ToolContext, &str) -> Result<PathBuf, String> + Send + Sync>;
+type PathTargetFn = Arc<dyn Fn(&ToolContext, &str) -> Result<PathBuf, String> + Send + Sync>;
 
-/// Declared semantics of a registered tool, consumed by same-file scheduling,
+/// How a scheduled call touches the canonical path its resolver returns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PathTouch {
+    /// Observes the path's bytes without changing them (`Read`, `ReadImage`).
+    Observe,
+    /// Writes the path's bytes (Edit, Write).
+    Mutate,
+}
+
+/// Declared semantics of a registered tool, consumed by same-path scheduling,
 /// read-only sandbox filtering, and hook payload shaping.
 ///
 /// Defaults fail closed (#277): an unmarked entry is treated as parsing its
@@ -714,9 +723,9 @@ pub(super) struct ToolCapabilities {
     /// Whether an interrupted call may be re-executed after recovery. The
     /// conservative default is [`ReplaySafety::Never`].
     pub(super) replay_safety: ReplaySafety,
-    /// Resolves the canonical path this call would mutate when the tool
-    /// mutates a resolvable path; drives same-file serialization (ADR-013).
-    pub(super) mutating_target: Option<MutationTargetFn>,
+    /// Resolves the canonical path this call targets and how it touches that
+    /// path; drives same-path serialization (ADR-013, ADR-043).
+    pub(super) path_target: Option<(PathTargetFn, PathTouch)>,
     /// The tool sends image bytes to the provider, so it is only offered to a
     /// model that declares image support. A text-only model would otherwise
     /// receive a tool whose output the provider rejects.
@@ -729,7 +738,7 @@ impl ToolCapabilities {
             repairs_arguments: false,
             read_safe: false,
             replay_safety: ReplaySafety::Never,
-            mutating_target: None,
+            path_target: None,
             requires_image_support: false,
         }
     }
@@ -794,13 +803,23 @@ impl ToolEntry {
         self
     }
 
-    /// Attach the resolver for the canonical path this tool's call would
-    /// mutate, enabling same-file serialization in scheduling.
+    /// Attach the resolver for the canonical path this tool's call mutates,
+    /// enabling same-path serialization in scheduling.
     fn mutates_path(
         mut self,
         target: impl Fn(&ToolContext, &str) -> Result<PathBuf, String> + Send + Sync + 'static,
     ) -> Self {
-        self.capabilities.mutating_target = Some(Arc::new(target));
+        self.capabilities.path_target = Some((Arc::new(target), PathTouch::Mutate));
+        self
+    }
+
+    /// Attach the resolver for the canonical path this tool's call observes,
+    /// so the call serializes with same-path mutations in scheduling.
+    fn observes_path(
+        mut self,
+        target: impl Fn(&ToolContext, &str) -> Result<PathBuf, String> + Send + Sync + 'static,
+    ) -> Self {
+        self.capabilities.path_target = Some((Arc::new(target), PathTouch::Observe));
         self
     }
 }
@@ -953,16 +972,17 @@ impl ToolRegistry {
         })
     }
 
-    /// Return the canonical path a registered tool would write, using the
-    /// mutation-target resolver declared at registration.
-    pub(super) fn mutating_target(
+    /// Return the canonical path a registered tool's call targets for
+    /// scheduling and how the call touches it, using the resolver declared at
+    /// registration.
+    pub(super) fn path_target(
         &self,
         context: &ToolContext,
         name: &str,
         arguments: &str,
-    ) -> Option<Result<PathBuf, String>> {
-        let target = self.find(name)?.capabilities.mutating_target.as_ref()?;
-        Some(target(context, arguments))
+    ) -> Option<(Result<PathBuf, String>, PathTouch)> {
+        let (target, touch) = self.find(name)?.capabilities.path_target.as_ref()?;
+        Some((target(context, arguments), *touch))
     }
 
     fn find(&self, name: &str) -> Option<&ToolEntry> {
@@ -1237,6 +1257,38 @@ pub(super) fn resolve_path_for_write_scheduling(
         return validate_path_for_write(context, path_str);
     }
 
+    resolve_nonexistent_path(context, path, false)
+}
+
+/// Resolve a read-target path for scheduling without requiring the file to
+/// exist. Returns the same stable path key as
+/// [`resolve_path_for_write_scheduling`] so a Read and a same-turn Write of a
+/// file that does not exist yet share one serialization group instead of
+/// racing on whether the read observes the file at all.
+///
+/// Read-only grants (`--add-dir`, skill directories) are accepted: reads
+/// observe them, while writes reject them.
+pub(super) fn resolve_path_for_read_scheduling(
+    context: &ToolContext,
+    path_str: &str,
+) -> Result<PathBuf, String> {
+    let path = Path::new(path_str);
+
+    if path.exists() {
+        return validate_path_in_cwd(context, path_str);
+    }
+
+    resolve_nonexistent_path(context, path, true)
+}
+
+/// Resolve the canonical key for a path that does not exist yet, validating
+/// it against the shared grant table. Read-write grants are always accepted;
+/// `allow_read_only` accepts read-only grants too.
+fn resolve_nonexistent_path(
+    context: &ToolContext,
+    path: &Path,
+    allow_read_only: bool,
+) -> Result<PathBuf, String> {
     // Resolve the path root-to-leaf with symlink-aware semantics for existing
     // components. Non-existing suffixes are normalised lexically so that
     // parent-directory components across nonexistent ancestors are handled
@@ -1263,6 +1315,7 @@ pub(super) fn resolve_path_for_write_scheduling(
         &context.skill_dirs,
     ) {
         Some(PathAccess::ReadWrite) => {},
+        Some(PathAccess::ReadOnly) if allow_read_only => {},
         Some(PathAccess::ReadOnly) => {
             return Err(format!(
                 "Path '{}' is in a read-only directory (added via --add-dir). Write operations are not allowed.",
@@ -1494,10 +1547,12 @@ pub(super) fn default_tool_registry() -> ToolRegistry {
             .mutates_path(edit::mutating_target),
         ToolEntry::new(read::read_tool(), execute_read_tool)
             .read_safe()
-            .replay_safe(),
+            .replay_safe()
+            .observes_path(read::path_target),
         ToolEntry::new(read_image::read_image_tool(), execute_read_image_tool)
             .read_safe()
             .replay_safe()
+            .observes_path(read_image::path_target)
             .requires_images(),
         ToolEntry::new(write::write_tool(), execute_write_tool)
             .repairs_arguments()
@@ -1516,7 +1571,8 @@ pub(super) fn read_tool_registry() -> ToolRegistry {
     ToolRegistry::new(vec![
         ToolEntry::new(read::read_tool(), execute_read_tool)
             .read_safe()
-            .replay_safe(),
+            .replay_safe()
+            .observes_path(read::path_target),
     ])
 }
 
@@ -2305,16 +2361,16 @@ mod tests {
         assert!(registry.repairs_arguments("tb__run_tests"));
         assert!(
             registry
-                .mutating_target(&ToolContext::from_current_process(), "tb__run_tests", "{}")
+                .path_target(&ToolContext::from_current_process(), "tb__run_tests", "{}")
                 .is_none(),
-            "toolbox tools declare no mutation target"
+            "toolbox tools declare no path target"
         );
     }
 
-    /// A registered mutation-target resolver drives scheduling lookups for
-    /// the built-in tools through the capability, not a name match.
+    /// A registered path-target resolver drives scheduling lookups for the
+    /// built-in tools through the capability, not a name match.
     #[test]
-    fn mutating_target_dispatches_through_registered_resolver() {
+    fn path_target_dispatches_through_registered_resolver() {
         let dir = tempfile::tempdir().unwrap();
         let context = ToolContext::with_temp_dirs(
             dir.path().canonicalize().unwrap(),
@@ -2326,17 +2382,23 @@ mod tests {
         let target = dir.path().join("file.txt");
         fs::write(&target, "first").unwrap();
         let registry = default_tool_registry();
+        let canonical = fs::canonicalize(&target).unwrap();
 
-        let arguments = serde_json::json!({ "path": target, "content": "x" }).to_string();
+        let write_arguments = serde_json::json!({ "path": target, "content": "x" }).to_string();
         let resolved = registry
-            .mutating_target(&context, "Write", &arguments)
-            .expect("Write declares a resolver")
-            .unwrap();
-        assert_eq!(resolved, fs::canonicalize(&target).unwrap());
+            .path_target(&context, "Write", &write_arguments)
+            .expect("Write declares a resolver");
+        assert_eq!(resolved, (Ok(canonical.clone()), PathTouch::Mutate));
+
+        let read_arguments = serde_json::json!({ "path": target }).to_string();
+        let observed = registry
+            .path_target(&context, "Read", &read_arguments)
+            .expect("Read declares a resolver");
+        assert_eq!(observed, (Ok(canonical), PathTouch::Observe));
 
         assert!(
-            registry.mutating_target(&context, "Bash", "{}").is_none(),
-            "non-mutating tools declare no resolver"
+            registry.path_target(&context, "Bash", "{}").is_none(),
+            "tools with no declared path target have no resolver"
         );
     }
 

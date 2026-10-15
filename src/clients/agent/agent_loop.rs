@@ -489,10 +489,10 @@ impl Agent {
 
     /// Execute a turn's tool calls.
     ///
-    /// Calls mutating the same canonical path run sequentially in issue order
-    /// so each sees the previous call's effects; all other calls run
-    /// concurrently. Results are returned in the model's issue order
-    /// regardless of grouping.
+    /// Calls targeting the same canonical path run sequentially in issue order
+    /// when the turn mutates that path, so each call sees the previous call's
+    /// effects; all other calls run concurrently. Results are returned in the
+    /// model's issue order regardless of grouping.
     async fn run_tool_plans(
         &self,
         tool_plans: Vec<(String, String, ToolHookPlan)>,
@@ -514,8 +514,7 @@ impl Agent {
 
     /// Execute one scheduling group: members run sequentially in issue order,
     /// each seeing the previous call's effects. Every member after the first
-    /// is a same-path serialization reordering the model needed compensated,
-    /// recorded as a telemetry event.
+    /// was delayed by same-path serialization, recorded as a telemetry event.
     async fn run_group(&self, group: Vec<ScheduledToolCall>) -> Vec<(usize, ToolRunResult)> {
         let mut results = Vec::with_capacity(group.len());
         for (position, call) in group.into_iter().enumerate() {

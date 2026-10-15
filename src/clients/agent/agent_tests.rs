@@ -1850,6 +1850,117 @@ printf 'completed:%s' "$index"
         );
     }
 
+    /// A same-turn Read issued after an Edit of the same file observes the
+    /// edit's effects instead of racing them: the sidecar records the read as
+    /// a same-path serialization follower, and both outputs keep per-call
+    /// attribution in issue order.
+    #[tokio::test]
+    async fn same_file_edit_then_read_in_one_turn_observes_the_edit() {
+        let mock_server = MockServer::start().await;
+        let dir = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+        let file_path = dir.path().join("observed.txt");
+        std::fs::write(&file_path, "alpha\n").unwrap();
+
+        let edit_arguments = serde_json::json!({
+            "path": file_path,
+            "edits": [{ "old_text": "alpha", "new_text": "alpha\nbeta" }]
+        })
+        .to_string();
+        let read_arguments = serde_json::json!({ "path": file_path }).to_string();
+
+        let edit_then_read_response = serde_json::json!({
+            "id": "resp-tool",
+            "output": [
+                {
+                    "type": "function_call",
+                    "id": "fc-1",
+                    "call_id": "call-1",
+                    "name": "Edit",
+                    "arguments": edit_arguments
+                },
+                {
+                    "type": "function_call",
+                    "id": "fc-2",
+                    "call_id": "call-2",
+                    "name": "Read",
+                    "arguments": read_arguments
+                }
+            ],
+            "usage": { "input_tokens": 1, "output_tokens": 1, "total_tokens": 2 }
+        });
+
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(edit_then_read_response))
+            .up_to_n_times(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(loop_final_response()))
+            .mount(&mock_server)
+            .await;
+
+        let telemetry_dir = tempfile::TempDir::new().unwrap();
+        let telemetry_path = telemetry_dir.path().join("sidecar.ndjson");
+        let mut agent = test_agent_with_url(&mock_server.uri())
+            .with_tools(crate::clients::tools::default_tool_registry())
+            .with_session_telemetry(
+                SessionTelemetryWriter::open(&telemetry_path).unwrap(),
+                uuid::Uuid::new_v4(),
+            );
+
+        let result = agent
+            .send("edit the file then read it".to_string())
+            .await
+            .unwrap();
+
+        assert_eq!(result, "done");
+        let outputs: Vec<(&str, &str)> = agent
+            .history()
+            .iter()
+            .filter_map(|item| match item {
+                ConversationItem::FunctionCallOutput {
+                    call_id, output, ..
+                } => Some((call_id.as_str(), output.as_str())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(outputs.len(), 2);
+        assert_eq!(outputs[0].0, "call-1");
+        assert_eq!(outputs[1].0, "call-2");
+        assert!(
+            !outputs[0].1.starts_with("Error:"),
+            "edit should succeed: {}",
+            outputs[0].1
+        );
+        assert!(
+            outputs[1].1.contains("alpha") && outputs[1].1.contains("beta"),
+            "the read must observe the edit's effects: {}",
+            outputs[1].1
+        );
+
+        // The read was ordered behind the edit, not raced against it: the
+        // sidecar records it as a same-path serialization follower. Reading
+        // the sidecar is deterministic where a content race would only make
+        // the read fail sometimes.
+        drop(agent);
+        let sidecar = std::fs::read_to_string(&telemetry_path).unwrap();
+        let records: Vec<serde_json::Value> = sidecar
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let compensation = records
+            .iter()
+            .find(|record| record["type"] == "compensation")
+            .expect("the serialized read must reach the telemetry sidecar");
+        assert_eq!(compensation["kind"], "same_path_serialization");
+        assert_eq!(
+            compensation["detail"],
+            file_path.canonicalize().unwrap().display().to_string()
+        );
+    }
+
     /// A valid 1x1 red PNG, generated with Python `zlib`.
     const TINY_PNG: &[u8] = &[
         0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,

@@ -3,7 +3,10 @@ use std::fmt::Write as _;
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 
-use crate::clients::tools::{ToolContext, contains_null_byte, decode_utf8, validate_path_in_cwd};
+use crate::clients::tools::{
+    ToolContext, contains_null_byte, decode_utf8, resolve_path_for_read_scheduling,
+    validate_path_in_cwd,
+};
 use crate::config::settings::ToolLimits;
 use crate::session_telemetry::{CompensationEventTelemetry, CompensationKind};
 
@@ -60,6 +63,20 @@ pub fn extract_path(arguments: &str) -> Option<String> {
     serde_json::from_str::<ReadArgs>(arguments)
         .map(|args| args.path)
         .ok()
+}
+
+/// Return the validated canonical path this Read call would observe.
+///
+/// Scheduling uses this to serialize the read with same-path mutations in the
+/// same turn. Unresolvable arguments or paths return `Err`, leaving the call
+/// unscheduled so it can surface its own error.
+pub(super) fn path_target(
+    context: &ToolContext,
+    arguments: &str,
+) -> Result<std::path::PathBuf, String> {
+    let args: ReadArgs =
+        serde_json::from_str(arguments).map_err(|e| format!("Invalid read arguments: {e}"))?;
+    resolve_path_for_read_scheduling(context, &args.path)
 }
 
 /// Execute a read command

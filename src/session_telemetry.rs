@@ -383,8 +383,8 @@ pub enum CompensationKind {
     /// or `enabled = false`), so the command ran without a judge verdict.
     /// Emitted per bypassed call so the escape hatch cannot be used silently.
     JudgeBypass,
-    /// A second same-path mutation reordered into serial execution.
-    /// `detail` is the canonical target path.
+    /// A call whose start was delayed behind an earlier call targeting the
+    /// same canonical path, read or mutation. `detail` is that path.
     SamePathSerialization,
     /// Tool output exceeded its inline cap and was truncated or spilled to a
     /// temp file. `detail` names the tool.
