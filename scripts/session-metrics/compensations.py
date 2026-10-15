@@ -9,6 +9,10 @@ delete it (or rework the prompt) before it becomes unmeasured cruft.
 Source: telemetry `compensation` records, plus context-overflow retries
 counted from `retry_scheduled` records (reason=context_overflow), which exist
 in sidecars written before the compensation record landed.
+
+The same-path serialization counter includes any follower delayed behind an
+earlier call targeting the same canonical path, reads as well as mutations
+(ADR 043).
 """
 
 from collections import Counter
