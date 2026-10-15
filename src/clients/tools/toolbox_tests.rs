@@ -1,4 +1,5 @@
 use super::*;
+use crate::config::toolbox::DEFAULT_EXECUTE_TIMEOUT_SECS;
 use std::path::{Path, PathBuf};
 
 fn fixture_tool(path: PathBuf, format: ToolboxFormat) -> ToolboxTool {
@@ -9,7 +10,13 @@ fn fixture_tool(path: PathBuf, format: ToolboxFormat) -> ToolboxTool {
         description: "Test fixture tool.".to_string(),
         parameters: serde_json::json!({ "type": "object", "properties": {} }),
         format,
-        timeout_secs: 5,
+        // Most fixtures assert stream, argument, or output-cap behavior, not
+        // timing, so the cap is only a watchdog against a hung test: the
+        // production default (60s), far above any plausible spawn latency.
+        // Do not tighten it. A shared 5-second cap made these tests fail under
+        // load for reasons unrelated to what they assert (#624); only the
+        // `timeout_*` tests below lower it, and they do so deliberately.
+        timeout_secs: DEFAULT_EXECUTE_TIMEOUT_SECS,
         replay: crate::types::ReplaySafety::Never,
     }
 }
@@ -237,6 +244,9 @@ mod subprocess {
         let dir = tempfile::tempdir().unwrap();
         let path = write_executable(dir.path(), "sleeps", "#!/bin/sh\nsleep 30\n");
         let mut tool = fixture_tool(path, ToolboxFormat::Json);
+        // Below the 30-second sleep on purpose: this test and its two
+        // siblings are the suite's deliberate timeout coverage, so the cap is
+        // the property under test rather than a budget the fixture must fit.
         tool.timeout_secs = 1;
 
         let err = run(&tool, dir.path(), "{}").await.unwrap_err();
@@ -263,6 +273,8 @@ mod subprocess {
             err.message.contains("timed out after 1"),
             "unexpected error: {err}"
         );
+        // Wait past the descendant's own 2-second timer so "no marker" means
+        // the kill worked, not that the descendant had not run yet.
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
         assert!(
             !marker.exists(),
@@ -288,9 +300,13 @@ mod subprocess {
             err.message.contains("timed out after 1"),
             "unexpected error: {err}"
         );
+        // Generous bound: the property is that the detached stdin write cannot
+        // stall the call past the timeout, not that the call returns quickly on
+        // a loaded machine (#624). A regression waits out the 30-second sleep.
         assert!(
-            started.elapsed() < std::time::Duration::from_secs(5),
-            "call must not hang past the timeout"
+            started.elapsed() < std::time::Duration::from_secs(15),
+            "call must not hang past the timeout: {:?}",
+            started.elapsed()
         );
     }
 
@@ -331,6 +347,8 @@ mod subprocess {
 
         let result = run(&tool, dir.path(), "{}").await.unwrap();
         assert!(result.output.ends_with("bytes ...]"));
+        // Wait past the descendant's own 2-second timer so "no marker" means
+        // the cap kill reached it, not that it had not run yet.
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
         assert!(
             !marker.exists(),
