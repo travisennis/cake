@@ -210,6 +210,25 @@ class TimeBreakdownTest(unittest.TestCase):
         self.assertRegex(output, r"tool execution \(cumulative work\)\s+800ms\s+may overlap")
         self.assertRegex(output, r"Slowest API attempts:[\s\S]+test-model\s+900ms")
 
+    def test_digest_without_recorded_safety_time_is_not_hashed_twice(self):
+        # A digest-shaped id that matches no judge or shadow record joins as
+        # itself; re-digesting it could never match anything.
+        digest = "ab" * 32
+        self.assertEqual(time_breakdown._join_key(digest, {}, {}), digest)
+
+    def test_raw_historical_id_is_digested_to_join(self):
+        self.assertEqual(
+            time_breakdown._join_key("call-1", {}, {}),
+            cakelib.call_id_digest("call-1"),
+        )
+
+    def test_recorded_raw_key_wins_for_historical_sidecars(self):
+        # Historical sidecars key their judge and shadow records by the raw
+        # identifier, so the same raw tool id must join directly.
+        self.assertEqual(
+            time_breakdown._join_key("call-1", {"call-1": 10}, {}), "call-1"
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
