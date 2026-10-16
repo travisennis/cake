@@ -497,7 +497,16 @@ fn write_report(
     providers: &[serde_json::Value],
 ) -> std::path::PathBuf {
     let run_id = super::unix_timestamp();
-    let performance = super::compute_report(trials, config, &run_id);
+    // One labeled case per measured corpus case, keyed like the shadow counts, so
+    // the performance and safety sections read the same gold risk and
+    // observational labels.
+    let labeled_cases: super::LabeledShadowCases = trials
+        .iter()
+        .filter_map(|trial| {
+            shadow_case(&cases[trial.case_line - 1]).map(|case| (super::case_key(trial), case))
+        })
+        .collect();
+    let performance = super::compute_report(trials, config, &run_id, Some(&labeled_cases));
     let safety: Vec<_> = config
         .models
         .iter()
@@ -507,15 +516,8 @@ fn write_report(
                 .filter(|t| &t.model == model)
                 .map(|t| (&cases[t.case_line - 1], t))
                 .collect();
-            let shadow_records = matched
-                .iter()
-                .filter_map(|(case, trial)| shadow_case(case).map(|case| (case, *trial)))
-                .collect::<Vec<_>>();
-            let shadow_pairs = shadow_records
-                .iter()
-                .map(|(case, trial)| (case, *trial))
-                .collect::<Vec<_>>();
-            serde_json::json!({"model": model, "metrics": safety_report(&matched), "typesafe_shadow": super::shadow_report(&shadow_pairs, &config.typesafe_cutoffs)})
+            let model_trials = matched.iter().map(|(_, trial)| *trial).collect::<Vec<_>>();
+            serde_json::json!({"model": model, "metrics": safety_report(&matched), "typesafe_shadow": super::labeled_shadow_report(&labeled_cases, &model_trials, &config.typesafe_cutoffs)})
         })
         .collect();
     let payload = serde_json::json!({
@@ -974,6 +976,88 @@ fn judge_bench_independent_shadow_bound_counts_distinct_blocked_cases() {
         "tuning"
     };
     assert_eq!(row[other]["blocked_cases_observed"], 0);
+}
+
+/// #634: the model report's shadow section must read the corpus's gold labels,
+/// so the columns the README describes are populated for a run that carries
+/// them, and the safety section must report the same counts.
+#[test]
+fn judge_bench_independent_performance_shadow_reads_the_corpus_labels() {
+    let cases = load().unwrap();
+    let high_risk = cases
+        .iter()
+        .position(|case| case.risk == Risk::High && case.expected_decision == Decision::Block)
+        .expect("the corpus holds a high-risk blocked case")
+        + 1;
+    let observational = cases
+        .iter()
+        .position(|case| {
+            case.tags.contains(&Tag::Observational) && case.expected_decision == Decision::Allow
+        })
+        .expect("the corpus holds an observational allowed case")
+        + 1;
+    let trials = [high_risk, observational]
+        .into_iter()
+        .map(|line| {
+            let case = &cases[line - 1];
+            let mut trial = super::trial_record(
+                "fixture",
+                &case.entry(line),
+                crate::clients::judge::JudgeEvaluation {
+                    outcome: Ok(crate::clients::judge::JudgeOutcome::Bypassed),
+                    attempts: vec![],
+                    diagnostic: None,
+                    shadow: None,
+                },
+            );
+            trial.shadow_probability = Some(0.1);
+            trial.shadow_elapsed_ms = Some(100);
+            trial.shadow_failure_class = None;
+            trial.shadow_group = Some(case.pair.clone());
+            trial
+        })
+        .collect::<Vec<_>>();
+    let directory = tempfile::tempdir().unwrap();
+    let config = BenchmarkConfig {
+        models: vec!["fixture".into()],
+        repetitions: 1,
+        case_lines: Vec::new(),
+        profile: None,
+        results_dir: directory.path().into(),
+        slo: super::SloThresholds::default(),
+        typesafe_cutoffs: vec![0.99],
+        concurrency: 1,
+    };
+    let path = write_report(&cases, &trials, &config, "rubric fixture", &[]);
+    let json: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    // Each case lands in whichever split its pair hashes to, so the two splits
+    // are summed rather than assumed.
+    let split_totals = |section: &serde_json::Value| {
+        let row = &section["thresholds"][0];
+        let field = |name: &str| {
+            row["tuning"][name].as_u64().unwrap() + row["held_out"][name].as_u64().unwrap()
+        };
+        (field("high_risk_total"), field("observational_total"))
+    };
+    let performance = &json["performance"]["models"][0]["shadow"];
+    let safety = &json["safety"][0]["typesafe_shadow"];
+    assert_eq!(split_totals(performance), (1, 1));
+    assert_eq!(split_totals(performance), split_totals(safety));
+    // The notes describe the labeled corpus, not the legacy one.
+    for section in [performance, safety] {
+        assert!(
+            section["risk_note"]
+                .as_str()
+                .unwrap()
+                .contains("gold risk label")
+        );
+        assert!(
+            !section["coverage_note"]
+                .as_str()
+                .unwrap()
+                .contains("legacy corpus")
+        );
+    }
 }
 
 /// The blocked cases of one pair, with their corpus positions, so a trial carries
