@@ -5,7 +5,7 @@
 //!
 //! - 0 — success
 //! - 1 — agent/tool error
-//! - 2 — API error (rate limit, auth failure, network error)
+//! - 2 — API error (rate limit, auth failure, network error, request timeout)
 //! - 3 — input error (no prompt, invalid flags, missing API key)
 
 #![expect(clippy::expect_used, reason = "test code uses expect for assertions")]

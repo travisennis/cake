@@ -17,7 +17,7 @@ The exit class is a compatibility surface: scripts and CI branch on `$?`. Cake t
 - The same provider failure should exit the same way whichever layer observed it (transport, status code, or typed timeout).
 - Retry behavior and exit classification answer different questions. Retrying asks whether re-sending might succeed; classifying asks who failed.
 - The class-2 set must stay small and explainable, because every addition is a breaking change for `$?` consumers.
-- The tool boundary must stay explicit: a Bash tool timeout is not a provider failure.
+- The tool boundary must stay explicit: a tool-level timeout (a toolbox tool or a hook exceeding its timeout) is not a provider failure.
 
 ## Considered Options
 
