@@ -27,7 +27,7 @@ You can see it working by running a session against a mock provider whose respon
 - [x] Update `scripts/session-metrics` (cwd fallback, `tool_call.call_id` digest) and its tests.
 - [x] Update `docs/integrations.md`, `docs/security.md`, `scripts/session-metrics/README.md`.
 - [x] (2026-10-15T14:40Z) `just check` and `just check-coverage` pass; preflight passes 1-3 run; commits `d1e8e02`, `50a95fd`, `5d1ac33`.
-- [ ] Open the pull request and hand off.
+- [x] Open the pull request and hand off (PR #729).
 
 ## Surprises & Discoveries
 
@@ -106,7 +106,7 @@ just check
 
 Behavior a reviewer can check:
 
-1. `cargo test --lib session_telemetry` passes with new tests proving: a 1,024-byte ASCII value and a multi-byte UTF-8 value over the cap serialize bounded with the marker inside the cap; a raw call ID, provider request ID, error text, `message`, and `detail` never appear in `serde_json::to_string(&record)`, while `digest_identifier(raw)` does; `base_url` with userinfo (`https://user:sk-canary@host/v1?api_key=sk-canary#frag`) serializes as `https://host/v1`; an unparseable `base_url` serializes as absent; a new `telemetry_init` record has no `working_directory` key; the `responses_failed` nested object carries no `provider_request_id` while the parent `api_attempt` carries its digest.
+1. `cargo test --lib session_telemetry` passes with new tests proving: a 1,024-byte ASCII value and a multi-byte UTF-8 value over the cap serialize bounded with the marker inside the cap; a raw call ID, provider request ID, error text, `message`, and `detail` never appear in `serde_json::to_string(&record)`, while `digest_identifier(raw)` does; `base_url` with userinfo (`https://user:sk-canary@host/v1?api_key=sk-canary#frag`) serializes as `https://host/v1`; an unparseable `base_url` serializes as `null`; a new `telemetry_init` record has no `working_directory` key; the `responses_failed` nested object carries no `provider_request_id` while the parent `api_attempt` carries its digest.
 2. `cargo test --test session_telemetry` passes with an end-to-end test: a mock provider returns a tool call whose id and a `response.failed` error message contain canary strings; the sidecar written by the run contains the digest and the bounded text but neither canary, and `telemetry_init` has no `working_directory`.
 3. `just session-metrics-check` passes, including the updated fixtures and the new cwd-fallback test.
 4. `just check` passes (fmt, strict clippy, all-feature tests, complexity ratchet, script suites, docs lint).
