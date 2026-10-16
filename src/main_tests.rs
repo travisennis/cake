@@ -921,8 +921,10 @@ fn output_sink_builds_limit_exceeded_json() {
 #[test]
 fn fail_on_error_exit_codes_follow_the_documented_classes() {
     // The strict contract publishes the failure's documented class, not a
-    // hardcoded 1. `finish_run` is the only classifier, so a propagated
-    // in-stream error lands on the same code it would in any output mode.
+    // hardcoded 1. This drives the real propagation: with the flag the sink
+    // hands the in-stream error out and `finish_run` --- the only classifier
+    // --- maps it to the class every output mode already uses; without the
+    // flag the same error stays in the stream.
     type ExitClassCase = (&'static str, fn() -> anyhow::Error, u8);
     let cases: [ExitClassCase; 4] = [
         (
@@ -960,13 +962,53 @@ fn fail_on_error_exit_codes_follow_the_documented_classes() {
         ),
     ];
 
-    for (name, error, expected) in cases {
-        assert_eq!(
-            finish_run(Err(error())),
-            std::process::ExitCode::from(expected),
-            "{name} must exit with its documented class"
-        );
-    }
+    temp_env::with_var("CAKE_TEST_VALID_KEY", Some("sk-test-123"), || {
+        let agent = Agent::new(
+            test_resolved_model_config(),
+            &[(Role::System, "test system prompt".to_string())],
+        )
+        .with_session_id(uuid::uuid!("550e8400-e29b-41d4-a716-446655440000"));
+        let session = Session::new(agent.session_id(), PathBuf::from("/work"));
+        let dir = match tempfile::tempdir() {
+            Ok(dir) => dir,
+            Err(err) => panic!("temp dir should be created: {err}"),
+        };
+        let data_dir = match temp_env::with_var("CAKE_DATA_DIR", Some(dir.path()), DataDir::new) {
+            Ok(data_dir) => data_dir,
+            Err(err) => panic!("data dir should be created: {err}"),
+        };
+
+        for (name, error, expected) in cases {
+            let render = |fail_on_error: bool| {
+                CliOutputSink::new(OutputFormat::StreamJson, fail_on_error).render_turn(
+                    crate::cli::TurnResult {
+                        result: Err(error()),
+                        duration_ms: 0,
+                    },
+                    &agent,
+                    Path::new("/work"),
+                    &data_dir,
+                    &session,
+                    true,
+                )
+            };
+
+            let propagated = render(true);
+            assert!(
+                propagated.is_err(),
+                "{name} must propagate out of the sink with --fail-on-error"
+            );
+            assert_eq!(
+                finish_run(propagated),
+                std::process::ExitCode::from(expected),
+                "{name} must exit with its documented class"
+            );
+            assert!(
+                render(false).is_ok(),
+                "{name} must stay in the stream without the flag"
+            );
+        }
+    });
 
     // Interruption keeps 130; broken-pipe cancellation still exits 0 through
     // the `is_closed_output` arm and is covered by the CLI broken-pipe test.

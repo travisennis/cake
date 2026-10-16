@@ -65,6 +65,75 @@ fn spawn_stream_json(env: &TestEnv, base_url: &str, fail_on_error: bool) -> Chil
     command.spawn().expect("failed to spawn cake")
 }
 
+/// Spawn a `json` run against `base_url`, optionally with the strict
+/// exit-code flag (which must be inert in this mode).
+fn spawn_json(env: &TestEnv, base_url: &str, fail_on_error: bool) -> Child {
+    env.write_project_settings(&provider_settings(base_url));
+    let mut command = env.command();
+    command
+        .args(["--output-format", "json"])
+        .args(["--no-session"])
+        .env(FAIL_ON_ERROR_KEY, "test-token")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if fail_on_error {
+        command.arg("--fail-on-error");
+    }
+    command.arg("hello");
+    command.spawn().expect("failed to spawn cake")
+}
+
+/// Answer one provider request with an immediate `400` (never retried), the
+/// agent-class provider failure the strict exit contract maps to `1`.
+///
+/// The request is read in full before the answer is written: a response that
+/// lands while the client is still sending is a transport error to hyper
+/// ("received unexpected message from connection"), and cake then retries --
+/// a connection this one-shot fixture never answers, hanging the test.
+fn answer_bad_request(stream: &mut std::net::TcpStream) {
+    use std::io::{Read as _, Write as _};
+
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(30)))
+        .expect("fixture must bound its read");
+    let mut request = Vec::new();
+    let mut buffer = [0_u8; 8192];
+    let (body_start, content_length) = loop {
+        let read = stream
+            .read(&mut buffer)
+            .expect("fixture should read the request");
+        assert!(read > 0, "client closed before sending a full request");
+        request.extend_from_slice(&buffer[..read]);
+        if let Some(position) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+            let content_length = String::from_utf8_lossy(&request[..position])
+                .lines()
+                .find_map(|line| {
+                    let line = line.to_ascii_lowercase();
+                    line.strip_prefix("content-length: ")
+                        .and_then(|value| value.trim().parse::<usize>().ok())
+                })
+                .unwrap_or(0);
+            break (position + 4, content_length);
+        }
+    };
+    while request.len() < body_start + content_length {
+        let read = stream
+            .read(&mut buffer)
+            .expect("fixture should read the request body");
+        assert!(read > 0, "client closed before sending the request body");
+        request.extend_from_slice(&buffer[..read]);
+    }
+
+    let body = r#"{"error":{"message":"bad request","type":"invalid_request_error"}}"#;
+    let response = format!(
+        "HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream
+        .write_all(response.as_bytes())
+        .expect("fixture should answer the provider request");
+}
+
 /// Read every remaining `stream-json` record from `reader`.
 fn read_records(reader: &mut impl BufRead) -> Vec<serde_json::Value> {
     let mut records = Vec::new();
@@ -439,7 +508,11 @@ fn test_fail_on_error_with_subcommand_exits_three() {
     assert!(output.stdout.is_empty(), "rejected input must not dispatch");
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("--fail-on-error"), "Stderr: {stderr}");
+    assert!(
+        stderr.contains("invalid usage")
+            && stderr.contains("cannot be used with subcommand 'sessions'"),
+        "the rejection must come from run-option validation, not clap's unknown-flag path. Stderr: {stderr}"
+    );
 }
 
 #[test]
@@ -475,6 +548,73 @@ fn test_fail_on_error_stream_json_network_failure_exits_two() {
         Some(2),
         "a refused connection is the API/network class: {}",
         String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// A provider that answers `400` immediately (never retried) is an
+/// agent-class failure, so `--fail-on-error` exits `1` --- the class the other
+/// CLI cases did not cover.
+#[test]
+fn test_fail_on_error_stream_json_agent_class_failure_exits_one() {
+    use std::net::TcpListener;
+
+    let env = cake_env();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("fixture listener should bind");
+    let base_url = format!(
+        "http://{}",
+        listener
+            .local_addr()
+            .expect("listener should have an address")
+    );
+    let child = spawn_stream_json(&env, &base_url, true);
+
+    let (mut stream, _peer) = listener.accept().expect("cake should reach the provider");
+    answer_bad_request(&mut stream);
+
+    let output = child.wait_with_output().expect("failed to wait for cake");
+    let records = read_records(&mut output.stdout.as_slice());
+    let (subtype, is_error) = task_complete_outcome(&records);
+    assert_eq!(subtype, "error_during_execution");
+    assert!(is_error, "provider failure must be an error outcome");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "a provider 400 is the agent class: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// `--fail-on-error` is accepted and inert with `json`, whose runs already
+/// exit with the failure's class and still print their document.
+#[test]
+fn test_fail_on_error_is_inert_with_json_output_format() {
+    use std::net::TcpListener;
+
+    let env = cake_env();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("fixture listener should bind");
+    let base_url = format!(
+        "http://{}",
+        listener
+            .local_addr()
+            .expect("listener should have an address")
+    );
+    let child = spawn_json(&env, &base_url, true);
+
+    let (mut stream, _peer) = listener.accept().expect("cake should reach the provider");
+    answer_bad_request(&mut stream);
+
+    let output = child.wait_with_output().expect("failed to wait for cake");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "json already exits with the failure's class: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let document: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("json mode must print one document");
+    assert!(
+        document["error"].is_string() && document["result"].is_null(),
+        "the failure stays in the document's error position: {document}"
     );
 }
 
