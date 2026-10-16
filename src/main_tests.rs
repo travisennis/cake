@@ -137,6 +137,32 @@ fn test_cli_rejects_tool_selection_flags_with_subcommand() {
 }
 
 #[test]
+fn test_cli_rejects_fail_on_error_with_subcommand() {
+    let args = CodingAssistant::parse_from([
+        "cake",
+        "--output-format",
+        "stream-json",
+        "--fail-on-error",
+        "ignored prompt",
+        "replay",
+        "550e8400-e29b-41d4-a716-446655440000",
+    ]);
+
+    let error = args
+        .validate_subcommand_options()
+        .expect_err("--fail-on-error must be rejected with a subcommand");
+    assert!(error.to_string().contains("--fail-on-error"));
+}
+
+#[test]
+fn test_cli_accepts_fail_on_error_for_a_run() {
+    let args = CodingAssistant::parse_from(["cake", "--fail-on-error", "test prompt"]);
+
+    assert!(args.fail_on_error);
+    assert!(args.validate_subcommand_options().is_ok());
+}
+
+#[test]
 fn test_cli_preserves_options_shared_with_subcommands() {
     let args = CodingAssistant::parse_from([
         "cake",
@@ -890,6 +916,111 @@ fn output_sink_builds_limit_exceeded_json() {
         assert_eq!(json["subtype"], "limit_exceeded");
         assert_eq!(json["result"], "partial work");
     });
+}
+
+#[test]
+fn fail_on_error_exit_codes_follow_the_documented_classes() {
+    // The strict contract publishes the failure's documented class, not a
+    // hardcoded 1. This drives the real propagation: with the flag the sink
+    // hands the in-stream error out and `finish_run` --- the only classifier
+    // --- maps it to the class every output mode already uses; without the
+    // flag the same error stays in the stream.
+    type ExitClassCase = (&'static str, fn() -> anyhow::Error, u8);
+    let cases: [ExitClassCase; 4] = [
+        (
+            "limit outcome",
+            || {
+                LimitExceededError::new(
+                    "max_turns".to_string(),
+                    "max_turns limit exceeded after 5 turns".to_string(),
+                    None,
+                )
+                .into()
+            },
+            exit_code::code::AGENT_ERROR,
+        ),
+        (
+            "agent error",
+            || anyhow::anyhow!("tool failed"),
+            exit_code::code::AGENT_ERROR,
+        ),
+        (
+            "api error",
+            || {
+                exit_code::ApiError {
+                    status: 429,
+                    body: "rate limit exceeded".to_string(),
+                }
+                .into()
+            },
+            exit_code::code::API_ERROR,
+        ),
+        (
+            "input error",
+            || anyhow::anyhow!("No input provided"),
+            exit_code::code::INPUT_ERROR,
+        ),
+    ];
+
+    temp_env::with_var("CAKE_TEST_VALID_KEY", Some("sk-test-123"), || {
+        let agent = Agent::new(
+            test_resolved_model_config(),
+            &[(Role::System, "test system prompt".to_string())],
+        )
+        .with_session_id(uuid::uuid!("550e8400-e29b-41d4-a716-446655440000"));
+        let session = Session::new(agent.session_id(), PathBuf::from("/work"));
+        let dir = match tempfile::tempdir() {
+            Ok(dir) => dir,
+            Err(err) => panic!("temp dir should be created: {err}"),
+        };
+        let data_dir = match temp_env::with_var("CAKE_DATA_DIR", Some(dir.path()), DataDir::new) {
+            Ok(data_dir) => data_dir,
+            Err(err) => panic!("data dir should be created: {err}"),
+        };
+
+        for (name, error, expected) in cases {
+            let render = |fail_on_error: bool| {
+                CliOutputSink::new(OutputFormat::StreamJson, fail_on_error).render_turn(
+                    crate::cli::TurnResult {
+                        result: Err(error()),
+                        duration_ms: 0,
+                    },
+                    &agent,
+                    Path::new("/work"),
+                    &data_dir,
+                    &session,
+                    true,
+                )
+            };
+
+            let propagated = render(true);
+            assert!(
+                propagated.is_err(),
+                "{name} must propagate out of the sink with --fail-on-error"
+            );
+            assert_eq!(
+                finish_run(propagated),
+                std::process::ExitCode::from(expected),
+                "{name} must exit with its documented class"
+            );
+            assert!(
+                render(false).is_ok(),
+                "{name} must stay in the stream without the flag"
+            );
+        }
+    });
+
+    // Interruption keeps 130; broken-pipe cancellation still exits 0 through
+    // the `is_closed_output` arm and is covered by the CLI broken-pipe test.
+    assert_eq!(
+        finish_run(Err(Interrupted.into())),
+        std::process::ExitCode::from(exit_code::code::INTERRUPTED)
+    );
+    assert_eq!(
+        finish_run(Ok(())),
+        std::process::ExitCode::from(exit_code::code::SUCCESS),
+        "the flag must not change a successful run"
+    );
 }
 
 #[test]

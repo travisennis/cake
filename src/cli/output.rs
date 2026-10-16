@@ -29,11 +29,15 @@ pub struct TurnResult {
 #[derive(Clone, Copy)]
 pub struct CliOutputSink {
     format: OutputFormat,
+    fail_on_error: bool,
 }
 
 impl CliOutputSink {
-    pub(crate) const fn new(format: OutputFormat) -> Self {
-        Self { format }
+    pub(crate) const fn new(format: OutputFormat, fail_on_error: bool) -> Self {
+        Self {
+            format,
+            fail_on_error,
+        }
     }
 
     pub(crate) fn attach_callbacks(self, mut client: Agent) -> Agent {
@@ -77,7 +81,7 @@ impl CliOutputSink {
                 Self::write_json_value(&json)?;
                 result.map(|_| ())
             },
-            OutputFormat::StreamJson => Self::stream_json_exit_result(result),
+            OutputFormat::StreamJson => Self::stream_json_exit_result(result, self.fail_on_error),
         }
     }
 
@@ -90,15 +94,24 @@ impl CliOutputSink {
     /// `error_output_schema` record and a nonzero exit — so that error
     /// propagates (mirroring how `Interrupted` propagates exit 130 regardless
     /// of output format).
-    fn stream_json_exit_result(result: anyhow::Result<String>) -> anyhow::Result<()> {
+    ///
+    /// `--fail-on-error` opts the run into the other rule: every in-stream
+    /// failure propagates, so `finish_run` classifies it into the documented
+    /// exit class instead of the process exiting 0. Broken-pipe cancellation
+    /// still exits 0, because `finish_run` maps `ClosedOutput` to success.
+    fn stream_json_exit_result(
+        result: anyhow::Result<String>,
+        fail_on_error: bool,
+    ) -> anyhow::Result<()> {
         match result {
-            Err(error) if Self::should_propagate_stream_error(&error) => Err(error),
+            Err(error) if Self::should_propagate_stream_error(&error, fail_on_error) => Err(error),
             _ => Ok(()),
         }
     }
 
-    fn should_propagate_stream_error(error: &anyhow::Error) -> bool {
-        Self::is_closed_output(error)
+    fn should_propagate_stream_error(error: &anyhow::Error, fail_on_error: bool) -> bool {
+        fail_on_error
+            || Self::is_closed_output(error)
             || matches!(
                 error.downcast_ref::<crate::config::OutputSchemaError>(),
                 Some(crate::config::OutputSchemaError::Unsatisfied { .. })
@@ -275,14 +288,14 @@ mod tests {
     #[test]
     fn stream_json_propagates_closed_output() {
         let result: anyhow::Result<String> = Err(ClosedOutput.into());
-        let error = CliOutputSink::stream_json_exit_result(result).unwrap_err();
+        let error = CliOutputSink::stream_json_exit_result(result, false).unwrap_err();
         assert!(CliOutputSink::is_closed_output(&error));
     }
 
     #[test]
     fn stream_json_swallows_generic_errors() {
         let result: anyhow::Result<String> = Err(anyhow::anyhow!("api failure"));
-        assert!(CliOutputSink::stream_json_exit_result(result).is_ok());
+        assert!(CliOutputSink::stream_json_exit_result(result, false).is_ok());
     }
 
     #[test]
@@ -291,7 +304,7 @@ mod tests {
         // its documented in-stream-error policy of exit 0.
         let result: anyhow::Result<String> =
             Err(crate::types::CutOffError::new("cut off".to_string()).into());
-        assert!(CliOutputSink::stream_json_exit_result(result).is_ok());
+        assert!(CliOutputSink::stream_json_exit_result(result, false).is_ok());
     }
 
     #[test]
@@ -310,10 +323,76 @@ mod tests {
             detail: "\"summary\" is a required property".to_string(),
         }
         .into());
-        let error = CliOutputSink::stream_json_exit_result(result).unwrap_err();
+        let error = CliOutputSink::stream_json_exit_result(result, false).unwrap_err();
         assert_eq!(
             crate::exit_code::classify_to_u8(&error),
             crate::exit_code::code::AGENT_ERROR
         );
+    }
+
+    #[test]
+    fn fail_on_error_propagates_in_stream_failures() {
+        // Without the flag, only output-schema exhaustion and a closed stdout
+        // consumer leave `task_complete` behind with exit 0. With the flag,
+        // every failure reaches `finish_run`, which keeps mapping broken-pipe
+        // cancellation to 0 and everything else to its documented class.
+        type FailureCase = (&'static str, fn() -> anyhow::Error, bool);
+        let cases: [FailureCase; 5] = [
+            (
+                "generic agent error",
+                || anyhow::anyhow!("api failure"),
+                false,
+            ),
+            (
+                "cut off",
+                || crate::types::CutOffError::new("cut off".to_string()).into(),
+                false,
+            ),
+            (
+                "limit exceeded",
+                || {
+                    crate::types::LimitExceededError::new(
+                        "max_turns".to_string(),
+                        "max_turns limit exceeded after 5 turns".to_string(),
+                        None,
+                    )
+                    .into()
+                },
+                false,
+            ),
+            (
+                "output schema exhaustion",
+                || {
+                    OutputSchemaError::Unsatisfied {
+                        attempts: 3,
+                        detail: "\"summary\" is a required property".to_string(),
+                    }
+                    .into()
+                },
+                true,
+            ),
+            ("closed output", || ClosedOutput.into(), true),
+        ];
+
+        for (name, error, propagates_by_default) in cases {
+            let strict: anyhow::Result<String> = Err(error());
+            assert!(
+                CliOutputSink::stream_json_exit_result(strict, true).is_err(),
+                "{name} must fail the run with --fail-on-error"
+            );
+
+            let default: anyhow::Result<String> = Err(error());
+            assert_eq!(
+                CliOutputSink::stream_json_exit_result(default, false).is_err(),
+                propagates_by_default,
+                "{name}: default stream-json exit policy must be unchanged"
+            );
+        }
+    }
+
+    #[test]
+    fn fail_on_error_keeps_successful_turns_successful() {
+        let result: anyhow::Result<String> = Ok("answer".to_string());
+        assert!(CliOutputSink::stream_json_exit_result(result, true).is_ok());
     }
 }
