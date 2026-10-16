@@ -24,9 +24,11 @@ pub struct ScheduledToolCall {
     pub call_id: String,
     pub name: String,
     pub plan: ToolHookPlan,
-    /// Canonical path this call targets for scheduling, when its tool declares
-    /// a resolvable path. Every member of a serialized same-path group carries
-    /// the group's path, including the group leader.
+    /// Canonical path this call targets for scheduling, when it was resolved
+    /// for grouping. Every member of a serialized same-path group carries the
+    /// group's path, including the group leader; a call whose target was not
+    /// needed for grouping (for example, a read in a turn with no resolved
+    /// mutation) keeps `None`.
     pub target: Option<PathBuf>,
 }
 
@@ -39,18 +41,27 @@ pub struct ScheduledToolCall {
 /// resolved, and reads of paths the turn does not mutate --- gets a singleton
 /// group. Groups are safe to run concurrently with each other as long as
 /// members of a group run sequentially in the returned order.
+///
+/// Targets are resolved in two phases: mutating calls first, then the
+/// remaining calls only when some mutation resolved. A turn without a
+/// resolved mutation cannot serialize anything, so the observe resolvers
+/// --- a full path validation on the model's read path --- are skipped and
+/// every call keeps `target: None`.
 pub fn schedule_tool_calls(
     tools: &ToolRegistry,
     context: &ToolContext,
     tool_plans: Vec<(String, String, ToolHookPlan)>,
 ) -> Vec<Vec<ScheduledToolCall>> {
     let expected_groups = tool_plans.len();
-    // Resolve every target before grouping: a read may precede the first
-    // same-path mutation in issue order and must still join its group.
-    let resolved: Vec<Option<(PathBuf, PathTouch)>> = tool_plans
+    // Phase one resolves mutating targets only. A mutation may precede a
+    // same-path read in issue order, so it is resolved before grouping
+    // regardless of its position.
+    let mut resolved: Vec<Option<(PathBuf, PathTouch)>> = tool_plans
         .iter()
         .map(|(_, name, plan)| match plan {
-            ToolHookPlan::Execute { arguments, .. } => {
+            ToolHookPlan::Execute { arguments, .. }
+                if tools.path_touch(name) == Some(PathTouch::Mutate) =>
+            {
                 match tools.path_target(context, name, arguments) {
                     // Calls with unparseable arguments or invalid paths execute as
                     // scheduled and surface their own errors.
@@ -58,7 +69,7 @@ pub fn schedule_tool_calls(
                     Some((Err(_), _)) | None => None,
                 }
             },
-            ToolHookPlan::Block { .. } => None,
+            ToolHookPlan::Execute { .. } | ToolHookPlan::Block { .. } => None,
         })
         .collect();
     let mutated: HashSet<PathBuf> = resolved
@@ -67,6 +78,19 @@ pub fn schedule_tool_calls(
         .filter(|(_, touch)| *touch == PathTouch::Mutate)
         .map(|(path, _)| path.clone())
         .collect();
+
+    if !mutated.is_empty() {
+        // Phase two: a mutation resolved, so a same-path read must join its
+        // group. Resolve the remaining calls against the same grant table.
+        for (slot, (_, name, plan)) in resolved.iter_mut().zip(&tool_plans) {
+            if slot.is_none()
+                && let ToolHookPlan::Execute { arguments, .. } = plan
+                && let Some((Ok(path), touch)) = tools.path_target(context, name, arguments)
+            {
+                *slot = Some((path, touch));
+            }
+        }
+    }
 
     let mut groups: Vec<Vec<ScheduledToolCall>> = Vec::with_capacity(expected_groups);
     let mut path_groups: HashMap<PathBuf, usize> = HashMap::new();
@@ -304,8 +328,37 @@ mod tests {
             ],
         );
 
-        // The turn mutates nothing, so the reads stay independent singletons.
+        // The turn mutates nothing, so the reads stay independent singletons
+        // and scheduling skips their path resolution entirely.
         assert_eq!(group_indexes(&groups), vec![vec![0], vec![1]]);
+        assert!(groups.iter().flatten().all(|call| call.target.is_none()));
+    }
+
+    #[test]
+    fn unresolvable_mutation_leaves_observe_targets_unresolved() {
+        let (_dir, context, path, _) = scheduling_fixture();
+        let read_arguments = serde_json::json!({ "path": path }).to_string();
+
+        let groups = schedule(
+            &context,
+            vec![
+                (
+                    "call-1".to_string(),
+                    "Read".to_string(),
+                    execute_plan(read_arguments),
+                ),
+                (
+                    "call-2".to_string(),
+                    "Edit".to_string(),
+                    execute_plan("{ not json".to_string()),
+                ),
+            ],
+        );
+
+        // No mutation resolved, so nothing can serialize and the read's
+        // target stays unresolved too.
+        assert_eq!(group_indexes(&groups), vec![vec![0], vec![1]]);
+        assert!(groups.iter().flatten().all(|call| call.target.is_none()));
     }
 
     #[test]

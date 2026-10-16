@@ -985,6 +985,13 @@ impl ToolRegistry {
         Some((target(context, arguments), *touch))
     }
 
+    /// Return how a registered tool's calls touch the canonical path its
+    /// resolver targets, without resolving a path. Unknown tools and tools
+    /// that declare no path target return `None`.
+    pub(super) fn path_touch(&self, name: &str) -> Option<PathTouch> {
+        Some(self.find(name)?.capabilities.path_target.as_ref()?.1)
+    }
+
     fn find(&self, name: &str) -> Option<&ToolEntry> {
         self.entries
             .iter()
@@ -2399,6 +2406,34 @@ mod tests {
         assert!(
             registry.path_target(&context, "Bash", "{}").is_none(),
             "tools with no declared path target have no resolver"
+        );
+    }
+
+    /// Reads accept a not-yet-existing path under a read-only grant
+    /// (`--add-dir`, skill directories) so read scheduling mirrors read
+    /// access. The write resolver rejects the same path, so the accepted key
+    /// can never join a mutation group.
+    #[test]
+    fn read_scheduling_accepts_nonexistent_path_under_read_only_grant() {
+        let cwd = tempfile::tempdir().unwrap();
+        let added = tempfile::tempdir().unwrap();
+        let canonical_added = added.path().canonicalize().unwrap();
+        let context = ToolContext::with_temp_dirs(
+            cwd.path().canonicalize().unwrap(),
+            Vec::new(),
+            vec![canonical_added.clone()],
+            Vec::new(),
+            Vec::new(),
+        );
+        let target = canonical_added.join("new.txt");
+        assert!(!target.exists());
+        let target_str = target.to_str().unwrap();
+
+        let observed = resolve_path_for_read_scheduling(&context, target_str);
+        assert_eq!(observed, Ok(target.clone()));
+        assert!(
+            resolve_path_for_write_scheduling(&context, target_str).is_err(),
+            "a nonexistent path under a read-only grant stays unwritable"
         );
     }
 
