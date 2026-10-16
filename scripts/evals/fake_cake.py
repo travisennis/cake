@@ -99,7 +99,6 @@ def _write_session(
             "invocation_id": str(uuid.uuid4()),
             "timestamp": "2026-01-01T00:00:00Z",
             "mode": "new",
-            "working_directory": os.getcwd(),
             "model": model,
             "api_type": "chat",
             "output_format": "json",
@@ -114,7 +113,7 @@ def _write_session(
                 "timestamp": "2026-01-01T00:00:00Z",
                 "tool_call": {
                     "turn_index": i,
-                    "call_id": f"call-{i}",
+                    "call_id": hashlib.sha256(f"call-{i}".encode()).hexdigest(),
                     "name": "bash",
                     "duration_ms": 10,
                     "output_bytes": 4,

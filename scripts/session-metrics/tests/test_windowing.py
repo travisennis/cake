@@ -319,6 +319,79 @@ class TelemetryWindowTest(unittest.TestCase):
             )
             self.assertEqual(len(invocations), 1)
 
+    def test_invocation_borrows_transcript_working_directory(self):
+        # Telemetry init records no longer carry the absolute path; the
+        # session transcript still records it, so project reporting and the
+        # --project filter keep working for new records.
+        with tempfile.TemporaryDirectory() as directory:
+            sessions = pathlib.Path(directory) / "sessions"
+            telemetry = pathlib.Path(directory) / "telemetry"
+            sessions.mkdir()
+            telemetry.mkdir()
+            (sessions / "s1.jsonl").write_text(json.dumps({
+                "type": "session_meta", "session_id": "s1", "model": "m",
+                "working_directory": "/projects/cake", "timestamp": T(),
+            }) + "\n")
+            (telemetry / "s1.ndjson").write_text(json.dumps({
+                "type": "telemetry_init", "session_id": "s1", "invocation_id": "i1",
+                "model": "m", "timestamp": T(),
+            }) + "\n")
+
+            args = cakelib.build_arg_parser("test").parse_args([
+                "--days", "0", "--sessions-dir", str(sessions),
+                "--telemetry-dir", str(telemetry),
+            ])
+            data = cakelib.load(args)
+            self.assertEqual([inv.working_directory for inv in data.invocations], [
+                "/projects/cake",
+            ])
+
+            filtered = cakelib.build_arg_parser("test").parse_args([
+                "--days", "0", "--sessions-dir", str(sessions),
+                "--telemetry-dir", str(telemetry), "--project", "cake",
+            ])
+            self.assertEqual(len(cakelib.load(filtered).invocations), 1)
+            other = cakelib.build_arg_parser("test").parse_args([
+                "--days", "0", "--sessions-dir", str(sessions),
+                "--telemetry-dir", str(telemetry), "--project", "elsewhere",
+            ])
+            self.assertEqual(cakelib.load(other).invocations, [])
+
+    def test_model_filter_still_borrows_from_the_filtered_out_transcript(self):
+        # The invocation's model can differ from the session's, and project
+        # identity comes from the transcript: a `--model` filter that excludes
+        # the session must not hide the working directory its sidecar borrows.
+        with tempfile.TemporaryDirectory() as directory:
+            sessions = pathlib.Path(directory) / "sessions"
+            telemetry = pathlib.Path(directory) / "telemetry"
+            sessions.mkdir()
+            telemetry.mkdir()
+            (sessions / "s1.jsonl").write_text(json.dumps({
+                "type": "session_meta", "session_id": "s1", "model": "other-model",
+                "working_directory": "/projects/alpha", "timestamp": T(),
+            }) + "\n")
+            (telemetry / "s1.ndjson").write_text(json.dumps({
+                "type": "telemetry_init", "session_id": "s1", "invocation_id": "i1",
+                "model": "wanted-model", "timestamp": T(),
+            }) + "\n")
+
+            args = cakelib.build_arg_parser("test").parse_args([
+                "--days", "0", "--sessions-dir", str(sessions),
+                "--telemetry-dir", str(telemetry), "--model", "wanted-model",
+            ])
+            data = cakelib.load(args)
+            self.assertEqual(data.sessions, [])
+            self.assertEqual([inv.working_directory for inv in data.invocations], [
+                "/projects/alpha",
+            ])
+
+            filtered = cakelib.build_arg_parser("test").parse_args([
+                "--days", "0", "--sessions-dir", str(sessions),
+                "--telemetry-dir", str(telemetry), "--model", "wanted-model",
+                "--project", "alpha",
+            ])
+            self.assertEqual(len(cakelib.load(filtered).invocations), 1)
+
 
 class DescribeWindowProvenanceTest(unittest.TestCase):
     """The window line must say when it was measured and how fresh the data is.

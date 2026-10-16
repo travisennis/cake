@@ -69,7 +69,16 @@ pub struct SessionTelemetrySettings {
     pub model_config: Option<String>,
     /// The provider endpoint the invocation targets (non-secret).
     /// Distinguishes same-ID entries on different backends.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ///
+    /// Serialized through [`sanitize_endpoint`]: userinfo, query, and fragment
+    /// are removed before the metadata byte bound is applied, and a value that
+    /// is not a parsable URL serializes as `null` rather than persisting the
+    /// raw string.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_endpoint_optional"
+    )]
     pub base_url: Option<String>,
 }
 
@@ -83,22 +92,45 @@ pub struct SessionTelemetryContext {
 /// on the Responses API after an accepted HTTP 2xx.
 ///
 /// Never carries raw response bodies, prompts, tool outputs, authorization
-/// data, or credentials. Only the provider-supplied error identity fields and
-/// the provider response ID are retained so an attempt can be diagnosed and
-/// correlated without persisting the request.
+/// data, or credentials. Every provider-supplied string serializes through
+/// [`bound_metadata`], and the response ID has exactly one owner: it is carried
+/// in memory here, skipped from the nested object, copied to
+/// [`ApiAttemptTelemetry::provider_request_id`], and serialized there only as a
+/// one-way digest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
 pub struct ResponsesFailedMetadata {
-    /// Carried internally to the attempt-level field; never duplicated inside
-    /// the serialized `responses_failed` object.
+    /// Carried internally to the attempt-level field; never serialized inside
+    /// the `responses_failed` object. The attempt-level
+    /// [`ApiAttemptTelemetry::provider_request_id`] serializes the value as a
+    /// one-way digest, so the raw provider-controlled identifier reaches no
+    /// record through either representation.
     #[serde(skip)]
     pub provider_request_id: Option<String>,
-    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "type",
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_bounded_optional"
+    )]
     pub error_type: Option<String>,
-    #[serde(rename = "code", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "code",
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_bounded_optional"
+    )]
     pub error_code: Option<String>,
-    #[serde(rename = "param", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "param",
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_bounded_optional"
+    )]
     pub error_param: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Provider error text. The in-memory value keeps its full length for the
+    /// user-facing error on [`crate::clients::ResponsesStreamFailed`]; the
+    /// serialized copy is bounded.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_bounded_optional"
+    )]
     pub message: Option<String>,
 }
 
@@ -148,6 +180,9 @@ pub struct ApiAttemptTelemetry {
     pub total_ms: u64,
     pub history_items: usize,
     pub status_code: Option<u16>,
+    /// Provider or transport error text, bounded at serialization so an
+    /// oversized error body cannot grow the record.
+    #[serde(serialize_with = "serialize_bounded_optional")]
     pub error: Option<String>,
     pub usage: Option<Usage>,
     /// Whether the provider reported every required token counter for this
@@ -174,8 +209,13 @@ pub struct ApiAttemptTelemetry {
     pub terminal_class: Option<ApiAttemptTerminalClass>,
     /// Provider response ID, when the provider supplied one. Retained on
     /// success and on `response.failed` so the attempt can be correlated with
-    /// provider logs.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// provider logs, and serialized only as the one-way digest
+    /// [`digest_identifier`] produces: a consumer correlates by hashing the
+    /// known raw identifier the same way.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_digested_optional"
+    )]
     pub provider_request_id: Option<String>,
     /// Bounded structured metadata when the attempt ended in `response.failed`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -237,18 +277,22 @@ pub struct JudgeAttemptTelemetry {
     pub tool_count: usize,
     pub tool_choice: Option<String>,
     pub status_code: Option<u16>,
-    /// One-way digest of the originating tool call identifier, when the
-    /// attempt came from a tool execution: concurrent Bash calls record
-    /// attempts in completion order, so consumers attribute an attempt to its
-    /// tool call by hashing the session's raw call identifier with the same
-    /// function. The raw value is provider-controlled text and enters neither
-    /// this attempt nor telemetry: it is digested when the attempt is built.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// The originating tool call identifier, when the attempt came from a tool
+    /// execution: concurrent Bash calls record attempts in completion order, so
+    /// consumers attribute an attempt to its tool call by hashing the session's
+    /// raw call identifier the same way. The field holds the raw value in
+    /// memory; serialization writes only its one-way digest, so the
+    /// provider-controlled identifier never enters a record.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_digested_optional"
+    )]
     pub call_id: Option<String>,
-    /// One-way digest of the provider request identifier, when the provider
-    /// supplied one. Consumers correlate the attempt with provider logs by
-    /// hashing the known raw identifier with the same function; raw
-    /// provider-controlled text never enters telemetry.
+    /// The provider request identifier, when the provider supplied one.
+    /// Consumers correlate the attempt with provider logs by hashing the known
+    /// raw identifier the same way; serialization writes only the one-way
+    /// digest, so raw provider-controlled text never enters a record.
+    #[serde(serialize_with = "serialize_digested_optional")]
     pub provider_request_id: Option<String>,
     pub terminal_class: JudgeAttemptTerminalClass,
     pub usage: Option<Usage>,
@@ -265,7 +309,14 @@ pub struct JudgeAttemptTelemetry {
 /// (ADR 034).
 #[derive(Debug, Clone, Serialize)]
 pub struct TypeSafeShadowTelemetry {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// The originating tool call identifier, held raw in memory and serialized
+    /// only as the one-way digest [`digest_identifier`] produces, matching
+    /// `judge_attempt.call_id` so a consumer can pair the observation with the
+    /// same call.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_digested_optional"
+    )]
     pub call_id: Option<String>,
     pub elapsed_ms: u64,
     pub model: Option<String>,
@@ -282,6 +333,9 @@ pub struct RetryScheduledTelemetry {
     pub max_retries: u32,
     pub reason: RetryReasonSnapshot,
     pub delay_ms: u64,
+    /// The retry classification's detail, which may embed provider-supplied
+    /// text; bounded at serialization.
+    #[serde(serialize_with = "serialize_bounded_required")]
     pub detail: String,
     pub changed_request_overrides: bool,
     pub request_overrides: RequestOverridesSnapshot,
@@ -300,7 +354,16 @@ pub struct RetryWaitTelemetry {
 #[derive(Debug, Clone, Serialize)]
 pub struct ToolCallTelemetry {
     pub turn_index: u32,
-    pub call_id: String,
+    /// The provider-assigned tool call identifier, held raw in memory so hooks,
+    /// transcripts, and permission labels keep the identifier the provider
+    /// sent. Serialization writes only the one-way digest
+    /// [`digest_identifier`] produces, and an empty identifier writes no field,
+    /// matching the other telemetry identifier fields.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_digested_optional"
+    )]
+    pub call_id: Option<String>,
     pub name: String,
     pub duration_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -401,8 +464,14 @@ pub enum CompensationKind {
 #[derive(Debug, Clone, Serialize)]
 pub struct CompensationEventTelemetry {
     pub kind: CompensationKind,
-    /// Kind-specific detail; see [`CompensationKind`].
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Kind-specific detail; see [`CompensationKind`]. Bounded at
+    /// serialization: the same-path and truncation kinds carry paths and tool
+    /// names, which are configuration- or tool-controlled rather than
+    /// provider-controlled, but the record's size stays bounded regardless.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_bounded_optional"
+    )]
     pub detail: Option<String>,
     /// Judge verdict call duration, when the event is a judge verdict.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -412,13 +481,16 @@ pub struct CompensationEventTelemetry {
     pub overridden: Option<bool>,
     /// One-way digest of the transcript tool call this event belongs to.
     ///
-    /// The value is the SHA-256 hex digest of the raw `call_id` the transcript
-    /// records, never the raw identifier, so pairing a call with its judge
-    /// outcome cannot pull provider-controlled text into telemetry. A judge
-    /// event carries the same digest as the `judge_attempt.call_id` recorded
-    /// for the call, which is what makes the session-metrics join deterministic
+    /// The field holds the transcript's raw `call_id` in memory and serializes
+    /// only its SHA-256 hex digest, so pairing a call with its judge outcome
+    /// cannot pull provider-controlled text into telemetry. A judge event
+    /// carries the same digest as the `judge_attempt.call_id` recorded for the
+    /// call, which is what makes the session-metrics join deterministic
     /// (#404). Compensations that are not tied to one tool call leave it unset.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_digested_optional"
+    )]
     pub call_id: Option<String>,
 }
 
@@ -479,14 +551,15 @@ impl CompensationEventTelemetry {
 
     /// Attach the transcript call this event belongs to.
     ///
-    /// `raw_call_id` is the transcript's raw tool-call identifier; it reaches
-    /// telemetry only as the digest [`digest_identifier`] produces, so the raw
-    /// identifier is never persisted. An absent or empty identifier attaches
-    /// nothing, which is the case for a call with no provider-assigned id.
+    /// `raw_call_id` is the transcript's raw tool-call identifier, retained
+    /// here so a live operation can correlate with it; serialization writes it
+    /// only as the digest [`digest_identifier`] produces, so the raw identifier
+    /// is never persisted. An absent or empty identifier attaches nothing,
+    /// which is the case for a call with no provider-assigned id.
     #[must_use]
     pub fn with_call_id(mut self, raw_call_id: Option<&str>) -> Self {
         self.call_id = match raw_call_id {
-            Some(call_id) if !call_id.is_empty() => Some(digest_identifier(call_id)),
+            Some(call_id) if !call_id.is_empty() => Some(call_id.to_string()),
             _ => None,
         };
         self
@@ -506,6 +579,121 @@ pub fn digest_identifier(value: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(value.as_bytes());
     hex::encode(hasher.finalize())
+}
+
+/// Maximum bytes retained for one provider-supplied metadata string.
+///
+/// The bound applies at serialization, so an oversized provider error, message,
+/// or detail value cannot make a telemetry record arbitrarily large; the
+/// in-memory value keeps its full length for user-facing error text.
+pub const METADATA_MAX_BYTES: usize = 1_024;
+
+/// The marker appended to a metadata string cut by [`bound_metadata`].
+///
+/// ASCII, so the byte budget and downstream `jq`/`grep` handling stay trivial,
+/// and counted inside [`METADATA_MAX_BYTES`].
+const METADATA_TRUNCATION_MARKER: &str = "...[truncated]";
+
+/// Bound one provider-supplied metadata string for serialization.
+///
+/// A value at or under [`METADATA_MAX_BYTES`] is returned unchanged; a longer
+/// value is cut on the last UTF-8 boundary that leaves room for
+/// [`METADATA_TRUNCATION_MARKER`]. The result is therefore always at most
+/// [`METADATA_MAX_BYTES`] bytes and never splits a code point.
+#[must_use]
+pub fn bound_metadata(value: &str) -> String {
+    if value.len() <= METADATA_MAX_BYTES {
+        return value.to_string();
+    }
+    let budget = METADATA_MAX_BYTES - METADATA_TRUNCATION_MARKER.len();
+    let mut bounded = String::with_capacity(METADATA_MAX_BYTES);
+    for character in value.chars() {
+        if bounded.len() + character.len_utf8() > budget {
+            break;
+        }
+        bounded.push(character);
+    }
+    bounded.push_str(METADATA_TRUNCATION_MARKER);
+    bounded
+}
+
+/// Reduce a configured provider endpoint to a bounded, credential-free form
+/// for serialization.
+///
+/// Userinfo, query, and fragment are removed before the byte bound is applied,
+/// so a credential embedded in any of those components never reaches a
+/// telemetry record. A value that is not a parsable URL, or whose userinfo
+/// cannot be cleared, yields `None` and serializes as `null` rather than
+/// persisting the raw string: an unparsable value cannot be proven
+/// credential-free. The retained path is endpoint identity (for example
+/// `https://host/v1`), not a credential surface.
+#[must_use]
+pub fn sanitize_endpoint(value: &str) -> Option<String> {
+    let mut url = reqwest::Url::parse(value).ok()?;
+    url.set_username("").ok()?;
+    url.set_password(None).ok()?;
+    url.set_query(None);
+    url.set_fragment(None);
+    Some(bound_metadata(url.as_str()))
+}
+
+/// Serialize an optional provider-supplied string through [`bound_metadata`].
+#[expect(
+    clippy::ref_option,
+    reason = "serde's serialize_with contract passes &T for a field of type T"
+)]
+fn serialize_bounded_optional<S>(value: &Option<String>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    match value {
+        Some(text) => serializer.serialize_some(&bound_metadata(text)),
+        None => serializer.serialize_none(),
+    }
+}
+
+/// Serialize a required provider-supplied string through [`bound_metadata`].
+fn serialize_bounded_required<S>(value: &str, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_str(&bound_metadata(value))
+}
+
+/// Serialize an optional provider-controlled identifier as a one-way digest.
+///
+/// The field holds the raw identifier in memory so a live operation can
+/// correlate with it; the record only ever carries the digest
+/// [`digest_identifier`] produces. An absent or empty identifier serializes as
+/// `null` rather than as the digest of an empty string, which every id-less
+/// call would share.
+#[expect(
+    clippy::ref_option,
+    reason = "serde's serialize_with contract passes &T for a field of type T"
+)]
+fn serialize_digested_optional<S>(value: &Option<String>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    match value.as_deref() {
+        Some(raw) if !raw.is_empty() => serializer.serialize_some(&digest_identifier(raw)),
+        _ => serializer.serialize_none(),
+    }
+}
+
+/// Serialize an optional configured endpoint through [`sanitize_endpoint`].
+#[expect(
+    clippy::ref_option,
+    reason = "serde's serialize_with contract passes &T for a field of type T"
+)]
+fn serialize_endpoint_optional<S>(value: &Option<String>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    match value.as_deref().and_then(sanitize_endpoint) {
+        Some(endpoint) => serializer.serialize_some(&endpoint),
+        None => serializer.serialize_none(),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -564,7 +752,6 @@ pub enum SessionTelemetryRecord {
         invocation_id: String,
         timestamp: DateTime<Utc>,
         mode: SessionTelemetryRunMode,
-        working_directory: String,
         model: String,
         api_type: ApiType,
         output_format: OutputFormat,
@@ -635,6 +822,9 @@ pub enum SessionTelemetryRecord {
         duration_ms: u64,
         turn_count: u32,
         usage: Usage,
+        /// The terminal error text for the invocation, bounded at serialization
+        /// so a provider-supplied message cannot grow the record.
+        #[serde(serialize_with = "serialize_bounded_optional")]
         error: Option<String>,
     },
 }
@@ -808,7 +998,7 @@ impl JudgeAttemptSink {
     /// prompts, provider bodies, or credentials. Under the cascade the record is
     /// the fast leg's evidence, whether it approved the command or fell back.
     pub fn record_typesafe(&self, mut observation: TypeSafeShadowTelemetry, call_id: Option<&str>) {
-        observation.call_id = call_id.filter(|id| !id.is_empty()).map(digest_identifier);
+        observation.call_id = call_id.filter(|id| !id.is_empty()).map(str::to_string);
         let record = SessionTelemetryRecord::TypeSafeShadow {
             session_id: self.context.session_id.clone(),
             invocation_id: self.context.invocation_id.clone(),
@@ -949,7 +1139,11 @@ mod tests {
 
         let value = serde_json::to_value(&attempt).unwrap();
         assert_eq!(value["terminal_class"], "response_failed");
-        assert_eq!(value["provider_request_id"], "req-42");
+        assert_eq!(
+            value["provider_request_id"],
+            digest_identifier("req-42"),
+            "the attempt-level identifier serializes only as its digest"
+        );
         assert_eq!(value["responses_failed"]["code"], "server_error");
         assert_eq!(value["responses_failed"]["type"], "server_error");
         assert!(value["responses_failed"].get("param").is_none());
@@ -1040,7 +1234,11 @@ mod tests {
         let value = serde_json::to_value(record).unwrap();
         assert_eq!(value["type"], "judge_attempt");
         assert_eq!(value["terminal_class"], "verdict");
-        assert_eq!(value["provider_request_id"], "req-123");
+        assert_eq!(
+            value["provider_request_id"],
+            digest_identifier("req-123"),
+            "the provider identifier serializes only as its digest"
+        );
         assert_eq!(value["tool_count"], 0);
         assert!(value["usage"].is_null());
         for forbidden in [
@@ -1089,7 +1287,7 @@ mod tests {
             timestamp: end,
             tool_call: ToolCallTelemetry {
                 turn_index: 1,
-                call_id: "call".to_string(),
+                call_id: Some("call".to_string()),
                 name: "Read".to_string(),
                 duration_ms: 12,
                 started_at: Some(start),
@@ -1533,6 +1731,254 @@ mod tests {
             assert_eq!(value["type"], "session_summary");
         }
     }
+    #[test]
+    fn metadata_bound_is_utf8_safe_and_marked() {
+        let short = "provider said no";
+        assert_eq!(bound_metadata(short), short);
+
+        let exact = "a".repeat(METADATA_MAX_BYTES);
+        assert_eq!(bound_metadata(&exact), exact);
+
+        let over = "a".repeat(METADATA_MAX_BYTES + 1);
+        let bounded = bound_metadata(&over);
+        assert_eq!(bounded.len(), METADATA_MAX_BYTES);
+        assert!(bounded.ends_with(METADATA_TRUNCATION_MARKER));
+
+        // A multi-byte character straddling the cut is never split: the prefix
+        // stays valid UTF-8 and the marker fits inside the budget.
+        let unicode = "é".repeat(METADATA_MAX_BYTES);
+        let bounded = bound_metadata(&unicode);
+        assert!(bounded.len() <= METADATA_MAX_BYTES);
+        assert!(bounded.is_char_boundary(bounded.len()));
+        let prefix = bounded
+            .strip_suffix(METADATA_TRUNCATION_MARKER)
+            .expect("a cut value carries the marker");
+        assert!(prefix.chars().all(|character| character == 'é'));
+        assert_eq!(prefix.len() % 2, 0, "no half code point survives");
+    }
+
+    /// One oversized provider error, message, or detail cannot grow a record:
+    /// every provider-supplied text field serializes bounded, with the tail
+    /// (and any secret hidden past the cap) dropped.
+    #[test]
+    fn provider_text_fields_serialize_bounded() {
+        let tail = "sk-canary-tail";
+        let long_error = format!("{}{tail}", "x".repeat(METADATA_MAX_BYTES * 4));
+
+        let mut attempt = api_attempt(None);
+        attempt.error = Some(long_error.clone());
+        attempt.responses_failed = Some(Box::new(ResponsesFailedMetadata {
+            provider_request_id: None,
+            error_type: Some(long_error.clone()),
+            error_code: Some(long_error.clone()),
+            error_param: Some(long_error.clone()),
+            message: Some(long_error.clone()),
+        }));
+        let attempt = serde_json::to_value(&attempt).unwrap();
+        for value in [
+            &attempt["error"],
+            &attempt["responses_failed"]["type"],
+            &attempt["responses_failed"]["code"],
+            &attempt["responses_failed"]["param"],
+            &attempt["responses_failed"]["message"],
+        ] {
+            let text = value.as_str().expect("a serialized string");
+            assert!(text.len() <= METADATA_MAX_BYTES, "{text}");
+            assert!(text.ends_with(METADATA_TRUNCATION_MARKER), "{text}");
+            assert!(!text.contains(tail), "the tail is cut with the bound");
+        }
+
+        let retry = SessionTelemetryRecord::RetryScheduled {
+            session_id: "session".to_string(),
+            invocation_id: "invocation".to_string(),
+            timestamp: Utc::now(),
+            retry: RetryScheduledTelemetry {
+                turn_index: 1,
+                attempt: 2,
+                max_retries: 3,
+                reason: RetryReasonSnapshot::ServerError,
+                delay_ms: 500,
+                detail: long_error.clone(),
+                changed_request_overrides: false,
+                request_overrides: RequestOverridesSnapshot {
+                    max_output_tokens: None,
+                    reasoning_max_tokens: None,
+                    context_overflow_retry_used: false,
+                },
+            },
+        };
+        let retry = serde_json::to_value(&retry).unwrap();
+        let detail = retry["detail"].as_str().expect("a serialized string");
+        assert!(detail.len() <= METADATA_MAX_BYTES, "{detail}");
+        assert!(detail.ends_with(METADATA_TRUNCATION_MARKER), "{detail}");
+        assert!(!detail.contains(tail));
+
+        let compensation = serde_json::to_value(SessionTelemetryRecord::Compensation {
+            session_id: "session".to_string(),
+            invocation_id: "invocation".to_string(),
+            timestamp: Utc::now(),
+            event: CompensationEventTelemetry::new(
+                CompensationKind::SamePathSerialization,
+                Some(long_error.clone()),
+            ),
+        })
+        .unwrap();
+        let detail = compensation["detail"]
+            .as_str()
+            .expect("a serialized string");
+        assert!(detail.len() <= METADATA_MAX_BYTES, "{detail}");
+        assert!(detail.ends_with(METADATA_TRUNCATION_MARKER), "{detail}");
+
+        let summary = serde_json::to_value(SessionTelemetryRecord::SessionSummary {
+            session_id: "session".to_string(),
+            invocation_id: "invocation".to_string(),
+            timestamp: Utc::now(),
+            success: false,
+            duration_ms: 1,
+            turn_count: 1,
+            usage: Usage::default(),
+            error: Some(long_error),
+        })
+        .unwrap();
+        let error = summary["error"].as_str().expect("a serialized string");
+        assert!(error.len() <= METADATA_MAX_BYTES, "{error}");
+        assert!(error.ends_with(METADATA_TRUNCATION_MARKER), "{error}");
+        assert!(!error.contains(tail));
+    }
+
+    /// Identifiers reach a record only as digests, whatever representation
+    /// carries them, and an empty identifier writes no value at all.
+    #[test]
+    fn provider_identifiers_serialize_only_as_digests() {
+        let raw_call_id = "call-canary-identifier";
+        let tool_call = serde_json::to_value(SessionTelemetryRecord::ToolCall {
+            session_id: "session".to_string(),
+            invocation_id: "invocation".to_string(),
+            timestamp: Utc::now(),
+            tool_call: ToolCallTelemetry {
+                turn_index: 1,
+                call_id: Some(raw_call_id.to_string()),
+                name: "Bash".to_string(),
+                duration_ms: 1,
+                started_at: None,
+                completed_at: None,
+                output_bytes: 0,
+                was_error: false,
+            },
+        })
+        .unwrap();
+        assert_eq!(tool_call["call_id"], digest_identifier(raw_call_id));
+
+        let compensation = serde_json::to_value(SessionTelemetryRecord::Compensation {
+            session_id: "session".to_string(),
+            invocation_id: "invocation".to_string(),
+            timestamp: Utc::now(),
+            event: CompensationEventTelemetry::judge_verdict("block", Some("rm_rf"), 5, false)
+                .with_call_id(Some(raw_call_id)),
+        })
+        .unwrap();
+        assert_eq!(compensation["call_id"], digest_identifier(raw_call_id));
+        assert_eq!(compensation["detail"], "block:rm_rf");
+
+        let observation = serde_json::to_value(SessionTelemetryRecord::TypeSafeShadow {
+            session_id: "session".to_string(),
+            invocation_id: "invocation".to_string(),
+            timestamp: Utc::now(),
+            observation: TypeSafeShadowTelemetry {
+                call_id: Some(raw_call_id.to_string()),
+                elapsed_ms: 5,
+                model: None,
+                probability: Some(0.9),
+                usage_input_tokens: None,
+                usage_output_tokens: None,
+                failure_class: None,
+            },
+        })
+        .unwrap();
+        assert_eq!(observation["call_id"], digest_identifier(raw_call_id));
+
+        let empty = serde_json::to_value(SessionTelemetryRecord::ToolCall {
+            session_id: "session".to_string(),
+            invocation_id: "invocation".to_string(),
+            timestamp: Utc::now(),
+            tool_call: ToolCallTelemetry {
+                turn_index: 1,
+                call_id: None,
+                name: "Read".to_string(),
+                duration_ms: 1,
+                started_at: None,
+                completed_at: None,
+                output_bytes: 0,
+                was_error: false,
+            },
+        })
+        .unwrap();
+        assert!(
+            empty.get("call_id").is_none(),
+            "a call with no identifier writes no field"
+        );
+    }
+
+    /// A new init record carries no working directory, and its endpoint is
+    /// credential-free: userinfo, query, and fragment are stripped before the
+    /// byte bound, and an unparsable value serializes as null instead of the
+    /// raw string.
+    #[test]
+    fn telemetry_init_omits_working_directory_and_sanitizes_endpoint() {
+        let canary = "sk-canary-credential";
+        let record = serde_json::to_string(&telemetry_init(Some(format!(
+            "https://user:{canary}@api.example.com/v1?api_key={canary}#{canary}"
+        ))))
+        .unwrap();
+        assert!(!record.contains("working_directory"), "{record}");
+        assert!(!record.contains(canary), "{record}");
+        let value: serde_json::Value = serde_json::from_str(&record).unwrap();
+        assert_eq!(value["settings"]["base_url"], "https://api.example.com/v1");
+
+        let long_path = telemetry_init(Some(format!(
+            "https://api.example.com/{}",
+            "p".repeat(METADATA_MAX_BYTES * 2)
+        )));
+        let value = serde_json::to_value(&long_path).unwrap();
+        let endpoint = value["settings"]["base_url"]
+            .as_str()
+            .expect("a serialized endpoint");
+        assert!(endpoint.len() <= METADATA_MAX_BYTES, "{endpoint}");
+        assert!(endpoint.ends_with(METADATA_TRUNCATION_MARKER), "{endpoint}");
+
+        let unparsable = serde_json::to_value(telemetry_init(Some(
+            "not a url sk-canary-credential".to_string(),
+        )))
+        .unwrap();
+        assert_eq!(
+            unparsable["settings"]["base_url"],
+            serde_json::Value::Null,
+            "an unparsable endpoint serializes as null, never as the raw string"
+        );
+    }
+
+    fn telemetry_init(base_url: Option<String>) -> SessionTelemetryRecord {
+        SessionTelemetryRecord::TelemetryInit {
+            session_id: "session".to_string(),
+            invocation_id: "invocation".to_string(),
+            timestamp: Utc::now(),
+            mode: SessionTelemetryRunMode::New,
+            model: "provider/model".to_string(),
+            api_type: ApiType::Responses,
+            output_format: OutputFormat::Text,
+            tools: vec!["Read".to_string()],
+            settings: SessionTelemetrySettings {
+                api_type: ApiType::Responses,
+                output_format: OutputFormat::Text,
+                max_output_tokens: None,
+                reasoning_effort: None,
+                reasoning_max_tokens: None,
+                model_config: Some("test".to_string()),
+                base_url,
+            },
+        }
+    }
+
     #[test]
     fn typesafe_shadow_sink_links_calls_without_raw_identifiers() {
         let dir = tempfile::TempDir::new().unwrap();

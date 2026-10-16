@@ -850,7 +850,6 @@ impl CodingAssistant {
         data_dir: &DataDir,
         session: &Session,
         run_mode: &RunMode,
-        current_dir: &Path,
         output_format: OutputFormat,
     ) -> Agent {
         if !run_mode.persists_session() {
@@ -878,7 +877,6 @@ impl CodingAssistant {
             invocation_id: invocation_id.to_string(),
             timestamp: chrono::Utc::now(),
             mode: run_mode.telemetry_mode(),
-            working_directory: current_dir.display().to_string(),
             model: client.model_name().to_string(),
             api_type: settings.api_type,
             output_format,
@@ -1309,7 +1307,6 @@ impl CmdRunner for CodingAssistant {
             data_dir,
             &session,
             &run_mode,
-            &prepared.current_dir,
             self.output_format,
         );
         let hook_context = HookContext {

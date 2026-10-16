@@ -286,6 +286,10 @@ class Invocation:
     summary: dict | None = None
     other: list[dict] = field(default_factory=list)
     mtime: datetime | None = None
+    # The transcript's working directory, filled in by `load_telemetry`.
+    # Telemetry init records stopped carrying the absolute path, so an
+    # invocation without one borrows the value from its session's transcript.
+    transcript_working_directory: str | None = None
 
     @property
     def model(self) -> str:
@@ -293,7 +297,14 @@ class Invocation:
 
     @property
     def working_directory(self) -> str:
-        return (self.init or {}).get("working_directory", "unknown")
+        """Project identity: the init record's value when present (historical
+        sidecars and anything that still writes it), otherwise the session
+        transcript's value, otherwise the unknown placeholder."""
+        return (
+            (self.init or {}).get("working_directory")
+            or self.transcript_working_directory
+            or "unknown"
+        )
 
     @property
     def last_activity(self) -> datetime | None:
@@ -358,8 +369,20 @@ def load(ns: argparse.Namespace) -> Dataset:
     sessions_dir = resolve_sessions_dir(ns)
     telemetry_dir = resolve_telemetry_dir(ns)
 
-    sessions, session_errors = load_sessions(sessions_dir, cutoff, ns.model, ns.project)
-    invocations, telemetry_errors = load_telemetry(telemetry_dir, cutoff, ns.model, ns.project)
+    sessions, session_errors = load_sessions(sessions_dir, cutoff)
+    # Project identity for new-format sidecars comes from the transcript, and
+    # it must not depend on the report's filters: a `--model` filter that
+    # excludes a session would otherwise hide the working directory its
+    # sidecar borrows.
+    session_working_directories = {s.id: s.working_directory for s in sessions}
+    sessions = [s for s in sessions if _session_matches(s, ns.model, ns.project)]
+    invocations, telemetry_errors = load_telemetry(
+        telemetry_dir,
+        cutoff,
+        ns.model,
+        ns.project,
+        session_working_directories,
+    )
     if ns.session:
         sessions = [s for s in sessions if s.id == ns.session]
         invocations = [inv for inv in invocations if inv.session_id == ns.session]
@@ -377,6 +400,19 @@ def load(ns: argparse.Namespace) -> Dataset:
         telemetry_parse_errors=telemetry_errors,
         selected_invocation=bool(ns.session or ns.invocation),
     )
+
+
+def _session_matches(
+    session: Session,
+    model_filter: str | None,
+    project_filter: str | None,
+) -> bool:
+    """Whether a session passes the invocation-wide model and project filters."""
+    if model_filter and model_filter not in session.model:
+        return False
+    if project_filter and project_filter not in session.working_directory:
+        return False
+    return True
 
 
 def load_sessions(
@@ -428,9 +464,7 @@ def load_sessions(
         if cutoff is not None and session.last_activity < cutoff:
             continue
 
-        if model_filter and model_filter not in session.model:
-            continue
-        if project_filter and project_filter not in session.working_directory:
+        if not _session_matches(session, model_filter, project_filter):
             continue
         sessions.append(session)
 
@@ -442,7 +476,17 @@ def load_telemetry(
     cutoff: datetime | None,
     model_filter: str | None = None,
     project_filter: str | None = None,
+    session_working_directories: dict[str, str] | None = None,
 ) -> tuple[list[Invocation], int]:
+    """Load telemetry sidecars into invocations.
+
+    `session_working_directories` maps a session id to the working directory
+    its transcript records. Telemetry init records no longer carry the absolute
+    path, so an invocation borrows the transcript value for project filters and
+    per-project reports; a sidecar that carries its own value (historical
+    records) keeps it.
+    """
+    session_working_directories = session_working_directories or {}
     grouped: dict[tuple[str, str], Invocation] = {}
     parse_errors = 0
 
@@ -485,6 +529,8 @@ def load_telemetry(
 
     invocations = []
     for inv in grouped.values():
+        if not (inv.init or {}).get("working_directory"):
+            inv.transcript_working_directory = session_working_directories.get(inv.session_id)
         if model_filter and model_filter not in inv.model:
             continue
         if project_filter and project_filter not in inv.working_directory:

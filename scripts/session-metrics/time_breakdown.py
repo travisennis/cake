@@ -34,6 +34,26 @@ def _span(record: dict) -> tuple[float, float] | None:
     return start, end
 
 
+def _looks_like_digest(value: str) -> bool:
+    """Whether an identifier already has the recorded one-way digest shape."""
+    return len(value) == 64 and all(character in "0123456789abcdef" for character in value)
+
+
+def _join_key(value: str, judge_ms: dict, shadow_ms: dict) -> str:
+    """Resolve a tool call's join key against the recorded judge/shadow keys.
+
+    A current-format sidecar records `call_id` already digested, so it joins
+    as-is; re-digesting a digest could never match a record. A historical
+    sidecar records the raw provider identifier and keys its judge and shadow
+    records the same way, so that value is digested here to join them.
+    """
+    if value in judge_ms or value in shadow_ms:
+        return value
+    if _looks_like_digest(value):
+        return value
+    return cakelib.call_id_digest(value)
+
+
 def invocation_timeline(inv: cakelib.Invocation) -> tuple[dict[str, float], dict[str, int]] | None:
     """Assign each observed instant once; keep missing historical spans visible."""
     if not inv.summary or (end := _ms(inv.summary.get("timestamp"))) is None:
@@ -95,7 +115,10 @@ def invocation_timeline(inv: cakelib.Invocation) -> tuple[dict[str, float], dict
         if name == "tb__subagent":
             add(start, stop, "delegated agent")
         elif name == "Bash":
-            digest = cakelib.call_id_digest(tool.get("call_id", ""))
+            # The judge and shadow records key their model time by whichever
+            # identifier shape the sidecar recorded; `_join_key` resolves the
+            # tool call's value against both maps.
+            digest = _join_key(tool.get("call_id") or "", judge_ms, shadow_ms)
             safety = min(stop - start, max(judge_ms[digest], shadow_ms[digest]))
             add(start, start + safety, "Bash safety models")
             add(start + safety, stop, "Bash remaining")

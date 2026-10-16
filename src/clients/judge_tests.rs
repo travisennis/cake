@@ -393,9 +393,14 @@ async fn judge_works_through_responses_backend() {
 
     assert_eq!(verdict.decision, JudgeDecision::Warn);
     assert_eq!(verdict.code.as_deref(), Some("rg-replace-footgun"));
-    assert_eq!(
-        call.attempts.last().unwrap().provider_request_id.as_deref(),
-        Some(digest("resp-judge").as_str())
+    let serialized_attempt = serde_json::to_string(call.attempts.last().unwrap()).unwrap();
+    assert!(
+        serialized_attempt.contains(&digest("resp-judge")),
+        "the record carries the request id only as a digest: {serialized_attempt}"
+    );
+    assert!(
+        !serialized_attempt.contains("resp-judge"),
+        "{serialized_attempt}"
     );
     assert_eq!(call.attempts.last().unwrap().tool_count, 0);
     assert_eq!(call.attempts.last().unwrap().tool_choice, None);
@@ -436,9 +441,10 @@ async fn observed_judge_attempt_records_metadata_and_exact_diagnostic_request() 
     assert_eq!(call.attempts.last().unwrap().attempt, 1);
     assert_eq!(call.attempts.last().unwrap().retry_ordinal, 0);
     assert_eq!(call.attempts.last().unwrap().status_code, Some(200));
-    assert_eq!(
-        call.attempts.last().unwrap().provider_request_id.as_deref(),
-        Some(digest("req-judge-123").as_str())
+    let serialized_attempt = serde_json::to_string(call.attempts.last().unwrap()).unwrap();
+    assert!(
+        serialized_attempt.contains(&digest("req-judge-123")),
+        "the record carries the request id only as a digest: {serialized_attempt}"
     );
     assert_eq!(
         call.attempts.last().unwrap().terminal_class,
@@ -462,6 +468,7 @@ async fn observed_judge_attempt_records_metadata_and_exact_diagnostic_request() 
     assert!(diagnostic.user_prompt.contains(command));
 
     let metadata = serde_json::to_string(&call.attempts.last().unwrap()).unwrap();
+    assert!(!metadata.contains("req-judge-123"));
     assert!(!metadata.contains(command));
     assert!(!metadata.contains("inspect state"));
     assert!(!metadata.contains("/work/project"));
@@ -504,14 +511,13 @@ async fn observed_judge_attempt_digests_provider_echoed_metadata() {
         )
         .await;
     assert!(call.result.is_ok());
-    assert_eq!(
-        call.attempts.last().unwrap().call_id.as_deref(),
-        Some(digest("call-9").as_str()),
-        "attempt must carry the digest of the originating tool call identifier"
+    let serialized = serde_json::to_string(call.attempts.last().unwrap()).unwrap();
+    assert!(
+        serialized.contains(&digest("call-9")),
+        "the originating tool call id is carried only as its digest"
     );
-    assert_eq!(
-        call.attempts.last().unwrap().provider_request_id.as_deref(),
-        Some(digest("hdr-test-key-status-rubric-guidance-echo").as_str()),
+    assert!(
+        serialized.contains(&digest("hdr-test-key-status-rubric-guidance-echo")),
         "request id echoing provider secrets must be persisted only as a digest"
     );
     assert!(
@@ -524,7 +530,6 @@ async fn observed_judge_attempt_digests_provider_echoed_metadata() {
             .is_none(),
         "termination reason outside the safe vocabulary must be omitted"
     );
-    let serialized = serde_json::to_string(&call.attempts.last().unwrap()).unwrap();
     for forbidden in [
         "test-key",
         "git status --short",
@@ -556,9 +561,10 @@ async fn observed_judge_attempt_keeps_safe_provider_metadata() {
         .judge_observed(request("ls", None), false)
         .await;
     assert!(call.result.is_ok());
-    assert_eq!(
-        call.attempts.last().unwrap().provider_request_id.as_deref(),
-        Some(digest("req-opaque-123").as_str())
+    let serialized = serde_json::to_string(call.attempts.last().unwrap()).unwrap();
+    assert!(
+        serialized.contains(&digest("req-opaque-123")),
+        "a clean opaque request id is recorded as its digest"
     );
     assert_eq!(
         call.attempts
@@ -599,12 +605,11 @@ async fn observed_judge_attempt_digests_dirty_call_id() {
             )
             .await;
         assert!(call.result.is_ok());
-        assert_eq!(
-            call.attempts.last().unwrap().call_id.as_deref(),
-            Some(digest(dirty).as_str()),
+        let serialized = serde_json::to_string(&call.attempts.last().unwrap()).unwrap();
+        assert!(
+            serialized.contains(&digest(dirty)),
             "call id {dirty:?} must be stored only as its digest"
         );
-        let serialized = serde_json::to_string(&call.attempts.last().unwrap()).unwrap();
         assert!(!serialized.contains("test-key"));
         assert!(!serialized.contains("git status --short"));
         assert!(!serialized.contains("/work/project"));
@@ -740,9 +745,9 @@ async fn observed_judge_attempt_bounds_normalized_provider_fragments() {
         .judge_observed(request("printf 'secret'", None), false)
         .await;
     assert!(call.result.is_ok());
-    assert_eq!(
-        call.attempts.last().unwrap().provider_request_id.as_deref(),
-        Some(digest("secret").as_str()),
+    let serialized = serde_json::to_string(call.attempts.last().unwrap()).unwrap();
+    assert!(
+        serialized.contains(&digest("secret")),
         "request id echoing a normalized command token must be stored only as a digest"
     );
     assert!(
@@ -755,7 +760,6 @@ async fn observed_judge_attempt_bounds_normalized_provider_fragments() {
             .is_none(),
         "termination reason echoing a normalized command token must be omitted"
     );
-    let serialized = serde_json::to_string(&call.attempts.last().unwrap()).unwrap();
     assert!(!serialized.contains("secret"));
 }
 
@@ -780,12 +784,11 @@ async fn observed_judge_attempt_digests_long_echoed_request_id() {
         .judge_observed(request(&command, None), false)
         .await;
     assert!(call.result.is_ok());
-    assert_eq!(
-        call.attempts.last().unwrap().provider_request_id.as_deref(),
-        Some(digest(&long_id).as_str()),
+    let serialized = serde_json::to_string(call.attempts.last().unwrap()).unwrap();
+    assert!(
+        serialized.contains(&digest(&long_id)),
         "request id echoing a command must be stored only as a digest"
     );
-    let serialized = serde_json::to_string(&call.attempts.last().unwrap()).unwrap();
     assert!(!serialized.contains("secret-echo-token"));
 }
 

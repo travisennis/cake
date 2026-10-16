@@ -138,6 +138,24 @@ class TimeBreakdownTest(unittest.TestCase):
             "parallel activity": 150, "unobserved": 50,
         })
 
+    def test_digested_tool_call_id_joins_its_judge_attempt(self):
+        # The current build writes `tool_call.call_id` already digested, so it
+        # joins the judge attempt directly rather than being hashed twice.
+        inv = invocation(wall_ms=1000)
+        inv.summary["timestamp"] = stamp(1000)
+        digest = cakelib.call_id_digest("call-1")
+        inv.tool_calls = [{
+            "name": "Bash", "call_id": digest,
+            "started_at": stamp(0), "completed_at": stamp(300),
+        }]
+        inv.judge_attempts = [{"call_id": digest, "total_ms": 80}]
+
+        totals, missing = time_breakdown.invocation_timeline(inv)
+
+        self.assertEqual(missing, {})
+        self.assertEqual(round(totals["Bash safety models"]), 80)
+        self.assertEqual(round(totals["Bash remaining"]), 220)
+
     def test_old_tool_record_is_unknown_instead_of_counted_as_zero(self):
         inv = invocation(wall_ms=1000, tool_durations=[800])
         inv.summary["timestamp"] = stamp(1000)
@@ -191,6 +209,25 @@ class TimeBreakdownTest(unittest.TestCase):
         self.assertIn("only their wall time and turn pacing are unavailable", output)
         self.assertRegex(output, r"tool execution \(cumulative work\)\s+800ms\s+may overlap")
         self.assertRegex(output, r"Slowest API attempts:[\s\S]+test-model\s+900ms")
+
+    def test_digest_without_recorded_safety_time_is_not_hashed_twice(self):
+        # A digest-shaped id that matches no judge or shadow record joins as
+        # itself; re-digesting it could never match anything.
+        digest = "ab" * 32
+        self.assertEqual(time_breakdown._join_key(digest, {}, {}), digest)
+
+    def test_raw_historical_id_is_digested_to_join(self):
+        self.assertEqual(
+            time_breakdown._join_key("call-1", {}, {}),
+            cakelib.call_id_digest("call-1"),
+        )
+
+    def test_recorded_raw_key_wins_for_historical_sidecars(self):
+        # Historical sidecars key their judge and shadow records by the raw
+        # identifier, so the same raw tool id must join directly.
+        self.assertEqual(
+            time_breakdown._join_key("call-1", {"call-1": 10}, {}), "call-1"
+        )
 
 
 if __name__ == "__main__":
