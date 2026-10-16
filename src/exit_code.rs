@@ -572,12 +572,13 @@ mod tests {
     }
 
     #[test]
-    fn classify_retried_statuses_stay_agent_errors() {
-        // Retryability is separate from the exit class: these statuses are
-        // retried by the transport-recovery policy, but each one is an answer
-        // from the provider rather than a timeout-adjacent provider failure, so
-        // the exhausted retries exit `1`. `504` is the gateway's own timeout
-        // and stays here with the rest of `5xx`.
+    fn classify_non_timeout_statuses_stay_agent_errors() {
+        // Retryability is separate from the exit class: `409`, `5xx`, and
+        // `529` are retried by the transport-recovery policy, `400` and `404`
+        // answer immediately, and all of them are answers from a reachable
+        // provider rather than a timeout-adjacent provider failure, so each
+        // exits `1`. `504` is the gateway's own timeout and stays here with
+        // the rest of `5xx`.
         for status in [400, 404, 409, 500, 502, 503, 504, 529] {
             let err = anyhow::Error::new(ApiError {
                 status,
