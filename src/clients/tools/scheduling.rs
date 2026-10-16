@@ -53,44 +53,13 @@ pub fn schedule_tool_calls(
     tool_plans: Vec<(String, String, ToolHookPlan)>,
 ) -> Vec<Vec<ScheduledToolCall>> {
     let expected_groups = tool_plans.len();
-    // Phase one resolves mutating targets only. A mutation may precede a
-    // same-path read in issue order, so it is resolved before grouping
-    // regardless of its position.
-    let mut resolved: Vec<Option<(PathBuf, PathTouch)>> = tool_plans
-        .iter()
-        .map(|(_, name, plan)| match plan {
-            ToolHookPlan::Execute { arguments, .. }
-                if tools.path_touch(name) == Some(PathTouch::Mutate) =>
-            {
-                match tools.path_target(context, name, arguments) {
-                    // Calls with unparseable arguments or invalid paths execute as
-                    // scheduled and surface their own errors.
-                    Some((Ok(path), touch)) => Some((path, touch)),
-                    Some((Err(_), _)) | None => None,
-                }
-            },
-            ToolHookPlan::Execute { .. } | ToolHookPlan::Block { .. } => None,
-        })
-        .collect();
+    let resolved = resolve_scheduling_targets(tools, context, &tool_plans);
     let mutated: HashSet<PathBuf> = resolved
         .iter()
         .flatten()
         .filter(|(_, touch)| *touch == PathTouch::Mutate)
         .map(|(path, _)| path.clone())
         .collect();
-
-    if !mutated.is_empty() {
-        // Phase two: a mutation resolved, so a same-path read must join its
-        // group. Resolve the remaining calls against the same grant table.
-        for (slot, (_, name, plan)) in resolved.iter_mut().zip(&tool_plans) {
-            if slot.is_none()
-                && let ToolHookPlan::Execute { arguments, .. } = plan
-                && let Some((Ok(path), touch)) = tools.path_target(context, name, arguments)
-            {
-                *slot = Some((path, touch));
-            }
-        }
-    }
 
     let mut groups: Vec<Vec<ScheduledToolCall>> = Vec::with_capacity(expected_groups);
     let mut path_groups: HashMap<PathBuf, usize> = HashMap::new();
@@ -131,6 +100,64 @@ pub fn schedule_tool_calls(
     }
 
     groups
+}
+
+/// Resolve the path targets same-path scheduling needs: mutating calls first,
+/// then the remaining calls only when some mutation resolved. A mutation may
+/// precede a same-path read in issue order, so it is resolved before grouping
+/// regardless of its position; and a turn without a resolved mutation cannot
+/// serialize anything, so the observe resolvers --- a full path validation on
+/// the model's read path --- are skipped and calls that can never group keep
+/// no target.
+fn resolve_scheduling_targets(
+    tools: &ToolRegistry,
+    context: &ToolContext,
+    tool_plans: &[(String, String, ToolHookPlan)],
+) -> Vec<Option<(PathBuf, PathTouch)>> {
+    let mut resolved: Vec<Option<(PathBuf, PathTouch)>> = tool_plans
+        .iter()
+        .map(|(_, name, plan)| match plan {
+            ToolHookPlan::Execute { arguments, .. }
+                if tools.path_touch(name) == Some(PathTouch::Mutate) =>
+            {
+                scheduling_target(tools, context, name, arguments)
+            },
+            ToolHookPlan::Execute { .. } | ToolHookPlan::Block { .. } => None,
+        })
+        .collect();
+    let mutation_resolved = resolved
+        .iter()
+        .flatten()
+        .any(|(_, touch)| *touch == PathTouch::Mutate);
+
+    if mutation_resolved {
+        // A mutation resolved, so a same-path read must join its group;
+        // resolve the remaining calls against the same grant table.
+        for (slot, (_, name, plan)) in resolved.iter_mut().zip(tool_plans) {
+            if slot.is_none()
+                && let ToolHookPlan::Execute { arguments, .. } = plan
+            {
+                *slot = scheduling_target(tools, context, name, arguments);
+            }
+        }
+    }
+
+    resolved
+}
+
+/// Resolve one call's scheduling target. Calls with unparseable arguments or
+/// invalid paths have no target: they execute as scheduled and surface their
+/// own errors.
+fn scheduling_target(
+    tools: &ToolRegistry,
+    context: &ToolContext,
+    name: &str,
+    arguments: &str,
+) -> Option<(PathBuf, PathTouch)> {
+    match tools.path_target(context, name, arguments) {
+        Some((Ok(path), touch)) => Some((path, touch)),
+        Some((Err(_), _)) | None => None,
+    }
 }
 
 #[cfg(test)]
