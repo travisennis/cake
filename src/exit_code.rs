@@ -530,6 +530,8 @@ mod tests {
     fn classify_settings_errors_as_input_errors() {
         let cases = [
             (
+                // Also matches the legacy string pattern, so this case does
+                // not by itself prove the typed path; the rest do.
                 "invalid model name",
                 SettingsError::InvalidModelName {
                     name: "Bad Name!".to_string(),
@@ -579,6 +581,12 @@ mod tests {
                 SettingsError::ParseError(
                     toml::from_str::<toml::Value>("not valid toml = [").unwrap_err(),
                 ),
+            ),
+            (
+                "unserializable settings value",
+                SettingsError::SerializeError(<toml::ser::Error as serde::ser::Error>::custom(
+                    "unserializable settings value",
+                )),
             ),
             (
                 "unreadable settings file",
