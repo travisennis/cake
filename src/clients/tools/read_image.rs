@@ -4,7 +4,7 @@ use std::path::Path;
 use base64::Engine as _;
 use serde::Deserialize;
 
-use crate::clients::tools::{ToolContext, validate_path_in_cwd};
+use crate::clients::tools::{ToolContext, resolve_path_for_read_scheduling, validate_path_in_cwd};
 use crate::types::ImagePart;
 
 // =============================================================================
@@ -38,6 +38,20 @@ pub(super) fn read_image_tool() -> super::Tool {
 #[derive(Deserialize)]
 struct ReadImageArgs {
     path: String,
+}
+
+/// Return the validated canonical path this `ReadImage` call would observe.
+///
+/// Scheduling uses this to serialize the read with same-path mutations in the
+/// same turn. Unresolvable arguments or paths return `Err`, leaving the call
+/// unscheduled so it can surface its own error.
+pub(super) fn path_target(
+    context: &ToolContext,
+    arguments: &str,
+) -> Result<std::path::PathBuf, String> {
+    let args: ReadImageArgs = serde_json::from_str(arguments)
+        .map_err(|e| format!("Invalid read_image arguments: {e}"))?;
+    resolve_path_for_read_scheduling(context, &args.path)
 }
 
 /// Execute a `ReadImage` call: validate the path, read the file under the

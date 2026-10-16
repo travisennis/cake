@@ -1,16 +1,19 @@
 //! Tool-call scheduling for a single assistant turn.
 //!
 //! Tool calls in one assistant turn execute concurrently. To keep that safe
-//! when the model issues multiple mutations for the same file, the scheduler
-//! groups mutating calls by canonical target path: groups run concurrently
-//! with each other and with non-mutating calls, while calls within a group
-//! run sequentially in issue order, each seeing the previous call's effects.
-//! See ADR-013.
+//! when the model issues a Read and a mutation for the same file, the
+//! scheduler groups path-targeted calls by canonical target path whenever the
+//! turn mutates that path: groups run concurrently with each other and with
+//! untargeted calls, while calls within a group run sequentially in issue
+//! order, each seeing the previous call's effects. A read of a path the turn
+//! does not mutate stays in its own group, so independent reads keep running
+//! concurrently.
+//! See ADR-013 and ADR-043.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use crate::clients::tools::{ToolContext, ToolRegistry};
+use crate::clients::tools::{PathTouch, ToolContext, ToolRegistry};
 use crate::hooks::ToolHookPlan;
 
 /// A tool call scheduled for execution, tagged with its position in the
@@ -21,40 +24,59 @@ pub struct ScheduledToolCall {
     pub call_id: String,
     pub name: String,
     pub plan: ToolHookPlan,
-    /// Canonical mutating target path, when the call mutates a resolvable
-    /// path. Shared by every call in the same serialized group.
+    /// Canonical path this call targets for scheduling, when it was resolved
+    /// for grouping. Every member of a serialized same-path group carries the
+    /// group's path, including the group leader; a call whose target was not
+    /// needed for grouping (for example, a read in a turn with no resolved
+    /// mutation) keeps `None`.
     pub target: Option<PathBuf>,
 }
 
 /// Partition a turn's tool-call plans into execution groups.
 ///
-/// Calls that would mutate the same canonical path share a group in issue
-/// order; every other call — non-mutating tools, hook-blocked calls, and
-/// calls whose target path cannot be determined — gets a singleton group.
-/// Groups are safe to run concurrently with each other as long as members of
-/// a group run sequentially in the returned order.
+/// Executable calls that resolve a canonical path share a group when the turn
+/// also mutates that path, in issue order: a read observes the state left by
+/// the calls issued before it. Every other call --- tools that declare no
+/// path target, hook-blocked calls, calls whose arguments or path cannot be
+/// resolved, and reads of paths the turn does not mutate --- gets a singleton
+/// group. Groups are safe to run concurrently with each other as long as
+/// members of a group run sequentially in the returned order.
+///
+/// Targets are resolved in two phases: mutating calls first, then the
+/// remaining calls only when some mutation resolved. A turn without a
+/// resolved mutation cannot serialize anything, so the observe resolvers
+/// --- a full path validation on the model's read path --- are skipped and
+/// every call keeps `target: None`.
 pub fn schedule_tool_calls(
     tools: &ToolRegistry,
     context: &ToolContext,
     tool_plans: Vec<(String, String, ToolHookPlan)>,
 ) -> Vec<Vec<ScheduledToolCall>> {
     let expected_groups = tool_plans.len();
-    let mut groups: Vec<Vec<ScheduledToolCall>> = Vec::with_capacity(expected_groups);
-    let mut mutating_path_groups: HashMap<PathBuf, usize> = HashMap::new();
+    let resolved = resolve_scheduling_targets(tools, context, &tool_plans);
+    let mutated: HashSet<PathBuf> = resolved
+        .iter()
+        .flatten()
+        .filter(|(_, touch)| *touch == PathTouch::Mutate)
+        .map(|(path, _)| path.clone())
+        .collect();
 
-    for (index, (call_id, name, plan)) in tool_plans.into_iter().enumerate() {
-        let target = match &plan {
-            ToolHookPlan::Execute { arguments, .. } => {
-                match tools.mutating_target(context, &name, arguments) {
-                    Some(Ok(path)) => Some(path),
-                    // Calls with unparseable arguments or invalid paths execute
-                    // as scheduled and surface their own errors.
-                    _ => None,
-                }
+    let mut groups: Vec<Vec<ScheduledToolCall>> = Vec::with_capacity(expected_groups);
+    let mut path_groups: HashMap<PathBuf, usize> = HashMap::new();
+
+    for ((index, (call_id, name, plan)), resolved_target) in
+        tool_plans.into_iter().enumerate().zip(resolved)
+    {
+        let (target, serialized) = match resolved_target {
+            Some((path, touch)) => {
+                // Mutations always serialize with themselves; a read joins the
+                // group only when the turn also mutates its path.
+                let serialized = touch == PathTouch::Mutate || mutated.contains(&path);
+                (Some(path), serialized)
             },
-            ToolHookPlan::Block { .. } => None,
+            None => (None, false),
         };
-        let mut call = ScheduledToolCall {
+        let call = ScheduledToolCall {
             index,
             call_id,
             name,
@@ -62,21 +84,80 @@ pub fn schedule_tool_calls(
             target,
         };
 
-        if let Some(&group) = call
+        let group = call
             .target
             .as_ref()
-            .and_then(|path| mutating_path_groups.get(path))
-        {
+            .filter(|_| serialized)
+            .and_then(|path| path_groups.get(path).copied());
+        if let Some(group) = group {
             groups[group].push(call);
         } else {
-            if let Some(path) = call.target.take() {
-                mutating_path_groups.insert(path, groups.len());
+            if serialized && let Some(path) = call.target.as_ref() {
+                path_groups.insert(path.clone(), groups.len());
             }
             groups.push(vec![call]);
         }
     }
 
     groups
+}
+
+/// Resolve the path targets same-path scheduling needs: mutating calls first,
+/// then the remaining calls only when some mutation resolved. A mutation may
+/// precede a same-path read in issue order, so it is resolved before grouping
+/// regardless of its position; and a turn without a resolved mutation cannot
+/// serialize anything, so the observe resolvers --- a full path validation on
+/// the model's read path --- are skipped and calls that can never group keep
+/// no target.
+fn resolve_scheduling_targets(
+    tools: &ToolRegistry,
+    context: &ToolContext,
+    tool_plans: &[(String, String, ToolHookPlan)],
+) -> Vec<Option<(PathBuf, PathTouch)>> {
+    let mut resolved: Vec<Option<(PathBuf, PathTouch)>> = tool_plans
+        .iter()
+        .map(|(_, name, plan)| match plan {
+            ToolHookPlan::Execute { arguments, .. }
+                if tools.path_touch(name) == Some(PathTouch::Mutate) =>
+            {
+                scheduling_target(tools, context, name, arguments)
+            },
+            ToolHookPlan::Execute { .. } | ToolHookPlan::Block { .. } => None,
+        })
+        .collect();
+    let mutation_resolved = resolved
+        .iter()
+        .flatten()
+        .any(|(_, touch)| *touch == PathTouch::Mutate);
+
+    if mutation_resolved {
+        // A mutation resolved, so a same-path read must join its group;
+        // resolve the remaining calls against the same grant table.
+        for (slot, (_, name, plan)) in resolved.iter_mut().zip(tool_plans) {
+            if slot.is_none()
+                && let ToolHookPlan::Execute { arguments, .. } = plan
+            {
+                *slot = scheduling_target(tools, context, name, arguments);
+            }
+        }
+    }
+
+    resolved
+}
+
+/// Resolve one call's scheduling target. Calls with unparseable arguments or
+/// invalid paths have no target: they execute as scheduled and surface their
+/// own errors.
+fn scheduling_target(
+    tools: &ToolRegistry,
+    context: &ToolContext,
+    name: &str,
+    arguments: &str,
+) -> Option<(PathBuf, PathTouch)> {
+    match tools.path_target(context, name, arguments) {
+        Some((Ok(path), touch)) => Some((path, touch)),
+        Some((Err(_), _)) | None => None,
+    }
 }
 
 #[cfg(test)]
@@ -274,7 +355,280 @@ mod tests {
             ],
         );
 
+        // The turn mutates nothing, so the reads stay independent singletons
+        // and scheduling skips their path resolution entirely.
         assert_eq!(group_indexes(&groups), vec![vec![0], vec![1]]);
+        assert!(groups.iter().flatten().all(|call| call.target.is_none()));
+    }
+
+    #[test]
+    fn unresolvable_mutation_leaves_observe_targets_unresolved() {
+        let (_dir, context, path, _) = scheduling_fixture();
+        let read_arguments = serde_json::json!({ "path": path }).to_string();
+
+        let groups = schedule(
+            &context,
+            vec![
+                (
+                    "call-1".to_string(),
+                    "Read".to_string(),
+                    execute_plan(read_arguments),
+                ),
+                (
+                    "call-2".to_string(),
+                    "Edit".to_string(),
+                    execute_plan("{ not json".to_string()),
+                ),
+            ],
+        );
+
+        // No mutation resolved, so nothing can serialize and the read's
+        // target stays unresolved too.
+        assert_eq!(group_indexes(&groups), vec![vec![0], vec![1]]);
+        assert!(groups.iter().flatten().all(|call| call.target.is_none()));
+    }
+
+    #[test]
+    fn serializes_read_before_edit_for_same_file() {
+        let (_dir, context, path, _) = scheduling_fixture();
+        let read_arguments = serde_json::json!({ "path": path }).to_string();
+
+        let groups = schedule(
+            &context,
+            vec![
+                (
+                    "call-1".to_string(),
+                    "Read".to_string(),
+                    execute_plan(read_arguments),
+                ),
+                (
+                    "call-2".to_string(),
+                    "Edit".to_string(),
+                    execute_plan(edit_arguments(&path)),
+                ),
+            ],
+        );
+
+        assert_eq!(group_indexes(&groups), vec![vec![0, 1]]);
+        assert_eq!(groups[0][0].call_id, "call-1");
+        assert_eq!(groups[0][1].call_id, "call-2");
+    }
+
+    #[test]
+    fn serializes_edit_before_read_for_same_file() {
+        let (_dir, context, path, _) = scheduling_fixture();
+        let read_arguments = serde_json::json!({ "path": path }).to_string();
+
+        let groups = schedule(
+            &context,
+            vec![
+                (
+                    "call-1".to_string(),
+                    "Edit".to_string(),
+                    execute_plan(edit_arguments(&path)),
+                ),
+                (
+                    "call-2".to_string(),
+                    "Read".to_string(),
+                    execute_plan(read_arguments),
+                ),
+            ],
+        );
+
+        // The read observes the edit's effects instead of racing them.
+        assert_eq!(group_indexes(&groups), vec![vec![0, 1]]);
+        assert_eq!(groups[0][0].call_id, "call-1");
+        assert_eq!(groups[0][1].call_id, "call-2");
+    }
+
+    #[test]
+    fn serializes_read_and_write_for_same_nonexistent_file() {
+        let (dir, context, _, _) = scheduling_fixture();
+        let path = dir.path().join("nonexistent.txt");
+        assert!(!path.exists());
+        let read_arguments = serde_json::json!({ "path": path }).to_string();
+        let write_arguments =
+            serde_json::json!({ "path": path, "content": "new file content" }).to_string();
+
+        let groups = schedule(
+            &context,
+            vec![
+                (
+                    "call-1".to_string(),
+                    "Read".to_string(),
+                    execute_plan(read_arguments),
+                ),
+                (
+                    "call-2".to_string(),
+                    "Write".to_string(),
+                    execute_plan(write_arguments),
+                ),
+            ],
+        );
+
+        // The read observes the pre-write state deterministically instead of
+        // racing whether the file exists yet.
+        assert_eq!(group_indexes(&groups), vec![vec![0, 1]]);
+    }
+
+    #[test]
+    fn serializes_write_before_read_for_same_nonexistent_file() {
+        let (dir, context, _, _) = scheduling_fixture();
+        let path = dir.path().join("nonexistent.txt");
+        assert!(!path.exists());
+        let write_arguments =
+            serde_json::json!({ "path": path, "content": "new file content" }).to_string();
+        let read_arguments = serde_json::json!({ "path": path }).to_string();
+
+        let groups = schedule(
+            &context,
+            vec![
+                (
+                    "call-1".to_string(),
+                    "Write".to_string(),
+                    execute_plan(write_arguments),
+                ),
+                (
+                    "call-2".to_string(),
+                    "Read".to_string(),
+                    execute_plan(read_arguments),
+                ),
+            ],
+        );
+
+        // The read observes the write's result instead of racing the creation.
+        assert_eq!(group_indexes(&groups), vec![vec![0, 1]]);
+        assert_eq!(groups[0][0].call_id, "call-1");
+        assert_eq!(groups[0][1].call_id, "call-2");
+    }
+
+    #[test]
+    fn serializes_read_image_behind_same_path_edit() {
+        let (_dir, context, path, _) = scheduling_fixture();
+        let read_image_arguments = serde_json::json!({ "path": path }).to_string();
+
+        let groups = schedule(
+            &context,
+            vec![
+                (
+                    "call-1".to_string(),
+                    "Edit".to_string(),
+                    execute_plan(edit_arguments(&path)),
+                ),
+                (
+                    "call-2".to_string(),
+                    "ReadImage".to_string(),
+                    execute_plan(read_image_arguments),
+                ),
+            ],
+        );
+
+        // ReadImage declares the same observing target as Read.
+        assert_eq!(group_indexes(&groups), vec![vec![0, 1]]);
+        assert_eq!(groups[0][0].call_id, "call-1");
+        assert_eq!(groups[0][1].call_id, "call-2");
+    }
+
+    #[test]
+    fn read_of_unmutated_path_stays_concurrent_with_other_mutations() {
+        let (_dir, context, first_path, second_path) = scheduling_fixture();
+        let read_arguments = serde_json::json!({ "path": second_path }).to_string();
+
+        let groups = schedule(
+            &context,
+            vec![
+                (
+                    "call-1".to_string(),
+                    "Read".to_string(),
+                    execute_plan(read_arguments),
+                ),
+                (
+                    "call-2".to_string(),
+                    "Edit".to_string(),
+                    execute_plan(edit_arguments(&first_path)),
+                ),
+            ],
+        );
+
+        assert_eq!(group_indexes(&groups), vec![vec![0], vec![1]]);
+        assert_eq!(
+            groups[0][0].target,
+            Some(second_path.canonicalize().unwrap())
+        );
+        assert_eq!(
+            groups[1][0].target,
+            Some(first_path.canonicalize().unwrap())
+        );
+    }
+
+    #[test]
+    fn interleaved_same_path_calls_keep_issue_order() {
+        let (_dir, context, path, _) = scheduling_fixture();
+        let read_arguments = serde_json::json!({ "path": path }).to_string();
+
+        let groups = schedule(
+            &context,
+            vec![
+                (
+                    "call-1".to_string(),
+                    "Read".to_string(),
+                    execute_plan(read_arguments.clone()),
+                ),
+                (
+                    "call-2".to_string(),
+                    "Edit".to_string(),
+                    execute_plan(edit_arguments(&path)),
+                ),
+                (
+                    "call-3".to_string(),
+                    "Read".to_string(),
+                    execute_plan(read_arguments),
+                ),
+            ],
+        );
+
+        assert_eq!(group_indexes(&groups), vec![vec![0, 1, 2]]);
+        assert_eq!(groups[0][0].call_id, "call-1");
+        assert_eq!(groups[0][1].call_id, "call-2");
+        assert_eq!(groups[0][2].call_id, "call-3");
+    }
+
+    #[test]
+    fn every_serialized_member_retains_the_group_target() {
+        let (dir, context, first_path, _) = scheduling_fixture();
+        let path = dir.path().join("nonexistent.txt");
+        assert!(!path.exists());
+        let read_arguments = serde_json::json!({ "path": path }).to_string();
+        let write_arguments =
+            serde_json::json!({ "path": path, "content": "new file content" }).to_string();
+
+        let groups = schedule(
+            &context,
+            vec![
+                (
+                    "call-1".to_string(),
+                    "Read".to_string(),
+                    execute_plan(read_arguments),
+                ),
+                (
+                    "call-2".to_string(),
+                    "Write".to_string(),
+                    execute_plan(write_arguments),
+                ),
+                (
+                    "call-3".to_string(),
+                    "Edit".to_string(),
+                    execute_plan(edit_arguments(&first_path)),
+                ),
+            ],
+        );
+
+        let expected = dir.path().canonicalize().unwrap().join("nonexistent.txt");
+        assert_eq!(group_indexes(&groups), vec![vec![0, 1], vec![2]]);
+        // The group leader keeps the target promised by the struct contract;
+        // followers keep it too.
+        assert_eq!(groups[0][0].target, Some(expected.clone()));
+        assert_eq!(groups[0][1].target, Some(expected));
     }
 
     #[test]
