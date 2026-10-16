@@ -23,7 +23,7 @@ For `stream-json`, validation failures before a task stream starts still use the
 
 `cake --fail-on-error` opts a `stream-json` run into a strict version of that contract, so a pipeline can act on `$?` alone ([ADR 046](adr/046-opt-in-strict-exit-codes-for-stream-json.md)). Without the flag nothing changes. With it, the run's own outcome decides the status:
 
-- An error or limit `task_complete` exits with the class of that failure: `1` for an agent, tool, cut-off, or `max_turns`/`max_tool_calls` limit outcome and for a provider failure that is none of the classes below (`5xx`, for example); `2` for an authentication, rate-limit, or network failure; and `3` for an input error. An unsatisfied output schema stays `1` with or without the flag.
+- A failed (`error`/`limit`) `task_complete` exits with the class of that outcome: `1` for an agent-class failure (including a fatal tool error), a cut-off, or a `max_turns`/`max_tool_calls` limit outcome, and for a provider failure that is none of the class-2 kinds (`5xx`, for example); `2` for an authentication, rate-limit, or network failure. Input and configuration failures are rejected before the stream starts, so an in-stream `3` does not exist. An unsatisfied output schema stays `1` with or without the flag.
 - A broken pipe from a consumer that closes stdout still exits `0`, and an interruption still exits `130`.
 - The stream itself is unchanged: the final `task_complete` record remains the outcome channel.
 
