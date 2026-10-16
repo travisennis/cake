@@ -194,7 +194,7 @@ fn debug_models_reports_settings_syntax_errors() {
         .output()
         .expect("Failed to execute command");
 
-    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(3));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("Failed to parse settings file"));
 }

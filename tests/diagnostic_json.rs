@@ -239,12 +239,9 @@ fn debug_models_json_reports_a_settings_failure_as_a_document() {
 
     let output = run(&env, &["debug", "models", "--json"]);
 
-    assert!(
-        !output.status.success(),
-        "a settings failure must exit nonzero (Cake classifies it as 1 today, not
-         the documented configuration code 3; this change preserves that), stderr: {}",
-        stderr(&output)
-    );
+    // A settings failure is a configuration defect, so it exits 3 like every
+    // other input error and still carries the failure in the document.
+    assert_eq!(output.status.code(), Some(3), "stderr: {}", stderr(&output));
     let document: serde_json::Value =
         serde_json::from_str(&stdout(&output)).expect("stdout must be one JSON document");
     assert_eq!(document["schema_version"], 1);
@@ -554,6 +551,28 @@ fn bash_check_json_keeps_settings_findings_on_stderr_when_no_document_is_written
     assert!(
         stderr(&output).contains("unknown key 'unauthenticated'"),
         "the finding must still reach stderr: {}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn bash_check_json_reports_an_unloadable_settings_file_without_a_document() {
+    let env = cake_env();
+    env.write_project_settings("not valid toml = [");
+
+    // The settings load precedes the judge, so this path cannot render a
+    // document; it keeps the settings failure class on stderr with empty stdout.
+    let output = run(&env, &["bash", "check", "--json", "--", "git status"]);
+
+    assert_eq!(output.status.code(), Some(3), "stderr: {}", stderr(&output));
+    assert_eq!(
+        stdout(&output),
+        "",
+        "a failure that writes no document leaves machine stdout empty"
+    );
+    assert!(
+        stderr(&output).contains("Failed to parse settings file"),
+        "stderr must name the settings failure: {}",
         stderr(&output)
     );
 }
