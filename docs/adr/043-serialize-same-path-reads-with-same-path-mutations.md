@@ -45,6 +45,7 @@ The concrete semantics:
 - Good, because no prompt text, guard, or rejection was added; the mechanism is the whole fix.
 - Good, because independent reads and unrelated mutations keep their concurrency, and result ordering, per-call attribution, and session and stream records are unchanged; a serialized read emits the existing `same_path_serialization` compensation event, with no new record shape.
 - Bad, because a turn that both reads and mutates one path loses that read's concurrency with the mutation, and two reads of such a path serialize with each other; the cost is bounded to the same-path group.
+- Bad, because a `Read` of a file a later same-turn `Write` creates now deterministically observes the pre-write (missing) state and fails its path check, where the concurrent scheduling previously let it occasionally succeed when the write happened to run first.
 - Neutral, because Bash commands that read or write a path remain unserialized against in-process calls for it; this predates the decision and stays out of scope.
 
 ## More Information
