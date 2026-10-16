@@ -357,6 +357,41 @@ class TelemetryWindowTest(unittest.TestCase):
             ])
             self.assertEqual(cakelib.load(other).invocations, [])
 
+    def test_model_filter_still_borrows_from_the_filtered_out_transcript(self):
+        # The invocation's model can differ from the session's, and project
+        # identity comes from the transcript: a `--model` filter that excludes
+        # the session must not hide the working directory its sidecar borrows.
+        with tempfile.TemporaryDirectory() as directory:
+            sessions = pathlib.Path(directory) / "sessions"
+            telemetry = pathlib.Path(directory) / "telemetry"
+            sessions.mkdir()
+            telemetry.mkdir()
+            (sessions / "s1.jsonl").write_text(json.dumps({
+                "type": "session_meta", "session_id": "s1", "model": "other-model",
+                "working_directory": "/projects/alpha", "timestamp": T(),
+            }) + "\n")
+            (telemetry / "s1.ndjson").write_text(json.dumps({
+                "type": "telemetry_init", "session_id": "s1", "invocation_id": "i1",
+                "model": "wanted-model", "timestamp": T(),
+            }) + "\n")
+
+            args = cakelib.build_arg_parser("test").parse_args([
+                "--days", "0", "--sessions-dir", str(sessions),
+                "--telemetry-dir", str(telemetry), "--model", "wanted-model",
+            ])
+            data = cakelib.load(args)
+            self.assertEqual(data.sessions, [])
+            self.assertEqual([inv.working_directory for inv in data.invocations], [
+                "/projects/alpha",
+            ])
+
+            filtered = cakelib.build_arg_parser("test").parse_args([
+                "--days", "0", "--sessions-dir", str(sessions),
+                "--telemetry-dir", str(telemetry), "--model", "wanted-model",
+                "--project", "alpha",
+            ])
+            self.assertEqual(len(cakelib.load(filtered).invocations), 1)
+
 
 class DescribeWindowProvenanceTest(unittest.TestCase):
     """The window line must say when it was measured and how fresh the data is.
