@@ -38,7 +38,7 @@ Concretely:
 - `src/exit_code.rs` gains a typed `SettingsError` mapping in `classify_typed_error`, beside the output-schema mapping. Every variant maps to `code::INPUT_ERROR`, and the match is exhaustive with no wildcard arm, so a new variant states its class instead of inheriting one.
 - The mapping is a typed downcast, not a string pattern. `"Failed to parse settings file"` stays out of the string patterns, and a test keeps it out.
 - The typed error must reach `classify_to_u8` unwrapped: `anyhow::Error::downcast_ref` inspects only the outermost error object, so nothing between `SettingsLoader::load*` and the classifier may add `.context(..)` to it.
-- The class applies everywhere the failure surfaces: the prompt-run path, `cake debug models` and `cake debug models --json` (which still emit the `settings.load_failed` error document), and `cake bash check --json` (which cannot render a document and reports on stderr with empty stdout). `cake sessions list` does not read settings, so it is unchanged, and `cake init` never loads settings, so it is unaffected.
+- The class applies everywhere the failure surfaces: the prompt-run path and every settings-reading subcommand --- `cake debug models` and `cake debug models --json` (which still emit the `settings.load_failed` error document), `cake debug skills`, and `cake bash check` in both output modes (`--json` cannot render a document and reports on stderr with empty stdout). `cake sessions list` does not read settings, so it is unchanged, and `cake init` never loads settings, so it is unaffected.
 
 ### Security and Compatibility Impact
 
