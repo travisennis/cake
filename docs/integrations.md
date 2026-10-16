@@ -4,12 +4,14 @@ This document describes Cake's stable shell-facing and machine-facing contracts.
 
 ## Exit codes
 
-  | Code | Meaning                                                     |
-  | ---- | ----------------------------------------------------------- |
-  | `0`  | successful task                                             |
-  | `1`  | agent or tool execution error                               |
-  | `2`  | authentication, rate-limit, or network error                |
-  | `3`  | invalid input, flags, configuration, or missing credentials |
+  | Code | Meaning                                                       |
+  | ---- | ------------------------------------------------------------- |
+  | `0`  | successful task                                               |
+  | `1`  | agent or tool execution error                                 |
+  | `2`  | authentication, rate-limit, network, or request-timeout error |
+  | `3`  | invalid input, flags, configuration, or missing credentials   |
+
+Class `2` is the provider-failure class: authentication (`401`, `403`), rate limiting (`429`), request timeouts (`408`), and transport failures such as connect errors or client timeouts. Retryability is a separate transport-recovery concern and does not decide the class: `409` (lock timeout), `5xx`, and `529` are retried but exit `1`, because the provider answered the request. A tool-level timeout --- a toolbox tool or a hook exceeding its timeout --- is a tool error, `1`; the Bash tool's own wait is a yield window, not a timeout failure. See [ADR 045](adr/045-classify-request-timeouts-as-api-errors.md).
 
 Human diagnostics go to stderr. Machine-readable stdout must contain only its declared JSON format.
 
@@ -216,7 +218,7 @@ Bash calls may also provide an optional `cwd`. Relative paths resolve from the i
 Every non-empty Bash command runs through the LLM judge (ADR-018) before spawn, unless `[tools.bash.judge.typesafe].mode = "cascade"` fast-approves it from an observation at or above the compiled TypeSafe cutoff ([ADR 034](adr/034-typesafe-judge-cascade-cutoff.md)); a call whose preflight collected referenced script contents makes no observation and always reaches the judge, since the observation request carries no script contents ([ADR 035](adr/035-judge-script-observations.md)). A fast approval is an approval only, so the command still runs under the sandbox and still appears in the session transcript and telemetry like any other allowed command. [Security](security.md) defines the gate semantics and [Configuration](configuration.md) the `[tools.bash.judge]` settings. A timeout, a retryable transport/HTTP failure, an undecodable 2xx response body, or a transport failure while the 2xx body is read triggers at most one recovery within `timeout_secs + retry_budget_secs`; verdicts,
 refusals, malformed verdicts, and semantic backend parse failures are never retried, and exhausted recovery fails closed.
 
-`cake bash check -- <command>` uses the preflight path and prompt without executing or collecting referenced host files, and reports the `TypeSafe` observation the decision rests on in both output modes; script verdicts can therefore differ from Bash tool preflight. Verdicts, allowlist overrides, and bypass exit `0`; timeout, network, auth, and rate-limit errors exit `2`; other transport errors, malformed verdicts, and refusals exit `1`; unknown judge models exit `3`.
+`cake bash check -- <command>` uses the preflight path and prompt without executing or collecting referenced host files, and reports the `TypeSafe` observation the decision rests on in both output modes; script verdicts can therefore differ from Bash tool preflight. Verdicts, allowlist overrides, and bypass exit `0`; timeouts (including a provider `408`), network, auth, and rate-limit errors exit `2`; other transport errors, malformed verdicts, and refusals exit `1`; unknown judge models exit `3`.
 
 `--diagnostic` also prints effective prompts, transformed request JSON, non-secret controls, zero-tool configuration, parsed response, usage, termination, timing, and verdict. Treat it as sensitive: prompts contain commands, paths, repository state, reasons, and possibly embedded secrets. Cake excludes its API key, authorization headers, and provider headers. It renders the bounded TypeSafe observation (outcome, probability or failure class, and elapsed time) but not the raw TypeSafe request or response. It remains inspection-only.
 
@@ -283,6 +285,8 @@ Toolbox executables are trusted and run outside the Bash sandbox. Their calls ma
 Changes to session versioning, record names or required fields, stream ordering, exit-code meaning, hook decisions, toolbox framing, or machine-readable stdout are compatibility changes. They require focused serialization or integration tests, migration analysis where applicable, and an update to this document's semantics.
 
 `debug models --json` and `sessions list --json` emitted a bare JSON array before the diagnostic document above; they now emit the document, and `bash check` gained `--json` ([ADR 029](adr/029-diagnostic-json-document.md)). Consumers that parsed the bare array read `data.models` or `data.sessions` instead. No default behavior changed: the affected flags are explicitly opt-in.
+
+An exhausted HTTP `408` request timeout from a provider now exits `2` instead of `1`, matching the client-side timeouts that already did ([ADR 045](adr/045-classify-request-timeouts-as-api-errors.md)). Scripts that branch on `$?` must treat `2` as the request-timeout class. The mapping depends on the status code the provider supplies, and every other status stays where it was: `400`, `404`, `409`, `5xx`, and `529` still exit `1`.
 
 ## Related decisions
 
