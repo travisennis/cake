@@ -85,3 +85,33 @@ just session-metrics --sessions-dir /tmp/cake-sessions-snapshot --days 0
 - New sidecars give `time_breakdown.py` tool start/end timestamps and observed main-provider retry waits; it pairs the existing in-flight provider start with its completed attempt. The per-invocation timeline assigns overlapping operations to `parallel activity`, then assigns uncovered time to `unobserved`. Older records without spans retain their aggregate totals and explicitly report missing spans. The Bash safety slice is an estimate from linked judge/TypeSafe model timings; `Bash remaining` also includes setup, command execution, output handling, and hooks. Hook durations are shown separately because they can overlap tools. Incomplete invocations have no `session_summary` wall time and receive no exclusive timeline.
 - Tool failure taxonomy categories are keyed to current tool error message wording (`src/clients/tools/*.rs`); filesystem denials are reported as `sandbox-blocked` under the same notice-line scoping as `is_tool_failure`, and `read-only path` matches the full write-validation message (`is read-only (added via --add-dir)` / `is in a read-only directory (added via --add-dir)`) on the first line of an Edit or Write failure, which is the shape those one-line messages are stored in, rather than the word `read-only` anywhere in the output, so a nearest-match hint, diff, or grep that quotes the message keeps its own tool's bucket. If those messages or markers change, update `classify_tool_error` and `is_tool_failure` in `cakelib.py`.
 - Cache-break detection is heuristic: it requires a prior cache read or write, ignores misses at or below 1,024 tokens, and uses five minutes as the idle-TTL label threshold. Provider pricing is not stored, so the report shows missed tokens but does not estimate dollars.
+
+## Automatic local dashboard (macOS)
+
+Install a private static dashboard, daily refresh at 08:00, and Monday reminder at 09:00 (local time):
+
+```bash
+python3 scripts/session-metrics/install_dashboard.py install
+python3 scripts/session-metrics/install_dashboard.py open
+```
+
+Bookmark the page in your browser. The installer generates the first report before registering two user LaunchAgents. Jobs run while you are logged in; launchd coalesces calendar events missed during sleep. Notifications depend on macOS notification permissions and Focus settings. No model calls, network service, or Python dependencies are required. The existing terminal report is unchanged.
+
+The dashboard compares the last seven complete UTC dates against the preceding seven and shows 30 daily rows including today. Model and project selectors filter both views. Zero-denominator rates show a dash. Completion means operational success, not verified task correctness. Missing telemetry, parser errors, sample counts, incomplete tasks, and a refresh older than 36 hours are visible.
+
+Files live in `~/Library/Application Support/cake-metrics`: `index.html`, `metrics.json` (schema version 1), `history/YYYY-MM-DD.json`, `runtime/`, and job logs. The dashboard embeds its data and opens directly from disk without a server. Daily rows store counts, duration samples, local project paths, and session IDs; they contain no prompts, commands, or tool output. The containing directory is owner-only. Keep exported copies private.
+
+The most recent 31 UTC dates are rebuilt from source records on every refresh; older daily aggregates are retained. Keep source records at least 31 days to avoid erasing recent history during a refresh. Late changes to older sessions are not backfilled automatically. Session model attribution comes from session metadata; telemetry attribution uses each invocation's model. Tool metrics use telemetry only. Cache rates use requests with cached-token details. Judge time is cumulative attempt time and can overlap other activity.
+
+The installer copies its runtime and pins the Python executable and resolved data directories, so switching branches and shell environment changes do not affect scheduled runs. Reinstall after updating the scripts, moving Python, or changing data roots. Pass `--sessions-dir` and `--telemetry-dir` for custom locations.
+
+```bash
+# Manual refresh, including on other platforms:
+python3 scripts/session-metrics/dashboard.py --output /tmp/cake-dashboard
+# Inspect scheduler state and refresh errors:
+launchctl print gui/$(id -u)/com.cake.metrics.refresh
+# Remove both schedules; preserve reports and history:
+python3 scripts/session-metrics/install_dashboard.py uninstall
+```
+
+Check `refresh.log` if the page is stale. Runtime copies include the installer, so schedules can also be removed without this checkout using `python3 ~/Library/Application\ Support/cake-metrics/runtime/install_dashboard.py uninstall`.
