@@ -20,9 +20,11 @@ FILE_TOOLS = ("Edit", "Write")
 # later is reported as `other` instead of being dropped from the join.
 JUDGE_EVENT_KIND_PREFIX = "judge_"
 
-# The bounded verdict vocabulary, and the judged outcomes the rates divide by:
-# only a `judge_verdict` carries one.
-JUDGE_VERDICTS = ("allow", "warn", "block")
+# The bounded verdict vocabulary and the event classifier live in `cakelib`,
+# shared with `summary.py`'s judge metrics. These aliases keep the report's
+# existing names stable for callers and tests.
+JUDGE_VERDICTS = cakelib.JUDGE_VERDICTS
+judge_event_outcome = cakelib.judge_event_outcome
 
 # The full outcome column order, as (stats key, column label): the verdicts, the
 # judge outcomes without a verdict, and the join's own bookkeeping (calls with
@@ -74,26 +76,6 @@ def bash_reason_coverage(data: cakelib.Dataset) -> list[list]:
     rows.append(["TOTAL", fmt_int(total_calls), fmt_int(total_with),
                  fmt_pct(total_with, total_calls)])
     return rows
-
-
-def judge_event_outcome(event: dict) -> str:
-    """Bucket one judge compensation event into the outcome vocabulary.
-
-    Only a `judge_verdict` carries a bounded verdict (`allow`, `warn:<code>`, or
-    `block:<code>`). `fail_closed` and `bypass` are judge outcomes with no
-    verdict, and an unrecognized kind or verdict value is `other`, so a
-    vocabulary change stays visible instead of riding an existing column.
-    """
-    kind = str(event.get("kind") or "")
-    if kind == "judge_fail_closed":
-        return "fail_closed"
-    if kind == "judge_bypass":
-        return "bypass"
-    if kind == "judge_verdict":
-        decision = (event.get("detail") or "").partition(":")[0]
-        if decision in JUDGE_VERDICTS:
-            return decision
-    return "other"
 
 
 def bash_judge_outcomes(data: cakelib.Dataset) -> tuple[list[list], dict]:

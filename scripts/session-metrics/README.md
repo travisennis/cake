@@ -21,6 +21,65 @@ python3 time_breakdown.py --session UUID --invocation UUID  # one task run
 
 Every script accepts `--days`, `--sessions-dir`, `--telemetry-dir`, `--model`, `--project`, `--session`, and `--invocation`. The ID filters require full, exact UUIDs. `report.py` loads the data once and runs all sections against it.
 
+## Machine-readable summary and comparisons
+
+`report.py --json` prints one schema-versioned JSON document instead of the human sections. The human report is unchanged without the flag.
+
+```bash
+just session-metrics --json --days 7 > /tmp/metrics.json
+just session-metrics --baseline /tmp/metrics.json
+just session-metrics --vs 7
+```
+
+`--json` loads the sources once with no cutoff and applies an explicit half-open UTC window `[start, end)`: `end` is the measurement time and `start` is `end - --days` days, or `null` (all time) when `--days 0` is used. `--baseline` compares the current `--days` window (default 30) with a saved document and prints value, baseline, delta, and direction per key. `--vs DAYS` compares the last `DAYS` days with the immediately preceding `DAYS` days from the same uncapped load; `--days` does not select either comparison window. `--json` cannot be combined with `--baseline` or `--vs`.
+
+Comparisons are only meaningful when the filters match: pass the same `--model`, `--project`, `--session`, and `--invocation` flags to the artifact and the later run. Live-window comparison is comparative evidence, not a controlled experiment, because model, project, and task mix move with the calendar. Prefer a saved baseline for before/after change review.
+
+The document shape (schema version 1):
+
+```json
+{
+  "schema_version": 1,
+  "measured": "2026-10-19T13:00:00Z",
+  "window": {"start": "2026-10-12T13:00:00Z", "end": "2026-10-19T13:00:00Z"},
+  "filters": {"model": null, "project": null, "session": null, "invocation": null},
+  "counts": {"sessions": 12, "invocations": 27, "invocations_started": 27,
+             "tasks": 40, "tasks_succeeded": 34, "tool_calls": 300, "edit_calls": 20,
+             "api_attempts": 200, "judge_attempts": 15, "judge_verdicts": 40,
+             "session_parse_errors": 0, "telemetry_parse_errors": 0},
+  "metric_metadata": {"outcomes.task_success_rate": {"unit": "rate", "higher_is_better": true}},
+  "metrics": {
+    "outcomes.task_success_rate": 0.85,
+    "outcomes.abnormal_termination_rate": 0.0,
+    "tools.edit.failure_rate": 0.15,
+    "tools.edit.no_match_rate": 0.05,
+    "tokens.cache_hit_rate": 0.7,
+    "api.latency.p95": 1234.0,
+    "api.failure_rate": 0.02,
+    "judge.timeout_rate": 0.0,
+    "judge.failure_rate": 0.0,
+    "judge.block_rate": 0.1
+  }
+}
+```
+
+Every documented key is present in `metrics`; an undefined rate or percentile is `null`, never omitted, so empty windows and missing telemetry keep a stable shape. `counts` values are always integers. `measured` is when the document was taken, `window` gives the explicit bounds (`null` start means all time), and parse-error counts come from the loaded source directories rather than the window. `filters` records the flags the loader applied. `metric_metadata` is the directionality and unit contract for a gate: a comparison prints `better` or `worse` from `higher_is_better`, `unchanged` for an equal value, and `n/a` when either side is `null`. A baseline key that is absent is also `n/a`, never zero, and a document with a different `schema_version` is rejected.
+
+  | Key                                  | Unit | Higher is better | Definition                                                                                                   |
+  | ------------------------------------ | ---- | ---------------- | ------------------------------------------------------------------------------------------------------------ |
+  | `outcomes.task_success_rate`         | rate | yes              | Completed transcript tasks whose subtype is `success`.                                                       |
+  | `outcomes.abnormal_termination_rate` | rate | no               | Invocations that started in the window and wrote no `session_summary`, over invocation starts in the window. |
+  | `tools.edit.failure_rate`            | rate | no               | Transcript `Edit` calls whose output reports a failure.                                                      |
+  | `tools.edit.no_match_rate`           | rate | no               | `Edit` calls that failed with the `no-match (old_text not found)` taxonomy category, over all `Edit` calls.  |
+  | `tokens.cache_hit_rate`              | rate | yes              | Cached input tokens over input tokens for `api_attempt` records that report cached-token details.            |
+  | `api.latency.p95`                    | ms   | no               | Nearest-rank p95 `request_ms` over `api_attempt` records.                                                    |
+  | `api.failure_rate`                   | rate | no               | `api_attempt` records with an error or a non-200 status.                                                     |
+  | `judge.timeout_rate`                 | rate | no               | `judge_attempt` records whose terminal class is `timeout`.                                                   |
+  | `judge.failure_rate`                 | rate | no               | `judge_attempt` records whose terminal class is not `verdict`.                                               |
+  | `judge.block_rate`                   | rate | no               | `judge_verdict` events with a `block` decision, over `allow` + `warn` + `block`.                             |
+
+`summary.py` is the one definition of these keys and the document shape; `report.py --json`, `--baseline`, and `--vs` all use it. A regression test (`test_summary.py`) proves the metrics it shares with `dashboard.py` agree with the dashboard's aggregation, so the two cannot drift silently. The first pass deliberately covers only the keys the CI regression gate and PR review need; all-section JSON can follow once this vocabulary is stable.
+
 ## Scripts
 
   | Script              | Reports                                                                                                                                                                                                                                                       |
@@ -35,6 +94,8 @@ Every script accepts `--days`, `--sessions-dir`, `--telemetry-dir`, `--model`, `
   | `outcomes.py`       | Task and invocation success rates, error subtypes, duration/turn distributions, per-session turn totals, permission denials, abnormal terminations                                                                                                            |
   | `hooks.py`          | Hook events, allow/deny decisions, denied commands, hook errors and durations, skill activations                                                                                                                                                              |
   | `compensations.py`  | Model-compensation counters per model: json repair, judge verdicts/fail-closed/bypass, same-path serialization (a follower behind an earlier same-path call, read or mutation), output truncation, Edit invalid args, context-overflow retries                |
+  | `summary.py`        | Shared metric vocabulary, schema-versioned summary document, and diff used by `report.py --json`, `--baseline`, and `--vs` (not a CLI)                                                                                                                        |
+  | `report.py`         | Combined human report; `--json` emits the summary document and `--baseline` / `--vs` print per-key comparisons                                                                                                                                                |
   | `cakelib.py`        | Shared loading, call pairing, error classification, formatting (not a CLI)                                                                                                                                                                                    |
 
 ## Compensation review
