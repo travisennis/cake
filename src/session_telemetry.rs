@@ -1,6 +1,6 @@
 use std::{
     fs::{self, File, OpenOptions},
-    io::{BufWriter, Write},
+    io::{BufWriter, Read, Seek, SeekFrom, Write},
     path::Path,
     sync::{Arc, Mutex},
 };
@@ -838,12 +838,20 @@ trait TelemetryRecordWriter: Send {
     fn append_record(&mut self, record: &SessionTelemetryRecord) -> anyhow::Result<()>;
 }
 
+/// Bytes inspected per backward window when locating the final record boundary.
+const TAIL_SCAN_CHUNK_BYTES: usize = 8 * 1024;
+
 impl SessionTelemetryWriter {
     pub fn open(path: &Path) -> anyhow::Result<Self> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let file = OpenOptions::new().create(true).append(true).open(path)?;
+        let file = OpenOptions::new()
+            .read(true)
+            .create(true)
+            .append(true)
+            .open(path)?;
+        truncate_unterminated_tail(&file, path)?;
         Ok(Self {
             writer: BufWriter::new(file),
         })
@@ -855,6 +863,57 @@ impl SessionTelemetryWriter {
         self.writer.flush()?;
         Ok(())
     }
+}
+
+/// Restore an NDJSON record boundary in a sidecar whose last write was
+/// interrupted.
+///
+/// The only recoverable framing failure is an unterminated final segment: the
+/// bytes after the last newline, or the whole file when it has no newline. That
+/// segment may be a record the previous writer never finished, so it is
+/// truncated before the file is reopened for append. A framed record is one
+/// terminated by a newline; an unterminated segment is therefore never counted
+/// as complete, even when its bytes happen to parse.
+///
+/// A newline-terminated line is a complete record whatever its contents. A
+/// malformed one is left byte-for-byte untouched and reported by consumers,
+/// because no recovery rule can tell where the writer meant to stop; guessing
+/// could discard a framed record.
+fn truncate_unterminated_tail(file: &File, path: &Path) -> anyhow::Result<()> {
+    let len = file.metadata()?.len();
+    let tail_len = unterminated_tail_len(file, len)?;
+    if tail_len == 0 {
+        return Ok(());
+    }
+
+    tracing::warn!(
+        target: "cake",
+        "Truncating {tail_len} incomplete byte(s) from the final record of telemetry sidecar {}",
+        path.display()
+    );
+    file.set_len(len - tail_len)?;
+    Ok(())
+}
+
+/// Return the length of the bytes after the final newline, or the whole file
+/// when it has no newline. Reads backwards in windows so a large sidecar is not
+/// buffered whole.
+fn unterminated_tail_len(file: &File, len: u64) -> std::io::Result<u64> {
+    let chunk_bytes = u64::try_from(TAIL_SCAN_CHUNK_BYTES).unwrap_or(u64::MAX);
+    let mut end = len;
+    while end > 0 {
+        let start = end.saturating_sub(chunk_bytes);
+        let chunk_len = usize::try_from(end - start).unwrap_or(TAIL_SCAN_CHUNK_BYTES);
+        let mut chunk = vec![0; chunk_len];
+        let mut handle = file;
+        handle.seek(SeekFrom::Start(start))?;
+        handle.read_exact(&mut chunk)?;
+        if let Some(index) = chunk.iter().rposition(|byte| *byte == b'\n') {
+            return Ok(len - (start + index as u64 + 1));
+        }
+        end = start;
+    }
+    Ok(len)
 }
 
 /// Outcome of one shared-writer append.
@@ -1507,6 +1566,120 @@ mod tests {
             "boom"
         );
         assert!(contents.ends_with('\n'));
+    }
+
+    const COMPLETE_RECORD: &str = "{\"type\":\"session_summary\",\"session_id\":\"earlier\"}\n";
+
+    fn summary_record(session_id: &str) -> SessionTelemetryRecord {
+        SessionTelemetryRecord::SessionSummary {
+            session_id: session_id.to_string(),
+            invocation_id: "invocation".to_string(),
+            timestamp: Utc::now(),
+            success: true,
+            duration_ms: 1,
+            turn_count: 1,
+            usage: Usage::default(),
+            error: None,
+        }
+    }
+
+    /// Open a sidecar holding `initial`, append one record, and return the bytes.
+    fn append_summary_after(initial: &[u8]) -> String {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("telemetry.ndjson");
+        std::fs::write(&path, initial).unwrap();
+        let mut writer = SessionTelemetryWriter::open(&path).unwrap();
+        writer.append(&summary_record("next")).unwrap();
+        drop(writer);
+        std::fs::read_to_string(&path).unwrap()
+    }
+
+    #[test]
+    fn telemetry_open_preserves_complete_sidecar_and_appends_independent_record() {
+        let contents = append_summary_after(COMPLETE_RECORD.as_bytes());
+        let lines = contents.lines().collect::<Vec<_>>();
+
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0], COMPLETE_RECORD.trim_end());
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(lines[1]).unwrap()["session_id"],
+            "next"
+        );
+        assert!(contents.ends_with('\n'));
+    }
+
+    #[test]
+    fn telemetry_open_truncates_unterminated_tail_and_preserves_earlier_records() {
+        let truncated =
+            format!("{COMPLETE_RECORD}{{\"type\":\"session_summary\",\"session_id\":\"partial");
+        let contents = append_summary_after(truncated.as_bytes());
+        let lines = contents.lines().collect::<Vec<_>>();
+
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0], COMPLETE_RECORD.trim_end());
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(lines[1]).unwrap()["session_id"],
+            "next"
+        );
+        assert!(!contents.contains("partial"));
+    }
+
+    #[test]
+    fn telemetry_open_truncates_unterminated_tail_when_it_is_the_only_content() {
+        let contents = append_summary_after(br#"{"type":"session_summary","session_id":"part"#);
+        let lines = contents.lines().collect::<Vec<_>>();
+
+        assert_eq!(lines.len(), 1);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(lines[0]).unwrap()["session_id"],
+            "next"
+        );
+        assert!(contents.ends_with('\n'));
+    }
+
+    #[test]
+    fn telemetry_open_discards_unterminated_final_segment_even_when_it_parses() {
+        let contents =
+            append_summary_after(br#"{"type":"session_summary","session_id":"earlier"}"#);
+        let lines = contents.lines().collect::<Vec<_>>();
+
+        assert_eq!(lines.len(), 1);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(lines[0]).unwrap()["session_id"],
+            "next"
+        );
+    }
+
+    #[test]
+    fn telemetry_open_creates_empty_sidecar_and_appends_normally() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("session-telemetry").join("test.ndjson");
+        let mut writer = SessionTelemetryWriter::open(&path).unwrap();
+        writer.append(&summary_record("next")).unwrap();
+        drop(writer);
+
+        let contents = std::fs::read_to_string(path).unwrap();
+        let lines = contents.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), 1);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(lines[0]).unwrap()["session_id"],
+            "next"
+        );
+    }
+
+    #[test]
+    fn telemetry_open_preserves_malformed_terminated_records_byte_for_byte() {
+        let initial = format!("{COMPLETE_RECORD}not json\n");
+        let contents = append_summary_after(initial.as_bytes());
+        let lines = contents.lines().collect::<Vec<_>>();
+
+        assert!(contents.starts_with(&initial));
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[1], "not json");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(lines[2]).unwrap()["session_id"],
+            "next"
+        );
     }
 
     const PARTIAL_PREFIX: &[u8] = b"{\"type\":\"session_summary\"";
