@@ -27,7 +27,7 @@ Every script accepts `--days`, `--sessions-dir`, `--telemetry-dir`, `--model`, `
 
 ```bash
 just session-metrics --json --days 7 > /tmp/metrics.json
-just session-metrics --baseline /tmp/metrics.json
+just session-metrics --baseline /tmp/metrics.json --days 7
 just session-metrics --vs 7
 ```
 
@@ -35,7 +35,7 @@ just session-metrics --vs 7
 
 With `--invocation`, JSON and comparison summaries join transcript tasks to the selected invocation's `api_attempt_in_flight.task_id` and tool calls to its `tool_call.call_id` SHA-256 digests, within the same session. Records without matching telemetry identity (including older sidecars without task IDs or call digests) are excluded from transcript counts and rates; an empty denominator is `null`. Timestamps and file modification times are not used to guess invocation ownership. Without `--invocation`, transcript metrics retain their session-wide scope.
 
-Comparisons are only meaningful when the filters match: pass the same `--model`, `--project`, `--session`, and `--invocation` flags to the artifact and the later run. Live-window comparison is comparative evidence, not a controlled experiment, because model, project, and task mix move with the calendar. Prefer a saved baseline for before/after change review.
+Comparisons are only meaningful when the window and filters match: for `--baseline`, pass the same `--days` as the saved artifact, and pass the same `--model`, `--project`, `--session`, and `--invocation` flags to both runs. Live-window comparison is comparative evidence, not a controlled experiment, because model, project, and task mix move with the calendar. Prefer a saved baseline for before/after change review.
 
 The document shape (schema version 1):
 

@@ -10,7 +10,7 @@ reads files or telemetry itself.
 Windows are half-open UTC intervals `[start, end)`. A `None` start means all
 time. Window membership follows each record's own timestamp, with the source
 file's mtime as the fallback, matching the rest of the suite. `measured` is when
-the summary was taken; counts and parse errors come from the loaded source
+the summary was taken; parse-error counts come from the loaded source
 directories, not from the window.
 
 Every metric key is always present. An undefined rate or percentile is `null`,

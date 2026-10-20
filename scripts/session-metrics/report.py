@@ -129,8 +129,8 @@ def _read_baseline(path: Path) -> dict:
         document = json.loads(path.read_text(encoding="utf-8"))
     except OSError as error:
         raise SystemExit(f"cannot read baseline {path}: {error}") from error
-    except json.JSONDecodeError as error:
-        raise SystemExit(f"baseline {path} is not valid JSON: {error}") from error
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise SystemExit(f"baseline {path} is not valid UTF-8 JSON: {error}") from error
     if not isinstance(document, dict):
         raise SystemExit(f"baseline {path} is not a JSON object")
     if document.get("schema_version") != summary.SCHEMA_VERSION:
