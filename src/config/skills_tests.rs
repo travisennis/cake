@@ -91,6 +91,42 @@ description: |
 }
 
 #[test]
+fn skill_parse_quoted_colon_in_description() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("quoted-colon-skill");
+    std::fs::create_dir_all(&dir).unwrap();
+    let content = r#"---
+name: quoted-colon-skill
+description: "A skill: with a colon"
+---
+"#;
+    let path = dir.join("SKILL.md");
+    std::fs::write(&path, content).unwrap();
+
+    let skill = Skill::parse(&path, SkillScope::Project).unwrap();
+
+    assert_eq!(skill.description, "A skill: with a colon");
+}
+
+#[test]
+fn skill_parse_unquoted_colon_in_description_uses_fallback() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("unquoted-colon-skill");
+    std::fs::create_dir_all(&dir).unwrap();
+    let content = r"---
+name: unquoted-colon-skill
+description: A skill: with a colon
+---
+";
+    let path = dir.join("SKILL.md");
+    std::fs::write(&path, content).unwrap();
+
+    let skill = Skill::parse(&path, SkillScope::Project).unwrap();
+
+    assert_eq!(skill.description, "A skill: with a colon");
+}
+
+#[test]
 fn skill_parse_missing_name() {
     let tmp = TempDir::new().unwrap();
     let dir = tmp.path().join("bad-skill");
