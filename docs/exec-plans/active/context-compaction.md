@@ -1,6 +1,6 @@
 # Continue long tasks through append-only context checkpoints
 
-This ExecPlan is a living document maintained per `docs/workflow/exec-plans.md`. Keep Progress, Surprises & Discoveries, Decision Log, and Outcomes & Retrospective current. Planning parent: ahm task 034. Document authoring: task 034c. The governing proposal is `docs/adr/042-compact-model-context-with-self-contained-append-only-checkpoints.md` (ADR 042).
+This ExecPlan is a living document maintained per `docs/workflow/exec-plans.md`. Keep Progress, Surprises & Discoveries, Decision Log, and Outcomes & Retrospective current. Planning parent: ahm task 034. Document authoring: task 034c. The governing decision is `docs/adr/047-compact-model-context-with-self-contained-append-only-checkpoints.md` (ADR 047).
 
 ## Purpose / Big Picture
 
@@ -10,16 +10,17 @@ A deterministic local provider fixture will force several compactions during one
 
 `cake sessions recover <UUID> --json` will create a new fork from raw conversation without checkpoints, provider calls, or tool execution, allowing recovery from an inaccurate summary. Summary creation requires a backend that supports a transmitted output cap; Cake's current Codex backend is excluded, while disabled-policy runs may restore existing checkpoints. Feature completion additionally requires separately authorized real-model quality evaluation. Compaction bounds model context and checkpoint work; retaining full raw history means host RAM and transcript size still grow with session length.
 
-This is a plan for future implementation, not implementation delivered by task 034c. ADR 042 is proposed. Settle its review before starting production changes. All milestones below belong to scoped implementation tasks under 034; the parent is not an executable task. Preserve the current tree's behavior until each milestone's explicit compatibility changes land.
+This is a plan for future implementation, not implementation delivered by task 034c. ADR 047 is accepted. All milestones below belong to scoped implementation tasks under 034; the parent is not an executable task. Preserve the current tree's behavior until each milestone's explicit compatibility changes land.
 
 ## Progress
 
 - [x] (2026-10-12) Read task 034, companion tasks 034a/034b, current workflow, source owners, and the October 9 research findings; created documentation branch and planning child 034c.
-- [x] (2026-10-12) Drafted proposed ADR 042 and this implementation plan.
+- [x] (2026-10-12) Drafted the proposed ADR and this implementation plan.
 - [x] (2026-10-12) Completed authoring preflight and Markdown/whitespace checks for task 034c; task linkage and the final documentation commit follow these records.
 - [x] (2026-10-12) Folded three review decisions into the proposal: a content-class estimator, no session format bump (the checkpoint is a format-4 record kind), and a positional resume boundary.
 - [x] (2026-10-13) Revised the proposal after design review: protect unseen images and observed skill instructions, terminally disable failed writers, budget serialized bytes before generation, require useful reduction, specify manual pins and raw-history recovery, and require quality qualification.
-- [ ] Accept ADR 042 and prepare implementation children and dependency order under task 034.
+- [x] (2026-10-20) Accepted ADR 047 as written.
+- [ ] Prepare implementation children and dependency order under task 034.
 - [ ] M1: implement validated checkpoint types, format-4 record persistence, and the positional projection.
 - [ ] M2: implement bounded selection, estimation, summary calls, and usage attribution behind the compaction interface.
 - [ ] M3: integrate settings and pre-request compaction, plus task 034a's prefix invariant.
@@ -48,7 +49,7 @@ The October 13 review found concrete integration hazards. `src/main.rs::emit_fai
 
 ## Decision Log
 
-On 2026-10-12, Codex drafted the following proposed decisions for Trav's review: self-contained checkpoint tails rather than retained-entry pointers; unchanged raw-history offsets with a separate request projection; exact current user input and whole provider exchanges; opt-in threshold policy with bounded summarization; separate summary usage attribution; and a single pressure-recovery guard per invocation. ADR 042 contains their tradeoffs.
+On 2026-10-12, Codex drafted the following proposed decisions for Trav's review: self-contained checkpoint tails rather than retained-entry pointers; unchanged raw-history offsets with a separate request projection; exact current user input and whole provider exchanges; opt-in threshold policy with bounded summarization; separate summary usage attribution; and a single pressure-recovery guard per invocation. ADR 047 contains their tradeoffs.
 
 On 2026-10-12, Codex first resolved the versioning proposal to new v5 files with v4 read/resume support, so that a v4 session could not gain checkpoints in place and compaction required an explicit fork into v5. A later same-day review reversed this decision (see the entry below) in favor of a self-versioned record kind within format version 4.
 
@@ -56,12 +57,12 @@ On 2026-10-12, Codex scoped task 034c to the two planning documents and task lin
 
 On 2026-10-12, Trav's review resolved three open questions. First, unmeasured tokens are estimated by one pure content-class function with a documented safety margin, since Cake ships no tokenizer. Second, the session format version stays 4 and the checkpoint is a new self-versioned record kind; older binaries are not a supported reader, so no v5 migration, fork-to-v5 flow, or dual-format reader is built. Third, the retired boundary is the latest checkpoint record's physical position, not a stored index, and fork re-envelops the checkpoint at its original position so the boundary survives.
 
-On 2026-10-13, Trav chose enforceable summary output caps with initial Codex exclusion, a raw-history recovery fork in this feature, real-model qualification before task 034 completion, and exact pinning of observed skill instruction exchanges during the current task. Engineering refinements add conservative unseen-image pins, terminal shared-writer failure, byte-aware selection, a 60%-of-window target at the default trigger, and invocation-wide proactive failure suppression. ADR 042 remains proposed; these choices do not authorize implementation or paid evaluation.
+On 2026-10-13, Trav chose enforceable summary output caps with initial Codex exclusion, a raw-history recovery fork in this feature, real-model qualification before task 034 completion, and exact pinning of observed skill instruction exchanges during the current task. Engineering refinements add conservative unseen-image pins, terminal shared-writer failure, byte-aware selection, a 60%-of-window target at the default trigger, and invocation-wide proactive failure suppression. ADR 047 records these choices and was accepted as written on 2026-10-20; paid evaluation still requires separate authorization.
 
 ## Outcomes & Retrospective
 
-Planning outcome: the ADR and plan specify the proposed persistence, trigger, summary, recovery, accounting, and compatibility behavior. Since the initial draft, three review decisions replaced the v5 session-format bump with an in-place format-4 checkpoint record, specified a content-class estimator, and fixed the resume boundary to the checkpoint record's position; the milestones, acceptance, and recovery sections reflect them. No Rust, settings, fixture, CLI, or provider changes have been made. Implementation milestones remain unstarted, and ADR acceptance remains a review decision. Authoring validation passed `panache format --check` and `panache lint` for both documents, `just docs-check` with both paths staged, and `git diff --cached --check`. Markdown checks were rerun outside the filesystem sandbox after cache permission errors. Rust gates were skipped because this branch changes documentation only. Preflight checked workflow conformance, source ownership/technical consistency,
-and scope; it clarified stream commit ordering, partial-usage estimation, and attempt-settlement ownership. Leave this plan active until the feature itself is delivered.
+Planning outcome: the ADR and plan specify the accepted persistence, trigger, summary, recovery, accounting, and compatibility behavior. Since the initial draft, three review decisions replaced the v5 session-format bump with an in-place format-4 checkpoint record, specified a content-class estimator, and fixed the resume boundary to the checkpoint record's position; the milestones, acceptance, and recovery sections reflect them. No Rust, settings, fixture, CLI, or provider changes have been made. Implementation milestones remain unstarted; ADR 047 was accepted as written on 2026-10-20. Authoring validation passed `panache format --check` and `panache lint` for both documents, `just docs-check` with both paths staged, and `git diff --cached --check`. Markdown checks were rerun outside the filesystem sandbox after cache permission errors. Rust gates were skipped because this branch changes documentation only. Preflight checked workflow conformance, source ownership/technical
+consistency, and scope; it clarified stream commit ordering, partial-usage estimation, and attempt-settlement ownership. Leave this plan active until the feature itself is delivered.
 
 The October 13 revision addresses the design-review findings and records Trav's four decisions in both documents. Task 034c was reopened on the existing documentation branch for this follow-up. Task 034 now records the in-place v4 policy and strengthened acceptance; 034b's older below-cap classification rule is reconciled with the requirement for independent pressure evidence. Open child 034d owns qualification and initially depends on planning child 034c; M0 must add its native M6 implementation dependencies before execution work is accepted. No implementation or real-model evaluation has run. Revision validation passed targeted `panache --no-cache format --check`, `panache --no-cache lint`, `PANACHE_NO_CACHE=true just docs-check`, `git diff --check`, and inspection of all nine relative document links. The first corpus-check invocation used an invalid boolean environment value; correcting it to `true` passed. The combined documentation preflight checked source ownership, failure-path
 integration, policy consistency, task synchronization, and scope. Rust gates and live-model evaluation were skipped because this is planning-only work.
@@ -84,11 +85,11 @@ A pin is an exact input or complete exchange that selection may not retire. Its 
 
 ## Plan of Work
 
-### M0: accept the proposal and prepare scoped tasks
+### M0: prepare scoped tasks from the accepted design
 
-Review ADR 042's proposed record and fork policy, opt-in settings, fixed operation bounds, manual and recovery commands, and qualification gate. Once accepted, allocate implementation children with `ahm task create ... --parent 034`, explicit Cake labels, priority, effort, Acceptance Notes, and this plan's path. Assign M1 through M7 to coherent stages; split a milestone if its diff exceeds the repository's 800-line limit, or 500-line limit for complex logic. Reuse any qualification planning child already recorded on task 034. Record allocated IDs in this plan and task 034. M2 depends on integrated M1; M3 depends on M2 and 034a; M4 depends on M3 and 034b; M5 depends on the common compaction and projection stages; M6 depends on all feature stages; M7's execution depends on integrated M6, though its corpus can be prepared earlier. Implement 034a/034b first when useful.
+ADR 047's record and fork policy, opt-in settings, fixed operation bounds, manual and recovery commands, and qualification gate are accepted. Allocate implementation children with `ahm task create ... --parent 034`, explicit Cake labels, priority, effort, Acceptance Notes, and this plan's path. Assign M1 through M7 to coherent stages; split a milestone if its diff exceeds the repository's 800-line limit, or 500-line limit for complex logic. Reuse any qualification planning child already recorded on task 034. Record allocated IDs in this plan and task 034. M2 depends on integrated M1; M3 depends on M2 and 034a; M4 depends on M3 and 034b; M5 depends on the common compaction and projection stages; M6 depends on all feature stages; M7's execution depends on integrated M6, though its corpus can be prepared earlier. Implement 034a/034b first when useful.
 
-Use native `ahm task dep add` relationships, and check each prerequisite's merged commit before starting dependent work from master: Completed in the home store does not mean integrated. Task 004's broader output-management scope remains separate; link the delivered subset without changing its status. Proof of M0 is an accepted ADR, inspectable children and dependencies, and a parent record with the work order. The authoring task does not itself accept the ADR or start these milestones.
+Use native `ahm task dep add` relationships, and check each prerequisite's merged commit before starting dependent work from master: Completed in the home store does not mean integrated. Task 004's broader output-management scope remains separate; link the delivered subset without changing its status. Proof of M0 is an accepted ADR, inspectable children and dependencies, and a parent record with the work order. The authoring task does not start these milestones.
 
 ### M1: establish checkpoint validation, projection, and persistence
 
@@ -177,7 +178,7 @@ Render manual JSON with `DiagnosticDocument`, `command = sessions compact`, sess
 Update restore, fork, and replay together. A fork copies original conversation and activation metadata, re-envelopes the latest checkpoint for the new session at its original position among the copied records, and copies all later conversation records in order; it preserves replay metadata and has no references into the source session. The copied conversation records before the checkpoint are retained for audit fidelity, and the checkpoint sits at its original position so the positional boundary is reconstructed. Seed the fork's effective context through the common projector, not a new independent algorithm, and reset main-request usage eligibility because fresh prompts may differ. Copying retained checkpoint content never duplicates raw tool records or billing events. Replay emits the checkpoint once in physical order and never expands retained contents. Readers list, discover, replay, and load the format-4 stream including checkpoint records; a pre-checkpoint Cake binary is not a
 supported reader for a checkpoint-bearing file.
 
-Update `docs/integrations.md` with the `compaction` record kind, provenance fields, record and stream semantics, accounting attribution, recovery-fork behavior, and exit codes; `docs/configuration.md` with settings/precedence, backend restrictions, and opt-in examples; `ARCHITECTURE.md` with projection ownership and the prefix exception; and `docs/security.md` with generated-memory trust and unchanged grants. Update command help and README with manual operation, raw-history recovery, no-fit remedies, host-memory limits, observed-skill scope, and qualification limits. Keep authoritative docs describing shipped behavior until their implementing stage is ready. Add narrow notes to ADRs 004/021/025/026/030 referring to ADR 042's extension rather than rewriting their history.
+Update `docs/integrations.md` with the `compaction` record kind, provenance fields, record and stream semantics, accounting attribution, recovery-fork behavior, and exit codes; `docs/configuration.md` with settings/precedence, backend restrictions, and opt-in examples; `ARCHITECTURE.md` with projection ownership and the prefix exception; and `docs/security.md` with generated-memory trust and unchanged grants. Update command help and README with manual operation, raw-history recovery, no-fit remedies, host-memory limits, observed-skill scope, and qualification limits. Keep authoritative docs describing shipped behavior until their implementing stage is ready. Add narrow notes to ADRs 004/021/025/026/030 referring to ADR 047's extension rather than rewriting their history.
 
 At M5's end, offline CLI integration tests prove a session without a checkpoint still lists, replays, resumes, and appends unchanged, that manual compaction appends a checkpoint in place on any format-4 session and reports a no-op when there is no new content, that manual compaction makes no tools/continuation calls, that JSON stdout parses, and that restored and forked requests use the newest checkpoint under fresh prompts. A held writer lock prevents all model calls. Run the integration commands below and `just session-metrics-check`.
 
@@ -249,12 +250,12 @@ Expect successful offline compaction fixtures and every routed gate passing. Rec
 For this authoring branch alone, validate the two documents with:
 
 ```
-panache format --check docs/adr/042-compact-model-context-with-self-contained-append-only-checkpoints.md docs/exec-plans/active/context-compaction.md
-panache lint docs/adr/042-compact-model-context-with-self-contained-append-only-checkpoints.md docs/exec-plans/active/context-compaction.md
+panache format --check docs/adr/047-compact-model-context-with-self-contained-append-only-checkpoints.md docs/exec-plans/active/context-compaction.md
+panache lint docs/adr/047-compact-model-context-with-self-contained-append-only-checkpoints.md docs/exec-plans/active/context-compaction.md
 git diff --check
 ```
 
-Stage the two authored paths before `just docs-check` so the tracked-corpus gate includes them. Rust gates are unnecessary for these documentation-only drafts. The plan remains active and ADR remains proposed after these checks.
+Stage the two authored paths before `just docs-check` so the tracked-corpus gate includes them. Rust gates are unnecessary for these documentation-only drafts. The plan remains active and ADR 047 is accepted after these checks.
 
 ## Validation and Acceptance
 
@@ -280,7 +281,7 @@ Before append, cancellation or model failure leaves the previous checkpoint auth
 
 Physical-tail repair and semantic recovery are distinct. A complete valid but inaccurate checkpoint remains authoritative on ordinary resume and fork, even with automatic policy disabled. Use `cake sessions recover <UUID> --json` to create a raw-history fork, then `cake sessions compact <NEW_UUID> --json` to rebuild its summary if the bounded operation can fit. The recovery command locks and reads the source without repairing or rewriting it; abandoned-call repairs apply only to the new file and execute no tools. A failed fork seed follows the existing cleanup policy for the incomplete destination. Neither operation reverses tool side effects.
 
-If implementation changes a durable decision, update proposed ADR 042 before acceptance or create a successor ADR after acceptance, then revise every affected section here. If a required check is blocked by the environment, record the exact reason and narrower evidence; do not bypass gates or claim completion.
+If implementation changes a durable decision, create a successor ADR and revise every affected section here. If a required check is blocked by the environment, record the exact reason and narrower evidence; do not bypass gates or claim completion.
 
 ## Artifacts and Notes
 

@@ -1,6 +1,6 @@
 ---
-status: proposed
-date: 2026-10-12
+status: accepted
+date: 2026-10-20
 decision-makers: Travis Ennis
 informed: ahm task 034, ahm task 034c, ahm task 034d
 ---
@@ -15,7 +15,7 @@ The October 9, 2026 source research compared pi `f1b2e77`, fold `e3a8aeb`, and f
 
 Cake has append-only version-4 JSONL, one typed `ConversationItem` representation, a shared locked writer, and two provider adapters. Its agent loop uses raw-history offsets to attribute current-invocation results. A checkpoint must therefore change request projection without shifting those offsets or replaying completed tools.
 
-This ADR is proposed. It records a reviewable design; it does not assert that compaction exists or authorize implementation before the decision is accepted.
+This ADR is accepted. It records the design decision and its review history; it does not assert that compaction exists.
 
 ## Decision Drivers
 
