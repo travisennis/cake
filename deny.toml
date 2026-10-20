@@ -22,6 +22,9 @@ version = 2
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
 ignore = [
-    # Add advisory IDs to ignore here
-    # Example: "RUSTSEC-0000-0000"
+    # unsafe-libyaml 0.2.11 is unmaintained and has no patched release. It is
+    # reached only through the deprecated serde_yaml, which Cake uses solely for
+    # local SKILL.md frontmatter (src/config/skills.rs). Retire serde_yaml in
+    # Task 123, then remove this ignore.
+    "RUSTSEC-2024-0449",
 ]
