@@ -178,8 +178,8 @@ impl Skill {
         yaml_text: &str,
         path: &Path,
     ) -> Result<(String, String), SkillDiagnostic> {
-        // Try parsing with serde_yaml first
-        let frontmatter: SkillFrontmatter = match serde_yaml::from_str(yaml_text) {
+        // Parse as YAML first
+        let frontmatter: SkillFrontmatter = match serde_saphyr::from_str(yaml_text) {
             Ok(fm) => fm,
             Err(_e) => {
                 // Try fallback: the YAML might have issues like unquoted colons in values
@@ -188,17 +188,27 @@ impl Skill {
             },
         };
 
-        let name = frontmatter.name.ok_or_else(|| SkillDiagnostic {
-            level: DiagnosticLevel::Error,
-            message: "SKILL.md missing required field 'name' in frontmatter".to_string(),
-            file: path.to_path_buf(),
-        })?;
+        // serde_saphyr keeps the trailing newline of a block scalar (`|` or `>`)
+        // even when the frontmatter has no final line break. Trim trailing
+        // whitespace so catalog and prompt rendering stay byte-identical to the
+        // previous parser's output.
+        let name = frontmatter
+            .name
+            .map(|name| name.trim_end().to_string())
+            .ok_or_else(|| SkillDiagnostic {
+                level: DiagnosticLevel::Error,
+                message: "SKILL.md missing required field 'name' in frontmatter".to_string(),
+                file: path.to_path_buf(),
+            })?;
 
-        let description = frontmatter.description.ok_or_else(|| SkillDiagnostic {
-            level: DiagnosticLevel::Error,
-            message: "SKILL.md missing required field 'description' in frontmatter".to_string(),
-            file: path.to_path_buf(),
-        })?;
+        let description = frontmatter
+            .description
+            .map(|description| description.trim_end().to_string())
+            .ok_or_else(|| SkillDiagnostic {
+                level: DiagnosticLevel::Error,
+                message: "SKILL.md missing required field 'description' in frontmatter".to_string(),
+                file: path.to_path_buf(),
+            })?;
 
         Ok((name, description))
     }
