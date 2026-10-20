@@ -20,14 +20,14 @@ This is a plan for future implementation, not implementation delivered by task 0
 - [x] (2026-10-12) Folded three review decisions into the proposal: a content-class estimator, no session format bump (the checkpoint is a format-4 record kind), and a positional resume boundary.
 - [x] (2026-10-13) Revised the proposal after design review: protect unseen images and observed skill instructions, terminally disable failed writers, budget serialized bytes before generation, require useful reduction, specify manual pins and raw-history recovery, and require quality qualification.
 - [x] (2026-10-20) Accepted ADR 047 as written.
-- [ ] Prepare implementation children and dependency order under task 034.
-- [ ] M1: implement validated checkpoint types, format-4 record persistence, and the positional projection.
-- [ ] M2: implement bounded selection, estimation, summary calls, and usage attribution behind the compaction interface.
-- [ ] M3: integrate settings and pre-request compaction, plus task 034a's prefix invariant.
-- [ ] M4: integrate task 034b's pressure classification and one compact-and-retry guard.
-- [ ] M5: deliver manual compaction, raw-history recovery, resume/fork/replay behavior, and user documentation.
-- [ ] M6: verify deterministic end-to-end continuation and integration checks.
-- [ ] M7: qualify real-model summary and continuation quality with separately authorized spend; complete parent acceptance and archive the plan.
+- [x] (2026-10-20) Allocated implementation children 034e-034j with native dependencies; 034d depends on 034j.
+- [ ] M1 (034e): implement validated checkpoint types, format-4 record persistence, and the positional projection.
+- [ ] M2 (034f): implement bounded selection, estimation, summary calls, and usage attribution behind the compaction interface.
+- [ ] M3 (034g): integrate settings and pre-request compaction, plus task 034a's prefix invariant.
+- [ ] M4 (034h): integrate task 034b's pressure classification and one compact-and-retry guard.
+- [ ] M5 (034i): deliver manual compaction, raw-history recovery, resume/fork/replay behavior, and user documentation.
+- [ ] M6 (034j): verify deterministic end-to-end continuation and integration checks.
+- [ ] M7 (034d): qualify real-model summary and continuation quality with separately authorized spend; complete parent acceptance and archive the plan.
 
 ## Surprises & Discoveries
 
@@ -64,8 +64,10 @@ On 2026-10-13, Trav chose enforceable summary output caps with initial Codex exc
 Planning outcome: the ADR and plan specify the accepted persistence, trigger, summary, recovery, accounting, and compatibility behavior. Since the initial draft, three review decisions replaced the v5 session-format bump with an in-place format-4 checkpoint record, specified a content-class estimator, and fixed the resume boundary to the checkpoint record's position; the milestones, acceptance, and recovery sections reflect them. No Rust, settings, fixture, CLI, or provider changes have been made. Implementation milestones remain unstarted; ADR 047 was accepted as written on 2026-10-20. Authoring validation passed `panache format --check` and `panache lint` for both documents, `just docs-check` with both paths staged, and `git diff --cached --check`. Markdown checks were rerun outside the filesystem sandbox after cache permission errors. Rust gates were skipped because this branch changes documentation only. Preflight checked workflow conformance, source ownership/technical
 consistency, and scope; it clarified stream commit ordering, partial-usage estimation, and attempt-settlement ownership. Leave this plan active until the feature itself is delivered.
 
-The October 13 revision addresses the design-review findings and records Trav's four decisions in both documents. Task 034c was reopened on the existing documentation branch for this follow-up. Task 034 now records the in-place v4 policy and strengthened acceptance; 034b's older below-cap classification rule is reconciled with the requirement for independent pressure evidence. Open child 034d owns qualification and initially depends on planning child 034c; M0 must add its native M6 implementation dependencies before execution work is accepted. No implementation or real-model evaluation has run. Revision validation passed targeted `panache --no-cache format --check`, `panache --no-cache lint`, `PANACHE_NO_CACHE=true just docs-check`, `git diff --check`, and inspection of all nine relative document links. The first corpus-check invocation used an invalid boolean environment value; correcting it to `true` passed. The combined documentation preflight checked source ownership, failure-path
-integration, policy consistency, task synchronization, and scope. Rust gates and live-model evaluation were skipped because this is planning-only work.
+The October 13 revision addresses the design-review findings and records Trav's four decisions in both documents. Task 034c was reopened on the existing documentation branch for this follow-up. Task 034 now records the in-place v4 policy and strengthened acceptance; 034b's older below-cap classification rule is reconciled with the requirement for independent pressure evidence. Qualification child 034d depends on planning child 034c and on 034j (M6) for execution. No implementation or real-model evaluation has run. Revision validation passed targeted `panache --no-cache format --check`, `panache --no-cache lint`, `PANACHE_NO_CACHE=true just docs-check`, `git diff --check`, and inspection of all nine relative document links. The first corpus-check invocation used an invalid boolean environment value; correcting it to `true` passed. The combined documentation preflight checked source ownership, failure-path integration, policy consistency, task synchronization, and scope. Rust gates and
+live-model evaluation were skipped because this is planning-only work.
+
+On 2026-10-20, ADR 047 was accepted as written and M0 allocated 034e through 034j; 034d is blocked on 034j. This allocation authorizes no implementation or provider spend by itself.
 
 ## Context and Orientation
 
@@ -87,9 +89,9 @@ A pin is an exact input or complete exchange that selection may not retire. Its 
 
 ### M0: prepare scoped tasks from the accepted design
 
-ADR 047's record and fork policy, opt-in settings, fixed operation bounds, manual and recovery commands, and qualification gate are accepted. Allocate implementation children with `ahm task create ... --parent 034`, explicit Cake labels, priority, effort, Acceptance Notes, and this plan's path. Assign M1 through M7 to coherent stages; split a milestone if its diff exceeds the repository's 800-line limit, or 500-line limit for complex logic. Reuse any qualification planning child already recorded on task 034. Record allocated IDs in this plan and task 034. M2 depends on integrated M1; M3 depends on M2 and 034a; M4 depends on M3 and 034b; M5 depends on the common compaction and projection stages; M6 depends on all feature stages; M7's execution depends on integrated M6, though its corpus can be prepared earlier. Implement 034a/034b first when useful.
+ADR 047's record and fork policy, opt-in settings, fixed operation bounds, manual and recovery commands, and qualification gate are accepted. On 2026-10-20, implementation children were allocated under task 034 with native dependencies: 034e M1 (blocks 034f and 034i); 034f M2 (depends 034e; blocks 034g, 034h, and 034i); 034g M3 (depends 034a and 034f; blocks 034h); 034h M4 (depends 034b and 034g); 034i M5 (depends 034e and 034f); 034j M6 (depends 034e through 034i; blocks 034d); and 034d M7 qualification (depends 034c and 034j). Work order: 034a and 034b first, then 034e and 034f, then 034g and 034i, then 034h, then 034j, then 034d. The allocated IDs are recorded in task 034; no milestone child is split further.
 
-Use native `ahm task dep add` relationships, and check each prerequisite's merged commit before starting dependent work from master: Completed in the home store does not mean integrated. Task 004's broader output-management scope remains separate; link the delivered subset without changing its status. Proof of M0 is an accepted ADR, inspectable children and dependencies, and a parent record with the work order. The authoring task does not start these milestones.
+Use native `ahm task dep add` relationships, and check each prerequisite's merged commit before starting dependent work from master: Completed in the home store does not mean integrated. Task 004's broader output-management scope remains separate; link the delivered subset without changing its status. Proof of M0 is met: ADR 047 is accepted, children 034e-034j and 034d are inspectable with native dependencies, and task 034 records the work order. The authoring task does not start these milestones.
 
 ### M1: establish checkpoint validation, projection, and persistence
 
