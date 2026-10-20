@@ -67,8 +67,15 @@ def summarize(
 
     tasks, tool_calls, edit_calls = [], 0, []
     for session in data.sessions:
-        tasks.extend(session.tasks_in_window(start, end=end))
+        session_tasks = session.tasks_in_window(start, end=end)
         calls = session.tool_calls_in_window(start, end=end)
+        if data.invocation_filter:
+            task_ids, call_ids = _invocation_identifiers(data, session.id)
+            session_tasks = [task for task in session_tasks
+                             if task.get("task_id") in task_ids]
+            calls = [call for call in calls if call.call_id
+                     and cakelib.call_id_digest(call.call_id) in call_ids]
+        tasks.extend(session_tasks)
         tool_calls += len(calls)
         edit_calls.extend(call for call in calls if call.name == "Edit")
 
@@ -145,6 +152,23 @@ def summarize(
                             for m in METRICS},
         "metrics": {metric.key: values[metric.key] for metric in METRICS},
     }
+
+
+def _invocation_identifiers(data: cakelib.Dataset, session_id: str) -> tuple[set, set]:
+    """Exact transcript joins; missing telemetry identity never implies ownership.
+
+    In-flight API records carry task_id; tool telemetry carries the SHA-256
+    digest of the transcript call_id. Collect identities before windowing so
+    an attempt outside the requested window can still identify its task.
+    """
+    invocations = [inv for inv in data.invocations
+                   if inv.session_id == session_id
+                   and inv.invocation_id == data.invocation_filter]
+    task_ids = {rec["task_id"] for inv in invocations for rec in inv.other
+                if rec.get("type") == "api_attempt_in_flight" and rec.get("task_id")}
+    call_ids = {rec["call_id"] for inv in invocations for rec in inv.tool_calls
+                if rec.get("call_id")}
+    return task_ids, call_ids
 
 
 def compare(current: dict, baseline: dict) -> list[dict]:

@@ -33,6 +33,8 @@ just session-metrics --vs 7
 
 `--json` loads the sources once with no cutoff and applies an explicit half-open UTC window `[start, end)`: `end` is the measurement time and `start` is `end - --days` days, or `null` (all time) when `--days 0` is used. `--baseline` compares the current `--days` window (default 30) with a saved document and prints value, baseline, delta, and direction per key. `--vs DAYS` compares the last `DAYS` days with the immediately preceding `DAYS` days from the same uncapped load; `--days` does not select either comparison window. `--json` cannot be combined with `--baseline` or `--vs`.
 
+With `--invocation`, JSON and comparison summaries join transcript tasks to the selected invocation's `api_attempt_in_flight.task_id` and tool calls to its `tool_call.call_id` SHA-256 digests, within the same session. Records without matching telemetry identity (including older sidecars without task IDs or call digests) are excluded from transcript counts and rates; an empty denominator is `null`. Timestamps and file modification times are not used to guess invocation ownership. Without `--invocation`, transcript metrics retain their session-wide scope.
+
 Comparisons are only meaningful when the filters match: pass the same `--model`, `--project`, `--session`, and `--invocation` flags to the artifact and the later run. Live-window comparison is comparative evidence, not a controlled experiment, because model, project, and task mix move with the calendar. Prefer a saved baseline for before/after change review.
 
 The document shape (schema version 1):

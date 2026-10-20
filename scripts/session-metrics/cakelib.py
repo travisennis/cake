@@ -369,6 +369,7 @@ class Dataset:
     session_parse_errors: int = 0
     telemetry_parse_errors: int = 0
     selected_invocation: bool = False
+    invocation_filter: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -429,6 +430,7 @@ def load(ns: argparse.Namespace) -> Dataset:
         session_parse_errors=session_errors,
         telemetry_parse_errors=telemetry_errors,
         selected_invocation=bool(ns.session or ns.invocation),
+        invocation_filter=ns.invocation,
     )
 
 

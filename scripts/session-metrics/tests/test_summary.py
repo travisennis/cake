@@ -232,6 +232,73 @@ class CliTest(unittest.TestCase):
         self.assertTrue(all(key in text for key in summary.METRIC_KEYS))
         self.assertIn("lacks 1 documented key(s): judge.block_rate", text)
 
+    def test_invocation_json_scopes_transcript_metrics_through_loader(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            sessions, telemetry = root / "sessions", root / "telemetry"
+            sessions.mkdir()
+            telemetry.mkdir()
+            records = [
+                {"type": "session_meta", "model": "alpha"},
+                *task("good-task", T(days=-1), "success"),
+                *task("bad-task", T(days=-1), "error"),
+                *task("unattributed-task", T(days=-1), "error"),
+                *edit("good-call", T(days=-1), "ok"),
+                *edit("bad-call", T(days=-1), "Error: could not find the exact text to replace"),
+                *edit("unattributed-call", T(days=-1), "Error: unknown"),
+            ]
+            (sessions / "s1.jsonl").write_text("\n".join(map(json.dumps, records)))
+            events = []
+            for invocation, task_id, call_id in (
+                ("good", "good-task", "good-call"), ("bad", "bad-task", "bad-call"),
+            ):
+                common = {"session_id": "s1", "invocation_id": invocation,
+                          "timestamp": T(days=-1)}
+                events.extend([
+                    {**common, "type": "telemetry_init", "model": "alpha"},
+                    {**common, "type": "api_attempt_in_flight", "task_id": task_id},
+                    {**common, "type": "tool_call", "name": "Edit",
+                     "call_id": cakelib.call_id_digest(call_id)},
+                    {**common, "type": "session_summary"},
+                ])
+            path = telemetry / "s1.ndjson"
+            path.write_text("\n".join(map(json.dumps, events)))
+
+            def run(*filters):
+                output = io.StringIO()
+                with patch.object(sys, "argv", [
+                    "report.py", "--json", "--days", "0", "--sessions-dir", str(sessions),
+                    "--telemetry-dir", str(telemetry), *filters,
+                ]), patch.object(report, "_now", return_value=NOW), \
+                        contextlib.redirect_stdout(output):
+                    report.main()
+                return json.loads(output.getvalue())
+
+            for invocation, success, failure in (("good", 1, 0), ("bad", 0, 1)):
+                with self.subTest(invocation=invocation):
+                    doc = run("--invocation", invocation)
+                    self.assertEqual(doc["counts"]["invocations"], 1)
+                    self.assertEqual(doc["counts"]["tasks"], 1)
+                    self.assertEqual(doc["counts"]["tool_calls"], 1)
+                    self.assertEqual(doc["counts"]["edit_calls"], 1)
+                    self.assertEqual(doc["metrics"]["outcomes.task_success_rate"], success)
+                    self.assertEqual(doc["metrics"]["tools.edit.failure_rate"], failure)
+                    self.assertEqual(doc["metrics"]["tools.edit.no_match_rate"], failure)
+            self.assertEqual(run()["counts"]["tasks"], 3)
+            self.assertEqual(run("--session", "s1")["counts"]["tool_calls"], 3)
+            self.assertEqual(run("--invocation", "missing")["counts"]["tasks"], 0)
+
+            # Historical/incomplete telemetry must not claim unrelated records.
+            events = [event for event in events if event["type"] != "api_attempt_in_flight"]
+            for event in events:
+                event.pop("call_id", None)
+            path.write_text("\n".join(map(json.dumps, events)))
+            doc = run("--invocation", "good")
+            self.assertEqual(doc["counts"]["tasks"], 0)
+            self.assertEqual(doc["counts"]["tool_calls"], 0)
+            self.assertIsNone(doc["metrics"]["outcomes.task_success_rate"])
+            self.assertIsNone(doc["metrics"]["tools.edit.failure_rate"])
+
     def test_vs_uses_one_uncapped_load(self):
         output = io.StringIO()
         with patch.object(cakelib, "load", return_value=dataset()) as load, \
