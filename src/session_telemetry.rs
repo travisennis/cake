@@ -125,7 +125,7 @@ pub struct ResponsesFailedMetadata {
     )]
     pub error_param: Option<String>,
     /// Provider error text. The in-memory value keeps its full length for the
-    /// user-facing error on [`crate::clients::ResponsesStreamFailed`]; the
+    /// user-facing error on `crate::clients::responses::ResponsesStreamFailed`; the
     /// serialized copy is bounded.
     #[serde(
         skip_serializing_if = "Option::is_none",
