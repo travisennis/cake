@@ -1135,11 +1135,43 @@ async fn sigterm_interrupts_session_cleanly() {
     assert_eq!(complete["is_error"], true);
 
     let telemetry = telemetry_records(&env);
-    let summary = telemetry
+    let in_flight_index = telemetry
         .iter()
-        .find(|record| record["type"] == "session_summary")
+        .position(|record| record["type"] == "api_attempt_in_flight")
+        .expect("telemetry should flush the request-start attempt record");
+    let last_in_flight = telemetry
+        .iter()
+        .rfind(|record| record["type"] == "api_attempt_in_flight")
+        .expect("telemetry should flush the request-start attempt record");
+    assert_eq!(
+        last_in_flight["phase"], "awaiting_headers",
+        "the delayed response never sent headers"
+    );
+    assert!(last_in_flight["started_at"].is_string());
+
+    let attempt_index = telemetry
+        .iter()
+        .position(|record| record["type"] == "api_attempt")
+        .expect("the interrupted provider attempt should close in telemetry");
+    let attempt = &telemetry[attempt_index];
+    assert_eq!(attempt["terminal_class"], "cancelled");
+    assert_eq!(attempt["phase"], "awaiting_headers");
+
+    let summary_index = telemetry
+        .iter()
+        .position(|record| record["type"] == "session_summary")
         .expect("telemetry should contain a session_summary");
+    let summary = &telemetry[summary_index];
     assert_eq!(summary["success"], false);
+
+    assert!(
+        in_flight_index < attempt_index && attempt_index < summary_index,
+        "expected api_attempt_in_flight -> api_attempt -> session_summary, got: {:?}",
+        telemetry
+            .iter()
+            .map(|record| record["type"].as_str().unwrap_or_default())
+            .collect::<Vec<_>>()
+    );
 }
 
 /// A finalized provider attempt must reach the telemetry sidecar before retry
