@@ -79,6 +79,17 @@ def resolve_telemetry_dir(ns: argparse.Namespace) -> Path:
     return DEFAULT_TELEMETRY_DIR
 
 
+def ts_in_window(ts: datetime | None, start: datetime | None, end: datetime | None) -> bool:
+    """Whether an instant falls in the half-open UTC window [start, end).
+
+    A ``None`` bound is unbounded; an unknown instant never matches, so a record
+    that cannot be placed in time is not silently attributed to the window.
+    """
+    if ts is None:
+        return False
+    return (start is None or ts >= start) and (end is None or ts < end)
+
+
 # ---------------------------------------------------------------------------
 # Data model
 # ---------------------------------------------------------------------------
@@ -231,12 +242,22 @@ class Session:
             }
         return self._task_ts_cache
 
-    def tasks_in_window(self, cutoff: datetime | None) -> list[dict]:
+    def active_between(self, start: datetime | None, end: datetime | None) -> bool:
+        """Whether any record's activity time falls in the half-open window."""
+        if not self.records:
+            return ts_in_window(self.mtime, start, end)
+        return any(ts_in_window(self._rec_ts(rec), start, end) for rec in self.records)
+
+    def tasks_in_window(
+        self, cutoff: datetime | None, end: datetime | None = None
+    ) -> list[dict]:
         """Task outcome records (task_complete/result) attributed to the window.
 
-        task_complete records carry no timestamp, so attribution uses the
-        matching task_start timestamp (by task_id); legacy result records use
-        their own timestamp. Falls back to the file mtime when neither exists.
+        ``cutoff`` is the inclusive start and ``end`` the exclusive end; either
+        may be ``None``. task_complete records carry no timestamp, so attribution
+        uses the matching task_start timestamp (by task_id); legacy result
+        records use their own timestamp. Falls back to the file mtime when
+        neither exists.
         """
         start_times = self._task_start_times()
         out = []
@@ -246,27 +267,31 @@ class Session:
             else:
                 ts = parse_ts(rec.get("timestamp"))
             ts = ts if ts is not None else self.mtime
-            if cutoff is None or ts >= cutoff:
+            if ts_in_window(ts, cutoff, end):
                 out.append(rec)
         return out
 
-    def records_in_window(self, cutoff: datetime | None, *types: str) -> list[dict]:
+    def records_in_window(
+        self, cutoff: datetime | None, *types: str, end: datetime | None = None
+    ) -> list[dict]:
         """Records of the given types whose timestamp is in the window."""
         out = []
         for rec in self.by_type(*types):
             ts = parse_ts(rec.get("timestamp"))
             ts = ts if ts is not None else self.mtime
-            if cutoff is None or ts >= cutoff:
+            if ts_in_window(ts, cutoff, end):
                 out.append(rec)
         return out
 
-    def tool_calls_in_window(self, cutoff: datetime | None) -> list[ToolCall]:
+    def tool_calls_in_window(
+        self, cutoff: datetime | None, end: datetime | None = None
+    ) -> list[ToolCall]:
         """Paired tool calls whose function_call timestamp is in the window."""
         out = []
         for call in self.tool_calls:
             ts = parse_ts(call.timestamp)
             ts = ts if ts is not None else self.mtime
-            if cutoff is None or ts >= cutoff:
+            if ts_in_window(ts, cutoff, end):
                 out.append(call)
         return out
 
@@ -328,6 +353,11 @@ class Invocation:
             recs.append(self.summary)
         return recs
 
+    def active_between(self, start: datetime | None, end: datetime | None) -> bool:
+        """Whether any record's timestamp falls in the half-open window."""
+        return any(ts_in_window(parse_ts(rec.get("timestamp")) or self.mtime, start, end)
+                   for rec in self._records())
+
 
 @dataclass
 class Dataset:
@@ -339,6 +369,7 @@ class Dataset:
     session_parse_errors: int = 0
     telemetry_parse_errors: int = 0
     selected_invocation: bool = False
+    invocation_filter: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -399,6 +430,7 @@ def load(ns: argparse.Namespace) -> Dataset:
         session_parse_errors=session_errors,
         telemetry_parse_errors=telemetry_errors,
         selected_invocation=bool(ns.session or ns.invocation),
+        invocation_filter=ns.invocation,
     )
 
 
@@ -549,6 +581,30 @@ def load_telemetry(
 # Pairing and classification
 # ---------------------------------------------------------------------------
 
+# The bounded judge verdict vocabulary. Only a `judge_verdict` compensation
+# event carries one; `fail_closed` and `bypass` are outcomes without a verdict.
+# Shared by the report sections and the machine-readable summary.
+JUDGE_VERDICTS = ("allow", "warn", "block")
+
+
+def judge_event_outcome(event: dict) -> str:
+    """Bucket one judge compensation event into the outcome vocabulary.
+
+    Only a `judge_verdict` carries a bounded verdict; an unrecognized kind or
+    verdict value is `other`, so a vocabulary change stays visible.
+    """
+    kind = str(event.get("kind") or "")
+    if kind == "judge_fail_closed":
+        return "fail_closed"
+    if kind == "judge_bypass":
+        return "bypass"
+    if kind == "judge_verdict":
+        decision = (event.get("detail") or "").partition(":")[0]
+        if decision in JUDGE_VERDICTS:
+            return decision
+    return "other"
+
+
 # Transcript failure shapes, shared by the `ok` gate and the taxonomy so the
 # two cannot drift apart. `agent_loop.rs` prefixes every tool error with
 # `Error: `, but stores PreToolUse hook denials verbatim as
@@ -582,6 +638,10 @@ READ_ONLY_MESSAGES = (
     "is read-only (added via --add-dir)",
     "is in a read-only directory (added via --add-dir)",
 )
+
+# The Edit failure category the summary's no-match rate counts. The wording is
+# defined here, next to the classifier that emits it, so the two cannot drift.
+NO_MATCH_CATEGORY = "no-match (old_text not found)"
 
 
 def sandbox_notice(output: str) -> bool:
@@ -678,7 +738,7 @@ def classify_tool_error(name: str, output: str) -> str:
 
     if name == "Edit":
         if "could not find the exact text to replace" in output:
-            return "no-match (old_text not found)"
+            return NO_MATCH_CATEGORY
         if "locations but must match exactly 1" in output:
             return "ambiguous (multiple matches)"
         if "overlap" in output:
