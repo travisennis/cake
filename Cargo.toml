@@ -82,6 +82,9 @@ nursery = { level = "warn", priority = -1 }
 # Allow some noisy ones
 missing_docs_in_private_items = "allow"
 missing_errors_doc = "deny"
+# Empty-collection assertions read more clearly as `assert!(value.is_empty())`;
+# the suggested typed-empty comparison adds noise without adding signal.
+assert_is_empty = "allow"
 
 # Coding-agent guardrails: require #[expect(..., reason = "...")] instead of #[allow]
 allow_attributes = "deny"
