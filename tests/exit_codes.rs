@@ -149,11 +149,21 @@ fn read_records(reader: &mut impl BufRead) -> Vec<serde_json::Value> {
 
 /// The final `task_complete` record's `subtype` and `is_error` fields. The
 /// record is the run's outcome channel, so it must be the last record written.
-fn task_complete_outcome(records: &[serde_json::Value]) -> (String, bool) {
-    let record = records.last().expect("stream-json run must emit records");
+///
+/// `status` and `stderr` feed the panic messages: a missing `task_complete`
+/// usually means the process died, and the exit status names the signal.
+fn task_complete_outcome(
+    records: &[serde_json::Value],
+    status: std::process::ExitStatus,
+    stderr: &[u8],
+) -> (String, bool) {
+    let stderr = String::from_utf8_lossy(stderr);
+    let Some(record) = records.last() else {
+        panic!("stream-json run must emit records; exit status: {status:?}; stderr: {stderr}");
+    };
     assert_eq!(
         record["type"], "task_complete",
-        "the final record must be task_complete: {record}"
+        "the final record must be task_complete; records: {records:?}; exit status: {status:?}; stderr: {stderr}"
     );
     (
         record["subtype"].as_str().unwrap_or_default().to_string(),
@@ -522,7 +532,7 @@ fn test_stream_json_failure_exits_zero_without_fail_on_error() {
     let output = child.wait_with_output().expect("failed to wait for cake");
 
     let records = read_records(&mut output.stdout.as_slice());
-    let (subtype, is_error) = task_complete_outcome(&records);
+    let (subtype, is_error) = task_complete_outcome(&records, output.status, &output.stderr);
     assert_eq!(subtype, "error_during_execution");
     assert!(is_error, "provider failure must be an error outcome");
     assert_eq!(
@@ -540,7 +550,7 @@ fn test_fail_on_error_stream_json_network_failure_exits_two() {
 
     // The stream is unchanged: the failure is still the final task_complete.
     let records = read_records(&mut output.stdout.as_slice());
-    let (subtype, is_error) = task_complete_outcome(&records);
+    let (subtype, is_error) = task_complete_outcome(&records, output.status, &output.stderr);
     assert_eq!(subtype, "error_during_execution");
     assert!(is_error, "provider failure must be an error outcome");
     assert_eq!(
@@ -573,7 +583,7 @@ fn test_fail_on_error_stream_json_agent_class_failure_exits_one() {
 
     let output = child.wait_with_output().expect("failed to wait for cake");
     let records = read_records(&mut output.stdout.as_slice());
-    let (subtype, is_error) = task_complete_outcome(&records);
+    let (subtype, is_error) = task_complete_outcome(&records, output.status, &output.stderr);
     assert_eq!(subtype, "error_during_execution");
     assert!(is_error, "provider failure must be an error outcome");
     assert_eq!(
@@ -641,11 +651,12 @@ fn test_fail_on_error_stream_json_broken_pipe_exits_zero() {
 }
 
 /// A provider that accepts the request and never answers keeps the agent turn
-/// in flight, so the interrupt cannot race the run's setup. Accepting the
-/// connection proves the request left cake and the signal handler is installed.
+/// in flight. The signal handlers are installed before the turn starts, so
+/// accepting the connection is a safe point to interrupt.
 #[cfg(unix)]
 #[test]
 fn test_fail_on_error_stream_json_interrupt_exits_130() {
+    use std::io::Read as _;
     use std::net::TcpListener;
 
     let env = cake_env();
@@ -671,8 +682,15 @@ fn test_fail_on_error_stream_json_interrupt_exits_130() {
     }
 
     let status = child.wait().expect("failed to wait for cake");
+    let mut stderr = String::new();
+    child
+        .stderr
+        .take()
+        .expect("stderr should be piped")
+        .read_to_string(&mut stderr)
+        .expect("cake stderr should be readable");
     let records = read_records(&mut reader);
-    let (subtype, is_error) = task_complete_outcome(&records);
+    let (subtype, is_error) = task_complete_outcome(&records, status, stderr.as_bytes());
     assert_eq!(subtype, "interrupted");
     assert!(is_error, "an interrupted task is an error outcome");
     assert_eq!(

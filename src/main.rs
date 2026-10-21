@@ -42,6 +42,8 @@ use crate::types::{CutOffError, LimitExceededError, SessionRecord, StreamRecord,
 use clap::{ArgGroup, Parser, ValueEnum};
 
 use serde::Serialize;
+#[cfg(unix)]
+use tokio::signal::unix::Signal;
 use tracing::info;
 
 /// Output format for the response
@@ -1332,6 +1334,13 @@ impl CmdRunner for CodingAssistant {
         // The agent turn is about to run; everything before this was setup.
         program_status::report(State::Working, None);
 
+        // Install the interrupt listeners before the turn starts. Tokio
+        // registers a signal's OS handler on the first poll of its listener,
+        // so creating them lazily in the `select!` would leave a window where
+        // an interrupt kills the process outright instead of closing the task
+        // with an interrupted TaskComplete record.
+        let mut interrupts = InterruptListeners::install();
+
         // Race interrupt signals (Ctrl-C, and SIGTERM on Unix) against the
         // agent turn so we can emit a clean TaskComplete record even when
         // interrupted.
@@ -1360,7 +1369,7 @@ impl CmdRunner for CodingAssistant {
                     return Err(e);
                 },
             },
-            () = Self::interrupt_signal() => {
+            () = interrupts.wait() => {
                 interrupted.store(true, Ordering::SeqCst);
                 // Dummy value — the flag check below short-circuits
                 // before `turn` is used when interrupted is true.
@@ -1414,36 +1423,6 @@ impl CodingAssistant {
         command.run(data_dir, options).await
     }
 
-    /// Wait for an interruption signal.
-    ///
-    /// Resolves on Ctrl-C (SIGINT) and, on Unix, also on SIGTERM, so
-    /// supervisors that cancel cake with SIGTERM (such as the cake-repl
-    /// runner) take the same graceful interruption path as Ctrl-C.
-    async fn interrupt_signal() {
-        #[cfg(unix)]
-        {
-            use tokio::signal::unix::{SignalKind, signal};
-            match signal(SignalKind::terminate()) {
-                Ok(mut sigterm) => {
-                    tokio::select! {
-                        biased;
-                        _ = tokio::signal::ctrl_c() => {}
-                        _ = sigterm.recv() => {}
-                    }
-                },
-                // SIGTERM handling is unavailable; Ctrl-C alone still
-                // enters the graceful interruption path.
-                Err(_) => {
-                    let _ = tokio::signal::ctrl_c().await.ok();
-                },
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = tokio::signal::ctrl_c().await.ok();
-        }
-    }
-
     /// Restore SIGTERM's default termination now that the agent turn is
     /// over and the graceful-interrupt listener is no longer needed.
     ///
@@ -1480,7 +1459,7 @@ impl CodingAssistant {
         // to detach: the listener stays alive as the hard escape hatch
         // while cleanup runs, and the runtime tears it down at exit.
         let _second_interrupt = tokio::spawn(async {
-            Self::interrupt_signal().await;
+            InterruptListeners::install().wait().await;
             std::process::exit(exit_code::code::INTERRUPTED.into());
         });
 
@@ -1533,6 +1512,76 @@ impl std::fmt::Display for Interrupted {
 }
 
 impl std::error::Error for Interrupted {}
+
+/// The interruption listeners for an agent turn.
+///
+/// Tokio registers a signal's OS handler on the first poll of the listener it
+/// returns, not when the future is created. Installing both listeners before
+/// the turn starts keeps an interrupt that lands during the turn's startup on
+/// the graceful path -- it closes the task with an interrupted `TaskComplete`
+/// record -- instead of taking the default disposition, which exits without
+/// one.
+struct InterruptListeners {
+    #[cfg(unix)]
+    sigint: Option<Signal>,
+    #[cfg(unix)]
+    sigterm: Option<Signal>,
+}
+
+impl InterruptListeners {
+    /// Install the OS handlers now, before the agent turn can start.
+    fn install() -> Self {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{SignalKind, signal};
+            // A failed registration leaves that signal's default disposition
+            // in place; `wait` falls back to the portable Ctrl-C listener.
+            Self {
+                sigint: signal(SignalKind::interrupt()).ok(),
+                sigterm: signal(SignalKind::terminate()).ok(),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            Self {}
+        }
+    }
+
+    /// Wait for an interruption signal.
+    ///
+    /// Resolves on Ctrl-C (SIGINT) and, on Unix, also on SIGTERM, so
+    /// supervisors that cancel cake with SIGTERM (such as the cake-repl
+    /// runner) take the same graceful interruption path as Ctrl-C.
+    async fn wait(&mut self) {
+        #[cfg(unix)]
+        {
+            match (&mut self.sigint, &mut self.sigterm) {
+                (Some(sigint), Some(sigterm)) => {
+                    tokio::select! {
+                        biased;
+                        _ = sigint.recv() => {}
+                        _ = sigterm.recv() => {}
+                    }
+                },
+                (Some(sigint), None) => {
+                    sigint.recv().await;
+                },
+                (None, Some(sigterm)) => {
+                    sigterm.recv().await;
+                },
+                // Both registrations failed; Ctrl-C alone still enters the
+                // graceful interruption path through the portable listener.
+                (None, None) => {
+                    let _ = tokio::signal::ctrl_c().await.ok();
+                },
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = tokio::signal::ctrl_c().await.ok();
+        }
+    }
+}
 
 /// RAII guard that ensures a git worktree is cleaned up on early-exit paths.
 ///
