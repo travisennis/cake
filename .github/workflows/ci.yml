@@ -104,7 +104,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.98.0
+          toolchain: 1.99.1
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --all-features
 
@@ -120,7 +120,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.98.0
+          toolchain: 1.99.1
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --all-features --quiet clients::tools::sandbox
       - name: Require real Landlock read-only enforcement
@@ -134,7 +134,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.98.0
+          toolchain: 1.99.1
           components: rustfmt
       - run: cargo fmt -- --check
 
@@ -146,7 +146,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.98.0
+          toolchain: 1.99.1
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --all-targets --all-features --message-format=short -- -D warnings
@@ -159,7 +159,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.98.0
+          toolchain: 1.99.1
       - uses: Swatinem/rust-cache@v2
       - name: Require real Seatbelt read-only enforcement
         run: cargo test --all-features --quiet test_sandbox_read_only
@@ -177,7 +177,7 @@ jobs:
         run: python3 scripts/lint-domain-glossary.py
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.98.0
+          toolchain: 1.99.1
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
         with:
@@ -194,7 +194,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.98.0
+          toolchain: 1.99.1
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
