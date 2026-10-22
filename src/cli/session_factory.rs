@@ -174,10 +174,7 @@ impl crate::CodingAssistant {
             // do not emit duplicates.
             .with_activated_skills(restored.activated_skills());
         let new_id = agent.session_id();
-        let latest_checkpoint = restored
-            .records
-            .iter()
-            .rposition(|record| matches!(record, SessionRecord::Compaction(_)));
+        let latest_checkpoint = restored.latest_checkpoint_index();
         let seed_records: Vec<_> = restored
             .records
             .iter()

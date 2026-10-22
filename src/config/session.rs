@@ -287,13 +287,15 @@ impl Session {
     /// of conversation items, derived by scanning records in order, so it stays
     /// stable across resume and fork without storing an index.
     pub fn context_seed(&self) -> ContextSeed {
+        let latest = self.latest_checkpoint_index();
         let mut seed = ContextSeed::default();
-        for record in &self.records {
+        for (index, record) in self.records.iter().enumerate() {
             match record {
-                SessionRecord::Compaction(checkpoint) => {
+                SessionRecord::Compaction(checkpoint) if latest == Some(index) => {
                     seed.checkpoint = Some(checkpoint.clone());
                     seed.boundary = Some(seed.messages.len());
                 },
+                SessionRecord::Compaction(_) => {},
                 record => {
                     if let Some(item) = record.to_conversation_item() {
                         seed.messages.push(item);
@@ -302,6 +304,17 @@ impl Session {
             }
         }
         seed
+    }
+
+    /// Returns the record index of the latest `compaction` checkpoint.
+    ///
+    /// Restore, fork seeding, and [`Self::context_seed`] all select the newest
+    /// checkpoint through this one rule, so they cannot disagree about which
+    /// summary is active.
+    pub fn latest_checkpoint_index(&self) -> Option<usize> {
+        self.records
+            .iter()
+            .rposition(|record| matches!(record, SessionRecord::Compaction(_)))
     }
 
     /// Returns the usage of the most recent provider attempt that reported it.
@@ -339,7 +352,7 @@ impl Session {
             .with_context(|| format!("Failed to open session file: {}", path.display()))?;
         let mut framer = SessionFramer::new(BufReader::new(file));
         let (meta, header) = read_session_header(&mut framer, path)?;
-        let records = read_session_records(&mut framer, path, header.timestamp, meta)?;
+        let records = read_session_records(&mut framer, path, header.timestamp, meta, header.id)?;
 
         Ok(Self {
             id: header.id,
@@ -580,8 +593,10 @@ fn read_session_records<R: std::io::BufRead>(
     path: &Path,
     session_timestamp: chrono::DateTime<chrono::Utc>,
     meta: SessionRecord,
+    session_id: uuid::Uuid,
 ) -> anyhow::Result<Vec<SessionRecord>> {
     let mut records = vec![meta];
+    let session_id = session_id.to_string();
 
     while let Some(line) = framer
         .next_record()
@@ -590,6 +605,16 @@ fn read_session_records<R: std::io::BufRead>(
         match serde_json::from_str::<SessionRecord>(&line.text) {
             Ok(mut record) => {
                 record.normalize_legacy_fields(session_timestamp);
+                if let SessionRecord::Compaction(checkpoint) = &record {
+                    ensure_checkpoint_matches_session(checkpoint, &session_id).with_context(
+                        || {
+                            format!(
+                                "Failed to validate compaction checkpoint in session file: {}",
+                                path.display()
+                            )
+                        },
+                    )?;
+                }
                 records.push(record);
             },
             Err(error) if line.partial_tail => {
@@ -613,6 +638,25 @@ fn read_session_records<R: std::io::BufRead>(
     }
 
     Ok(records)
+}
+
+/// Reject a checkpoint recorded for a different session.
+///
+/// Fork seeding must re-envelope the copied checkpoint for the new session.
+/// A checkpoint that still names the source session means that step was
+/// skipped, so loading fails loudly instead of projecting another session's
+/// summary.
+pub fn ensure_checkpoint_matches_session(
+    checkpoint: &CompactionData,
+    session_id: &str,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        checkpoint.session_id == session_id,
+        "Compaction checkpoint '{}' belongs to session {}, not {session_id}",
+        checkpoint.checkpoint_id,
+        checkpoint.session_id
+    );
+    Ok(())
 }
 
 fn lock_session_file(file: &File, path: &Path) -> anyhow::Result<()> {
@@ -1552,6 +1596,11 @@ mod tests {
         let seed = session.context_seed();
 
         assert_eq!(
+            session.latest_checkpoint_index(),
+            Some(5),
+            "the latest checkpoint record index is exposed for fork seeding"
+        );
+        assert_eq!(
             seed.messages.len(),
             3,
             "context_seed keeps full raw history"
@@ -1587,6 +1636,7 @@ mod tests {
         assert_eq!(seed.messages.len(), 1);
         assert!(seed.checkpoint.is_none());
         assert!(seed.boundary.is_none());
+        assert!(session.latest_checkpoint_index().is_none());
     }
 
     #[test]
@@ -1609,6 +1659,35 @@ mod tests {
         let error = format!("{:#}", Session::load(&path).unwrap_err());
         assert!(
             error.contains("Unsupported compaction checkpoint_version: 2 (expected 1)"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn session_load_rejects_a_checkpoint_from_another_session() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let session = make_test_session();
+        let mut checkpoint = test_support::checkpoint("checkpoint-1", "summary", Vec::new());
+        checkpoint.session_id = uuid::Uuid::new_v4().to_string();
+        let foreign_session = checkpoint.session_id.clone();
+        fs::write(
+            &path,
+            format!(
+                "{}\n{}\n",
+                serde_json::to_string(&meta_record(&session)).unwrap(),
+                serde_json::to_string(&SessionRecord::Compaction(checkpoint)).unwrap()
+            ),
+        )
+        .unwrap();
+
+        let error = format!("{:#}", Session::load(&path).unwrap_err());
+        assert!(
+            error.contains("Failed to validate compaction checkpoint")
+                && error.contains(&format!(
+                    "belongs to session {foreign_session}, not {}",
+                    session.id
+                )),
             "unexpected error: {error}"
         );
     }
