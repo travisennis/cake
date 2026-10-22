@@ -1004,7 +1004,7 @@ mod tests {
     // ---- context checkpoints ----
 
     use crate::types::compaction::test_support;
-    use crate::types::session::MessageData;
+    use crate::types::session::{FunctionCallData, FunctionCallOutputData, MessageData};
 
     fn message_record(role: crate::types::Role, content: &str) -> SessionRecord {
         SessionRecord::Message(MessageData {
@@ -1042,6 +1042,24 @@ mod tests {
             message_record(crate::types::Role::Assistant, "retired answer"),
             checkpoint_record(&session_id, "checkpoint-new", "newer summary"),
             message_record(crate::types::Role::User, "new request"),
+            // A completed exchange after the checkpoint keeps its
+            // execution-time replay declaration through the fork.
+            SessionRecord::FunctionCall(FunctionCallData {
+                id: "fc-later".to_string(),
+                call_id: "call-later".to_string(),
+                name: "Read".to_string(),
+                arguments: "{}".to_string(),
+                arguments_parse_error: None,
+                replay: Some(crate::types::ReplaySafety::Safe),
+                timestamp: None,
+            }),
+            SessionRecord::FunctionCallOutput(FunctionCallOutputData {
+                call_id: "call-later".to_string(),
+                output: "later result".to_string(),
+                replay: Some(crate::types::ReplaySafety::Safe),
+                timestamp: None,
+                images: Vec::new(),
+            }),
             // Billing, task, and activation audit records must not be copied.
             SessionRecord::TurnUsage(crate::types::TurnUsageData {
                 session_id: session_id.clone(),
@@ -1075,27 +1093,9 @@ mod tests {
         SessionRecord::Compaction(data)
     }
 
-    #[test]
-    fn forked_session_copies_only_the_latest_checkpoint_at_its_position() {
-        let source = source_with_two_checkpoints();
-
-        let run = crate::CodingAssistant::forked_client_and_session(
-            &source,
-            test_resolved_model_config(),
-            "test".to_string(),
-            PathBuf::from("/work"),
-            &[(crate::types::Role::System, "fresh system".to_string())],
-            HashMap::new(),
-            test_tool_context(),
-            Vec::new(),
-            None,
-            uuid::Uuid::new_v4(),
-        )
-        .expect("fork should succeed");
-
-        let Some(SessionPersistencePlan::Create { seed_records }) = run.persistence.as_ref() else {
-            panic!("a fork persists a new session");
-        };
+    /// Assert the fork seed carries only the latest checkpoint, at its
+    /// original position, without duplicating audit or replay records.
+    fn assert_fork_seed(seed_records: &[SessionRecord], new_session_id: &str) {
         let checkpoints: Vec<_> = seed_records
             .iter()
             .filter_map(|record| match record {
@@ -1106,8 +1106,7 @@ mod tests {
         assert_eq!(checkpoints.len(), 1, "only the latest checkpoint is copied");
         assert_eq!(checkpoints[0].checkpoint_id, "checkpoint-new");
         assert_eq!(
-            checkpoints[0].session_id,
-            run.agent.session_id().to_string(),
+            checkpoints[0].session_id, new_session_id,
             "the copied checkpoint names the new session"
         );
         let conversation_before = seed_records
@@ -1134,6 +1133,68 @@ mod tests {
             1,
             "activation records are copied once"
         );
+        let copied_io: Vec<_> = seed_records
+            .iter()
+            .filter(|record| {
+                matches!(
+                    record,
+                    SessionRecord::FunctionCall(data) if data.call_id == "call-later"
+                ) || matches!(
+                    record,
+                    SessionRecord::FunctionCallOutput(data) if data.call_id == "call-later"
+                )
+            })
+            .collect();
+        assert_eq!(
+            copied_io.len(),
+            2,
+            "a copied exchange appears once, not again through the retained tail"
+        );
+        assert!(
+            copied_io.iter().all(|record| matches!(
+                record,
+                SessionRecord::FunctionCall(FunctionCallData {
+                    replay: Some(_),
+                    ..
+                }) | SessionRecord::FunctionCallOutput(FunctionCallOutputData {
+                    replay: Some(_),
+                    ..
+                })
+            )),
+            "execution-time replay declarations survive the fork"
+        );
+    }
+
+    #[test]
+    fn forked_session_copies_only_the_latest_checkpoint_at_its_position() {
+        let source = source_with_two_checkpoints();
+
+        let run = crate::CodingAssistant::forked_client_and_session(
+            &source,
+            test_resolved_model_config(),
+            "test".to_string(),
+            PathBuf::from("/work"),
+            &[(crate::types::Role::System, "fresh system".to_string())],
+            HashMap::new(),
+            test_tool_context(),
+            Vec::new(),
+            None,
+            uuid::Uuid::new_v4(),
+        )
+        .expect("fork should succeed");
+
+        let Some(SessionPersistencePlan::Create { seed_records }) = run.persistence.as_ref() else {
+            panic!("a fork persists a new session");
+        };
+        assert_fork_seed(seed_records, &run.agent.session_id().to_string());
+        assert_eq!(
+            projected_contents(&run.agent.request_context())
+                .iter()
+                .filter(|content| content.as_str() == "call:call-later")
+                .count(),
+            1,
+            "the later exchange is projected once"
+        );
 
         assert_eq!(
             projected_contents(&run.agent.request_context()),
@@ -1146,6 +1207,8 @@ mod tests {
                 "call:call-1".to_string(),
                 "output:call-1".to_string(),
                 "new request".to_string(),
+                "call:call-later".to_string(),
+                "output:call-later".to_string(),
             ],
             "the fork projects the latest checkpoint, not retired raw history"
         );
