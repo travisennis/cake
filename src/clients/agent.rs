@@ -779,3 +779,6 @@ mod tests;
 
 #[cfg(test)]
 mod session_restore_tests;
+
+#[cfg(test)]
+mod tail_only_growth_tests;
