@@ -1847,6 +1847,76 @@ mod tests {
     }
 
     #[test]
+    fn flush_failure_with_an_oversized_record_leaves_no_malformed_line() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let session = make_test_session();
+        let file = Session::create_on_disk(&path, &meta_record(&session)).unwrap();
+        let writer = SessionWriter::new(file);
+        let before = fs::read(&path).unwrap();
+
+        // Larger than `BufWriter`'s capacity. `write_all` bypasses the buffer
+        // for a write this large, so the full record reaches the file before
+        // the injected flush failure; detaching the buffer at failure must not
+        // leave an interior fragment.
+        let large_output = "x".repeat(128 * 1024);
+        let mut checkpoint = test_support::checkpoint(
+            "checkpoint-1",
+            "summary",
+            test_support::exchange("call-1", &large_output),
+        );
+        checkpoint.session_id = session.id.to_string();
+
+        writer.fail_next_checkpoint(WriterFault::Flush);
+        let error = writer
+            .commit_checkpoint(&checkpoint)
+            .expect_err("the injected failure must fail the commit")
+            .to_string();
+        assert!(error.contains("injected Flush failure"), "{error}");
+        let after = fs::read(&path).unwrap();
+        assert!(
+            after.len() > before.len(),
+            "the oversized record reached the file before the failure"
+        );
+        assert!(
+            after.ends_with(b"\n"),
+            "the direct write included the record's newline"
+        );
+
+        drop(writer);
+        drop(Session::open_for_append(&path).expect("a locked reopen accepts the record boundary"));
+
+        assert_frameable_records(&path);
+        let loaded = Session::load(&path).expect("the session loads after the failure");
+        let checkpoints: Vec<_> = loaded
+            .records
+            .iter()
+            .filter_map(|record| match record {
+                SessionRecord::Compaction(data) => Some(data),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            checkpoints.len(),
+            1,
+            "a record that reached the file stays, and it is complete"
+        );
+        assert_eq!(checkpoints[0].checkpoint_id, "checkpoint-1");
+        let crate::types::compaction::RetainedConversationRecord::FunctionCallOutput(output) =
+            &checkpoints[0].retained[1].record
+        else {
+            panic!("the retained exchange keeps its output");
+        };
+        assert_eq!(output.output.len(), large_output.len());
+
+        let mut file = Session::open_for_append(&path).unwrap();
+        Session::append_record(&mut file, &task_start(&session, "task-1")).unwrap();
+        drop(file);
+        assert_frameable_records(&path);
+        Session::load(&path).expect("later records append after the complete checkpoint");
+    }
+
+    #[test]
     fn open_for_append_repairs_a_torn_tail_after_a_complete_checkpoint() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("session.jsonl");
