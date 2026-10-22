@@ -1137,15 +1137,7 @@ impl CodingAssistant {
         // session writer rejects the completion record too (its state is
         // terminal), and reporting that rejection instead would hide the
         // original cause, such as a checkpoint that could not be committed.
-        if let Err(emit_error) =
-            client.emit_task_complete_record(Self::task_outcome_for_error(error), duration_ms)
-        {
-            tracing::warn!(
-                target: "cake",
-                error = %emit_error,
-                "Failed to append task completion record"
-            );
-        }
+        Self::append_task_completion(client, Self::task_outcome_for_error(error), duration_ms);
         Ok(())
     }
 
@@ -1157,12 +1149,27 @@ impl CodingAssistant {
     ) -> anyhow::Result<()> {
         Self::run_stop_hook(hook_runner, &cutoff.detail).await;
         Self::run_session_end_hook(hook_runner, SessionEndReason::Error).await;
-        client.emit_task_complete_record(
+        // A failed writer must not replace the cut-off diagnostic with a second
+        // append error, for the same reason as `emit_failed_agent_turn`.
+        Self::append_task_completion(
+            client,
             TaskOutcome::CutOff {
                 detail: cutoff.detail.clone(),
             },
             duration_ms,
-        )
+        );
+        Ok(())
+    }
+
+    /// Append a completion record without masking the failure it describes.
+    fn append_task_completion(client: &mut Agent, outcome: TaskOutcome, duration_ms: u64) {
+        if let Err(emit_error) = client.emit_task_complete_record(outcome, duration_ms) {
+            tracing::warn!(
+                target: "cake",
+                error = %emit_error,
+                "Failed to append task completion record"
+            );
+        }
     }
 
     async fn run_stop_hook(hook_runner: Option<&Arc<HookRunner>>, response_text: &str) {

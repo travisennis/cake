@@ -1580,12 +1580,56 @@ async fn handle_agent_turn_error_occurred_hook_failure_does_not_mask_error() {
 // Failed session writer — checkpoint commit error, hooks, and cleanup
 // -------------------------------------------------------------------------
 
+/// A failed writer must not mask a cut-off turn with its own append error.
+///
+/// Both failure clean-ups route their completion append through the same
+/// log-and-continue path, so the caller keeps the cut-off diagnostic.
+#[tokio::test]
+async fn failed_writer_does_not_mask_a_cut_off_turn() {
+    use crate::config::SessionWriter;
+    use crate::types::compaction::test_support;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session.jsonl");
+    let session_id = uuid::Uuid::new_v4();
+    std::fs::write(
+        &path,
+        format!(
+            r#"{{"type":"session_meta","format_version":4,"session_id":"{session_id}","timestamp":"2026-01-01T00:00:00Z","working_directory":"/work","tools":[]}}"#
+        ) + "\n",
+    )
+    .unwrap();
+    let writer = SessionWriter::new(Session::open_for_append(&path).unwrap());
+    let mut checkpoint = test_support::checkpoint("checkpoint-1", "summary", Vec::new());
+    checkpoint.session_id = session_id.to_string();
+    writer.fail_next_checkpoint(crate::config::session::WriterFault::Flush);
+    writer
+        .commit_checkpoint(&checkpoint)
+        .expect_err("the injected failure must fail the commit");
+    let stable = std::fs::read(&path).unwrap();
+
+    let for_agent = writer.clone();
+    let mut agent =
+        test_agent_for_turn().with_persist_callback(move |record| for_agent.append_record(record));
+    let result: Result<String, anyhow::Error> =
+        Err(crate::types::CutOffError::new("response was truncated".to_string()).into());
+
+    CodingAssistant::handle_agent_turn_result(&mut agent, None, &result, 75)
+        .await
+        .expect("a failed completion append must not mask the cut-off diagnostic");
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        stable,
+        "the failed writer rejects the cut-off completion record"
+    );
+}
+
 /// A failed checkpoint commit is the run's primary diagnostic.
 ///
 /// The shared writer is terminal, so the session-end hook still runs while its
 /// audit appends and the task-completion record are rejected. The turn result
 /// keeps the original commit error, so the caller reports that instead of a
-/// second write failure and starts no further provider request.
+/// second write failure.
 #[tokio::test]
 #[cfg(unix)]
 async fn failed_writer_preserves_the_commit_error_and_runs_the_session_end_hook() {
