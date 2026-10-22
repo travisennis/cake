@@ -63,6 +63,7 @@ Persisted sessions are append-only, versioned JSONL logs. Stream-json is a curre
 - Production imports use absolute `crate::` paths; verified by `just lint-imports`.
 - Production code does not use `unwrap` or `expect`; verified by clippy.
 - Conversation state has one typed internal representation.
+- Within one invocation, conversation growth is tail-only: each provider request's message sequence is an exact prefix-extension of the previous request's, with no sanctioned exception yet; provider prompt caches depend on it.
 - Filesystem tools validate paths before side effects.
 - Sandboxing is default-on and availability failures fail closed, except for the documented recognized nested-Seatbelt fallback.
 - Session files are append-only and versioned; older records are never silently rewritten.
