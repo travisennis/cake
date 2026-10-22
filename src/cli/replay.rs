@@ -195,18 +195,7 @@ fn load_records(path: &Path, session_id: Uuid) -> Result<Vec<SessionRecord>, Rep
     let mut records = vec![meta];
     while let Some(line) = next_record()? {
         match parse_record(&line.text, &session_id) {
-            Ok(record) => {
-                if let SessionRecord::Compaction(checkpoint) = &record {
-                    ensure_checkpoint_matches_session(checkpoint, &session_id.to_string())
-                        .map_err(|error| {
-                            ReplayError::Corrupt(
-                                session_id.to_string(),
-                                format!("invalid compaction checkpoint: {error:#}"),
-                            )
-                        })?;
-                }
-                records.push(record);
-            },
+            Ok(record) => records.push(record),
             // A writer interrupted mid-record leaves a partial final line
             // without a trailing newline; tolerate it like `Session::load`.
             Err(error) if line.partial_tail => {
@@ -255,14 +244,32 @@ fn validate_meta(meta: &SessionRecord, session_id: Uuid) -> Result<(), ReplayErr
     }
 }
 
+/// Validate a checkpoint's session envelope while replaying records.
+fn validate_checkpoint_envelope(
+    record: &SessionRecord,
+    session_id: &Uuid,
+) -> Result<(), ReplayError> {
+    let SessionRecord::Compaction(checkpoint) = record else {
+        return Ok(());
+    };
+    ensure_checkpoint_matches_session(checkpoint, &session_id.to_string()).map_err(|error| {
+        ReplayError::Corrupt(
+            session_id.to_string(),
+            format!("invalid compaction checkpoint: {error:#}"),
+        )
+    })
+}
+
 /// Parse one JSONL session record, mapping parse failures to [`ReplayError::Corrupt`].
 fn parse_record(line: &str, session_id: &Uuid) -> Result<SessionRecord, ReplayError> {
-    serde_json::from_str(line).map_err(|error| {
+    let record: SessionRecord = serde_json::from_str(line).map_err(|error| {
         ReplayError::Corrupt(
             session_id.to_string(),
             format!("invalid session record: {error}"),
         )
-    })
+    })?;
+    validate_checkpoint_envelope(&record, session_id)?;
+    Ok(record)
 }
 
 #[cfg(test)]
