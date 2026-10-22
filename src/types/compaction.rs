@@ -343,8 +343,8 @@ impl CompactionData {
     /// Every read path runs this as the record is parsed, so an unknown
     /// version or an unsafe retained tail fails loudly wherever a checkpoint
     /// enters the process. The size ceiling is a write-side invariant and is
-    /// checked by [`Self::validate`] before a commit.
-    fn validate_structure(&self) -> anyhow::Result<()> {
+    /// checked by [`Self::to_record_bytes`] while the writer mutex is held.
+    pub(crate) fn validate_structure(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
             self.checkpoint_version == CHECKPOINT_VERSION,
             "Unsupported compaction checkpoint_version: {} (expected {CHECKPOINT_VERSION})",

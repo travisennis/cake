@@ -120,16 +120,21 @@ impl SessionWriter {
 
     /// Append one checkpoint and sync it before returning.
     ///
-    /// The whole write holds the shared mutex and the advisory lock through
-    /// the newline, the flush, and `sync_data`. [`CompactionData::to_record_bytes`]
-    /// validates and serializes once, before the writer is touched, so the
-    /// record ceiling applies to exactly the bytes written. A failure in any
-    /// write stage terminally fails every clone and returns the original error.
+    /// Structural validation runs first and leaves the writer untouched on a
+    /// caller error. The whole write then holds the shared mutex and the
+    /// advisory lock through serialization, the newline, the flush, and
+    /// `sync_data`; [`CompactionData::to_record_bytes`] is called inside that
+    /// critical section so a serialization or size failure is an append failure
+    /// that terminally fails every clone. The record ceiling therefore applies
+    /// to exactly the bytes written, and the original error is preserved.
     pub fn commit_checkpoint(&self, checkpoint: &CompactionData) -> anyhow::Result<()> {
-        let bytes = checkpoint.to_record_bytes()?;
+        checkpoint.validate_structure()?;
         self.write(|buffer| {
             #[cfg(test)]
             self.inject_fault(WriterFault::Serialize)?;
+            // Serialize while the mutex is held: the plan requires a failure
+            // before serialization completion to fail the shared writer.
+            let bytes = checkpoint.to_record_bytes()?;
             buffer
                 .write_all(&bytes)
                 .context("Failed to write compaction checkpoint")?;
