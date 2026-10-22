@@ -462,9 +462,31 @@ impl Agent {
     /// Sets the conversation history for a restored session.
     ///
     /// Use this when continuing a previous session to restore the conversation context.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "restore seeds through with_context_seed; this remains the checkpoint-free history builder for tests"
+        )
+    )]
     pub fn with_history(mut self, messages: Vec<ConversationItem>) -> anyhow::Result<Self> {
         self.conversation.with_restored_history(messages)?;
         Ok(self)
+    }
+
+    /// Restores raw history and the latest checkpoint from a session seed.
+    ///
+    /// Restore and fork both use this instead of [`Self::with_history`] so a
+    /// checkpointed session projects the same request context a live run would.
+    pub fn with_context_seed(mut self, seed: crate::types::ContextSeed) -> anyhow::Result<Self> {
+        self.conversation.with_restored_context(seed)?;
+        Ok(self)
+    }
+
+    /// The provider request context for the next turn (for tests).
+    #[cfg(test)]
+    pub(crate) fn request_context(&self) -> Vec<ConversationItem> {
+        self.conversation.request_context().into_owned()
     }
 
     /// Set the skill locations for path-watching `SkillActivated` records.

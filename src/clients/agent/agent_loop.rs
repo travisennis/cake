@@ -838,7 +838,10 @@ impl Agent {
         let config = &self.config;
         let session_id = self.session_id;
         let task_id = self.task_id;
-        let history = self.conversation.history();
+        // Requests use the projection, never the raw vector: raw offsets keep
+        // their meaning for attribution while a checkpoint may replace retired
+        // history here.
+        let history = self.conversation.request_context();
         let turn_index = self.turn_count.saturating_add(1);
         let runner = &self.runner;
         let runner_telemetry = self.runner_telemetry_sink();
@@ -851,7 +854,7 @@ impl Agent {
                 session_id,
                 task_id,
                 turn_index,
-                history,
+                &history,
                 tool_definitions,
                 constraint,
                 next_attempt,

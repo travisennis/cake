@@ -76,7 +76,7 @@ impl crate::CodingAssistant {
         enabled_tools: Option<&[String]>,
         task_id: uuid::Uuid,
     ) -> anyhow::Result<RunSession> {
-        let messages = restored.messages();
+        let seed = restored.context_seed();
         // Seed once-per-session activation dedup from the persisted records so
         // a resumed run does not re-emit "first observed" for known skills.
         let activated_skills = restored.activated_skills();
@@ -90,7 +90,7 @@ impl crate::CodingAssistant {
             .with_enabled_tools(enabled_tools)
             // Flattened rather than layered: the CLI prints only the outermost
             // error, and the underlying diagnostic is the useful part.
-            .with_history(messages)
+            .with_context_seed(seed)
             .map_err(|error| anyhow::anyhow!("Cannot restore session {}: {error:#}", restored.id))?
             .with_last_usage(restored.last_turn_usage())
             .with_skill_locations(skill_locations.clone())
@@ -165,7 +165,7 @@ impl crate::CodingAssistant {
             .with_tool_context(tool_context)
             .with_toolbox_tools(toolbox_tools)
             .with_enabled_tools(enabled_tools)
-            .with_history(restored.messages())
+            .with_context_seed(restored.context_seed())
             .map_err(|error| anyhow::anyhow!("Cannot fork session {}: {error:#}", restored.id))?
             .with_last_usage(restored.last_turn_usage())
             .with_skill_locations(skill_locations)
@@ -174,10 +174,15 @@ impl crate::CodingAssistant {
             // do not emit duplicates.
             .with_activated_skills(restored.activated_skills());
         let new_id = agent.session_id();
+        let latest_checkpoint = restored
+            .records
+            .iter()
+            .rposition(|record| matches!(record, SessionRecord::Compaction(_)));
         let seed_records: Vec<_> = restored
             .records
             .iter()
-            .filter_map(|record| match record {
+            .enumerate()
+            .filter_map(|(index, record)| match record {
                 record if record.to_conversation_item().is_some() => Some(record.clone()),
                 SessionRecord::SkillActivated {
                     task_id,
@@ -192,6 +197,13 @@ impl crate::CodingAssistant {
                     name: name.clone(),
                     path: path.clone(),
                 }),
+                // Copy only the latest checkpoint, re-enveloped for this
+                // session at its original position among the copied records,
+                // so the positional boundary is reconstructed. Checkpoint-free
+                // format-4 forks copy exactly what they copied before.
+                SessionRecord::Compaction(checkpoint) if latest_checkpoint == Some(index) => Some(
+                    SessionRecord::Compaction(checkpoint.for_session(new_id.to_string())),
+                ),
                 _ => None,
             })
             .collect();
@@ -987,5 +999,206 @@ mod tests {
             assert_eq!(task_start["model"], "glm-5.1");
             assert_eq!(task_start["model_config"], "test");
         });
+    }
+
+    // ---- context checkpoints ----
+
+    use crate::types::compaction::test_support;
+    use crate::types::session::MessageData;
+
+    fn message_record(role: crate::types::Role, content: &str) -> SessionRecord {
+        SessionRecord::Message(MessageData {
+            role,
+            content: content.to_string(),
+            id: None,
+            status: None,
+            timestamp: None,
+            images: Vec::new(),
+        })
+    }
+
+    fn projected_contents(items: &[crate::types::ConversationItem]) -> Vec<String> {
+        items
+            .iter()
+            .map(|item| match item {
+                crate::types::ConversationItem::Message { content, .. } => content.clone(),
+                crate::types::ConversationItem::Reasoning { .. } => "<reasoning>".to_string(),
+                crate::types::ConversationItem::FunctionCall { call_id, .. } => {
+                    format!("call:{call_id}")
+                },
+                crate::types::ConversationItem::FunctionCallOutput { call_id, .. } => {
+                    format!("output:{call_id}")
+                },
+            })
+            .collect()
+    }
+
+    fn source_with_two_checkpoints() -> Session {
+        let mut source = Session::new(uuid::Uuid::new_v4(), PathBuf::from("/work"));
+        let session_id = source.id.to_string();
+        let records = vec![
+            message_record(crate::types::Role::User, "retired request"),
+            checkpoint_record(&session_id, "checkpoint-old", "older summary"),
+            message_record(crate::types::Role::Assistant, "retired answer"),
+            checkpoint_record(&session_id, "checkpoint-new", "newer summary"),
+            message_record(crate::types::Role::User, "new request"),
+            // Billing, task, and activation audit records must not be copied.
+            SessionRecord::TurnUsage(crate::types::TurnUsageData {
+                session_id: session_id.clone(),
+                task_id: uuid::Uuid::new_v4().to_string(),
+                turn: 1,
+                usage: crate::types::Usage::default(),
+                timestamp: chrono::Utc::now(),
+                attempt: None,
+                terminal_class: None,
+                usage_presence: None,
+                model: None,
+                response_model: None,
+                provider_request_id: None,
+            }),
+            SessionRecord::SkillActivated {
+                session_id,
+                task_id: uuid::Uuid::new_v4().to_string(),
+                timestamp: chrono::Utc::now(),
+                name: "debugging-cake".to_string(),
+                path: PathBuf::from("/work/.agents/skills/debugging-cake/SKILL.md"),
+            },
+        ];
+        source.records = records;
+        source
+    }
+
+    fn checkpoint_record(session_id: &str, id: &str, summary: &str) -> SessionRecord {
+        let mut data =
+            test_support::checkpoint(id, summary, test_support::exchange("call-1", "out"));
+        data.session_id = session_id.to_string();
+        SessionRecord::Compaction(data)
+    }
+
+    #[test]
+    fn forked_session_copies_only_the_latest_checkpoint_at_its_position() {
+        let source = source_with_two_checkpoints();
+
+        let run = crate::CodingAssistant::forked_client_and_session(
+            &source,
+            test_resolved_model_config(),
+            "test".to_string(),
+            PathBuf::from("/work"),
+            &[(crate::types::Role::System, "fresh system".to_string())],
+            HashMap::new(),
+            test_tool_context(),
+            Vec::new(),
+            None,
+            uuid::Uuid::new_v4(),
+        )
+        .expect("fork should succeed");
+
+        let Some(SessionPersistencePlan::Create { seed_records }) = run.persistence.as_ref() else {
+            panic!("a fork persists a new session");
+        };
+        let checkpoints: Vec<_> = seed_records
+            .iter()
+            .filter_map(|record| match record {
+                SessionRecord::Compaction(data) => Some(data),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(checkpoints.len(), 1, "only the latest checkpoint is copied");
+        assert_eq!(checkpoints[0].checkpoint_id, "checkpoint-new");
+        assert_eq!(
+            checkpoints[0].session_id,
+            run.agent.session_id().to_string(),
+            "the copied checkpoint names the new session"
+        );
+        let conversation_before = seed_records
+            .iter()
+            .take_while(|record| !matches!(record, SessionRecord::Compaction(_)))
+            .filter(|record| record.to_conversation_item().is_some())
+            .count();
+        assert_eq!(
+            conversation_before, 2,
+            "the checkpoint keeps its original position among copied records"
+        );
+        assert!(
+            !seed_records.iter().any(|record| matches!(
+                record,
+                SessionRecord::TurnUsage(_) | SessionRecord::TaskComplete(_)
+            )),
+            "a fork must not copy billing or task audit records"
+        );
+        assert_eq!(
+            seed_records
+                .iter()
+                .filter(|record| matches!(record, SessionRecord::SkillActivated { .. }))
+                .count(),
+            1,
+            "activation records are copied once"
+        );
+
+        assert_eq!(
+            projected_contents(&run.agent.request_context()),
+            vec![
+                "fresh system".to_string(),
+                format!(
+                    "{}\n\nnewer summary",
+                    crate::types::compaction::HISTORICAL_SUMMARY_MARKER
+                ),
+                "call:call-1".to_string(),
+                "output:call-1".to_string(),
+                "new request".to_string(),
+            ],
+            "the fork projects the latest checkpoint, not retired raw history"
+        );
+    }
+
+    #[test]
+    fn checkpoint_free_fork_seeds_exactly_the_conversation_records() {
+        let mut source = Session::new(uuid::Uuid::new_v4(), PathBuf::from("/work"));
+        source.records = vec![
+            message_record(crate::types::Role::User, "hello"),
+            message_record(crate::types::Role::Assistant, "hi"),
+            SessionRecord::TurnUsage(crate::types::TurnUsageData {
+                session_id: source.id.to_string(),
+                task_id: uuid::Uuid::new_v4().to_string(),
+                turn: 1,
+                usage: crate::types::Usage::default(),
+                timestamp: chrono::Utc::now(),
+                attempt: None,
+                terminal_class: None,
+                usage_presence: None,
+                model: None,
+                response_model: None,
+                provider_request_id: None,
+            }),
+        ];
+
+        let run = crate::CodingAssistant::forked_client_and_session(
+            &source,
+            test_resolved_model_config(),
+            "test".to_string(),
+            PathBuf::from("/work"),
+            &[(crate::types::Role::System, "fresh system".to_string())],
+            HashMap::new(),
+            test_tool_context(),
+            Vec::new(),
+            None,
+            uuid::Uuid::new_v4(),
+        )
+        .expect("fork should succeed");
+
+        let Some(SessionPersistencePlan::Create { seed_records }) = run.persistence.as_ref() else {
+            panic!("a fork persists a new session");
+        };
+        assert_eq!(
+            seed_records.len(),
+            2,
+            "only conversation records are copied"
+        );
+        assert!(
+            !seed_records
+                .iter()
+                .any(|record| matches!(record, SessionRecord::Compaction(_))),
+            "a checkpoint-free fork gains no checkpoint"
+        );
     }
 }
