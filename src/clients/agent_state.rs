@@ -122,6 +122,17 @@ impl ConversationState {
             checkpoint,
             boundary,
         } = seed;
+        let boundary = match boundary {
+            Some(boundary) => {
+                anyhow::ensure!(
+                    boundary <= messages.len(),
+                    "restored context boundary {boundary} exceeds its {} history records",
+                    messages.len()
+                );
+                Some(boundary)
+            },
+            None => None,
+        };
         let prompt_len = self.history.len();
         let first_non_prompt = messages
             .iter()
@@ -136,7 +147,6 @@ impl ConversationState {
             })
             .unwrap_or(messages.len());
         if let Some(boundary) = boundary {
-            let boundary = boundary.min(messages.len());
             ensure_no_open_calls(
                 messages
                     .get(first_non_prompt.min(boundary)..boundary)
@@ -823,6 +833,32 @@ mod tests {
             1,
             "a rejected restore leaves history untouched"
         );
+    }
+
+    #[test]
+    fn restored_context_rejects_a_boundary_beyond_the_seed() {
+        let mut state = ConversationState::new(&[(Role::System, "sys".to_string())]);
+
+        let error = state
+            .with_restored_context(restored_seed(
+                test_support::checkpoint("checkpoint-1", "summary", Vec::new()),
+                vec![user_message("go")],
+                2,
+            ))
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("restored context boundary 2 exceeds its 1 history records"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(
+            state.history().len(),
+            1,
+            "a rejected restore leaves history untouched"
+        );
+        assert!(!state.has_checkpoint());
     }
 
     #[test]
