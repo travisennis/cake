@@ -1765,4 +1765,15 @@ mod helper_tests {
             .expect_err("semantic recovery tool calls must stop");
         assert!(error.to_string().contains("response was incomplete"));
     }
+
+    #[test]
+    fn pressure_recovery_guard_allows_exactly_one_recovery_per_invocation() {
+        let mut guard = PressureRecoveryGuard::default();
+
+        assert!(guard.consume(), "the first pressure verdict may recover");
+        assert!(
+            !guard.consume(),
+            "a later pressure verdict in the same invocation cannot recover again"
+        );
+    }
 }
