@@ -118,6 +118,24 @@ fn message_response(text: &str) -> serde_json::Value {
     })
 }
 
+fn over_window_message_response(text: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": "resp-final",
+        "status": "completed",
+        "output": [{
+            "type": "message",
+            "id": "msg-final",
+            "status": "completed",
+            "content": [{"type": "output_text", "text": text}]
+        }],
+        "usage": {
+            "input_tokens": OVER_WINDOW_INPUT,
+            "output_tokens": 5,
+            "total_tokens": OVER_WINDOW_INPUT + 5
+        }
+    })
+}
+
 type PersistedRecords = Arc<Mutex<Vec<SessionRecord>>>;
 type StreamedRecords = Arc<Mutex<Vec<String>>>;
 
@@ -267,29 +285,35 @@ async fn chat_length_stop_below_cap_over_the_window_is_pressure() {
 }
 
 #[tokio::test]
-async fn message_without_termination_over_the_window_is_not_pressure() {
+async fn no_termination_over_the_window_is_pressure() {
     let mock_server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/responses"))
         .respond_with(
             ResponseTemplate::new(200).set_body_json(over_window_input_without_termination()),
         )
-        .up_to_n_times(1)
-        .mount(&mock_server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/responses"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(message_response("Hello!")))
+        .expect(1)
         .mount(&mock_server)
         .await;
 
-    let mut agent = test_agent_for(ApiType::Responses, &mock_server.uri())
-        .with_context_window(Some(CONTEXT_WINDOW));
-    let result = agent.send("go".to_string()).await.unwrap();
+    let (mut agent, persisted, streamed) = captured_agent(&mock_server.uri());
+    let error = agent.send("go".to_string()).await.unwrap_err();
 
-    assert_eq!(result, "Hello!");
-    assert_eq!(agent.turn_count(), 2);
-    assert_eq!(mock_server.received_requests().await.unwrap().len(), 2);
+    assert!(
+        error.downcast_ref::<crate::types::CutOffError>().is_some(),
+        "an unclassified stop over the window is discarded: {error:#}"
+    );
+    assert_eq!(mock_server.received_requests().await.unwrap().len(), 1);
+    assert_eq!(agent.turn_count(), 0);
+    assert_eq!(agent.history().len(), 2);
+    assert_eq!(persisted_types(&persisted), vec!["message", "turn_usage"]);
+    assert!(
+        streamed
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|record| !record.contains("reasoning"))
+    );
 }
 
 #[tokio::test]
@@ -380,7 +404,42 @@ async fn ambiguous_below_cap_length_stop_within_the_window_is_not_pressure() {
 }
 
 #[tokio::test]
-async fn completed_answer_over_the_window_is_returned() {
+async fn completed_content_over_the_window_is_discarded() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(over_window_message_response("Hello!")),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let (mut agent, persisted, streamed) = captured_agent(&mock_server.uri());
+    let error = agent.send("go".to_string()).await.unwrap_err();
+    let cutoff = error
+        .downcast_ref::<crate::types::CutOffError>()
+        .expect("a completed response over the window is still discarded");
+
+    assert!(cutoff.detail.contains("cake --resume"), "{}", cutoff.detail);
+    // No message was persisted or streamed, no request was retried, and the
+    // attempt's usage still settled once.
+    assert_eq!(mock_server.received_requests().await.unwrap().len(), 1);
+    assert_eq!(agent.turn_count(), 0);
+    assert_eq!(agent.history().len(), 2);
+    assert_eq!(persisted_types(&persisted), vec!["message", "turn_usage"]);
+    assert!(
+        streamed
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|record| !record.contains("Hello!"))
+    );
+    assert_eq!(agent.total_usage().input_tokens, OVER_WINDOW_INPUT);
+}
+
+#[tokio::test]
+async fn completed_answer_within_the_window_is_returned() {
     let mock_server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/responses"))
@@ -398,7 +457,7 @@ async fn completed_answer_over_the_window_is_returned() {
 }
 
 #[tokio::test]
-async fn tool_call_turn_over_the_window_continues() {
+async fn tool_call_over_the_window_executes_no_tool() {
     let mock_server = MockServer::start().await;
     let dir = tempfile::tempdir().unwrap();
     let file_path = dir.path().join("observed.txt");
@@ -424,30 +483,23 @@ async fn tool_call_turn_over_the_window_continues() {
     Mock::given(method("POST"))
         .and(path("/responses"))
         .respond_with(ResponseTemplate::new(200).set_body_json(tool_call))
-        .up_to_n_times(1)
-        .mount(&mock_server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/responses"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(message_response("Hello!")))
+        .expect(1)
         .mount(&mock_server)
         .await;
 
-    let mut agent = test_agent_for(ApiType::Responses, &mock_server.uri())
-        .with_tools(crate::clients::tools::read_tool_registry())
-        .with_context_window(Some(CONTEXT_WINDOW));
-    let result = agent.send("go".to_string()).await.unwrap();
+    let (mut agent, persisted, _streamed) = captured_agent(&mock_server.uri());
+    let error = agent.send("go".to_string()).await.unwrap_err();
 
-    assert_eq!(result, "Hello!");
-    assert_eq!(agent.tool_call_count, 1);
-    assert_eq!(
-        agent
-            .history()
-            .iter()
-            .filter(|item| matches!(item, ConversationItem::FunctionCallOutput { .. }))
-            .count(),
-        1
+    assert!(
+        error.downcast_ref::<crate::types::CutOffError>().is_some(),
+        "a tool-call turn over the window is discarded: {error:#}"
     );
+    assert_eq!(mock_server.received_requests().await.unwrap().len(), 1);
+    assert_eq!(agent.tool_call_count, 0);
+    assert_eq!(agent.turn_count(), 0);
+    // Neither the call nor any output reached the transcript or the session.
+    assert_eq!(agent.history().len(), 2);
+    assert_eq!(persisted_types(&persisted), vec!["message", "turn_usage"]);
 }
 
 #[tokio::test]

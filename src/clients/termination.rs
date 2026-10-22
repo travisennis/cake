@@ -320,11 +320,12 @@ fn output_limit_outcome(
 
 /// Pressure a successful response establishes by measuring its own input.
 ///
-/// Only a turn that ended early is recoverable. A completed answer is returned
-/// as-is; a tool-call turn continues and the next request re-checks the window
-/// before it spends; and an unknown termination is never evidence of anything.
-/// The measurement itself stays in the verdict for those outcomes, so a later
-/// consumer can still see it.
+/// A complete measurement above the known window is pressure whatever ended the
+/// turn, because the request that produced this response was already over the
+/// window the caller configured, and the next request only grows. Three things
+/// are never pressure: a genuine intended-cap stop, which is an output-limit
+/// stop rather than a context problem; and a refusal, a content filter, or a
+/// provider-reported failure, which are unrelated failures.
 fn measured_pressure(
     window: Option<u32>,
     measured_input: Option<u64>,
@@ -337,10 +338,13 @@ fn measured_pressure(
         return None;
     }
 
-    matches!(
+    (!matches!(
         outcome,
-        TerminationOutcome::EarlyTermination { .. } | TerminationOutcome::Incomplete
-    )
+        TerminationOutcome::OutputLimit { .. }
+            | TerminationOutcome::ContentFilter
+            | TerminationOutcome::Refusal
+            | TerminationOutcome::Failed
+    ))
     .then_some(ContextPressure::MeasuredInput {
         input_tokens,
         context_window,
@@ -629,7 +633,10 @@ mod tests {
                 },
                 expected_pressure: None,
             },
-            // A completed turn has its answer; there is nothing to recover.
+            // Every outcome except an intended-cap stop and an unrelated
+            // failure is pressure once the measurement is complete and over the
+            // window: the request that produced the response was already over
+            // the configured window.
             ResponseCase {
                 name: "completed turn over the known window",
                 limits: window(1000),
@@ -640,9 +647,11 @@ mod tests {
                 )),
                 usage: Some(complete_usage(5000, 50)),
                 expected_outcome: TerminationOutcome::Completed,
-                expected_pressure: None,
+                expected_pressure: Some(ContextPressure::MeasuredInput {
+                    input_tokens: 5000,
+                    context_window: 1000,
+                }),
             },
-            // A tool-call turn continues; the next request re-checks the window.
             ResponseCase {
                 name: "tool-call turn over the known window",
                 limits: window(1000),
@@ -653,9 +662,11 @@ mod tests {
                 )),
                 usage: Some(complete_usage(5000, 50)),
                 expected_outcome: TerminationOutcome::ToolCalls,
-                expected_pressure: None,
+                expected_pressure: Some(ContextPressure::MeasuredInput {
+                    input_tokens: 5000,
+                    context_window: 1000,
+                }),
             },
-            // Unrecognized termination is never evidence, even when over window.
             ResponseCase {
                 name: "unknown termination over the known window",
                 limits: window(1000),
@@ -666,6 +677,21 @@ mod tests {
                 )),
                 usage: Some(complete_usage(5000, 50)),
                 expected_outcome: TerminationOutcome::Unknown,
+                expected_pressure: Some(ContextPressure::MeasuredInput {
+                    input_tokens: 5000,
+                    context_window: 1000,
+                }),
+            },
+            ResponseCase {
+                name: "completed turn over the known window with partial usage",
+                limits: window(1000),
+                termination: Some(termination(
+                    TerminationClassification::Completed,
+                    None,
+                    None,
+                )),
+                usage: Some(partial_usage(5000, 50)),
+                expected_outcome: TerminationOutcome::Completed,
                 expected_pressure: None,
             },
             // A genuine cap stop is never pressure, whatever the input measured.
@@ -720,14 +746,17 @@ mod tests {
                 expected_outcome: TerminationOutcome::Failed,
                 expected_pressure: None,
             },
-            // No termination signal at all is not evidence either.
+            // No termination signal is still over-window pressure.
             ResponseCase {
                 name: "no termination signal over the known window",
                 limits: window(1000),
                 termination: None,
                 usage: Some(complete_usage(5000, 50)),
                 expected_outcome: TerminationOutcome::Unknown,
-                expected_pressure: None,
+                expected_pressure: Some(ContextPressure::MeasuredInput {
+                    input_tokens: 5000,
+                    context_window: 1000,
+                }),
             },
             // A zero window is not a known window.
             ResponseCase {
