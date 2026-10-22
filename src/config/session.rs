@@ -68,8 +68,7 @@ impl WriterState {
 
     /// Move to the terminal failed state without flushing unwritten bytes.
     fn fail(&mut self, error: &anyhow::Error) {
-        self.failure
-            .get_or_insert_with(|| format!("Failed to write session record: {error:#}"));
+        self.failure.get_or_insert_with(|| format!("{error:#}"));
         if let Some(buffer) = self.buffer.take() {
             // `into_parts` detaches the buffer instead of flushing it on drop:
             // a failed writer must not append a partial record later. The
@@ -122,9 +121,10 @@ impl SessionWriter {
 
     /// Append one checkpoint and sync it before returning.
     ///
-    /// The whole operation holds the shared mutex and the advisory lock through
-    /// serialization, the newline, the flush, and `sync_data`. A failure at any
-    /// stage terminally fails every clone and returns the original error.
+    /// The whole write holds the shared mutex and the advisory lock through
+    /// serialization, the newline, the flush, and `sync_data`. Validation runs
+    /// first and does not touch the writer; a failure in any write stage
+    /// terminally fails every clone and returns the original error.
     pub fn commit_checkpoint(&self, checkpoint: &CompactionData) -> anyhow::Result<()> {
         checkpoint.validate()?;
         let record = SessionRecord::Compaction(checkpoint.clone());

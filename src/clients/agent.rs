@@ -459,9 +459,11 @@ impl Agent {
         self
     }
 
-    /// Sets the conversation history for a restored session.
+    /// Sets the conversation history from raw conversation items.
     ///
-    /// Use this when continuing a previous session to restore the conversation context.
+    /// Restore and fork seed through [`Self::with_context_seed`], which carries
+    /// the latest checkpoint too. This remains the checkpoint-free builder used
+    /// by tests.
     #[cfg_attr(
         not(test),
         expect(
