@@ -1575,3 +1575,103 @@ async fn handle_agent_turn_error_occurred_hook_failure_does_not_mask_error() {
     assert_eq!(json["error"], "tool error");
     assert_eq!(json["duration_ms"], 50);
 }
+
+// -------------------------------------------------------------------------
+// Failed session writer — checkpoint commit error, hooks, and cleanup
+// -------------------------------------------------------------------------
+
+/// A failed checkpoint commit is the run's primary diagnostic.
+///
+/// The shared writer is terminal, so the session-end hook still runs while its
+/// audit appends and the task-completion record are rejected. The turn result
+/// keeps the original commit error, so the caller reports that instead of a
+/// second write failure and starts no further provider request.
+#[tokio::test]
+#[cfg(unix)]
+async fn failed_writer_preserves_the_commit_error_and_runs_the_session_end_hook() {
+    use crate::config::SessionWriter;
+    use crate::types::compaction::test_support;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session.jsonl");
+    let session_id = uuid::Uuid::new_v4();
+    std::fs::write(
+        &path,
+        format!(
+            r#"{{"type":"session_meta","format_version":4,"session_id":"{session_id}","timestamp":"2026-01-01T00:00:00Z","working_directory":"/work","tools":[]}}"#
+        ) + "\n",
+    )
+    .unwrap();
+    let writer = SessionWriter::new(Session::open_for_append(&path).unwrap());
+    let mut checkpoint = test_support::checkpoint("checkpoint-1", "summary", Vec::new());
+    checkpoint.session_id = session_id.to_string();
+    writer.fail_next_checkpoint(crate::config::session::WriterFault::Flush);
+    let commit_error = writer
+        .commit_checkpoint(&checkpoint)
+        .expect_err("the injected failure must fail the commit");
+    let stable = std::fs::read(&path).unwrap();
+
+    // The agent's persistence callback and the hook event sink share the
+    // failed writer.
+    let for_agent = writer.clone();
+    let mut agent =
+        test_agent_for_turn().with_persist_callback(move |record| for_agent.append_record(record));
+    let for_hooks = writer.clone();
+    let marker = dir.path().join("session-end");
+    let command = crate::config::hooks::HookCommand {
+        command: format!("touch '{}'", marker.display()),
+        timeout: std::time::Duration::from_secs(2),
+        fail_closed: true,
+        status_message: None,
+        source_path: dir.path().join("hooks.json"),
+    };
+    let runner = std::sync::Arc::new(HookRunner::new(
+        crate::config::hooks::LoadedHooks {
+            groups: vec![crate::config::hooks::HookGroup {
+                event: crate::config::hooks::HookEvent::SessionEnd,
+                matcher: crate::config::hooks::HookMatcher::All,
+                hooks: vec![command],
+            }],
+        },
+        HookContext {
+            session_id,
+            task_id: uuid::Uuid::new_v4(),
+            transcript_path: Some(path.clone()),
+            hook_event_sink: Some(std::sync::Arc::new(move |record| {
+                for_hooks.append_record(&SessionRecord::from(record))
+            })),
+            cwd: dir.path().to_path_buf(),
+            model: "test-model".to_string(),
+        },
+    ));
+
+    let result: Result<String, anyhow::Error> = Err(commit_error);
+    CodingAssistant::handle_agent_turn_result(&mut agent, Some(&runner), &result, 100)
+        .await
+        .expect("a failed completion append must not mask the commit error");
+
+    assert!(marker.exists(), "the session-end hook must still run");
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        stable,
+        "no hook, usage, or completion record may reach the failed file"
+    );
+    let error = writer
+        .append_record(&SessionRecord::TaskStart(crate::types::TaskStartData {
+            session_id: session_id.to_string(),
+            task_id: uuid::Uuid::new_v4().to_string(),
+            timestamp: chrono::Utc::now(),
+            model: None,
+            model_config: None,
+        }))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("permanently failed") && error.contains("injected Flush failure"),
+        "every clone names the original failure: {error}"
+    );
+    assert!(
+        result.is_err(),
+        "the turn result keeps the original commit error and starts no further request"
+    );
+}

@@ -934,6 +934,9 @@ impl CodingAssistant {
             if let Some(writer) = &session_writer {
                 let session_record = SessionRecord::from(record.clone());
                 if let Err(error) = writer.append_record(&session_record) {
+                    // A terminally failed writer rejects this append, and the
+                    // hook lifecycle still completes: hook audit records are
+                    // best-effort and must never reopen a failed session file.
                     tracing::warn!(
                         target: "cake::hooks",
                         error = %error,
@@ -1130,7 +1133,20 @@ impl CodingAssistant {
     ) -> anyhow::Result<()> {
         Self::run_error_hook(hook_runner, error).await;
         Self::run_session_end_hook(hook_runner, SessionEndReason::Error).await;
-        client.emit_task_complete_record(Self::task_outcome_for_error(error), duration_ms)
+        // The failure that ended the task is the primary diagnostic. A failed
+        // session writer rejects the completion record too (its state is
+        // terminal), and reporting that rejection instead would hide the
+        // original cause, such as a checkpoint that could not be committed.
+        if let Err(emit_error) =
+            client.emit_task_complete_record(Self::task_outcome_for_error(error), duration_ms)
+        {
+            tracing::warn!(
+                target: "cake",
+                error = %emit_error,
+                "Failed to append task completion record"
+            );
+        }
+        Ok(())
     }
 
     async fn emit_cut_off_agent_turn(
