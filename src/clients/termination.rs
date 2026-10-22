@@ -387,6 +387,25 @@ mod tests {
         )
     }
 
+    /// Complete usage whose reported output is mostly reasoning, as providers
+    /// include reasoning in `output_tokens`.
+    fn reasoning_heavy_usage(
+        input_tokens: u64,
+        output_tokens: u64,
+        reasoning_tokens: u64,
+    ) -> ReportedUsage {
+        ReportedUsage::new(
+            Usage {
+                input_tokens,
+                output_tokens,
+                total_tokens: input_tokens.saturating_add(output_tokens),
+                output_tokens_details: crate::types::OutputTokensDetails { reasoning_tokens },
+                ..Usage::default()
+            },
+            UsagePresence::Complete,
+        )
+    }
+
     fn partial_usage(input_tokens: u64, output_tokens: u64) -> ReportedUsage {
         ReportedUsage::new(
             Usage {
@@ -470,15 +489,29 @@ mod tests {
                 },
                 expected_pressure: None,
             },
-            // Reasoning-heavy output is still output: it counts toward the cap.
+            // Reasoning-heavy output is still output: the provider's reported
+            // total, reasoning included, counts toward the cap.
             ResponseCase {
                 name: "reasoning-heavy output reaches the cap",
                 limits: cap(1000),
                 termination: Some(length()),
-                usage: Some(complete_usage(10, 1200)),
+                usage: Some(reasoning_heavy_usage(10, 1200, 1100)),
                 expected_outcome: TerminationOutcome::OutputLimit {
                     intended_cap: 1000,
                     output_tokens: 1200,
+                },
+                expected_pressure: None,
+            },
+            // 900 visible tokens plus 100 reasoning tokens is still below a
+            // 1000-token cap: the stop is ambiguous, not a cap stop.
+            ResponseCase {
+                name: "reasoning-heavy output below the cap",
+                limits: cap(1000),
+                termination: Some(length()),
+                usage: Some(reasoning_heavy_usage(10, 950, 900)),
+                expected_outcome: TerminationOutcome::EarlyTermination {
+                    intended_cap: Some(1000),
+                    output_tokens: Some(950),
                 },
                 expected_pressure: None,
             },
