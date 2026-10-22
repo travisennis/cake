@@ -10,6 +10,7 @@ use crate::clients::backend::{
 };
 use crate::clients::responses::ResponsesStreamFailed;
 use crate::clients::retry::{self, HttpFailure, RequestOverrides, RetryPolicy, RetryStatus};
+use crate::clients::termination::{self, IntendedLimits, TerminationOutcome, TurnEvidence};
 use crate::clients::tools::Tool;
 use crate::config::model::ResolvedModelConfig;
 use crate::session_telemetry::{
@@ -885,9 +886,26 @@ fn api_error_from_failure(
 ) -> crate::exit_code::ApiError {
     debug!(target: "cake", "{}", failure.body);
 
+    // The terminal error carries the classifier's verdict so a compaction owner
+    // can act on a genuine input overflow without re-parsing the body (ADR
+    // 047). The retry loop's behavior is unchanged: an overflow whose input
+    // fits was already retried with a reduced allowance above.
+    let verdict = termination::classify(
+        IntendedLimits::default(),
+        TurnEvidence::HttpFailure {
+            status: failure.status,
+            body: &failure.body,
+        },
+    );
+    let input_overflow = match verdict.outcome {
+        TerminationOutcome::InputDoesNotFit(overflow) => Some(overflow),
+        _ => None,
+    };
+
     crate::exit_code::ApiError {
         status: failure.status,
         body: api_error_body(config, failure),
+        input_overflow,
     }
 }
 

@@ -45,6 +45,12 @@ pub struct ApiError {
     pub status: u16,
     /// The formatted error body (model name + response text).
     pub body: String,
+    /// The provider's parsed input overflow, when the failure was a genuine
+    /// input overflow: the request's input cannot fit alongside a usable output
+    /// allowance. `None` for every other failure, including an overflow that
+    /// only rejected the requested output allowance. A context-compaction owner
+    /// consumes this verdict instead of re-parsing the body (ADR 047).
+    pub input_overflow: Option<crate::clients::retry::InputOverflow>,
 }
 
 /// Classify an `anyhow::Error` into a `u8` exit code value.
@@ -640,6 +646,7 @@ mod tests {
         let err = anyhow::Error::new(ApiError {
             status: 429,
             body: "glm-5\n\nRate limit exceeded".to_string(),
+            input_overflow: None,
         });
         assert_eq!(classify_to_u8(&err), code::API_ERROR);
     }
@@ -649,6 +656,7 @@ mod tests {
         let err = anyhow::Error::new(ApiError {
             status: 401,
             body: "glm-5\n\nInvalid API key".to_string(),
+            input_overflow: None,
         });
         assert_eq!(classify_to_u8(&err), code::API_ERROR);
     }
@@ -658,6 +666,7 @@ mod tests {
         let err = anyhow::Error::new(ApiError {
             status: 403,
             body: "glm-5\n\nForbidden".to_string(),
+            input_overflow: None,
         });
         assert_eq!(classify_to_u8(&err), code::API_ERROR);
     }
@@ -667,6 +676,7 @@ mod tests {
         let err = anyhow::Error::new(ApiError {
             status: 408,
             body: "glm-5\n\nRequest timeout".to_string(),
+            input_overflow: None,
         });
         assert_eq!(classify_to_u8(&err), code::API_ERROR);
     }
@@ -676,6 +686,7 @@ mod tests {
         let err = anyhow::Error::new(ApiError {
             status: 500,
             body: "glm-5\n\nInternal server error".to_string(),
+            input_overflow: None,
         });
         assert_eq!(classify_to_u8(&err), code::AGENT_ERROR);
     }
@@ -692,6 +703,7 @@ mod tests {
             let err = anyhow::Error::new(ApiError {
                 status,
                 body: format!("glm-5\n\nHTTP {status}"),
+                input_overflow: None,
             });
             assert_eq!(classify_to_u8(&err), code::AGENT_ERROR, "status {status}");
         }

@@ -950,6 +950,7 @@ fn fail_on_error_exit_codes_follow_the_documented_classes() {
                 exit_code::ApiError {
                     status: 429,
                     body: "rate limit exceeded".to_string(),
+                    input_overflow: None,
                 }
                 .into()
             },
