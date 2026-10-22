@@ -1,5 +1,9 @@
 use super::*;
 use crate::config::session::CURRENT_FORMAT_VERSION;
+use crate::types::compaction::{
+    CHECKPOINT_VERSION, CompactionData, CompactionTrigger, EstimateBasis, EstimatedInput,
+    MessageOrigin, ModelIdentity, PinReason, RetainedConversationRecord, RetainedRecord,
+};
 use crate::types::conversation::{ReasoningContentKind, ReasoningSummary};
 use crate::types::usage::{InputTokensDetails, OutputTokensDetails, UsagePresence};
 
@@ -1029,6 +1033,92 @@ fn snapshot_session_json_function_call_with_replay() {
         "session_json_function_call_with_replay",
         session_json_for_with_replay(&item, ReplaySafety::Safe)
     );
+}
+
+#[test]
+fn snapshot_session_json_compaction() {
+    let json = session_record_json(SessionRecord::Compaction(CompactionData {
+        checkpoint_version: CHECKPOINT_VERSION,
+        checkpoint_id: "checkpoint-1".to_string(),
+        session_id: fixed_session_id(),
+        task_id: fixed_task_id(),
+        timestamp: fixed_timestamp(),
+        trigger: CompactionTrigger::Threshold,
+        summary: "Earlier turns read README.md and answered questions about it.".to_string(),
+        retained: vec![
+            RetainedRecord {
+                record: RetainedConversationRecord::Message(MessageData {
+                    role: Role::User,
+                    content: "Read README.md".to_string(),
+                    id: None,
+                    status: None,
+                    timestamp: Some(timestamp_at("2026-05-10T00:00:00Z")),
+                    images: Vec::new(),
+                }),
+                pin: Some(PinReason::UserInput),
+                source_task: Some(fixed_task_id()),
+                origin: Some(MessageOrigin::User),
+                skill_read: None,
+            },
+            RetainedRecord {
+                record: RetainedConversationRecord::Message(MessageData {
+                    role: Role::Assistant,
+                    content: "I read the file.".to_string(),
+                    id: Some("msg-1".to_string()),
+                    status: Some("completed".to_string()),
+                    timestamp: Some(timestamp_at("2026-05-10T00:00:01Z")),
+                    images: Vec::new(),
+                }),
+                pin: None,
+                source_task: None,
+                origin: None,
+                skill_read: None,
+            },
+            RetainedRecord {
+                record: RetainedConversationRecord::FunctionCall(FunctionCallData {
+                    id: "fc-1".to_string(),
+                    call_id: "call-1".to_string(),
+                    name: "Read".to_string(),
+                    arguments: r#"{"path":"README.md"}"#.to_string(),
+                    arguments_parse_error: None,
+                    replay: None,
+                    timestamp: Some(timestamp_at("2026-05-10T00:00:01Z")),
+                }),
+                pin: None,
+                source_task: None,
+                origin: None,
+                skill_read: None,
+            },
+            RetainedRecord {
+                record: RetainedConversationRecord::FunctionCallOutput(FunctionCallOutputData {
+                    call_id: "call-1".to_string(),
+                    output: "# Cake\n".to_string(),
+                    replay: Some(ReplaySafety::Safe),
+                    timestamp: Some(timestamp_at("2026-05-10T00:00:02Z")),
+                    images: Vec::new(),
+                }),
+                pin: None,
+                source_task: None,
+                origin: None,
+                skill_read: None,
+            },
+        ],
+        model: ModelIdentity {
+            model: "gpt-5.4".to_string(),
+            model_config: Some("test".to_string()),
+            reasoning_effort: None,
+        },
+        summary_instruction_version: 1,
+        estimated_input: EstimatedInput {
+            before_tokens: 1200,
+            after_tokens: 400,
+            basis: EstimateBasis::ContentClass,
+        },
+    }));
+    serde_json::from_value::<SessionRecord>(json.clone())
+        .expect("the snapshot is a valid, loadable checkpoint record");
+
+    insta::assert_json_snapshot!("session_json_compaction", json);
 }
 
 #[test]

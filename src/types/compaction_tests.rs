@@ -2,7 +2,7 @@ use super::*;
 use crate::types::compaction::test_support::{
     as_skill_read, as_user_input, checkpoint, exchange, message, reasoning,
 };
-use crate::types::{ConversationItem, SessionRecord};
+use crate::types::{ConversationItem, ReplaySafety, SessionRecord};
 
 fn deserialize_record(json: &str) -> Result<SessionRecord, String> {
     serde_json::from_str::<SessionRecord>(json).map_err(|error| error.to_string())
@@ -52,11 +52,17 @@ fn summary_item(summary: &str) -> String {
 
 fn provenance_checkpoint() -> CompactionData {
     let mut first_exchange = exchange("call-1", "skill instructions");
+    let call = first_exchange.remove(0);
+    let mut output = first_exchange.remove(0);
+    let RetainedConversationRecord::FunctionCallOutput(data) = &mut output.record else {
+        unreachable!()
+    };
+    data.replay = Some(ReplaySafety::Safe);
     let retained = vec![
         as_user_input(message(Role::User, "do the thing")),
         reasoning("r-1"),
-        first_exchange.remove(0),
-        as_skill_read(first_exchange.remove(0), "debugging-cake"),
+        call,
+        as_skill_read(output, "debugging-cake"),
     ];
     checkpoint("checkpoint-1", "earlier work", retained)
 }
@@ -74,6 +80,10 @@ fn assert_provenance_json(json: &serde_json::Value) {
     assert_eq!(json["retained"][3]["skill_read"]["name"], "debugging-cake");
     assert_eq!(json["retained"][3]["pin"]["kind"], "skill_instructions");
     assert_eq!(json["retained"][3]["pin"]["name"], "debugging-cake");
+    assert_eq!(
+        json["retained"][3]["replay"], "safe",
+        "a retained output keeps its execution-time replay declaration"
+    );
     assert!(json["retained"][3]["source_task"].is_string());
 }
 
@@ -102,6 +112,14 @@ fn compaction_checkpoint_round_trips_retained_provenance() {
     );
     assert!(parsed.retained[3].pin.is_some());
     assert!(parsed.retained[3].source_task.is_some());
+    let RetainedConversationRecord::FunctionCallOutput(output) = &parsed.retained[3].record else {
+        panic!("expected a retained output");
+    };
+    assert_eq!(
+        output.replay,
+        Some(ReplaySafety::Safe),
+        "replay metadata survives the checkpoint round trip"
+    );
 }
 
 #[test]
