@@ -498,8 +498,10 @@ pub struct ContextSeed {
 /// Without a checkpoint this is the raw history, unchanged. With one, the fresh
 /// prompt context stays, retired history is replaced by the cycle's summary and
 /// retained tail, and everything appended after the checkpoint follows in
-/// source order. Records before the positional boundary are never also emitted
-/// from raw history, so retained duplicates appear once.
+/// source order. The leading System/Developer run is derived from the full
+/// history, not the retired slice, so a boundary at or inside the fresh prompts
+/// cannot drop them or emit them twice. Records before the positional boundary
+/// are never also emitted from raw history, so retained duplicates appear once.
 pub fn project_context(
     history: &[ConversationItem],
     checkpoint: Option<&CompactionData>,
@@ -509,8 +511,9 @@ pub fn project_context(
         return history.to_vec();
     };
     let boundary = boundary.min(history.len());
+    let prompt_len = prompt_context_prefix(history).count();
     let mut projected = Vec::with_capacity(checkpoint.retained.len() + history.len() + 1);
-    projected.extend(prompt_context_prefix(&history[..boundary]));
+    projected.extend(history[..prompt_len].iter().cloned());
     projected.push(historical_summary_item(checkpoint));
     projected.extend(
         checkpoint
@@ -518,7 +521,7 @@ pub fn project_context(
             .iter()
             .map(RetainedRecord::to_conversation_item),
     );
-    projected.extend_from_slice(&history[boundary..]);
+    projected.extend_from_slice(&history[boundary.max(prompt_len)..]);
     projected
 }
 

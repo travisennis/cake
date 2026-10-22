@@ -601,6 +601,37 @@ fn compaction_projection_keeps_repeated_call_ids_and_source_order() {
 }
 
 #[test]
+fn compaction_projection_keeps_fresh_prompts_at_a_boundary_of_zero() {
+    let checkpoint = checkpoint("checkpoint-1", "summary", vec![]);
+    let history = vec![
+        ConversationItem::Message {
+            role: Role::System,
+            content: "fresh system prompt".to_string(),
+            id: None,
+            status: None,
+            timestamp: None,
+            images: Vec::new(),
+        },
+        developer_message("fresh developer context"),
+        user_message("after"),
+    ];
+
+    for boundary in [0, 1] {
+        let projected = project_context(&history, Some(&checkpoint), boundary);
+        assert_eq!(
+            contents(&projected),
+            vec![
+                "fresh system prompt".to_string(),
+                "fresh developer context".to_string(),
+                summary_item("summary"),
+                "after".to_string(),
+            ],
+            "boundary {boundary}: fresh prompts stay at the head exactly once"
+        );
+    }
+}
+
+#[test]
 fn compaction_projection_keeps_a_boundary_of_zero_in_source_order() {
     let checkpoint = checkpoint("checkpoint-1", "summary", vec![]);
     let history = vec![user_message("after")];
@@ -614,14 +645,12 @@ fn compaction_projection_keeps_a_boundary_of_zero_in_source_order() {
 }
 
 #[test]
-fn compaction_context_seed_defaults_to_checkpoint_free_history() {
-    let seed = ContextSeed {
-        messages: vec![user_message("only")],
-        checkpoint: None,
-        boundary: None,
-    };
+fn compaction_context_seed_default_is_empty() {
+    let seed = ContextSeed::default();
 
-    assert_eq!(contents(&seed.messages), vec!["only".to_string()]);
+    assert!(seed.messages.is_empty());
+    assert!(seed.checkpoint.is_none());
+    assert!(seed.boundary.is_none());
 }
 
 #[test]
