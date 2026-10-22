@@ -346,6 +346,116 @@ async fn schema_correction_appends_at_the_tail() {
     );
 }
 
+/// A checkpoint commit failure reported through the production persist
+/// callback ends the invocation before the next provider request.
+///
+/// The agent's session callback appends a `FunctionCall` record while the
+/// scripted turn's tool is still pending. Committing a checkpoint at that point
+/// fails at the injected stage, and the loop must surface the commit error
+/// without appending or executing the tool output. A flush failure leaves no
+/// record; a sync failure leaves the already-flushed, complete checkpoint.
+#[tokio::test]
+async fn failed_checkpoint_commit_through_the_persist_callback_stops_the_loop() {
+    use crate::config::session::{Session, SessionWriter, WriterFault};
+    use crate::types::compaction::test_support;
+
+    let session_id = "550e8400-e29b-41d4-a716-446655440000";
+    for stage in [WriterFault::Flush, WriterFault::Sync] {
+        let server = MockServer::start().await;
+        let fixture_dir = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+        let fixture_path = fixture_dir.path().join("checkpoint-failure-input.txt");
+        std::fs::write(&fixture_path, "alpha\n").unwrap();
+        let read_path = fixture_path.display().to_string();
+
+        // Only one response is scripted; the provider panics on a second request.
+        let provider = ScriptedProvider::new();
+        provider
+            .mount(
+                &server,
+                "/responses",
+                vec![
+                    ResponseTemplate::new(200)
+                        .set_body_json(responses_tool_call("call-1", &read_path)),
+                ],
+            )
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        std::fs::write(
+            &path,
+            format!(
+                r#"{{"type":"session_meta","format_version":4,"session_id":"{session_id}","timestamp":"2026-01-01T00:00:00Z","working_directory":"/work","tools":[]}}"#
+            ) + "\n",
+        )
+        .unwrap();
+        let writer = SessionWriter::new(Session::open_for_append(&path).unwrap());
+        let mut checkpoint = test_support::checkpoint("checkpoint-1", "retired work", Vec::new());
+        checkpoint.session_id = session_id.to_string();
+        writer.fail_next_checkpoint(stage);
+
+        let for_agent = writer.clone();
+        let mut agent = test_agent(ApiType::Responses, &server.uri())
+            .with_persist_callback(move |record| {
+                if matches!(record, SessionRecord::FunctionCall(_)) {
+                    for_agent.commit_checkpoint(&checkpoint)?;
+                }
+                for_agent.append_record(record)
+            })
+            .with_tools(crate::clients::tools::read_tool_registry());
+
+        let error = agent
+            .send("read the fixture".to_string())
+            .await
+            .expect_err("a failed checkpoint commit must abort the invocation");
+        assert!(
+            format!("{error:#}").contains(&format!("injected {stage:?} failure")),
+            "{stage:?}: the original commit error must surface: {error:#}"
+        );
+        assert_eq!(agent.turn_count(), 1, "{stage:?}");
+        assert_eq!(
+            provider.requests.lock().unwrap().len(),
+            1,
+            "{stage:?}: a failed commit must not start another provider request"
+        );
+        assert!(
+            !agent
+                .history()
+                .iter()
+                .any(|item| matches!(item, ConversationItem::FunctionCallOutput { .. })),
+            "{stage:?}: the pending tool must not run after the commit failure"
+        );
+
+        drop(agent);
+        drop(writer);
+        let loaded = Session::load(&path).expect("the session must stay loadable");
+        match stage {
+            WriterFault::Flush => {
+                assert!(
+                    !loaded
+                        .records
+                        .iter()
+                        .any(|record| matches!(record, SessionRecord::Compaction(_))),
+                    "the failed checkpoint must not survive"
+                );
+            },
+            WriterFault::Sync => {
+                let checkpoints: Vec<_> = loaded
+                    .records
+                    .iter()
+                    .filter_map(|record| match record {
+                        SessionRecord::Compaction(data) => Some(data),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(checkpoints.len(), 1, "the flushed checkpoint is complete");
+                assert_eq!(checkpoints[0].checkpoint_id, "checkpoint-1");
+            },
+            WriterFault::Serialize => unreachable!("only write stages are exercised"),
+        }
+    }
+}
+
 /// A failed session append ends the invocation before the next provider
 /// request.
 ///
