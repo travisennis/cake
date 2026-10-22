@@ -11,7 +11,7 @@ use crate::config::model::ApiType;
 use crate::types::SessionRecord;
 use std::sync::{Arc, Mutex};
 
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{body_partial_json, method, path};
 use wiremock::{Match, Mock, MockServer, Request, ResponseTemplate};
 
 const CONTEXT_WINDOW: u32 = 1000;
@@ -81,7 +81,7 @@ fn over_window_input_with_partial_usage() -> serde_json::Value {
     })
 }
 
-fn over_window_cap_stop_with_text() -> serde_json::Value {
+fn over_window_length_stop_with_text() -> serde_json::Value {
     serde_json::json!({
         "id": "resp-cap",
         "status": "incomplete",
@@ -346,7 +346,7 @@ async fn genuine_cap_stop_over_the_window_still_gets_semantic_recovery() {
     let mock_server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/responses"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(over_window_cap_stop_with_text()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(over_window_length_stop_with_text()))
         .up_to_n_times(1)
         .mount(&mock_server)
         .await;
@@ -362,7 +362,13 @@ async fn genuine_cap_stop_over_the_window_still_gets_semantic_recovery() {
     let result = agent.send("go".to_string()).await.unwrap();
 
     assert_eq!(result, "Hello!");
-    // The partial text was persisted and a bounded continuation followed.
+    // A genuine cap stop is not discarded: its partial text stays in history
+    // and a bounded continuation follows.
+    assert!(agent.history().iter().any(|item| matches!(
+        item,
+        ConversationItem::Message { role: Role::Assistant, content, .. }
+            if content == "partial answer"
+    )));
     assert_eq!(agent.turn_count(), 2);
     assert_eq!(mock_server.received_requests().await.unwrap().len(), 2);
 }
@@ -544,6 +550,69 @@ async fn typed_http_input_overflow_is_terminal_and_carries_the_verdict() {
 }
 
 #[tokio::test]
+async fn the_intended_cap_is_the_value_before_context_clamping() {
+    let mock_server = MockServer::start().await;
+    // The initial request overflows and its input fits, so the retry path
+    // reduces the output allowance from the configured 5000 to 3360.
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .and(body_partial_json(serde_json::json!({
+            "max_output_tokens": 5000
+        })))
+        .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "error": {
+                "message": "input length and max_tokens exceed context limit: 12000 + 5000 > 16384",
+                "type": "invalid_request_error"
+            }
+        })))
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+    // The retry carries the clamped allowance and stops at exactly that many
+    // reported output tokens.
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .and(body_partial_json(serde_json::json!({
+            "max_output_tokens": 3360
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": "resp-clamped",
+            "status": "incomplete",
+            "incomplete_details": {"reason": "max_output_tokens"},
+            "output": [{
+                "type": "message",
+                "id": "msg-partial",
+                "status": "incomplete",
+                "content": [{"type": "output_text", "text": "partial answer"}]
+            }],
+            "usage": {
+                "input_tokens": 12000,
+                "output_tokens": 3360,
+                "total_tokens": 15360
+            }
+        })))
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    // The window is known and the measured input is above it, so an ambiguous
+    // stop discards the response. If the clamped 3360 were used as the intended
+    // cap instead of the configured 5000, the stop would read as a genuine cap
+    // stop, stay non-pressure, and continue with a semantic recovery.
+    let mut agent = test_agent_for(ApiType::Responses, &mock_server.uri())
+        .with_max_output_tokens(Some(5000))
+        .with_context_window(Some(CONTEXT_WINDOW));
+    let error = agent.send("go".to_string()).await.unwrap_err();
+
+    assert!(
+        error.downcast_ref::<crate::types::CutOffError>().is_some(),
+        "a stop at the clamped allowance is ambiguous, not a genuine cap stop: {error:#}"
+    );
+    assert_eq!(mock_server.received_requests().await.unwrap().len(), 2);
+    assert_eq!(agent.turn_count(), 0);
+}
+
+#[tokio::test]
 async fn output_allowance_overflow_retry_does_not_report_input_overflow() {
     let mock_server = MockServer::start().await;
     Mock::given(method("POST"))
@@ -591,6 +660,27 @@ async fn output_allowance_overflow_retry_does_not_report_input_overflow() {
     assert_eq!(mock_server.received_requests().await.unwrap().len(), 2);
 }
 
+/// Matches an unconstrained correction retry: the corrective message is in the
+/// input, no tools are offered, and no native schema constraint is attached.
+#[derive(Debug)]
+struct UnconstrainedCorrectionRequest;
+
+impl Match for UnconstrainedCorrectionRequest {
+    fn matches(&self, request: &Request) -> bool {
+        let Ok(body) = serde_json::from_slice::<serde_json::Value>(&request.body) else {
+            return false;
+        };
+        let has_corrective = body["input"].as_array().is_some_and(|items| {
+            items.iter().any(|item| {
+                item["content"][0]["text"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("failed output schema validation"))
+            })
+        });
+        has_corrective && body.get("tools").is_none() && body.get("text").is_none()
+    }
+}
+
 /// Matches a Responses correction request: the corrective message is in the
 /// input, no tools are offered, and the native schema constraint is attached.
 #[derive(Debug)]
@@ -630,6 +720,67 @@ fn test_schema() -> Arc<OutputSchema> {
 }
 
 #[tokio::test]
+async fn typed_input_overflow_on_a_constraint_turn_is_not_a_constraint_rejection() {
+    let mock_server = MockServer::start().await;
+    // An unconstrained retry would match this mock; the typed overflow must end
+    // the run instead of buying another request.
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .and(UnconstrainedCorrectionRequest)
+        .respond_with(ResponseTemplate::new(200).set_body_json(over_window_length_stop_with_text()))
+        .expect(0)
+        .mount(&mock_server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": "resp-1",
+            "output": [{
+                "type": "message",
+                "id": "msg-1",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": "not json"}]
+            }],
+            "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
+        })))
+        .up_to_n_times(1)
+        .mount(&mock_server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .and(ConstrainedCorrectionRequest)
+        .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "error": {
+                "message": "input length and max_tokens exceed context limit: 16380 + 5000 > 16384",
+                "type": "invalid_request_error"
+            }
+        })))
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let mut agent =
+        test_agent_for(ApiType::Responses, &mock_server.uri()).with_output_schema(test_schema());
+    let error = agent.send("go".to_string()).await.unwrap_err();
+    let api_error = error
+        .downcast_ref::<crate::exit_code::ApiError>()
+        .expect("the typed overflow stays the terminal provider error");
+
+    assert_eq!(api_error.status, 400);
+    assert!(
+        api_error
+            .input_overflow
+            .is_some_and(|overflow| !overflow.fits_with_reduced_output()),
+        "the genuine input overflow keeps its typed verdict"
+    );
+    assert_eq!(
+        mock_server.received_requests().await.unwrap().len(),
+        2,
+        "the constrained correction request is not retried unconstrained"
+    );
+}
+
+#[tokio::test]
 async fn pressure_during_a_correction_turn_keeps_correction_mode_intact() {
     let mock_server = MockServer::start().await;
     Mock::given(method("POST"))
@@ -650,7 +801,7 @@ async fn pressure_during_a_correction_turn_keeps_correction_mode_intact() {
     Mock::given(method("POST"))
         .and(path("/responses"))
         .and(ConstrainedCorrectionRequest)
-        .respond_with(ResponseTemplate::new(200).set_body_json(over_window_cap_stop_with_text()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(over_window_length_stop_with_text()))
         .expect(1)
         .mount(&mock_server)
         .await;

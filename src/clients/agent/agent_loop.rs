@@ -1025,7 +1025,13 @@ impl Agent {
 fn is_native_constraint_rejection(error: &anyhow::Error) -> bool {
     error
         .downcast_ref::<crate::exit_code::ApiError>()
-        .is_some_and(|api_error| api_error.status == 400)
+        .is_some_and(|api_error| {
+            // A typed input overflow is also a 400, but it is not a rejected
+            // constraint: retrying without the schema cannot make the input fit
+            // and would spend a second request before the compaction owner sees
+            // the verdict (ADR 047).
+            api_error.status == 400 && api_error.input_overflow.is_none()
+        })
 }
 
 fn tool_definitions_for_turn(tools: &ToolRegistry, turn_mode: TurnMode) -> &[Tool] {

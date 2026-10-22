@@ -159,16 +159,19 @@ impl TerminationVerdict {
     }
 
     /// Whether a bounded semantic continuation may be attempted. A pressure
-    /// verdict, a normal completion, and unrelated failures never get one.
+    /// verdict, a normal completion, and unrelated failures never get one; the
+    /// pressure check is explicit so a future caller cannot reach a
+    /// continuation through an outcome match alone.
     pub const fn allows_semantic_continuation(&self) -> bool {
-        matches!(
-            self.outcome,
-            TerminationOutcome::ToolCalls
-                | TerminationOutcome::OutputLimit { .. }
-                | TerminationOutcome::EarlyTermination { .. }
-                | TerminationOutcome::Incomplete
-                | TerminationOutcome::Unknown
-        )
+        !self.is_context_pressure()
+            && matches!(
+                self.outcome,
+                TerminationOutcome::ToolCalls
+                    | TerminationOutcome::OutputLimit { .. }
+                    | TerminationOutcome::EarlyTermination { .. }
+                    | TerminationOutcome::Incomplete
+                    | TerminationOutcome::Unknown
+            )
     }
 
     /// Whether a caller that requires complete output --- a compaction summary
@@ -213,11 +216,13 @@ pub fn classify(limits: IntendedLimits, evidence: TurnEvidence<'_>) -> Terminati
 /// Classify a provider failure.
 ///
 /// The typed overflow form is the only failure that carries pressure evidence.
-/// The retry path applies the same parse and the same
+/// The retry path applies the same status gate
+/// ([`retry::is_input_overflow_status`]), the same parse, and the same
 /// [`InputOverflow::fits_with_reduced_output`] rule before it reduces the output
-/// allowance, so a request whose input fits cannot be read as pressure here.
+/// allowance, so a request whose input fits, and any quota, auth, or rate-limit
+/// failure, cannot be read as pressure here.
 fn classify_http_failure(status: u16, body: &str) -> TerminationVerdict {
-    let overflow = if (400..500).contains(&status) {
+    let overflow = if retry::is_input_overflow_status(status) {
         retry::parse_input_overflow(body)
     } else {
         None
@@ -893,6 +898,30 @@ mod tests {
     }
 
     #[test]
+    fn non_400_failures_are_not_pressure_even_with_the_full_typed_phrase() {
+        // The retry path parses the overflow form only on 400, so the
+        // classifier reads the same gate: a quota, auth, or rate-limit body that
+        // quotes the phrase must never become a pressure verdict.
+        for status in [401, 403, 408, 429, 500, 503] {
+            let verdict = classify_http(status, OVERFLOW_DOES_NOT_FIT);
+            assert_eq!(
+                verdict.outcome,
+                TerminationOutcome::Unknown,
+                "status {status} must not parse the overflow form"
+            );
+            assert_eq!(verdict.pressure, None, "status {status}");
+        }
+
+        // The 400 control does establish pressure from the same body.
+        let control = classify_http(400, OVERFLOW_DOES_NOT_FIT);
+        assert!(control.is_context_pressure());
+        assert!(matches!(
+            control.outcome,
+            TerminationOutcome::InputDoesNotFit(_)
+        ));
+    }
+
+    #[test]
     fn quota_failure_is_not_pressure_even_with_overflow_numbers() {
         let verdict = classify_http(
             429,
@@ -932,6 +961,28 @@ mod tests {
         );
         assert!(!early.is_context_pressure());
         assert!(early.allows_semantic_continuation());
+    }
+
+    #[test]
+    fn a_pressure_verdict_never_allows_semantic_continuation() {
+        let over_window_incomplete = response_verdict(
+            IntendedLimits {
+                output_cap: None,
+                context_window: Some(1000),
+            },
+            Some(&termination(
+                TerminationClassification::Incomplete,
+                None,
+                None,
+            )),
+            Some(complete_usage(5000, 50)),
+        );
+
+        assert!(over_window_incomplete.is_context_pressure());
+        assert!(
+            !over_window_incomplete.allows_semantic_continuation(),
+            "pressure must deny a continuation even though the outcome alone would allow one"
+        );
     }
 
     #[test]

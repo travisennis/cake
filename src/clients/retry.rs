@@ -308,6 +308,16 @@ pub fn policy_backoff_delay(
     fallback_delay(policy, attempt, session_id)
 }
 
+/// Whether a provider failure status can carry the typed input-overflow form.
+///
+/// Providers return the form on `400` only. Sharing the gate keeps a quota,
+/// auth, or rate-limit body that happens to quote overflow numbers from being
+/// read as an input overflow, whether by the retry path or by the termination
+/// classifier.
+pub const fn is_input_overflow_status(status: u16) -> bool {
+    status == 400
+}
+
 /// Classify a context-overflow failure and derive the complete retry
 /// transition — status plus token-budget overrides — in a single pass over
 /// the failure body. Returns `None` when the failure is not an overflow, the
@@ -319,7 +329,7 @@ fn context_overflow_retry(
     attempt: u32,
     current_overrides: &RequestOverrides,
 ) -> Option<(RetryStatus, RequestOverrides)> {
-    if failure.status != 400 || current_overrides.context_overflow_retry_used {
+    if !is_input_overflow_status(failure.status) || current_overrides.context_overflow_retry_used {
         return None;
     }
 
