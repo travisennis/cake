@@ -345,3 +345,65 @@ async fn schema_correction_appends_at_the_tail() {
         "the corrective prompt must be the new tail: {last}"
     );
 }
+
+/// A failed session append ends the invocation before the next provider
+/// request.
+///
+/// A checkpoint commit reports failure through this same persist callback, so
+/// no pending tool may run and no follow-up request may start after it.
+#[tokio::test]
+async fn failed_append_stops_before_the_next_provider_request() {
+    let server = MockServer::start().await;
+    let fixture_dir = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+    let fixture_path = fixture_dir.path().join("append-failure-input.txt");
+    std::fs::write(&fixture_path, "alpha\n").unwrap();
+    let read_path = fixture_path.display().to_string();
+
+    // Only one response is scripted; the provider panics on a second request.
+    let provider = ScriptedProvider::new();
+    provider
+        .mount(
+            &server,
+            "/responses",
+            vec![
+                ResponseTemplate::new(200).set_body_json(responses_tool_call("call-1", &read_path)),
+            ],
+        )
+        .await;
+
+    let appends = Arc::new(Mutex::new(0usize));
+    let appends_clone = Arc::clone(&appends);
+    let mut agent = test_agent(ApiType::Responses, &server.uri())
+        .with_persist_callback(move |record| {
+            *appends_clone.lock().unwrap() += 1;
+            if matches!(record, SessionRecord::FunctionCall(_)) {
+                anyhow::bail!("forced session append failure");
+            }
+            Ok(())
+        })
+        .with_tools(crate::clients::tools::read_tool_registry());
+
+    let error = agent
+        .send("read the fixture".to_string())
+        .await
+        .expect_err("a failed append must abort the invocation");
+
+    assert!(
+        format!("{error:#}").contains("forced session append failure"),
+        "unexpected error: {error:#}"
+    );
+    assert_eq!(agent.turn_count(), 1);
+    assert_eq!(
+        provider.requests.lock().unwrap().len(),
+        1,
+        "a failed append must not start another provider request"
+    );
+    assert!(*appends.lock().unwrap() > 0);
+    assert!(
+        !agent
+            .history()
+            .iter()
+            .any(|item| matches!(item, ConversationItem::FunctionCallOutput { .. })),
+        "the pending tool must not run after the append failure"
+    );
+}
