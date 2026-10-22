@@ -7,8 +7,10 @@
 //!
 //! The retained tail is a restricted typed union of the existing conversation
 //! payloads. It cannot hold another checkpoint, prompt context, task boundary,
-//! hook audit, usage aggregate, or executable command, so a reader never has to
-//! interpret a second conversation schema.
+//! hook audit, or usage aggregate, and no retained record is executed when a
+//! checkpoint is restored: retained Bash arguments are inert data. A reader
+//! therefore never has to interpret a second conversation schema or a record
+//! with lifecycle or prompt authority.
 //!
 //! [`project_context`] is the one pure projector that turns raw history and the
 //! latest checkpoint into the provider request. Live runs and session restore
@@ -27,10 +29,6 @@ pub const CHECKPOINT_VERSION: u32 = 1;
 
 /// Maximum serialized size of one `compaction` record, including its newline.
 pub const MAX_CHECKPOINT_RECORD_BYTES: usize = 8 * 1024 * 1024;
-
-/// Conservative bytes reserved for the `{"type":"compaction",...}` record
-/// envelope and its trailing newline when checking the record ceiling.
-const RECORD_ENVELOPE_BYTES: usize = 64;
 
 /// Opens the summary when the projector substitutes a checkpoint for retired
 /// history. The summary is reference material, not a new user request.
@@ -194,20 +192,57 @@ impl RetainedRecord {
 
     /// Local provenance rules: each metadata field belongs to one payload kind.
     fn validate_provenance(&self) -> anyhow::Result<()> {
-        let is_message = matches!(&self.record, RetainedConversationRecord::Message(_));
-        let is_output = matches!(
-            &self.record,
-            RetainedConversationRecord::FunctionCallOutput(_)
-        );
+        let message = match &self.record {
+            RetainedConversationRecord::Message(data) => Some(data),
+            _ => None,
+        };
+        let output = match &self.record {
+            RetainedConversationRecord::FunctionCallOutput(data) => Some(data),
+            _ => None,
+        };
         anyhow::ensure!(
-            is_message || self.origin.is_none(),
+            message.is_some() || self.origin.is_none(),
             "Compaction checkpoint origin is only valid on a retained message"
         );
         anyhow::ensure!(
-            is_output || self.skill_read.is_none(),
+            output.is_some() || self.skill_read.is_none(),
             "Compaction checkpoint skill_read is only valid on a retained function call output"
         );
-        Ok(())
+        match &self.pin {
+            None => Ok(()),
+            Some(PinReason::UserInput) => {
+                anyhow::ensure!(
+                    message.is_some_and(|data| data.role == Role::User),
+                    "Compaction checkpoint user_input pin is only valid on a retained user message"
+                );
+                Ok(())
+            },
+            Some(PinReason::SkillInstructions { name, path }) => {
+                anyhow::ensure!(
+                    output.is_some(),
+                    "Compaction checkpoint skill_instructions pin is only valid on a retained \
+                     function call output"
+                );
+                anyhow::ensure!(
+                    self.skill_read
+                        .as_ref()
+                        .is_some_and(|read| { read.name == *name && read.path == *path }),
+                    "Compaction checkpoint skill_instructions pin must match the retained output's \
+                     skill_read provenance"
+                );
+                Ok(())
+            },
+            Some(PinReason::UnconsumedImage) => {
+                let carries_images = message.is_some_and(|data| !data.images.is_empty())
+                    || output.is_some_and(|data| !data.images.is_empty());
+                anyhow::ensure!(
+                    carries_images,
+                    "Compaction checkpoint unconsumed_image pin is only valid on a retained message \
+                     or function call output carrying images"
+                );
+                Ok(())
+            },
+        }
     }
 }
 
@@ -292,15 +327,15 @@ impl CompactionData {
     ///
     /// Rejects everything [`Self::validate_structure`] rejects, plus a record
     /// above the serialized size ceiling.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the writer commits through to_record_bytes, which performs the same validation; this names the validation contract for callers and tests"
+        )
+    )]
     pub fn validate(&self) -> anyhow::Result<()> {
-        self.validate_structure()?;
-        let record_bytes = self.serialized_record_len()?;
-        anyhow::ensure!(
-            record_bytes <= MAX_CHECKPOINT_RECORD_BYTES,
-            "Compaction checkpoint record is {record_bytes} bytes; the limit is \
-             {MAX_CHECKPOINT_RECORD_BYTES} bytes"
-        );
-        Ok(())
+        self.to_record_bytes().map(|_| ())
     }
 
     /// Validate the checkpoint's version, summary, provenance, and pairing.
@@ -319,6 +354,16 @@ impl CompactionData {
             !self.summary.trim().is_empty(),
             "Compaction checkpoint summary is empty"
         );
+        for (field, value) in [
+            ("checkpoint_id", &self.checkpoint_id),
+            ("session_id", &self.session_id),
+            ("task_id", &self.task_id),
+        ] {
+            anyhow::ensure!(
+                !value.trim().is_empty(),
+                "Compaction checkpoint {field} is empty"
+            );
+        }
         for retained in &self.retained {
             validate_retained_message(retained)?;
             retained.validate_provenance()?;
@@ -326,12 +371,31 @@ impl CompactionData {
         validate_complete_pairing(&self.retained)
     }
 
-    /// The checkpoint's bytes when framed as one JSONL session record.
-    fn serialized_record_len(&self) -> anyhow::Result<usize> {
-        let payload = serde_json::to_vec(self).map_err(|error| {
+    /// Validate the checkpoint and serialize its exact framed JSONL record.
+    ///
+    /// The returned bytes include the record envelope and trailing newline, so
+    /// validation and a writer commit enforce the same ceiling on the same
+    /// bytes. Serialization happens once: a writer can append these bytes
+    /// directly.
+    ///
+    /// # Errors
+    ///
+    /// Rejects everything [`Self::validate_structure`] rejects, plus a record
+    /// above [`MAX_CHECKPOINT_RECORD_BYTES`].
+    pub fn to_record_bytes(&self) -> anyhow::Result<Vec<u8>> {
+        self.validate_structure()?;
+        let record = crate::types::session::SessionRecord::Compaction(self.clone());
+        let mut bytes = serde_json::to_vec(&record).map_err(|error| {
             anyhow::anyhow!("Failed to serialize compaction checkpoint: {error}")
         })?;
-        Ok(payload.len() + RECORD_ENVELOPE_BYTES)
+        bytes.push(b'\n');
+        anyhow::ensure!(
+            bytes.len() <= MAX_CHECKPOINT_RECORD_BYTES,
+            "Compaction checkpoint record is {} bytes; the limit is \
+             {MAX_CHECKPOINT_RECORD_BYTES} bytes",
+            bytes.len()
+        );
+        Ok(bytes)
     }
 
     /// Copy this checkpoint into another session's envelope.
@@ -394,7 +458,19 @@ fn validate_complete_pairing(retained: &[RetainedRecord]) -> anyhow::Result<()> 
                 };
                 open.remove(position);
             },
-            RetainedConversationRecord::Message(_) | RetainedConversationRecord::Reasoning(_) => {},
+            RetainedConversationRecord::Message(_) | RetainedConversationRecord::Reasoning(_) => {
+                let kind = if matches!(&retained.record, RetainedConversationRecord::Message(_)) {
+                    "message"
+                } else {
+                    "reasoning"
+                };
+                anyhow::ensure!(
+                    open.is_empty(),
+                    "Compaction checkpoint retained a {kind} while function call '{}' still awaits \
+                     its output; only complete provider exchanges may be retained",
+                    open.first().copied().unwrap_or_default()
+                );
+            },
         }
     }
     if let Some(call_id) = open.first() {

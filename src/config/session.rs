@@ -14,8 +14,7 @@ use anyhow::Context;
 use fs4::{FileExt, TryLockError};
 
 use crate::types::{
-    CompactionData, ContextSeed, ConversationItem, GitState, MAX_CHECKPOINT_RECORD_BYTES,
-    SessionRecord, TurnUsageData, Usage,
+    CompactionData, ContextSeed, ConversationItem, GitState, SessionRecord, TurnUsageData, Usage,
 };
 
 /// Shared writer that holds the locked append handle for a session JSONL file.
@@ -85,7 +84,7 @@ impl WriterState {
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WriterFault {
-    /// Fail before the record is fully serialized.
+    /// Fail before any record byte reaches the file.
     Serialize,
     /// Fail after the record is written to the buffer but before it flushes.
     Flush,
@@ -122,16 +121,15 @@ impl SessionWriter {
     /// Append one checkpoint and sync it before returning.
     ///
     /// The whole write holds the shared mutex and the advisory lock through
-    /// serialization, the newline, the flush, and `sync_data`. Validation runs
-    /// first and does not touch the writer; a failure in any write stage
-    /// terminally fails every clone and returns the original error.
+    /// the newline, the flush, and `sync_data`. [`CompactionData::to_record_bytes`]
+    /// validates and serializes once, before the writer is touched, so the
+    /// record ceiling applies to exactly the bytes written. A failure in any
+    /// write stage terminally fails every clone and returns the original error.
     pub fn commit_checkpoint(&self, checkpoint: &CompactionData) -> anyhow::Result<()> {
-        checkpoint.validate()?;
-        let record = SessionRecord::Compaction(checkpoint.clone());
+        let bytes = checkpoint.to_record_bytes()?;
         self.write(|buffer| {
             #[cfg(test)]
             self.inject_fault(WriterFault::Serialize)?;
-            let bytes = checkpoint_record_bytes(&record)?;
             buffer
                 .write_all(&bytes)
                 .context("Failed to write compaction checkpoint")?;
@@ -408,19 +406,6 @@ impl Session {
         }
         Ok(())
     }
-}
-
-/// Serialize one checkpoint as a complete JSONL record and enforce its ceiling.
-fn checkpoint_record_bytes(record: &SessionRecord) -> anyhow::Result<Vec<u8>> {
-    let mut bytes =
-        serde_json::to_vec(record).context("Failed to serialize compaction checkpoint")?;
-    bytes.push(b'\n');
-    anyhow::ensure!(
-        bytes.len() <= MAX_CHECKPOINT_RECORD_BYTES,
-        "Compaction checkpoint record is {} bytes; the limit is {MAX_CHECKPOINT_RECORD_BYTES} bytes",
-        bytes.len()
-    );
-    Ok(bytes)
 }
 
 /// Restore a record boundary in a session file whose last write was interrupted.

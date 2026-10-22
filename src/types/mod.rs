@@ -11,7 +11,7 @@ pub mod session;
 mod usage;
 
 #[doc(inline)]
-pub use compaction::{CompactionData, ContextSeed, MAX_CHECKPOINT_RECORD_BYTES, project_context};
+pub use compaction::{CompactionData, ContextSeed, project_context};
 #[doc(inline)]
 pub use conversation::{
     ConversationItem, ImagePart, ReasoningContent, ReasoningContentKind, ReasoningSummary, Role,
