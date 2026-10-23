@@ -84,6 +84,23 @@ fn conversation_records() -> Vec<serde_json::Value> {
             "timestamp": "2026-08-14T12:00:02Z",
         }),
         serde_json::json!({
+            "type": "turn_usage",
+            "session_id": SESSION_ID,
+            "task_id": TASK_ID,
+            "turn": 1,
+            "usage": {
+                "input_tokens": 10,
+                "input_tokens_details": { "cached_tokens": 2 },
+                "output_tokens": 5,
+                "output_tokens_details": { "reasoning_tokens": 3 },
+                "total_tokens": 15,
+            },
+            "timestamp": "2026-08-14T12:00:02Z",
+            "usage_presence": "complete",
+            "context_window": 100,
+            "remaining_context_tokens": 90,
+        }),
+        serde_json::json!({
             "type": "function_call",
             "id": "fc-1",
             "call_id": "call-1",
@@ -219,6 +236,7 @@ fn replay_emits_complete_transcript_in_order() {
             "task_start",
             "prompt_context",
             "message",
+            "turn_usage",
             "function_call",
             "function_call_output",
             "skill_activated",
@@ -232,8 +250,11 @@ fn replay_emits_complete_transcript_in_order() {
     assert_eq!(records[0]["session_id"], SESSION_ID);
     assert_eq!(records[0]["model"], "test-model");
     assert_eq!(records[1]["task_id"], TASK_ID);
-    assert_eq!(records[9]["subtype"], "success");
-    assert_eq!(records[9]["usage"]["total_tokens"], 15);
+    assert_eq!(records[4]["context_window"], 100);
+    assert_eq!(records[4]["remaining_context_tokens"], 90);
+    assert_eq!(records[4]["usage"]["input_tokens"], 10);
+    assert_eq!(records[10]["subtype"], "success");
+    assert_eq!(records[10]["usage"]["total_tokens"], 15);
 }
 
 #[test]
@@ -494,8 +515,50 @@ fn replay_tolerates_interrupted_final_record() {
         String::from_utf8_lossy(&output.stderr)
     );
     let records = parse_stream(&output.stdout);
-    assert_eq!(records.len(), 10, "all complete records should be emitted");
-    assert_eq!(records[9]["type"], "task_complete");
+    assert_eq!(records.len(), 11, "all complete records should be emitted");
+    assert_eq!(records[10]["type"], "task_complete");
+}
+
+#[test]
+fn replay_emits_legacy_turn_usage_without_a_context_budget() {
+    let env = cake_env();
+    let mut records = session_fixture();
+    // Every record written before the budget fields existed replays verbatim;
+    // the client sees the measured usage but no fabricated window.
+    for record in &mut records {
+        if record["type"] == "turn_usage" {
+            record.as_object_mut().unwrap().remove("context_window");
+            record
+                .as_object_mut()
+                .unwrap()
+                .remove("remaining_context_tokens");
+        }
+    }
+    let lines: Vec<String> = records.iter().map(ToString::to_string).collect();
+    fs::write(session_path(&env, SESSION_ID), lines.join("\n") + "\n")
+        .expect("failed to write legacy fixture");
+
+    let output = env
+        .command()
+        .args(["--output-format", "stream-json", "replay", SESSION_ID])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute command");
+
+    assert!(
+        output.status.success(),
+        "legacy replay should exit 0, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let records = parse_stream(&output.stdout);
+    let usage = records
+        .iter()
+        .find(|record| record["type"] == "turn_usage")
+        .expect("legacy usage should still replay");
+    assert_eq!(usage["usage"]["input_tokens"], 10);
+    assert!(usage.get("context_window").is_none());
+    assert!(usage.get("remaining_context_tokens").is_none());
 }
 
 #[test]

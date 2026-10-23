@@ -33,6 +33,23 @@ fn success_response() -> serde_json::Value {
     })
 }
 
+fn partial_usage_response() -> serde_json::Value {
+    serde_json::json!({
+        "id": "resp-partial",
+        "model": "glm-5.1",
+        "output": [{
+            "type": "message",
+            "id": "msg-partial",
+            "status": "completed",
+            "content": [{"type": "output_text", "text": "Hello!"}]
+        }],
+        "usage": {
+            "input_tokens": 10,
+            "output_tokens": 5
+        }
+    })
+}
+
 fn reasoning_only_response() -> serde_json::Value {
     serde_json::json!({
         "id": "resp-reasoning",
@@ -100,6 +117,17 @@ fn response_failed_body_with_usage(id: &str, code: &str, message: &str) -> Strin
 }
 
 fn write_responses_settings(env: &TestEnv, base_url: &str) {
+    write_responses_settings_with_window(env, base_url, None);
+}
+
+fn write_responses_settings_with_window(
+    env: &TestEnv,
+    base_url: &str,
+    context_window: Option<u32>,
+) {
+    let window = context_window
+        .map(|tokens| format!("context_window = {tokens}\n"))
+        .unwrap_or_default();
     env.write_project_settings(&format!(
         r#"
 default_model = "test"
@@ -110,7 +138,7 @@ model = "glm-5.1"
 base_url = "{base_url}"
 api_key_env = "SESSION_TELEMETRY_TEST_KEY"
 api_type = "responses"
-"#
+{window}"#
     ));
 }
 
@@ -561,7 +589,113 @@ async fn response_failed_server_error_retries_and_recovers() {
 }
 
 #[tokio::test]
-async fn response_failed_usage_is_persisted_in_session_totals_without_stream_record() {
+async fn live_stream_turn_usage_carries_the_resolved_context_budget() {
+    let env = TestEnv::new("cake-stream-context-budget-test");
+    let mock_server = MockServer::start().await;
+    write_responses_settings_with_window(&env, &mock_server.uri(), Some(100));
+
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(success_response()))
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let output = env
+        .command()
+        .arg("--output-format")
+        .arg("stream-json")
+        .arg("test prompt")
+        .env("SESSION_TELEMETRY_TEST_KEY", "test-token")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute cake");
+
+    assert!(
+        output.status.success(),
+        "cake should succeed. stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stream = String::from_utf8(output.stdout).expect("stream-json should be UTF-8");
+    let stream_records = stream
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+
+    let usage = stream_records
+        .iter()
+        .find(|record| record["type"] == "turn_usage")
+        .expect("live stream should carry the attempt usage");
+    assert_eq!(usage["turn"], 1);
+    assert_eq!(usage["usage_presence"], "complete");
+    assert_eq!(usage["usage"]["input_tokens"], 10);
+    assert_eq!(usage["context_window"], 100);
+    assert_eq!(usage["remaining_context_tokens"], 90);
+    assert!(usage.get("attempt").is_none());
+    assert!(usage.get("terminal_class").is_none());
+
+    // The completion document keeps its task-aggregate shape.
+    let complete = stream_records
+        .iter()
+        .find(|record| record["type"] == "task_complete")
+        .expect("stream-json should contain task_complete");
+    assert_eq!(complete["usage"]["total_tokens"], 15);
+}
+
+#[tokio::test]
+async fn partial_usage_never_streams_a_context_fraction() {
+    let env = TestEnv::new("cake-stream-context-partial-test");
+    let mock_server = MockServer::start().await;
+    write_responses_settings_with_window(&env, &mock_server.uri(), Some(100));
+
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(partial_usage_response()))
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let output = env
+        .command()
+        .arg("--output-format")
+        .arg("stream-json")
+        .arg("test prompt")
+        .env("SESSION_TELEMETRY_TEST_KEY", "test-token")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute cake");
+
+    assert!(
+        output.status.success(),
+        "cake should succeed. stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stream = String::from_utf8(output.stdout).expect("stream-json should be UTF-8");
+    let stream_records = stream
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+
+    let usage = stream_records
+        .iter()
+        .find(|record| record["type"] == "turn_usage")
+        .expect("the partial attempt still reports usage");
+    assert_eq!(usage["usage_presence"], "partial");
+    assert_eq!(usage["usage"]["input_tokens"], 10);
+    assert!(
+        usage.get("context_window").is_none(),
+        "a partial report must not produce a context fraction: {usage:#?}"
+    );
+    assert!(
+        usage.get("remaining_context_tokens").is_none(),
+        "a partial report must not produce a context fraction: {usage:#?}"
+    );
+}
+
+#[tokio::test]
+async fn response_failed_usage_is_persisted_and_streamed_for_clients() {
     let env = TestEnv::new("cake-response-failed-usage-test");
     let mock_server = MockServer::start().await;
     write_responses_settings(&env, &mock_server.uri());
@@ -600,11 +734,21 @@ async fn response_failed_usage_is_persisted_in_session_totals_without_stream_rec
         .lines()
         .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
         .collect::<Vec<_>>();
+    let streamed_usage = stream_records
+        .iter()
+        .find(|record| record["type"] == "turn_usage")
+        .expect("every reported main-agent attempt should reach stream-json");
+    assert_eq!(streamed_usage["attempt"], 1);
+    assert_eq!(streamed_usage["terminal_class"], "response_failed");
+    assert_eq!(streamed_usage["usage"]["total_tokens"], 18);
+    assert_eq!(streamed_usage["usage_presence"], "complete");
     assert!(
-        stream_records
-            .iter()
-            .all(|record| record["type"] != "turn_usage"),
-        "session-only usage audit records must not enter stream-json: {stream_records:#?}"
+        streamed_usage.get("context_window").is_none(),
+        "the test model configures no window: {streamed_usage:#?}"
+    );
+    assert!(
+        streamed_usage.get("remaining_context_tokens").is_none(),
+        "the test model configures no window: {streamed_usage:#?}"
     );
     let complete = stream_records
         .iter()

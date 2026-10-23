@@ -120,13 +120,10 @@ impl CmdRunner for ReplayCommand {
 }
 
 fn emit_records(records: Vec<SessionRecord>) -> anyhow::Result<()> {
-    // `turn_usage` is a session-only audit record with no stream-json
-    // counterpart; replay mirrors the live stream vocabulary, so it is
-    // filtered out here rather than converted.
+    // Replay mirrors the live stream vocabulary and preserves physical record
+    // order. `turn_usage` records are emitted verbatim, including records
+    // written before the optional context-budget fields existed.
     for record in records {
-        if matches!(record, SessionRecord::TurnUsage(_)) {
-            continue;
-        }
         emit(&StreamRecord::from(record))?;
     }
     Ok(())

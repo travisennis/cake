@@ -59,13 +59,13 @@ The agent loop is uncapped by default; a user-configured `[limits]` section (see
 
 `--output-format json` emits one JSON object after the invocation completes. It contains the final result or error plus session metadata, usage, working directory, turn count, and elapsed time.
 
-`usage` is the task aggregate (see [Persisted sessions](#persisted-sessions)); per-attempt usage and provider identity are not part of this document. Text and stream-JSON output likewise report the task, not the attempt: the per-attempt detail lives in the session file's `turn_usage` records and in the telemetry sidecar's `api_attempt` records so that the machine-readable completion document keeps its existing shape.
+`usage` is the task aggregate (see [Persisted sessions](#persisted-sessions)); per-attempt usage and provider identity are not part of this document. Text output likewise reports the task. Stream-JSON keeps `task_complete.usage` as that same aggregate while also emitting main-agent `turn_usage` records for clients that measure context use (ADR 048); the remaining per-attempt audit detail lives in the session file and the telemetry sidecar's `api_attempt` records.
 
 Progress and retry rendering are suppressed so stdout remains parseable. The exact serialized shape is protected by CLI tests; consumers should tolerate additional optional fields.
 
 ## Stream JSON
 
-`--output-format stream-json` emits newline-delimited JSON records for the current invocation as events occur. It includes task boundaries, conversation items, hook events, and task completion. It does not emit session metadata, skill-activation metadata, or prior tasks.
+`--output-format stream-json` emits newline-delimited JSON records for the current invocation as events occur. It includes task boundaries, conversation items, main-agent per-attempt usage, hook events, and task completion. It does not emit session metadata, skill-activation metadata, or prior tasks.
 
 The `task_start` record that opens a task reports the resolved model identity serving the run: `model` is the provider model ID and `model_config` is the `[[models]]` entry name, the same split as `session_meta`. Both fields are absent when the identity is unknown; a consumer must tolerate their absence and must not substitute the raw `--model` value.
 
@@ -74,6 +74,10 @@ A redirected stream is an event feed, not a resumable session file. Consumers sh
 Malformed model tool arguments remain visible on the `function_call` record and produce a corresponding error output instead of making the stream invalid.
 
 A `message` or `function_call_output` record carries the additive `images` array when the item holds image bytes; text-only records omit the field, so consumers that ignore unknown optional fields are unaffected.
+
+A `turn_usage` record reports one main-agent provider attempt that reported usage. It carries the attempt's normalized `usage`, `turn`, `timestamp`, and provider identity, plus optional `attempt` and `terminal_class` on retried, failed, or discarded attempts. It is emitted at the provider boundary, so it can appear before that response's `message`, `reasoning`, `function_call`, or `function_call_output` records. Use the most recent record with `usage_presence` equal to `complete` as the current context size: its `usage.input_tokens` is the provider's count of the request just sent. `task_complete.usage` remains the sum of every reported attempt, including retries.
+
+The optional `context_window` and `remaining_context_tokens` fields report the configured input window and the budget left after the attempt. Both are present only when the model configures a window and `usage_presence` is `complete`; an unknown window, a partial provider report, or a record written before the fields existed omits them rather than sending zero or a fabricated fraction. Summary and compaction attempts are session and telemetry audit records and never appear as stream context measurements.
 
 An automatic semantic continuation is visible as the provider's partial conversation records followed by one Cake-authored user continuation message. The invocation still emits exactly one final `task_complete`; recovery does not create another task boundary.
 
@@ -127,7 +131,7 @@ failed, or came in below the cutoff. Its `outcome` is `absent` when no request w
 
 ## Session replay
 
-`cake --output-format stream-json replay <uuid>` re-emits an existing session transcript as stream-json without running a prompt, reading the file read-only (no lock, no append, no network) and preserving record order. Replay is the only stream-json mode that emits `session_meta`, `prompt_context`, and `skill_activated`; live invocations never do. It re-emits stored records verbatim, so a replayed `task_start` carries the identity the file records; a file written before the identity fields existed replays without them.
+`cake --output-format stream-json replay <uuid>` re-emits an existing session transcript as stream-json without running a prompt, reading the file read-only (no lock, no append, no network) and preserving record order. Replay is the only stream-json mode that emits `session_meta`, `prompt_context`, and `skill_activated`; live invocations never do. Both live and replay emit `turn_usage`; replay re-emits the stored records, including historical ones whose optional context budget is absent. It re-emits stored records verbatim, so a replayed `task_start` carries the identity the file records; a file written before the identity fields existed replays without them.
 
 Replay skips a trailing partial record from an interrupted writer, matching the session loader's tolerance, and treats a `session_meta` whose `session_id` does not match the requested UUID as `corrupt`.
 
@@ -144,12 +148,12 @@ The current format version is 4:
 3. Conversation and metadata records are appended live.
 4. The invocation ends with one `task_complete` when Cake can record an outcome.
 
-Conversation records restored into model history are `message`, `function_call`, `function_call_output`, and `reasoning`. `session_meta`, `task_start`, `prompt_context`, `skill_activated`, `hook_event`, `turn_usage`, and `task_complete` are audit or lifecycle metadata and are not replayed as conversation. A `skill_activated` record marks the first `Read`-tool read of a known skill in a session; a skill loaded through `Bash` (`cat <location>`) is deliberately not recorded, because matching a known `SKILL.md` path inside arbitrary shell text is a heuristic (see [ADR 002](adr/002-agent-skills.md)). `turn_usage` records one normalized `usage` for every provider attempt that reports it, before retry or discard classification. A retried or discarded attempt therefore has optional 1-based `attempt` and `terminal_class` fields; a terminal failed turn is audited when usage is available. Cake uses the most recent record to seed the agent's last-usage basis on resume and fork, so a restored run
-knows its current context size before the first new provider request. `task_complete.usage` totals all reported attempts, including failed or retried attempts.
+Conversation records restored into model history are `message`, `function_call`, `function_call_output`, and `reasoning`. `session_meta`, `task_start`, `prompt_context`, `skill_activated`, `hook_event`, `turn_usage`, and `task_complete` are audit or lifecycle metadata and are not replayed as conversation. A `skill_activated` record marks the first `Read`-tool read of a known skill in a session; a skill loaded through `Bash` (`cat <location>`) is deliberately not recorded, because matching a known `SKILL.md` path inside arbitrary shell text is a heuristic (see [ADR 002](adr/002-agent-skills.md)). `turn_usage` records one normalized `usage` for every main-agent provider attempt that reports it, before retry or discard classification. A retried or discarded attempt therefore has optional 1-based `attempt` and `terminal_class` fields; a terminal failed turn is audited when usage is available. The record is audit metadata, never restored into model history, but replay emits it as a stream
+record so a client can measure context use (ADR 048). Cake uses the most recent record to seed the agent's last-usage basis on resume and fork, so a restored run knows its current context size before the first new provider request. `task_complete.usage` totals all reported attempts, including failed or retried attempts.
 
 Usage is reported at three layers, and each record states which one it describes:
 
-- A **provider attempt** is one HTTP request to the provider. Its telemetry record is `api_attempt` (see [Telemetry sidecars](#telemetry-sidecars)), and each attempt that reports usage also writes one `turn_usage` record. A `turn_usage` record names the attempt's own identity: the configured `model`, the provider's response ID in `provider_request_id`, and the model the provider reported serving the response in `response_model` when its wire format supplied one and the attempt succeeded.
+- A **provider attempt** is one HTTP request to the provider. Its telemetry record is `api_attempt` (see [Telemetry sidecars](#telemetry-sidecars)), and each main-agent attempt that reports usage also writes one `turn_usage` record. A `turn_usage` record names the attempt's own identity: the configured `model`, the provider's response ID in `provider_request_id`, and the model the provider reported serving the response in `response_model` when its wire format supplied one and the attempt succeeded. Summary and compaction attempts remain attributable in the session and telemetry audit, but they are not streamed as context measurements.
 - An **agent turn** is one logical loop iteration, reported by `turns` in the completion JSON and by one provider turn of conversation records. One turn may contain several provider attempts.
 - A **task aggregate** is `task_complete.usage` in the session file and `usage` in the completion JSON: the sum of the `Usage` values of every attempt that reported one, unchanged in shape and meaning by this metadata.
 
@@ -187,7 +191,7 @@ Live `function_call` and `function_call_output` records may carry an optional `r
 - `reasoning`: provider reasoning data retained for round trips. Its `summary` array uses typed objects with `type` and `text`; loaders accept historical string entries and normalize them to `summary_text` objects.
 - `skill_activated`: first observed read of a known skill in a session.
 - `hook_event`: hook execution, decision, timing, and bounded diagnostics.
-- `turn_usage`: one provider attempt's reported usage, with optional 1-based `attempt`, `terminal_class`, `usage_presence`, `model`, `response_model`, and `provider_request_id`.
+- `turn_usage`: one main-agent provider attempt's reported usage, with optional 1-based `attempt`, `terminal_class`, `usage_presence`, `model`, `response_model`, `provider_request_id`, `context_window`, and `remaining_context_tokens`. The budget pair is present only when the window is configured and the provider reported complete usage.
 - `task_complete`: outcome, duration, turns, tool-call count, result or error, usage, and optional permission denials. Denial strings keep the existing `Tool(call): ...` shape; filesystem-sandbox entries use `sandbox: <operation> <path>` after that prefix, where operation is `read`, `write`, or `execute`. A `limit_exceeded` outcome also carries the fired `limit` key and a partial `result`.
 
 Serialization snapshots under `src/types/snapshots/` provide canonical record examples.

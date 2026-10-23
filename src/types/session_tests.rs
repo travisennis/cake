@@ -1162,9 +1162,72 @@ fn snapshot_session_json_turn_usage() {
         model: Some("glm-5.1".to_string()),
         response_model: Some("served-glm-5.1".to_string()),
         provider_request_id: Some("resp-fail".to_string()),
+        context_window: None,
+        remaining_context_tokens: None,
     });
 
     insta::assert_json_snapshot!("session_json_turn_usage", session_record_json(record));
+}
+
+#[test]
+fn snapshot_stream_record_json_turn_usage_with_context_budget() {
+    let data = TurnUsageData {
+        session_id: fixed_session_id(),
+        task_id: fixed_task_id(),
+        turn: 2,
+        usage: Usage {
+            input_tokens: 1200,
+            input_tokens_details: InputTokensDetails {
+                cached_tokens: 300,
+                cache_write_tokens: 0,
+            },
+            output_tokens: 100,
+            output_tokens_details: OutputTokensDetails {
+                reasoning_tokens: 40,
+            },
+            total_tokens: 1300,
+        },
+        timestamp: fixed_timestamp(),
+        attempt: None,
+        terminal_class: None,
+        usage_presence: Some(UsagePresence::Complete),
+        model: Some("glm-5.1".to_string()),
+        response_model: Some("served-glm-5.1".to_string()),
+        provider_request_id: Some("resp-ok".to_string()),
+        context_window: Some(2000),
+        remaining_context_tokens: Some(800),
+    };
+
+    insta::assert_json_snapshot!(
+        "stream_record_json_turn_usage",
+        serde_json::to_value(StreamRecord::TurnUsage(data)).unwrap()
+    );
+}
+
+#[test]
+fn turn_usage_stream_and_session_records_share_the_same_shape() {
+    let data = TurnUsageData {
+        session_id: fixed_session_id(),
+        task_id: fixed_task_id(),
+        turn: 1,
+        usage: Usage::default(),
+        timestamp: fixed_timestamp(),
+        attempt: None,
+        terminal_class: None,
+        usage_presence: Some(UsagePresence::Complete),
+        model: None,
+        response_model: None,
+        provider_request_id: None,
+        context_window: Some(1000),
+        remaining_context_tokens: Some(1000),
+    };
+    let stream = serde_json::to_value(StreamRecord::TurnUsage(data.clone())).unwrap();
+    let session = serde_json::to_value(SessionRecord::TurnUsage(data)).unwrap();
+
+    assert_eq!(stream, session);
+    assert_eq!(stream["type"], "turn_usage");
+    assert_eq!(stream["context_window"], 1000);
+    assert_eq!(stream["remaining_context_tokens"], 1000);
 }
 
 #[test]
@@ -1199,6 +1262,8 @@ fn legacy_turn_usage_shape_deserializes_without_attempt_metadata() {
             model: None,
             response_model: None,
             provider_request_id: None,
+            context_window: None,
+            remaining_context_tokens: None,
             ..
         })
     ));
@@ -1218,6 +1283,8 @@ fn turn_usage_without_provider_metadata_keeps_legacy_shape() {
         model: None,
         response_model: None,
         provider_request_id: None,
+        context_window: None,
+        remaining_context_tokens: None,
     });
     let json = session_record_json(record);
 
@@ -1227,6 +1294,8 @@ fn turn_usage_without_provider_metadata_keeps_legacy_shape() {
     assert!(json.get("model").is_none());
     assert!(json.get("response_model").is_none());
     assert!(json.get("provider_request_id").is_none());
+    assert!(json.get("context_window").is_none());
+    assert!(json.get("remaining_context_tokens").is_none());
 }
 
 #[test]
@@ -1243,6 +1312,8 @@ fn turn_usage_without_attempt_metadata_keeps_legacy_shape() {
         model: None,
         response_model: None,
         provider_request_id: None,
+        context_window: None,
+        remaining_context_tokens: None,
     });
     let json = session_record_json(record);
 

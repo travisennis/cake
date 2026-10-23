@@ -26,6 +26,7 @@ use crate::session_telemetry::{
 use crate::types::{
     ApiAttemptTerminalClass, ConversationItem, ReplaySafety, ReportedUsage, Role, SessionRecord,
     StreamRecord, TaskCompleteData, TaskOutcome, TaskStartData, TurnUsageData, Usage,
+    UsagePresence,
 };
 
 /// Result of a single API turn (one request/response cycle).
@@ -65,6 +66,7 @@ pub(super) fn record_turn_usage(
     last_usage: &mut Option<Usage>,
     session_id: uuid::Uuid,
     task_id: uuid::Uuid,
+    context_window: Option<u32>,
     settlement: TurnUsageSettlement,
 ) {
     let TurnUsageSettlement {
@@ -79,8 +81,19 @@ pub(super) fn record_turn_usage(
     accumulate_usage(total_usage, Some(&usage.usage));
     *last_usage = Some(usage.usage);
 
+    // A context fraction is only meaningful when the provider reported every
+    // counter and the model configures a window. A partial report would
+    // otherwise read as a measured context size the provider never gave us.
+    let budget = match context_window {
+        Some(window) if usage.presence == UsagePresence::Complete => Some((
+            window,
+            u64::from(window).saturating_sub(usage.usage.input_tokens),
+        )),
+        _ => None,
+    };
+
     let legacy_shape = attempt == 1 && terminal_class == ApiAttemptTerminalClass::Completed;
-    let record = SessionRecord::TurnUsage(TurnUsageData {
+    let data = TurnUsageData {
         session_id: session_id.to_string(),
         task_id: task_id.to_string(),
         turn: turn_index,
@@ -92,10 +105,13 @@ pub(super) fn record_turn_usage(
         model: Some(model),
         response_model,
         provider_request_id,
-    });
-    if let Err(error) = observer.persist_record(&record) {
+        context_window: budget.map(|(window, _)| window),
+        remaining_context_tokens: budget.map(|(_, remaining)| remaining),
+    };
+    if let Err(error) = observer.persist_record(&SessionRecord::TurnUsage(data.clone())) {
         tracing::warn!(target: "cake", %error, "Failed to persist per-attempt usage");
     }
+    observer.stream_audit_record(&StreamRecord::TurnUsage(data));
 }
 
 struct AgentTelemetry {

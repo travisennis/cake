@@ -19,7 +19,7 @@ The existing session format is version 4 and append-only. Live `stream-json` is 
 - Preserve reported provider cost even when response recovery or the agent task fails.
 - Keep provider-attempt failures distinguishable without storing raw provider bodies.
 - Keep old session records readable and avoid a session-format migration.
-- Keep session-only audit records out of stream-json.
+- Keep session-only audit records out of stream-json. (Partially superseded by ADR 048: main-agent `turn_usage` records are now emitted as a client context measurement.)
 - Match the provider billing boundary: each request that reports usage is billable independently.
 
 ## Considered Options
@@ -36,7 +36,7 @@ Chosen option: extend `turn_usage` with optional 1-based `attempt` and bounded `
 
 - Good, because usage remains durable when the result is not durable.
 - Good, because a retry or discarded response is attributable to its provider-attempt ordinal and terminal class.
-- Good, because old records remain readable, session format version 4 remains valid, and stream-json shapes do not change.
+- Good, because old records remain readable, session format version 4 remains valid, and existing stream-json shapes do not change. (The additive `turn_usage` stream record arrives with ADR 048.)
 - Bad, because a session may contain multiple `turn_usage` records for one logical turn when retries occur.
 - Bad, because usage that a provider never reports, such as tokens lost in a mid-stream transport death, remains unmeasurable.
 
@@ -46,3 +46,4 @@ Chosen option: extend `turn_usage` with optional 1-based `attempt` and bounded `
 - [Integration contracts](../integrations.md)
 - [Append-only session task events](004-append-only-session-task-events.md)
 - [Execution plan](../exec-plans/completed/failed-provider-turn-usage.md)
+- Partially superseded by [ADR 048](048-expose-main-request-context-usage-on-stream-json.md): main-agent `turn_usage` records are now also emitted on stream-json with an optional context budget, so the driver "Keep session-only audit records out of stream-json" no longer applies to that record. Summary and compaction usage, telemetry, and every other part of this decision remain unchanged.

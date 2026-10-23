@@ -157,6 +157,22 @@ fn captured_agent(base_url: &str) -> (Agent, PersistedRecords, StreamedRecords) 
     (agent, persisted, streamed)
 }
 
+fn streamed_types(records: &StreamedRecords) -> Vec<String> {
+    records
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|json| {
+            serde_json::from_str::<serde_json::Value>(json)
+                .unwrap()
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string()
+        })
+        .collect()
+}
+
 fn persisted_types(records: &Arc<Mutex<Vec<SessionRecord>>>) -> Vec<&'static str> {
     records
         .lock()
@@ -233,12 +249,21 @@ async fn pressure_discards_the_response_without_persisting_streaming_or_executin
         vec!["message", "turn_usage"],
         "only the user message and the attempt usage persist"
     );
-    let streamed = streamed.lock().unwrap().clone();
+    let streamed = streamed_types(&streamed);
     assert!(
+        streamed.iter().all(|record| !matches!(
+            record.as_str(),
+            "function_call" | "function_call_output" | "reasoning"
+        )),
+        "discarded items must not stream: {streamed:?}"
+    );
+    assert_eq!(
         streamed
             .iter()
-            .all(|record| !record.contains("function_call") && !record.contains("reasoning")),
-        "discarded items must not stream: {streamed:?}"
+            .filter(|record| record.as_str() == "turn_usage")
+            .count(),
+        1,
+        "the discarded attempt still settles usage once: {streamed:?}"
     );
 
     // The attempt's reported usage still settles once.
@@ -313,12 +338,17 @@ async fn no_termination_over_the_window_is_pressure() {
     assert_eq!(agent.turn_count(), 0);
     assert_eq!(agent.history().len(), 2);
     assert_eq!(persisted_types(&persisted), vec!["message", "turn_usage"]);
+    let streamed = streamed_types(&streamed);
     assert!(
+        streamed.iter().all(|record| record.as_str() != "reasoning"),
+        "discarded reasoning must not stream: {streamed:?}"
+    );
+    assert_eq!(
         streamed
-            .lock()
-            .unwrap()
             .iter()
-            .all(|record| !record.contains("reasoning"))
+            .filter(|record| record.as_str() == "turn_usage")
+            .count(),
+        1
     );
 }
 
