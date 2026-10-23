@@ -13,7 +13,9 @@ use crate::config::session_jsonl::SessionFramer;
 use anyhow::Context;
 use fs4::{FileExt, TryLockError};
 
-use crate::types::{ConversationItem, GitState, SessionRecord, TurnUsageData, Usage};
+use crate::types::{
+    CompactionData, ContextSeed, ConversationItem, GitState, SessionRecord, TurnUsageData, Usage,
+};
 
 /// Shared writer that holds the locked append handle for a session JSONL file.
 ///
@@ -24,26 +26,183 @@ use crate::types::{ConversationItem, GitState, SessionRecord, TurnUsageData, Usa
 /// The inner `File` is wrapped in a `BufWriter` so that each JSONL record
 /// serialized by `serde_json::to_writer` issues a single `write()` syscall
 /// instead of many small fragment writes.
+///
+/// A checkpoint commit is durable: it holds the same mutex through
+/// serialization, newline, flush, and `File::sync_data`. Any append, flush, or
+/// sync failure moves the shared state terminally to failed while the mutex is
+/// held, so every clone rejects later writes instead of appending to a file
+/// whose tail is unknown. The failed writer detaches its buffer without a
+/// drop-time flush and keeps the locked file until every owner drops.
 #[derive(Clone)]
 pub struct SessionWriter {
-    file: Arc<Mutex<BufWriter<File>>>,
+    inner: Arc<Mutex<WriterState>>,
+    /// Test-only fault injected at the next checkpoint commit stage.
+    #[cfg(test)]
+    fault: Arc<Mutex<Option<WriterFault>>>,
+}
+
+struct WriterState {
+    /// The buffered append handle, present until a write fails terminally.
+    buffer: Option<BufWriter<File>>,
+    /// The advisory-locked handle retained after a terminal failure, so the
+    /// lock outlives every clone's ability to append.
+    locked_file: Option<File>,
+    /// The first append/flush/sync failure, preserved as the primary cause
+    /// later writers are rejected with.
+    failure: Option<String>,
+}
+
+impl WriterState {
+    /// Borrow the append handle, rejecting a closed or terminally failed writer.
+    fn open_buffer(&mut self) -> anyhow::Result<&mut BufWriter<File>> {
+        if let Some(cause) = &self.failure {
+            anyhow::bail!(
+                "Session writer is permanently failed after an earlier write error: {cause}"
+            );
+        }
+        self.buffer
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("Session writer is already closed"))
+    }
+
+    /// Move to the terminal failed state without flushing unwritten bytes.
+    fn fail(&mut self, error: &anyhow::Error) {
+        self.failure.get_or_insert_with(|| format!("{error:#}"));
+        if let Some(buffer) = self.buffer.take() {
+            // `into_parts` detaches the buffer instead of flushing it on drop:
+            // a failed writer must not append a partial record later. The
+            // locked file stays owned by the shared state until every clone
+            // drops, so no other writer can acquire the session lock meanwhile.
+            let (file, unwritten) = buffer.into_parts();
+            drop(unwritten);
+            self.locked_file = Some(file);
+        }
+    }
+}
+
+/// A test-only failure point in a checkpoint commit.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WriterFault {
+    /// Fail before any record byte reaches the file.
+    Serialize,
+    /// Fail after the record is written to the buffer but before it flushes.
+    Flush,
+    /// Fail after the flush but before `sync_data` completes.
+    Sync,
 }
 
 impl SessionWriter {
     /// Create a writer that owns the locked append handle.
     pub fn new(file: File) -> Self {
         Self {
-            file: Arc::new(Mutex::new(BufWriter::new(file))),
+            inner: Arc::new(Mutex::new(WriterState {
+                buffer: Some(BufWriter::new(file)),
+                locked_file: None,
+                failure: None,
+            })),
+            #[cfg(test)]
+            fault: Arc::new(Mutex::new(None)),
         }
     }
 
     /// Append a single record using the shared file handle.
+    ///
+    /// A `compaction` record routes through [`Self::commit_checkpoint`] so no
+    /// caller can persist a checkpoint without its durability and validation
+    /// semantics.
     pub fn append_record(&self, record: &SessionRecord) -> anyhow::Result<()> {
-        let mut guard = self
-            .file
+        match record {
+            SessionRecord::Compaction(checkpoint) => self.commit_checkpoint(checkpoint),
+            record => self.write(|buffer| Session::append_record(buffer, record)),
+        }
+    }
+
+    /// Append one checkpoint and sync it before returning.
+    ///
+    /// Structural validation runs first and leaves the writer untouched on a
+    /// caller error. The whole write then holds the shared mutex and the
+    /// advisory lock through serialization, the newline, the flush, and
+    /// `sync_data`; [`CompactionData::to_record_bytes`] is called inside that
+    /// critical section so a serialization or size failure is an append failure
+    /// that terminally fails every clone. The record ceiling therefore applies
+    /// to exactly the bytes written, and the original error is preserved.
+    pub fn commit_checkpoint(&self, checkpoint: &CompactionData) -> anyhow::Result<()> {
+        checkpoint.validate_structure()?;
+        self.write(|buffer| {
+            #[cfg(test)]
+            self.inject_fault(WriterFault::Serialize)?;
+            // Serialize while the mutex is held: the plan requires a failure
+            // before serialization completion to fail the shared writer.
+            let bytes = checkpoint.to_record_bytes()?;
+            buffer
+                .write_all(&bytes)
+                .context("Failed to write compaction checkpoint")?;
+            #[cfg(test)]
+            self.inject_fault(WriterFault::Flush)?;
+            buffer.flush().context("Failed to flush session file")?;
+            #[cfg(test)]
+            self.inject_fault(WriterFault::Sync)?;
+            buffer
+                .get_ref()
+                .sync_data()
+                .context("Failed to sync session file")
+        })
+    }
+
+    /// Run one append against the shared buffer, failing the writer on error.
+    fn write(
+        &self,
+        append: impl FnOnce(&mut BufWriter<File>) -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
+        let mut state = self
+            .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        Session::append_record(&mut *guard, record)
+        let result = {
+            let buffer = state.open_buffer()?;
+            append(buffer)
+        };
+        if let Err(error) = result {
+            state.fail(&error);
+            drop(state);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Whether the shared writer has failed terminally (for tests).
+    #[cfg(test)]
+    pub(crate) fn is_failed(&self) -> bool {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .failure
+            .is_some()
+    }
+
+    /// Arm a one-shot failure at the next matching checkpoint commit stage.
+    #[cfg(test)]
+    pub(crate) fn fail_next_checkpoint(&self, stage: WriterFault) {
+        *self
+            .fault
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(stage);
+    }
+
+    /// Return the injected failure for `stage`, consuming it.
+    #[cfg(test)]
+    fn inject_fault(&self, stage: WriterFault) -> anyhow::Result<()> {
+        let mut fault = self
+            .fault
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if *fault != Some(stage) {
+            return Ok(());
+        }
+        *fault = None;
+        drop(fault);
+        anyhow::bail!("injected {stage:?} failure while committing a compaction checkpoint")
     }
 }
 
@@ -111,11 +270,56 @@ impl Session {
 
     /// Returns the conversation items from this session's records,
     /// filtering out session metadata and task boundary records.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "restore reads context_seed now; messages() stays the raw-conversation accessor for session consumers and tests"
+        )
+    )]
     pub fn messages(&self) -> Vec<ConversationItem> {
         self.records
             .iter()
             .filter_map(SessionRecord::to_conversation_item)
             .collect()
+    }
+
+    /// Returns the full raw conversation and the latest checkpoint's boundary.
+    ///
+    /// [`Self::messages`] keeps its existing meaning. Restore uses this seed
+    /// instead, so the request projector can replace every conversation item
+    /// before the latest checkpoint record's position. The boundary is a count
+    /// of conversation items, derived by scanning records in order, so it stays
+    /// stable across resume and fork without storing an index.
+    pub fn context_seed(&self) -> ContextSeed {
+        let latest = self.latest_checkpoint_index();
+        let mut seed = ContextSeed::default();
+        for (index, record) in self.records.iter().enumerate() {
+            match record {
+                SessionRecord::Compaction(checkpoint) if latest == Some(index) => {
+                    seed.checkpoint = Some(checkpoint.clone());
+                    seed.boundary = Some(seed.messages.len());
+                },
+                SessionRecord::Compaction(_) => {},
+                record => {
+                    if let Some(item) = record.to_conversation_item() {
+                        seed.messages.push(item);
+                    }
+                },
+            }
+        }
+        seed
+    }
+
+    /// Returns the record index of the latest `compaction` checkpoint.
+    ///
+    /// Restore, fork seeding, and [`Self::context_seed`] all select the newest
+    /// checkpoint through this one rule, so they cannot disagree about which
+    /// summary is active.
+    pub fn latest_checkpoint_index(&self) -> Option<usize> {
+        self.records
+            .iter()
+            .rposition(|record| matches!(record, SessionRecord::Compaction(_)))
     }
 
     /// Returns the usage of the most recent provider attempt that reported it.
@@ -153,7 +357,7 @@ impl Session {
             .with_context(|| format!("Failed to open session file: {}", path.display()))?;
         let mut framer = SessionFramer::new(BufReader::new(file));
         let (meta, header) = read_session_header(&mut framer, path)?;
-        let records = read_session_records(&mut framer, path, header.timestamp, meta)?;
+        let records = read_session_records(&mut framer, path, header.timestamp, meta, header.id)?;
 
         Ok(Self {
             id: header.id,
@@ -394,8 +598,10 @@ fn read_session_records<R: std::io::BufRead>(
     path: &Path,
     session_timestamp: chrono::DateTime<chrono::Utc>,
     meta: SessionRecord,
+    session_id: uuid::Uuid,
 ) -> anyhow::Result<Vec<SessionRecord>> {
     let mut records = vec![meta];
+    let session_id = session_id.to_string();
 
     while let Some(line) = framer
         .next_record()
@@ -404,6 +610,16 @@ fn read_session_records<R: std::io::BufRead>(
         match serde_json::from_str::<SessionRecord>(&line.text) {
             Ok(mut record) => {
                 record.normalize_legacy_fields(session_timestamp);
+                if let SessionRecord::Compaction(checkpoint) = &record {
+                    ensure_checkpoint_matches_session(checkpoint, &session_id).with_context(
+                        || {
+                            format!(
+                                "Failed to validate compaction checkpoint in session file: {}",
+                                path.display()
+                            )
+                        },
+                    )?;
+                }
                 records.push(record);
             },
             Err(error) if line.partial_tail => {
@@ -427,6 +643,25 @@ fn read_session_records<R: std::io::BufRead>(
     }
 
     Ok(records)
+}
+
+/// Reject a checkpoint recorded for a different session.
+///
+/// Fork seeding must re-envelope the copied checkpoint for the new session.
+/// A checkpoint that still names the source session means that step was
+/// skipped, so loading fails loudly instead of projecting another session's
+/// summary.
+pub fn ensure_checkpoint_matches_session(
+    checkpoint: &CompactionData,
+    session_id: &str,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        checkpoint.session_id == session_id,
+        "Compaction checkpoint '{}' belongs to session {}, not {session_id}",
+        checkpoint.checkpoint_id,
+        checkpoint.session_id
+    );
+    Ok(())
 }
 
 fn lock_session_file(file: &File, path: &Path) -> anyhow::Result<()> {
@@ -1318,5 +1553,409 @@ mod tests {
         assert!(error.contains(
             "Another cake invocation is currently writing to session 550e8400-e29b-41d4-a716-446655440000"
         ));
+    }
+
+    // ---- context checkpoints ----
+
+    use crate::types::compaction::test_support;
+
+    fn checkpoint_record(session: &Session, id: &str, summary: &str) -> SessionRecord {
+        let mut data =
+            test_support::checkpoint(id, summary, test_support::exchange("call-1", "out"));
+        data.session_id = session.id.to_string();
+        SessionRecord::Compaction(data)
+    }
+
+    fn message_record(role: Role, content: &str) -> SessionRecord {
+        SessionRecord::Message(MessageData {
+            role,
+            content: content.to_string(),
+            id: None,
+            status: None,
+            timestamp: None,
+            images: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn session_context_seed_uses_the_latest_compaction_boundary() {
+        let mut session = make_test_session();
+        session.records.push(meta_record(&session));
+        session.records.push(task_start(&session, "task-1"));
+        session
+            .records
+            .push(message_record(Role::User, "retired request"));
+        session
+            .records
+            .push(checkpoint_record(&session, "checkpoint-1", "older summary"));
+        session
+            .records
+            .push(message_record(Role::Assistant, "intervening answer"));
+        session
+            .records
+            .push(checkpoint_record(&session, "checkpoint-2", "newer summary"));
+        session
+            .records
+            .push(message_record(Role::User, "new request"));
+
+        let seed = session.context_seed();
+
+        assert_eq!(
+            session.latest_checkpoint_index(),
+            Some(5),
+            "the latest checkpoint record index is exposed for fork seeding"
+        );
+        assert_eq!(
+            seed.messages.len(),
+            3,
+            "context_seed keeps full raw history"
+        );
+        assert_eq!(
+            session.messages().len(),
+            3,
+            "messages() keeps its semantics"
+        );
+        assert_eq!(
+            seed.boundary,
+            Some(2),
+            "the boundary is the conversation-item count at the latest checkpoint"
+        );
+        let checkpoint = seed.checkpoint.expect("latest checkpoint");
+        assert_eq!(checkpoint.checkpoint_id, "checkpoint-2");
+        assert_eq!(checkpoint.summary, "newer summary");
+        assert!(
+            !checkpoint.retained.is_empty(),
+            "the latest tail is selected"
+        );
+    }
+
+    #[test]
+    fn checkpoint_free_session_context_seed_is_raw_history() {
+        let mut session = make_test_session();
+        session.records.push(meta_record(&session));
+        session.records.push(task_start(&session, "task-1"));
+        session.records.push(message_record(Role::User, "hello"));
+
+        let seed = session.context_seed();
+
+        assert_eq!(seed.messages.len(), 1);
+        assert!(seed.checkpoint.is_none());
+        assert!(seed.boundary.is_none());
+        assert!(session.latest_checkpoint_index().is_none());
+    }
+
+    #[test]
+    fn session_load_rejects_an_unknown_compaction_checkpoint_version() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let session = make_test_session();
+        let mut json = serde_json::to_value(checkpoint_record(&session, "c-1", "summary")).unwrap();
+        json["checkpoint_version"] = serde_json::json!(2);
+        fs::write(
+            &path,
+            format!(
+                "{}\n{}\n",
+                serde_json::to_string(&meta_record(&session)).unwrap(),
+                json
+            ),
+        )
+        .unwrap();
+
+        let error = format!("{:#}", Session::load(&path).unwrap_err());
+        assert!(
+            error.contains("Unsupported compaction checkpoint_version: 2 (expected 1)"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn session_load_rejects_a_checkpoint_from_another_session() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let session = make_test_session();
+        let mut checkpoint = test_support::checkpoint("checkpoint-1", "summary", Vec::new());
+        checkpoint.session_id = uuid::Uuid::new_v4().to_string();
+        let foreign_session = checkpoint.session_id.clone();
+        fs::write(
+            &path,
+            format!(
+                "{}\n{}\n",
+                serde_json::to_string(&meta_record(&session)).unwrap(),
+                serde_json::to_string(&SessionRecord::Compaction(checkpoint)).unwrap()
+            ),
+        )
+        .unwrap();
+
+        let error = format!("{:#}", Session::load(&path).unwrap_err());
+        assert!(
+            error.contains("Failed to validate compaction checkpoint")
+                && error.contains(&format!(
+                    "belongs to session {foreign_session}, not {}",
+                    session.id
+                )),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn compaction_checkpoint_commit_appends_a_loadable_record() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let session = make_test_session();
+        let mut file = Session::create_on_disk(&path, &meta_record(&session)).unwrap();
+        Session::append_record(&mut file, &message_record(Role::User, "hello")).unwrap();
+        let writer = SessionWriter::new(file);
+        let mut checkpoint = test_support::checkpoint(
+            "checkpoint-1",
+            "summarized earlier work",
+            test_support::exchange("call-1", "tool output"),
+        );
+        checkpoint.session_id = session.id.to_string();
+
+        writer
+            .commit_checkpoint(&checkpoint)
+            .expect("checkpoint should commit");
+        // The same record through the generic append takes the durable path.
+        writer
+            .append_record(&SessionRecord::Compaction(checkpoint))
+            .expect("append_record should route a checkpoint through its commit");
+        drop(writer);
+
+        assert_frameable_records(&path);
+        let loaded = Session::load(&path).unwrap();
+        let checkpoints: Vec<_> = loaded
+            .records
+            .iter()
+            .filter_map(|record| match record {
+                SessionRecord::Compaction(data) => Some(data),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(checkpoints.len(), 2);
+        assert_eq!(checkpoints[1].summary, "summarized earlier work");
+        assert_eq!(loaded.messages().len(), 1, "raw history is unchanged");
+        assert_eq!(loaded.context_seed().boundary, Some(1));
+    }
+
+    #[test]
+    fn compaction_checkpoint_commit_rejects_invalid_data_without_writing() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let session = make_test_session();
+        let file = Session::create_on_disk(&path, &meta_record(&session)).unwrap();
+        let writer = SessionWriter::new(file);
+        let before = fs::read(&path).unwrap();
+        let mut invalid = test_support::checkpoint("checkpoint-1", "  ", Vec::new());
+        invalid.session_id = session.id.to_string();
+
+        let error = writer.commit_checkpoint(&invalid).unwrap_err().to_string();
+
+        assert!(error.contains("summary is empty"), "{error}");
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert!(
+            !writer.is_failed(),
+            "validation fails before the writer touches the file"
+        );
+        writer
+            .append_record(&task_start(&session, "task-1"))
+            .expect("the writer stays usable after a validation failure");
+    }
+
+    #[test]
+    fn compaction_checkpoint_commit_failure_fails_every_writer_clone() {
+        for stage in [
+            WriterFault::Serialize,
+            WriterFault::Flush,
+            WriterFault::Sync,
+        ] {
+            let dir = TempDir::new().unwrap();
+            let path = dir.path().join(format!("session-{stage:?}.jsonl"));
+            let session = make_test_session();
+            let file = Session::create_on_disk(&path, &meta_record(&session)).unwrap();
+            let writer = SessionWriter::new(file);
+            let clone = writer.clone();
+            let mut checkpoint = test_support::checkpoint("checkpoint-1", "summary", Vec::new());
+            checkpoint.session_id = session.id.to_string();
+
+            writer.fail_next_checkpoint(stage);
+            let error = writer
+                .commit_checkpoint(&checkpoint)
+                .expect_err("the injected failure must fail the commit")
+                .to_string();
+            assert!(
+                error.contains(&format!("injected {stage:?} failure")),
+                "{stage:?}: {error}"
+            );
+            assert!(writer.is_failed(), "{stage:?}");
+            assert!(clone.is_failed(), "{stage:?}");
+            assert!(
+                Session::open_for_append(&path).is_err(),
+                "{stage:?}: the failed writer keeps the advisory lock"
+            );
+
+            // The file is stable from here on: the failed writer detaches its
+            // buffer instead of flushing it, and every clone rejects writes.
+            let stable = fs::read(&path).unwrap();
+            let record = task_start(&session, "task-2");
+            for writer in [&writer, &clone] {
+                let error = writer.append_record(&record).unwrap_err().to_string();
+                assert!(
+                    error.contains("permanently failed")
+                        && error.contains(&format!("injected {stage:?} failure")),
+                    "{stage:?}: later appends name the original failure: {error}"
+                );
+            }
+            let commit_error = clone
+                .commit_checkpoint(&checkpoint)
+                .unwrap_err()
+                .to_string();
+            assert!(commit_error.contains("permanently failed"), "{stage:?}");
+            assert_eq!(
+                fs::read(&path).unwrap(),
+                stable,
+                "{stage:?}: no bytes changed"
+            );
+
+            // A concurrent clone on another thread shares the failed state.
+            let threaded = clone.clone();
+            let record = record.clone();
+            let rejected = std::thread::spawn(move || threaded.append_record(&record).is_err())
+                .join()
+                .expect("writer thread should not panic");
+            assert!(rejected, "{stage:?}: a concurrent clone must reject writes");
+
+            drop(writer);
+            drop(clone);
+            assert_eq!(
+                fs::read(&path).unwrap(),
+                stable,
+                "{stage:?}: owner destruction must not flush or append"
+            );
+
+            // A new locked open releases the lock and repairs or retains the
+            // last record.
+            let mut file = Session::open_for_append(&path).unwrap();
+            Session::append_record(&mut file, &task_start(&session, "task-3")).unwrap();
+            drop(file);
+            assert_frameable_records(&path);
+            let loaded = Session::load(&path).unwrap();
+            let retained = loaded
+                .records
+                .iter()
+                .any(|record| matches!(record, SessionRecord::Compaction(data) if data.checkpoint_id == "checkpoint-1"));
+            assert_eq!(
+                retained,
+                stage == WriterFault::Sync,
+                "{stage:?}: only a checkpoint whose flush completed is retained"
+            );
+        }
+    }
+
+    #[test]
+    fn flush_failure_with_an_oversized_record_leaves_no_malformed_line() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let session = make_test_session();
+        let file = Session::create_on_disk(&path, &meta_record(&session)).unwrap();
+        let writer = SessionWriter::new(file);
+        let before = fs::read(&path).unwrap();
+
+        // Larger than `BufWriter`'s capacity. `write_all` bypasses the buffer
+        // for a write this large, so the full record reaches the file before
+        // the injected flush failure; detaching the buffer at failure must not
+        // leave an interior fragment.
+        let large_output = "x".repeat(128 * 1024);
+        let mut checkpoint = test_support::checkpoint(
+            "checkpoint-1",
+            "summary",
+            test_support::exchange("call-1", &large_output),
+        );
+        checkpoint.session_id = session.id.to_string();
+
+        writer.fail_next_checkpoint(WriterFault::Flush);
+        let error = writer
+            .commit_checkpoint(&checkpoint)
+            .expect_err("the injected failure must fail the commit")
+            .to_string();
+        assert!(error.contains("injected Flush failure"), "{error}");
+        let after = fs::read(&path).unwrap();
+        assert!(
+            after.len() > before.len(),
+            "the oversized record reached the file before the failure"
+        );
+        assert!(
+            after.ends_with(b"\n"),
+            "the direct write included the record's newline"
+        );
+
+        drop(writer);
+        drop(Session::open_for_append(&path).expect("a locked reopen accepts the record boundary"));
+
+        assert_frameable_records(&path);
+        let loaded = Session::load(&path).expect("the session loads after the failure");
+        let checkpoints: Vec<_> = loaded
+            .records
+            .iter()
+            .filter_map(|record| match record {
+                SessionRecord::Compaction(data) => Some(data),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            checkpoints.len(),
+            1,
+            "a record that reached the file stays, and it is complete"
+        );
+        assert_eq!(checkpoints[0].checkpoint_id, "checkpoint-1");
+        let crate::types::compaction::RetainedConversationRecord::FunctionCallOutput(output) =
+            &checkpoints[0].retained[1].record
+        else {
+            panic!("the retained exchange keeps its output");
+        };
+        assert_eq!(output.output.len(), large_output.len());
+
+        let mut file = Session::open_for_append(&path).unwrap();
+        Session::append_record(&mut file, &task_start(&session, "task-1")).unwrap();
+        drop(file);
+        assert_frameable_records(&path);
+        Session::load(&path).expect("later records append after the complete checkpoint");
+    }
+
+    #[test]
+    fn open_for_append_repairs_a_torn_tail_after_a_complete_checkpoint() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let session = make_test_session();
+        let file = Session::create_on_disk(&path, &meta_record(&session)).unwrap();
+        let writer = SessionWriter::new(file);
+        let mut checkpoint =
+            test_support::checkpoint("checkpoint-1", "durable summary", Vec::new());
+        checkpoint.session_id = session.id.to_string();
+        writer.commit_checkpoint(&checkpoint).unwrap();
+        drop(writer);
+
+        // A later process dies mid-record after the complete checkpoint.
+        let durable = fs::read(&path).unwrap();
+        let mut torn = String::from_utf8(durable.clone()).unwrap();
+        torn.push_str(r#"{"type":"message","role":"user","content":"interrup"#);
+        fs::write(&path, torn).unwrap();
+
+        let mut file = Session::open_for_append(&path).unwrap();
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            durable,
+            "repair keeps the complete checkpoint and truncates the fragment"
+        );
+        Session::append_record(&mut file, &task_start(&session, "task-2")).unwrap();
+        drop(file);
+
+        assert_frameable_records(&path);
+        let loaded = Session::load(&path).unwrap();
+        let seed = loaded.context_seed();
+        assert_eq!(
+            seed.checkpoint.expect("checkpoint survives").summary,
+            "durable summary"
+        );
+        assert_eq!(seed.boundary, Some(0));
     }
 }

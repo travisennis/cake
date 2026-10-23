@@ -50,12 +50,12 @@
     {
       "file": "./src/types/session.rs",
       "function": "SessionRecord::from",
-      "cyclomatic": 12.0
+      "cyclomatic": 13.0
     },
     {
       "file": "./src/types/session.rs",
       "function": "StreamRecord::from",
-      "cyclomatic": 12.0
+      "cyclomatic": 13.0
     },
     {
       "file": "./src/types/session.rs",

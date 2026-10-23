@@ -559,3 +559,140 @@ fn replay_mismatched_header_session_id_fails_as_corrupt() {
     assert_eq!(records[0]["type"], "replay_error");
     assert_eq!(records[0]["kind"], "corrupt");
 }
+
+fn compaction_record() -> serde_json::Value {
+    serde_json::json!({
+        "type": "compaction",
+        "checkpoint_version": 1,
+        "checkpoint_id": "checkpoint-1",
+        "session_id": SESSION_ID,
+        "task_id": TASK_ID,
+        "timestamp": "2026-08-14T12:00:08Z",
+        "trigger": "threshold",
+        "summary": "Earlier work retired into this summary.",
+        "retained": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": "retained input",
+                "origin": "user",
+                "pin": { "kind": "user_input" }
+            },
+            {
+                "type": "function_call",
+                "id": "fc-retained",
+                "call_id": "call-retained",
+                "name": "read",
+                "arguments": "{}"
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call-retained",
+                "output": "retained output"
+            }
+        ],
+        "model": { "model": "test-model", "model_config": "test" },
+        "summary_instruction_version": 1,
+        "estimated_input": {
+            "before_tokens": 100,
+            "after_tokens": 40,
+            "basis": "content_class"
+        }
+    })
+}
+
+#[test]
+fn replay_emits_a_checkpoint_once_in_physical_order() {
+    let env = cake_env();
+    let mut fixture = session_fixture();
+    fixture.insert(fixture.len() - 1, compaction_record());
+    let lines: Vec<String> = fixture.iter().map(ToString::to_string).collect();
+    fs::write(session_path(&env, SESSION_ID), lines.join("\n") + "\n")
+        .expect("failed to write checkpoint fixture");
+
+    let output = env
+        .command()
+        .args(["--output-format", "stream-json", "replay", SESSION_ID])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute command");
+
+    assert!(
+        output.status.success(),
+        "replay should exit 0, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let records = parse_stream(&output.stdout);
+    let checkpoints: Vec<_> = records
+        .iter()
+        .filter(|record| record["type"] == "compaction")
+        .collect();
+    assert_eq!(
+        checkpoints.len(),
+        1,
+        "replay emits the checkpoint exactly once"
+    );
+    assert_eq!(
+        checkpoints[0]["summary"],
+        "Earlier work retired into this summary."
+    );
+    assert_eq!(checkpoints[0]["retained"][0]["content"], "retained input");
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| record["type"] == "message")
+            .count(),
+        1,
+        "replay must not expand the retained tail into duplicate messages"
+    );
+    let types: Vec<&str> = records
+        .iter()
+        .map(|record| record["type"].as_str().unwrap_or_default())
+        .collect();
+    let checkpoint_index = types
+        .iter()
+        .position(|kind| *kind == "compaction")
+        .expect("checkpoint record");
+    assert_eq!(
+        checkpoint_index,
+        types.len() - 2,
+        "the checkpoint keeps its physical position before task_complete"
+    );
+}
+
+#[test]
+fn replay_rejects_an_unknown_checkpoint_version() {
+    let env = cake_env();
+    let mut fixture = session_fixture();
+    let mut checkpoint = compaction_record();
+    checkpoint["checkpoint_version"] = serde_json::json!(2);
+    fixture.insert(fixture.len() - 1, checkpoint);
+    let lines: Vec<String> = fixture.iter().map(ToString::to_string).collect();
+    fs::write(session_path(&env, SESSION_ID), lines.join("\n") + "\n")
+        .expect("failed to write unknown-version fixture");
+
+    let output = env
+        .command()
+        .args(["--output-format", "stream-json", "replay", SESSION_ID])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute command");
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "an unknown checkpoint version is a corrupt-session error"
+    );
+    let records = parse_stream(&output.stdout);
+    assert_eq!(records[0]["type"], "replay_error");
+    assert_eq!(records[0]["kind"], "corrupt");
+    assert!(
+        records[0]["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("Unsupported compaction checkpoint_version: 2")),
+        "the error must name the checkpoint version: {}",
+        records[0]["error"]
+    );
+}

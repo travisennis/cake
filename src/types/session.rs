@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use crate::types::compaction::CompactionData;
 use crate::types::conversation::{
     ConversationItem, ImagePart, ReasoningContent, ReasoningSummary, Role,
 };
@@ -607,6 +608,12 @@ pub enum SessionRecord {
 
     /// Per-attempt token usage (session-only; not emitted to stream-json).
     TurnUsage(TurnUsageData),
+
+    /// One self-contained context checkpoint: a summary of retired history plus
+    /// the retained tail that replaces it. The record carries its own version,
+    /// so the session `format_version` does not change. Validation runs when the
+    /// record is parsed or committed.
+    Compaction(CompactionData),
 }
 
 /// Machine-readable category for a `replay_error` stream record.
@@ -687,6 +694,11 @@ pub enum StreamRecord {
 
     TaskComplete(TaskCompleteData),
 
+    /// One committed context checkpoint, emitted in physical transcript order
+    /// by replay. Retained contents are never expanded into duplicate message
+    /// or tool events.
+    Compaction(CompactionData),
+
     /// Structured failure emitted by `cake replay` before the process exits
     /// non-zero, so stream-json parsers can learn why replay failed without
     /// waiting for the exit code. Never emitted by live streams.
@@ -762,6 +774,7 @@ impl From<StreamRecord> for SessionRecord {
             StreamRecord::HookEvent(d) => Self::HookEvent(d),
             StreamRecord::Reasoning(d) => Self::Reasoning(d),
             StreamRecord::TaskComplete(d) => Self::TaskComplete(d),
+            StreamRecord::Compaction(d) => Self::Compaction(d),
             // `replay_error` is emitted only by `cake replay`, which never
             // writes to a session file; there is no persisted counterpart.
             StreamRecord::ReplayError { .. } => {
@@ -830,6 +843,7 @@ impl From<SessionRecord> for StreamRecord {
             SessionRecord::HookEvent(d) => Self::HookEvent(d),
             SessionRecord::Reasoning(d) => Self::Reasoning(d),
             SessionRecord::TaskComplete(d) => Self::TaskComplete(d),
+            SessionRecord::Compaction(d) => Self::Compaction(d),
             // `turn_usage` is a session-only audit record with no stream-json
             // counterpart; `cake replay` filters it before conversion.
             SessionRecord::TurnUsage(_) => {
@@ -932,6 +946,7 @@ impl SessionRecord {
             | Self::SkillActivated { .. }
             | Self::HookEvent(_)
             | Self::TaskComplete(_)
+            | Self::Compaction(_)
             | Self::TurnUsage(_) => {},
         }
     }
@@ -1002,6 +1017,7 @@ impl SessionRecord {
             | Self::SkillActivated { .. }
             | Self::HookEvent(_)
             | Self::TaskComplete(_)
+            | Self::Compaction(_)
             | Self::TurnUsage(_) => None,
         }
     }
