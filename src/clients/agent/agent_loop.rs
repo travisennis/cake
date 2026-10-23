@@ -7,6 +7,9 @@ use futures::StreamExt;
 use crate::clients::agent::{Agent, TurnResult, record_turn_usage};
 use crate::clients::backend::FinalOutputConstraint;
 use crate::clients::retry::{RequestOverrides, RetryReason, RetryStatus};
+use crate::clients::termination::{
+    self, ContextPressure, IntendedLimits, TerminationVerdict, TurnEvidence,
+};
 use crate::clients::tools::{
     ScheduledToolCall, Tool, ToolError, ToolRegistry, ToolResult, argument_compensation_events,
     read_extract_path, schedule_tool_calls,
@@ -16,7 +19,7 @@ use crate::config::output_schema::{OutputSchema, OutputSchemaError};
 use crate::hooks::{HookRunner, ToolHookPlan};
 use crate::session_telemetry::{
     AgentRunnerTelemetryEvent, CompensationEventTelemetry, CompensationKind,
-    RetryScheduledTelemetry, TerminationClassification, ToolCallTelemetry,
+    RetryScheduledTelemetry, ToolCallTelemetry,
 };
 use crate::types::{ConversationItem, CutOffError, ImagePart, LimitExceededError, SessionRecord};
 
@@ -42,7 +45,26 @@ struct TurnContext<'a> {
     semantic_recovery_used: &'a mut bool,
     provider_turn_start: usize,
     invocation_start: usize,
-    termination: Option<&'a crate::session_telemetry::ProviderTermination>,
+    verdict: &'a TerminationVerdict,
+}
+
+/// The invocation's single context-pressure recovery allowance.
+///
+/// Shared by every pressure verdict in one `Agent::send` invocation, and later
+/// by an HTTP input overflow (034h). Compaction is not wired yet, so consuming
+/// the guard ends the invocation instead of retrying the identical request.
+#[derive(Debug, Default)]
+struct PressureRecoveryGuard {
+    spent: bool,
+}
+
+impl PressureRecoveryGuard {
+    /// Consume the allowance, returning whether it was still available.
+    const fn consume(&mut self) -> bool {
+        let available = !self.spent;
+        self.spent = true;
+        available
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -171,6 +193,7 @@ impl Agent {
         let mut corrections_used: u32 = 0;
         let mut turn_mode = TurnMode::Normal;
         let mut semantic_recovery_used = false;
+        let mut pressure_guard = PressureRecoveryGuard::default();
 
         // Agent loop: continue until model stops making tool calls
         loop {
@@ -181,10 +204,40 @@ impl Agent {
 
             let provider_turn_start = self.conversation.history().len();
             let TurnResult {
-                items, termination, ..
+                items,
+                usage,
+                termination,
+                ..
             } = self
                 .complete_turn_with_output_schema_fallback(turn_mode)
                 .await?;
+
+            // Classify before persisting or streaming the turn's items and
+            // before dispatching any returned tools, so a discarded response
+            // leaves no trace beyond the usage its attempt already settled.
+            let verdict = termination::classify(
+                self.intended_limits(),
+                TurnEvidence::Response {
+                    termination: termination.as_ref(),
+                    usage,
+                },
+            );
+            if let Some(pressure) = verdict.pressure {
+                // One pressure recovery per invocation, shared with the HTTP
+                // input-overflow path (034h). Nothing can spend it yet, so the
+                // guard ends the invocation rather than retrying the identical
+                // request; it never also gets a semantic continuation.
+                let recovery_available = pressure_guard.consume();
+                tracing::info!(
+                    target: "cake",
+                    recovery_available,
+                    pressure = ?pressure,
+                    measured_input = verdict.measured_input,
+                    context_window = verdict.context_window,
+                    "Discarding a response classified as context pressure"
+                );
+                return Err(context_pressure_error(self.session_id, pressure).into());
+            }
 
             let function_calls = self.process_completed_turn(items, turn_mode)?;
             let turn_context = TurnContext {
@@ -193,11 +246,23 @@ impl Agent {
                 semantic_recovery_used: &mut semantic_recovery_used,
                 provider_turn_start,
                 invocation_start,
-                termination: termination.as_ref(),
+                verdict: &verdict,
             };
             if let Some(document) = self.process_turn(function_calls, turn_context).await? {
                 return Ok(document);
             }
+        }
+    }
+
+    /// The limits the current request was intended to honor.
+    ///
+    /// The output cap is the resolved model maximum before any context
+    /// clamping; `complete_turn` may send a smaller allowance after an overflow,
+    /// which must never become the reference for a cap comparison.
+    const fn intended_limits(&self) -> IntendedLimits {
+        IntendedLimits {
+            output_cap: self.config.model_config.max_output_tokens,
+            context_window: self.context_window(),
         }
     }
 
@@ -229,7 +294,7 @@ impl Agent {
                 context.turn_mode,
                 context.semantic_recovery_used,
                 context.provider_turn_start,
-                context.termination,
+                context.verdict,
             );
         }
 
@@ -239,7 +304,7 @@ impl Agent {
                 context.corrections_used,
                 context.turn_mode,
                 context.provider_turn_start,
-                context.termination,
+                context.verdict,
             )?;
             return Ok(None);
         }
@@ -255,13 +320,13 @@ impl Agent {
         turn_mode: &mut TurnMode,
         semantic_recovery_used: &mut bool,
         provider_turn_start: usize,
-        termination: Option<&crate::session_telemetry::ProviderTermination>,
+        verdict: &TerminationVerdict,
     ) -> anyhow::Result<Option<String>> {
         let message = self
             .conversation
             .resolve_assistant_message_from(provider_turn_start);
-        if message.is_none() || termination_marks_incomplete(termination) {
-            if !*semantic_recovery_used && semantic_incomplete_is_retryable(termination) {
+        if message.is_none() || verdict.marks_incomplete() {
+            if !*semantic_recovery_used && verdict.allows_semantic_continuation() {
                 *semantic_recovery_used = true;
                 *turn_mode = TurnMode::SemanticRecovery;
                 self.record_semantic_recovery_retry();
@@ -279,7 +344,7 @@ impl Agent {
                 .unwrap_or_default();
             return Err(cut_off_error(
                 turn_items,
-                termination,
+                verdict,
                 semantic_recovery_used.then_some(self.session_id),
             )
             .into());
@@ -299,7 +364,7 @@ impl Agent {
         corrections_used: &mut u32,
         turn_mode: &mut TurnMode,
         provider_turn_start: usize,
-        termination: Option<&crate::session_telemetry::ProviderTermination>,
+        verdict: &TerminationVerdict,
     ) -> anyhow::Result<()> {
         // Correction turns offer no tools, so any function calls here come
         // from a misbehaving provider. Do not execute them; treat the turn
@@ -325,7 +390,7 @@ impl Agent {
             .history()
             .get(provider_turn_start..)
             .unwrap_or_default();
-        Err(cut_off_error(turn_items, termination, Some(self.session_id)).into())
+        Err(cut_off_error(turn_items, verdict, Some(self.session_id)).into())
     }
 
     async fn execute_tool_turn(
@@ -962,7 +1027,13 @@ impl Agent {
 fn is_native_constraint_rejection(error: &anyhow::Error) -> bool {
     error
         .downcast_ref::<crate::exit_code::ApiError>()
-        .is_some_and(|api_error| api_error.status == 400)
+        .is_some_and(|api_error| {
+            // A typed input overflow is also a 400, but it is not a rejected
+            // constraint: retrying without the schema cannot make the input fit
+            // and would spend a second request before the compaction owner sees
+            // the verdict (ADR 047).
+            api_error.status == 400 && api_error.input_overflow.is_none()
+        })
 }
 
 fn tool_definitions_for_turn(tools: &ToolRegistry, turn_mode: TurnMode) -> &[Tool] {
@@ -1128,7 +1199,7 @@ fn detect_skill_activation(
 /// empty response as cut off during reasoning.
 fn cut_off_error(
     turn_items: &[ConversationItem],
-    termination: Option<&crate::session_telemetry::ProviderTermination>,
+    verdict: &TerminationVerdict,
     resume_session_id: Option<uuid::Uuid>,
 ) -> CutOffError {
     let mut detail = if turn_items.is_empty() {
@@ -1141,58 +1212,50 @@ fn cut_off_error(
     } else {
         "The model's response was incomplete. No final message was received.".to_string()
     };
-    detail.push_str(&termination_diagnostic(termination));
+    if let Some(label) = verdict.diagnostic() {
+        detail.push_str(" Provider termination: ");
+        detail.push_str(label);
+        detail.push('.');
+    }
     if let Some(session_id) = resume_session_id {
-        detail.push_str(" To continue this session explicitly, run: cake --resume ");
-        detail.push_str(&session_id.to_string());
-        detail.push_str(" \"try again\"");
+        detail.push_str(&resume_hint(session_id));
     }
     CutOffError::new(detail)
 }
 
-fn semantic_incomplete_is_retryable(
-    termination: Option<&crate::session_telemetry::ProviderTermination>,
-) -> bool {
-    termination.is_none_or(|termination| {
-        !matches!(
-            termination.classification,
-            TerminationClassification::ContentFilter | TerminationClassification::Failed
-        ) && !provider_declares_refusal(termination.provider_status.as_deref())
-            && !provider_declares_refusal(termination.provider_reason.as_deref())
-    })
+/// Build the neutral error for a discarded pressure response.
+///
+/// It states the evidence the classifier established and the remedy, never a
+/// truncation cause. Resuming is not the remedy: the resumed request re-sends
+/// the same over-window input, so it would be discarded again. The session ID
+/// stays for inspection and for the recovery owner (034h).
+fn context_pressure_error(session_id: uuid::Uuid, pressure: ContextPressure) -> CutOffError {
+    let detail = match pressure {
+        ContextPressure::MeasuredInput {
+            input_tokens,
+            context_window,
+        } => format!(
+            "The model's response was discarded because the reported input \
+             ({input_tokens} tokens) exceeded the configured context window \
+             ({context_window} tokens). Raise or remove the model's `context_window`, \
+             or start a new session; resuming this session re-sends the same input."
+        ),
+        ContextPressure::ProviderInputOverflow {
+            input_tokens,
+            context_limit,
+        } => format!(
+            "The model's response was discarded because the provider rejected the \
+             request: its input ({input_tokens} tokens) did not fit the context limit \
+             ({context_limit} tokens). Start a new session; resuming this session \
+             re-sends the same input."
+        ),
+    };
+    CutOffError::new(format!("{detail} Session: {session_id}."))
 }
 
-fn termination_marks_incomplete(
-    termination: Option<&crate::session_telemetry::ProviderTermination>,
-) -> bool {
-    termination.is_some_and(|termination| {
-        matches!(
-            termination.classification,
-            TerminationClassification::ToolCalls
-                | TerminationClassification::TokenLimit
-                | TerminationClassification::ContentFilter
-                | TerminationClassification::Incomplete
-                | TerminationClassification::Failed
-        ) || provider_declares_refusal(termination.provider_status.as_deref())
-            || provider_declares_refusal(termination.provider_reason.as_deref())
-    })
-}
-
-fn provider_declares_refusal(value: Option<&str>) -> bool {
-    value.is_some_and(|value| {
-        value.eq_ignore_ascii_case("refusal") || value.eq_ignore_ascii_case("refused")
-    })
-}
-
-fn termination_diagnostic(
-    termination: Option<&crate::session_telemetry::ProviderTermination>,
-) -> String {
-    termination.map_or_else(String::new, |termination| {
-        format!(
-            " Provider termination: {}.",
-            termination.classification.as_str()
-        )
-    })
+/// The sentence offering an explicit continuation of the session.
+fn resume_hint(session_id: uuid::Uuid) -> String {
+    format!(" To continue this session explicitly, run: cake --resume {session_id} \"try again\"")
 }
 
 #[cfg(test)]
@@ -1676,8 +1739,19 @@ mod helper_tests {
         ));
     }
 
+    fn no_termination_verdict() -> TerminationVerdict {
+        termination::classify(
+            IntendedLimits::default(),
+            TurnEvidence::Response {
+                termination: None,
+                usage: None,
+            },
+        )
+    }
+
     #[test]
     fn disabled_tool_turn_records_correction_and_cutoff_paths() {
+        let verdict = no_termination_verdict();
         let calls = vec![("call-1".to_string(), "Read".to_string(), "{}".to_string())];
         let mut correction_agent = test_agent();
         let mut corrections_used = 0;
@@ -1689,7 +1763,7 @@ mod helper_tests {
                 &mut corrections_used,
                 &mut mode,
                 correction_start,
-                None,
+                &verdict,
             )
             .expect("correction tool calls are recorded");
         assert_eq!(corrections_used, 1);
@@ -1709,9 +1783,89 @@ mod helper_tests {
                 &mut unused_corrections,
                 &mut recovery_mode,
                 recovery_start,
-                None,
+                &verdict,
             )
             .expect_err("semantic recovery tool calls must stop");
         assert!(error.to_string().contains("response was incomplete"));
+    }
+
+    #[test]
+    fn pressure_recovery_guard_allows_exactly_one_recovery_per_invocation() {
+        let mut guard = PressureRecoveryGuard::default();
+
+        assert!(guard.consume(), "the first pressure verdict may recover");
+        assert!(
+            !guard.consume(),
+            "a later pressure verdict in the same invocation cannot recover again"
+        );
+    }
+
+    #[test]
+    fn context_pressure_error_names_the_evidence_and_the_remedy() {
+        let session_id = uuid::uuid!("550e8400-e29b-41d4-a716-446655440000");
+
+        let measured = context_pressure_error(
+            session_id,
+            ContextPressure::MeasuredInput {
+                input_tokens: 5000,
+                context_window: 1000,
+            },
+        );
+        assert!(
+            measured.detail.contains("reported input (5000 tokens)"),
+            "{}",
+            measured.detail
+        );
+        assert!(
+            measured
+                .detail
+                .contains("configured context window (1000 tokens)"),
+            "{}",
+            measured.detail
+        );
+        assert!(
+            measured
+                .detail
+                .contains("Raise or remove the model's `context_window`"),
+            "{}",
+            measured.detail
+        );
+        assert!(
+            measured
+                .detail
+                .contains("resuming this session re-sends the same input"),
+            "{}",
+            measured.detail
+        );
+        assert!(
+            !measured.detail.contains("cake --resume"),
+            "resuming cannot fix the over-window input: {}",
+            measured.detail
+        );
+        assert!(
+            measured
+                .detail
+                .ends_with(&format!("Session: {session_id}."))
+        );
+
+        let overflow = context_pressure_error(
+            session_id,
+            ContextPressure::ProviderInputOverflow {
+                input_tokens: 16_380,
+                context_limit: 16_384,
+            },
+        );
+        assert!(
+            overflow
+                .detail
+                .contains("did not fit the context limit (16384 tokens)"),
+            "{}",
+            overflow.detail
+        );
+        assert!(
+            overflow
+                .detail
+                .ends_with(&format!("Session: {session_id}."))
+        );
     }
 }

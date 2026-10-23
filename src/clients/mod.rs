@@ -26,6 +26,7 @@ mod provider_strategy;
 mod responses;
 mod responses_types;
 pub mod retry;
+pub mod termination;
 mod tools;
 pub mod typesafe;
 

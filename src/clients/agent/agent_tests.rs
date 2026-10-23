@@ -5283,3 +5283,7 @@ mod output_schema_constraint_tests {
         assert_eq!(usages[2]["response_model"], "test-model");
     }
 }
+
+#[cfg(test)]
+#[path = "termination_tests.rs"]
+mod termination_tests;

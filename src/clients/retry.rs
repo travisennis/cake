@@ -81,11 +81,39 @@ pub enum RetryDecision {
     DoNotRetry,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ContextOverflow {
-    input_tokens: u32,
-    requested_tokens: u32,
-    context_limit: u32,
+/// A provider's typed input-overflow rejection.
+///
+/// The provider reports the request's input size, the output allowance it was
+/// asked for, and the total context limit. One value drives both the
+/// output-allowance retry and the termination classifier, so the retry path and
+/// the pressure verdict cannot disagree about what fits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InputOverflow {
+    pub input_tokens: u32,
+    pub requested_tokens: u32,
+    pub context_limit: u32,
+}
+
+impl InputOverflow {
+    /// Output tokens left after the input and the safety buffer.
+    pub const fn available_output(self) -> u32 {
+        self.context_limit
+            .saturating_sub(self.input_tokens)
+            .saturating_sub(CONTEXT_OVERFLOW_SAFETY_BUFFER_TOKENS)
+    }
+
+    /// Whether reducing the output allowance can still fit the request. When it
+    /// cannot, the request's input itself does not fit: that is genuine input
+    /// overflow, not an output-allowance mismatch.
+    pub const fn fits_with_reduced_output(self) -> bool {
+        self.available_output() >= MIN_CONTEXT_OVERFLOW_OUTPUT_TOKENS
+    }
+
+    /// The output allowance the retry sends: what is available, capped by what
+    /// the request originally asked for.
+    pub fn reduced_output(self) -> u32 {
+        self.available_output().min(self.requested_tokens)
+    }
 }
 
 struct RetryClassification {
@@ -280,6 +308,16 @@ pub fn policy_backoff_delay(
     fallback_delay(policy, attempt, session_id)
 }
 
+/// Whether a provider failure status can carry the typed input-overflow form.
+///
+/// Providers return the form on `400` only. Sharing the gate keeps a quota,
+/// auth, or rate-limit body that happens to quote overflow numbers from being
+/// read as an input overflow, whether by the retry path or by the termination
+/// classifier.
+pub const fn is_input_overflow_status(status: u16) -> bool {
+    status == 400
+}
+
 /// Classify a context-overflow failure and derive the complete retry
 /// transition — status plus token-budget overrides — in a single pass over
 /// the failure body. Returns `None` when the failure is not an overflow, the
@@ -291,21 +329,16 @@ fn context_overflow_retry(
     attempt: u32,
     current_overrides: &RequestOverrides,
 ) -> Option<(RetryStatus, RequestOverrides)> {
-    if failure.status != 400 || current_overrides.context_overflow_retry_used {
+    if !is_input_overflow_status(failure.status) || current_overrides.context_overflow_retry_used {
         return None;
     }
 
-    let overflow = parse_context_overflow(&failure.body)?;
-    let available_output = overflow
-        .context_limit
-        .saturating_sub(overflow.input_tokens)
-        .saturating_sub(CONTEXT_OVERFLOW_SAFETY_BUFFER_TOKENS);
-
-    if available_output < MIN_CONTEXT_OVERFLOW_OUTPUT_TOKENS {
+    let overflow = parse_input_overflow(&failure.body)?;
+    if !overflow.fits_with_reduced_output() {
         return None;
     }
 
-    let max_output_tokens = available_output.min(overflow.requested_tokens);
+    let max_output_tokens = overflow.reduced_output();
 
     let status = RetryStatus {
         attempt: attempt + 1,
@@ -444,7 +477,12 @@ fn has_structured_overloaded_signal(value: &Value) -> bool {
         .any(|field| field.eq_ignore_ascii_case("overloaded_error"))
 }
 
-fn parse_context_overflow(body: &str) -> Option<ContextOverflow> {
+/// Parse a provider's typed input-overflow error body.
+///
+/// The typed form names the input size, the requested output allowance, and the
+/// context limit, for example `context limit: 12000 + 5000 > 16384`. Prose that
+/// merely mentions a context limit is not an overflow.
+pub fn parse_input_overflow(body: &str) -> Option<InputOverflow> {
     let owned_message = extract_error_message(body);
     let message = owned_message.as_deref().unwrap_or(body);
     let message_lower = message.to_ascii_lowercase();
@@ -461,7 +499,7 @@ fn parse_context_overflow(body: &str) -> Option<ContextOverflow> {
     let requested_tokens = parse_first_u32(requested_expression)?;
     let context_limit = parse_first_u32(context_limit_expression)?;
 
-    Some(ContextOverflow {
+    Some(InputOverflow {
         input_tokens,
         requested_tokens,
         context_limit,
@@ -918,18 +956,51 @@ mod tests {
 
     #[test]
     fn parse_context_overflow_handles_unicode_before_marker() {
-        let overflow = parse_context_overflow(
+        let overflow = parse_input_overflow(
             "préfix input length and max_tokens exceed context limit: 12000 + 5000 > 16384",
         );
 
         assert_eq!(
             overflow,
-            Some(ContextOverflow {
+            Some(InputOverflow {
                 input_tokens: 12000,
                 requested_tokens: 5000,
                 context_limit: 16384,
             })
         );
+    }
+
+    #[test]
+    fn input_overflow_allowance_separates_fitting_input_from_genuine_overflow() {
+        // 16384 - 12000 - 1024 leaves room for a useful capped output.
+        let fits = InputOverflow {
+            input_tokens: 12000,
+            requested_tokens: 5000,
+            context_limit: 16384,
+        };
+        assert_eq!(fits.available_output(), 3360);
+        assert!(fits.fits_with_reduced_output());
+        assert_eq!(fits.reduced_output(), 3360);
+
+        // Only the input is left: no output allowance can make this fit.
+        let over = InputOverflow {
+            input_tokens: 16380,
+            requested_tokens: 5000,
+            context_limit: 16384,
+        };
+        assert_eq!(over.available_output(), 0);
+        assert!(!over.fits_with_reduced_output());
+    }
+
+    #[test]
+    fn input_overflow_reduced_output_never_exceeds_the_original_request() {
+        let overflow = InputOverflow {
+            input_tokens: 1000,
+            requested_tokens: 500,
+            context_limit: 16384,
+        };
+
+        assert_eq!(overflow.reduced_output(), 500);
     }
 
     #[test]
