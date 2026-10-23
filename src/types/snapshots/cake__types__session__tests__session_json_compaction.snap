@@ -1,0 +1,60 @@
+---
+source: src/types/session_tests.rs
+expression: json
+---
+{
+  "checkpoint_id": "checkpoint-1",
+  "checkpoint_version": 1,
+  "estimated_input": {
+    "after_tokens": 400,
+    "basis": "content_class",
+    "before_tokens": 1200
+  },
+  "model": {
+    "model": "gpt-5.4",
+    "model_config": "test"
+  },
+  "retained": [
+    {
+      "content": "Read README.md",
+      "origin": "user",
+      "pin": {
+        "kind": "user_input"
+      },
+      "role": "user",
+      "source_task": "550e8400-e29b-41d4-a716-446655440001",
+      "timestamp": "2026-05-10T00:00:00Z",
+      "type": "message"
+    },
+    {
+      "content": "I read the file.",
+      "id": "msg-1",
+      "role": "assistant",
+      "status": "completed",
+      "timestamp": "2026-05-10T00:00:01Z",
+      "type": "message"
+    },
+    {
+      "arguments": "{\"path\":\"README.md\"}",
+      "call_id": "call-1",
+      "id": "fc-1",
+      "name": "Read",
+      "timestamp": "2026-05-10T00:00:01Z",
+      "type": "function_call"
+    },
+    {
+      "call_id": "call-1",
+      "output": "# Cake\n",
+      "replay": "safe",
+      "timestamp": "2026-05-10T00:00:02Z",
+      "type": "function_call_output"
+    }
+  ],
+  "session_id": "550e8400-e29b-41d4-a716-446655440000",
+  "summary": "Earlier turns read README.md and answered questions about it.",
+  "summary_instruction_version": 1,
+  "task_id": "550e8400-e29b-41d4-a716-446655440001",
+  "timestamp": "2026-05-10T12:34:56Z",
+  "trigger": "threshold",
+  "type": "compaction"
+}

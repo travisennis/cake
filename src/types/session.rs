@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use crate::types::compaction::CompactionData;
 use crate::types::conversation::{
     ConversationItem, ImagePart, ReasoningContent, ReasoningSummary, Role,
 };
@@ -624,6 +625,12 @@ pub enum SessionRecord {
 
     /// Per-attempt token usage for a main-agent provider attempt.
     TurnUsage(TurnUsageData),
+
+    /// One self-contained context checkpoint: a summary of retired history plus
+    /// the retained tail that replaces it. The record carries its own version,
+    /// so the session `format_version` does not change. Validation runs when the
+    /// record is parsed or committed.
+    Compaction(CompactionData),
 }
 
 /// Machine-readable category for a `replay_error` stream record.
@@ -703,6 +710,11 @@ pub enum StreamRecord {
     Reasoning(ReasoningData),
 
     TaskComplete(TaskCompleteData),
+
+    /// One committed context checkpoint, emitted in physical transcript order
+    /// by replay. Retained contents are never expanded into duplicate message
+    /// or tool events.
+    Compaction(CompactionData),
 
     /// Per-attempt usage for a main-agent provider attempt.
     ///
@@ -790,24 +802,25 @@ impl From<StreamRecord> for SessionRecord {
             StreamRecord::HookEvent(d) => Self::HookEvent(d),
             StreamRecord::Reasoning(d) => Self::Reasoning(d),
             StreamRecord::TaskComplete(d) => Self::TaskComplete(d),
-            record @ (StreamRecord::TurnUsage(_) | StreamRecord::ReplayError { .. }) => {
-                session_record_from_audit_stream(record)
-            },
+            record @ (StreamRecord::Compaction(_)
+            | StreamRecord::TurnUsage(_)
+            | StreamRecord::ReplayError { .. }) => session_record_from_stream_metadata(record),
         }
     }
 }
 
-/// Convert the stream-only audit tail without growing the main conversion
+/// Convert the stream-only metadata tail without growing the main conversion
 /// match past its complexity ceiling.
-fn session_record_from_audit_stream(record: StreamRecord) -> SessionRecord {
+fn session_record_from_stream_metadata(record: StreamRecord) -> SessionRecord {
     match record {
+        StreamRecord::Compaction(d) => SessionRecord::Compaction(d),
         StreamRecord::TurnUsage(d) => SessionRecord::TurnUsage(d),
         // `replay_error` is emitted only by `cake replay`, which never writes
         // to a session file; there is no persisted counterpart.
         StreamRecord::ReplayError { .. } => {
             unreachable!("replay_error stream records are never persisted to a session file")
         },
-        _ => unreachable!("only audit stream records are converted here"),
+        _ => unreachable!("only stream metadata records are converted here"),
     }
 }
 
@@ -870,6 +883,7 @@ impl From<SessionRecord> for StreamRecord {
             SessionRecord::HookEvent(d) => Self::HookEvent(d),
             SessionRecord::Reasoning(d) => Self::Reasoning(d),
             SessionRecord::TaskComplete(d) => Self::TaskComplete(d),
+            SessionRecord::Compaction(d) => Self::Compaction(d),
             SessionRecord::TurnUsage(d) => Self::TurnUsage(d),
         }
     }
@@ -968,6 +982,7 @@ impl SessionRecord {
             | Self::SkillActivated { .. }
             | Self::HookEvent(_)
             | Self::TaskComplete(_)
+            | Self::Compaction(_)
             | Self::TurnUsage(_) => {},
         }
     }
@@ -1038,6 +1053,7 @@ impl SessionRecord {
             | Self::SkillActivated { .. }
             | Self::HookEvent(_)
             | Self::TaskComplete(_)
+            | Self::Compaction(_)
             | Self::TurnUsage(_) => None,
         }
     }

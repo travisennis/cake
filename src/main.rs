@@ -934,6 +934,9 @@ impl CodingAssistant {
             if let Some(writer) = &session_writer {
                 let session_record = SessionRecord::from(record.clone());
                 if let Err(error) = writer.append_record(&session_record) {
+                    // A terminally failed writer rejects this append, and the
+                    // hook lifecycle still completes: hook audit records are
+                    // best-effort and must never reopen a failed session file.
                     tracing::warn!(
                         target: "cake::hooks",
                         error = %error,
@@ -1130,7 +1133,12 @@ impl CodingAssistant {
     ) -> anyhow::Result<()> {
         Self::run_error_hook(hook_runner, error).await;
         Self::run_session_end_hook(hook_runner, SessionEndReason::Error).await;
-        client.emit_task_complete_record(Self::task_outcome_for_error(error), duration_ms)
+        // The failure that ended the task is the primary diagnostic. A failed
+        // session writer rejects the completion record too (its state is
+        // terminal), and reporting that rejection instead would hide the
+        // original cause, such as a checkpoint that could not be committed.
+        Self::append_task_completion(client, Self::task_outcome_for_error(error), duration_ms);
+        Ok(())
     }
 
     async fn emit_cut_off_agent_turn(
@@ -1141,12 +1149,27 @@ impl CodingAssistant {
     ) -> anyhow::Result<()> {
         Self::run_stop_hook(hook_runner, &cutoff.detail).await;
         Self::run_session_end_hook(hook_runner, SessionEndReason::Error).await;
-        client.emit_task_complete_record(
+        // A failed writer must not replace the cut-off diagnostic with a second
+        // append error, for the same reason as `emit_failed_agent_turn`.
+        Self::append_task_completion(
+            client,
             TaskOutcome::CutOff {
                 detail: cutoff.detail.clone(),
             },
             duration_ms,
-        )
+        );
+        Ok(())
+    }
+
+    /// Append a completion record without masking the failure it describes.
+    fn append_task_completion(client: &mut Agent, outcome: TaskOutcome, duration_ms: u64) {
+        if let Err(emit_error) = client.emit_task_complete_record(outcome, duration_ms) {
+            tracing::warn!(
+                target: "cake",
+                error = %emit_error,
+                "Failed to append task completion record"
+            );
+        }
     }
 
     async fn run_stop_hook(hook_runner: Option<&Arc<HookRunner>>, response_text: &str) {

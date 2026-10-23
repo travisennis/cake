@@ -296,6 +296,44 @@ const SESSIONS_GOLDEN: &str = r#"{
 "#;
 
 #[test]
+fn sessions_list_json_loads_a_session_with_a_checkpoint() {
+    let env = cake_env();
+    write_session(&env, SESSION_ID, "2026-07-27T12:00:00Z", "list the files");
+    let path = env
+        .data_dir
+        .join("sessions")
+        .join(format!("{SESSION_ID}.jsonl"));
+    let checkpoint = serde_json::json!({
+        "type": "compaction",
+        "checkpoint_version": 1,
+        "checkpoint_id": "checkpoint-1",
+        "session_id": SESSION_ID,
+        "task_id": "550e8400-e29b-41d4-a716-446655440001",
+        "timestamp": "2026-07-27T12:00:01Z",
+        "trigger": "manual",
+        "summary": "retired work",
+        "retained": [],
+        "model": { "model": "glm-5.1" },
+        "summary_instruction_version": 1,
+        "estimated_input": {
+            "before_tokens": 10,
+            "after_tokens": 4,
+            "basis": "content_class"
+        }
+    });
+    let mut contents = fs::read_to_string(&path).expect("session fixture should exist");
+    contents.push_str(&serde_json::to_string(&checkpoint).expect("checkpoint serializes"));
+    contents.push('\n');
+    fs::write(&path, contents).expect("session fixture should be writable");
+
+    let output = run(&env, &["sessions", "list", "--json"]);
+
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    assert_eq!(stdout(&output), SESSIONS_GOLDEN);
+    assert_eq!(stderr(&output), "");
+}
+
+#[test]
 fn sessions_list_json_orders_equal_timestamps_by_session_id() {
     let env = cake_env();
     let timestamp = "2026-07-27T12:00:00Z";

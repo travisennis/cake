@@ -21,7 +21,7 @@ This is a plan for future implementation, not implementation delivered by task 0
 - [x] (2026-10-13) Revised the proposal after design review: protect unseen images and observed skill instructions, terminally disable failed writers, budget serialized bytes before generation, require useful reduction, specify manual pins and raw-history recovery, and require quality qualification.
 - [x] (2026-10-20) Accepted ADR 047 as written.
 - [x] (2026-10-20) Allocated implementation children 034e-034j with native dependencies; 034d depends on 034j.
-- [ ] M1 (034e): implement validated checkpoint types, format-4 record persistence, and the positional projection.
+- [x] (2026-10-22) M1 (034e): delivered validated checkpoint data, the format-4 `compaction` record, the shared request projector, positional restore and fork boundaries, and the durable checkpoint commit on branch `feat/checkpoint-persistence`. Focused evidence: `cargo test compaction`, `cargo test session`, the persist-callback and writer-failure tests in `src/clients/agent/tail_only_growth_tests.rs`, and the replay unit tests; the child's handoff records the integration targets and full gates. No production path creates a checkpoint yet.
 - [ ] M2 (034f): implement bounded selection, estimation, summary calls, and usage attribution behind the compaction interface.
 - [ ] M3 (034g): integrate settings and pre-request compaction, plus task 034a's prefix invariant.
 - [ ] M4 (034h): integrate task 034b's pressure classification and one compact-and-retry guard.
@@ -47,6 +47,12 @@ The research does not prove summary quality on Cake's configured models. The def
 
 The October 13 review found concrete integration hazards. `src/main.rs::emit_failed_agent_turn` runs cleanup hooks and appends completion after an agent error, so merely returning a checkpoint-write error does not stop shared-writer appends. `src/clients/responses.rs::build_request_json` strips the output cap for Codex. Image-bearing tool results can trigger compaction before the next model request, and a flat image token estimate does not bound base64 bytes. `SkillActivated` is emitted only once per session and does not identify every subsequent instruction read. These facts determine the writer state, support check, pin provenance, and byte budgeting below.
 
+M1 implementation on 2026-10-22 settled two interface deviations from the illustrative signatures below. The projector is `project_context(history, checkpoint, boundary)` over the full raw history plus a conversation-item boundary, not `(initial, checkpoint, subsequent)`, and `Session::context_seed()` returns an infallible `ContextSeed { messages, checkpoint, boundary }`, not `Result<RestoredContext>`. Validation runs while a checkpoint is parsed or committed, so projection itself cannot fail. Restore translates the seed boundary after replacing the historical System/Developer prompt prefix (`prompt_len + boundary - first_non_prompt`), and the projector derives the fresh prompt run from the full history, so a boundary of zero or a boundary inside the prompts cannot drop or duplicate them.
+
+`BufWriter` does not necessarily leave a torn prefix when a checkpoint write fails. A record larger than the buffer capacity makes `write_all` bypass the buffer and write the whole record, including its newline, so a flush-stage failure afterwards can leave a complete checkpoint that was never explicitly flushed or synced. A process interrupted during a large write can still leave a torn tail, which the existing locked reopen repairs. M1's failure tests assert the surviving record's completeness instead of assuming the partial record is dropped.
+
+M1 adds no production path that creates a checkpoint: `SessionWriter::commit_checkpoint` exists and the generic append routes `compaction` records through it, but only tests and future milestones call it. The first real commit, the pre-request writer-health check for warning-only usage and hook appends, and the post-checkpoint reset of the last usage measurement land with M3 (034g).
+
 ## Decision Log
 
 On 2026-10-12, Codex drafted the following proposed decisions for Trav's review: self-contained checkpoint tails rather than retained-entry pointers; unchanged raw-history offsets with a separate request projection; exact current user input and whole provider exchanges; opt-in threshold policy with bounded summarization; separate summary usage attribution; and a single pressure-recovery guard per invocation. ADR 047 contains their tradeoffs.
@@ -59,6 +65,10 @@ On 2026-10-12, Trav's review resolved three open questions. First, unmeasured to
 
 On 2026-10-13, Trav chose enforceable summary output caps with initial Codex exclusion, a raw-history recovery fork in this feature, real-model qualification before task 034 completion, and exact pinning of observed skill instruction exchanges during the current task. Engineering refinements add conservative unseen-image pins, terminal shared-writer failure, byte-aware selection, a 60%-of-window target at the default trigger, and invocation-wide proactive failure suppression. ADR 047 records these choices and was accepted as written on 2026-10-20; paid evaluation still requires separate authorization.
 
+On 2026-10-22, M1 delivery recorded the interface deviations named under Surprises through this Decision Log, as the rule below requires. `project_context` takes full history plus a positional boundary and is infallible; `Session::context_seed()` returns `ContextSeed` directly; and restore translates the boundary after the fresh prompt prefix replaces the historical one. Ownership and behavior are unchanged: one pure projector serves live requests and restore, the boundary stays positional, and a checkpoint is validated when parsed or committed. `cargo test compaction` and `cargo test session` pin these interfaces.
+
+On 2026-10-22, M1 deferred three responsibilities to M3 (034g) because M1 has no production caller for them: consulting writer health before a provider request when a usage or hook append only warned; resetting the last usage measurement after a checkpoint restore; and exposing a production writer-health seam instead of the test-only failure query. M1 also adds no production checkpoint creation path.
+
 ## Outcomes & Retrospective
 
 Planning outcome: the ADR and plan specify the accepted persistence, trigger, summary, recovery, accounting, and compatibility behavior. Since the initial draft, three review decisions replaced the v5 session-format bump with an in-place format-4 checkpoint record, specified a content-class estimator, and fixed the resume boundary to the checkpoint record's position; the milestones, acceptance, and recovery sections reflect them. No Rust, settings, fixture, CLI, or provider changes have been made. Implementation milestones remain unstarted; ADR 047 was accepted as written on 2026-10-20. Authoring validation passed `panache format --check` and `panache lint` for both documents, `just docs-check` with both paths staged, and `git diff --cached --check`. Markdown checks were rerun outside the filesystem sandbox after cache permission errors. Rust gates were skipped because this branch changes documentation only. Preflight checked workflow conformance, source ownership/technical
@@ -68,6 +78,8 @@ The October 13 revision addresses the design-review findings and records Trav's 
 live-model evaluation were skipped because this is planning-only work.
 
 On 2026-10-20, ADR 047 was accepted as written and M0 allocated 034e through 034j; 034d is blocked on 034j. This allocation authorizes no implementation or provider spend by itself.
+
+M1 outcome (2026-10-22): task 034e delivered validated checkpoint data, the self-versioned format-4 `compaction` record, one shared projector, positional restore and fork boundaries, and the durable shared-writer commit, with the interface deviations recorded above. Tests cover projection, validation, envelope identity, writer failure at each stage, an oversized retained record, the production persist-callback failure path, and the record's JSON snapshot. No production checkpoint creation, settings, CLI command, user documentation, or provider request changed; M2 is next.
 
 ## Context and Orientation
 

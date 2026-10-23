@@ -1,11 +1,20 @@
-use crate::types::{ConversationItem, ImagePart, Role, Usage};
+use std::borrow::Cow;
+
+use crate::types::{
+    CompactionData, ContextSeed, ConversationItem, ImagePart, Role, Usage, project_context,
+};
 
 #[derive(Debug)]
 pub(super) struct ConversationState {
     history: Vec<ConversationItem>,
-    /// Repair outputs synthesized by [`Self::with_restored_history`] that have
+    /// Repair outputs synthesized by [`Self::with_restored_context`] that have
     /// not yet been streamed and persisted.
     pending_repairs: Vec<ConversationItem>,
+    /// The validated checkpoint that replaces retired history in requests.
+    checkpoint: Option<CompactionData>,
+    /// Raw-history index of the active checkpoint's positional boundary:
+    /// `history[..checkpoint_boundary]` is represented by `checkpoint`.
+    checkpoint_boundary: usize,
 }
 
 impl ConversationState {
@@ -24,11 +33,42 @@ impl ConversationState {
                 })
                 .collect(),
             pending_repairs: Vec::new(),
+            checkpoint: None,
+            checkpoint_boundary: 0,
         }
     }
 
     pub(super) fn history(&self) -> &[ConversationItem] {
         &self.history
+    }
+
+    /// The provider request derived from raw history and the active checkpoint.
+    ///
+    /// Raw history and its offsets stay untouched: invocation and provider-turn
+    /// attribution keep indexing the raw vector, never the projection. A run
+    /// without a checkpoint borrows the raw vector, so today's requests cost no
+    /// copy.
+    pub(super) fn request_context(&self) -> Cow<'_, [ConversationItem]> {
+        let Some(checkpoint) = self.checkpoint.as_ref() else {
+            return Cow::Borrowed(&self.history);
+        };
+        Cow::Owned(project_context(
+            &self.history,
+            Some(checkpoint),
+            self.checkpoint_boundary,
+        ))
+    }
+
+    /// Whether a checkpoint currently replaces part of the request context.
+    #[cfg(test)]
+    pub(super) const fn has_checkpoint(&self) -> bool {
+        self.checkpoint.is_some()
+    }
+
+    /// The active checkpoint, for tests that pin its session envelope.
+    #[cfg(test)]
+    pub(super) const fn checkpoint(&self) -> Option<&CompactionData> {
+        self.checkpoint.as_ref()
     }
 
     pub(super) fn append_developer_context(&mut self, contexts: Vec<String>) {
@@ -60,10 +100,46 @@ impl ConversationState {
         &mut self,
         messages: Vec<ConversationItem>,
     ) -> anyhow::Result<()> {
+        self.with_restored_context(ContextSeed {
+            messages,
+            checkpoint: None,
+            boundary: None,
+        })
+    }
+
+    /// Restore a persisted conversation and its latest checkpoint.
+    ///
+    /// The checkpoint's positional boundary is translated into raw-history
+    /// coordinates after the leading prompt context is replaced, so the same
+    /// records are retired on every resume and fork. Repair runs first: an
+    /// unfinished call before the boundary cannot be projected, because the
+    /// checkpoint would retire the call and keep its synthetic output.
+    pub(super) fn with_restored_context(&mut self, seed: ContextSeed) -> anyhow::Result<()> {
         anyhow::ensure!(
             !self.history.is_empty(),
             "with_history requires Agent::new() to have set initial prompt messages"
         );
+        anyhow::ensure!(
+            seed.checkpoint.is_some() == seed.boundary.is_some(),
+            "restored context boundary and checkpoint must be provided together"
+        );
+        let ContextSeed {
+            messages,
+            checkpoint,
+            boundary,
+        } = seed;
+        let boundary = match boundary {
+            Some(boundary) => {
+                anyhow::ensure!(
+                    boundary <= messages.len(),
+                    "restored context boundary {boundary} exceeds its {} history records",
+                    messages.len()
+                );
+                Some(boundary)
+            },
+            None => None,
+        };
+        let prompt_len = self.history.len();
         let first_non_prompt = messages
             .iter()
             .position(|item| {
@@ -76,6 +152,13 @@ impl ConversationState {
                 )
             })
             .unwrap_or(messages.len());
+        if let Some(boundary) = boundary {
+            ensure_no_open_calls(
+                messages
+                    .get(first_non_prompt.min(boundary)..boundary)
+                    .unwrap_or_default(),
+            )?;
+        }
         let repairs = repair_items_for_incomplete_calls(
             messages.get(first_non_prompt..).unwrap_or_default(),
         )?;
@@ -83,6 +166,10 @@ impl ConversationState {
             .extend(messages.into_iter().skip(first_non_prompt));
         self.history.extend(repairs.iter().cloned());
         self.pending_repairs.extend(repairs);
+        if let (Some(checkpoint), Some(boundary)) = (checkpoint, boundary) {
+            self.checkpoint_boundary = prompt_len + boundary.saturating_sub(first_non_prompt);
+            self.checkpoint = Some(checkpoint);
+        }
         Ok(())
     }
 
@@ -175,6 +262,35 @@ fn incomplete_tool_call_repair_output(name: &str, call_id: &str) -> String {
 fn repair_items_for_incomplete_calls(
     items: &[ConversationItem],
 ) -> anyhow::Result<Vec<ConversationItem>> {
+    let open = open_function_calls(items)?;
+    let timestamp = chrono::Utc::now();
+    Ok(open
+        .into_iter()
+        .map(|(call_id, name)| ConversationItem::FunctionCallOutput {
+            call_id: call_id.to_string(),
+            output: incomplete_tool_call_repair_output(name, call_id),
+            timestamp: Some(timestamp),
+            images: Vec::new(),
+        })
+        .collect())
+}
+
+/// Reject history whose unfinished call is retired by a checkpoint.
+///
+/// The projector would drop the call but keep its repair output, leaving an
+/// output with no call in the provider request.
+fn ensure_no_open_calls(items: &[ConversationItem]) -> anyhow::Result<()> {
+    if let Some((call_id, _)) = open_function_calls(items)?.first() {
+        anyhow::bail!(
+            "Corrupt session history: the checkpoint retires the unfinished function call \
+             '{call_id}', so no complete exchange can be projected."
+        );
+    }
+    Ok(())
+}
+
+/// Return every function call left open at the end of `items`, in issue order.
+fn open_function_calls(items: &[ConversationItem]) -> anyhow::Result<Vec<(&str, &str)>> {
     let mut open: Vec<(&str, &str)> = Vec::new();
     for item in items {
         match item {
@@ -203,17 +319,7 @@ fn repair_items_for_incomplete_calls(
             ConversationItem::Message { .. } | ConversationItem::Reasoning { .. } => {},
         }
     }
-
-    let timestamp = chrono::Utc::now();
-    Ok(open
-        .into_iter()
-        .map(|(call_id, name)| ConversationItem::FunctionCallOutput {
-            call_id: call_id.to_string(),
-            output: incomplete_tool_call_repair_output(name, call_id),
-            timestamp: Some(timestamp),
-            images: Vec::new(),
-        })
-        .collect())
+    Ok(open)
 }
 
 fn resolve_assistant_message(items: &[ConversationItem]) -> Option<String> {
@@ -236,6 +342,8 @@ fn resolve_assistant_message(items: &[ConversationItem]) -> Option<String> {
 mod tests {
     use super::*;
     use crate::types::ReasoningSummary;
+    use crate::types::compaction::ContextSeed;
+    use crate::types::compaction::test_support;
 
     #[test]
     fn resolve_assistant_message_with_assistant_message() {
@@ -548,5 +656,238 @@ mod tests {
         assert!(error.to_string().contains("Corrupt session history"));
         // The history is left untouched when restoration fails.
         assert_eq!(state.history().len(), 1);
+    }
+
+    fn assistant_message_item(content: &str) -> ConversationItem {
+        ConversationItem::Message {
+            role: Role::Assistant,
+            content: content.to_string(),
+            id: Some("msg-1".to_string()),
+            status: Some("completed".to_string()),
+            timestamp: None,
+            images: Vec::new(),
+        }
+    }
+
+    fn restored_seed(
+        checkpoint: crate::types::CompactionData,
+        messages: Vec<ConversationItem>,
+        boundary: usize,
+    ) -> ContextSeed {
+        ContextSeed {
+            messages,
+            checkpoint: Some(checkpoint),
+            boundary: Some(boundary),
+        }
+    }
+
+    fn projected_contents(items: &[ConversationItem]) -> Vec<String> {
+        items
+            .iter()
+            .map(|item| match item {
+                ConversationItem::Message { content, .. } => content.clone(),
+                ConversationItem::Reasoning { .. } => "<reasoning>".to_string(),
+                ConversationItem::FunctionCall { call_id, .. } => format!("call:{call_id}"),
+                ConversationItem::FunctionCallOutput { call_id, .. } => {
+                    format!("output:{call_id}")
+                },
+            })
+            .collect()
+    }
+
+    #[test]
+    fn restored_context_projects_the_checkpoint_and_keeps_raw_history() {
+        let checkpoint = test_support::checkpoint(
+            "checkpoint-1",
+            "retired summary",
+            test_support::exchange("call-1", "tool output"),
+        );
+        let mut state = ConversationState::new(&[
+            (Role::System, "fresh system".to_string()),
+            (Role::Developer, "fresh developer".to_string()),
+        ]);
+        state
+            .with_restored_context(restored_seed(
+                checkpoint,
+                vec![
+                    user_message("retired request"),
+                    assistant_message_item("retired answer"),
+                    user_message("new request"),
+                ],
+                2,
+            ))
+            .unwrap();
+        assert!(state.has_checkpoint());
+        assert_eq!(
+            state.history().len(),
+            5,
+            "raw history keeps every restored record"
+        );
+
+        let projected = state.request_context();
+
+        assert_eq!(
+            projected_contents(&projected),
+            vec![
+                "fresh system".to_string(),
+                "fresh developer".to_string(),
+                format!(
+                    "{}\n\nretired summary",
+                    crate::types::compaction::HISTORICAL_SUMMARY_MARKER
+                ),
+                "call:call-1".to_string(),
+                "output:call-1".to_string(),
+                "new request".to_string(),
+            ],
+            "retired raw records are replaced by the checkpoint, once"
+        );
+        assert!(!projected_contents(&projected).contains(&"retired answer".to_string()));
+    }
+
+    #[test]
+    fn restored_checkpoint_boundary_follows_the_replaced_prompt_prefix() {
+        let checkpoint = test_support::checkpoint("checkpoint-1", "summary", Vec::new());
+        let mut state = ConversationState::new(&[(Role::System, "fresh system".to_string())]);
+        state
+            .with_restored_context(restored_seed(
+                checkpoint,
+                vec![
+                    // The historical developer message is dropped and rebuilt
+                    // fresh, so the positional boundary shifts by one.
+                    ConversationItem::Message {
+                        role: Role::Developer,
+                        content: "old hook context".to_string(),
+                        id: None,
+                        status: None,
+                        timestamp: None,
+                        images: Vec::new(),
+                    },
+                    user_message("retired request"),
+                    assistant_message_item("retained answer"),
+                    user_message("new request"),
+                ],
+                3,
+            ))
+            .unwrap();
+
+        let projected = state.request_context();
+
+        assert_eq!(
+            projected_contents(&projected),
+            vec![
+                "fresh system".to_string(),
+                format!(
+                    "{}\n\nsummary",
+                    crate::types::compaction::HISTORICAL_SUMMARY_MARKER
+                ),
+                "new request".to_string(),
+            ],
+            "only records after the derived boundary are sent as-is"
+        );
+    }
+
+    #[test]
+    fn new_user_input_after_restore_stays_after_retained_exchanges() {
+        let checkpoint = test_support::checkpoint(
+            "checkpoint-1",
+            "summary",
+            test_support::exchange("call-1", "tool output"),
+        );
+        let mut state = ConversationState::new(&[(Role::System, "sys".to_string())]);
+        state
+            .with_restored_context(restored_seed(
+                checkpoint,
+                vec![user_message("retired request")],
+                1,
+            ))
+            .unwrap();
+
+        state.push_user_message("new user input".to_string());
+        let projected = state.request_context();
+
+        assert_eq!(
+            projected_contents(&projected).last().map(String::as_str),
+            Some("new user input"),
+            "a fresh request must follow retained exchanges from earlier tasks"
+        );
+    }
+
+    #[test]
+    fn restored_checkpoint_rejects_an_unfinished_call_before_the_boundary() {
+        let checkpoint = test_support::checkpoint("checkpoint-1", "summary", Vec::new());
+        let mut state = ConversationState::new(&[(Role::System, "sys".to_string())]);
+
+        let error = state
+            .with_restored_context(restored_seed(
+                checkpoint,
+                vec![
+                    user_message("retired request"),
+                    function_call("call-1", "Bash"),
+                ],
+                2,
+            ))
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("checkpoint retires the unfinished function call 'call-1'"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(
+            state.history().len(),
+            1,
+            "a rejected restore leaves history untouched"
+        );
+    }
+
+    #[test]
+    fn restored_context_rejects_a_boundary_beyond_the_seed() {
+        let mut state = ConversationState::new(&[(Role::System, "sys".to_string())]);
+
+        let error = state
+            .with_restored_context(restored_seed(
+                test_support::checkpoint("checkpoint-1", "summary", Vec::new()),
+                vec![user_message("go")],
+                2,
+            ))
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("restored context boundary 2 exceeds its 1 history records"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(
+            state.history().len(),
+            1,
+            "a rejected restore leaves history untouched"
+        );
+        assert!(!state.has_checkpoint());
+    }
+
+    #[test]
+    fn restored_context_requires_a_boundary_with_a_checkpoint() {
+        let mut state = ConversationState::new(&[(Role::System, "sys".to_string())]);
+
+        let error = state
+            .with_restored_context(ContextSeed {
+                messages: vec![user_message("go")],
+                checkpoint: Some(test_support::checkpoint(
+                    "checkpoint-1",
+                    "summary",
+                    Vec::new(),
+                )),
+                boundary: None,
+            })
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("boundary and checkpoint must be provided together"),
+            "unexpected error: {error}"
+        );
     }
 }

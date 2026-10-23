@@ -17,7 +17,7 @@ use uuid::Uuid;
 use crate::OutputFormat;
 use crate::cli::{CliOutputSink, CmdRunner, CommandRunOptions};
 use crate::config::DataDir;
-use crate::config::session::CURRENT_FORMAT_VERSION;
+use crate::config::session::{CURRENT_FORMAT_VERSION, ensure_checkpoint_matches_session};
 use crate::config::session_jsonl::SessionFramer;
 use crate::types::{ReplayErrorKind, SessionRecord, StreamRecord};
 
@@ -241,14 +241,32 @@ fn validate_meta(meta: &SessionRecord, session_id: Uuid) -> Result<(), ReplayErr
     }
 }
 
+/// Validate a checkpoint's session envelope while replaying records.
+fn validate_checkpoint_envelope(
+    record: &SessionRecord,
+    session_id: &Uuid,
+) -> Result<(), ReplayError> {
+    let SessionRecord::Compaction(checkpoint) = record else {
+        return Ok(());
+    };
+    ensure_checkpoint_matches_session(checkpoint, &session_id.to_string()).map_err(|error| {
+        ReplayError::Corrupt(
+            session_id.to_string(),
+            format!("invalid compaction checkpoint: {error:#}"),
+        )
+    })
+}
+
 /// Parse one JSONL session record, mapping parse failures to [`ReplayError::Corrupt`].
 fn parse_record(line: &str, session_id: &Uuid) -> Result<SessionRecord, ReplayError> {
-    serde_json::from_str(line).map_err(|error| {
+    let record: SessionRecord = serde_json::from_str(line).map_err(|error| {
         ReplayError::Corrupt(
             session_id.to_string(),
             format!("invalid session record: {error}"),
         )
-    })
+    })?;
+    validate_checkpoint_envelope(&record, session_id)?;
+    Ok(record)
 }
 
 #[cfg(test)]
@@ -337,6 +355,31 @@ mod tests {
         let path = write_session(dir.path(), &[&meta_line(), "{ not json"]);
         let error = load_records(&path, Uuid::parse_str(SESSION_ID).unwrap()).unwrap_err();
         assert!(matches!(error, ReplayError::Corrupt(_, _)));
+    }
+
+    #[test]
+    fn load_records_rejects_a_checkpoint_from_another_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut checkpoint = crate::types::compaction::test_support::checkpoint(
+            "checkpoint-1",
+            "summary",
+            Vec::new(),
+        );
+        checkpoint.session_id = "550e8400-e29b-41d4-a716-446655440002".to_string();
+        let checkpoint_line = serde_json::to_string(&SessionRecord::Compaction(checkpoint))
+            .expect("checkpoint serializes");
+        let path = write_session(dir.path(), &[&meta_line(), &checkpoint_line]);
+
+        let error = load_records(&path, Uuid::parse_str(SESSION_ID).unwrap()).unwrap_err();
+
+        match error {
+            ReplayError::Corrupt(_, detail) => assert!(
+                detail.contains("invalid compaction checkpoint")
+                    && detail.contains("belongs to session"),
+                "unexpected detail: {detail}"
+            ),
+            other => panic!("expected a corrupt-session error, got {other}"),
+        }
     }
 
     #[test]
