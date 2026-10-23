@@ -491,6 +491,12 @@ impl Agent {
         self.conversation.request_context().into_owned()
     }
 
+    /// The active checkpoint, for tests that pin the restored envelope.
+    #[cfg(test)]
+    pub(crate) const fn active_checkpoint(&self) -> Option<&crate::types::CompactionData> {
+        self.conversation.checkpoint()
+    }
+
     /// Set the skill locations for path-watching `SkillActivated` records.
     ///
     /// These paths are checked when the Read tool is used. If the model reads

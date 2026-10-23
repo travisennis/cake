@@ -432,8 +432,10 @@ fn validate_retained_message(retained: &RetainedRecord) -> anyhow::Result<()> {
 ///
 /// Provider call IDs repeat after a completed exchange, so pairing walks the
 /// retained records in order: each call opens and the next matching output
-/// closes it. Two calls open at once, or an output with no open call, makes the
-/// tail ambiguous and is rejected rather than guessed.
+/// closes it. Parallel calls may open together and their outputs may close in
+/// any order, but a second open call with an existing `call_id`, an output with
+/// no open call, or a call still open at the end makes the tail ambiguous and
+/// is rejected rather than guessed.
 fn validate_complete_pairing(retained: &[RetainedRecord]) -> anyhow::Result<()> {
     let mut open: Vec<&str> = Vec::new();
     for retained in retained {
@@ -491,6 +493,20 @@ pub struct ContextSeed {
     pub messages: Vec<ConversationItem>,
     pub checkpoint: Option<CompactionData>,
     pub boundary: Option<usize>,
+}
+
+impl ContextSeed {
+    /// Re-envelope this seed's checkpoint for another session.
+    ///
+    /// A fork copies the source's active checkpoint into a new session, so the
+    /// in-memory seed must name the same session as the persisted record. A
+    /// checkpoint-free seed is unchanged.
+    pub fn for_session(mut self, session_id: String) -> Self {
+        if let Some(checkpoint) = self.checkpoint.take() {
+            self.checkpoint = Some(checkpoint.for_session(session_id));
+        }
+        self
+    }
 }
 
 /// Build the provider request from raw history and the latest checkpoint.

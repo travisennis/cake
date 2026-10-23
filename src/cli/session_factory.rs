@@ -164,8 +164,12 @@ impl crate::CodingAssistant {
             .with_model_config_name(model_config_name.clone())
             .with_tool_context(tool_context)
             .with_toolbox_tools(toolbox_tools)
-            .with_enabled_tools(enabled_tools)
-            .with_context_seed(restored.context_seed())
+            .with_enabled_tools(enabled_tools);
+        let new_id = agent.session_id();
+        // Re-envelope the seed's checkpoint for this session before restoring
+        // it, so the in-memory checkpoint and the copied record below agree.
+        let agent = agent
+            .with_context_seed(restored.context_seed().for_session(new_id.to_string()))
             .map_err(|error| anyhow::anyhow!("Cannot fork session {}: {error:#}", restored.id))?
             .with_last_usage(restored.last_turn_usage())
             .with_skill_locations(skill_locations)
@@ -173,7 +177,6 @@ impl crate::CodingAssistant {
             // session's SkillActivated records; seed the same names so re-reads
             // do not emit duplicates.
             .with_activated_skills(restored.activated_skills());
-        let new_id = agent.session_id();
         let latest_checkpoint = restored.latest_checkpoint_index();
         let seed_records: Vec<_> = restored
             .records
@@ -1184,6 +1187,14 @@ mod tests {
             panic!("a fork persists a new session");
         };
         assert_fork_seed(seed_records, &run.agent.session_id().to_string());
+        assert_eq!(
+            run.agent
+                .active_checkpoint()
+                .expect("the fork keeps the latest checkpoint active")
+                .session_id,
+            run.agent.session_id().to_string(),
+            "the in-memory checkpoint names the fork session too"
+        );
         assert_eq!(
             projected_contents(&run.agent.request_context())
                 .iter()

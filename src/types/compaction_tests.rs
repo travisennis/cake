@@ -672,6 +672,31 @@ fn compaction_context_seed_default_is_empty() {
 }
 
 #[test]
+fn compaction_context_seed_re_envelopes_only_the_checkpoint_for_a_fork() {
+    let seed = ContextSeed {
+        messages: vec![user_message("retained")],
+        checkpoint: Some(checkpoint("checkpoint-1", "summary", Vec::new())),
+        boundary: Some(1),
+    };
+
+    let resealed = seed.for_session("550e8400-e29b-41d4-a716-446655440099".to_string());
+
+    assert_eq!(contents(&resealed.messages), vec!["retained".to_string()]);
+    assert_eq!(resealed.boundary, Some(1));
+    assert_eq!(
+        resealed.checkpoint.expect("checkpoint survives").session_id,
+        "550e8400-e29b-41d4-a716-446655440099"
+    );
+    assert!(
+        ContextSeed::default()
+            .for_session("ignored".to_string())
+            .checkpoint
+            .is_none(),
+        "a checkpoint-free seed stays checkpoint-free"
+    );
+}
+
+#[test]
 fn compaction_trigger_and_provenance_values_are_stable() {
     assert_eq!(
         serde_json::to_value(CompactionTrigger::Overflow).unwrap(),

@@ -65,6 +65,12 @@ impl ConversationState {
         self.checkpoint.is_some()
     }
 
+    /// The active checkpoint, for tests that pin its session envelope.
+    #[cfg(test)]
+    pub(super) const fn checkpoint(&self) -> Option<&CompactionData> {
+        self.checkpoint.as_ref()
+    }
+
     pub(super) fn append_developer_context(&mut self, contexts: Vec<String>) {
         let timestamp = chrono::Utc::now();
         for content in contexts {
