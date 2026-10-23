@@ -7,7 +7,9 @@ use futures::StreamExt;
 use crate::clients::agent::{Agent, TurnResult, record_turn_usage};
 use crate::clients::backend::FinalOutputConstraint;
 use crate::clients::retry::{RequestOverrides, RetryReason, RetryStatus};
-use crate::clients::termination::{self, IntendedLimits, TerminationVerdict, TurnEvidence};
+use crate::clients::termination::{
+    self, ContextPressure, IntendedLimits, TerminationVerdict, TurnEvidence,
+};
 use crate::clients::tools::{
     ScheduledToolCall, Tool, ToolError, ToolRegistry, ToolResult, argument_compensation_events,
     read_extract_path, schedule_tool_calls,
@@ -220,7 +222,7 @@ impl Agent {
                     usage,
                 },
             );
-            if verdict.is_context_pressure() {
+            if let Some(pressure) = verdict.pressure {
                 // One pressure recovery per invocation, shared with the HTTP
                 // input-overflow path (034h). Nothing can spend it yet, so the
                 // guard ends the invocation rather than retrying the identical
@@ -229,12 +231,12 @@ impl Agent {
                 tracing::info!(
                     target: "cake",
                     recovery_available,
-                    pressure = ?verdict.pressure,
+                    pressure = ?pressure,
                     measured_input = verdict.measured_input,
                     context_window = verdict.context_window,
                     "Discarding a response classified as context pressure"
                 );
-                return Err(context_pressure_error(self.session_id).into());
+                return Err(context_pressure_error(self.session_id, pressure).into());
             }
 
             let function_calls = self.process_completed_turn(items, turn_mode)?;
@@ -1223,17 +1225,32 @@ fn cut_off_error(
 
 /// Build the neutral error for a discarded pressure response.
 ///
-/// It states only what was observed --- the request exceeded the configured
-/// window, so the response was discarded --- and names the session for an
-/// explicit continuation. It never claims the configured output limit was
-/// reached and never names a provider-side cause.
-fn context_pressure_error(session_id: uuid::Uuid) -> CutOffError {
-    let mut detail = String::from(
-        "The model's response was discarded because the request exceeded the configured \
-         context window.",
-    );
-    detail.push_str(&resume_hint(session_id));
-    CutOffError::new(detail)
+/// It states the evidence the classifier established and the remedy, never a
+/// truncation cause. Resuming is not the remedy: the resumed request re-sends
+/// the same over-window input, so it would be discarded again. The session ID
+/// stays for inspection and for the recovery owner (034h).
+fn context_pressure_error(session_id: uuid::Uuid, pressure: ContextPressure) -> CutOffError {
+    let detail = match pressure {
+        ContextPressure::MeasuredInput {
+            input_tokens,
+            context_window,
+        } => format!(
+            "The model's response was discarded because the reported input \
+             ({input_tokens} tokens) exceeded the configured context window \
+             ({context_window} tokens). Raise or remove the model's `context_window`, \
+             or start a new session; resuming this session re-sends the same input."
+        ),
+        ContextPressure::ProviderInputOverflow {
+            input_tokens,
+            context_limit,
+        } => format!(
+            "The model's response was discarded because the provider rejected the \
+             request: its input ({input_tokens} tokens) did not fit the context limit \
+             ({context_limit} tokens). Start a new session; resuming this session \
+             re-sends the same input."
+        ),
+    };
+    CutOffError::new(format!("{detail} Session: {session_id}."))
 }
 
 /// The sentence offering an explicit continuation of the session.
@@ -1780,6 +1797,75 @@ mod helper_tests {
         assert!(
             !guard.consume(),
             "a later pressure verdict in the same invocation cannot recover again"
+        );
+    }
+
+    #[test]
+    fn context_pressure_error_names_the_evidence_and_the_remedy() {
+        let session_id = uuid::uuid!("550e8400-e29b-41d4-a716-446655440000");
+
+        let measured = context_pressure_error(
+            session_id,
+            ContextPressure::MeasuredInput {
+                input_tokens: 5000,
+                context_window: 1000,
+            },
+        );
+        assert!(
+            measured.detail.contains("reported input (5000 tokens)"),
+            "{}",
+            measured.detail
+        );
+        assert!(
+            measured
+                .detail
+                .contains("configured context window (1000 tokens)"),
+            "{}",
+            measured.detail
+        );
+        assert!(
+            measured
+                .detail
+                .contains("Raise or remove the model's `context_window`"),
+            "{}",
+            measured.detail
+        );
+        assert!(
+            measured
+                .detail
+                .contains("resuming this session re-sends the same input"),
+            "{}",
+            measured.detail
+        );
+        assert!(
+            !measured.detail.contains("cake --resume"),
+            "resuming cannot fix the over-window input: {}",
+            measured.detail
+        );
+        assert!(
+            measured
+                .detail
+                .ends_with(&format!("Session: {session_id}."))
+        );
+
+        let overflow = context_pressure_error(
+            session_id,
+            ContextPressure::ProviderInputOverflow {
+                input_tokens: 16_380,
+                context_limit: 16_384,
+            },
+        );
+        assert!(
+            overflow
+                .detail
+                .contains("did not fit the context limit (16384 tokens)"),
+            "{}",
+            overflow.detail
+        );
+        assert!(
+            overflow
+                .detail
+                .ends_with(&format!("Session: {session_id}."))
         );
     }
 }

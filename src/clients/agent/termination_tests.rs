@@ -191,9 +191,10 @@ async fn pressure_discards_the_response_without_persisting_streaming_or_executin
 
     assert_eq!(
         cutoff.detail,
-        "The model's response was discarded because the request exceeded the configured \
-         context window. To continue this session explicitly, run: cake --resume \
-         550e8400-e29b-41d4-a716-446655440000 \"try again\""
+        "The model's response was discarded because the reported input (5000 tokens) exceeded \
+         the configured context window (1000 tokens). Raise or remove the model's \
+         `context_window`, or start a new session; resuming this session re-sends the same \
+         input. Session: 550e8400-e29b-41d4-a716-446655440000."
     );
     for claim in [
         "output limit",
@@ -206,6 +207,11 @@ async fn pressure_discards_the_response_without_persisting_streaming_or_executin
             "the message must stay neutral about the cause: {claim}"
         );
     }
+    assert!(
+        !cutoff.detail.contains("cake --resume"),
+        "resuming cannot fix the over-window input: {}",
+        cutoff.detail
+    );
 
     // Exactly one provider attempt: the identical request is never retried.
     assert_eq!(mock_server.received_requests().await.unwrap().len(), 1);
@@ -427,7 +433,11 @@ async fn completed_content_over_the_window_is_discarded() {
         .downcast_ref::<crate::types::CutOffError>()
         .expect("a completed response over the window is still discarded");
 
-    assert!(cutoff.detail.contains("cake --resume"), "{}", cutoff.detail);
+    assert!(
+        cutoff.detail.contains("reported input (5000 tokens)"),
+        "{}",
+        cutoff.detail
+    );
     // No message was persisted or streamed, no request was retried, and the
     // attempt's usage still settled once.
     assert_eq!(mock_server.received_requests().await.unwrap().len(), 1);

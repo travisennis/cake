@@ -2656,7 +2656,7 @@ printf 'completed:%s' "$index"
             .mount(&mock_server)
             .await;
 
-        let mut agent = test_agent_for(ApiType::Responses, &mock_server.uri());
+        let mut agent = test_agent_with_url(&mock_server.uri());
         let error = agent.send("hello".to_string()).await.unwrap_err();
         let cutoff = error
             .downcast_ref::<crate::types::CutOffError>()
@@ -2706,7 +2706,7 @@ printf 'completed:%s' "$index"
             .mount(&mock_server)
             .await;
 
-        let mut agent = test_agent_for(ApiType::Responses, &mock_server.uri());
+        let mut agent = test_agent_with_url(&mock_server.uri());
         let response = agent.send("hello".to_string()).await.unwrap();
 
         assert_eq!(response, "Hello!");
@@ -2742,7 +2742,7 @@ printf 'completed:%s' "$index"
             .mount(&mock_server)
             .await;
 
-        let mut agent = test_agent_for(ApiType::Responses, &mock_server.uri());
+        let mut agent = test_agent_with_url(&mock_server.uri());
         let error = agent.send("hello".to_string()).await.unwrap_err();
         let cutoff = error
             .downcast_ref::<crate::types::CutOffError>()
@@ -2780,7 +2780,7 @@ printf 'completed:%s' "$index"
             .mount(&mock_server)
             .await;
 
-        let mut agent = test_agent_for(ApiType::Responses, &mock_server.uri());
+        let mut agent = test_agent_with_url(&mock_server.uri());
         let error = agent.send("hello".to_string()).await.unwrap_err();
         let cutoff = error
             .downcast_ref::<crate::types::CutOffError>()
@@ -2957,7 +2957,7 @@ printf 'completed:%s' "$index"
         let mock_server = MockServer::start().await;
         mount_response(&mock_server, reasoning_only_response()).await;
 
-        let mut agent = test_agent_for(ApiType::Responses, &mock_server.uri());
+        let mut agent = test_agent_with_url(&mock_server.uri());
         let err = agent.send("hello".to_string()).await.unwrap_err();
 
         let cutoff = err
@@ -2980,7 +2980,7 @@ printf 'completed:%s' "$index"
         body["incomplete_details"] = serde_json::json!({"reason": "max_output_tokens"});
         mount_response(&mock_server, body).await;
 
-        let mut agent = test_agent_for(ApiType::Responses, &mock_server.uri());
+        let mut agent = test_agent_with_url(&mock_server.uri());
         let err = agent.send("hello".to_string()).await.unwrap_err();
         let cutoff = err
             .downcast_ref::<crate::types::CutOffError>()
@@ -3001,7 +3001,7 @@ printf 'completed:%s' "$index"
             serde_json::json!({"reason": "private model output\nand control text"});
         mount_response(&mock_server, body).await;
 
-        let mut agent = test_agent_for(ApiType::Responses, &mock_server.uri());
+        let mut agent = test_agent_with_url(&mock_server.uri());
         let err = agent.send("hello".to_string()).await.unwrap_err();
         let cutoff = err
             .downcast_ref::<crate::types::CutOffError>()
@@ -3237,7 +3237,7 @@ printf 'completed:%s' "$index"
             .mount(&mock_server)
             .await;
 
-        let mut agent = test_agent_for(ApiType::Responses, &mock_server.uri());
+        let mut agent = test_agent_with_url(&mock_server.uri());
         agent.history_mut().push(ConversationItem::Message {
             role: Role::User,
             content: "test".to_string(),
@@ -3268,7 +3268,7 @@ printf 'completed:%s' "$index"
             .mount(&mock_server)
             .await;
 
-        let mut agent = test_agent_for(ApiType::Responses, &mock_server.uri());
+        let mut agent = test_agent_with_url(&mock_server.uri());
         agent.history_mut().push(ConversationItem::Message {
             role: Role::User,
             content: "test".to_string(),
@@ -3299,7 +3299,7 @@ printf 'completed:%s' "$index"
             .mount(&mock_server)
             .await;
 
-        let mut agent = test_agent_for(ApiType::Responses, &mock_server.uri());
+        let mut agent = test_agent_with_url(&mock_server.uri());
         agent.history_mut().push(ConversationItem::Message {
             role: Role::User,
             content: "test".to_string(),
@@ -3330,7 +3330,7 @@ printf 'completed:%s' "$index"
             .mount(&mock_server)
             .await;
 
-        let mut agent = test_agent_for(ApiType::Responses, &mock_server.uri());
+        let mut agent = test_agent_with_url(&mock_server.uri());
         agent.history_mut().push(ConversationItem::Message {
             role: Role::User,
             content: "test".to_string(),
@@ -3374,7 +3374,7 @@ printf 'completed:%s' "$index"
             .mount(&mock_server)
             .await;
 
-        let mut agent = test_agent_for(ApiType::Responses, &mock_server.uri());
+        let mut agent = test_agent_with_url(&mock_server.uri());
         agent.history_mut().push(ConversationItem::Message {
             role: Role::User,
             content: "test".to_string(),
@@ -3416,7 +3416,7 @@ printf 'completed:%s' "$index"
             .mount(&mock_server)
             .await;
 
-        let mut agent = test_agent_for(ApiType::Responses, &mock_server.uri());
+        let mut agent = test_agent_with_url(&mock_server.uri());
         agent.history_mut().push(ConversationItem::Message {
             role: Role::User,
             content: "test".to_string(),
@@ -3458,7 +3458,7 @@ printf 'completed:%s' "$index"
             .mount(&mock_server)
             .await;
 
-        let mut agent = test_agent_for(ApiType::Responses, &mock_server.uri());
+        let mut agent = test_agent_with_url(&mock_server.uri());
         agent.history_mut().push(ConversationItem::Message {
             role: Role::User,
             content: "test".to_string(),
@@ -3496,7 +3496,7 @@ printf 'completed:%s' "$index"
             .mount(&mock_server)
             .await;
 
-        let mut agent = test_agent_for(ApiType::Responses, &mock_server.uri());
+        let mut agent = test_agent_with_url(&mock_server.uri());
         agent.history_mut().push(ConversationItem::Message {
             role: Role::User,
             content: "test".to_string(),
@@ -3534,7 +3534,7 @@ printf 'completed:%s' "$index"
             .mount(&mock_server)
             .await;
 
-        let mut agent = test_agent_for(ApiType::Responses, &mock_server.uri());
+        let mut agent = test_agent_with_url(&mock_server.uri());
         agent.history_mut().push(ConversationItem::Message {
             role: Role::User,
             content: "test".to_string(),
@@ -3574,7 +3574,7 @@ printf 'completed:%s' "$index"
             .mount(&mock_server)
             .await;
 
-        let mut agent = test_agent_for(ApiType::Responses, &mock_server.uri());
+        let mut agent = test_agent_with_url(&mock_server.uri());
         agent.history_mut().push(ConversationItem::Message {
             role: Role::User,
             content: "test".to_string(),
@@ -3610,7 +3610,7 @@ printf 'completed:%s' "$index"
             .mount(&mock_server)
             .await;
 
-        let mut agent = test_agent_for(ApiType::Responses, &mock_server.uri());
+        let mut agent = test_agent_with_url(&mock_server.uri());
         agent.history_mut().push(ConversationItem::Message {
             role: Role::User,
             content: "test".to_string(),
@@ -3646,7 +3646,7 @@ printf 'completed:%s' "$index"
             .mount(&mock_server)
             .await;
 
-        let mut agent = test_agent_for(ApiType::Responses, &mock_server.uri());
+        let mut agent = test_agent_with_url(&mock_server.uri());
         agent.history_mut().push(ConversationItem::Message {
             role: Role::User,
             content: "test".to_string(),
@@ -3684,7 +3684,7 @@ printf 'completed:%s' "$index"
             .mount(&mock_server)
             .await;
 
-        let mut agent = test_agent_for(ApiType::Responses, &mock_server.uri());
+        let mut agent = test_agent_with_url(&mock_server.uri());
         agent.history_mut().push(ConversationItem::Message {
             role: Role::User,
             content: "test".to_string(),
@@ -3714,7 +3714,7 @@ printf 'completed:%s' "$index"
             .mount(&mock_server)
             .await;
 
-        let mut agent = test_agent_for(ApiType::Responses, &mock_server.uri());
+        let mut agent = test_agent_with_url(&mock_server.uri());
         agent.history_mut().push(ConversationItem::Message {
             role: Role::User,
             content: "test".to_string(),
@@ -4597,7 +4597,7 @@ printf 'completed:%s' "$index"
             .mount(&mock_server)
             .await;
 
-        let mut agent = test_agent_for(ApiType::Responses, &mock_server.uri());
+        let mut agent = test_agent_with_url(&mock_server.uri());
         agent.history_mut().push(ConversationItem::Message {
             role: Role::User,
             content: "Hello".to_string(),
