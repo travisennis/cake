@@ -1,0 +1,30 @@
+---
+source: src/types/session_tests.rs
+assertion_line: 1201
+expression: "serde_json::to_value(StreamRecord::TurnUsage(data)).unwrap()"
+---
+{
+  "context_window": 2000,
+  "model": "glm-5.1",
+  "provider_request_id": "resp-ok",
+  "remaining_context_tokens": 800,
+  "response_model": "served-glm-5.1",
+  "session_id": "550e8400-e29b-41d4-a716-446655440000",
+  "task_id": "550e8400-e29b-41d4-a716-446655440001",
+  "timestamp": "2026-05-10T12:34:56Z",
+  "turn": 2,
+  "type": "turn_usage",
+  "usage": {
+    "input_tokens": 1200,
+    "input_tokens_details": {
+      "cache_write_tokens": 0,
+      "cached_tokens": 300
+    },
+    "output_tokens": 100,
+    "output_tokens_details": {
+      "reasoning_tokens": 40
+    },
+    "total_tokens": 1300
+  },
+  "usage_presence": "complete"
+}

@@ -1343,11 +1343,16 @@ mod error_tests {
 
         let persisted = Arc::new(Mutex::new(Vec::new()));
         let persisted_clone = Arc::clone(&persisted);
+        let streamed = Arc::new(Mutex::new(Vec::new()));
+        let streamed_clone = Arc::clone(&streamed);
         let mut agent = test_agent_with_url(&mock_server.uri())
             .with_context_window(Some(2000))
             .with_persist_callback(move |record| {
                 persisted_clone.lock().unwrap().push(record.clone());
                 Ok(())
+            })
+            .with_streaming_json(move |json| {
+                streamed_clone.lock().unwrap().push(json.to_string());
             })
             .with_tools(crate::clients::tools::read_tool_registry());
 
@@ -1383,7 +1388,7 @@ mod error_tests {
             "second request must carry the first turn's tool output"
         );
 
-        // One session-only TurnUsage audit record per completed turn, in order.
+        // One TurnUsage audit record per completed turn, persisted and streamed, in order.
         let persisted = persisted.lock().unwrap();
         let turn_usage: Vec<_> = persisted
             .iter()
@@ -1396,8 +1401,30 @@ mod error_tests {
         assert_eq!(turn_usage.len(), 2);
         assert_eq!(turn_usage[0].turn, 1);
         assert_eq!(turn_usage[0].usage.input_tokens, 1000);
+        assert_eq!(turn_usage[0].context_window, Some(2000));
+        assert_eq!(turn_usage[0].remaining_context_tokens, Some(1000));
         assert_eq!(turn_usage[1].turn, 2);
         assert_eq!(turn_usage[1].usage.input_tokens, 1200);
+        assert_eq!(turn_usage[1].context_window, Some(2000));
+        assert_eq!(turn_usage[1].remaining_context_tokens, Some(800));
+
+        // Main-agent usage is mirrored on the live stream so a client can
+        // measure context use without reading the session file. Replays and
+        // retries retain the same per-attempt shape.
+        let streamed = stream_records(&streamed);
+        let streamed_usage: Vec<_> = streamed
+            .iter()
+            .filter(|record| record["type"] == "turn_usage")
+            .collect();
+        assert_eq!(streamed_usage.len(), 2, "{streamed:#?}");
+        assert_eq!(streamed_usage[0]["turn"], 1);
+        assert_eq!(streamed_usage[0]["context_window"], 2000);
+        assert_eq!(streamed_usage[0]["remaining_context_tokens"], 1000);
+        assert_eq!(streamed_usage[0]["usage"]["input_tokens"], 1000);
+        assert_eq!(streamed_usage[1]["turn"], 2);
+        assert_eq!(streamed_usage[1]["context_window"], 2000);
+        assert_eq!(streamed_usage[1]["remaining_context_tokens"], 800);
+        assert_eq!(streamed_usage[1]["usage"]["input_tokens"], 1200);
     }
 
     #[tokio::test]
@@ -2473,8 +2500,8 @@ printf 'completed:%s' "$index"
         }));
 
         let persisted = persisted.lock().unwrap();
-        // Each completed turn also persists a session-only `TurnUsage` audit
-        // record, so the persisted list is longer than the streamed records.
+        // Each completed turn also persists and streams a `TurnUsage` audit
+        // record, so the streamed list is longer than the conversation records.
         assert_eq!(persisted.len(), 6);
         assert!(
             persisted
@@ -2495,14 +2522,26 @@ printf 'completed:%s' "$index"
             .count();
         assert_eq!(turn_usage_count, 2);
         drop(persisted);
-        let streamed = streamed.lock().unwrap();
-        assert_eq!(streamed.len(), 4);
-        assert!(
-            streamed
+        let streamed_records: Vec<serde_json::Value> = streamed
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|json| serde_json::from_str(json).unwrap())
+            .collect();
+        assert_eq!(streamed_records.len(), 6);
+        assert_eq!(
+            streamed_records
                 .iter()
-                .all(|record| !record.contains("task_complete"))
+                .filter(|record| record["type"] == "turn_usage")
+                .count(),
+            2,
+            "{streamed_records:#?}"
         );
-        drop(streamed);
+        assert!(
+            streamed_records
+                .iter()
+                .all(|record| record["type"] != "task_complete")
+        );
         assert_eq!(
             progress.lock().unwrap().as_slice(),
             ["Retrying incomplete model turn (semantic_incomplete, attempt 1/1)"]

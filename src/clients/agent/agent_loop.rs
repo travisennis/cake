@@ -935,6 +935,7 @@ impl Agent {
                         last_usage,
                         session_id,
                         task_id,
+                        config.model_config.context_window,
                         settlement,
                     );
                 },

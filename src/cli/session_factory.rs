@@ -609,6 +609,8 @@ mod tests {
                     model: None,
                     response_model: None,
                     provider_request_id: None,
+                    context_window: None,
+                    remaining_context_tokens: None,
                 },
             ));
 
@@ -1073,6 +1075,8 @@ mod tests {
                 model: None,
                 response_model: None,
                 provider_request_id: None,
+                context_window: None,
+                remaining_context_tokens: None,
             }),
             SessionRecord::SkillActivated {
                 session_id,
@@ -1240,6 +1244,8 @@ mod tests {
                 model: None,
                 response_model: None,
                 provider_request_id: None,
+                context_window: None,
+                remaining_context_tokens: None,
             }),
         ];
 

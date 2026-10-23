@@ -465,18 +465,20 @@ pub enum ApiAttemptTerminalClass {
     ResponseFailed,
 }
 
-/// Token usage for one provider attempt.
+/// Token usage for one main-agent provider attempt.
 ///
-/// Session-only audit record: persisted to the session file but never emitted
-/// to stream-json output. Per-attempt usage lets a resumed session know the
-/// current context size before the next provider request and makes token cost
+/// Persisted to the session file and, for main-agent attempts, emitted to
+/// stream-json output so a machine-mode client can show how full the context
+/// is (ADR-048). Per-attempt usage also lets a resumed session know the current
+/// context size before the next provider request and makes token cost
 /// reconstructible even when a response is retried or discarded.
 ///
 /// The record also names the provider identity of the attempt, so the usage
 /// can be tied to the response that produced it, and states whether the
 /// provider reported every counter or only some of them (ADR-030). The
 /// aggregate records (`task_complete.usage`) keep summing only reported
-/// values.
+/// values. Summary and compaction-attempt usage stays session and telemetry
+/// audit data and is never streamed as a context measurement.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct TurnUsageData {
     pub session_id: String,
@@ -511,6 +513,21 @@ pub struct TurnUsageData {
     /// one, so the usage can be correlated with provider logs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_request_id: Option<String>,
+    /// The configured input token window for the attempt.
+    ///
+    /// Present only when the model configures a window and the provider
+    /// reported complete usage; a partial measurement never produces a
+    /// fraction a client could act on. Absent on records written before the
+    /// field existed and on summary or compaction attempts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u32>,
+    /// Input budget remaining after this attempt's request, computed as the
+    /// configured window minus the provider-reported input tokens.
+    ///
+    /// Same presence rule as [`Self::context_window`]; the value saturates at
+    /// zero rather than going negative.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remaining_context_tokens: Option<u64>,
 }
 
 /// Shared data for `HookEvent` records in both `StreamRecord` and `SessionRecord`.
@@ -606,7 +623,7 @@ pub enum SessionRecord {
 
     TaskComplete(TaskCompleteData),
 
-    /// Per-attempt token usage (session-only; not emitted to stream-json).
+    /// Per-attempt token usage for a main-agent provider attempt.
     TurnUsage(TurnUsageData),
 
     /// One self-contained context checkpoint: a summary of retired history plus
@@ -699,6 +716,17 @@ pub enum StreamRecord {
     /// or tool events.
     Compaction(CompactionData),
 
+    /// Per-attempt usage for a main-agent provider attempt.
+    ///
+    /// Live streams emit one record for every main-agent attempt that reported
+    /// usage, in provider-attempt order and before that response's conversation
+    /// records. Clients use the most recent complete record to measure context
+    /// use; `task_complete.usage` remains the task aggregate. Summary and
+    /// compaction attempts never appear here. Replay emits stored records in
+    /// physical order, including records written before the optional budget
+    /// fields existed.
+    TurnUsage(TurnUsageData),
+
     /// Structured failure emitted by `cake replay` before the process exits
     /// non-zero, so stream-json parsers can learn why replay failed without
     /// waiting for the exit code. Never emitted by live streams.
@@ -774,13 +802,25 @@ impl From<StreamRecord> for SessionRecord {
             StreamRecord::HookEvent(d) => Self::HookEvent(d),
             StreamRecord::Reasoning(d) => Self::Reasoning(d),
             StreamRecord::TaskComplete(d) => Self::TaskComplete(d),
-            StreamRecord::Compaction(d) => Self::Compaction(d),
-            // `replay_error` is emitted only by `cake replay`, which never
-            // writes to a session file; there is no persisted counterpart.
-            StreamRecord::ReplayError { .. } => {
-                unreachable!("replay_error stream records are never persisted to a session file")
-            },
+            record @ (StreamRecord::Compaction(_)
+            | StreamRecord::TurnUsage(_)
+            | StreamRecord::ReplayError { .. }) => session_record_from_stream_metadata(record),
         }
+    }
+}
+
+/// Convert the stream-only metadata tail without growing the main conversion
+/// match past its complexity ceiling.
+fn session_record_from_stream_metadata(record: StreamRecord) -> SessionRecord {
+    match record {
+        StreamRecord::Compaction(d) => SessionRecord::Compaction(d),
+        StreamRecord::TurnUsage(d) => SessionRecord::TurnUsage(d),
+        // `replay_error` is emitted only by `cake replay`, which never writes
+        // to a session file; there is no persisted counterpart.
+        StreamRecord::ReplayError { .. } => {
+            unreachable!("replay_error stream records are never persisted to a session file")
+        },
+        _ => unreachable!("only stream metadata records are converted here"),
     }
 }
 
@@ -844,11 +884,7 @@ impl From<SessionRecord> for StreamRecord {
             SessionRecord::Reasoning(d) => Self::Reasoning(d),
             SessionRecord::TaskComplete(d) => Self::TaskComplete(d),
             SessionRecord::Compaction(d) => Self::Compaction(d),
-            // `turn_usage` is a session-only audit record with no stream-json
-            // counterpart; `cake replay` filters it before conversion.
-            SessionRecord::TurnUsage(_) => {
-                unreachable!("turn_usage records are session-only and have no stream counterpart")
-            },
+            SessionRecord::TurnUsage(d) => Self::TurnUsage(d),
         }
     }
 }

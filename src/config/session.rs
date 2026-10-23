@@ -785,6 +785,8 @@ mod tests {
             model: None,
             response_model: None,
             provider_request_id: None,
+            context_window: None,
+            remaining_context_tokens: None,
         })
     }
 

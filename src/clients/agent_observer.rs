@@ -66,6 +66,25 @@ impl AgentObserver {
         Ok(())
     }
 
+    /// Stream an audit record whose persistence is owned by another path.
+    ///
+    /// Usage settlement writes its session record separately and has always
+    /// treated a persistence failure as a warning rather than a failed task.
+    /// Streaming the same record keeps that behavior: a serialization or sink
+    /// error is logged and never changes the provider-attempt outcome.
+    pub(super) fn stream_audit_record(&self, record: &StreamRecord) {
+        let stream_json = self.streaming.as_ref().and_then(|_| {
+            serde_json::to_string(record)
+                .inspect_err(
+                    |error| tracing::warn!(target: "cake", %error, "Stream serialization failed"),
+                )
+                .ok()
+        });
+        if let Err(error) = self.emit_stream_record(stream_json) {
+            tracing::warn!(target: "cake", %error, "Failed to stream per-attempt usage");
+        }
+    }
+
     pub(super) fn persist_record(&mut self, record: &SessionRecord) -> anyhow::Result<()> {
         if let Some(ref mut callback) = self.persist {
             callback(record)?;
