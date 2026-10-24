@@ -1,0 +1,529 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/travisennis/cake/docs/schemas/cake-gate-1.schema.json",
+  "title": "cake-gate/1 protocol",
+  "description": "Wire schema for the cake-gate/1 external policy gate protocol. Validate a describe object with #/$defs/describe and any serve frame with #/$defs/frame. Unknown fields are tolerated for additive evolution; required fields and conditional requirements are enforced. Byte limits that JSON Schema cannot express are stated in docs/integrations.md: a frame is at most 1 MiB, init.config at most 64 KiB, each evidence payload at most 8 KiB, and total evidence at most 32 KiB. Model-visible text is defensively truncated by Cake to 1,000 characters; the schema's 8,192-character ceiling catches accidental transcripts.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/describe"
+    },
+    {
+      "$ref": "#/$defs/frame"
+    }
+  ],
+  "$defs": {
+    "protocol": {
+      "const": "cake-gate/1"
+    },
+    "gate_name": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+    },
+    "gate_version": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?$"
+    },
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "phase": {
+      "enum": ["pre_tool", "post_tool"]
+    },
+    "action": {
+      "enum": ["bash.exec"]
+    },
+    "transport": {
+      "enum": ["stdio", "oneshot"]
+    },
+    "capability": {
+      "enum": ["shadow", "diagnostic", "resolved-models"]
+    },
+    "decision_label": {
+      "enum": ["allow", "warn", "block", "abstain"]
+    },
+    "code": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+    },
+    "env_name": {
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+    },
+    "describe": {
+      "type": "object",
+      "required": [
+        "protocol",
+        "name",
+        "version",
+        "phases",
+        "actions",
+        "transports",
+        "capabilities"
+      ],
+      "properties": {
+        "protocol": {
+          "$ref": "#/$defs/protocol"
+        },
+        "name": {
+          "$ref": "#/$defs/gate_name"
+        },
+        "version": {
+          "$ref": "#/$defs/gate_version"
+        },
+        "phases": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/phase"
+          }
+        },
+        "actions": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/action"
+          }
+        },
+        "transports": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "contains": {
+            "const": "stdio"
+          },
+          "items": {
+            "$ref": "#/$defs/transport"
+          }
+        },
+        "capabilities": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/capability"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "model_descriptor": {
+      "type": "object",
+      "required": ["base_url", "api_type", "model", "api_key_env"],
+      "properties": {
+        "provider": {
+          "type": "string"
+        },
+        "base_url": {
+          "type": "string",
+          "minLength": 1
+        },
+        "api_type": {
+          "enum": ["chat_completions", "responses"]
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "provider_headers": {
+          "type": "object",
+          "properties": {
+            "http_referer": {
+              "type": "string"
+            },
+            "x_title": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "temperature": {
+          "type": "number"
+        },
+        "top_p": {
+          "type": "number"
+        },
+        "max_output_tokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "reasoning_effort": {
+          "type": "string"
+        },
+        "reasoning_summary": {
+          "type": "string"
+        },
+        "reasoning_max_tokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "api_key_env": {
+          "$ref": "#/$defs/env_name"
+        }
+      },
+      "additionalProperties": true
+    },
+    "init_session": {
+      "type": "object",
+      "required": ["cwd"],
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "task_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "invocation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cwd": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": true
+    },
+    "check_session": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "task_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "invocation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "call_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "turn": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": true
+    },
+    "init": {
+      "type": "object",
+      "required": ["protocol", "type", "id", "session"],
+      "properties": {
+        "protocol": {
+          "$ref": "#/$defs/protocol"
+        },
+        "type": {
+          "const": "init"
+        },
+        "id": {
+          "const": "init"
+        },
+        "session": {
+          "$ref": "#/$defs/init_session"
+        },
+        "config": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "models": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/model_descriptor"
+          }
+        },
+        "env": {
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/env_name"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "ready": {
+      "type": "object",
+      "required": ["protocol", "type", "id", "name", "version"],
+      "properties": {
+        "protocol": {
+          "$ref": "#/$defs/protocol"
+        },
+        "type": {
+          "const": "ready"
+        },
+        "id": {
+          "const": "init"
+        },
+        "name": {
+          "$ref": "#/$defs/gate_name"
+        },
+        "version": {
+          "$ref": "#/$defs/gate_version"
+        },
+        "warnings": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "string",
+            "maxLength": 1024
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "script_evidence": {
+      "type": "object",
+      "required": ["path", "contents"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "contents": {
+          "type": "string",
+          "maxLength": 32768
+        }
+      },
+      "additionalProperties": true
+    },
+    "bash_input": {
+      "type": "object",
+      "required": ["command", "cwd", "script_evidence"],
+      "properties": {
+        "command": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": ["string", "null"]
+        },
+        "repo_digest": {
+          "type": ["string", "null"]
+        },
+        "script_evidence": {
+          "type": "array",
+          "maxItems": 1,
+          "items": {
+            "$ref": "#/$defs/script_evidence"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "check": {
+      "type": "object",
+      "required": ["protocol", "type", "id", "phase", "action", "input", "options"],
+      "properties": {
+        "protocol": {
+          "$ref": "#/$defs/protocol"
+        },
+        "type": {
+          "const": "check"
+        },
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "phase": {
+          "const": "pre_tool"
+        },
+        "action": {
+          "const": "bash.exec"
+        },
+        "input": {
+          "$ref": "#/$defs/bash_input"
+        },
+        "session": {
+          "$ref": "#/$defs/check_session"
+        },
+        "options": {
+          "type": "object",
+          "required": ["diagnostic"],
+          "properties": {
+            "diagnostic": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "annotation": {
+      "type": "object",
+      "required": ["placement", "text"],
+      "properties": {
+        "placement": {
+          "const": "prepend"
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8192
+        }
+      },
+      "additionalProperties": true
+    },
+    "evidence": {
+      "type": "object",
+      "required": ["kind", "data"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+        },
+        "data": true
+      },
+      "additionalProperties": true
+    },
+    "decision": {
+      "type": "object",
+      "required": ["protocol", "type", "id", "decision"],
+      "properties": {
+        "protocol": {
+          "$ref": "#/$defs/protocol"
+        },
+        "type": {
+          "const": "decision"
+        },
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "decision": {
+          "$ref": "#/$defs/decision_label"
+        },
+        "code": {
+          "$ref": "#/$defs/code"
+        },
+        "message": {
+          "type": "string",
+          "maxLength": 8192
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "annotations": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "$ref": "#/$defs/annotation"
+          }
+        },
+        "short_circuit": {
+          "type": "boolean"
+        },
+        "evidence": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "$ref": "#/$defs/evidence"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "decision": {
+                "enum": ["block", "warn"]
+              }
+            },
+            "required": ["decision"]
+          },
+          "then": {
+            "required": ["code", "message"]
+          }
+        }
+      ],
+      "additionalProperties": true
+    },
+    "error": {
+      "type": "object",
+      "required": ["protocol", "type", "id", "class", "message"],
+      "properties": {
+        "protocol": {
+          "$ref": "#/$defs/protocol"
+        },
+        "type": {
+          "const": "error"
+        },
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "class": {
+          "enum": [
+            "timeout",
+            "network",
+            "auth",
+            "rate_limit",
+            "transport",
+            "malformed",
+            "refusal",
+            "config",
+            "unsupported",
+            "internal",
+            "protocol"
+          ]
+        },
+        "message": {
+          "type": "string",
+          "maxLength": 1024
+        }
+      },
+      "additionalProperties": true
+    },
+    "shutdown": {
+      "type": "object",
+      "required": ["protocol", "type", "id"],
+      "properties": {
+        "protocol": {
+          "$ref": "#/$defs/protocol"
+        },
+        "type": {
+          "const": "shutdown"
+        },
+        "id": {
+          "const": "shutdown"
+        }
+      },
+      "additionalProperties": true
+    },
+    "frame": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/init"
+        },
+        {
+          "$ref": "#/$defs/ready"
+        },
+        {
+          "$ref": "#/$defs/check"
+        },
+        {
+          "$ref": "#/$defs/decision"
+        },
+        {
+          "$ref": "#/$defs/error"
+        },
+        {
+          "$ref": "#/$defs/shutdown"
+        }
+      ]
+    }
+  }
+}

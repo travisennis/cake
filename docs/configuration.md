@@ -223,6 +223,69 @@ The fast-approval cutoff is `0.85`, and it is a reviewed constant in the code ra
 
 Emergency bypass skips both evaluations. Jev judges safety eligibility; advisory-only hook warnings do not make an otherwise observational command ineligible, and hooks continue to run independently. See [the benchmark guide](../scripts/judge-bench/README.md) for evaluation commands and report interpretation.
 
+## Gates
+
+Status: this section freezes the `[gates]` configuration contract from [ADR 049](adr/049-external-policy-gates-with-the-cake-gate-1-protocol.md). The keys are not read until the external gate layer lands; until then `[tools.bash.judge]` remains the live command gate and a `[gates]` table or `[tools.bash] gates` key is reported as an unrecognized settings key, not applied. Once the layer is enabled, an unrecognized or invalid gate key is an input error (exit `3`), never a silent fallback.
+
+Gates are external policy executables composed in order for an action. The only action in this release is the Bash pre-tool check, `bash.exec`. The [Gate protocol](integrations.md#gate-protocol) is the wire contract; this section owns configuration, defaults, and precedence.
+
+```toml
+[tools.bash]
+gates = ["typesafe", "safety"]
+
+[gates.typesafe]
+command = "cake-typesafe-gate"
+transport = "stdio"
+mode = "shadow"
+timeout_secs = 2
+fail = "closed"
+
+[gates.safety]
+command = "cake-safety-judge"
+transport = "stdio"
+mode = "enforce"
+timeout_secs = 45
+fail = "closed"
+allowlist = ["git status --short"]
+models = ["judge"]
+config = { model = "judge", rubric_file = ".cake/judge-rubric.md" }
+```
+
+`[tools.bash].gates` is the ordered composition for `bash.exec`. Each name indexes a `[gates.<name>]` table. A name with no table, an unknown transport or mode, or an unresolvable command is a settings error at load time. A table that is not listed is ignored. An explicit empty list (`gates = []`) means no gates: Bash is disabled under the no-gate rule. A profile overlay replaces the list; `env`, `models`, and `allowlist` overlays also replace rather than union.
+
+Each `[gates.<name>]` table supports:
+
+- `command` (required): the executable to run. A value containing a path separator resolves from the invocation working directory; a bare name resolves on `PATH`. Cake runs it directly, never through a shell.
+- `args` (optional, default `[]`): arguments inserted before the `describe` or `serve` subcommand. No shell expansion is performed.
+- `transport` (default `"stdio"`): `stdio` for one long-lived process per run, or `oneshot` for one process per check. The gate's `describe` must list the selected transport.
+- `mode` (default `"enforce"`): `enforce`, `shadow`, or `off`. A shadow gate records its would-be decision and never changes authorization. `off` removes the gate from the run without deleting its configuration. A shadow gate must declare the `shadow` capability.
+- `timeout_secs` (default `30`, minimum `1`): the per-check deadline. A timeout kills the gate process group, restarts the process for the next check, and fails that check closed unless `fail = "open"`.
+- `startup_timeout_secs` (default `10`, minimum `1`): the deadline for `describe` and for `init`/`ready`, applied separately.
+- `fail` (default `"closed"`): `closed` blocks the command on a gate failure; `open` records the failure and continues. `open` is an explicit experiment setting, is recorded as failed-open in telemetry, and is called out by `cake gates doctor`.
+- `short_circuit_on_allow` (default `false`): when true, an `allow` decision that also sets `short_circuit` stops the enforce chain. A `warn` or `abstain` never short-circuits.
+- `allowlist` (default `[]`): exact raw-command strings whose `block` decision from this gate is overridden to allow. The command is still checked by every gate, the override is recorded, and only a deliberate `block` is overridden; failures, protocol errors, and the no-gate rule are never overridden. A profile overlay replaces the list.
+- `env` (default `[]`): additional environment variable names to pass to the gate process. The credential variable names of the gate's resolved models are passed automatically. Values are never written to the protocol or telemetry.
+- `models` (default `[]`): `[[models]]` entry names whose resolved descriptors the gate receives. The reserved name `default` selects the run's resolved model; the auto-detected safety gate receives it automatically when it declares `resolved-models`. A gate that does not declare `resolved-models` must leave this empty. A gate model must be environment-backed: a file-backed subscription credential is never passed, so configure a model with an `api_key_env` for a gate that needs one.
+- `config` (default `{}`): the gate's own JSON-compatible configuration table, passed in `init` and limited to 64 KiB. Keys are gate-defined; Cake does not interpret them. Do not put credentials here.
+
+The default gate is auto-detected. When `[tools.bash].gates` is absent, Cake looks for `cake-safety-judge` on `PATH` and, if found, runs it as an enforce gate named `safety` with the defaults above, a 45-second `timeout_secs`, and, when it declares `resolved-models`, the run's model as the reserved `default` descriptor (with its credential variable name). Precedence is explicit `gates`, then `cake-safety-judge` on `PATH`, then the in-process judge when `[tools.bash.judge]` is present (the one-release compatibility path), then no gate. If the final step is reached, Bash is disabled rather than run ungated. An explicit `gates` list disables auto-detection, including an explicitly empty list. Auto-detection never synthesizes any other gate.
+
+`CAKE_GATE=off` or `--no-gate` bypasses the whole pipeline for the invocation. Every Bash call while bypassed records a `gate_decision` with `bypassed: true`, and no gate process starts. `CAKE_JUDGE=off` is an alias for `CAKE_GATE=off` for one release. `--no-gate` wins over the environment variable, and `CAKE_GATE` wins over the deprecated `CAKE_JUDGE`. Only the exact value `off` disables the pipeline; other values are ignored, matching the existing `CAKE_JUDGE` behavior. A bypass is unsafe and is never the default.
+
+When both `[tools.bash].gates` and `[tools.bash.judge]` are present, `gates` wins and the judge table is ignored with one startup warning. During the one-release migration, a `[tools.bash.judge]` table with no `gates` list and no external gate on `PATH` maps to a single in-process `safety` gate: `enabled = false` or `CAKE_JUDGE=off` maps to the global bypass, `allowlist` maps to the gate allowlist, `timeout_secs` maps to the gate timeout, and `retry_budget_secs`, `rubric_file`, `model`, and `[tools.bash.judge.typesafe]` map to the gate's `config` table. A non-empty `model` also adds that `[[models]]` entry to `models`, so the gate receives its descriptor. A project settings file may set any of these, as it can today, so treat project settings as trusted input.
+
+Profile overlays follow the ordinary settings rules. `[profiles.<name>.tools.bash] gates` replaces the list; `[profiles.<name>.gates.<name>]` merges field by field, and its `config` table merges key by key rather than replacing the whole table. A profile may set `mode = "off"` to drop one gate without editing the global list; if that leaves no enforce gate for `bash.exec`, the no-gate rule applies.
+
+Inspect the resolved pipeline without running a command:
+
+```bash
+cake gates list
+cake gates doctor
+cake gates doctor -- 'git push --force'
+```
+
+`list` shows the configured and auto-detected gates, their resolved commands and paths, transports, modes, timeouts, and declared phase/action coverage; it is informational and exits `0` even when a gate is broken. `doctor` runs `describe` and `init` for every gate, reports missing commands, protocol or capability mismatches, unresolved models, missing environment variable names, and the no-gate condition; it exits `0` when the pipeline is healthy, `1` on a configuration or coverage problem, `2` on a gate process failure, and `3` on a settings load error. With `-- <command>`, `doctor` also runs one check through the full chain and prints each stage's decision; that run may call a gate's provider and spend tokens. `doctor` never executes the inspected command.
+
 ## Filesystem access
 
 Top-level and profile `directories` grant persistent read-write access to the listed directories under `workspace-write`. Global and project entries are merged, deduplicated, and sorted, so the resolved list is stable across runs. The `read-only` policy demotes these paths to read-only access.
@@ -354,3 +417,4 @@ Set `RUST_LOG=cake=debug` or `RUST_LOG=cake=trace` for verbose file logging. Nor
 
 - [ADR 002](adr/002-agent-skills.md), the skills system.
 - [ADR 003](adr/003-settings-profiles.md), settings profiles.
+- [ADR 049](adr/049-external-policy-gates-with-the-cake-gate-1-protocol.md), external policy gates and the `cake-gate/1` protocol.
