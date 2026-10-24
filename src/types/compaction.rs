@@ -57,6 +57,16 @@ pub enum EstimateBasis {
     ContentClass,
 }
 
+impl EstimateBasis {
+    /// The serialized name, for human-readable diagnostics.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::MeasuredUsage => "measured_usage",
+            Self::ContentClass => "content_class",
+        }
+    }
+}
+
 /// Estimated input tokens before and after the checkpoint, with their basis.
 ///
 /// These are estimates, not provider measurements of the projected request.

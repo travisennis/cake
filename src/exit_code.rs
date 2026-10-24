@@ -121,6 +121,12 @@ fn classify_typed_error(err: &anyhow::Error) -> Option<u8> {
         return Some(replay_err.exit_code());
     }
 
+    // `cake sessions checkpoint` reports invalid payloads and identities as
+    // input errors and lock, read, or append failures as operational errors.
+    if let Some(checkpoint_err) = err.downcast_ref::<crate::cli::CheckpointError>() {
+        return Some(checkpoint_err.exit_code());
+    }
+
     None
 }
 
@@ -866,6 +872,35 @@ mod tests {
             anyhow::Error::new(crate::cli::ReplayError::Permission(
                 "550e8400-e29b-41d4-a716-446655440000".to_string(),
             )),
+        ] {
+            assert_eq!(classify_to_u8(&err), code::AGENT_ERROR);
+        }
+    }
+
+    // --- Checkpoint append error classification ---
+
+    #[test]
+    fn classify_checkpoint_input_errors() {
+        let err = anyhow::Error::new(crate::cli::CheckpointError::Input(
+            "checkpoint payload is not JSON".to_string(),
+        ));
+        assert_eq!(classify_to_u8(&err), code::INPUT_ERROR);
+    }
+
+    #[test]
+    fn classify_checkpoint_operational_errors() {
+        for err in [
+            anyhow::Error::new(crate::cli::CheckpointError::Locked(
+                "550e8400-e29b-41d4-a716-446655440000".to_string(),
+            )),
+            anyhow::Error::new(crate::cli::CheckpointError::Unreadable {
+                session_id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+                detail: "invalid record".to_string(),
+            }),
+            anyhow::Error::new(crate::cli::CheckpointError::Append {
+                session_id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+                detail: "failed to sync".to_string(),
+            }),
         ] {
             assert_eq!(classify_to_u8(&err), code::AGENT_ERROR);
         }

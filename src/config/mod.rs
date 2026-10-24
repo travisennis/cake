@@ -40,7 +40,7 @@ pub use model::{ModelConfig, ReasoningEffort, ResolvedModelConfig};
 #[doc(inline)]
 pub use output_schema::{OutputSchema, OutputSchemaError};
 #[doc(inline)]
-pub use session::{Session, SessionWriter};
+pub use session::{Session, SessionLockedError, SessionWriter};
 #[doc(inline)]
 pub use settings::{ModelDefinition, SettingsLoader};
 #[doc(inline)]
