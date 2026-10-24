@@ -276,12 +276,12 @@ Cake runs `describe` once per gate per run, before any work, and validates the r
 ```
 
 - `protocol` is exactly `cake-gate/1`. Cake does not negotiate versions; a gate speaking another version is a configuration failure.
-- `name` is the configured gate name and matches `[a-z0-9][a-z0-9-]{0,63}`. `version` is the gate's own version, matching `MAJOR.MINOR.PATCH` with an optional prerelease suffix, at most 64 bytes.
-- `phases` is a non-empty subset of `pre_tool` and `post_tool`. `actions` is a non-empty list using the `<tool>.<operation>` convention; `bash.exec` is the only action Cake configures in this release.
+- `name` is the gate's own product name and matches `[a-z0-9][a-z0-9-]{0,63}`. The `[gates.<name>]` key is the local instance name and may differ, so one binary can be configured twice with different `config`; composition, `data.gate`, and telemetry use the instance name, and `describe.name` is informational. `version` is the gate's own version, matching `MAJOR.MINOR.PATCH` with an optional prerelease suffix, at most 64 characters.
+- `phases` is a non-empty subset of `pre_tool` and `post_tool`; only `pre_tool` is configurable in this release, so a gate may declare `post_tool` for future compatibility but Cake sends no post-tool checks. `actions` is a non-empty list using the `<tool>.<operation>` convention; `bash.exec` is the only action Cake configures in this release.
 - `transports` lists `stdio` and optionally `oneshot`. A configured transport the gate does not declare is a configuration failure.
 - `capabilities` may contain `shadow`, `diagnostic`, and `resolved-models`. A configured `mode = "shadow"` requires `shadow`. `options.diagnostic` is sent only to a gate declaring `diagnostic`. A gate declaring `resolved-models` receives resolved model descriptors and their credential variable names. Unknown capabilities are ignored.
 
-A gate must declare every phase and action pair it supports. If configuration names a gate for `bash.exec` and `describe` does not declare that action, Cake treats it as a configuration failure and does not run the command. `describe` output is cached for the run. Under `transport = "oneshot"`, Cake still runs `describe` once, then spawns a fresh process for each check and repeats `init`/`ready`, the check, and `shutdown`; the same frames and validation apply. `transport = "stdio"` keeps one `serve` process for the run and repeats `init` only after a restart. A nonzero exit, a timeout, extra stdout, or an invalid object is a configuration failure.
+A gate must declare every phase and action pair it supports. If configuration names a gate for `bash.exec` and `describe` does not declare that action, Cake treats it as a configuration failure and does not run the command. `describe` output is cached for the run. Under `transport = "oneshot"`, Cake still runs `describe` once, then spawns a fresh `<command> <args...> serve` process for each check with exactly one `init`/`ready`, one `check`/`decision`, and one `shutdown`, followed by process exit; the same frames and validation apply. `transport = "stdio"` keeps one `serve` process for the run and repeats `init` only after a restart. A nonzero exit, a timeout, extra stdout, or an invalid object is a configuration failure.
 
 ### `init`
 
@@ -336,7 +336,7 @@ The gate answers with `ready`:
 }
 ```
 
-`warnings` is optional, bounded to eight entries of 1,024 bytes each, and shown by `cake gates doctor`; it never changes a decision. A gate that cannot initialize replies with an error frame instead. Cake waits `startup_timeout_secs` for `ready`; a timeout or invalid reply is a gate failure.
+Cake checks that `ready.name` and `ready.version` match the cached `describe`; a mismatch is a protocol failure. `warnings` is optional, bounded to eight entries of 1,024 characters each, and shown by `cake gates doctor`; it never changes a decision. A gate that cannot initialize replies with an error frame instead. Cake waits `startup_timeout_secs` for `ready`; a timeout or invalid reply is a gate failure.
 
 ### `check`
 
@@ -397,7 +397,7 @@ A gate replies to each check with exactly one decision frame carrying the same `
 
 - `decision` is `allow`, `warn`, `block`, or `abstain`.
 - `code` is a gate-defined stable label matching `[a-z0-9][a-z0-9-]{0,63}`. It is required for `block` and `warn`; it is optional for `allow` and `abstain`.
-- `message` is required for `block` and `warn` and optional otherwise. Cake strips control characters except newline, carriage return, and tab, and truncates it to 1,000 characters. A block renders as `BLOCKED\n\nReason: <message>`; a warn with no annotations renders as `NOTICE: <message>`.
+- `message` is required and non-empty for `block` and `warn` and optional otherwise. Cake strips control characters except newline, carriage return, and tab, and truncates it to 1,000 characters. A block renders as `BLOCKED\n\nReason: <message>`; a warn with no annotations renders as `NOTICE: <message>`.
 - `confidence` is an optional finite number from `0.0` to `1.0`.
 - `annotations` is an optional list of model-visible lines. The only placement in this version is `prepend`. Cake prepends allow and warn annotations in gate order, joined by blank lines, and sanitizes them; it accepts at most eight annotations and truncates each to 1,000 characters. Annotations from `abstain` and `block` decisions are ignored for model output. A warn that supplies annotations does not also repeat its message as a `NOTICE`.
 - `short_circuit` is an optional boolean, default `false`. Cake honors it only for an `allow` decision when the gate's configuration sets `short_circuit_on_allow = true`; otherwise it is ignored. A `warn` or `abstain` never short-circuits.
@@ -417,7 +417,7 @@ A gate that cannot evaluate sends an error frame instead of a decision:
 }
 ```
 
-The bounded classes are `timeout`, `network`, `auth`, `rate_limit`, `transport`, `malformed`, `refusal`, `config`, `unsupported`, `internal`, and `protocol`. Unknown classes are treated as `protocol`. A gate must not use `abstain` for a failure it actually observed; a failure is an error so it is recorded and composed as one. `message` is diagnostic; it is bounded to 1,024 bytes and never becomes the model-visible failure text on its own.
+The bounded classes are `timeout`, `network`, `auth`, `rate_limit`, `transport`, `malformed`, `refusal`, `config`, `unsupported`, `internal`, and `protocol`. Unknown classes are treated as `protocol`. A gate must not use `abstain` for a failure it actually observed; a failure is an error so it is recorded and composed as one. `message` is diagnostic; it is bounded to 1,024 characters and never becomes the model-visible failure text on its own.
 
 ### Composition
 
@@ -426,7 +426,7 @@ Cake runs the gates listed by `[tools.bash] gates` in order for `pre_tool` + `ba
 - `abstain` changes nothing and the next gate runs.
 - `allow` continues unless the gate sets `short_circuit_on_allow = true` and the decision sets `short_circuit = true`; then later enforce gates do not run.
 - `warn` accumulates and the next gate runs. Cake prepends the accumulated warnings, in gate order, to the command output.
-- `block` stops the enforce chain and the command does not run, unless that gate's exact raw-command allowlist contains the command. An overridden block records `overridden: true` and continues.
+- `block` stops the enforce chain and the command does not run, unless that gate's exact normalized-command allowlist contains `input.command`. An overridden block records `overridden: true` and continues.
 - A gate failure in enforce mode blocks. With `fail = "open"`, the failure is recorded as failed-open and the next gate runs. `fail = "closed"` is the default.
 - If every enforce gate abstains or is allowlisted through, the command runs. A chain with no enforce gate is not a chain: `bash.exec` has no decision, so Bash is disabled under the no-gate rule.
 - `mode = "shadow"` gates run beside the enforce chain and record their would-be decisions. A shadow decision, annotation, failure, or allowlist override never changes authorization and never short-circuits. Shadow gates still run when an enforce gate has already blocked, so the observation is available.
@@ -482,7 +482,7 @@ Evidence is a separate record so a decision stays small:
 
 Evidence is recorded as `gate_evidence` with the gate name, the same `call_id` digest, the declared `kind`, and bounded `data`. An oversized or excess item is replaced by one `gate_evidence` record with `kind: "truncated"` and `data: {"dropped_items": N, "dropped_bytes": M}`. Gate evidence is the explicit disclosure surface: normal command text, reasons, and messages stay out of telemetry.
 
-For one release, the built-in judge path also emits the existing `judge_verdict`, `judge_fail_closed`, and `judge_bypass` compensation events and the `judge_attempt` and `type_safe_shadow` records, so session analysis keeps working. An external safety gate can supply evidence with the reserved kinds `judge_attempt` and `type_safe_shadow`; Cake validates and re-emits them in the existing shapes. Consumers should move to `gate_decision` and `gate_evidence`; both surfaces may be present during the transition.
+For one release, the built-in judge path also emits the existing `judge_verdict`, `judge_fail_closed`, and `judge_bypass` compensation events and the `judge_attempt` and `type_safe_shadow` records, so session analysis keeps working. An external safety gate can supply evidence with the reserved kinds `judge_attempt` and `type_safe_shadow`; Cake validates them against the existing shape, bounds every numeric field and `failure_class` to the documented vocabulary, requires `model` to equal the descriptor's model name, and re-emits them. The reserved shapes carry no command, reason, prompt, or response text, so they cannot become a free-text disclosure channel. Consumers should move to `gate_decision` and `gate_evidence`; both surfaces may be present during the transition.
 
 ### `cake bash check`
 
@@ -490,8 +490,8 @@ For one release, the built-in judge path also emits the existing `judge_verdict`
 
 The existing document fields keep their meanings: `summary.verdict` is `allow`, `warn`, `block`, or `bypassed`; `data.verdict`, `code`, `confidence`, `message`, `overridden`, `bypassed`, `latency_ms`, `stage`, `probability`, and `observation` are unchanged for the in-process judge and the TypeSafe cascade. The pipeline verdict is `block` when the command is blocked, otherwise `warn` when at least one enforce gate warned, otherwise `allow`. When several gates warn, `data.gate`, `code`, `confidence`, and `message` come from the first warning gate in composition order; every warning still appears in the tool output and in `data.stages`. Two additive fields describe the pipeline:
 
-- `data.gate` is the name of the gate whose decision determined the outcome, or `null` for a bypass or a chain in which every enforce gate abstained.
-- `data.stages` is an array in execution order. Each entry carries `gate`, `version`, `mode`, `decision`, `code`, `latency_ms`, `overridden`, and `failure_class`. Shadow entries carry `mode: "shadow"` and their would-be decision. A later enforce stage that never ran because an earlier gate blocked or short-circuited is absent; shadow stages still appear when an earlier enforce gate blocked, because shadow gates always run. During the dual-path release, the in-process judge appears as the reserved gate `builtin-safety` with the Cake package version; that name is removed in slice 5.
+- `data.gate` is the name of the gate whose decision determined the outcome, or `null` for a bypass or a chain in which every enforce gate abstained. An overridden block does not set `data.gate`; the override is recorded in `data.overridden` and the stage, and `data.gate` otherwise follows the first-warning or final-block rule.
+- `data.stages` is an array in execution order. Each entry carries `gate`, `version`, `mode`, `decision`, `code`, `latency_ms`, `overridden`, and `failure_class`. Shadow entries carry `mode: "shadow"` and their would-be decision. A later enforce stage that never ran because an earlier gate blocked or short-circuited is absent; shadow stages still appear when an earlier enforce gate blocked, because shadow gates always run. During the dual-path release, the in-process judge appears as the reserved gate `builtin-safety` (see [Configuration](configuration.md#gates)) with the Cake package version; that name is removed in slice 5.
 
 `data.stage` is the legacy two-stage label. It remains `typesafe` for a TypeSafe cascade fast approval, `judge` whenever the gate pipeline ran and no TypeSafe stage fast-approved (including an all-abstain chain), and `null` for a bypass. `data.gate` and `data.stages` are authoritative for an external pipeline. `data.probability` and `data.observation` remain TypeSafe-specific and report their absent shape for a pipeline with no TypeSafe stage. `data.overridden` is true when any gate's block was overridden by that gate's allowlist; the affected stage also carries `overridden: true`.
 
@@ -499,7 +499,7 @@ Gate failure classes map to the existing exit classes: `timeout`, `network`, `au
 
 ### Trust boundary
 
-Gate executables are trusted user or project configuration. Cake starts them unsandboxed with a minimal environment plus the declared allowlist, and never passes credentials in JSON. A project `.cake/settings.toml` can name a different command, so a gate is only as trustworthy as the checkout and the user's configuration; this is the same trust already granted to hooks and toolbox executables. Cake validates and bounds every gate frame, sanitizes model-visible text, and never executes gate-supplied text. The OS sandbox still runs the approved command; a gate approval is not a sandbox bypass.
+Gate executables are trusted user or project configuration. Cake starts them unsandboxed with a minimal environment plus the declared allowlist, and never passes credentials in JSON. A project `.cake/settings.toml` can name a different command, so a gate is only as trustworthy as the checkout and the user's configuration; this is the same trust already granted to hooks and toolbox executables. Auto-detection trusts the first `cake-safety-judge` on `PATH`, so treat `PATH` as trusted configuration; `cake gates list` and `cake gates doctor` show the resolved absolute path. Cake validates and bounds every gate frame, sanitizes model-visible text, and never executes gate-supplied text. The OS sandbox still runs the approved command; a gate approval is not a sandbox bypass.
 
 ## Hook protocol
 

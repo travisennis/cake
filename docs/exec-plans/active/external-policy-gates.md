@@ -53,6 +53,8 @@ The `[tools.bash.judge.typesafe]` cascade is both a policy stage and a latency o
 - Decision: bounds are a 1 MiB frame, 64 KiB init config, 1,000-character model-visible text, 8 annotations, 8 evidence items, 8 KiB per evidence payload, and 32 KiB total evidence. Rationale: bound every gate-controlled payload before it reaches the model or telemetry. Date/Author: 2026-10-24, Trav.
 - Decision: two consecutive process-level failures disable a gate for the rest of the run. Rationale: a broken gate must not add a startup timeout to every Bash command. Date/Author: 2026-10-24, Trav.
 - Decision: the `[gates]` configuration is documented now but not read until slice 4. Rationale: freeze the contract before code, without claiming unimplemented behavior. Date/Author: 2026-10-24, Trav.
+- Decision: the `[gates.<name>]` key is the local instance name and `describe.name` is the gate's product name, so one binary can be configured twice; composition and telemetry use the instance name. Rationale: a binary cannot know its config key, and aliasing is a core policy-experiment case. Date/Author: 2026-10-24, Trav.
+- Decision: gate startup failures are pipeline failures, not silent drops. An explicit configuration error is a settings error (exit 3); a gate that fails `describe` or `init` removes Bash for the run with a diagnostic. Rationale: dropping a broken enforce gate would leave a weaker pipeline. Date/Author: 2026-10-24, Trav.
 
 ## Outcomes & Retrospective
 
@@ -71,7 +73,7 @@ A **seam** is the narrow internal interface that lets Cake swap the policy imple
 
 The contract authorities are `docs/adr/049-external-policy-gates-with-the-cake-gate-1-protocol.md`, the "Gate protocol" section of `docs/integrations.md`, the "Gates" section of `docs/configuration.md`, the "External gates" section of `docs/security.md`, and `docs/schemas/cake-gate-1.schema.json`. `docs/integrations.md` owns the wire shape and composition. `docs/configuration.md` owns settings and precedence. `docs/security.md` owns the trust boundary and the no-gate rule. The schema is structural; byte limits that JSON Schema cannot express are in the protocol section.
 
-The baseline is `master` at `9c39c44`; master advanced to `5e0ffe8` (#749) after this branch was cut, and the slice-0 diff does not touch the merged files. Slice 0 works in `.cake/worktrees/docs/gate-protocol` on branch `docs/gate-protocol`. The new gate repository does not exist yet. The workspace rule is one task in one repository: the Cake slices and the `cake-safety-judge` slices are separate tasks.
+The baseline is `master` at `9c39c44`; master advanced to `5e0ffe8` (#749) after this branch was cut. Both changes touch `docs/integrations.md` in different sections, so merge master before the next push; the merge is mechanical and the slice-0 diff touches no merged source file. Slice 0 works in `.cake/worktrees/docs/gate-protocol` on branch `docs/gate-protocol`. The new gate repository does not exist yet. The workspace rule is one task in one repository: the Cake slices and the `cake-safety-judge` slices are separate tasks.
 
 Terms to keep straight: a **decision** is the gate's answer; a **verdict** is the current judge's wire object; a **record** is a persisted session or telemetry object. A **compensation event** is the existing sidecar record for a cross-cutting tool outcome. A **call id** is the provider-assigned tool-call identifier; telemetry stores only its SHA-256 digest.
 
@@ -109,7 +111,7 @@ Do not add `serve` until the `check` decisions match. Then add the NDJSON loop w
 
 ### Slice 3: shadow evaluation
 
-Add `[gates]` parsing to Cake only as far as the shadow comparison needs. The dual-path recipe is `[tools.bash] gates = ["builtin-safety", "safety"]`, where `builtin-safety` is a reserved name for the in-process judge and `safety` is `mode = "shadow"`. The reserved name is temporary and is removed in slice 5. The external gate receives the same `Check` input as the built-in gate; both are recorded as `gate_decision` with the same `call_id` digest.
+Add `[gates]` parsing to Cake only as far as the shadow comparison needs. The dual-path recipe is `[tools.bash] gates = ["builtin-safety", "safety"]`, where `builtin-safety` is a reserved name for the in-process judge (defined in `docs/configuration.md`) and `safety` is `mode = "shadow"`. The reserved name is temporary and is removed in slice 5. The external gate receives the same `Check` input as the built-in gate; both are recorded as `gate_decision` with the same `call_id` digest.
 
 Compare on the frozen corpus first, then on live sessions with explicit authorization. The differential report classifies each pair as exact agreement, safe divergence (both allow, or oracle warn vs gate allow with no safety loss), unsafe divergence (oracle block vs gate allow), or gate failure. The acceptance bound is zero unsafe divergence. Record latency distributions for the in-process and external paths, the gate process startup cost, and estimated token spend. Do not give the external gate authority in this slice.
 
@@ -119,9 +121,9 @@ Update `docs/integrations.md` and the session-analysis instructions with the pai
 
 Add the real `[gates]` configuration, validation, and the `cake gates list`/`cake gates doctor` commands. Add `--no-gate` and `CAKE_GATE=off`; map `CAKE_JUDGE=off` for one release. Resolve the default pipeline: explicit `[tools.bash] gates` first, then `cake-safety-judge` on `PATH`, then the in-process judge if `[tools.bash.judge]` is configured, then no gate. The last state removes Bash and `BashSession` from the registry and writes one startup diagnostic. `cake init` may print a commented gate example but does not write an active gate block.
 
-Add the `doctor` checks: command resolution, `describe` protocol and fields, transport and capability consistency, `init`/`ready`, model resolution, missing environment variable names (not values), and phase/action coverage. `doctor` must not call a provider unless the user passes an action after `--`. `list` is informational and always exits `0`; `doctor` exits `0` healthy, `1` configuration/coverage, `2` gate process failure, and `3` settings load failure.
+Add the `doctor` checks: command resolution, `describe` protocol and fields, transport and capability consistency, `init`/`ready`, model resolution, missing environment variable names (not values), and phase/action coverage. `doctor` must not call a provider unless the user passes an action after `--`. `list` is informational and exits `0` when the settings load, even when a gate is broken; `doctor` exits `0` healthy, `1` configuration/coverage, `2` gate process failure, and `3` settings load failure.
 
-Map `[tools.bash.judge]` to the in-process gate for the dual-path release and warn when both it and `[tools.bash] gates` are present. Keep the emergency bypass, allowlist, and TypeSafe settings working through the mapping. Update the docs status notes from "not yet enforced" to current behavior, and add the gate section to `ARCHITECTURE.md`'s host/model-command boundary.
+Map `[tools.bash.judge]` to the reserved `builtin-safety` gate for the dual-path release and warn when both it and `[tools.bash] gates` are present. Keep the emergency bypass, allowlist, and TypeSafe settings working through the mapping. Update the docs status notes from "not yet enforced" to current behavior, and add the gate section to `ARCHITECTURE.md`'s host/model-command boundary.
 
 ### Slice 5: delete the in-process implementation
 
@@ -203,7 +205,7 @@ Expect the build and tests to pass with no judge modules, no production referenc
 
 ## Validation and Acceptance
 
-Slice 0 is accepted when ADR 049 and the four contract documents are reviewed, the schema parses, the documented examples match the schema's required fields and conditionals, and a novice can write a fake gate from the docs. A reviewer should be able to answer: what does Cake send, what may a gate return, what happens on failure, what appears in telemetry, what happens with no gate, and how do `bash check` and exit codes stay compatible. The security review must record the bypass classes and confirm that no secret value crosses the boundary.
+Slice 0 is accepted when ADR 049 and the four contract documents are reviewed, the failure-outcome table covers every startup and per-check condition, the schema parses, the documented examples match the schema's required fields and conditionals, and a novice can write a fake gate from the docs. A reviewer should be able to answer: what does Cake send, what may a gate return, what happens on failure, what appears in telemetry, what happens with no gate, and how do `bash check` and exit codes stay compatible. The security review must record the bypass classes and confirm that no secret value crosses the boundary.
 
 Slice 1 is accepted when every existing judge and Bash test passes without changed expectations, the new composition tests cover every decision and failure combination, the fake gate proves allow/warn/block/abstain/malformed/timeout/crash, and `cake bash check` output is unchanged. There must be no user-visible behavior change and no new setting.
 
