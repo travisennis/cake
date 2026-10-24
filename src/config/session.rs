@@ -1,7 +1,7 @@
 use std::{
     collections::HashSet,
     fs::{self, File, OpenOptions},
-    io::{BufReader, BufWriter, Read, Seek, Write},
+    io::{BufRead, BufReader, BufWriter, Read, Seek, Write},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     thread,
@@ -355,7 +355,28 @@ impl Session {
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let file = fs::File::open(path)
             .with_context(|| format!("Failed to open session file: {}", path.display()))?;
-        let mut framer = SessionFramer::new(BufReader::new(file));
+        Self::read_from(BufReader::new(file), path)
+    }
+
+    /// Load a session through a file already opened for append.
+    ///
+    /// [`Self::load`] opens its own handle. A caller that must lock first ---
+    /// such as the checkpoint append command --- uses this instead, so the
+    /// identity check, the derived boundary, and the append all happen under
+    /// one advisory lock without opening a second handle. The handle is rewound
+    /// to the start of the file before it is read.
+    pub fn load_from_append_handle(file: &File, path: &Path) -> anyhow::Result<Self> {
+        let mut reader = file;
+        reader
+            .seek(std::io::SeekFrom::Start(0))
+            .with_context(|| format!("Failed to read session file: {}", path.display()))?;
+        Self::read_from(BufReader::new(reader), path)
+    }
+
+    /// Read a session from an open stream, the shared body of [`Self::load`]
+    /// and [`Self::load_from_append_handle`].
+    fn read_from(reader: impl BufRead, path: &Path) -> anyhow::Result<Self> {
+        let mut framer = SessionFramer::new(reader);
         let (meta, header) = read_session_header(&mut framer, path)?;
         let records = read_session_records(&mut framer, path, header.timestamp, meta, header.id)?;
 
@@ -683,14 +704,28 @@ fn try_lock_session_file_with_retries(file: &File, path: &Path) -> anyhow::Resul
     try_lock_session_file(file, path)
 }
 
+/// The session file is locked by another cake invocation.
+///
+/// This is an operational conflict rather than an input error: the caller's
+/// input is valid and can succeed once the other invocation finishes. Callers
+/// that report structured failures downcast this type instead of matching the
+/// message.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "Another cake invocation is currently writing to session {session_id}. Wait for it to finish or run in a different directory."
+)]
+pub struct SessionLockedError {
+    /// Session id from the session file name, or `<unknown>`.
+    pub session_id: String,
+}
+
 fn session_lock_conflict_error(path: &Path) -> anyhow::Error {
-    let id = path
+    let session_id = path
         .file_stem()
         .and_then(|stem| stem.to_str())
-        .unwrap_or("<unknown>");
-    anyhow::anyhow!(
-        "Another cake invocation is currently writing to session {id}. Wait for it to finish or run in a different directory."
-    )
+        .unwrap_or("<unknown>")
+        .to_string();
+    SessionLockedError { session_id }.into()
 }
 
 fn try_lock_session_file(file: &File, path: &Path) -> anyhow::Result<bool> {
