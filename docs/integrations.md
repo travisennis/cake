@@ -126,8 +126,8 @@ Exit behavior follows the codes above: `ok` and `warning` exit `0`; `error` repo
 `sessions list --json` reports the sessions for the current working directory: `summary.count` is the number of listed sessions and `data.sessions` holds each `session_id`, `timestamp`, and `first_prompt`, newest first, with the session id breaking ties between equal timestamps.
 
 `bash check --json` reports one judge decision: `summary.verdict` is `allow`, `warn`, `block`, or `bypassed` when the judge is disabled, and `data` carries `verdict` (`null` when bypassed), `code`, `confidence`, `message`, `overridden`, `bypassed`, and `latency_ms`. Two additive fields name the deciding stage: `data.stage` is `judge` when the safety judge decided and `typesafe` when the cascade fast-approved the command without a judge call, and `data.probability` carries the observed TypeSafe probability on a fast approval and `null` otherwise. A bypassed judge leaves both `null`, because no stage decided it. A fast approval therefore keeps the `allow` verdict a judge allow produces, so a consumer switching on `summary.verdict` or `data.verdict` is unaffected. A third additive field, `data.observation`, reports whether the fast path ran and what it observed, which `stage` and `probability` cannot answer: a fallback renders as `stage: "judge"` whether the cascade was never armed,
-failed, or came in below the cutoff. Its `outcome` is `absent` when no request was made (`mode = "off"`, a disabled judge, or the emergency bypass), `approved` when the cascade fast-approved the command, `below_cutoff` when the cascade's observation succeeded below the compiled cutoff, `failed` when it failed, and `shadow` when the observation ran under `mode = "shadow"` and decided nothing, which is also what a shadow-mode failure reports beside its `failure_class`, because no authorization was at stake. `probability` carries what the observation measured (repeating `data.probability` on a fast approval, `null` when it failed or made no request), `failure_class` names a failure with the same bounded class a `type_safe_shadow` record carries, and `elapsed_ms` times the request. The object is always present and never `null`, so a consumer reads `data.observation.outcome` unconditionally and tolerates added values. Unrecognized settings keys appear in `checks`, as they do for
-`debug models --json`, so a typo in `[tools.bash.judge]` is visible to a machine consumer. A verdict, allowlist override, or bypass exits `0`; `--json` reports a failing judge through the existing judge-failure exit codes and writes no document, keeping its findings on stderr. `--json` and `--diagnostic` are mutually exclusive.
+failed, or came in below the cutoff. Its `outcome` is `absent` when no request was made (`mode = "off"`, a disabled judge, or the emergency bypass), `approved` when the cascade fast-approved the command, `below_cutoff` when the cascade's observation succeeded below the compiled cutoff, `failed` when it failed, and `shadow` when the observation ran under `mode = "shadow"` and decided nothing, which is also what a shadow-mode failure reports beside its `failure_class`, because no authorization was at stake. `probability` carries what the observation measured (repeating `data.probability` on a fast approval, `null` when it failed or made no request), `failure_class` names a failure with the same bounded class a `type_safe_shadow` record carries, and `elapsed_ms` times the request. The object is always present and never `null`, so a consumer reads `data.observation.outcome` unconditionally and tolerates added values. Under the `cake-gate/1` contract, `data.gate` and `data.stages` are added
+additively: `data.gate` names the deciding gate (or `null` for a bypass), and `data.stages` carries one entry per gate in execution order with its mode, decision, code, latency, override flag, and failure class. `data.stage`, `data.probability`, and `data.observation` keep their existing meanings; `data.gate` and `data.stages` are authoritative for an external pipeline. Unrecognized settings keys appear in `checks`, as they do for `debug models --json`, so a typo in `[tools.bash.judge]` is visible to a machine consumer. A verdict, allowlist override, or bypass exits `0`; `--json` reports a failing judge through the existing judge-failure exit codes and writes no document, keeping its findings on stderr. `--json` and `--diagnostic` are mutually exclusive.
 
 ## Session replay
 
@@ -222,6 +222,8 @@ With `[tools.bash.judge.typesafe].mode = "shadow"`, the sidecar also receives ad
 
 `mode = "cascade"` emits the same `type_safe_shadow` record, with a second meaning: the observation is the fast-approval stage, so it is recorded whether it approved the command or fell back to the judge. A fast approval is identifiable from existing records, with no new record type or field: a `type_safe_shadow` record whose `failure_class` is `null` and whose `probability` is at or above the compiled `0.85` cutoff, **no** `judge_attempt` record for the same `call_id` digest, and a `judge_verdict` compensation event whose `latency_ms` is the fast leg's elapsed time rather than the sum of judge attempts. Every other cascade outcome records the observation beside the judge's own attempt and verdict, exactly as `shadow` does.
 
+The `cake-gate/1` contract adds `gate_decision` and `gate_evidence` records (see [Gate protocol](#gate-protocol)). They are additive and do not replace the judge records during the one-release transition: a pipeline that includes the in-process judge or the safety gate emits both surfaces. `gate_decision` is one metadata-only record per gate that ran, carrying the gate name and version, mode, phase, action, decision, code, latency, override and bypass flags, failure class, and the one-way `call_id` digest. `gate_evidence` carries a gate-declared `kind` and bounded `data`, and is the only path by which gate-controlled text reaches telemetry. A bypass records `gate: null`, `decision: "allow"`, and `bypassed: true`.
+
 Consumers must tolerate added enum values and optional fields; old sidecars remain valid. Sidecars never drive resume, fork, or session discovery.
 
 ## Bash tool and command-safety checks
@@ -233,11 +235,271 @@ The Bash tool's optional `reason` is the model's untrusted intent report; guidan
 Bash calls may also provide an optional `cwd`. Relative paths resolve from the invocation working directory; absolute paths are accepted only when they resolve to an existing directory inside that workspace or inside a directory the sandbox already grants (`--add-dir`, settings, a skill directory, a Cake-managed temporary path, or a built-in toolchain cache). Under `--sandbox danger-full-access` any existing directory is accepted, because that policy applies no profile. The selected directory applies to that call only and is used consistently by the child process, judge, repository digest, and sandbox-denial diagnostics. A `cwd` outside the workspace and every grant fails before judge evaluation and before the process is spawned, with a message naming the boundary and the grant classes. Omitting `cwd` preserves the invocation directory.
 
 Every non-empty Bash command runs through the LLM judge (ADR-018) before spawn, unless `[tools.bash.judge.typesafe].mode = "cascade"` fast-approves it from an observation at or above the compiled TypeSafe cutoff ([ADR 034](adr/034-typesafe-judge-cascade-cutoff.md)); a call whose preflight collected referenced script contents makes no observation and always reaches the judge, since the observation request carries no script contents ([ADR 035](adr/035-judge-script-observations.md)). A fast approval is an approval only, so the command still runs under the sandbox and still appears in the session transcript and telemetry like any other allowed command. [Security](security.md) defines the gate semantics and [Configuration](configuration.md) the `[tools.bash.judge]` settings. A timeout, a retryable transport/HTTP failure, an undecodable 2xx response body, or a transport failure while the 2xx body is read triggers at most one recovery within `timeout_secs + retry_budget_secs`; verdicts,
-refusals, malformed verdicts, and semantic backend parse failures are never retried, and exhausted recovery fails closed.
+refusals, malformed verdicts, and semantic backend parse failures are never retried, and exhausted recovery fails closed. The external-gate contract that will replace this in-process special case is specified under [Gate protocol](#gate-protocol).
 
 `cake bash check -- <command>` uses the preflight path and prompt without executing or collecting referenced host files, and reports the `TypeSafe` observation the decision rests on in both output modes; script verdicts can therefore differ from Bash tool preflight. Verdicts, allowlist overrides, and bypass exit `0`; timeouts (including a provider `408`), network, auth, and rate-limit errors exit `2`; other transport errors, malformed verdicts, and refusals exit `1`; unknown judge models exit `3`.
 
 `--diagnostic` also prints effective prompts, transformed request JSON, non-secret controls, zero-tool configuration, parsed response, usage, termination, timing, and verdict. Treat it as sensitive: prompts contain commands, paths, repository state, reasons, and possibly embedded secrets. Cake excludes its API key, authorization headers, and provider headers. It renders the bounded TypeSafe observation (outcome, probability or failure class, and elapsed time) but not the raw TypeSafe request or response. It remains inspection-only.
+
+## Gate protocol
+
+Status: this section freezes the `cake-gate/1` contract from [ADR 049](adr/049-external-policy-gates-with-the-cake-gate-1-protocol.md). Implementation is staged; until the external gate becomes the default, the in-process judge described above remains the only command gate and `[gates]` settings are not read. The machine-checkable frame schema is [`docs/schemas/cake-gate-1.schema.json`](schemas/cake-gate-1.schema.json); this section defines the semantics the schema cannot express.
+
+A gate is a trusted executable that owns a pre- or post-action policy decision. Cake owns enforcement, context assembly, process lifecycle, composition, and observability. The initial supported phase and action pair is `pre_tool` and `bash.exec`; `post_tool`, Edit, Write, and toolbox gates are deferred. A gate never changes the command, the working directory, or the tool arguments. It can allow, warn, block, or abstain.
+
+Gate executables are trusted configuration, like hooks and toolbox tools. They run outside the Bash sandbox with Cake's ambient authority. A gate must not read the workspace to learn about the action or to resolve sandbox paths; Cake assembles the action evidence so sandbox semantics have one implementation. A gate may read its own rubric and configuration files named in its config, which are policy inputs, not action evidence. See [Security](security.md) for the trust boundary and the no-gate rule.
+
+### Executable interface
+
+A gate implements two required subcommands and one optional one. Cake invokes the configured `command` with its configured `args`, followed by the subcommand:
+
+- `<command> <args...> describe` prints one JSON object on stdout and exits `0`.
+- `<command> <args...> serve` runs the long-lived protocol on stdin and stdout.
+- `<command> <args...> check` is an optional human and offline mode. Cake does not invoke it as a transport; a gate may define its own argument handling and sugar for it. The reference gate accepts a command line and prints one decision.
+
+`check` is recommended so a corpus can be evaluated without Cake. Logs go to stderr; stdout carries only the described object or protocol frames. Cake starts the gate process in the invocation working directory; the per-action directory is always `input.cwd`, and a gate must not infer it from its own working directory.
+
+### `describe`
+
+Cake runs `describe` once per gate per run, before any work, and validates the result:
+
+```json
+{
+  "protocol": "cake-gate/1",
+  "name": "safety",
+  "version": "0.1.0",
+  "phases": ["pre_tool"],
+  "actions": ["bash.exec"],
+  "transports": ["stdio"],
+  "capabilities": ["resolved-models", "diagnostic"]
+}
+```
+
+- `protocol` is exactly `cake-gate/1`. Cake does not negotiate versions; a gate speaking another version is a configuration failure.
+- `name` is the configured gate name and matches `[a-z0-9][a-z0-9-]{0,63}`. `version` is the gate's own version, matching `MAJOR.MINOR.PATCH` with an optional prerelease suffix, at most 64 bytes.
+- `phases` is a non-empty subset of `pre_tool` and `post_tool`. `actions` is a non-empty list using the `<tool>.<operation>` convention; `bash.exec` is the only action Cake configures in this release.
+- `transports` lists `stdio` and optionally `oneshot`. A configured transport the gate does not declare is a configuration failure.
+- `capabilities` may contain `shadow`, `diagnostic`, and `resolved-models`. A configured `mode = "shadow"` requires `shadow`. `options.diagnostic` is sent only to a gate declaring `diagnostic`. A gate declaring `resolved-models` receives resolved model descriptors and their credential variable names. Unknown capabilities are ignored.
+
+A gate must declare every phase and action pair it supports. If configuration names a gate for `bash.exec` and `describe` does not declare that action, Cake treats it as a configuration failure and does not run the command. `describe` output is cached for the run. Under `transport = "oneshot"`, Cake still runs `describe` once, then spawns a fresh process for each check and repeats `init`/`ready`, the check, and `shutdown`; the same frames and validation apply. `transport = "stdio"` keeps one `serve` process for the run and repeats `init` only after a restart. A nonzero exit, a timeout, extra stdout, or an invalid object is a configuration failure.
+
+### `init`
+
+After a gate process starts, Cake sends exactly one `init` frame before any check. A restarted process receives a fresh `init`:
+
+```json
+{
+  "protocol": "cake-gate/1",
+  "type": "init",
+  "id": "init",
+  "session": {
+    "session_id": "9f1c...",
+    "task_id": "4b2e...",
+    "invocation_id": "01J...",
+    "cwd": "/repo"
+  },
+  "config": {
+    "model": "judge",
+    "rubric_file": ".cake/judge-rubric.md"
+  },
+  "models": {
+    "judge": {
+      "provider": "openai",
+      "base_url": "https://api.example.test/v1",
+      "api_type": "chat_completions",
+      "model": "judge-model",
+      "api_key_env": "JUDGE_API_KEY"
+    }
+  },
+  "env": ["JUDGE_API_KEY"]
+}
+```
+
+`config` is the gate's own `[gates.<name>.config]` table, passed as JSON. It is limited to 64 KiB; put credentials in environment variables, never in gate configuration.
+
+`session` identifies an agent run. `session_id`, `task_id`, and `invocation_id` are optional; a standalone `cake bash check` supplies `cwd` and an invocation id but no agent session or task. A gate must treat these identifiers as correlation context, never as authorization, and must not require them.
+
+`models` is present only for a gate declaring `resolved-models`. It contains one descriptor for each name listed by `[gates.<name>].models`; the reserved name `default` selects the run's resolved model. The auto-detected safety gate receives `default` even without a list, provided it declares `resolved-models`, so it works with no configuration; an explicitly configured gate receives exactly the names it lists. A descriptor may carry `provider`, `base_url`, `api_type` (`chat_completions` or `responses`), `model`, `provider_headers` (`http_referer` and `x_title`), `temperature`, `top_p`, `max_output_tokens`, `reasoning_effort`, `reasoning_summary`, `reasoning_max_tokens`, and `api_key_env`. Unset fields are omitted. The descriptor never contains a credential value, an `Authorization` header, or a credential file path.
+
+`env` lists every variable Cake passes beyond the fixed base set. It is the union of `[gates.<name>].env` and the `api_key_env` names of the included model descriptors, at most 32 names. Cake starts the gate with `PATH`, `HOME`, `TMPDIR`, `LANG`, `LC_ALL`, `LC_CTYPE`, `TZ`, `SSL_CERT_FILE`, and `SSL_CERT_DIR` from its own environment, plus exactly those names. All other variables are removed. The gate reads its credentials from those variables. A gate model must be environment-backed: Cake does not pass a file-backed subscription credential or its path. If the run's model uses one, configure the gate with a model whose `api_key_env` points at an available variable.
+
+The gate answers with `ready`:
+
+```json
+{
+  "protocol": "cake-gate/1",
+  "type": "ready",
+  "id": "init",
+  "name": "safety",
+  "version": "0.1.0",
+  "warnings": []
+}
+```
+
+`warnings` is optional, bounded to eight entries of 1,024 bytes each, and shown by `cake gates doctor`; it never changes a decision. A gate that cannot initialize replies with an error frame instead. Cake waits `startup_timeout_secs` for `ready`; a timeout or invalid reply is a gate failure.
+
+### `check`
+
+Cake sends one check frame per non-empty Bash command. An empty command is not gated because it has no effect.
+
+```json
+{
+  "protocol": "cake-gate/1",
+  "type": "check",
+  "id": "01J...",
+  "phase": "pre_tool",
+  "action": "bash.exec",
+  "input": {
+    "command": "git status --short",
+    "cwd": "/repo",
+    "reason": null,
+    "repo_digest": "git repo, branch main",
+    "script_evidence": []
+  },
+  "session": {
+    "session_id": "9f1c...",
+    "task_id": "4b2e...",
+    "call_id": "call_...",
+    "turn": 3
+  },
+  "options": {
+    "diagnostic": false
+  }
+}
+```
+
+`input.command` is the normalized text Cake will execute, after removal of one simple trailing `&`. `input.cwd` is the resolved per-call working directory. `input.reason` is the model's untrusted intent report, never authorization. `input.repo_digest` is Cake's compact repository line and may be `null`. `input.script_evidence` is an array of `{ "path": "<rendered path>", "contents": "<text>" }`; this release sends zero or one item, with the same 32 KiB collection limit and recognition rules as the Bash preflight. Script text is untrusted evidence. The trusted authorization projection from 033b and the structured action packet from 033c will arrive as additive `input` fields; a gate must ignore fields it does not know.
+
+`session.call_id` is the provider-assigned tool-call identifier when one exists; it may be absent. `session` itself is optional for a standalone `cake bash check`; a normal agent run supplies `session_id`, `task_id`, `call_id`, and `turn` when available. A gate must not require any of them. `session.turn` is optional. `options.diagnostic` is `true` only for `cake bash check --diagnostic` and only when the gate declares `diagnostic`.
+
+### `decision`
+
+A gate replies to each check with exactly one decision frame carrying the same `id`:
+
+```json
+{
+  "protocol": "cake-gate/1",
+  "type": "decision",
+  "id": "01J...",
+  "decision": "warn",
+  "code": "rg-replace-footgun",
+  "message": "Use rg -n so the replace preview can be inspected.",
+  "confidence": 0.78,
+  "annotations": [
+    { "placement": "prepend", "text": "NOTICE: Use rg -n so the replace preview can be inspected." }
+  ],
+  "short_circuit": false,
+  "evidence": [
+    { "kind": "attempt", "data": { "model": "judge-model", "latency_ms": 1200 } }
+  ]
+}
+```
+
+- `decision` is `allow`, `warn`, `block`, or `abstain`.
+- `code` is a gate-defined stable label matching `[a-z0-9][a-z0-9-]{0,63}`. It is required for `block` and `warn`; it is optional for `allow` and `abstain`.
+- `message` is required for `block` and `warn` and optional otherwise. Cake strips control characters except newline, carriage return, and tab, and truncates it to 1,000 characters. A block renders as `BLOCKED\n\nReason: <message>`; a warn with no annotations renders as `NOTICE: <message>`.
+- `confidence` is an optional finite number from `0.0` to `1.0`.
+- `annotations` is an optional list of model-visible lines. The only placement in this version is `prepend`. Cake prepends allow and warn annotations in gate order, joined by blank lines, and sanitizes them; it accepts at most eight annotations and truncates each to 1,000 characters. Annotations from `abstain` and `block` decisions are ignored for model output. A warn that supplies annotations does not also repeat its message as a `NOTICE`.
+- `short_circuit` is an optional boolean, default `false`. Cake honors it only for an `allow` decision when the gate's configuration sets `short_circuit_on_allow = true`; otherwise it is ignored. A `warn` or `abstain` never short-circuits.
+- `evidence` is an optional list of `{ "kind": "<label>", "data": <JSON value> }` objects. Cake records at most eight items, each payload bounded to 8 KiB, and 32 KiB total per decision; excess is dropped and recorded as a `gate_evidence` truncation record. Evidence is the only gate-controlled data that reaches telemetry, so a gate that places command text, a reason, or a message there is explicitly choosing to disclose it.
+
+### `error`
+
+A gate that cannot evaluate sends an error frame instead of a decision:
+
+```json
+{
+  "protocol": "cake-gate/1",
+  "type": "error",
+  "id": "01J...",
+  "class": "timeout",
+  "message": "the upstream judge call exceeded its deadline"
+}
+```
+
+The bounded classes are `timeout`, `network`, `auth`, `rate_limit`, `transport`, `malformed`, `refusal`, `config`, `unsupported`, `internal`, and `protocol`. Unknown classes are treated as `protocol`. A gate must not use `abstain` for a failure it actually observed; a failure is an error so it is recorded and composed as one. `message` is diagnostic; it is bounded to 1,024 bytes and never becomes the model-visible failure text on its own.
+
+### Composition
+
+Cake runs the gates listed by `[tools.bash] gates` in order for `pre_tool` + `bash.exec`. Only gates whose `describe` declares the pair participate. Composition has these rules:
+
+- `abstain` changes nothing and the next gate runs.
+- `allow` continues unless the gate sets `short_circuit_on_allow = true` and the decision sets `short_circuit = true`; then later enforce gates do not run.
+- `warn` accumulates and the next gate runs. Cake prepends the accumulated warnings, in gate order, to the command output.
+- `block` stops the enforce chain and the command does not run, unless that gate's exact raw-command allowlist contains the command. An overridden block records `overridden: true` and continues.
+- A gate failure in enforce mode blocks. With `fail = "open"`, the failure is recorded as failed-open and the next gate runs. `fail = "closed"` is the default.
+- If every enforce gate abstains or is allowlisted through, the command runs. A chain with no enforce gate is not a chain: `bash.exec` has no decision, so Bash is disabled under the no-gate rule.
+- `mode = "shadow"` gates run beside the enforce chain and record their would-be decisions. A shadow decision, annotation, failure, or allowlist override never changes authorization and never short-circuits. Shadow gates still run when an enforce gate has already blocked, so the observation is available.
+
+A gate cannot widen another gate's decision. A later allow cannot undo an earlier block; a gate's allowlist overrides only its own block; and only Cake applies an override.
+
+### Lifecycle and framing
+
+`serve` uses newline-delimited JSON over stdio. Each line is one UTF-8 JSON object, at most 1 MiB, with no unescaped control characters and no pretty printing. Frames are flushed as they are written. Every frame carries `protocol` and `type`; `describe` is the only object without a `type`.
+
+Requests may be concurrent: Cake may keep up to eight checks in flight for one gate. A gate may process them serially, but it must answer each with the matching `id`; responses may arrive out of order. A duplicate or unknown `id`, an unknown frame type, a protocol mismatch, a frame over the limit, stdout noise, or an early exit is a protocol failure for the gate process. Cake kills the process group and fails every in-flight check closed.
+
+On a per-check timeout, crash, or protocol failure, Cake kills the process group and fails that check closed. The next check starts a fresh process and repeats `init`. Two consecutive process-level failures disable the gate for the rest of the run; later checks fail closed immediately with the recorded class, so a broken gate cannot add a startup timeout to every command. A successful `ready` or completed check resets the count. `describe` is not repeated within the run.
+
+At session end Cake sends `{"protocol":"cake-gate/1","type":"shutdown","id":"shutdown"}`, closes stdin, waits two seconds, then sends SIGTERM and finally kills the process group. A gate should exit `0` after flushing. Shutdown is best effort and never changes a task outcome.
+
+### Telemetry
+
+Cake writes one `gate_decision` record per gate that ran for the check to the session telemetry sidecar. The record is metadata-only:
+
+```json
+{
+  "type": "gate_decision",
+  "gate": "safety",
+  "version": "0.1.0",
+  "mode": "enforce",
+  "phase": "pre_tool",
+  "action": "bash.exec",
+  "decision": "block",
+  "code": "credential-disclosure",
+  "latency_ms": 1200,
+  "overridden": false,
+  "bypassed": false,
+  "failed_open": false,
+  "failure_class": null,
+  "call_id": "<sha256 digest>"
+}
+```
+
+A bypass has no gate: Cake writes `gate: null`, `decision: "allow"`, and `bypassed: true`. A gate failure records `decision: null`, `failure_class`, and either `failed_open` or the fail-closed block. `call_id` is the one-way SHA-256 digest of the originating transcript tool-call identifier, absent when the call has none, matching the existing `judge_attempt` and `tool_call` linkage.
+
+Evidence is a separate record so a decision stays small:
+
+```json
+{
+  "type": "gate_evidence",
+  "gate": "safety",
+  "call_id": "<sha256 digest>",
+  "kind": "attempt",
+  "data": { "model": "judge-model", "latency_ms": 1200 }
+}
+```
+
+Evidence is recorded as `gate_evidence` with the gate name, the same `call_id` digest, the declared `kind`, and bounded `data`. An oversized or excess item is replaced by one `gate_evidence` record with `kind: "truncated"` and `data: {"dropped_items": N, "dropped_bytes": M}`. Gate evidence is the explicit disclosure surface: normal command text, reasons, and messages stay out of telemetry.
+
+For one release, the built-in judge path also emits the existing `judge_verdict`, `judge_fail_closed`, and `judge_bypass` compensation events and the `judge_attempt` and `type_safe_shadow` records, so session analysis keeps working. An external safety gate can supply evidence with the reserved kinds `judge_attempt` and `type_safe_shadow`; Cake validates and re-emits them in the existing shapes. Consumers should move to `gate_decision` and `gate_evidence`; both surfaces may be present during the transition.
+
+### `cake bash check`
+
+`cake bash check` runs the configured pipeline, including shadow gates, without executing the command and without collecting referenced host files. A pipeline with no `bash.exec` pre-tool gate exits `3` with a diagnostic naming the no-gate rule and `cake gates doctor`, unless the invocation is explicitly bypassed, which exits `0` and reports `bypassed: true`; it never reports an allow it did not obtain. A deliberate decision writes the existing diagnostic document; a gate failure writes no document in `--json` mode and exits with the class below, matching today's judge-failure behavior.
+
+The existing document fields keep their meanings: `summary.verdict` is `allow`, `warn`, `block`, or `bypassed`; `data.verdict`, `code`, `confidence`, `message`, `overridden`, `bypassed`, `latency_ms`, `stage`, `probability`, and `observation` are unchanged for the in-process judge and the TypeSafe cascade. The pipeline verdict is `block` when the command is blocked, otherwise `warn` when at least one enforce gate warned, otherwise `allow`. When several gates warn, `data.gate`, `code`, `confidence`, and `message` come from the first warning gate in composition order; every warning still appears in the tool output and in `data.stages`. Two additive fields describe the pipeline:
+
+- `data.gate` is the name of the gate whose decision determined the outcome, or `null` for a bypass or a chain in which every enforce gate abstained.
+- `data.stages` is an array in execution order. Each entry carries `gate`, `version`, `mode`, `decision`, `code`, `latency_ms`, `overridden`, and `failure_class`. Shadow entries carry `mode: "shadow"` and their would-be decision. A later enforce stage that never ran because an earlier gate blocked or short-circuited is absent; shadow stages still appear when an earlier enforce gate blocked, because shadow gates always run. During the dual-path release, the in-process judge appears as the reserved gate `builtin-safety` with the Cake package version; that name is removed in slice 5.
+
+`data.stage` is the legacy two-stage label. It remains `typesafe` for a TypeSafe cascade fast approval, `judge` whenever the gate pipeline ran and no TypeSafe stage fast-approved (including an all-abstain chain), and `null` for a bypass. `data.gate` and `data.stages` are authoritative for an external pipeline. `data.probability` and `data.observation` remain TypeSafe-specific and report their absent shape for a pipeline with no TypeSafe stage. `data.overridden` is true when any gate's block was overridden by that gate's allowlist; the affected stage also carries `overridden: true`.
+
+Gate failure classes map to the existing exit classes: `timeout`, `network`, `auth`, and `rate_limit` exit `2`; `transport`, `malformed`, `refusal`, `protocol`, `crash`, `unsupported`, and `internal` exit `1`; `config` exits `3`. `crash` and `protocol` are assigned by Cake when the process exits or violates framing; a gate reports the other classes in an error frame. Verdicts, abstentions, allowlist overrides, and a global bypass exit `0`. `--diagnostic` adds each gate's effective request and decision or failure, its bounded stderr, and its timing; treat that output as sensitive for the same reasons as the judge diagnostic.
+
+### Trust boundary
+
+Gate executables are trusted user or project configuration. Cake starts them unsandboxed with a minimal environment plus the declared allowlist, and never passes credentials in JSON. A project `.cake/settings.toml` can name a different command, so a gate is only as trustworthy as the checkout and the user's configuration; this is the same trust already granted to hooks and toolbox executables. Cake validates and bounds every gate frame, sanitizes model-visible text, and never executes gate-supplied text. The OS sandbox still runs the approved command; a gate approval is not a sandbox bypass.
 
 ## Hook protocol
 
@@ -299,7 +561,7 @@ Toolbox executables are trusted and run outside the Bash sandbox. Their calls ma
 
 ## Compatibility changes
 
-Changes to session versioning, record names or required fields, stream ordering, exit-code meaning, hook decisions, toolbox framing, or machine-readable stdout are compatibility changes. They require focused serialization or integration tests, migration analysis where applicable, and an update to this document's semantics.
+Changes to session versioning, record names or required fields, stream ordering, exit-code meaning, hook decisions, toolbox framing, gate framing or decisions, or machine-readable stdout are compatibility changes. They require focused serialization or integration tests, migration analysis where applicable, and an update to this document's semantics.
 
 A settings file that cannot be loaded or parsed exited `1`; it now exits `3`, the class this document already assigns to invalid configuration. Every command that loads settings reports the failure with that code: `cake <prompt>`, `cake debug models`, `cake debug models --json`, `cake debug skills`, and `cake bash check` in both output modes. A script that branched on `1` for a broken settings file must branch on `3` instead; the stderr diagnostic is unchanged. See [ADR 044](adr/044-classify-settings-failures-as-input-errors.md).
 
@@ -308,6 +570,8 @@ A settings file that cannot be loaded or parsed exited `1`; it now exits `3`, th
 An exhausted HTTP `408` request timeout from a provider now exits `2` instead of `1`, matching the client-side timeouts that already did ([ADR 045](adr/045-classify-request-timeouts-as-api-errors.md)). Scripts that branch on `$?` must treat `2` as the request-timeout class. The mapping depends on the status code the provider supplies, and every other status stays where it was: `400`, `404`, `409`, `5xx`, and `529` still exit `1`.
 
 `cake --fail-on-error` adds an opt-in strict exit contract for `stream-json` ([ADR 046](adr/046-opt-in-strict-exit-codes-for-stream-json.md)). Exit-code meaning grows, but no default behavior changes: without the flag, an in-stream agent, provider, or tool failure still exits `0`, so every existing consumer keeps working. A consumer that adopts the flag reads a nonzero exit where it previously read `0`, which is the point of opting in.
+
+The `cake-gate/1` contract adds `gate_decision` and `gate_evidence` sidecar records and the additive `bash check` fields `data.gate` and `data.stages` ([ADR 049](adr/049-external-policy-gates-with-the-cake-gate-1-protocol.md)). Both are additive: existing judge records, document fields, and exit codes keep their meanings for one release, and `CAKE_JUDGE=off` remains an alias for `CAKE_GATE=off`. A pipeline with no `bash.exec` pre-tool gate is a new configuration failure: `cake bash check` exits `3`, and the Bash tool is not offered at all. That is a deliberate failure, not a behavior change to an existing gate. Consumers should tolerate both telemetry surfaces during the transition.
 
 ## Related decisions
 
@@ -318,3 +582,4 @@ An exhausted HTTP `408` request timeout from a provider now exits `2` instead of
 - [ADR 021](adr/021-session-transcript-replay.md), session transcript replay.
 - [ADR 029](adr/029-diagnostic-json-document.md), the diagnostic JSON document.
 - [ADR 044](adr/044-classify-settings-failures-as-input-errors.md), the exit class for a settings load or parse failure.
+- [ADR 049](adr/049-external-policy-gates-with-the-cake-gate-1-protocol.md), external policy gates and the `cake-gate/1` protocol.

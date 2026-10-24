@@ -73,6 +73,31 @@ Sandbox availability errors fail closed, including on platforms without a suppor
 
 For operational diagnosis and platform-specific recovery, use the `debugging-cake-sandbox` skill.
 
+## External gates (contract; not yet enforced)
+
+[ADR 049](adr/049-external-policy-gates-with-the-cake-gate-1-protocol.md) freezes an external gate layer for command policy. Until that layer lands, the in-process LLM judge described above remains the only command gate, and the guarantees in this section are the target contract rather than current behavior.
+
+A gate is a trusted executable, like a hook or a toolbox tool. Cake runs it outside the Bash sandbox with Cake's ambient host authority. Only enable gate executables and gate configuration you trust. A project `.cake/settings.toml` can name a different gate command, add a permissive gate, or remove one; the gate is only as trustworthy as the checkout and the user configuration, which is the trust this project already grants to hooks and toolbox executables. A gate must not read the workspace to assemble action evidence or resolve sandbox paths; Cake supplies the command, working directory, repository digest, and script evidence so sandbox semantics have one implementation. A gate may read its own rubric and configuration files named in its config.
+
+No secret value crosses the gate boundary. Cake passes resolved model descriptors and the *names* of credential environment variables, never the values, and it never passes `Authorization` headers, credential file contents, or a file-backed subscription credential path. It starts the gate with a minimal base environment plus the gate's declared `env` allowlist and the `api_key_env` names of its resolved models. The gate reads its own credentials from those variables. This is least disclosure, not a sandbox: a trusted gate can read anything Cake can, so the environment allowlist exists to prevent accidental leakage, not to contain a malicious executable. Gate configuration is not a credential store; credentials belong in environment variables.
+
+The no-gate rule is part of the security contract: if no `pre_tool` `bash.exec` gate is available in enforce mode, Bash and `BashSession` are removed from the tool registry and a startup diagnostic explains how to install or configure a gate (`cake gates doctor`). Cake never falls back to running commands without a gate. `CAKE_GATE=off` and `--no-gate` are explicit, recorded bypasses; `CAKE_JUDGE=off` remains an alias for one release. Auto-detecting `cake-safety-judge` on `PATH` is the zero-config default once the binary is installed. A missing gate is a startup and doctor diagnostic, not a quiet allow.
+
+Enforcement remains fail-closed. A gate failure in enforce mode blocks the command. Per-gate `fail = "open"` is an explicit experiment setting, is recorded as failed-open, and is surfaced by `cake gates doctor`; it is never the default. A shadow gate has no authority: its decision, annotations, allowlist, and failures are recorded and never change authorization. Only Cake applies an allowlist override or a bypass. A gate approval is not a sandbox bypass: the approved command still runs under the OS sandbox, and a gate can only annotate a command, never change its text, working directory, or arguments.
+
+Cake treats every gate frame as untrusted input even though the executable is trusted. It validates the protocol and frame shape, bounds frames, annotations, messages, warnings, and evidence, strips terminal control characters from model-visible text, kills and restarts a timed-out or crashed process, and disables a gate after two consecutive process-level failures so a broken gate cannot add a startup timeout to every command. Gate-supplied text is never executed.
+
+Bypass and failure classes this boundary must defend against, for security review of any change:
+
+- no gate configured or found: Bash is disabled, never ungated;
+- a project settings file replacing the safety gate with a permissive command: accepted as trusted project configuration, and documented as such;
+- a secret value crossing the JSON boundary or the child environment: descriptors carry names only, and the environment is a fixed base plus the explicit allowlist;
+- a gate forging or rewriting a decision to widen authorization: Cake owns composition, allowlist application, bypass, and fail-closed handling; a gate cannot widen another gate's decision;
+- gate text injecting terminal control sequences or oversized output into the model-visible result: text is sanitized and bounded;
+- a gate process timing out, crashing, or looping on restart: the process group is killed, the check fails closed, and repeated process failures disable the gate for the run;
+- a gate approval skipping the sandbox, the exact-command allowlist rule, or the bypass record: no path exists; a gate approval is only a policy decision;
+- a shadow gate acquiring authority: shadow decisions are recorded only.
+
 ## What the sandbox does not restrict
 
 The Bash sandbox is a filesystem boundary. Network access remains available, and environment variables are not path-bounded, so a command can still reach a credential the sandbox cannot deny; the judge's `credential-disclosure` class is the only gate over that disclosure, and it is stochastic. Remote Git history, APIs, databases, and other network effects are outside the filesystem sandbox, and the `data-egress` class is the only gate over sending local payload content to them, stochastic for the same reason.
@@ -81,7 +106,7 @@ The sandbox also cannot promise confidentiality from a model or provider once co
 
 ## Trusted extensions
 
-Hooks are user or project control-plane commands. Toolbox tools are user-provided executables exposed to the model. Both run with the Cake process's ambient host authority, outside the Bash sandbox.
+Hooks are user or project control-plane commands. Toolbox tools are user-provided executables exposed to the model. Both run with the Cake process's ambient host authority, outside the Bash sandbox. Once the external gate layer lands ([ADR 049](adr/049-external-policy-gates-with-the-cake-gate-1-protocol.md)), gate executables join them as a third trusted extension with the same ambient authority.
 
 `PreToolUse` hooks are a primary enforcement path for in-process mutations (Edit and Write) and for toolbox calls, which run unsandboxed. Hooks evaluate the same structured `tool_input` the tool will act on, so a payload whose raw JSON is malformed but repairable cannot bypass a hook that inspects the tool's structured arguments.
 
@@ -100,7 +125,7 @@ counts, phase timing, attempt/retry ordinal, retry reason, backoff wait, effecti
 
 ## Security-sensitive changes
 
-Changes to allowed paths, sandbox policy, fallback behavior, command checks, hook/toolbox execution, credential handling, transcript contents, or network policy require:
+Changes to allowed paths, sandbox policy, fallback behavior, command checks, gate executables or gate configuration, hook/toolbox execution, credential handling, transcript contents, or network policy require:
 
 - explicit compatibility and security-impact analysis;
 - focused allow/deny tests;
@@ -130,3 +155,4 @@ The three `[tools.bash.judge.typesafe]` keys merge from global, project, and pro
 - [ADR 017](adr/017-trusted-executable-toolbox-tools.md), trusted toolbox executables.
 - [ADR 018](adr/018-llm-judge-command-gate.md), the LLM judge command gate.
 - [ADR 019](adr/019-project-customizable-sandbox-paths.md), project-customizable sandbox paths.
+- [ADR 049](adr/049-external-policy-gates-with-the-cake-gate-1-protocol.md), external policy gates and the `cake-gate/1` protocol.
