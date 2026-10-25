@@ -32,6 +32,8 @@ The current model-visible framing is part of the compatibility surface. A judge 
 
 The judge's `provider_headers` are only OpenRouter attribution values (`http_referer` and `x_title`), not credentials. That makes the resolved descriptor safe to cross the process boundary as long as Cake sends `api_key_env` as a name and never the resolved `api_key`.
 
+The only file-backed credential path is the Codex/ChatGPT auth store. A gate cannot use it through a descriptor: descriptors are environment-backed only, and a file-backed run model yields no `default`, so a gate that needs a model fails `init` with `config` and `doctor` names the fix. This is deliberate; the Codex integration may be removed, and the contract does not freeze a special case for it.
+
 `JudgeRequest.script_evidence` is currently one optional object, while the protocol carries an array. The seam maps one item to a one-element array; this release never sends more than one.
 
 The judge table is already trusted project configuration: a project `.cake/settings.toml` can set `[tools.bash.judge] enabled = false` and remove the judge for commands run there. Gate configuration does not create a new trust class; it is the same project authority applied to an enforcement surface, so the security document must say so explicitly rather than implying a new protection.
@@ -55,6 +57,9 @@ The `[tools.bash.judge.typesafe]` cascade is both a policy stage and a latency o
 - Decision: the `[gates]` configuration is documented now but not read until slice 4. Rationale: freeze the contract before code, without claiming unimplemented behavior. Date/Author: 2026-10-24, Trav.
 - Decision: the `[gates.<name>]` key is the local instance name and `describe.name` is the gate's product name, so one binary can be configured twice; composition and telemetry use the instance name. Rationale: a binary cannot know its config key, and aliasing is a core policy-experiment case. Date/Author: 2026-10-24, Trav.
 - Decision: gate startup failures are pipeline failures, not silent drops. An explicit configuration error is a settings error (exit 3); a gate that fails `describe` or `init` removes Bash for the run with a diagnostic. Rationale: dropping a broken enforce gate would leave a weaker pipeline. Date/Author: 2026-10-24, Trav.
+- Decision: model descriptors are environment-backed only. A file-backed run model yields no `default` descriptor; a gate that needs a model fails `init` with `config`, Bash is removed for the run, and `doctor` names the fix. No `credential` field or auth path is added. Rationale: the Codex integration may be removed, and the contract should not freeze a special case for it. Date/Author: 2026-10-24, Trav.
+- Decision: the schema's enums and cardinality bounds are the v1 known set. Adding a field is free, adding an enum value or raising a bound is an additive schema edit without a protocol bump, and only removing or changing meaning requires `cake-gate/2`. Rationale: keep gate-author validation precise and avoid speculative widening for 033c. Date/Author: 2026-10-24, Trav.
+- Decision: a bypass records `decision: null` in `gate_decision`, matching `bash check`'s null verdict; `bypassed: true` carries the effect. Rationale: a bypass has no gate decision and must not count as a policy allow. Date/Author: 2026-10-24, Trav.
 
 ## Outcomes & Retrospective
 

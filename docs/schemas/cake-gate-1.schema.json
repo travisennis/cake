@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/travisennis/cake/docs/schemas/cake-gate-1.schema.json",
   "title": "cake-gate/1 protocol",
-  "description": "Wire schema for the cake-gate/1 external policy gate protocol. Validate a describe object with #/$defs/describe and any serve frame with #/$defs/frame. Unknown fields are tolerated for additive evolution; required fields and conditional requirements are enforced. Byte limits that JSON Schema cannot express are stated in docs/integrations.md: a frame is at most 1 MiB, init.config at most 64 KiB, each evidence payload at most 8 KiB, and total evidence at most 32 KiB. Model-visible text is defensively truncated by Cake to 1,000 characters; the schema's 8,192-character ceiling catches accidental transcripts.",
+  "description": "Wire schema for the cake-gate/1 external policy gate protocol. Validate a describe object with #/$defs/describe and any serve frame with #/$defs/frame. Unknown fields are tolerated for additive evolution; required fields and conditional requirements are enforced. The enums and cardinality bounds are the cake-gate/1 known set: adding a field is free, adding an enum value or raising a bound is an additive schema edit that does not require cake-gate/2, and removing or changing the meaning of a value does. Byte limits that JSON Schema cannot express are stated in docs/integrations.md: a frame is at most 1 MiB, init.config at most 64 KiB, each evidence payload at most 8 KiB, and total evidence at most 32 KiB. Model-visible text is defensively truncated by Cake to 1,000 characters; the schema's 8,192-character ceiling catches accidental transcripts.",
   "oneOf": [
     {
       "$ref": "#/$defs/describe"
