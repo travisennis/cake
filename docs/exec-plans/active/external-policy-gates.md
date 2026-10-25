@@ -16,7 +16,7 @@ The current in-process judge remains the oracle and the only command gate until 
 - [x] (2026-10-24) Created tracker 128 and contract child 128a; cut `docs/gate-protocol` in a linked worktree at `.cake/worktrees/docs/gate-protocol` from `origin/master` (`9c39c44`).
 - [x] (2026-10-24) Drafted ADR 049 as `proposed`, the `cake-gate/1` protocol section in `docs/integrations.md`, the `[gates]` schema in `docs/configuration.md`, the trust boundary and no-gate rule in `docs/security.md`, and `docs/schemas/cake-gate-1.schema.json`.
 - [x] (2026-10-24) Drafted this ExecPlan.
-- [x] (2026-10-24) Contract reviewed and frozen; ADR 049 moved to `accepted`.
+- [x] (2026-10-25) Contract reviewed and frozen; ADR 049 moved to `accepted`.
 - [ ] Update the docs status notes when enforcement lands (slice 4).
 - [ ] Slice 1 (cake): gate protocol types, process runner, composer, in-process judge gate, fake gate, telemetry sink; no user-visible change.
 - [ ] Slice 2 (cake-safety-judge): repository, `describe`, `check`, rubric and corpus, offline parity with the oracle.
@@ -66,7 +66,7 @@ The `[tools.bash.judge.typesafe]` cascade is both a policy stage and a latency o
 
 ## Outcomes & Retrospective
 
-Slice 0 has produced the accepted ADR, the wire contract, the configuration schema, the security trust-boundary section, the JSON Schema, and this plan. The 2026-10-24 review resolved the precedence/migration, fail-open, open-string, `bash check` mapping, telemetry, and all-abstain issues; the contract is frozen for slice 1. No Rust code, settings parser, process runner, gate binary, or behavior change exists yet. The current in-process judge is unchanged and remains the only command gate.
+Slice 0 has produced the accepted ADR, the wire contract, the configuration schema, the security trust-boundary section, the JSON Schema, and this plan. The 2026-10-25 review resolved the precedence/migration, fail-open, open-string, `bash check` mapping, telemetry, and all-abstain issues; the contract is frozen for slice 1. No Rust code, settings parser, process runner, gate binary, or behavior change exists yet. The current in-process judge is unchanged and remains the only command gate.
 
 Fill this section at each slice boundary with what was delivered, what the evidence showed, and what remains. Do not move this plan to `docs/exec-plans/completed/` until slice 5 is verified.
 
@@ -310,4 +310,4 @@ The interface is intentionally narrow: a gate never receives a sandbox resolver,
 
 ## Revision notes
 
-2026-10-24: the contract review changed the default pipeline to explicit configuration first with the default-on in-process judge as the fallback, defined `fail` as a per-check setting with startup failures always pipeline-fatal and the circuit breaker honoring `fail`, opened capabilities and error classes for additive evolution, added `gate_startup` and the `disabled`/`failed_open` stage fields, defined the `bash check` deciding-gate and latency mapping, and recorded the all-abstain consequence. The branch merged `5e0ffe8` before the final push.
+2026-10-25: the contract review changed the default pipeline to explicit configuration first with the default-on in-process judge as the fallback, defined `fail` as a per-check setting with startup failures always pipeline-fatal and the circuit breaker honoring `fail`, opened capabilities and error classes for additive evolution, added `gate_startup` and the `disabled`/`failed_open` stage fields, defined the `bash check` deciding-gate and latency mapping, and recorded the all-abstain consequence. The branch merged `5e0ffe8` before the final push.
