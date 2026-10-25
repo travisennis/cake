@@ -11,21 +11,27 @@ from pathlib import Path
 import dashboard
 
 LABELS = ('com.cake.metrics.refresh', 'com.cake.metrics.reminder')
+PYTHON_FALLBACKS = ('/opt/homebrew/bin/python3', '/usr/local/bin/python3', '/usr/bin/python3')
+
+
+def python_candidates(python):
+    """Prefer the installer's interpreter, then stable Homebrew and system paths."""
+    return list(dict.fromkeys([str(python), *PYTHON_FALLBACKS]))
 
 
 def jobs(root, python, sessions, telemetry):
     runtime = root / 'runtime'
+    script = runtime / 'metrics_job.sh'
     common = dict(ProcessType='Background')
     refresh = dict(common, Label=LABELS[0],
-                   ProgramArguments=[str(python), str(runtime / 'dashboard.py'),
-                                     '--output', str(root), '--sessions-dir', str(sessions),
-                                     '--telemetry-dir', str(telemetry)],
+                   ProgramArguments=['/bin/sh', str(script), 'refresh', str(root),
+                                     str(sessions), str(telemetry),
+                                     *python_candidates(python)],
                    StartCalendarInterval=dict(Hour=8, Minute=0), RunAtLoad=True,
                    StandardOutPath=str(root / 'refresh.log'),
                    StandardErrorPath=str(root / 'refresh.log'))
     reminder = dict(common, Label=LABELS[1],
-                    ProgramArguments=['/usr/bin/osascript', '-e',
-                                      'display notification "Your local dashboard is ready. Open your Cake metrics bookmark." with title "Cake weekly metrics"'],
+                    ProgramArguments=['/bin/sh', str(script), 'remind', str(root)],
                     StartCalendarInterval=dict(Weekday=1, Hour=9, Minute=0),
                     StandardOutPath=str(root / 'reminder.log'),
                     StandardErrorPath=str(root / 'reminder.log'))
@@ -65,11 +71,14 @@ def main():
     runtime = root / 'runtime'
     runtime.mkdir(exist_ok=True, mode=0o700)
     source = Path(__file__).resolve().parent
-    for name in ('dashboard.py', 'dashboard.html', 'cakelib.py', 'install_dashboard.py'):
+    for name in ('dashboard.py', 'dashboard.html', 'cakelib.py', 'install_dashboard.py',
+                 'metrics_job.sh'):
         shutil.copy2(source / name, runtime / name)
     sessions = dashboard.cakelib.resolve_sessions_dir(ns).expanduser().resolve()
     telemetry = dashboard.cakelib.resolve_telemetry_dir(ns).expanduser().resolve()
-    definitions = jobs(root, Path(sys.executable).resolve(), sessions, telemetry)
+    # Keep the interpreter unresolved: Homebrew revises the Cellar directory
+    # behind the opt symlink, and the job script falls back if it disappears.
+    definitions = jobs(root, Path(sys.executable).absolute(), sessions, telemetry)
     # Validate and generate before replacing an existing schedule.
     subprocess.run(definitions[0]['ProgramArguments'], check=True)
     agents.mkdir(parents=True, exist_ok=True)

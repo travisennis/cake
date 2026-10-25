@@ -159,7 +159,7 @@ python3 scripts/session-metrics/install_dashboard.py install
 python3 scripts/session-metrics/install_dashboard.py open
 ```
 
-Bookmark the page in your browser. The installer generates the first report before registering two user LaunchAgents. Jobs run while you are logged in; launchd coalesces calendar events missed during sleep. Notifications depend on macOS notification permissions and Focus settings. No model calls, network service, or Python dependencies are required. The existing terminal report is unchanged.
+Bookmark the page in your browser. The installer generates the first report before registering two user LaunchAgents. Both jobs run through a `/bin/sh` wrapper, so a missing or upgraded Python cannot stop launchd from starting them: the refresh picks the first working Python 3.10+ from the installer's interpreter, `/opt/homebrew/bin/python3`, `/usr/local/bin/python3`, and `/usr/bin/python3`. A failed refresh posts a notification, and the Monday reminder reports how old the report is instead of claiming it is ready. Jobs run while you are logged in; launchd coalesces calendar events missed during sleep. Notifications depend on macOS notification permissions and Focus settings. No model calls, network service, or Python dependencies are required. The existing terminal report is unchanged.
 
 The dashboard compares the last seven complete UTC dates against the preceding seven and shows 30 daily rows including today. Model and project selectors filter both views. Zero-denominator rates show a dash. Completion means operational success, not verified task correctness. Missing telemetry, parser errors, sample counts, incomplete tasks, and a refresh older than 36 hours are visible.
 
@@ -167,7 +167,7 @@ Files live in `~/Library/Application Support/cake-metrics`: `index.html`, `metri
 
 The most recent 31 UTC dates are rebuilt from source records on every refresh; older daily aggregates are retained. Keep source records at least 31 days to avoid erasing recent history during a refresh. Late changes to older sessions are not backfilled automatically. Session model attribution comes from session metadata; telemetry attribution uses each invocation's model. Tool metrics use telemetry only. Cache rates use requests with cached-token details. Judge time is cumulative attempt time and can overlap other activity.
 
-The installer copies its runtime and pins the Python executable and resolved data directories, so switching branches and shell environment changes do not affect scheduled runs. Reinstall after updating the scripts, moving Python, or changing data roots. Pass `--sessions-dir` and `--telemetry-dir` for custom locations.
+The installer copies its runtime and resolves the data directories, and records the interpreter that ran it as the preferred Python, so switching branches and shell environment changes do not affect scheduled runs. The job script falls back to Homebrew and system interpreters when that path disappears. Reinstall after updating the scripts, moving Python, or changing data roots. Pass `--sessions-dir` and `--telemetry-dir` for custom locations.
 
 ```bash
 # Manual refresh, including on other platforms:
@@ -178,4 +178,4 @@ launchctl print gui/$(id -u)/com.cake.metrics.refresh
 python3 scripts/session-metrics/install_dashboard.py uninstall
 ```
 
-Check `refresh.log` if the page is stale. Runtime copies include the installer, so schedules can also be removed without this checkout using `python3 ~/Library/Application\ Support/cake-metrics/runtime/install_dashboard.py uninstall`.
+Check `refresh.log` (or `reminder.log`) if the page is stale; a failed refresh also posts a notification. Runtime copies include the installer, so schedules can also be removed without this checkout using `python3 ~/Library/Application\ Support/cake-metrics/runtime/install_dashboard.py uninstall`.
