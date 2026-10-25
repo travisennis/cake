@@ -7,13 +7,14 @@ use tokio::process::{Child, Command};
 use tokio::time::{Duration, timeout};
 use tracing::debug;
 
+use crate::clients::judge::repo_state_digest;
 #[cfg(test)]
-use crate::clients::judge::JudgeContext;
-use crate::clients::judge::{
-    JudgeDecision, JudgeOutcome, JudgeRequest, evaluate_command_observed, judge_is_enabled,
-    repo_state_digest,
-};
+use crate::clients::judge::{JudgeContext, JudgeDecision, JudgeOutcome};
 use crate::clients::tools::secure_temp_dir::secure_temp_dir;
+use crate::gates::composer::{GatePipelineError, GateRequest, PipelineAuthorization};
+#[cfg(test)]
+use crate::gates::judge_gate::builtin_pipeline;
+use crate::gates::protocol::{BashInput, CheckSession, ScriptEvidence};
 use crate::session_telemetry::{CompensationEventTelemetry, CompensationKind};
 use crate::time_format::format_seconds_tenths;
 
@@ -70,11 +71,6 @@ pub(super) const TERMINATE_GRACE_PERIOD: Duration = Duration::from_secs(3);
 /// returns, so the reap is bounded and a timed-out Bash call cannot outlive
 /// its timeout. The armed `ToolboxProcessGuard` still delivers the kill.
 const TERMINATE_REAP_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// Maximum characters of judge-provided message text allowed into the agent
-/// loop, so a verbose or compromised judge cannot flood the model-visible
-/// tool error or output.
-const JUDGE_MESSAGE_MAX_CHARS: usize = 1000;
 
 /// Arguments for bash execution, including the sandbox policy
 struct BashExecutionArgs {
@@ -1397,41 +1393,26 @@ struct JudgePreflight {
     compensation_events: Vec<CompensationEventTelemetry>,
 }
 
-/// A preflight for a call the judge never evaluated because it is disabled.
+/// Run the command-policy pipeline for one Bash call.
 ///
-/// The bypass event records the escape hatch so it cannot be used silently, and
-/// carries the originating call's linkage like every other judge event.
-fn bypassed_preflight(raw_call_id: Option<&str>) -> JudgePreflight {
-    let event = CompensationEventTelemetry::judge_bypass().with_call_id(raw_call_id);
-    JudgePreflight {
-        warnings: Vec::new(),
-        compensation_events: vec![event],
-    }
-}
-
-/// Run the LLM-judge command-safety preflight for one Bash call.
-///
-/// The judge is the only non-sandbox command gate (`ExecPlan` Milestone 5):
-/// every command is evaluated before spawn, and the judge stays active under
-/// `danger-full-access` and `CAKE_SANDBOX=off`, matching the old guard's
+/// The gate pipeline is the only non-sandbox command gate (`ExecPlan`
+/// Milestone 5): every command is evaluated before spawn, and it stays active
+/// under `danger-full-access` and `CAKE_SANDBOX=off`, matching the old guard's
 /// independence from the sandbox.
 ///
-/// Every judge decision and every fail-closed denial is recorded as a
-/// telemetry compensation event (verdict + code + latency, bypass, or failure
-/// class), including on the `Err` path, so the gate's behavior stays
-/// observable even when the tool call fails. Each event also carries the
-/// one-way digest of the transcript call it judged, so session metrics can
-/// pair a call with its outcome by transcript call (#404).
+/// Every decision and every fail-closed denial arrives as a pipeline legacy
+/// event (judge verdict, bypass, or failure), including on the `Err` path, and
+/// each event carries the one-way digest of the transcript call it judged.
+/// The tool layer never sees judge settings, providers, or prompts.
 async fn bash_judge_preflight(
     context: &super::ToolContext,
     args: &BashExecutionArgs,
     cwd: &Path,
     call_id: Option<String>,
 ) -> Result<JudgePreflight, super::ToolError> {
-    // The transcript call id links this Bash call to the judge request, the
-    // judge attempts, and the recorded events. Borrowed once here: the events
-    // digest it at construction and the judge observer only ever holds the
-    // digest, so the raw identifier never reaches telemetry.
+    // The transcript call id links this Bash call to the gate request and the
+    // recorded events. The events digest it at construction, so the raw
+    // identifier never reaches telemetry.
     let raw_call_id = call_id.as_deref();
 
     // Empty commands have nothing to judge; `bash -c ""` is harmless and the
@@ -1443,125 +1424,158 @@ async fn bash_judge_preflight(
         });
     }
 
-    let Some(judge) = context.judge.as_deref() else {
+    let Some(pipeline) = context.gates.as_deref() else {
+        // Test-only compatibility: a few direct judge tests attach the
+        // `JudgeContext` field rather than a pipeline. Production only ever
+        // sets `gates`.
+        #[cfg(test)]
+        {
+            let fallback = context
+                .judge
+                .as_ref()
+                .and_then(|judge| builtin_pipeline(std::sync::Arc::clone(judge)).ok())
+                .map(std::sync::Arc::new);
+            if let Some(pipeline) = fallback {
+                return bash_pipeline_preflight(pipeline.as_ref(), context, args, cwd, raw_call_id)
+                    .await;
+            }
+        }
         return Err(fail_closed_tool_error(
             "missing_context",
             "the command-safety judge is not configured for this run",
             raw_call_id,
         ));
     };
-    // The emergency bypass short-circuits before any judge setup: a disabled
-    // judge must not fail on an unusable model or rubric, because the bypass
-    // is the recovery path when judge configuration is broken. The bypass is
-    // still recorded so the escape hatch cannot be used silently. The value
-    // was captured once when the run's judge context was built, so this path
-    // never reads the process-global environment.
-    let bypass_env = judge.bypass_env.as_deref();
-    if !judge_is_enabled(&judge.settings, bypass_env) {
-        return Ok(bypassed_preflight(raw_call_id));
-    }
-
-    judge_enabled_preflight(context, args, cwd, call_id, judge, bypass_env).await
+    bash_pipeline_preflight(pipeline, context, args, cwd, raw_call_id).await
 }
 
-/// Run the judge once the configuration has passed the empty-command, missing
-/// context, and bypass checks.
-///
-/// Splitting this out of [`bash_judge_preflight`] keeps the fail-closed branch
-/// count in one function at the change-risk ratchet's allowed level; the script
-/// observation adds no decision point here.
-async fn judge_enabled_preflight(
-    context: &super::ToolContext,
-    args: &BashExecutionArgs,
-    cwd: &Path,
-    call_id: Option<String>,
-    judge: &crate::clients::judge::JudgeContext,
-    bypass_env: Option<&str>,
-) -> Result<JudgePreflight, super::ToolError> {
-    let raw_call_id = call_id.as_deref();
-    // Collection runs before judge configuration resolution: a referenced
-    // script that cannot be collected is a fail-closed denial on its own, and
-    // an unusable judge configuration must not mask that explanation.
-    let request = script_judge_request(context, args, cwd, raw_call_id)?;
-    let observation_note = script_observation_note(&request);
-    let client = judge
-        .judge_client()
-        .map_err(|e| fail_closed_tool_error(e.class, &e.message, raw_call_id))?;
-
-    let evaluation =
-        evaluate_command_observed(client, &judge.settings, request, bypass_env, false).await;
-    // Persist finalized attempts as soon as judging completes: an interrupted
-    // command (for example Ctrl-C on a hung Bash call) cancels the agent
-    // future before the tool result and its compensation events are recorded,
-    // so waiting for that path would drop the attempts.
-    record_judge_attempts(judge, &evaluation.attempts);
-    record_typesafe_shadow(judge, evaluation.shadow.as_ref(), raw_call_id);
-    observed_evaluation_to_preflight(evaluation, raw_call_id)
-        .map_err(|mut error| {
-            if let Some(note) = &observation_note {
-                error.message.push_str("\n\n");
-                error.message.push_str(note);
-            }
-            error
-        })
-        .map(|mut preflight| {
-            preflight.warnings.extend(observation_note);
-            preflight
-        })
-}
-
-/// Build the judge request for one Bash call, collecting any directly
-/// referenced script as bounded untrusted evidence.
-fn script_judge_request(
+/// Run one request through a resolved pipeline and map the outcome onto the
+/// tool result.
+async fn bash_pipeline_preflight(
+    pipeline: &crate::gates::composer::GatePipeline,
     context: &super::ToolContext,
     args: &BashExecutionArgs,
     cwd: &Path,
     raw_call_id: Option<&str>,
-) -> Result<JudgeRequest, super::ToolError> {
-    let mut request =
-        JudgeRequest::new(args.command.clone(), cwd.to_path_buf(), args.reason.clone())
-            .with_repo_digest(repo_state_digest(cwd))
-            .with_call_id(raw_call_id.map(String::from));
-    request.script_evidence =
-        crate::clients::tools::script_evidence::collect(context, &args.command).map_err(|detail| {
-            // The generic unavailable-judge helper would misdescribe this
-            // failure: collection happens before any provider call, so the
-            // block reuses the fail-closed prefix and keeps its own wording.
-            super::ToolError {
-                message: format!(
-                    "BLOCKED\n\nReferenced script evidence could not be collected, so the command was not executed and the judge was not called. {detail}\nUse an existing readable regular UTF-8 script within the configured Read grants (at most 32 KiB), or inline the intended command for judgment."
-                ),
-                compensation_events: vec![
-                    CompensationEventTelemetry::judge_fail_closed("script_evidence")
-                        .with_call_id(raw_call_id),
-                ],
+) -> Result<JudgePreflight, super::ToolError> {
+    let (request, observation_note) =
+        gate_request(context, args, cwd, raw_call_id, !pipeline.is_bypassed())?;
+    match pipeline.check(request).await {
+        Ok(outcome) => {
+            let mut preflight = preflight_from_outcome(outcome, raw_call_id);
+            if let Some(note) = &observation_note {
+                match &mut preflight {
+                    Ok(preflight) => preflight.warnings.push(note.clone()),
+                    Err(error) => {
+                        error.message.push_str("\n\n");
+                        error.message.push_str(note);
+                    },
+                }
             }
-        })?;
-    Ok(request)
+            preflight
+        },
+        Err(error) => {
+            let mut message = fail_closed_message(gate_pipeline_error_message(&error));
+            if let Some(note) = &observation_note {
+                message.push_str("\n\n");
+                message.push_str(note);
+            }
+            let mut compensation_events = error.legacy_events().to_vec();
+            if compensation_events.is_empty() {
+                compensation_events.push(
+                    CompensationEventTelemetry::judge_fail_closed(error.class().as_str())
+                        .with_call_id(raw_call_id),
+                );
+            }
+            Err(super::ToolError {
+                message,
+                compensation_events,
+            })
+        },
+    }
 }
 
-/// The notice a call reports when the judge saw a referenced script, naming the
-/// observed path without echoing contents.
-fn script_observation_note(request: &JudgeRequest) -> Option<String> {
-    request.script_evidence.as_ref().map(|evidence| {
+fn preflight_from_outcome(
+    outcome: crate::gates::composer::PipelineOutcome,
+    raw_call_id: Option<&str>,
+) -> Result<JudgePreflight, super::ToolError> {
+    let mut compensation_events = outcome.legacy_events;
+    if outcome.bypassed {
+        if compensation_events.is_empty() {
+            compensation_events
+                .push(CompensationEventTelemetry::judge_bypass().with_call_id(raw_call_id));
+        }
+        return Ok(JudgePreflight {
+            warnings: Vec::new(),
+            compensation_events,
+        });
+    }
+    match outcome.authorization {
+        PipelineAuthorization::Run => Ok(JudgePreflight {
+            warnings: outcome.annotations,
+            compensation_events,
+        }),
+        PipelineAuthorization::Block { message } => Err(super::ToolError {
+            message: format!("BLOCKED\n\nReason: {message}"),
+            compensation_events,
+        }),
+    }
+}
+
+/// Build the gate request for one Bash call, collecting any directly
+/// referenced script as bounded untrusted evidence.
+fn gate_request(
+    context: &super::ToolContext,
+    args: &BashExecutionArgs,
+    cwd: &Path,
+    raw_call_id: Option<&str>,
+    collect_evidence: bool,
+) -> Result<(GateRequest, Option<String>), super::ToolError> {
+    let evidence = if collect_evidence {
+        crate::clients::tools::script_evidence::collect(context, &args.command)
+            .map_err(|detail| {
+                // The generic unavailable-judge helper would misdescribe this
+                // failure: collection happens before any provider call, so the
+                // block reuses the fail-closed prefix and keeps its own wording.
+                super::ToolError {
+                    message: format!(
+                        "BLOCKED\n\nReferenced script evidence could not be collected, so the command was not executed and the judge was not called. {detail}\nUse an existing readable regular UTF-8 script within the configured Read grants (at most 32 KiB), or inline the intended command for judgment."
+                    ),
+                    compensation_events: vec![
+                        CompensationEventTelemetry::judge_fail_closed("script_evidence")
+                            .with_call_id(raw_call_id),
+                    ],
+                }
+            })?
+    } else {
+        None
+    };
+    let note = evidence.as_ref().map(|evidence| {
         // JSON escaping keeps model-supplied paths from injecting control characters.
         format!(
             "Safety judge inspected referenced script {} (untrusted contents; dependencies and later changes not covered).",
             serde_json::json!(evidence.path)
         )
-    })
-}
-
-/// Persist finalized judge attempts through the run's telemetry sink, if any.
-fn record_judge_attempts(
-    judge: &crate::clients::judge::JudgeContext,
-    attempts: &[crate::session_telemetry::JudgeAttemptTelemetry],
-) {
-    if let Some(sink) = &judge.record_attempt {
-        for attempt in attempts {
-            sink.record(attempt.clone());
-        }
-    }
+    });
+    let script_evidence = evidence
+        .into_iter()
+        .map(|evidence| ScriptEvidence {
+            path: evidence.path,
+            contents: evidence.contents,
+        })
+        .collect();
+    let input = BashInput {
+        command: args.command.clone(),
+        cwd: cwd.to_string_lossy().into_owned(),
+        reason: args.reason.clone(),
+        repo_digest: repo_state_digest(cwd),
+        script_evidence,
+    };
+    let session = CheckSession {
+        call_id: raw_call_id.map(String::from),
+        ..CheckSession::default()
+    };
+    Ok((GateRequest::new(input).with_session(session), note))
 }
 
 /// Persist one `TypeSafe` observation through the run's telemetry sink, if any.
@@ -1572,9 +1586,10 @@ fn record_judge_attempts(
 /// approval is identifiable from it, the `judge_verdict` event, and the absence
 /// of a `judge_attempt` for the same call (ADR 034).
 ///
-/// The optional observation adds no decision point to `bash_judge_preflight`:
-/// the change-risk ratchet scores any new branch there as a regression, so both
-/// `Option` checks live here instead.
+/// Test-only after the gate seam: the built-in adapter now owns observation
+/// recording, and this helper remains the direct sink assertion in the Bash
+/// tests.
+#[cfg(test)]
 fn record_typesafe_shadow(
     judge: &crate::clients::judge::JudgeContext,
     shadow: Option<&crate::clients::typesafe::TypeSafeObservation>,
@@ -1597,74 +1612,42 @@ fn record_typesafe_shadow(
     );
 }
 
-fn observed_evaluation_to_preflight(
-    evaluation: crate::clients::judge::JudgeEvaluation,
-    raw_call_id: Option<&str>,
-) -> Result<JudgePreflight, super::ToolError> {
-    // The decision latency. A cascade fast approval made no judge call, so the
-    // fast leg's elapsed time is the whole decision; it lands in the existing
-    // `judge_verdict` latency field rather than a new record field, which is
-    // what keeps the cascade measurable without changing the telemetry shape
-    // (ADR 034). Every other decision is the cumulative wall time across every
-    // attempt, including the backoff waits between them, so the
-    // verdict/fail-closed latency reflects the whole judge operation after a
-    // bounded recovery.
-    let latency_ms = match &evaluation.outcome {
-        Ok(JudgeOutcome::FastApproved { elapsed, .. }) => {
-            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-        },
-        _ => evaluation.attempts.iter().fold(0_u64, |acc, attempt| {
-            acc.saturating_add(attempt.total_ms)
-                .saturating_add(attempt.retry_delay_ms)
-        }),
-    };
-    match evaluation.outcome {
-        Ok(outcome) => judge_preflight_outcome(outcome, latency_ms, raw_call_id),
-        Err(error) => {
-            let class = error.error_class();
-            Err(fail_closed_tool_error(class, error, raw_call_id))
-        },
-    }
-}
-
-/// Map a judge-path outcome to the preflight result: the warnings to prepend
-/// plus the telemetry event recorded for the decision.
+/// Test-only compatibility shim for the pre-seam judge-event linkage tests.
 ///
-/// A `warn` verdict prepends its message as a `NOTICE`; an allow verdict, an
-/// allowlist-overridden block (the verdict and the override flag are
-/// preserved for telemetry), and the bypass run unannotated; a real `block`
-/// blocks with the verdict reason as the tool error, carrying the verdict
-/// event on the error path.
+/// Production maps decisions through [`preflight_from_outcome`]; this keeps the
+/// existing event-shape assertions running against the same legacy event
+/// constructors the adapter uses.
+#[cfg(test)]
 fn judge_preflight_outcome(
     outcome: JudgeOutcome,
     latency_ms: u64,
     raw_call_id: Option<&str>,
 ) -> Result<JudgePreflight, super::ToolError> {
     match outcome {
-        JudgeOutcome::Bypassed => Ok(bypassed_preflight(raw_call_id)),
-        // A fast approval emits the unannotated `allow` event an allow verdict
-        // emits, carrying the fast leg's elapsed time as the latency. It is
-        // preceded by no `judge_attempt` record, which is what identifies it in
-        // telemetry (ADR 034). A fast approval adds no warning: it approved the
-        // command as observational, so there is nothing to prepend.
+        JudgeOutcome::Bypassed => Ok(JudgePreflight {
+            warnings: Vec::new(),
+            compensation_events: vec![
+                CompensationEventTelemetry::judge_bypass().with_call_id(raw_call_id),
+            ],
+        }),
         JudgeOutcome::FastApproved { .. } => Ok(JudgePreflight {
             warnings: Vec::new(),
             compensation_events: vec![
-                CompensationEventTelemetry::judge_verdict(
-                    JudgeDecision::Allow.as_str(),
-                    None,
-                    latency_ms,
-                    false,
-                )
-                .with_call_id(raw_call_id),
+                CompensationEventTelemetry::judge_verdict("allow", None, latency_ms, false)
+                    .with_call_id(raw_call_id),
             ],
         }),
         JudgeOutcome::Verdict {
             verdict,
             overridden,
         } => {
+            let decision = match verdict.decision {
+                JudgeDecision::Allow => "allow",
+                JudgeDecision::Warn => "warn",
+                JudgeDecision::Block => "block",
+            };
             let event = CompensationEventTelemetry::judge_verdict(
-                verdict.decision.as_str(),
+                decision,
                 verdict.code.as_deref(),
                 latency_ms,
                 overridden,
@@ -1690,6 +1673,24 @@ fn judge_preflight_outcome(
                     compensation_events: vec![event],
                 }),
             }
+        },
+    }
+}
+
+#[cfg(test)]
+fn sanitize_judge_message(message: &str) -> String {
+    crate::gates::protocol::sanitize_model_text(message)
+}
+
+/// The model-visible text for a pipeline failure. The built-in adapter's
+/// failure message preserves the existing judge error wording.
+fn gate_pipeline_error_message(error: &GatePipelineError) -> String {
+    match error {
+        GatePipelineError::NoEnforceGate => {
+            "no command-policy gate is configured for this run".to_string()
+        },
+        GatePipelineError::Startup { failure, .. } | GatePipelineError::Check { failure, .. } => {
+            failure.message.clone()
         },
     }
 }
@@ -1733,18 +1734,6 @@ fn judge_tool_error(
     }
 }
 
-/// Judge messages are model-generated text entering the agent loop. Cap the
-/// length and strip control characters so a compromised or confused judge
-/// cannot inject terminal control sequences or unbounded text into the
-/// model-visible tool error or output. Line breaks are kept for readability.
-fn sanitize_judge_message(message: &str) -> String {
-    message
-        .chars()
-        .filter(|c| !c.is_control() || matches!(c, '\n' | '\r' | '\t'))
-        .take(JUDGE_MESSAGE_MAX_CHARS)
-        .collect()
-}
-
 /// Run one Bash call unsandboxed in a fresh temporary directory with a
 /// bypassed judge, used by tests that exercise Bash output handling rather
 /// than the judge path: the judge is never called and commands run ungated.
@@ -1784,9 +1773,9 @@ async fn execute_bash_with_judge_in(
     cwd: &std::path::Path,
 ) -> Result<super::ToolResult, super::ToolError> {
     let mut context = super::ToolContext::from_current_process();
-    context.cwd = cwd.to_path_buf();
-    context.judge = judge;
     context.sandbox_policy = super::sandbox::SandboxPolicy::DangerFullAccess;
+    let mut context = context.with_judge(judge);
+    context.cwd = cwd.to_path_buf();
     let (args, effective_cwd, sandbox_config) = parse_bash_call(&context, arguments)?;
     Box::pin(execute_bash_with_args(
         &context,

@@ -20,8 +20,9 @@ use crate::config::skills::Skill;
 use crate::config::toolbox::ToolboxTool;
 use crate::hooks::HookRunner;
 use crate::session_telemetry::{
-    JudgeAttemptSink, ProviderTermination, SessionTelemetryContext, SessionTelemetryRecord,
-    SessionTelemetrySettings, SessionTelemetryWriter, SharedSessionTelemetryWriter,
+    GateTelemetrySink, JudgeAttemptSink, ProviderTermination, SessionTelemetryContext,
+    SessionTelemetryRecord, SessionTelemetrySettings, SessionTelemetryWriter,
+    SharedSessionTelemetryWriter,
 };
 use crate::types::{
     ApiAttemptTerminalClass, ConversationItem, ReplaySafety, ReportedUsage, Role, SessionRecord,
@@ -649,24 +650,18 @@ impl Agent {
             context: context.clone(),
             writer: Arc::clone(&writer),
         });
-        self.install_judge_attempt_sink(JudgeAttemptSink::new(writer, context));
+        if let Some(pipeline) = self.tool_context.gates.clone() {
+            pipeline.install_judge_attempt_sink(&JudgeAttemptSink::new(
+                Arc::clone(&writer),
+                context.clone(),
+            ));
+            let gate_sink = GateTelemetrySink::new(Arc::clone(&writer), context);
+            pipeline.install_telemetry_sink(gate_sink.clone());
+            for startup in pipeline.startup_records() {
+                gate_sink.record_startup(startup);
+            }
+        }
         self
-    }
-
-    /// Give the Bash preflight a sink that records judge attempts immediately,
-    /// rebuilding the tool context around the judge context with the sink.
-    fn install_judge_attempt_sink(&mut self, sink: JudgeAttemptSink) {
-        let Some(judge) = self.tool_context.judge.clone() else {
-            return;
-        };
-        let mut judge = (*judge).clone();
-        judge.record_attempt = Some(sink);
-        let context = Arc::new(
-            (*self.tool_context)
-                .clone()
-                .with_judge(Some(Arc::new(judge))),
-        );
-        self.tool_context = context;
     }
 
     /// Emit a task record to persistence and streaming sinks.
@@ -822,6 +817,10 @@ impl Agent {
 #[cfg(test)]
 #[path = "agent/agent_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "agent/gate_telemetry_tests.rs"]
+mod gate_telemetry_tests;
 
 #[cfg(test)]
 mod session_restore_tests;

@@ -421,6 +421,72 @@ impl From<&RequestOverrides> for RequestOverridesSnapshot {
     }
 }
 
+/// Metadata-only record for one gate at startup.
+///
+/// `version`, `phases`, and `actions` are null or empty when `describe`
+/// failed. The record carries no gate text.
+#[derive(Debug, Clone, Serialize)]
+pub struct GateStartupTelemetry {
+    pub gate: String,
+    pub version: Option<String>,
+    pub mode: String,
+    pub phases: Vec<String>,
+    pub actions: Vec<String>,
+    /// `ready` or `failed`.
+    pub outcome: String,
+    pub failure_class: Option<String>,
+    pub latency_ms: u64,
+}
+
+/// Metadata-only record for one gate's participation in one check.
+///
+/// A bypass has no gate: `gate` and `decision` are null, `bypassed` is true,
+/// and `disabled` is false. A gate failure records no decision and carries the
+/// bounded class. A gate disabled by the circuit breaker records `disabled`
+/// and `failed_open` according to its `fail` mode.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the flags are independent telemetry facts from the protocol record; a bypass, a
+              failed-open check, an override, and a disabled gate are separate states"
+)]
+#[derive(Debug, Clone, Serialize)]
+pub struct GateDecisionTelemetry {
+    pub gate: Option<String>,
+    pub version: Option<String>,
+    pub mode: String,
+    pub phase: String,
+    pub action: String,
+    pub decision: Option<String>,
+    pub code: Option<String>,
+    pub latency_ms: u64,
+    pub overridden: bool,
+    pub bypassed: bool,
+    pub failed_open: bool,
+    pub disabled: bool,
+    pub failure_class: Option<String>,
+    /// The originating tool-call identifier, held raw in memory and serialized
+    /// only as the one-way digest, matching `judge_attempt.call_id`.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_digested_optional"
+    )]
+    pub call_id: Option<String>,
+}
+
+/// One gate-declared evidence payload. Evidence is the only gate-controlled
+/// data that reaches telemetry.
+#[derive(Debug, Clone, Serialize)]
+pub struct GateEvidenceTelemetry {
+    pub gate: String,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_digested_optional"
+    )]
+    pub call_id: Option<String>,
+    pub kind: String,
+    pub data: serde_json::Value,
+}
+
 /// A model weakness cake compensates for during a session.
 ///
 /// Every variant maps to one compensation: hand-coded knowledge that rescues
@@ -814,6 +880,27 @@ pub enum SessionTelemetryRecord {
         #[serde(flatten)]
         event: CompensationEventTelemetry,
     },
+    GateStartup {
+        session_id: String,
+        invocation_id: String,
+        timestamp: DateTime<Utc>,
+        #[serde(flatten)]
+        startup: GateStartupTelemetry,
+    },
+    GateDecision {
+        session_id: String,
+        invocation_id: String,
+        timestamp: DateTime<Utc>,
+        #[serde(flatten)]
+        decision: GateDecisionTelemetry,
+    },
+    GateEvidence {
+        session_id: String,
+        invocation_id: String,
+        timestamp: DateTime<Utc>,
+        #[serde(flatten)]
+        evidence: GateEvidenceTelemetry,
+    },
     SessionSummary {
         session_id: String,
         invocation_id: String,
@@ -1077,6 +1164,86 @@ impl std::fmt::Debug for JudgeAttemptSink {
             .finish_non_exhaustive()
     }
 }
+
+/// Shared handle that appends generic gate records to the session sidecar.
+///
+/// The pipeline writes one `gate_startup` record per gate at startup and one
+/// `gate_decision` record for every gate that participated in a check. The
+/// one-release `judge_*` records remain alongside them.
+#[derive(Clone)]
+pub struct GateTelemetrySink {
+    writer: Arc<SharedSessionTelemetryWriter>,
+    context: SessionTelemetryContext,
+}
+
+impl GateTelemetrySink {
+    pub const fn new(
+        writer: Arc<SharedSessionTelemetryWriter>,
+        context: SessionTelemetryContext,
+    ) -> Self {
+        Self { writer, context }
+    }
+
+    /// Append one startup record. Metadata only; gate text never enters it.
+    pub fn record_startup(&self, startup: GateStartupTelemetry) {
+        let record = SessionTelemetryRecord::GateStartup {
+            session_id: self.context.session_id.clone(),
+            invocation_id: self.context.invocation_id.clone(),
+            timestamp: Utc::now(),
+            startup,
+        };
+        if let TelemetryAppend::Failed(error) = self.writer.append(&record) {
+            tracing::warn!(target: "cake", "Failed to record gate startup: {error}");
+        }
+    }
+
+    /// Append one decision record. A bypass carries `gate: None` and
+    /// `decision: None`; a disabled or failed gate carries no decision either.
+    pub fn record_decision(&self, decision: GateDecisionTelemetry) {
+        let record = SessionTelemetryRecord::GateDecision {
+            session_id: self.context.session_id.clone(),
+            invocation_id: self.context.invocation_id.clone(),
+            timestamp: Utc::now(),
+            decision,
+        };
+        if let TelemetryAppend::Failed(error) = self.writer.append(&record) {
+            tracing::warn!(target: "cake", "Failed to record gate decision: {error}");
+        }
+    }
+
+    /// Append one bounded evidence record. An oversized payload is replaced by
+    /// one `truncated` record, matching the protocol's evidence bound.
+    pub fn record_evidence(&self, mut evidence: GateEvidenceTelemetry) {
+        let bytes = serde_json::to_vec(&evidence.data).map_or(usize::MAX, |data| data.len());
+        if bytes > MAX_GATE_EVIDENCE_BYTES {
+            evidence.kind = "truncated".to_string();
+            evidence.data = serde_json::json!({
+                "dropped_items": 1,
+                "dropped_bytes": bytes,
+            });
+        }
+        let record = SessionTelemetryRecord::GateEvidence {
+            session_id: self.context.session_id.clone(),
+            invocation_id: self.context.invocation_id.clone(),
+            timestamp: Utc::now(),
+            evidence,
+        };
+        if let TelemetryAppend::Failed(error) = self.writer.append(&record) {
+            tracing::warn!(target: "cake", "Failed to record gate evidence: {error}");
+        }
+    }
+}
+
+impl std::fmt::Debug for GateTelemetrySink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GateTelemetrySink")
+            .field("context", &self.context)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Maximum serialized bytes of one gate evidence payload.
+const MAX_GATE_EVIDENCE_BYTES: usize = 8 * 1024;
 
 #[cfg(test)]
 mod tests {
@@ -2204,3 +2371,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "session_telemetry_gate_tests.rs"]
+mod gate_tests;

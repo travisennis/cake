@@ -12,7 +12,8 @@
 //! agent/session setup).
 
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 
@@ -20,13 +21,20 @@ use crate::cli::{
     CmdRunner, CommandRunOptions, DiagnosticCheck, DiagnosticDocument, settings_warnings,
 };
 use crate::clients::judge::{
-    JudgeClient, JudgeDecision, JudgeError, JudgeEvaluation, JudgeOutcome, JudgeRequest,
-    JudgeVerdict, evaluate_command_observed, judge_is_enabled, read_user_rubric, repo_state_digest,
-    resolve_judge_client_config,
+    JudgeClient, JudgeContext, JudgeDecision, JudgeError, JudgeEvaluation, JudgeOutcome,
+    JudgeRequest, JudgeVerdict, evaluate_command_observed, judge_is_enabled, read_user_rubric,
+    repo_state_digest, resolve_judge_client_config,
 };
 use crate::clients::typesafe::{TypeSafeClient, TypeSafeObservation};
 use crate::config::settings::{JUDGE_BYPASS_ENV, JudgeSettings, LoadedSettings, TypeSafeMode};
 use crate::config::{DataDir, ResolvedModelConfig, SettingsLoader};
+use crate::gates::composer::{
+    GatePipeline, PipelineOutcome, StageObservation, StageObservationOutcome,
+};
+#[cfg(test)]
+use crate::gates::judge_gate::pipeline_from_client;
+use crate::gates::judge_gate::{builtin_pipeline, compatibility_verdict};
+use crate::gates::protocol::BashInput;
 use serde::Serialize;
 
 /// Inspect and explain Bash command-safety decisions.
@@ -150,23 +158,56 @@ async fn run_bash_check_verdict(
     Ok(())
 }
 
-/// Run one `cake bash check` evaluation against the configured judge.
+/// Run one `cake bash check` evaluation through the configured pipeline.
 ///
 /// Resolves the judge model (the `[tools.bash.judge] model` override, falling
-/// back to the `--model` flag, then the agent's `default_model`), appends any
-/// configured user rubric file, and returns the outcome without executing
-/// anything.
+/// back to the `--model` flag, then the agent's `default_model`), and returns
+/// the outcome without executing anything. The emergency bypass becomes a
+/// bypass pipeline, so it skips model resolution and records the bypass as the
+/// pipeline's own outcome.
 async fn run_bash_check(
     loaded: &LoadedSettings,
     cwd: &Path,
     command: &str,
     cli_model: Option<&str>,
 ) -> anyhow::Result<CheckOutcome> {
-    let (client, bypass_env) = resolve_run_judge_client(loaded, cli_model)?;
-    let Some(client) = client else {
-        return Ok(CheckOutcome::bypassed());
+    let bypass_env = std::env::var(JUDGE_BYPASS_ENV).ok();
+    let pipeline = if judge_is_enabled(&loaded.judge, bypass_env.as_deref()) {
+        let model = resolve_judge_model(loaded, cli_model)?;
+        let judge = JudgeContext {
+            settings: loaded.judge.clone(),
+            bypass_env,
+            agent_model: model,
+            models: loaded.models.clone(),
+            client: std::sync::OnceLock::new(),
+            record_attempt: None,
+        };
+        builtin_pipeline(Arc::new(judge)).map_err(anyhow::Error::new)?
+    } else {
+        GatePipeline::bypass()
     };
-    evaluate_with_client(client, &loaded.judge, bypass_env.as_deref(), cwd, command).await
+    evaluate_pipeline(&pipeline, cwd, command).await
+}
+
+/// Run one inspection request through the pipeline and project the result into
+/// the existing `bash check` report.
+async fn evaluate_pipeline(
+    pipeline: &GatePipeline,
+    cwd: &Path,
+    command: &str,
+) -> anyhow::Result<CheckOutcome> {
+    let input = BashInput {
+        command: command.to_string(),
+        cwd: cwd.to_string_lossy().into_owned(),
+        reason: None,
+        repo_digest: repo_state_digest(cwd),
+        script_evidence: Vec::new(),
+    };
+    let outcome = pipeline
+        .check(crate::gates::composer::GateRequest::new(input))
+        .await
+        .map_err(anyhow::Error::new)?;
+    CheckOutcome::from_pipeline(&outcome)
 }
 
 /// One judge outcome, the latency it was measured in, and the `TypeSafe`
@@ -202,6 +243,53 @@ impl CheckOutcome {
             // A bypassed judge makes no observation either.
             observation: ObservationReport::absent(),
         }
+    }
+
+    /// Project the one-stage slice-1 pipeline back into the existing judge
+    /// outcome vocabulary. `data.gate` and `data.stages` are deliberately not
+    /// added yet; the single built-in stage keeps the current document exact.
+    fn from_pipeline(outcome: &PipelineOutcome) -> anyhow::Result<Self> {
+        if outcome.bypassed {
+            return Ok(Self::bypassed());
+        }
+        let stage = outcome.compatibility_stage().ok_or_else(|| {
+            anyhow::anyhow!(
+                "the gate pipeline did not execute exactly one enforce stage for cake bash check"
+            )
+        })?;
+        let latency = outcome.latency;
+        let observation = ObservationReport::from_stage(stage.observation.as_ref());
+        if stage.fast_approved {
+            let probability = stage
+                .observation
+                .as_ref()
+                .and_then(|observation| observation.probability)
+                .unwrap_or_default();
+            return Ok(Self {
+                outcome: JudgeOutcome::FastApproved {
+                    probability,
+                    elapsed: latency,
+                },
+                latency,
+                observation,
+            });
+        }
+        let decision = stage.decision.ok_or_else(|| {
+            anyhow::anyhow!("the gate pipeline returned no decision for the built-in judge")
+        })?;
+        Ok(Self {
+            outcome: JudgeOutcome::Verdict {
+                verdict: compatibility_verdict(
+                    decision,
+                    stage.code.clone(),
+                    stage.message.clone(),
+                    stage.confidence,
+                ),
+                overridden: stage.overridden,
+            },
+            latency,
+            observation,
+        })
     }
 
     /// Render the outcome as the human-readable verdict.
@@ -353,6 +441,26 @@ impl ObservationReport {
         }
     }
 
+    /// The report for one gate stage's bounded observation.
+    const fn from_stage(observation: Option<&StageObservation>) -> Self {
+        let Some(observation) = observation else {
+            return Self::absent();
+        };
+        let outcome = match observation.outcome {
+            StageObservationOutcome::Absent => ObservationOutcome::Absent,
+            StageObservationOutcome::Shadow => ObservationOutcome::Shadow,
+            StageObservationOutcome::Approved => ObservationOutcome::Approved,
+            StageObservationOutcome::BelowCutoff => ObservationOutcome::BelowCutoff,
+            StageObservationOutcome::Failed => ObservationOutcome::Failed,
+        };
+        Self {
+            outcome,
+            probability: observation.probability,
+            failure_class: observation.failure_class,
+            elapsed_ms: observation.elapsed_ms,
+        }
+    }
+
     /// Classify one pipeline result into the bounded vocabulary.
     ///
     /// `fast_approved` is whether the pipeline approved the command from the
@@ -488,10 +596,11 @@ fn resolve_run_judge_client(
 /// drive the exact `cake bash check` path against a stub judge without touching
 /// settings or spawning processes.
 ///
-/// The command runs through the full judge path (bypass check, allowlist
+/// The command runs through the full gate pipeline (bypass check, allowlist
 /// override), so the rendered output reflects what the Bash preflight will do.
-/// `bypass_env` is the `CAKE_JUDGE` value passed to the judge path; tests pass
+/// `bypass_env` is the `CAKE_JUDGE` value passed to the pipeline; tests pass
 /// an explicit value so they are hermetic against the ambient environment.
+#[cfg(test)]
 async fn evaluate_with_client(
     client: JudgeClient,
     settings: &JudgeSettings,
@@ -499,27 +608,14 @@ async fn evaluate_with_client(
     cwd: &Path,
     command: &str,
 ) -> anyhow::Result<CheckOutcome> {
-    let request = JudgeRequest::new(command.to_string(), cwd.to_path_buf(), None)
-        .with_repo_digest(repo_state_digest(cwd));
-
-    let started = Instant::now();
-    // The observed form carries the `TypeSafe` observation the check reports
-    // beside the verdict; diagnostics stay off, so no raw request or response is
-    // retained.
-    let evaluation = evaluate_command_observed(&client, settings, request, bypass_env, false).await;
-    let latency = started.elapsed();
-    let outcome = evaluation.outcome?;
-    let observation = ObservationReport::classify(
-        evaluation.shadow.as_ref(),
-        settings.typesafe.mode,
-        is_fast_approval(&outcome),
-    );
-
-    Ok(CheckOutcome {
-        outcome,
-        latency,
-        observation,
-    })
+    let pipeline = pipeline_from_client(
+        client,
+        settings.clone(),
+        bypass_env.map(str::to_string),
+        Duration::ZERO,
+    )
+    .map_err(anyhow::Error::new)?;
+    evaluate_pipeline(&pipeline, cwd, command).await
 }
 
 /// Rendered `--diagnostic` output and the fail-closed judge outcome.
@@ -861,11 +957,7 @@ const JUDGE_STAGE: &str = "judge";
 
 /// The label used for a judge decision in both output modes.
 const fn decision_label(decision: JudgeDecision) -> &'static str {
-    match decision {
-        JudgeDecision::Block => "block",
-        JudgeDecision::Warn => "warn",
-        JudgeDecision::Allow => "allow",
-    }
+    decision.as_str()
 }
 
 /// The verdict's stable code, when the judge supplied a non-empty one.
