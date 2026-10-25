@@ -4,10 +4,13 @@ import contextlib
 import io
 import json
 from datetime import datetime, timezone
+import os
 from pathlib import Path
 import plistlib
+import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -80,12 +83,73 @@ class DashboardTests(unittest.TestCase):
             self.assertNotIn('</script><script>evil', (output / 'index.html').read_text())
             self.assertEqual(output.stat().st_mode & 0o777, 0o700)
 
-    def test_launch_jobs_preserve_spaces_and_pin_explicit_roots(self):
-        jobs = install_dashboard.jobs(Path('/tmp/with spaces'), Path('/usr/bin/python3'), Path('/data/sessions'), Path('/cache'))
+    def test_launch_jobs_use_shell_wrapper_and_python_fallbacks(self):
+        jobs = install_dashboard.jobs(
+            Path('/tmp/with spaces'), Path('/opt/homebrew/opt/python@3.15/bin/python3.15'),
+            Path('/data/sessions'), Path('/cache'))
         for job in jobs:
             self.assertEqual(plistlib.loads(plistlib.dumps(job)), job)
-        self.assertEqual(jobs[0]['ProgramArguments'][1], '/tmp/with spaces/runtime/dashboard.py')
+        script = '/tmp/with spaces/runtime/metrics_job.sh'
+        self.assertEqual(jobs[0]['ProgramArguments'][:6],
+                         ['/bin/sh', script, 'refresh', '/tmp/with spaces', '/data/sessions', '/cache'])
+        self.assertEqual(jobs[0]['ProgramArguments'][6:],
+                         ['/opt/homebrew/opt/python@3.15/bin/python3.15',
+                          '/opt/homebrew/bin/python3', '/usr/local/bin/python3', '/usr/bin/python3'])
+        self.assertEqual(jobs[1]['ProgramArguments'],
+                         ['/bin/sh', script, 'remind', '/tmp/with spaces'])
         self.assertEqual(jobs[1]['StartCalendarInterval'], dict(Weekday=1, Hour=9, Minute=0))
+
+    def test_python_candidates_dedupe_the_installer_interpreter(self):
+        self.assertEqual(install_dashboard.python_candidates(Path('/opt/homebrew/bin/python3')),
+                         ['/opt/homebrew/bin/python3', '/usr/local/bin/python3', '/usr/bin/python3'])
+
+    def job(self, *args, env=None):
+        script = Path(install_dashboard.__file__).parent / 'metrics_job.sh'
+        return subprocess.run(['/bin/sh', str(script), *map(str, args)],
+                              capture_output=True, text=True, env=env)
+
+    def test_job_script_skips_unusable_python_and_logs_success(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            root = temp / 'root'
+            root.mkdir()
+            marker = temp / 'ran'
+            broken = temp / 'broken'
+            broken.write_text('#!/bin/sh\nexit 1\n')
+            broken.chmod(0o755)
+            good = temp / 'good'
+            good.write_text('#!/bin/sh\nif [ "$1" = "-c" ]; then exit 0; fi\n'
+                            'printf "%s\\n" "$@" > "$MARKER"\n')
+            good.chmod(0o755)
+            env = dict(os.environ, MARKER=str(marker), CAKE_METRICS_NO_NOTIFY='1')
+            result = self.job('refresh', root, '/sessions', '/telemetry', broken, good, env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(marker.exists())
+            self.assertIn('refresh succeeded via', (root / 'refresh.log').read_text())
+
+    def test_job_script_reports_missing_python(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            broken = root / 'broken'
+            broken.write_text('#!/bin/sh\nexit 1\n')
+            broken.chmod(0o755)
+            env = dict(os.environ, CAKE_METRICS_NO_NOTIFY='1')
+            result = self.job('refresh', root, '/sessions', '/telemetry', broken, env=env)
+            self.assertEqual(result.returncode, 78)
+            self.assertIn('no Python 3.10+ interpreter found',
+                          (root / 'refresh.log').read_text())
+
+    def test_reminder_flags_stale_and_missing_reports(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            env = dict(os.environ, CAKE_METRICS_NO_NOTIFY='1')
+            self.assertEqual(self.job('remind', root, env=env).returncode, 0)
+            self.assertIn('missing', (root / 'reminder.log').read_text())
+            (root / 'metrics.json').write_text('{}')
+            old = time.time() - 37 * 3600
+            os.utime(root / 'metrics.json', (old, old))
+            self.assertEqual(self.job('remind', root, env=env).returncode, 0)
+            self.assertIn('stale', (root / 'reminder.log').read_text())
 
     def test_missing_source_does_not_replace_dashboard(self):
         with tempfile.TemporaryDirectory() as temp:
