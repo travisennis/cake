@@ -257,6 +257,17 @@ async fn shutdown_cleans_descendants_after_the_direct_child_exits() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn describe_success_cleans_descendants() {
+    let dir = tempfile::tempdir().expect("descendant dir");
+    let pid_path = dir.path().join("descendant.pid");
+    let mut process = GateProcess::new(spec_with_descendant("allow", &pid_path));
+    process.describe().await.expect("describe");
+    let pid = wait_for_pid_file(&pid_path).await;
+    wait_for_process_exit(pid).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn describe_failure_cleans_descendants() {
     let dir = tempfile::tempdir().expect("descendant dir");
     let pid_path = dir.path().join("descendant.pid");

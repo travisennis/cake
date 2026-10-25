@@ -210,6 +210,11 @@ impl GateProcess {
         };
         match timeout(deadline, read).await {
             Ok(Ok(describe)) => {
+                // `describe` is a one-shot process whose stdout may have been
+                // closed by a descendant after the direct child exited. The
+                // group still needs the forceful cleanup, and the later serve
+                // process is a different group.
+                terminate_process_group(&mut child, pgid).await;
                 self.describe = Some(describe.clone());
                 Ok(describe)
             },
