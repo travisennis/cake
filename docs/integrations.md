@@ -112,6 +112,7 @@ Each finding carries a stable machine-readable `id`, a `status` of `warning` or 
 - `settings.unknown_key` --- one finding per unrecognized settings key, in loader order, with the source file and key in the message.
 - `settings.load_failed` --- settings could not be loaded or parsed. The message matches the stderr diagnostic.
 - `sessions.directory_unreadable` --- the sessions directory could not be read.
+- `sessions.checkpoint_failed` --- a `cake sessions checkpoint` append failed. The message matches the stderr diagnostic, and the exit code follows that failure's class (see [Checkpoint append](#checkpoint-append)).
 
 Consumers switch on `id`, ignore unknown ids, and tolerate added fields and added findings.
 
@@ -124,6 +125,8 @@ Exit behavior follows the codes above: `ok` and `warning` exit `0`; `error` repo
 `debug models --json` reports the configured models: `summary.count` is the number of models, `data.models` holds the full model definitions in name order, and unrecognized settings keys appear in `checks` rather than on stderr.
 
 `sessions list --json` reports the sessions for the current working directory: `summary.count` is the number of listed sessions and `data.sessions` holds each `session_id`, `timestamp`, and `first_prompt`, newest first, with the session id breaking ties between equal timestamps.
+
+`cake sessions checkpoint --json` reports one append: `summary` carries `session_id`, `checkpoint_id`, `boundary`, `before_tokens`, `after_tokens`, and `retained_count`, and `data` carries `session_file` and `basis`.
 
 `bash check --json` reports one judge decision: `summary.verdict` is `allow`, `warn`, `block`, or `bypassed` when the judge is disabled, and `data` carries `verdict` (`null` when bypassed), `code`, `confidence`, `message`, `overridden`, `bypassed`, and `latency_ms`. Two additive fields name the deciding stage: `data.stage` is `judge` when the safety judge decided and `typesafe` when the cascade fast-approved the command without a judge call, and `data.probability` carries the observed TypeSafe probability on a fast approval and `null` otherwise. A bypassed judge leaves both `null`, because no stage decided it. A fast approval therefore keeps the `allow` verdict a judge allow produces, so a consumer switching on `summary.verdict` or `data.verdict` is unaffected. A third additive field, `data.observation`, reports whether the fast path ran and what it observed, which `stage` and `probability` cannot answer: a fallback renders as `stage: "judge"` whether the cascade was never armed,
 failed, or came in below the cutoff. Its `outcome` is `absent` when no request was made (`mode = "off"`, a disabled judge, or the emergency bypass), `approved` when the cascade fast-approved the command, `below_cutoff` when the cascade's observation succeeded below the compiled cutoff, `failed` when it failed, and `shadow` when the observation ran under `mode = "shadow"` and decided nothing, which is also what a shadow-mode failure reports beside its `failure_class`, because no authorization was at stake. `probability` carries what the observation measured (repeating `data.probability` on a fast approval, `null` when it failed or made no request), `failure_class` names a failure with the same bounded class a `type_safe_shadow` record carries, and `elapsed_ms` times the request. The object is always present and never `null`, so a consumer reads `data.observation.outcome` unconditionally and tolerates added values. Under the `cake-gate/1` contract, `data.gate` and `data.stages` are added
@@ -197,6 +200,36 @@ Live `function_call` and `function_call_output` records may carry an optional `r
 Serialization snapshots under `src/types/snapshots/` provide canonical record examples.
 
 For evidence-backed review of a persisted session, use the `analyzing-cake-sessions` skill. For reactive triage of a recent failed run, use the `debugging-cake` skill.
+
+## Checkpoint append
+
+`cake sessions checkpoint <UUID> [--json]` appends exactly one `compaction` record to an existing format-4 session. It reads one JSON payload from stdin and neither calls a model nor chooses what to summarize or retain; an interactive terminal with no piped payload is an input error.
+
+The caller owns the selection, the summary, the retained tail, the trigger, and the token estimates. Cake owns everything that identifies or positions the record: `type`, `checkpoint_version`, `checkpoint_id` (a new UUID), `session_id` (the target session), `timestamp` (now), and the boundary (the conversation-item count at the append position). The payload is a protocol: an unknown field, or any payload-supplied core-owned field, is rejected.
+
+```json
+{
+  "trigger": "manual",
+  "summary": "One paragraph describing the retired history.",
+  "retained": [
+    { "type": "message", "role": "assistant", "content": "the latest answer" },
+    { "type": "function_call", "id": "fc-1", "call_id": "call-1", "name": "Read", "arguments": "{}" },
+    { "type": "function_call_output", "call_id": "call-1", "output": "file contents" }
+  ],
+  "estimated_input": { "before_tokens": 12000, "after_tokens": 3000, "basis": "measured_usage" },
+  "summary_instruction_version": 1,
+  "model": { "model": "gpt-5.6-luna", "model_config": "luna-high" },
+  "task_id": "optional; defaults to the latest task_start"
+}
+```
+
+`retained` holds the same restricted union a checkpoint persists: `message`, `reasoning`, `function_call`, and `function_call_output` payloads, with their optional pin, origin, skill-read, and source-task metadata. Every retained call needs its matching output, and a retained message may not have the `system` or `tool` role. `model` defaults to the session's recorded model identity and `task_id` to the newest `task_start`; the command rejects a payload when neither source exists. `estimated_input.after_tokens` must be below `before_tokens`.
+
+The command takes the session's exclusive append lock first, repairs an interrupted final record under that lock, and reads identity and history through the same handle. Prior bytes are never rewritten: a `compaction` record is appended only. Validation uses the M1 rules --- checkpoint structure, retained roles and complete call/output pairing, pin and provenance placement, nonempty identity and summary, the framed 8 MiB record ceiling, and the token reduction --- and runs before the writer is used, so a rejected payload leaves the file byte-stable. A failed append preserves the original error and no later append is attempted.
+
+Raw history stays in the session file. Replay emits the raw transcript plus the checkpoint record at its physical position without expanding the retained tail (see [Session replay](#session-replay)); resume and fork use the newest checkpoint as the active one. A Cake build without checkpoint support cannot read a session that has received one, so keep a checkpoint-aware binary for those sessions.
+
+`--json` emits one diagnostic document, described under [Diagnostic payloads](#diagnostic-payloads). Exit codes follow [Exit codes](#exit-codes): `0` success; `3` for invalid input or identity --- an invalid UUID, no piped payload, invalid JSON, an unknown or core-owned field, a rejected checkpoint (including an oversized record or a non-reduction), a missing session, a file whose header names another session, or a missing model or task id; `1` for operational failures --- another invocation holding the session lock, an unreadable or unsupported session file, or a write failure. Failures write nothing.
 
 ## Telemetry sidecars
 

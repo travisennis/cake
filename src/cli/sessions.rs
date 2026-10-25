@@ -6,6 +6,7 @@ use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
 use serde::Serialize;
 
+use crate::cli::checkpoint::checkpoint_command;
 use crate::cli::{
     CHECK_SESSIONS_DIRECTORY, CmdRunner, CommandRunOptions, DiagnosticDocument, report_failure,
 };
@@ -36,6 +37,25 @@ Examples:
         #[arg(long, default_value_t = false)]
         json: bool,
     },
+
+    /// Append one context-compaction checkpoint to an existing session
+    #[command(after_help = "\
+Examples:
+  cake sessions checkpoint 550e8400-e29b-41d4-a716-446655440000 < checkpoint.json
+  cake-compact compact --json | cake sessions checkpoint \"$SESSION\" --json
+
+Reads one JSON payload from stdin. Cake owns the record envelope, the
+checkpoint and session ids, the timestamp, the boundary, the lock, validation,
+and the append. The caller owns the summary, the retained tail, the trigger,
+and the token estimates.")]
+    Checkpoint {
+        /// Session UUID to append the checkpoint to
+        #[arg(value_name = "UUID")]
+        uuid: String,
+        /// Output the append as one diagnostic JSON document
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
 }
 
 impl CmdRunner for SessionsCommand {
@@ -48,6 +68,9 @@ impl CmdRunner for SessionsCommand {
         std::future::ready(()).await;
         match &self.command {
             SessionsSubcommand::List { json } => list_sessions_command(data_dir, *json),
+            SessionsSubcommand::Checkpoint { uuid, json } => {
+                checkpoint_command(data_dir, uuid, *json)
+            },
         }
     }
 }

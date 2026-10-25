@@ -41,6 +41,9 @@ pub const CHECK_SETTINGS_LOAD_FAILED: &str = "settings.load_failed";
 /// Check id for a sessions directory that could not be read.
 pub const CHECK_SESSIONS_DIRECTORY: &str = "sessions.directory_unreadable";
 
+/// Check id for a checkpoint append that failed.
+pub const CHECK_SESSIONS_CHECKPOINT: &str = "sessions.checkpoint_failed";
+
 /// Overall status of a diagnostic document.
 ///
 /// The status describes the invocation, not the subject it inspects: a
