@@ -18,7 +18,7 @@ The current in-process judge remains the oracle and the only command gate until 
 - [x] (2026-10-24) Drafted this ExecPlan.
 - [x] (2026-10-25) Contract reviewed and frozen; ADR 049 moved to `accepted`.
 - [ ] Update the docs status notes when enforcement lands (slice 4).
-- [ ] Slice 1 (cake): gate protocol types, process runner, composer, in-process judge gate, fake gate, telemetry sink; no user-visible change.
+- [x] (2026-10-25) Slice 1 implemented on `feat/gates-seam`: `src/gates/` protocol, runner, composer, and built-in judge adapter; the Bash preflight and `cake bash check` run through `GatePipeline`; generic `gate_*` telemetry sits beside the legacy `judge_*` records; the fake gate proves allow, warn, block, abstain, malformed, timeout, crash, restart, fail-open, and fail-closed. Existing judge, Bash, and CLI tests pass without changed expectations; `just check` passes. PR pending review.
 - [ ] Slice 2 (cake-safety-judge): repository, `describe`, `check`, rubric and corpus, offline parity with the oracle.
 - [ ] Slice 2 (cake-safety-judge): `serve` with concurrent request IDs and graceful shutdown.
 - [ ] Slice 3 (cake): external gate in shadow beside the in-process judge; differential report; latency and cost measured.
@@ -36,6 +36,10 @@ The judge's `provider_headers` are only OpenRouter attribution values (`http_ref
 The only file-backed credential path is the Codex/ChatGPT auth store. A gate cannot use it through a descriptor: descriptors are environment-backed only, and a file-backed run model yields no `default`, so a gate that needs a model fails `init` with `config` and `doctor` names the fix. This is deliberate; the Codex integration may be removed, and the contract does not freeze a special case for it.
 
 `JudgeRequest.script_evidence` is currently one optional object, while the protocol carries an array. The seam maps one item to a one-element array; this release never sends more than one.
+
+Slice 1 clarified the circuit breaker's reset rule. A restart's successful `ready` handshake does not reset the consecutive process-failure count; only a completed check (including a gate-reported error) does. Resetting on every restart `ready` would let a gate that crashes on every check restart and handshake forever, which is exactly what the breaker exists to prevent. The initial startup handshake begins at zero, so the documented "successful `ready`" reset still holds there.
+
+Slice 1 keeps the raw `cake bash check --diagnostic` rendering on the direct judge path. The normal verdict and JSON paths run through the composer; the diagnostic path is the explicit sensitive inspection surface that prints the judge request and response, and it stays unchanged for this release.
 
 The judge table is already trusted project configuration: a project `.cake/settings.toml` can set `[tools.bash.judge] enabled = false` and remove the judge for commands run there. Gate configuration does not create a new trust class; it is the same project authority applied to an enforcement surface, so the security document must say so explicitly rather than implying a new protection.
 
@@ -66,7 +70,12 @@ The `[tools.bash.judge.typesafe]` cascade is both a policy stage and a latency o
 
 ## Outcomes & Retrospective
 
-Slice 0 has produced the accepted ADR, the wire contract, the configuration schema, the security trust-boundary section, the JSON Schema, and this plan. The 2026-10-25 review resolved the precedence/migration, fail-open, open-string, `bash check` mapping, telemetry, and all-abstain issues; the contract is frozen for slice 1. No Rust code, settings parser, process runner, gate binary, or behavior change exists yet. The current in-process judge is unchanged and remains the only command gate.
+Slice 0 has produced the accepted ADR, the wire contract, the configuration schema, the security trust-boundary section, the JSON Schema, and this plan. The 2026-10-25 review resolved the precedence/migration, fail-open, open-string, `bash check` mapping, telemetry, and all-abstain issues; the contract is frozen for slice 1. At the slice-0 boundary, no Rust code, settings parser, process runner, gate binary, or behavior change existed; the current in-process judge was unchanged and the only command gate.
+
+Slice 1 now makes the seam real without changing user-visible behavior. `src/gates/protocol.rs` mirrors the frozen schema, `runner.rs` owns the NDJSON transport and breaker, `composer.rs` owns ordered composition and the no-enforce-gate rule, and `judge_gate.rs` wraps the existing judge as the reserved `builtin-safety` gate. `ToolContext.gates` replaces the direct judge handle for the Bash preflight and the normal `cake bash check` path; `cake bash check` still writes the same document fields and exit codes, and its `--json` failure path still writes no document. Generic `gate_startup`, `gate_decision`, and `gate_evidence` records are written beside the legacy `judge_*` records, and a bypass is recorded as `gate: null`, `decision: null`, `bypassed: true`. The fake gate under `tests/fixtures/gates/` proves the protocol modes, restart, fail-open/closed, and the two-failure breaker without a provider. `[gates]` settings are still not read, no external gate is selected in production, and
+the in-process judge remains the oracle.
+
+Slice 1 verification: `cargo test gates`, `cargo test judge`, `cargo test bash`, the full `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo fmt -- --check`, and `just check` all pass. `cake bash check --json -- 'git status --short'` still prints the existing document fields and exits `0` on this machine's bypassed judge configuration. The PR records the task id (128b) and the checks that ran.
 
 Fill this section at each slice boundary with what was delivered, what the evidence showed, and what remains. Do not move this plan to `docs/exec-plans/completed/` until slice 5 is verified.
 

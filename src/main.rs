@@ -6,6 +6,12 @@ mod clients;
 mod concurrency;
 mod config;
 mod exit_code;
+#[expect(
+    dead_code,
+    reason = "slice 1 ships the full protocol, runner, and composition surface before production \
+              wiring uses the external transport; the fake-gate tests exercise it"
+)]
+mod gates;
 mod hooks;
 mod logger;
 mod program_status;

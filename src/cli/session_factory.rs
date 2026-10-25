@@ -11,7 +11,7 @@ use std::sync::Arc;
 use tracing::info;
 
 use crate::cli::run_mode::{RunMode, SessionPersistencePlan};
-use crate::clients::judge::JudgeContext;
+use crate::clients::judge::{JudgeContext, judge_is_enabled};
 use crate::clients::{Agent, ToolContext};
 use crate::config::settings::{JUDGE_BYPASS_ENV, JudgeSettings};
 use crate::config::skills::Skill;
@@ -446,15 +446,32 @@ fn attach_judge(
     judge: &JudgeSettings,
     models: &HashMap<String, ModelDefinition>,
 ) -> Arc<ToolContext> {
-    let context = JudgeContext {
-        settings: judge.clone(),
-        bypass_env: std::env::var(JUDGE_BYPASS_ENV).ok(),
-        agent_model: agent_model.clone(),
-        models: models.clone(),
-        client: std::sync::OnceLock::new(),
-        record_attempt: None,
+    let bypass_env = std::env::var(JUDGE_BYPASS_ENV).ok();
+    let gates = if judge_is_enabled(judge, bypass_env.as_deref()) {
+        let context = JudgeContext {
+            settings: judge.clone(),
+            bypass_env,
+            agent_model: agent_model.clone(),
+            models: models.clone(),
+            client: std::sync::OnceLock::new(),
+            record_attempt: None,
+        };
+        crate::gates::judge_gate::builtin_pipeline(std::sync::Arc::new(context))
+            .map(std::sync::Arc::new)
+            .map_err(|error| {
+                tracing::warn!(
+                    target: "cake",
+                    "Failed to start the built-in safety gate: {error}"
+                );
+                error
+            })
+            .ok()
+    } else {
+        Some(std::sync::Arc::new(
+            crate::gates::composer::GatePipeline::bypass(),
+        ))
     };
-    Arc::new((**tool_context).clone().with_judge(Some(Arc::new(context))))
+    Arc::new((**tool_context).clone().with_gates(gates))
 }
 
 #[cfg(test)]

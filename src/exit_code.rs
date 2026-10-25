@@ -101,6 +101,14 @@ fn classify_typed_error(err: &anyhow::Error) -> Option<u8> {
         return Some(classify_judge_error(judge_err));
     }
 
+    // A gate pipeline failure carries the protocol's failure class. The
+    // mapping preserves the existing judge exit classes: provider failures are
+    // API errors, configuration failures are input errors, and every other
+    // gate failure is an agent error.
+    if let Some(gate_err) = err.downcast_ref::<crate::gates::composer::GatePipelineError>() {
+        return Some(classify_gate_class(&gate_err.class()));
+    }
+
     // Configuration-state conflicts and root agent-run options combined with a
     // subcommand are input errors rather than agent errors.
     if is_cli_input_error(err) {
@@ -217,6 +225,27 @@ fn classify_judge_error(error: &crate::clients::judge::JudgeError) -> u8 {
     }
 }
 
+/// Classify a gate failure class into the documented exit classes.
+const fn classify_gate_class(class: &crate::gates::protocol::GateErrorClass) -> u8 {
+    use crate::gates::protocol::GateErrorClass;
+
+    match class {
+        GateErrorClass::Timeout
+        | GateErrorClass::Network
+        | GateErrorClass::Auth
+        | GateErrorClass::RateLimit => code::API_ERROR,
+        GateErrorClass::Config => code::INPUT_ERROR,
+        GateErrorClass::Transport
+        | GateErrorClass::Malformed
+        | GateErrorClass::Refusal
+        | GateErrorClass::Unsupported
+        | GateErrorClass::Internal
+        | GateErrorClass::Protocol
+        | GateErrorClass::Crash
+        | GateErrorClass::Other(_) => code::AGENT_ERROR,
+    }
+}
+
 fn classify_error_cause(cause: &(dyn std::error::Error + 'static)) -> Option<u8> {
     if let Some(req_err) = cause.downcast_ref::<reqwest::Error>()
         && is_reqwest_api_error(req_err)
@@ -306,7 +335,7 @@ fn is_input_error(msg: &str) -> bool {
 ///
 /// This only matches network-level patterns (connection refused, DNS, timeout).
 /// HTTP status code classification is handled structurally via [`ApiError`].
-fn is_api_network_error(msg: &str) -> bool {
+pub fn is_api_network_error(msg: &str) -> bool {
     if msg.contains("error sending request")
         || msg.contains("connection refused")
         || msg.contains("connection timed out")
@@ -772,6 +801,60 @@ mod tests {
             detail: "request timeout".to_string(),
         });
         assert_eq!(classify_to_u8(&err), code::API_ERROR);
+    }
+
+    #[test]
+    fn classify_gate_pipeline_failures_by_protocol_class() {
+        let cases = [
+            (
+                crate::gates::protocol::GateErrorClass::Timeout,
+                code::API_ERROR,
+            ),
+            (
+                crate::gates::protocol::GateErrorClass::Network,
+                code::API_ERROR,
+            ),
+            (
+                crate::gates::protocol::GateErrorClass::Auth,
+                code::API_ERROR,
+            ),
+            (
+                crate::gates::protocol::GateErrorClass::RateLimit,
+                code::API_ERROR,
+            ),
+            (
+                crate::gates::protocol::GateErrorClass::Config,
+                code::INPUT_ERROR,
+            ),
+            (
+                crate::gates::protocol::GateErrorClass::Transport,
+                code::AGENT_ERROR,
+            ),
+            (
+                crate::gates::protocol::GateErrorClass::Malformed,
+                code::AGENT_ERROR,
+            ),
+            (
+                crate::gates::protocol::GateErrorClass::Protocol,
+                code::AGENT_ERROR,
+            ),
+            (
+                crate::gates::protocol::GateErrorClass::Crash,
+                code::AGENT_ERROR,
+            ),
+        ];
+        for (class, expected) in cases {
+            let failure = crate::gates::composer::GateFailure::new(class.clone(), "failed");
+            let err = anyhow::Error::new(crate::gates::composer::GatePipelineError::Check {
+                gate: "safety".to_string(),
+                failure,
+                stages: Vec::new(),
+                legacy_events: Vec::new(),
+            });
+            assert_eq!(classify_to_u8(&err), expected, "class {class}");
+        }
+        let err = anyhow::Error::new(crate::gates::composer::GatePipelineError::NoEnforceGate);
+        assert_eq!(classify_to_u8(&err), code::INPUT_ERROR);
     }
 
     #[test]
