@@ -342,15 +342,15 @@ impl GateProcess {
             .await,
         );
         drop(gate_child.stdin);
-        if timeout(SHUTDOWN_WAIT, gate_child.child.wait())
+        let direct_exited = timeout(SHUTDOWN_WAIT, gate_child.child.wait())
             .await
-            .is_ok()
-        {
-            return;
-        }
+            .is_ok();
+        // The direct child exiting does not mean the process group is gone: a
+        // gate may have spawned descendants. Always signal the group so those
+        // descendants cannot outlive the run.
         signal_process_group(gate_child.pgid, SIGTERM);
-        if timeout(KILL_WAIT, gate_child.child.wait()).await.is_ok() {
-            return;
+        if !direct_exited {
+            drop(timeout(KILL_WAIT, gate_child.child.wait()).await);
         }
         signal_process_group(gate_child.pgid, SIGKILL);
         drop(timeout(KILL_WAIT, gate_child.child.wait()).await);
@@ -523,16 +523,30 @@ fn parse_ready_frame(
 fn parse_init_error(value: serde_json::Value) -> Result<GateFailure, GateFailure> {
     let error: ErrorFrame = serde_json::from_value(value)
         .map_err(|error| GateFailure::protocol(format!("invalid error frame: {error}")))?;
-    if error.id != InitFrame::INIT_ID {
-        return Err(GateFailure::protocol(format!(
-            "init error id '{}' does not match 'init'",
-            error.id
-        )));
-    }
+    validate_error_header(&error, InitFrame::INIT_ID)?;
     Ok(GateFailure::new(
         error.class.normalized(),
         format!("gate failed init: {}", bound_error_message(&error.message)),
     ))
+}
+
+fn validate_error_header(error: &ErrorFrame, expected_id: &str) -> Result<(), GateFailure> {
+    if error.protocol != PROTOCOL_VERSION {
+        return Err(GateFailure::protocol(format!(
+            "error speaks '{}', expected '{PROTOCOL_VERSION}'",
+            error.protocol
+        )));
+    }
+    if error.frame_type != FrameType::Error {
+        return Err(GateFailure::protocol("error frame has the wrong type"));
+    }
+    if error.id != expected_id {
+        return Err(GateFailure::protocol(format!(
+            "error id '{}' does not match request '{expected_id}'",
+            error.id
+        )));
+    }
+    Ok(())
 }
 
 async fn read_check_frame(
@@ -563,12 +577,7 @@ async fn read_check_frame(
         "error" => {
             let error: ErrorFrame = serde_json::from_value(value)
                 .map_err(|error| GateFailure::protocol(format!("invalid error frame: {error}")))?;
-            if error.id != expected_id {
-                return Err(GateFailure::protocol(format!(
-                    "error id '{}' does not match request '{expected_id}'",
-                    error.id
-                )));
-            }
+            validate_error_header(&error, expected_id)?;
             Ok(Err(GateFailure::new(
                 error.class.normalized(),
                 bound_error_message(&error.message),
@@ -667,10 +676,12 @@ async fn read_frame_line<R: AsyncBufRead + Unpin>(
 
 async fn terminate_process_group(child: &mut Child, pgid: Option<u32>) {
     signal_process_group(pgid, SIGTERM);
-    if timeout(KILL_WAIT, child.wait()).await.is_err() {
-        signal_process_group(pgid, SIGKILL);
-        drop(timeout(KILL_WAIT, child.wait()).await);
-    }
+    drop(timeout(KILL_WAIT, child.wait()).await);
+    // The direct child may exit while a descendant keeps the group alive. The
+    // forceful phase always follows the cooperative one, independent of the
+    // direct child's exit status.
+    signal_process_group(pgid, SIGKILL);
+    drop(timeout(KILL_WAIT, child.wait()).await);
 }
 
 #[cfg(unix)]

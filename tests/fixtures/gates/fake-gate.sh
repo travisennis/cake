@@ -9,7 +9,14 @@
 #   crash-once                    crash on the first check, then allow
 #   oversized                     one frame over the 1 MiB limit
 #   bad-describe                  describe speaks the wrong protocol
-#   init-error                    reply to init with an error frame
+#   init-error                    reply to init with a config error frame
+#   init-error-bad-protocol       reply to init with the wrong protocol
+#   check-error                   reply to a check with a config error frame
+#   check-error-bad-protocol      reply to a check with the wrong protocol
+#
+# Set FAKE_GATE_DESCENDANT_PID to a file path to spawn a long-lived descendant
+# and record its pid. The runner must clean it up with the process group even
+# when the shell itself exits first.
 #
 # The script reads one NDJSON frame per line and answers on stdout. It never
 # reads the workspace or the command text.
@@ -17,7 +24,17 @@
 MODE=${FAKE_GATE_MODE:-allow}
 DELAY=${FAKE_GATE_DELAY:-5}
 
+spawn_descendant() {
+    if [ -n "${FAKE_GATE_DESCENDANT_PID:-}" ]; then
+        # The descendant ignores SIGTERM so only the runner's unconditional
+        # process-group SIGKILL can clean it up.
+        sh -c 'trap "" TERM; sleep 60' </dev/null >/dev/null 2>&1 &
+        printf '%s' "$!" > "$FAKE_GATE_DESCENDANT_PID"
+    fi
+}
+
 describe() {
+    spawn_descendant
     if [ "$MODE" = "bad-describe" ]; then
         printf '%s\n' '{"protocol":"cake-gate/2","name":"fake-safety","version":"0.1.0","phases":["pre_tool"],"actions":["bash.exec"],"transports":["stdio"],"capabilities":[]}'
         return 0
@@ -49,6 +66,7 @@ case "${1:-}" in
         exit 0
         ;;
     serve)
+        spawn_descendant
         ;;
     *)
         printf 'fake-gate: unknown mode %s\n' "${1:-}" >&2
@@ -59,11 +77,17 @@ esac
 while IFS= read -r line; do
     case "$line" in
         *'"type":"init"'*)
-            if [ "$MODE" = "init-error" ]; then
-                printf '%s\n' '{"protocol":"cake-gate/1","type":"error","id":"init","class":"config","message":"fake init failure"}'
-            else
-                printf '%s\n' '{"protocol":"cake-gate/1","type":"ready","id":"init","name":"fake-safety","version":"0.1.0","warnings":[]}'
-            fi
+            case "$MODE" in
+                init-error)
+                    printf '%s\n' '{"protocol":"cake-gate/1","type":"error","id":"init","class":"config","message":"fake init failure"}'
+                    ;;
+                init-error-bad-protocol)
+                    printf '%s\n' '{"protocol":"cake-gate/2","type":"error","id":"init","class":"config","message":"fake init failure"}'
+                    ;;
+                *)
+                    printf '%s\n' '{"protocol":"cake-gate/1","type":"ready","id":"init","name":"fake-safety","version":"0.1.0","warnings":[]}'
+                    ;;
+            esac
             ;;
         *'"type":"check"'*)
             id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
@@ -97,6 +121,12 @@ while IFS= read -r line; do
                     printf '%s' '","decision":"allow","message":"'
                     head -c 1100000 /dev/zero | tr '\0' x
                     printf '%s\n' '"}'
+                    ;;
+                check-error)
+                    printf '{"protocol":"cake-gate/1","type":"error","id":"%s","class":"config","message":"fake check failure"}\n' "$id"
+                    ;;
+                check-error-bad-protocol)
+                    printf '{"protocol":"cake-gate/2","type":"error","id":"%s","class":"config","message":"fake check failure"}\n' "$id"
                     ;;
                 *)
                     decision "$id"

@@ -44,6 +44,46 @@ fn request() -> crate::gates::composer::GateRequest {
     ))
 }
 
+fn spec_with_descendant(mode: &str, pid_path: &std::path::Path) -> GateProcessSpec {
+    let mut spec = spec(mode);
+    spec.environment.insert(
+        "FAKE_GATE_DESCENDANT_PID".to_string(),
+        pid_path.display().to_string(),
+    );
+    spec
+}
+
+#[cfg(unix)]
+fn process_exists(pid: i32) -> bool {
+    // SAFETY: signal 0 performs existence and permission checks without
+    // sending a signal.
+    unsafe { libc::kill(pid, 0) == 0 }
+}
+
+#[cfg(unix)]
+async fn wait_for_pid_file(path: &std::path::Path) -> i32 {
+    for _ in 0..100 {
+        if let Ok(text) = std::fs::read_to_string(path)
+            && let Ok(pid) = text.trim().parse()
+        {
+            return pid;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("fake gate did not write its descendant pid");
+}
+
+#[cfg(unix)]
+async fn wait_for_process_exit(pid: i32) {
+    for _ in 0..100 {
+        if !process_exists(pid) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("gate descendant {pid} survived process-group cleanup");
+}
+
 #[tokio::test]
 async fn describe_init_check_and_shutdown_round_trip() {
     let mut process = GateProcess::new(spec("allow"));
@@ -198,6 +238,88 @@ async fn oversized_init_config_is_rejected_before_spawn() {
     }));
     let failure = process.start(init).await.expect_err("config too large");
     assert_eq!(failure.class, GateErrorClass::Config);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn shutdown_cleans_descendants_after_the_direct_child_exits() {
+    let dir = tempfile::tempdir().expect("descendant dir");
+    let pid_path = dir.path().join("descendant.pid");
+    let mut process = GateProcess::new(spec_with_descendant("allow", &pid_path));
+    process.describe().await.expect("describe");
+    process.start(init_frame()).await.expect("init");
+    process.check(check_frame("check-1")).await.expect("check");
+    let pid = wait_for_pid_file(&pid_path).await;
+    assert!(process_exists(pid), "descendant should be running");
+    process.shutdown().await;
+    wait_for_process_exit(pid).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn describe_failure_cleans_descendants() {
+    let dir = tempfile::tempdir().expect("descendant dir");
+    let pid_path = dir.path().join("descendant.pid");
+    let mut process = GateProcess::new(spec_with_descendant("bad-describe", &pid_path));
+    let failure = process.describe().await.expect_err("bad describe");
+    assert_eq!(failure.class, GateErrorClass::Config);
+    let pid = wait_for_pid_file(&pid_path).await;
+    wait_for_process_exit(pid).await;
+}
+
+#[tokio::test]
+async fn valid_check_error_frame_is_not_a_process_failure() {
+    let mut process = GateProcess::new(spec("check-error"));
+    process.describe().await.expect("describe");
+    process.start(init_frame()).await.expect("init");
+    for attempt in 0..3 {
+        let failure = process
+            .check(check_frame(&format!("check-{attempt}")))
+            .await
+            .expect_err("gate-reported error");
+        match failure {
+            GateCheckFailure::Failure(failure) => {
+                assert_eq!(failure.class, GateErrorClass::Config);
+            },
+            GateCheckFailure::Disabled { .. } => {
+                panic!("a valid error frame must not trip the process breaker");
+            },
+        }
+    }
+}
+
+#[tokio::test]
+async fn bad_protocol_check_error_is_a_process_failure_and_trips_the_breaker() {
+    let mut process = GateProcess::new(spec("check-error-bad-protocol"));
+    process.describe().await.expect("describe");
+    process.start(init_frame()).await.expect("init");
+    for attempt in 0..2 {
+        let failure = process
+            .check(check_frame(&format!("check-{attempt}")))
+            .await
+            .expect_err("bad protocol error");
+        match failure {
+            GateCheckFailure::Failure(failure) => {
+                assert_eq!(failure.class, GateErrorClass::Protocol);
+            },
+            GateCheckFailure::Disabled { .. } => panic!("unexpected early disable"),
+        }
+    }
+    assert!(matches!(
+        process.check(check_frame("check-3")).await,
+        Err(GateCheckFailure::Disabled { .. })
+    ));
+}
+
+#[tokio::test]
+async fn bad_protocol_init_error_is_a_startup_protocol_failure() {
+    let mut process = GateProcess::new(spec("init-error-bad-protocol"));
+    process.describe().await.expect("describe");
+    let failure = process
+        .start(init_frame())
+        .await
+        .expect_err("bad init protocol");
+    assert_eq!(failure.class, GateErrorClass::Protocol);
 }
 
 #[tokio::test]
