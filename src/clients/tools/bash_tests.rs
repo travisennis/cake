@@ -3208,8 +3208,15 @@ fn cascade_fast_approves_collected_script_evidence() {
         assert!(
             result
                 .output
+                .contains("its contents were not reviewed by the safety judge"),
+            "a fast approval must not claim the judge inspected the script, got: {}",
+            result.output
+        );
+        assert!(
+            !result
+                .output
                 .contains("Safety judge inspected referenced script"),
-            "the observation note must report the inspected script, got: {}",
+            "the fast path never showed the script to the judge, got: {}",
             result.output
         );
         judge_server.verify().await;

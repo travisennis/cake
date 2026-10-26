@@ -56,4 +56,4 @@ No CLI, settings, persisted-state, gate-protocol, or telemetry-shape change. The
 - Partially supersedes the **Evidence completeness and fast approval** section of [ADR-035](035-judge-script-observations.md); ADR-035's collection rules and limitations remain in force.
 - Relates to [ADR-018](018-llm-judge-command-gate.md), [ADR-033](033-typesafe-judge-shadow-evaluation.md), [ADR-034](034-typesafe-judge-cascade-cutoff.md), and [ADR-049](049-external-policy-gates-with-the-cake-gate-1-protocol.md).
 - `cake-safety-judge` already observes every check; this decision makes the in-process judge match it.
-- Follow-up, not part of this decision: treat heredoc and `-c` bodies as script content in the rubric, fail closed on unobservable interpreter input, and add corpus cases for inline scripts, `bash -c "$(cat file)"`, and oversized scripts.
+- Follow-up, not part of this decision: task 033q covers treating heredoc and `-c` bodies as script content in the rubric, failing closed on unobservable interpreter input, and adding corpus cases for inline scripts, `bash -c "$(cat file)"`, and oversized scripts.
