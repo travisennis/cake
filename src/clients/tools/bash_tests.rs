@@ -3157,83 +3157,128 @@ async fn script_evidence_bypass_skips_collection() {
 }
 
 #[test]
-fn cascade_makes_no_observation_for_collected_script_evidence() {
-    // Preflight collects the referenced script, and the cascade must not
-    // observe a command whose evidence the `TypeSafe` request state cannot
-    // carry: no observation request is made, and the judge's verdict still
-    // governs --- an allow runs the script, a block stops it (ADR 035).
+fn cascade_fast_approves_collected_script_evidence() {
+    // ADR 050: preflight still collects the script for the judge, but the
+    // cascade observes every request, so a clean TypeSafe answer runs the
+    // command without a judge call.
     run_with_judge_enabled(async {
-        for (verdict, expected) in [
-            (r#"{"verdict":"allow","message":"Safe"}"#, None),
-            (
-                r#"{"verdict":"block","code":"destructive-rm","message":"Denied"}"#,
-                Some("Denied"),
-            ),
-        ] {
-            let judge_server = MockServer::start().await;
-            let typesafe_server = MockServer::start().await;
-            // `expect(1)` on the judge and `expect(0)` on the observation are
-            // the assertions: the judge decides, and the observation, which
-            // would fast-approve at 0.99, is never sent.
-            Mock::given(method("POST"))
-                .respond_with(
-                    ResponseTemplate::new(200).set_body_json(judge_chat_response(verdict)),
-                )
-                .expect(1)
-                .mount(&judge_server)
-                .await;
-            Mock::given(method("POST"))
-                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                    "model": "jev-1.13.0",
-                    "answers": {"eligible": {"type": "noul", "noul": 0.99}},
-                    "usage": {"input_tokens": 5, "output_tokens": 1}
-                })))
-                .expect(0)
-                .mount(&typesafe_server)
-                .await;
-
-            let dir = tempfile::tempdir().unwrap();
-            std::fs::write(dir.path().join("job.sh"), "printf cascade-script-evidence").unwrap();
-            let judge = cascade_judge_context(
-                &judge_server,
-                &typesafe_server,
-                std::time::Duration::from_millis(200),
-            );
-            let outcome = execute_bash_with_judge_in(
-                r#"{"command":"bash job.sh"}"#,
-                Some(std::sync::Arc::new(judge)),
-                dir.path(),
+        let judge_server = MockServer::start().await;
+        let typesafe_server = MockServer::start().await;
+        // `expect(0)` on the judge and `expect(1)` on the observation are the
+        // assertions: the fast leg decides and the judge never runs.
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(judge_chat_response(
+                    r#"{"verdict":"allow","message":"Safe"}"#,
+                )),
             )
+            .expect(0)
+            .mount(&judge_server)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "model": "jev-1.13.0",
+                "answers": {"eligible": {"type": "noul", "noul": 0.99}},
+                "usage": {"input_tokens": 5, "output_tokens": 1}
+            })))
+            .expect(1)
+            .mount(&typesafe_server)
             .await;
 
-            match expected {
-                None => {
-                    let result = outcome.expect("a judge allow runs the command");
-                    assert!(
-                        result.output.contains("cascade-script-evidence"),
-                        "the judge-decided command must run, got: {}",
-                        result.output
-                    );
-                    assert!(
-                        result
-                            .output
-                            .contains("Safety judge inspected referenced script"),
-                        "the observation note must report the inspected script, got: {}",
-                        result.output
-                    );
-                },
-                Some(message) => {
-                    let error = outcome.expect_err("a judge block stops the command");
-                    assert!(
-                        error.message.contains(message),
-                        "the judge's block must reach the model, got: {}",
-                        error.message
-                    );
-                },
-            }
-            judge_server.verify().await;
-            typesafe_server.verify().await;
-        }
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("job.sh"), "printf cascade-script-evidence").unwrap();
+        let judge = cascade_judge_context(
+            &judge_server,
+            &typesafe_server,
+            std::time::Duration::from_millis(200),
+        );
+        let result = execute_bash_with_judge_in(
+            r#"{"command":"bash job.sh"}"#,
+            Some(std::sync::Arc::new(judge)),
+            dir.path(),
+        )
+        .await
+        .expect("a fast approval runs the command");
+
+        assert!(
+            result.output.contains("cascade-script-evidence"),
+            "the fast-approved command must run, got: {}",
+            result.output
+        );
+        assert!(
+            result
+                .output
+                .contains("its contents were not reviewed by the safety judge"),
+            "a fast approval must not claim the judge inspected the script, got: {}",
+            result.output
+        );
+        assert!(
+            !result
+                .output
+                .contains("Safety judge inspected referenced script"),
+            "the fast path never showed the script to the judge, got: {}",
+            result.output
+        );
+        judge_server.verify().await;
+        typesafe_server.verify().await;
+    });
+}
+
+#[test]
+fn cascade_falls_back_for_collected_script_evidence_below_the_cutoff() {
+    // A below-cutoff observation still reaches the judge, which sees the
+    // collected evidence and can block the script (ADR 050).
+    run_with_judge_enabled(async {
+        let judge_server = MockServer::start().await;
+        let typesafe_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(judge_chat_response(
+                    r#"{"verdict":"block","code":"destructive-rm","message":"Denied"}"#,
+                )),
+            )
+            .expect(1)
+            .mount(&judge_server)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "model": "jev-1.13.0",
+                "answers": {"eligible": {"type": "noul", "noul": 0.2}},
+                "usage": {"input_tokens": 5, "output_tokens": 1}
+            })))
+            .expect(1)
+            .mount(&typesafe_server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("job.sh"), "printf cascade-script-evidence").unwrap();
+        let judge = cascade_judge_context(
+            &judge_server,
+            &typesafe_server,
+            std::time::Duration::from_millis(200),
+        );
+        let outcome = execute_bash_with_judge_in(
+            r#"{"command":"bash job.sh"}"#,
+            Some(std::sync::Arc::new(judge)),
+            dir.path(),
+        )
+        .await;
+
+        let error = outcome.expect_err("a judge block stops the command");
+        assert!(
+            error.message.contains("Denied"),
+            "the judge's block must reach the model, got: {}",
+            error.message
+        );
+        assert!(
+            error
+                .message
+                .contains("Safety judge inspected referenced script"),
+            "the fallback note must report the inspected script, got: {}",
+            error.message
+        );
+        judge_server.verify().await;
+        typesafe_server.verify().await;
     });
 }
 

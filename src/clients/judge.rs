@@ -25,9 +25,10 @@
 //! = "cascade"` a clean observation at or above
 //! [`TYPESAFE_FAST_APPROVAL_CUTOFF`] approves the command without a judge call,
 //! and every other observation outcome falls back to the judge unchanged.
-//! `shadow` stays observational. A request whose preflight collected script
-//! evidence makes no observation at all and always reaches the judge, which is
-//! the stage that saw the contents (ADR 035).
+//! `shadow` stays observational. Every non-bypassed request is observed,
+//! including one whose preflight collected script evidence; script contents
+//! remain judge-only, and the fast path decides from command text alone
+//! (ADR 035, ADR 050).
 //!
 //! The types and client are consumed by `cake bash check` and the Bash
 //! preflight.
@@ -187,6 +188,8 @@ pub struct JudgeRequest {
     /// concurrent Bash calls stay attributable.
     pub call_id: Option<String>,
     /// A bounded, untrusted observation; never proof of complete dependencies.
+    /// It reaches the generative judge only and does not suppress the `TypeSafe`
+    /// observation (ADR 050).
     pub script_evidence: Option<ScriptEvidence>,
 }
 
@@ -306,7 +309,9 @@ pub fn judge_is_enabled(settings: &JudgeSettings, bypass_env: Option<&str>) -> b
 /// it. Under `mode = "cascade"` a clean observation at or above
 /// [`TYPESAFE_FAST_APPROVAL_CUTOFF`] approves the command without a judge
 /// call; every other cascade outcome falls back to the judge, whose authority
-/// and fail-closed behavior are unchanged (ADR 034).
+/// and fail-closed behavior are unchanged (ADR 034). Every non-bypassed
+/// request is observed, including one whose preflight collected script
+/// evidence; that evidence reaches the judge only (ADR 050).
 ///
 /// An allowlisted command is still judged. A `block` verdict on an exact
 /// allowlist match is overridden to allow (the original verdict and the
@@ -353,8 +358,9 @@ pub async fn evaluate_command_observed(
 }
 
 /// Evaluate one command under `mode = "cascade"`: the observation runs first
-/// and alone, and the judge runs only when the observation does not
-/// fast-approve the command (ADR 034).
+/// and alone for every request, including one carrying collected script
+/// evidence, and the judge runs only when the observation does not
+/// fast-approve the command (ADR 034, ADR 050).
 ///
 /// The observation is returned either way, so telemetry records the fast leg's
 /// outcome even when it decided nothing. On the fallback the judge is the sole
@@ -366,7 +372,9 @@ async fn evaluate_cascade(
     request: JudgeRequest,
     include_raw_diagnostic: bool,
 ) -> JudgeEvaluation {
-    let observation = cascade_observation(client, settings, &request).await;
+    let observation = client
+        .typesafe_observed(request.clone(), settings.typesafe.mode)
+        .await;
     if let Some(probability) = observation.as_ref().and_then(fast_approval_probability) {
         let elapsed = observation.as_ref().map_or(Duration::ZERO, |o| o.elapsed);
         return JudgeEvaluation {
@@ -387,32 +395,6 @@ async fn evaluate_cascade(
         diagnostic: call.diagnostic,
         shadow: observation,
     }
-}
-
-/// The `TypeSafe` observation the cascade is allowed to decide on, if any.
-///
-/// A request whose preflight collected script evidence makes no `TypeSafe`
-/// request at all and goes straight to the generative judge. The observation
-/// request state carries the command, working directory, repository digest, and
-/// reason (ADR 034) but never script contents (ADR 035), so an observation made
-/// for such a request would approve blind to evidence the judge was shown.
-/// Script contents must reach both stages, or neither stage may approve: this
-/// spends no token on an observation that could never authorize, and the judge
-/// decides with the evidence in hand (ADR 018).
-///
-/// The `None` is honest telemetry, not a failure: no `TypeSafe` request was
-/// made, and no failure class is reported for one.
-async fn cascade_observation(
-    client: &JudgeClient,
-    settings: &JudgeSettings,
-    request: &JudgeRequest,
-) -> Option<TypeSafeObservation> {
-    if request.script_evidence.is_some() {
-        return None;
-    }
-    client
-        .typesafe_observed(request.clone(), settings.typesafe.mode)
-        .await
 }
 
 /// Apply the exact-match allowlist to one judge call's result.

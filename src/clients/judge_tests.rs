@@ -2772,7 +2772,8 @@ async fn cascade_makes_no_typesafe_request_when_off_or_bypassed() {
 }
 
 /// A judge request carrying collected script evidence, as the Bash preflight
-/// builds one (ADR 035).
+/// builds one (ADR 035). It reaches the judge only and does not change `TypeSafe`
+/// eligibility (ADR 050).
 fn request_with_script_evidence(command: &str) -> JudgeRequest {
     let mut request = request(command, None);
     request.script_evidence = Some(ScriptEvidence {
@@ -2783,13 +2784,42 @@ fn request_with_script_evidence(command: &str) -> JudgeRequest {
 }
 
 #[tokio::test]
-async fn cascade_makes_no_observation_when_script_evidence_was_collected() {
-    // Script contents reach the generative judge and never the `TypeSafe`
-    // request state, so a command whose referenced script was collected must
-    // not be eligible for fast approval: it makes no observation at all, and
-    // the judge decides --- for an allow and for a block alike (ADR 035,
-    // ADR 034, ADR 018).
-    for (verdict, expected) in [
+async fn cascade_fast_approves_a_request_with_script_evidence() {
+    // ADR 050: the observation runs for every non-bypassed request. Collected
+    // script evidence reaches the judge only and does not suppress the fast path.
+    let judge_server = MockServer::start().await;
+    let typesafe_server = MockServer::start().await;
+    mount_judge_allow(&judge_server, 0).await;
+    mount_typesafe(&typesafe_server, 0.99).await;
+
+    let evaluation = evaluate_command_observed(
+        &cascade_client(&judge_server, &typesafe_server),
+        &cascade_settings(),
+        request_with_script_evidence("bash job.sh"),
+        None,
+        false,
+    )
+    .await;
+
+    let Ok(JudgeOutcome::FastApproved { probability, .. }) = evaluation.outcome else {
+        panic!("a script-evidence request must fast-approve at the cutoff");
+    };
+    assert_probability(Some(probability), 0.99);
+    assert!(evaluation.attempts.is_empty());
+    let observation = evaluation
+        .shadow
+        .expect("the deciding observation is retained");
+    assert_eq!(observation.failure_class, None);
+    assert_probability(observation.probability, 0.99);
+    judge_server.verify().await;
+    typesafe_server.verify().await;
+}
+
+#[tokio::test]
+async fn cascade_falls_back_to_the_judge_for_script_evidence_below_the_cutoff() {
+    // The script-evidence request takes the same fallback path as any other: the
+    // judge still receives the evidence and keeps its authority (ADR 050).
+    for (verdict_body, expected) in [
         (
             r#"{"verdict":"allow","message":"Safe"}"#,
             JudgeDecision::Allow,
@@ -2801,11 +2831,8 @@ async fn cascade_makes_no_observation_when_script_evidence_was_collected() {
     ] {
         let judge_server = MockServer::start().await;
         let typesafe_server = MockServer::start().await;
-        // `expect(1)` on the judge and `expect(0)` on the observation are the
-        // assertions: the judge decides and no observation request is made.
-        // The observation would fast-approve at 0.99 if it were sent at all.
-        mount_judge_verdict(&judge_server, verdict, 1).await;
-        mount_typesafe_expecting(&typesafe_server, 0.99, 0).await;
+        mount_judge_verdict(&judge_server, verdict_body, 1).await;
+        mount_typesafe_expecting(&typesafe_server, 0.2, 1).await;
 
         let evaluation = evaluate_command_observed(
             &cascade_client(&judge_server, &typesafe_server),
@@ -2824,25 +2851,65 @@ async fn cascade_makes_no_observation_when_script_evidence_was_collected() {
             .outcome
             .unwrap_or_else(|e| panic!("{error}: {e}"))
         else {
-            panic!("{error}: a collected script must not be fast-approved");
+            panic!("{error}: a below-cutoff observation must fall back");
         };
         assert_eq!(verdict.decision, expected, "{error}");
         assert!(!overridden, "{error}");
         assert_eq!(evaluation.attempts.len(), 1, "{error}");
-        assert!(
-            evaluation.shadow.is_none(),
-            "{error}: no observation may be made or reported"
-        );
+        let observation = evaluation
+            .shadow
+            .expect("the fallback observation is retained");
+        assert_probability(observation.probability, 0.2);
         judge_server.verify().await;
         typesafe_server.verify().await;
     }
 }
 
 #[tokio::test]
+async fn cascade_falls_back_on_an_observation_failure_with_script_evidence() {
+    // A failed observation cannot approve or block, and cannot skip the judge,
+    // even when script evidence was collected (ADR 050).
+    let judge_server = MockServer::start().await;
+    let typesafe_server = MockServer::start().await;
+    mount_judge_allow(&judge_server, 1).await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("no"))
+        .expect(1)
+        .mount(&typesafe_server)
+        .await;
+    let client = judge_client(&judge_server).with_typesafe(Some(shadow_client(
+        &typesafe_server,
+        Duration::from_millis(100),
+    )));
+
+    let evaluation = evaluate_command_observed(
+        &client,
+        &cascade_settings(),
+        request_with_script_evidence("bash job.sh"),
+        None,
+        false,
+    )
+    .await;
+
+    let JudgeOutcome::Verdict { verdict, .. } = evaluation
+        .outcome
+        .unwrap_or_else(|e| panic!("an observation failure must fall back to the judge: {e}"))
+    else {
+        panic!("an observation failure must not approve");
+    };
+    assert_eq!(verdict.decision, JudgeDecision::Allow);
+    let observation = evaluation
+        .shadow
+        .expect("a failed observation is still recorded");
+    assert_eq!(observation.failure_class, Some("http_error"));
+    assert_eq!(observation.probability, None);
+    judge_server.verify().await;
+}
+
+#[tokio::test]
 async fn cascade_still_fast_approves_a_request_without_script_evidence() {
-    // The gate keys on collected evidence alone: the same clean observation at
-    // or above the cutoff still fast-approves a request that carries none
-    // (ADR 034 preserved).
+    // The control for the script-evidence fast-approval test: the no-evidence
+    // path is unchanged (ADR 034 preserved).
     let judge_server = MockServer::start().await;
     let typesafe_server = MockServer::start().await;
     mount_judge_allow(&judge_server, 0).await;

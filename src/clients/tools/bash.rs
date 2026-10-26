@@ -1458,17 +1458,25 @@ async fn bash_pipeline_preflight(
     cwd: &Path,
     raw_call_id: Option<&str>,
 ) -> Result<JudgePreflight, super::ToolError> {
-    let (request, observation_note) =
+    let (request, script_path) =
         gate_request(context, args, cwd, raw_call_id, !pipeline.is_bypassed())?;
     match pipeline.check(request).await {
         Ok(outcome) => {
+            // A fast approval (or any short-circuiting allow) decided from the
+            // command text alone, so the note must not claim the judge saw a
+            // file the deciding stage never received (ADR 050).
+            let judge_reviewed = !outcome
+                .stages
+                .iter()
+                .any(|stage| stage.fast_approved || stage.short_circuit);
             let mut preflight = preflight_from_outcome(outcome, raw_call_id);
-            if let Some(note) = &observation_note {
+            if let Some(path) = &script_path {
+                let note = script_evidence_note(path, judge_reviewed);
                 match &mut preflight {
-                    Ok(preflight) => preflight.warnings.push(note.clone()),
+                    Ok(preflight) => preflight.warnings.push(note),
                     Err(error) => {
                         error.message.push_str("\n\n");
-                        error.message.push_str(note);
+                        error.message.push_str(&note);
                     },
                 }
             }
@@ -1476,9 +1484,9 @@ async fn bash_pipeline_preflight(
         },
         Err(error) => {
             let mut message = fail_closed_message(gate_pipeline_error_message(&error));
-            if let Some(note) = &observation_note {
+            if let Some(path) = &script_path {
                 message.push_str("\n\n");
-                message.push_str(note);
+                message.push_str(&script_evidence_note(path, false));
             }
             let mut compensation_events = error.legacy_events().to_vec();
             if compensation_events.is_empty() {
@@ -1524,6 +1532,9 @@ fn preflight_from_outcome(
 
 /// Build the gate request for one Bash call, collecting any directly
 /// referenced script as bounded untrusted evidence.
+///
+/// Returns the collected script's path so the caller can describe the review
+/// that actually happened after the pipeline decides.
 fn gate_request(
     context: &super::ToolContext,
     args: &BashExecutionArgs,
@@ -1550,13 +1561,7 @@ fn gate_request(
     } else {
         None
     };
-    let note = evidence.as_ref().map(|evidence| {
-        // JSON escaping keeps model-supplied paths from injecting control characters.
-        format!(
-            "Safety judge inspected referenced script {} (untrusted contents; dependencies and later changes not covered).",
-            serde_json::json!(evidence.path)
-        )
-    });
+    let script_path = evidence.as_ref().map(|evidence| evidence.path.clone());
     let script_evidence = evidence
         .into_iter()
         .map(|evidence| ScriptEvidence {
@@ -1575,7 +1580,26 @@ fn gate_request(
         call_id: raw_call_id.map(String::from),
         ..CheckSession::default()
     };
-    Ok((GateRequest::new(input).with_session(session), note))
+    Ok((GateRequest::new(input).with_session(session), script_path))
+}
+
+/// Model-visible note naming the collected script and whether the safety judge
+/// reviewed its contents.
+///
+/// A fast approval decides from the command text alone, so the note must not
+/// claim the judge inspected file contents the fast path never sent (ADR 050).
+fn script_evidence_note(path: &str, judge_reviewed: bool) -> String {
+    // JSON escaping keeps model-supplied paths from injecting control characters.
+    let path = serde_json::json!(path);
+    if judge_reviewed {
+        format!(
+            "Safety judge inspected referenced script {path} (untrusted contents; dependencies and later changes not covered)."
+        )
+    } else {
+        format!(
+            "Referenced script {path} was collected but its contents were not reviewed by the safety judge (untrusted contents; dependencies and later changes not covered)."
+        )
+    }
 }
 
 /// Persist one `TypeSafe` observation through the run's telemetry sink, if any.
