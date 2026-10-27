@@ -515,7 +515,7 @@ fn test_cli_rejects_no_runtime_context_with_subcommand() {
 fn test_help_documents_no_runtime_context() {
     use clap::CommandFactory;
 
-    let help = CodingAssistant::command().render_help().to_string();
+    let help = CodingAssistant::command().render_long_help().to_string();
     assert!(help.contains("--no-runtime-context"));
     assert!(help.contains("process-environment"));
     assert!(help.contains("not a sandbox or security control"));

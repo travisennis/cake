@@ -197,10 +197,11 @@ pub(crate) struct CodingAssistant {
     #[arg(long, value_name = "PATH")]
     pub system_prompt: Option<String>,
 
-    /// Omit the process-environment Developer message (working directory,
-    /// date, platform, architecture, shell, and terminal). Intended for
-    /// tool-less or transcript-only subcalls; it is not a sandbox or security
-    /// control.
+    /// Omit the process-environment Developer message from the prompt
+    ///
+    /// The omitted message reports the working directory, date, platform,
+    /// architecture, shell, and terminal. Intended for tool-less or
+    /// transcript-only subcalls; it is not a sandbox or security control.
     #[arg(long)]
     pub no_runtime_context: bool,
 
