@@ -94,7 +94,7 @@ Every documented key is present in `metrics`; an undefined rate or percentile is
   | `api.py`            | API attempt failures, status codes, latency percentiles by model, retry reasons/delays, context-overflow overrides                                                                                                                                            |
   | `judge.py`          | LLM-judge reliability from `judge_attempt` telemetry: latency and phase timing, terminal classes (timeout/transport/...) and rates, retries, token cost, status codes, near-timeout attempts                                                                  |
   | `time_breakdown.py` | Per-invocation exclusive wall-time timeline when spans exist, plus API elapsed time, cumulative tool work, scheduled retry delays, turn pacing, think time between tasks, and slowest operations                                                              |
-  | `outcomes.py`       | Task and invocation success rates, error subtypes, duration/turn distributions, per-session turn totals, permission denials, abnormal terminations                                                                                                            |
+  | `outcomes.py`       | Task and invocation success rates, error subtypes, duration/turn distributions, per-session turn totals, permission denials by source (hook, judge-block, judge-fail-closed, sandbox, path, other), abnormal terminations                                     |
   | `hooks.py`          | Hook events, allow/deny decisions, denied commands, hook errors and durations, skill activations                                                                                                                                                              |
   | `compensations.py`  | Model-compensation counters per model: json repair, judge verdicts/fail-closed/bypass, same-path serialization (a follower behind an earlier same-path call, read or mutation), output truncation, Edit invalid args, context-overflow retries                |
   | `summary.py`        | Shared metric vocabulary, schema-versioned summary document, and diff used by `report.py --json`, `--baseline`, and `--vs` (not a CLI)                                                                                                                        |
@@ -121,6 +121,27 @@ Judge events recorded before cake carried that digest have no event-side key, so
 The table is metadata-only: it reports the presence of `reason`, the bounded outcome vocabulary, the model, and aggregate counts. The command text, the reason text, the raw call id, and the digest itself never enter the report.
 
 Run the metrics tests with `just session-metrics-check`.
+
+## Permission denials by source
+
+`outcomes.py` reports the permission denials recorded in in-window `task_complete` records as a flat total plus a per-source event count and the number of tasks carrying each source. The sources describe which gate denied a call; the flat total stays the denominator, and the per-source event counts sum to it (the `TOTAL` row repeats both figures). Task counts overlap: a task denied by two gates appears under both.
+
+Every label is `{tool}({call_id}): {text}`, and the text after that separator decides the source, in this order. Each token is an exact prefix and includes the space that follows its colon.
+
+  | Text after `{tool}({call_id}):` | Source              | Recorded by                                                       |
+  | ------------------------------- | ------------------- | ----------------------------------------------------------------- |
+  | `judge block:`                  | `judge-block`       | `judge_denial_label` in `src/clients/agent/agent_loop.rs`         |
+  | `judge fail-closed:`            | `judge-fail-closed` | the same function                                                 |
+  | `sandbox:`                      | `sandbox`           | `SandboxPathRef::permission_label` in `src/clients/tools/bash.rs` |
+  | `path:`                         | `path`              | the in-process path gate                                          |
+  | `{hook_path}: {reason}`         | `hook`              | `PreToolUse` hook denials (see the ambiguity below)               |
+  | anything else                   | `other`             | a label shape outside this vocabulary                             |
+
+A hook denial's label is `{tool}({call_id}): {hook_path}: {reason}`, where `{reason}` is hook-supplied text. A hook reason that itself begins with one of the tokens above --- `sandbox:`, `judge block:`, `judge fail-closed:`, or `path:` --- is attributed to that token's source rather than to `hook`. That ambiguity is recorded behavior: the label content is a compatibility surface, so the report pins the precedence with a test instead of changing what cake writes. Fixing it needs a source token in the hook label itself, which is separate work.
+
+A label without the `{tool}({call_id}):` separator, or with text in none of these shapes, is counted as `other` rather than dropped, the same accounting discipline the judge linkage table in `tools.py` uses. Parts that are not in this vocabulary never disappear from the totals. `path:` is tolerated when a corpus predates the in-process path gate: those records simply contribute no `path` row.
+
+The breakdown is metadata-only: it prints the source name, the event count, and the task count. The reason text, the command, and the denied path never enter the report.
 
 ## Reproducibility
 
