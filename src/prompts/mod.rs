@@ -824,7 +824,7 @@ mod tests {
         let with_context = build(true);
         let without_context = build(false);
 
-        assert_eq!(without_context.len() + 1, with_context.len());
+        assert_eq!(with_context.len(), without_context.len() + 1);
         assert_eq!(
             &with_context[..with_context.len() - 1],
             without_context.as_slice()

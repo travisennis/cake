@@ -872,6 +872,55 @@ mod tests {
         });
     }
 
+    /// A resumed run rebuilds the leading prompt context instead of replaying
+    /// the Developer message an earlier invocation persisted.
+    #[test]
+    fn resumed_run_rebuilds_prompt_context_without_runtime_message() {
+        temp_env::with_var("SESSION_FACTORY_TEST_KEY", Some("test-key"), || {
+            let data_dir_dir = tempfile::tempdir().expect("temp data dir");
+            let data_dir = DataDir::new_in_dir(data_dir_dir.path());
+            let working_dir = tempfile::tempdir().expect("temp working dir");
+
+            let mut saved = Session::new(uuid::Uuid::new_v4(), working_dir.path().to_path_buf());
+            saved.model = Some("glm-5.1".to_string());
+            saved
+                .records
+                .push(SessionRecord::Message(crate::types::session::MessageData {
+                    role: crate::types::Role::Developer,
+                    content: "Current working directory: /stale\nToday's date: yesterday"
+                        .to_string(),
+                    id: None,
+                    status: None,
+                    timestamp: None,
+                    images: Vec::new(),
+                }));
+            data_dir
+                .save_session(&saved)
+                .expect("session fixture should save");
+
+            let run = build_for_mode(
+                &crate::CodingAssistant::parse_from(["cake", "--no-runtime-context"]),
+                &RunMode::Resume {
+                    session_id: saved.id,
+                },
+                &data_dir,
+                working_dir.path(),
+            )
+            .expect("resume should succeed");
+
+            let text = request_text(&run);
+            assert!(
+                !text.contains("Current working directory"),
+                "persisted runtime context was replayed"
+            );
+            assert!(
+                !text.contains("Today's date"),
+                "persisted runtime context was replayed"
+            );
+            assert!(text.contains("You are cake."));
+        });
+    }
+
     #[test]
     fn resume_restores_the_named_session() {
         temp_env::with_var("SESSION_FACTORY_TEST_KEY", Some("test-key"), || {
