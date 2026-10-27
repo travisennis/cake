@@ -376,6 +376,8 @@ The system prompt uses the first readable source in this order:
 
 An override replaces the built-in prompt; it is not appended. The selected system prompt is stored when a session is created and reused on resume. Mutable AGENTS.md, skill, and environment context is rebuilt for each invocation.
 
+`--no-runtime-context` suppresses only the mutable process-environment Developer message that reports the working directory, date, platform, architecture, shell, and terminal. The system prompt, AGENTS.md context, skill catalog, tool list, output schema, and session persistence are unchanged. It is intended for tool-less or transcript-only subcalls, not as a sandbox or security control: commands still inherit their normal environment.
+
 ## Hooks
 
 Hooks are trusted commands configured in:

@@ -475,6 +475,53 @@ fn test_cli_parsing_no_tools() {
 }
 
 #[test]
+fn test_cli_parsing_no_runtime_context() {
+    let args = CodingAssistant::parse_from(["cake", "--no-runtime-context", "test prompt"]);
+    assert!(args.no_runtime_context);
+
+    let args = CodingAssistant::parse_from(["cake", "test prompt"]);
+    assert!(!args.no_runtime_context);
+
+    let args = CodingAssistant::parse_from([
+        "cake",
+        "--no-session",
+        "--no-tools",
+        "--no-skills",
+        "--no-runtime-context",
+        "test prompt",
+    ]);
+    assert!(args.no_session);
+    assert!(args.no_tools);
+    assert!(args.no_skills);
+    assert!(args.no_runtime_context);
+}
+
+#[test]
+fn test_cli_rejects_no_runtime_context_with_subcommand() {
+    let args = CodingAssistant::parse_from([
+        "cake",
+        "--no-runtime-context",
+        "ignored prompt",
+        "sessions",
+        "list",
+    ]);
+    let error = args
+        .validate_subcommand_options()
+        .expect_err("--no-runtime-context must be rejected with a subcommand");
+    assert!(error.to_string().contains("--no-runtime-context"));
+}
+
+#[test]
+fn test_help_documents_no_runtime_context() {
+    use clap::CommandFactory;
+
+    let help = CodingAssistant::command().render_help().to_string();
+    assert!(help.contains("--no-runtime-context"));
+    assert!(help.contains("process-environment"));
+    assert!(help.contains("not a sandbox or security control"));
+}
+
+#[test]
 fn test_resolve_model_config_no_model_configured() {
     let args = CodingAssistant::parse_from(["cake", "test prompt"]);
     let models = HashMap::new();

@@ -232,7 +232,8 @@ pub fn resolve_system_prompt(
 /// separate developer messages so it is not tied to the system prompt. The
 /// optional exact-name tool allowlist narrows which tools are advertised to the
 /// model; `None` preserves the full registry. `supports_images` gates tools that
-/// send image input to the provider.
+/// send image input to the provider. `include_runtime_context` controls the
+/// final Developer message that describes the process environment.
 #[expect(
     clippy::too_many_arguments,
     reason = "prompt construction naturally requires many inputs"
@@ -248,6 +249,7 @@ pub fn build_initial_prompt_messages_with_enabled_tools(
     toolbox_tools: &[ToolboxTool],
     enabled_tools: Option<&[String]>,
     supports_images: bool,
+    include_runtime_context: bool,
 ) -> Vec<(Role, String)> {
     let mut messages = vec![(
         Role::System,
@@ -280,24 +282,25 @@ pub fn build_initial_prompt_messages_with_enabled_tools(
         }
     }
 
-    let today = Local::now().format("%Y-%m-%d").to_string();
-    let working_dir_str = working_dir.to_string_lossy();
-    let platform = std::env::consts::OS;
-    let arch = std::env::consts::ARCH;
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "unknown".to_string());
-    let terminal = std::env::var("TERM_PROGRAM")
-        .or_else(|_| std::env::var("TERM"))
-        .unwrap_or_else(|_| "unknown".to_string());
-
-    let env_message = format!(
-        "Current working directory: {working_dir_str}\n\
-         Today's date: {today}\n\
-         Platform: {platform}\n\
-         Architecture: {arch}\n\
-         Shell: {shell}\n\
-         Terminal: {terminal}"
-    );
-    messages.push((Role::Developer, env_message));
+    if include_runtime_context {
+        let today = Local::now().format("%Y-%m-%d").to_string();
+        let working_dir_str = working_dir.to_string_lossy();
+        let platform = std::env::consts::OS;
+        let arch = std::env::consts::ARCH;
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "unknown".to_string());
+        let terminal = std::env::var("TERM_PROGRAM")
+            .or_else(|_| std::env::var("TERM"))
+            .unwrap_or_else(|_| "unknown".to_string());
+        let env_message = format!(
+            "Current working directory: {working_dir_str}\n\
+             Today's date: {today}\n\
+             Platform: {platform}\n\
+             Architecture: {arch}\n\
+             Shell: {shell}\n\
+             Terminal: {terminal}"
+        );
+        messages.push((Role::Developer, env_message));
+    }
 
     messages
 }
@@ -742,6 +745,7 @@ mod tests {
             &[],
             None,
             true,
+            true,
         );
         let prompt = render_messages(&messages);
         assert!(prompt.contains("## Additional Context"));
@@ -775,6 +779,7 @@ mod tests {
             &[],
             None,
             true,
+            true,
         );
         let prompt = render_messages(&messages);
         // Should not include Project Context section since all files are empty
@@ -782,6 +787,80 @@ mod tests {
         // But should still include working directory and date
         assert!(prompt.contains("Current working directory: /tmp"));
         assert!(prompt.contains("Today's date:"));
+    }
+
+    #[test]
+    fn runtime_context_can_be_omitted_without_changing_other_messages() {
+        let config_dir = default_config_dir();
+        let files = vec![AgentsFile {
+            path: "./AGENTS.md".to_string(),
+            content: "Project instructions.".to_string(),
+        }];
+        let mut catalog = SkillCatalog::empty();
+        catalog.skills.push(Skill {
+            name: "debugging".to_string(),
+            description: "How to debug Rust programs".to_string(),
+            location: PathBuf::from("/project/.agents/skills/debugging/SKILL.md"),
+            base_directory: PathBuf::from("/project/.agents/skills/debugging"),
+            scope: SkillScope::Project,
+        });
+        let enabled = vec!["Read".to_string()];
+        let build = |include_runtime_context: bool| {
+            build_initial_prompt_messages_with_enabled_tools(
+                Path::new("/project"),
+                config_dir.path(),
+                None,
+                None,
+                &files,
+                &catalog,
+                SandboxPolicy::WorkspaceWrite,
+                &[],
+                Some(&enabled),
+                true,
+                include_runtime_context,
+            )
+        };
+
+        let with_context = build(true);
+        let without_context = build(false);
+
+        assert_eq!(without_context.len() + 1, with_context.len());
+        assert_eq!(
+            &with_context[..with_context.len() - 1],
+            without_context.as_slice()
+        );
+        assert_eq!(
+            with_context.last().map(|(role, _)| *role),
+            Some(Role::Developer)
+        );
+        for label in [
+            "Current working directory",
+            "Today's date",
+            "Platform:",
+            "Architecture:",
+            "Shell:",
+            "Terminal:",
+        ] {
+            assert!(
+                !without_context
+                    .iter()
+                    .any(|(_, content)| content.contains(label)),
+                "runtime label {label:?} survived --no-runtime-context"
+            );
+            assert!(
+                with_context
+                    .last()
+                    .is_some_and(|(_, content)| content.contains(label)),
+                "default runtime message is missing {label:?}"
+            );
+        }
+
+        let prompt = render_messages(&without_context);
+        assert!(prompt.contains("## Available tools"));
+        assert!(prompt.contains("## Additional Context"));
+        assert!(prompt.contains("Project instructions."));
+        assert!(prompt.contains("## Skills"));
+        assert!(prompt.contains("<name>debugging</name>"));
     }
 
     /// Writes one project skill into `working_dir` and returns its catalog.
@@ -818,6 +897,7 @@ mod tests {
             SandboxPolicy::WorkspaceWrite,
             &[],
             Some(enabled),
+            true,
             true,
         );
         render_messages(&messages)
@@ -900,6 +980,7 @@ mod tests {
             &[],
             None,
             true,
+            true,
         );
         assert_prompt_snapshot("prompt_empty", &messages);
     }
@@ -921,6 +1002,7 @@ mod tests {
             SandboxPolicy::WorkspaceWrite,
             &[],
             None,
+            true,
             true,
         );
         assert_prompt_snapshot("prompt_with_project_agents", &messages);
@@ -950,6 +1032,7 @@ mod tests {
             &[],
             None,
             true,
+            true,
         );
         assert_prompt_snapshot("prompt_with_user_and_project_agents", &messages);
     }
@@ -975,6 +1058,7 @@ mod tests {
             SandboxPolicy::WorkspaceWrite,
             &[],
             None,
+            true,
             true,
         );
         assert_prompt_snapshot("prompt_with_skill_catalog", &messages);
@@ -1002,6 +1086,7 @@ mod tests {
             SandboxPolicy::WorkspaceWrite,
             &[],
             Some(&enabled),
+            true,
             true,
         );
         assert_prompt_snapshot("prompt_with_bash_only_skill_catalog", &messages);
@@ -1032,6 +1117,7 @@ mod tests {
             SandboxPolicy::WorkspaceWrite,
             &[],
             None,
+            true,
             true,
         );
         assert_prompt_snapshot("prompt_with_agents_and_skills", &messages);
