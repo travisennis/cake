@@ -8,6 +8,7 @@
 use crate::clients::tools::sandbox::{SandboxConfig, SandboxGuard, SandboxPolicy, SandboxStrategy};
 use crate::clients::tools::secure_temp_dir::secure_temp_dir;
 use std::io::Write;
+use std::os::unix::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Output, Stdio};
 use std::sync::OnceLock;
@@ -180,24 +181,43 @@ impl MacOsSandbox {
         profile.blank();
     }
 
-    /// Append SSH agent socket rules to the profile
+    /// Append SSH agent socket rules to the profile.
+    ///
+    /// Seatbelt reaches a Unix-domain socket through write access to the
+    /// socket path, so the socket file is the grant and its directory is not.
+    /// Granting the parent directory instead would make every sibling
+    /// writable: an agent socket inside `~/.ssh` would expose `config`,
+    /// `known_hosts`, and private keys. The parent gets read-only access,
+    /// which is what path traversal needs.
     fn append_ssh_agent_rules(profile: &mut SeatbeltProfileBuilder) {
         profile.comment("SSH agent sockets (for git push over SSH)");
-        // SSH agent sockets are typically in /tmp/ssh-XXXXXX/agent.XXXXXX
-        profile.allow_regex("file-read* file-write*", "^/tmp/ssh-");
+        // Conventional temporary agent layouts. Both patterns are end-anchored
+        // and require the agent socket file name, so a sibling file in the same
+        // directory, including one that shares the directory prefix, stays
+        // denied.
+        profile.allow_regex(
+            "file-read* file-write*",
+            "^/tmp/ssh-[A-Za-z0-9]+/agent\\.[0-9]+$",
+        );
         // On macOS, launchd-managed ssh-agent uses /private/tmp
-        profile.allow_regex("file-read* file-write*", "^/private/tmp/ssh-");
+        profile.allow_regex(
+            "file-read* file-write*",
+            "^/private/tmp/ssh-[A-Za-z0-9]+/agent\\.[0-9]+$",
+        );
         profile.allow_regex(
             "file-read* file-write*",
             "^/private/tmp/com\\.apple\\.launchd\\..*/Listeners$",
         );
-        // Allow the actual SSH_AUTH_SOCK path (may be in a non-standard location
-        // such as ~/.ssh/agent/). Grant read-write on the parent directory so the
-        // sandboxed process can connect to the Unix-domain socket.
-        if let Ok(sock) = std::env::var("SSH_AUTH_SOCK") {
-            let sock_path = std::path::Path::new(&sock);
-            if let Some(parent) = sock_path.parent() {
-                profile.allow_subpath("file-read* file-write*", parent);
+        // A command reaches its agent only through the socket SSH_AUTH_SOCK
+        // names, such as ~/.ssh/agent/s.XXXX (the macOS default) or
+        // ~/.1password/agent.sock. Grant that socket in both the spelling the
+        // variable uses and its resolved form, plus traversal for its parent.
+        if let Some(sock_path) = ssh_auth_sock_path() {
+            for path in resolved_path_variants(&sock_path) {
+                profile.allow_literal("file-read* file-write*", &path);
+                if let Some(parent) = path.parent() {
+                    profile.allow_literal("file-read*", parent);
+                }
             }
         }
         profile.blank();
@@ -455,6 +475,37 @@ impl SandboxStrategy for MacOsSandbox {
 
 fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
+}
+
+/// Return the absolute `SSH_AUTH_SOCK` path when it names a Unix-domain socket.
+///
+/// A relative value cannot match a Seatbelt path rule, and an `SSH_AUTH_SOCK`
+/// that names a directory or a regular file would otherwise turn that path into
+/// a write grant. A stale value for a socket that no longer exists grants
+/// nothing, which matches the connection failure the command would hit anyway.
+fn ssh_auth_sock_path() -> Option<PathBuf> {
+    let path = PathBuf::from(std::env::var_os("SSH_AUTH_SOCK")?);
+    if !path.is_absolute() {
+        return None;
+    }
+    let metadata = std::fs::metadata(&path).ok()?;
+    metadata.file_type().is_socket().then_some(path)
+}
+
+/// Return `path` plus its canonical spelling when the two differ.
+///
+/// Seatbelt matches resolved vnode paths, while `SSH_AUTH_SOCK` and the
+/// conventional agent paths can spell the macOS `/tmp` and `/var/run`
+/// symlinks literally. Emitting both spellings keeps the socket reachable
+/// without widening the grant to a directory.
+fn resolved_path_variants(path: &Path) -> Vec<PathBuf> {
+    let mut paths = vec![path.to_path_buf()];
+    if let Ok(resolved) = path.canonicalize()
+        && resolved != path
+    {
+        paths.push(resolved);
+    }
+    paths
 }
 
 struct SeatbeltProfileBuilder {
@@ -1076,6 +1127,117 @@ mod tests {
         );
     }
 
+    /// Generate a profile whose `HOME` and `SSH_AUTH_SOCK` name a real socket
+    /// at `<home>/<relative>`.
+    fn profile_with_agent_socket(relative: &str) -> (tempfile::TempDir, PathBuf, PathBuf, String) {
+        let fixture = tempfile::tempdir().unwrap();
+        let home = fixture.path().join("home");
+        let socket = home.join(relative);
+        std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
+        // A listener is the socket fixture: ssh resolves its agent only from
+        // SSH_AUTH_SOCK, so the profile must grant the real socket type.
+        let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let profile = temp_env::with_vars(
+            [
+                ("HOME", Some(home.to_str().unwrap())),
+                ("SSH_AUTH_SOCK", Some(socket.to_str().unwrap())),
+            ],
+            || MacOsSandbox::generate_profile(&test_config()),
+        );
+        (fixture, home, socket, profile)
+    }
+
+    #[test]
+    fn ssh_agent_socket_grant_does_not_widen_its_parent() {
+        // The first layout puts the socket beside real SSH trust files; the
+        // second is the macOS ssh-agent default directory.
+        for relative in [".ssh/s.test", ".ssh/agent/s.test"] {
+            let (_fixture, home, socket, profile) = profile_with_agent_socket(relative);
+            let parent = socket.parent().unwrap();
+            let home_text = home.to_str().unwrap();
+            let parent_text = parent.to_str().unwrap();
+
+            // SSH_AUTH_SOCK and its resolved spelling both stay reachable:
+            // tempfile hands back a /var path whose canonical form is
+            // /private/var.
+            let resolved = socket.canonicalize().unwrap();
+            for socket_text in [socket.to_str().unwrap(), resolved.to_str().unwrap()] {
+                assert!(
+                    profile.contains(&format!(
+                        "(allow file-read* file-write* (literal \"{socket_text}\"))"
+                    )),
+                    "Expected a write grant for the socket itself: {socket_text}"
+                );
+            }
+            for parent_text in [parent_text, resolved.parent().unwrap().to_str().unwrap()] {
+                assert!(
+                    profile.contains(&format!("(allow file-read* (literal \"{parent_text}\"))")),
+                    "Expected read-only traversal for the socket parent: {parent_text}"
+                );
+            }
+            assert!(
+                !profile.contains(&format!(
+                    "(allow file-read* file-write* (subpath \"{parent_text}\"))"
+                )),
+                "The socket parent must not be writable: {parent_text}"
+            );
+            assert!(
+                !profile.contains(&format!(
+                    "(allow file-read* file-write* (subpath \"{home_text}/.ssh\"))"
+                )),
+                "~/.ssh must not be writable"
+            );
+
+            // Nothing under ~/.ssh is writable except the agent socket.
+            for line in profile
+                .lines()
+                .filter(|line| line.contains("file-write*") && line.contains(".ssh"))
+            {
+                assert!(
+                    line.contains("s.test"),
+                    "Unexpected write grant beside the agent socket: {line}"
+                );
+            }
+
+            // The read-only SSH configuration grants are unchanged.
+            for name in ["config", "known_hosts"] {
+                assert!(
+                    profile.contains(&format!(
+                        "(allow file-read* (literal \"{home_text}/.ssh/{name}\"))"
+                    )),
+                    "Expected {name} to stay readable"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ssh_agent_grant_skips_values_that_name_no_socket() {
+        let fixture = tempfile::tempdir().unwrap();
+        let home = fixture.path().join("home");
+        let ssh_dir = home.join(".ssh");
+        std::fs::create_dir_all(&ssh_dir).unwrap();
+        let regular_file = ssh_dir.join("not-a-key");
+        std::fs::write(&regular_file, b"fixture").unwrap();
+
+        for value in [ssh_dir, regular_file] {
+            let profile = temp_env::with_vars(
+                [
+                    ("HOME", Some(home.to_str().unwrap())),
+                    ("SSH_AUTH_SOCK", Some(value.to_str().unwrap())),
+                ],
+                || MacOsSandbox::generate_profile(&test_config()),
+            );
+            assert!(
+                !profile
+                    .lines()
+                    .any(|line| line.contains("file-write*") && line.contains(".ssh")),
+                "SSH_AUTH_SOCK={} must not become a write grant",
+                value.display()
+            );
+        }
+    }
+
     #[test]
     fn test_profile_allows_git_xdg_config() {
         let profile = MacOsSandbox::generate_profile(&test_config());
@@ -1285,5 +1447,76 @@ mod tests {
             .is_some_and(|remainder| remainder.ends_with(&suffix));
 
         assert!(wildcard_match, "pattern {pattern} must match {path}");
+    }
+
+    /// Match `path` against an SSH temporary socket rule of the emitted shape
+    /// `^<prefix>[A-Za-z0-9]+/agent\.[0-9]+$`.
+    ///
+    /// A broader pattern fails every match here, so the test cannot pass by
+    /// restating a looser rule.
+    fn ssh_agent_socket_rule_matches(pattern: &str, path: &str) -> bool {
+        let Some(prefix) = pattern
+            .strip_prefix('^')
+            .and_then(|rule| rule.strip_suffix("/agent\\.[0-9]+$"))
+            .and_then(|rule| rule.strip_suffix("[A-Za-z0-9]+"))
+        else {
+            return false;
+        };
+        let Some(relative) = path.strip_prefix(prefix) else {
+            return false;
+        };
+        let Some((directory, pid)) = relative.split_once("/agent.") else {
+            return false;
+        };
+        !directory.is_empty()
+            && directory.chars().all(|c| c.is_ascii_alphanumeric())
+            && !pid.is_empty()
+            && pid.chars().all(|c| c.is_ascii_digit())
+    }
+
+    #[test]
+    fn temporary_ssh_agent_socket_rules_exclude_siblings() {
+        let profile = MacOsSandbox::generate_profile(&test_config());
+        let patterns: Vec<&str> = profile
+            .lines()
+            .filter_map(|line| {
+                line.strip_prefix("(allow file-read* file-write* (regex #\"")
+                    .and_then(|pattern| pattern.strip_suffix("\"))"))
+            })
+            .filter(|pattern| pattern.contains("/ssh-"))
+            .collect();
+        assert_eq!(
+            patterns.len(),
+            2,
+            "expected the /tmp and /private/tmp agent socket rules: {patterns:?}"
+        );
+
+        for pattern in patterns {
+            assert!(
+                pattern.starts_with('^') && pattern.ends_with("/agent\\.[0-9]+$"),
+                "temporary agent socket rule must be anchored to the socket file: {pattern}"
+            );
+            let directory = pattern
+                .trim_start_matches('^')
+                .trim_end_matches("/agent\\.[0-9]+$")
+                .replace("[A-Za-z0-9]+", "AbC123");
+            let socket = format!("{directory}/agent.4242");
+            assert!(
+                ssh_agent_socket_rule_matches(pattern, &socket),
+                "{pattern} must match {socket}"
+            );
+            for sibling in [
+                format!("{directory}/known_hosts"),
+                format!("{directory}/agent"),
+                format!("{directory}/agent.4242.bak"),
+                format!("{directory}/agent.4242/id_ed25519"),
+                format!("{directory}-extra/agent.4242"),
+            ] {
+                assert!(
+                    !ssh_agent_socket_rule_matches(pattern, &sibling),
+                    "{pattern} must not match {sibling}"
+                );
+            }
+        }
     }
 }
