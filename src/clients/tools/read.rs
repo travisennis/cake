@@ -4,8 +4,8 @@ use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 
 use crate::clients::tools::{
-    ToolContext, contains_null_byte, decode_utf8, resolve_path_for_read_scheduling,
-    validate_path_in_cwd,
+    ToolContext, contains_null_byte, decode_utf8, file_access::validate_regular_file,
+    resolve_path_for_read_scheduling, validate_path_in_cwd,
 };
 use crate::config::settings::ToolLimits;
 use crate::session_telemetry::{CompensationEventTelemetry, CompensationKind};
@@ -90,18 +90,9 @@ pub(super) fn execute_read(
     // Validate and canonicalize the path
     let path = validate_path_in_cwd(context, &args.path)?;
 
-    // Check if path exists
-    if !path.exists() {
-        return Err(format!("Path not found: {}", path.display()));
-    }
-
-    // Reject directories
-    if path.is_dir() {
-        return Err(format!(
-            "Path is a directory, not a file: {}",
-            path.display()
-        ));
-    }
+    // Reject directories, pipes, sockets, and other objects before the
+    // blocking open; a named pipe with no writer never returns from it.
+    validate_regular_file(&path)?;
 
     // Handle file
     read_file(&path, args.start_line, args.end_line, &context.limits)
@@ -575,6 +566,8 @@ fn no_content_result(path: &Path, total_lines: usize) -> super::ToolResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use crate::clients::tools::file_access::process_isolation;
     use std::fmt::Write;
     use std::fs;
     use tempfile::TempDir;
@@ -700,6 +693,75 @@ mod tests {
         let result = execute_read(&ToolContext::from_current_process(), &args);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("is a directory, not a file"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_rejects_fifo_without_a_writer() {
+        // A regression in the object-type precheck would make the blocking
+        // open wait forever, so the body runs in a child process with an
+        // external deadline.
+        if !process_isolation::in_child() {
+            process_isolation::run_isolated(
+                "read_rejects_fifo_without_a_writer",
+                std::time::Duration::from_secs(10),
+            );
+            return;
+        }
+
+        let temp_dir = TempDir::new().unwrap();
+        let fifo = temp_dir.path().join("pipe.txt");
+        create_fifo(&fifo);
+
+        let args = serde_json::json!({ "path": fifo.to_str().unwrap() }).to_string();
+        let err = execute_read(&ToolContext::from_current_process(), &args).unwrap_err();
+
+        assert!(err.contains("is not a regular file"), "{err}");
+        assert!(err.contains("pipe.txt"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_rejects_unix_socket() {
+        let temp_dir = TempDir::new().unwrap();
+        let socket = temp_dir.path().join("agent.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+
+        let args = serde_json::json!({ "path": socket.to_str().unwrap() }).to_string();
+        let err = execute_read(&ToolContext::from_current_process(), &args).unwrap_err();
+
+        assert!(err.contains("is not a regular file"), "{err}");
+        assert!(err.contains("agent.sock"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_follows_symlink_to_regular_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let target = temp_dir.path().join("target.txt");
+        fs::write(&target, "Line 1\nLine 2").unwrap();
+        let link = temp_dir.path().join("link.txt");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let args = serde_json::json!({ "path": link.to_str().unwrap() }).to_string();
+        let result = execute_read(&ToolContext::from_current_process(), &args).unwrap();
+
+        assert!(
+            result.output.contains("     1: Line 1"),
+            "{}",
+            result.output
+        );
+    }
+
+    /// Create a named pipe with no writer, which blocks `File::open` until the
+    /// object-type precheck rejects it.
+    #[cfg(unix)]
+    fn create_fifo(path: &std::path::Path) {
+        let status = std::process::Command::new("mkfifo")
+            .arg(path)
+            .status()
+            .unwrap();
+        assert!(status.success(), "mkfifo failed for {}", path.display());
     }
 
     #[test]
