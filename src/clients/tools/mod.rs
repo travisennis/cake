@@ -251,6 +251,7 @@ pub fn get_settings_dirs(context: &ToolContext) -> &[PathBuf] {
 
 mod bash;
 mod edit;
+mod file_access;
 mod json_repair;
 mod read;
 mod read_image;

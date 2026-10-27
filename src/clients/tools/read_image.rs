@@ -4,7 +4,10 @@ use std::path::Path;
 use base64::Engine as _;
 use serde::Deserialize;
 
-use crate::clients::tools::{ToolContext, resolve_path_for_read_scheduling, validate_path_in_cwd};
+use crate::clients::tools::{
+    ToolContext, file_access::validate_regular_file, resolve_path_for_read_scheduling,
+    validate_path_in_cwd,
+};
 use crate::types::ImagePart;
 
 // =============================================================================
@@ -65,16 +68,9 @@ pub(super) fn execute_read_image(
 
     let path = validate_path_in_cwd(context, &args.path)?;
 
-    if !path.exists() {
-        return Err(format!("Path not found: {}", path.display()));
-    }
-
-    if path.is_dir() {
-        return Err(format!(
-            "Path is a directory, not a file: {}",
-            path.display()
-        ));
-    }
+    // Reject directories, pipes, sockets, and other objects before the
+    // blocking open; a named pipe with no writer never returns from it.
+    validate_regular_file(&path)?;
 
     let bytes = read_bounded(&path, context.limits.read_image_max_bytes)?;
 
@@ -169,6 +165,8 @@ fn unsupported_image_error(path: &Path, detected: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use crate::clients::tools::file_access::process_isolation;
     use crate::config::settings::DEFAULT_READ_IMAGE_MAX_BYTES;
     use tempfile::TempDir;
 
@@ -284,6 +282,72 @@ mod tests {
         let err = execute_read_image(&ToolContext::from_current_process(), &args).unwrap_err();
 
         assert!(err.contains("is a directory"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_image_rejects_fifo_without_a_writer() {
+        // A regression in the object-type precheck would make the blocking
+        // open wait forever, so the body runs in a child process with an
+        // external deadline.
+        if !process_isolation::in_child() {
+            process_isolation::run_isolated(
+                "read_image_rejects_fifo_without_a_writer",
+                std::time::Duration::from_secs(10),
+            );
+            return;
+        }
+
+        let temp_dir = TempDir::new().unwrap();
+        let fifo = temp_dir.path().join("pipe.png");
+        create_fifo(&fifo);
+
+        let args = serde_json::json!({ "path": fifo.to_str().unwrap() }).to_string();
+        let err = execute_read_image(&ToolContext::from_current_process(), &args).unwrap_err();
+
+        assert!(err.contains("is not a regular file"), "{err}");
+        assert!(err.contains("pipe.png"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_image_rejects_unix_socket() {
+        let temp_dir = TempDir::new().unwrap();
+        let socket = temp_dir.path().join("agent.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+
+        let args = serde_json::json!({ "path": socket.to_str().unwrap() }).to_string();
+        let err = execute_read_image(&ToolContext::from_current_process(), &args).unwrap_err();
+
+        assert!(err.contains("is not a regular file"), "{err}");
+        assert!(err.contains("agent.sock"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_image_follows_symlink_to_regular_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let target = temp_dir.path().join("red.png");
+        std::fs::write(&target, TINY_PNG).unwrap();
+        let link = temp_dir.path().join("link.png");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let args = serde_json::json!({ "path": link.to_str().unwrap() }).to_string();
+        let result = execute_read_image(&ToolContext::from_current_process(), &args).unwrap();
+
+        assert_eq!(result.images.len(), 1);
+        assert_eq!(result.images[0].media_type, "image/png");
+    }
+
+    /// Create a named pipe with no writer, which blocks `File::open` until the
+    /// object-type precheck rejects it.
+    #[cfg(unix)]
+    fn create_fifo(path: &std::path::Path) {
+        let status = std::process::Command::new("mkfifo")
+            .arg(path)
+            .status()
+            .unwrap();
+        assert!(status.success(), "mkfifo failed for {}", path.display());
     }
 
     #[test]
