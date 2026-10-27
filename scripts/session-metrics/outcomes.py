@@ -1,14 +1,127 @@
 #!/usr/bin/env python3
 """Task and invocation outcomes: success rates, durations, turns, permission
-denials, and abnormal terminations.
+denials by source, and abnormal terminations.
 
 Sources: transcript task_complete/result records and telemetry session_summary.
 """
 
+import re
 from collections import Counter, defaultdict
 
 import cakelib
 from cakelib import fmt_int, fmt_ms, fmt_pct, percentile, print_header, print_table
+
+# ---------------------------------------------------------------------------
+# Permission-denial attribution
+# ---------------------------------------------------------------------------
+# Every `permission_denials` label is `{tool}({call_id}): {text}`, and the text
+# after that separator identifies the gate that denied the call, by this
+# precedence:
+#
+#   `judge block: `       -> judge-block        (judge_denial_label,
+#                                                src/clients/agent/agent_loop.rs)
+#   `judge fail-closed: ` -> judge-fail-closed  (same)
+#   `sandbox: `           -> sandbox            (SandboxPathRef::permission_label,
+#                                                src/clients/tools/bash.rs)
+#   `path: `              -> path               (the in-process path gate)
+#   `{hook_path}: {rest}` -> hook, unless `rest` itself begins with one of the
+#                            tokens above, which then wins
+#   anything else         -> other
+#
+# A hook denial is `{tool}({call_id}): {hook_path}: {reason}`, and `{reason}` is
+# hook-supplied text (src/hooks.rs), so a reason that itself begins with a cake
+# token is attributed to that token's source rather than to `hook`. That is
+# recorded behavior, not an accident to correct here: the label content is a
+# compatibility surface, so this report pins the precedence with tests instead
+# of changing what cake writes. A label without the separator, or with text in
+# none of these shapes, is counted as `other` rather than dropped --- the same
+# accounting discipline the judge linkage table in `tools.py` uses.
+#
+# Metadata only: the source name is the only label-derived value that enters the
+# report. The reason text, the denied path, and the command never do.
+DENIAL_SOURCES = (
+    "judge-block", "judge-fail-closed", "sandbox", "path", "hook", "other",
+)
+_DENIAL_TOKENS = (
+    ("judge block: ", "judge-block"),
+    ("judge fail-closed: ", "judge-fail-closed"),
+    ("sandbox: ", "sandbox"),
+    ("path: ", "path"),
+)
+_DENIAL_SEPARATOR = re.compile(r"^[^()]+\([^()]*\): ")
+
+
+def _token_source(text: str) -> str | None:
+    for prefix, source in _DENIAL_TOKENS:
+        if text.startswith(prefix):
+            return source
+    return None
+
+
+def denial_source(label: object) -> str:
+    """The gate a `permission_denials` label is attributed to."""
+    if not isinstance(label, str):
+        return "other"
+    separator = _DENIAL_SEPARATOR.match(label)
+    if separator is None:
+        return "other"
+    text = label[separator.end():]
+    source = _token_source(text)
+    if source is not None:
+        return source
+    head, sep, rest = text.partition(": ")
+    if not sep or not head:
+        return "other"
+    # The hook shape is `{hook_path}: {reason}`. The reason's own leading token
+    # wins, which is the ambiguity documented above.
+    return _token_source(rest) or "hook"
+
+
+def denial_counts(tasks: list[dict]) -> tuple[int, int, Counter, Counter]:
+    """Event and task counts for the in-window completed tasks.
+
+    Returns (events, denied_tasks, events_by_source, tasks_by_source).
+    `events_by_source` sums to `events`, so the breakdown reconciles with the
+    flat total; `tasks_by_source` counts a task once per source it carries, so
+    a task denied by two gates appears under both.
+    """
+    events = 0
+    denied_tasks = 0
+    by_source: Counter = Counter()
+    tasks_by_source: Counter = Counter()
+    for task in tasks:
+        labels = task.get("permission_denials")
+        if not labels:
+            continue
+        if not isinstance(labels, list):
+            labels = [labels]
+        denied_tasks += 1
+        events += len(labels)
+        sources = Counter(denial_source(label) for label in labels)
+        by_source.update(sources)
+        tasks_by_source.update(sources.keys())
+    return events, denied_tasks, by_source, tasks_by_source
+
+
+def denial_rows(tasks: list[dict]) -> tuple[list[list[str]], int, int]:
+    """The per-source table for the in-window tasks, plus its flat totals.
+
+    Returns (rows, events, denied_tasks). Rows are ordered by event count
+    (ties in vocabulary order) and end with a TOTAL row, so the parts visibly
+    sum to the flat total. Sources with no events get no row; `other` appears
+    whenever a label shape was outside the vocabulary, so nothing is dropped
+    silently.
+    """
+    total, denied_tasks, by_source, tasks_by_source = denial_counts(tasks)
+    rows = [
+        [source, fmt_int(by_source[source]), fmt_int(tasks_by_source[source])]
+        for source in sorted(
+            by_source, key=lambda s: (-by_source[s], DENIAL_SOURCES.index(s))
+        )
+    ]
+    if rows:
+        rows.append(["TOTAL", fmt_int(total), fmt_int(denied_tasks)])
+    return rows, total, denied_tasks
 
 
 def run(data: cakelib.Dataset) -> None:
@@ -43,10 +156,11 @@ def run(data: cakelib.Dataset) -> None:
                          fmt_int(percentile(tool_counts, 90)), fmt_int(max(tool_counts))])
         print_table(["metric", "p50", "p90", "max"], rows)
 
-        denials = [t.get("permission_denials") for t in tasks if t.get("permission_denials")]
-        flat = [d for group in denials for d in (group if isinstance(group, list) else [group])]
-        print(f"\nPermission denials recorded: {fmt_int(len(flat))} across "
-              f"{fmt_int(len(denials))} tasks")
+        denial_table, total, denied_tasks = denial_rows(tasks)
+        print(f"\nPermission denials recorded: {fmt_int(total)} across "
+              f"{fmt_int(denied_tasks)} tasks")
+        if denial_table:
+            print_table(["source", "events", "tasks"], denial_table)
 
         print("\nTasks per session (completed, in window):")
         per_session = Counter(len(s.tasks_in_window(data.cutoff)) for s in data.sessions)
