@@ -1114,6 +1114,8 @@ fn snapshot_session_json_compaction() {
             after_tokens: 400,
             basis: EstimateBasis::ContentClass,
         },
+        summary_usage: None,
+        summary_time_ms: None,
     }));
     serde_json::from_value::<SessionRecord>(json.clone())
         .expect("the snapshot is a valid, loadable checkpoint record");

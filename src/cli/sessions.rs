@@ -47,7 +47,8 @@ Examples:
 Reads one JSON payload from stdin. Cake owns the record envelope, the
 checkpoint and session ids, the timestamp, the boundary, the lock, validation,
 and the append. The caller owns the summary, the retained tail, the trigger,
-and the token estimates.")]
+the token estimates, and the optional summary_usage and summary_time_ms
+measurement fields.")]
     Checkpoint {
         /// Session UUID to append the checkpoint to
         #[arg(value_name = "UUID")]

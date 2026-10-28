@@ -123,6 +123,41 @@ fn compaction_checkpoint_round_trips_retained_provenance() {
 }
 
 #[test]
+fn compaction_checkpoint_round_trips_summary_usage() {
+    let mut data = provenance_checkpoint();
+    data.summary_usage = Some(SummaryUsage {
+        input_tokens: 1457,
+        cached_tokens: 0,
+        output_tokens: 779,
+        reasoning_tokens: 291,
+        summary_visible_tokens: 488,
+        total_tokens: 2236,
+    });
+    data.summary_time_ms = Some(6757);
+
+    let json = checkpoint_json(&data);
+    assert_eq!(json["summary_usage"]["input_tokens"], 1457);
+    assert_eq!(json["summary_usage"]["cached_tokens"], 0);
+    assert_eq!(json["summary_usage"]["reasoning_tokens"], 291);
+    assert_eq!(json["summary_usage"]["summary_visible_tokens"], 488);
+    assert_eq!(json["summary_time_ms"], 6757);
+
+    let parsed = deserialize_record(&json.to_string()).expect("checkpoint should load");
+    let SessionRecord::Compaction(parsed) = parsed else {
+        panic!("expected a compaction record");
+    };
+    assert_eq!(parsed.summary_usage, data.summary_usage);
+    assert_eq!(parsed.summary_time_ms, data.summary_time_ms);
+}
+
+#[test]
+fn compaction_checkpoint_omits_absent_summary_usage() {
+    let json = checkpoint_json(&provenance_checkpoint());
+    assert!(json.get("summary_usage").is_none());
+    assert!(json.get("summary_time_ms").is_none());
+}
+
+#[test]
 fn compaction_checkpoint_rejects_unknown_version() {
     let data = checkpoint("checkpoint-1", "summary", vec![]);
     let mut json = checkpoint_json(&data);

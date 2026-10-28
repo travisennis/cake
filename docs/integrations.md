@@ -196,6 +196,7 @@ Live `function_call` and `function_call_output` records may carry an optional `r
 - `hook_event`: hook execution, decision, timing, and bounded diagnostics.
 - `turn_usage`: one main-agent provider attempt's reported usage, with optional 1-based `attempt`, `terminal_class`, `usage_presence`, `model`, `response_model`, `provider_request_id`, `context_window`, and `remaining_context_tokens`. The budget pair is present only when the window is configured and the provider reported complete usage.
 - `task_complete`: outcome, duration, turns, tool-call count, result or error, usage, and optional permission denials. Denial strings keep the existing `Tool(call): ...` shape; filesystem-sandbox entries use `sandbox: <operation> <path>` after that prefix, where operation is `read`, `write`, or `execute`. A `limit_exceeded` outcome also carries the fired `limit` key and a partial `result`.
+- `compaction`: checkpoint identity, summary, retained tail, model and instruction metadata, token estimates, and optional summarizer `summary_usage` and `summary_time_ms`. The usage object is the flat provider measurement; both fields are absent on records written before they existed and when the summarizer made no model call.
 
 Serialization snapshots under `src/types/snapshots/` provide canonical record examples.
 
@@ -218,12 +219,23 @@ The caller owns the selection, the summary, the retained tail, the trigger, and 
   ],
   "estimated_input": { "before_tokens": 12000, "after_tokens": 3000, "basis": "measured_usage" },
   "summary_instruction_version": 1,
+  "summary_usage": {
+    "input_tokens": 1457,
+    "cached_tokens": 0,
+    "output_tokens": 779,
+    "reasoning_tokens": 291,
+    "summary_visible_tokens": 488,
+    "total_tokens": 2236
+  },
+  "summary_time_ms": 6757,
   "model": { "model": "gpt-5.6-luna", "model_config": "luna-high" },
   "task_id": "optional; defaults to the latest task_start"
 }
 ```
 
 `retained` holds the same restricted union a checkpoint persists: `message`, `reasoning`, `function_call`, and `function_call_output` payloads, with their optional pin, origin, skill-read, and source-task metadata. Every retained call needs its matching output, and a retained message may not have the `system` or `tool` role. `model` defaults to the session's recorded model identity and `task_id` to the newest `task_start`; the command rejects a payload when neither source exists. `estimated_input.after_tokens` must be below `before_tokens`.
+
+`summary_usage` is optional and records the summarizer's provider-reported tokens when it made a model call: input, cached input, output, hidden reasoning, visible output, and total. `summary_time_ms` is optional and records the summary stage's wall time. Both are copied into the `compaction` record unchanged; a file or command summarizer omits them rather than writing zeroes.
 
 The command takes the session's exclusive append lock first, repairs an interrupted final record under that lock, and reads identity and history through the same handle. Prior bytes are never rewritten: a `compaction` record is appended only. Validation uses the M1 rules --- checkpoint structure, retained roles and complete call/output pairing, pin and provenance placement, nonempty identity and summary, the framed 8 MiB record ceiling, and the token reduction --- and runs before the writer is used, so a rejected payload leaves the file byte-stable. A failed append preserves the original error and no later append is attempted.
 

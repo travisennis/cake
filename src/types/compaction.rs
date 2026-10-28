@@ -256,6 +256,25 @@ impl RetainedRecord {
     }
 }
 
+/// Provider-reported usage for the summarizer that produced a checkpoint.
+///
+/// The flat shape matches the result document external compaction callers
+/// already report. It is optional on a checkpoint because a file or command
+/// summarizer has no provider usage to record.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "the field names mirror the external checkpoint protocol"
+)]
+pub struct SummaryUsage {
+    pub input_tokens: u64,
+    pub cached_tokens: u64,
+    pub output_tokens: u64,
+    pub reasoning_tokens: u64,
+    pub summary_visible_tokens: u64,
+    pub total_tokens: u64,
+}
+
 /// One saved summary plus the retained tail that replaces retired history.
 #[derive(Debug, Clone, Serialize)]
 pub struct CompactionData {
@@ -277,6 +296,13 @@ pub struct CompactionData {
     /// Version of the summary instruction that produced `summary`.
     pub summary_instruction_version: u32,
     pub estimated_input: EstimatedInput,
+    /// The summarizer's provider-reported usage, when it made a model call and
+    /// the provider reported one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_usage: Option<SummaryUsage>,
+    /// Wall time of the summary stage in milliseconds, when measured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_time_ms: Option<u64>,
 }
 
 /// Deserialization twin for [`CompactionData`].
@@ -298,6 +324,10 @@ struct CompactionDataWire {
     model: ModelIdentity,
     summary_instruction_version: u32,
     estimated_input: EstimatedInput,
+    #[serde(default)]
+    summary_usage: Option<SummaryUsage>,
+    #[serde(default)]
+    summary_time_ms: Option<u64>,
 }
 
 impl From<CompactionDataWire> for CompactionData {
@@ -314,6 +344,8 @@ impl From<CompactionDataWire> for CompactionData {
             model: wire.model,
             summary_instruction_version: wire.summary_instruction_version,
             estimated_input: wire.estimated_input,
+            summary_usage: wire.summary_usage,
+            summary_time_ms: wire.summary_time_ms,
         }
     }
 }
@@ -617,6 +649,8 @@ pub mod test_support {
                 after_tokens: 40,
                 basis: EstimateBasis::ContentClass,
             },
+            summary_usage: None,
+            summary_time_ms: None,
         }
     }
 
