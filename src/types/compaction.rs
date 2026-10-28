@@ -260,8 +260,11 @@ impl RetainedRecord {
 ///
 /// The flat shape matches the result document external compaction callers
 /// already report. It is optional on a checkpoint because a file or command
-/// summarizer has no provider usage to record.
+/// summarizer has no provider usage to record. `cached_tokens` is a subset of
+/// `input_tokens`; `summary_visible_tokens` is `output_tokens - reasoning_tokens`
+/// clamped at zero; `total_tokens` is the provider-reported total.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(deny_unknown_fields)]
 #[expect(
     clippy::struct_field_names,
     reason = "the field names mirror the external checkpoint protocol"

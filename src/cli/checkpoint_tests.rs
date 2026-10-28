@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
+use clap::CommandFactory;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -122,6 +123,43 @@ fn payload_bytes(payload: &Value) -> Vec<u8> {
 
 fn append(dd: &DataDir, payload: &Value) -> Result<CheckpointOutcome, CheckpointError> {
     append_checkpoint(dd, session_uuid(), &payload_bytes(payload))
+}
+
+#[test]
+fn payload_without_measurements_appends_absent_fields() {
+    let (dd, _tmp) = make_data_dir();
+    let path = session_path(&dd);
+    basic_session(&path, Some("gpt-test"));
+
+    let mut legacy = payload();
+    let object = legacy.as_object_mut().expect("payload is an object");
+    object.remove("summary_usage");
+    object.remove("summary_time_ms");
+
+    append(&dd, &legacy).unwrap();
+
+    let loaded = Session::load(&path).unwrap();
+    let checkpoint = loaded
+        .context_seed()
+        .checkpoint
+        .expect("the appended checkpoint restores");
+    assert_eq!(checkpoint.summary_usage, None);
+    assert_eq!(checkpoint.summary_time_ms, None);
+}
+
+#[test]
+fn checkpoint_help_advertises_measurement_fields() {
+    let mut command = crate::cli::SessionsCommand::command();
+    let checkpoint = command
+        .find_subcommand_mut("checkpoint")
+        .expect("sessions checkpoint subcommand");
+    let help = checkpoint.render_help().to_string();
+    for field in ["summary_usage", "summary_time_ms"] {
+        assert!(
+            help.contains(field),
+            "sessions checkpoint --help must advertise {field}:\n{help}"
+        );
+    }
 }
 
 #[test]
@@ -272,6 +310,9 @@ fn invalid_payloads_are_input_errors_that_write_nothing() {
     let mut invalid_summary_usage = payload();
     invalid_summary_usage["summary_usage"] = json!({"input_tokens": "many"});
 
+    let mut unknown_summary_field = payload();
+    unknown_summary_field["summary_usage"]["cache_write_tokens"] = json!(0);
+
     let mut cases: Vec<(&str, Vec<u8>)> = vec![
         ("invalid json", b"{ not json".to_vec()),
         ("not an object", b"[]".to_vec()),
@@ -290,6 +331,10 @@ fn invalid_payloads_are_input_errors_that_write_nothing() {
         (
             "invalid summary usage",
             payload_bytes(&invalid_summary_usage),
+        ),
+        (
+            "unknown summary usage field",
+            payload_bytes(&unknown_summary_field),
         ),
     ];
     cases.push((
