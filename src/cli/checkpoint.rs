@@ -23,7 +23,7 @@ use crate::config::session::{Session, SessionWriter};
 use crate::config::{DataDir, SessionLockedError};
 use crate::types::compaction::{
     CHECKPOINT_VERSION, CompactionData, CompactionTrigger, EstimatedInput,
-    MAX_CHECKPOINT_RECORD_BYTES, ModelIdentity, RetainedRecord,
+    MAX_CHECKPOINT_RECORD_BYTES, ModelIdentity, RetainedRecord, SummaryUsage,
 };
 use crate::types::session::SessionRecord;
 
@@ -62,6 +62,10 @@ struct CheckpointPayload {
     model: Option<ModelIdentity>,
     #[serde(default)]
     task_id: Option<String>,
+    #[serde(default)]
+    summary_usage: Option<SummaryUsage>,
+    #[serde(default)]
+    summary_time_ms: Option<u64>,
 }
 
 impl CheckpointPayload {
@@ -273,6 +277,8 @@ fn append_checkpoint(
         model: resolve_model(payload.model, &session)?,
         summary_instruction_version: payload.summary_instruction_version,
         estimated_input: payload.estimated_input,
+        summary_usage: payload.summary_usage,
+        summary_time_ms: payload.summary_time_ms,
     };
 
     // Validate before the writer is used, so a rejected checkpoint is an input

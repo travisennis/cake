@@ -3,12 +3,13 @@
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
+use clap::CommandFactory;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
 use super::*;
 use crate::config::session::CURRENT_FORMAT_VERSION;
-use crate::types::compaction::EstimateBasis;
+use crate::types::compaction::{EstimateBasis, SummaryUsage};
 use crate::types::session::{FunctionCallData, FunctionCallOutputData, MessageData};
 use crate::types::{GitState, Role};
 
@@ -103,7 +104,16 @@ fn payload() -> Value {
             "after_tokens": 3000,
             "basis": "measured_usage"
         },
-        "summary_instruction_version": 1
+        "summary_instruction_version": 1,
+        "summary_usage": {
+            "input_tokens": 1457,
+            "cached_tokens": 0,
+            "output_tokens": 779,
+            "reasoning_tokens": 291,
+            "summary_visible_tokens": 488,
+            "total_tokens": 2236
+        },
+        "summary_time_ms": 6757
     })
 }
 
@@ -113,6 +123,43 @@ fn payload_bytes(payload: &Value) -> Vec<u8> {
 
 fn append(dd: &DataDir, payload: &Value) -> Result<CheckpointOutcome, CheckpointError> {
     append_checkpoint(dd, session_uuid(), &payload_bytes(payload))
+}
+
+#[test]
+fn payload_without_measurements_appends_absent_fields() {
+    let (dd, _tmp) = make_data_dir();
+    let path = session_path(&dd);
+    basic_session(&path, Some("gpt-test"));
+
+    let mut legacy = payload();
+    let object = legacy.as_object_mut().expect("payload is an object");
+    object.remove("summary_usage");
+    object.remove("summary_time_ms");
+
+    append(&dd, &legacy).unwrap();
+
+    let loaded = Session::load(&path).unwrap();
+    let checkpoint = loaded
+        .context_seed()
+        .checkpoint
+        .expect("the appended checkpoint restores");
+    assert_eq!(checkpoint.summary_usage, None);
+    assert_eq!(checkpoint.summary_time_ms, None);
+}
+
+#[test]
+fn checkpoint_help_advertises_measurement_fields() {
+    let mut command = crate::cli::SessionsCommand::command();
+    let checkpoint = command
+        .find_subcommand_mut("checkpoint")
+        .expect("sessions checkpoint subcommand");
+    let help = checkpoint.render_help().to_string();
+    for field in ["summary_usage", "summary_time_ms"] {
+        assert!(
+            help.contains(field),
+            "sessions checkpoint --help must advertise {field}:\n{help}"
+        );
+    }
 }
 
 #[test]
@@ -163,8 +210,24 @@ fn assert_restored_checkpoint(path: &Path, outcome: &CheckpointOutcome) {
     assert_eq!(checkpoint.model.model_config.as_deref(), Some("test"));
     assert_eq!(checkpoint.model.reasoning_effort, None);
     assert_eq!(checkpoint.trigger, CompactionTrigger::Manual);
+    assert_restored_summary_usage(&checkpoint);
     // The retained tail lives once inside the checkpoint, not as extra records.
     assert_eq!(checkpoint.retained.len(), 1);
+}
+
+fn assert_restored_summary_usage(checkpoint: &CompactionData) {
+    assert_eq!(
+        checkpoint.summary_usage,
+        Some(SummaryUsage {
+            input_tokens: 1457,
+            cached_tokens: 0,
+            output_tokens: 779,
+            reasoning_tokens: 291,
+            summary_visible_tokens: 488,
+            total_tokens: 2236,
+        })
+    );
+    assert_eq!(checkpoint.summary_time_ms, Some(6757));
 }
 
 #[test]
@@ -244,6 +307,12 @@ fn invalid_payloads_are_input_errors_that_write_nothing() {
     let mut empty_model = payload();
     empty_model["model"] = json!({"model": "  "});
 
+    let mut invalid_summary_usage = payload();
+    invalid_summary_usage["summary_usage"] = json!({"input_tokens": "many"});
+
+    let mut unknown_summary_field = payload();
+    unknown_summary_field["summary_usage"]["cache_write_tokens"] = json!(0);
+
     let mut cases: Vec<(&str, Vec<u8>)> = vec![
         ("invalid json", b"{ not json".to_vec()),
         ("not an object", b"[]".to_vec()),
@@ -259,6 +328,14 @@ fn invalid_payloads_are_input_errors_that_write_nothing() {
         ("grown context", payload_bytes(&grown)),
         ("empty summary", payload_bytes(&empty_summary)),
         ("empty model", payload_bytes(&empty_model)),
+        (
+            "invalid summary usage",
+            payload_bytes(&invalid_summary_usage),
+        ),
+        (
+            "unknown summary usage field",
+            payload_bytes(&unknown_summary_field),
+        ),
     ];
     cases.push((
         "retained role",
