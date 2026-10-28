@@ -22,6 +22,7 @@ fn model_config() -> ModelConfig {
         provider_headers: None,
         temperature: None,
         top_p: None,
+        top_k: None,
         max_output_tokens: None,
         context_window: None,
         reasoning_effort: None,

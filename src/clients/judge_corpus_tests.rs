@@ -807,6 +807,7 @@ fn corpus_loaded_settings() -> LoadedSettings {
             provider_headers: None,
             temperature: None,
             top_p: None,
+            top_k: None,
             max_output_tokens: None,
             context_window: None,
             reasoning_effort: None,

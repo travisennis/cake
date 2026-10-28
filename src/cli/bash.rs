@@ -751,6 +751,7 @@ fn render_diagnostic_evaluation(
     _ = writeln!(out, "Reasoning effort: {:?}", attempt.reasoning_effort);
     _ = writeln!(out, "Temperature: {:?}", attempt.temperature);
     _ = writeln!(out, "Top-p: {:?}", attempt.top_p);
+    _ = writeln!(out, "Top-k: {:?}", attempt.top_k);
     _ = writeln!(out, "Max output tokens: {:?}", attempt.max_output_tokens);
     _ = writeln!(
         out,

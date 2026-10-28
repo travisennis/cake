@@ -790,6 +790,7 @@ fn snapshot_responses_request_minimal() {
         instructions: None,
         temperature: None,
         top_p: None,
+        top_k: None,
         max_output_tokens: None,
         tools: None,
         tool_choice: None,
@@ -858,6 +859,7 @@ fn snapshot_responses_request_with_tools_provider_and_reasoning() {
         instructions,
         temperature: Some(0.3),
         top_p: Some(0.95),
+        top_k: None,
         max_output_tokens: Some(2048),
         tools: convert_tools(&tools, None),
         tool_choice: Some("auto".to_string()),
@@ -905,6 +907,7 @@ fn snapshot_responses_request_with_output_schema_constraint() {
         instructions: None,
         temperature: None,
         top_p: None,
+        top_k: None,
         max_output_tokens: None,
         tools: None,
         tool_choice: None,
@@ -939,6 +942,7 @@ fn snapshot_responses_request_full_with_agents_and_skills() {
         instructions,
         temperature: Some(0.2),
         top_p: Some(0.9),
+        top_k: None,
         max_output_tokens: None,
         tools: convert_tools(registry.definitions(), None),
         tool_choice: Some("auto".to_string()),
@@ -964,8 +968,9 @@ fn build_request_disables_storage_for_codex_backend() {
             api_key_env: "UNUSED_FOR_CHATGPT_AUTH".to_string(),
             provider: None,
             provider_headers: None,
-            temperature: None,
-            top_p: None,
+            temperature: Some(0.7),
+            top_p: Some(0.9),
+            top_k: Some(40),
             max_output_tokens: None,
             context_window: None,
             reasoning_effort: None,
@@ -1000,7 +1005,44 @@ fn build_request_disables_storage_for_codex_backend() {
     assert_eq!(wire["stream"], true);
     assert!(wire.get("temperature").is_none());
     assert!(wire.get("top_p").is_none());
+    assert!(wire.get("top_k").is_none());
     assert!(wire.get("max_output_tokens").is_none());
+}
+
+#[test]
+fn build_request_json_sends_top_k_only_when_configured() {
+    let mut config = request_config("https://api.example.com/v1", ApiType::Responses);
+    config.model_config.top_k = Some(40);
+
+    let wire: serde_json::Value = serde_json::from_slice(
+        &super::build_request_json(
+            &config,
+            &[],
+            &[],
+            &crate::clients::retry::RequestOverrides::default(),
+            None,
+        )
+        .expect("build request"),
+    )
+    .expect("parse request");
+    assert_eq!(wire["top_k"], 40);
+
+    config.model_config.top_k = None;
+    let wire: serde_json::Value = serde_json::from_slice(
+        &super::build_request_json(
+            &config,
+            &[],
+            &[],
+            &crate::clients::retry::RequestOverrides::default(),
+            None,
+        )
+        .expect("build request"),
+    )
+    .expect("parse request");
+    assert!(
+        wire.get("top_k").is_none(),
+        "unset top_k must be omitted: {wire}"
+    );
 }
 
 #[test]
@@ -1052,6 +1094,7 @@ fn build_request_preserves_optional_tools_with_explicit_openai_strictness() {
                 provider_headers: None,
                 temperature: None,
                 top_p: None,
+                top_k: None,
                 max_output_tokens: None,
                 context_window: None,
                 reasoning_effort: None,
@@ -1786,6 +1829,7 @@ fn request_config(base_url: &str, api_type: ApiType) -> ResolvedModelConfig {
             provider_headers: None,
             temperature: None,
             top_p: None,
+            top_k: None,
             max_output_tokens: None,
             context_window: None,
             reasoning_effort: None,

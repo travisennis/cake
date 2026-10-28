@@ -287,6 +287,7 @@ mod tests {
             api_type,
             temperature: None,
             top_p: None,
+            top_k: None,
             max_output_tokens: None,
             context_window: None,
             reasoning_effort: None,
@@ -378,6 +379,7 @@ mod tests {
         assert!(arr[0].get("provider").is_some());
         assert!(arr[0].get("temperature").is_some());
         assert!(arr[0].get("top_p").is_some());
+        assert!(arr[0].get("top_k").is_some());
 
         // Verify no leaked secrets — only env var names
         assert_eq!(arr[0]["api_key_env"], "ALPHA_API_KEY");

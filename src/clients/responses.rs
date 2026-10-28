@@ -95,6 +95,9 @@ pub(super) fn build_request_json<'a>(
         top_p: (!is_codex_backend)
             .then_some(config.model_config.top_p)
             .flatten(),
+        top_k: (!is_codex_backend)
+            .then_some(config.model_config.top_k)
+            .flatten(),
         max_output_tokens: (!is_codex_backend).then_some(max_output_tokens).flatten(),
         tools: convert_tools(tools, strategy.responses_tool_strict()),
         tool_choice: if tools.is_empty() {

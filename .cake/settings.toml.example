@@ -29,6 +29,8 @@ api_key_env = "OPENCODE_ZEN_API_TOKEN"
 # temperature = 0.8
 # Optional: nucleus sampling parameter (alternative to temperature)
 # top_p = 0.9
+# Optional: top-k sampling parameter
+# top_k = 40
 # Optional: maximum output tokens
 # max_output_tokens = 8000
 # Optional: provider routing hints
@@ -53,5 +55,6 @@ provider = "openrouter" # Optional; inferred for openrouter.ai URLs
 # provider_headers = { http_referer = "https://github.com/you/project", x_title = "cake" }
 # temperature = 0.7
 # top_p = 0.9
+# top_k = 40
 # max_output_tokens = 8000
 # providers = []
