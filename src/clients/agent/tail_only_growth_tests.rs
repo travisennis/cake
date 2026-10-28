@@ -120,6 +120,7 @@ fn test_resolved_model_config(api_type: ApiType, base_url: &str) -> ResolvedMode
             provider_headers: None,
             temperature: None,
             top_p: None,
+            top_k: None,
             max_output_tokens: None,
             context_window: None,
             reasoning_effort: None,

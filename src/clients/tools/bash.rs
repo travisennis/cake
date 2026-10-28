@@ -1829,6 +1829,7 @@ fn bypassed_judge_context() -> std::sync::Arc<JudgeContext> {
         provider_headers: None,
         temperature: None,
         top_p: None,
+        top_k: None,
         max_output_tokens: None,
         context_window: None,
         reasoning_effort: None,

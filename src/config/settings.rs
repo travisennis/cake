@@ -768,6 +768,9 @@ pub struct ModelDefinition {
     /// Nucleus sampling parameter
     #[serde(default)]
     pub top_p: Option<f32>,
+    /// Top-k sampling parameter
+    #[serde(default)]
+    pub top_k: Option<u32>,
     /// Maximum number of output tokens
     #[serde(default)]
     pub max_output_tokens: Option<u32>,
@@ -851,6 +854,7 @@ impl ModelDefinition {
             provider_headers: self.provider_headers.clone(),
             temperature: self.temperature,
             top_p: self.top_p,
+            top_k: self.top_k,
             max_output_tokens: self.max_output_tokens,
             context_window: self.context_window,
             reasoning_effort: self.reasoning_effort,

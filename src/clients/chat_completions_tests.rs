@@ -1279,6 +1279,7 @@ fn snapshot_chat_request_kimi_tool_calls() {
         messages,
         temperature: Some(0.2),
         top_p: Some(0.9),
+        top_k: None,
         max_completion_tokens: Some(1024),
         tools: Some(convert_tools(&tools)),
         tool_choice: Some("auto".to_string()),
@@ -1316,6 +1317,7 @@ fn snapshot_chat_request_with_output_schema_constraint() {
         messages: build_messages(&history),
         temperature: None,
         top_p: None,
+        top_k: None,
         max_completion_tokens: None,
         tools: None,
         tool_choice: None,
@@ -1345,6 +1347,7 @@ fn snapshot_chat_request_full_with_agents_and_skills() {
         messages: build_messages(&history),
         temperature: Some(0.2),
         top_p: Some(0.9),
+        top_k: None,
         max_completion_tokens: None,
         tools: Some(convert_tools(registry.definitions())),
         tool_choice: Some("auto".to_string()),
@@ -1996,6 +1999,7 @@ fn build_request_json_preserves_f32_sampling_fields_on_the_wire() {
             provider_headers: None,
             temperature: Some(0.9),
             top_p: Some(0.9),
+            top_k: None,
             max_output_tokens: Some(128),
             context_window: None,
             reasoning_effort: None,
@@ -2044,6 +2048,42 @@ fn build_request_json_preserves_f32_sampling_fields_on_the_wire() {
     );
 }
 
+#[test]
+fn build_request_json_sends_top_k_and_omits_it_when_unset() {
+    let mut config = request_config("https://api.example.com/v1", ApiType::ChatCompletions);
+    config.model_config.top_k = Some(40);
+
+    let wire: serde_json::Value = serde_json::from_slice(
+        &super::build_request_json(
+            &config,
+            &[],
+            &[],
+            &crate::clients::retry::RequestOverrides::default(),
+            None,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(wire["top_k"], 40);
+
+    config.model_config.top_k = None;
+    let wire: serde_json::Value = serde_json::from_slice(
+        &super::build_request_json(
+            &config,
+            &[],
+            &[],
+            &crate::clients::retry::RequestOverrides::default(),
+            None,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        wire.get("top_k").is_none(),
+        "unset top_k must be omitted: {wire}"
+    );
+}
+
 // ── Final authenticated request composition (issue #453) ──────
 // Production requests are `apply_headers` composed with `apply_request_auth`
 // inside the `build_*_request` functions; these tests assert the User-Agent
@@ -2061,6 +2101,7 @@ fn request_config(base_url: &str, api_type: ApiType) -> ResolvedModelConfig {
             provider_headers: None,
             temperature: None,
             top_p: None,
+            top_k: None,
             max_output_tokens: None,
             context_window: None,
             reasoning_effort: None,

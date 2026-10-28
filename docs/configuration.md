@@ -75,7 +75,7 @@ Run `codex login` first. For this exact `base_url`, Cake reads the access token 
 
 This uses an internal Codex backend and is intended for experimentation rather than a stable provider integration. The backend may require a currently supported Codex model and Responses API request shape.
 
-Optional model fields are `api_type` (`chat_completions` or `responses`), `provider`, `provider_headers`, `temperature`, `top_p`, `max_output_tokens`, `context_window`, `reasoning_effort`, `reasoning_summary`, `reasoning_max_tokens`, `providers`, and `supports_images`.
+Optional model fields are `api_type` (`chat_completions` or `responses`), `provider`, `provider_headers`, `temperature`, `top_p`, `top_k`, `max_output_tokens`, `context_window`, `reasoning_effort`, `reasoning_summary`, `reasoning_max_tokens`, `providers`, and `supports_images`. `top_k` is an integer top-k sampling cutoff, omitted when unset.
 
 ### Provider-specific behavior
 

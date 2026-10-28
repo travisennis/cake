@@ -271,6 +271,7 @@ pub struct JudgeAttemptTelemetry {
     pub reasoning_effort: Option<ReasoningEffort>,
     pub temperature: Option<f32>,
     pub top_p: Option<f32>,
+    pub top_k: Option<u32>,
     pub max_output_tokens: Option<u32>,
     pub reasoning_max_tokens: Option<u32>,
     pub configured_timeout_ms: u64,
@@ -1297,6 +1298,7 @@ mod tests {
             reasoning_effort: Some(ReasoningEffort::Low),
             temperature: Some(0.0),
             top_p: None,
+            top_k: Some(40),
             max_output_tokens: Some(128),
             reasoning_max_tokens: None,
             configured_timeout_ms: 30_000,
@@ -1466,6 +1468,7 @@ mod tests {
             "the provider identifier serializes only as its digest"
         );
         assert_eq!(value["tool_count"], 0);
+        assert_eq!(value["top_k"], 40);
         assert!(value["usage"].is_null());
         for forbidden in [
             "command",

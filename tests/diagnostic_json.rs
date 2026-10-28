@@ -106,6 +106,7 @@ model = "glm-5.1"
 base_url = "https://example.com/v1"
 api_key_env = "SECRET_TOKEN"
 api_type = "responses"
+top_k = 40
 "#,
     );
 
@@ -154,6 +155,7 @@ const DEBUG_MODELS_GOLDEN: &str = r#"{
         "reasoning_summary": null,
         "supports_images": false,
         "temperature": null,
+        "top_k": 40,
         "top_p": null
       }
     ]

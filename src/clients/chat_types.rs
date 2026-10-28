@@ -17,6 +17,8 @@ pub(super) struct ChatRequest<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) top_p: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) top_k: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) max_completion_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) tools: Option<Vec<ChatTool<'a>>>,

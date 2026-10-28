@@ -610,6 +610,7 @@ fn initial_attempt(
         reasoning_effort: client.config.model_config.reasoning_effort,
         temperature: client.config.model_config.temperature,
         top_p: client.config.model_config.top_p,
+        top_k: client.config.model_config.top_k,
         max_output_tokens: client.config.model_config.max_output_tokens,
         // Chat Completions requests never carry `reasoning.max_tokens`, so
         // reporting the configured value would describe a control the request
@@ -873,6 +874,7 @@ mod tests {
             reasoning_effort: None,
             temperature: None,
             top_p: None,
+            top_k: None,
             max_output_tokens: None,
             reasoning_max_tokens: None,
             configured_timeout_ms: 0,

@@ -91,6 +91,9 @@ pub struct ModelConfig {
     /// Nucleus sampling parameter
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_p: Option<f32>,
+    /// Top-k sampling parameter
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_k: Option<u32>,
     /// Maximum number of output tokens
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<u32>,
@@ -213,6 +216,7 @@ mod tests {
             provider_headers: None,
             temperature: Some(0.8),
             top_p: None,
+            top_k: None,
             max_output_tokens: Some(8000),
             context_window: None,
             reasoning_effort: None,

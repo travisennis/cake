@@ -67,6 +67,7 @@ pub(super) fn build_request_json<'a>(
         messages,
         temperature: config.model_config.temperature,
         top_p: config.model_config.top_p,
+        top_k: config.model_config.top_k,
         max_completion_tokens: overrides
             .max_output_tokens
             .or(config.model_config.max_output_tokens),

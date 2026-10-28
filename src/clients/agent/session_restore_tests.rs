@@ -282,6 +282,7 @@ fn session_restore_model_config() -> ResolvedModelConfig {
             provider_headers: None,
             temperature: None,
             top_p: None,
+            top_k: None,
             max_output_tokens: None,
             context_window: Some(200_000),
             reasoning_effort: None,

@@ -317,6 +317,35 @@ supports_images = true
 }
 
 #[test]
+fn test_top_k_parses_and_propagates() {
+    let dir = create_project_settings(
+        r#"
+[[models]]
+name = "sampled"
+model = "test/sampled"
+base_url = "https://example.com"
+api_key_env = "MY_KEY"
+top_k = 40
+"#,
+    );
+
+    let home = create_home_dir();
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load(Some(dir.path()))
+    })
+    .unwrap();
+    let def = loaded.models.get("sampled").unwrap();
+
+    assert_eq!(def.top_k, Some(40));
+    assert_eq!(def.to_model_config().top_k, Some(40));
+    assert!(
+        !loaded.warnings.iter().any(|w| w.contains("top_k")),
+        "top_k must be a recognized model field: {:?}",
+        loaded.warnings
+    );
+}
+
+#[test]
 fn test_validate_name_valid() {
     assert!(ModelDefinition::validate_name("simple").is_ok());
     assert!(ModelDefinition::validate_name("my-model").is_ok());
@@ -350,6 +379,7 @@ fn test_to_model_config() {
         api_type: ApiType::Responses,
         temperature: Some(0.5),
         top_p: Some(0.9),
+        top_k: Some(40),
         max_output_tokens: Some(4000),
         context_window: Some(200_000),
         reasoning_effort: Some(ReasoningEffort::High),
@@ -372,8 +402,10 @@ fn test_to_model_config() {
         })
     );
     assert_eq!(config.api_type, ApiType::Responses);
-    assert_eq!(config.temperature, Some(0.5));
-    assert_eq!(config.top_p, Some(0.9));
+    assert_eq!(
+        (config.temperature, config.top_p, config.top_k),
+        (Some(0.5), Some(0.9), Some(40))
+    );
     assert_eq!(config.max_output_tokens, Some(4000));
     assert_eq!(config.context_window, Some(200_000));
     assert_eq!(config.reasoning_effort, Some(ReasoningEffort::High));
@@ -2419,6 +2451,7 @@ provider = "openrouter"
 provider_headers = { http_referer = "https://example.com", x_title = "cake" }
 temperature = 0.7
 top_p = 0.9
+top_k = 40
 max_output_tokens = 8000
 reasoning_effort = "high"
 reasoning_summary = "concise"
