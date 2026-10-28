@@ -48,6 +48,7 @@ fn full_prompt_history() -> Vec<ConversationItem> {
         &[],
         None,
         true,
+        true,
     )
     .into_iter()
     .map(|(role, content)| ConversationItem::Message {

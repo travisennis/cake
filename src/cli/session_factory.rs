@@ -253,6 +253,7 @@ impl crate::CodingAssistant {
             tool_context,
             toolbox_tools,
             tools_enabled: enabled_tools,
+            include_runtime_context: !self.no_runtime_context,
             task_id,
             judge,
         };
@@ -386,6 +387,7 @@ struct RunInputs<'a> {
     tool_context: &'a Arc<ToolContext>,
     toolbox_tools: &'a [ToolboxTool],
     tools_enabled: Option<&'a [String]>,
+    include_runtime_context: bool,
     task_id: uuid::Uuid,
     judge: &'a JudgeSettings,
 }
@@ -408,6 +410,7 @@ impl RunInputs<'_> {
             self.toolbox_tools,
             self.tools_enabled,
             supports_images,
+            self.include_runtime_context,
         )
     }
 }
@@ -809,6 +812,113 @@ mod tests {
             None,
             &JudgeSettings::default(),
         )
+    }
+
+    /// Flatten the provider request context into text for prompt assertions.
+    fn request_text(run: &RunSession) -> String {
+        run.agent
+            .request_context()
+            .into_iter()
+            .filter_map(|item| match item {
+                crate::types::ConversationItem::Message { content, .. } => Some(content),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn no_runtime_context_flag_omits_environment_message_from_request() {
+        temp_env::with_var("SESSION_FACTORY_TEST_KEY", Some("test-key"), || {
+            let data_dir_dir = tempfile::tempdir().expect("temp data dir");
+            let data_dir = DataDir::new_in_dir(data_dir_dir.path());
+            let working_dir = tempfile::tempdir().expect("temp working dir");
+
+            let default_run = build_for_mode(
+                &crate::CodingAssistant::parse_from(["cake"]),
+                &RunMode::NewSession,
+                &data_dir,
+                working_dir.path(),
+            )
+            .expect("default session construction should succeed");
+            let no_context_run = build_for_mode(
+                &crate::CodingAssistant::parse_from(["cake", "--no-runtime-context"]),
+                &RunMode::NewSession,
+                &data_dir,
+                working_dir.path(),
+            )
+            .expect("no-runtime-context session construction should succeed");
+
+            let default_text = request_text(&default_run);
+            assert!(default_text.contains("Current working directory:"));
+            assert!(default_text.contains("Today's date:"));
+
+            let no_context_text = request_text(&no_context_run);
+            for label in [
+                "Current working directory",
+                "Today's date",
+                "Platform:",
+                "Architecture:",
+                "Shell:",
+                "Terminal:",
+            ] {
+                assert!(
+                    !no_context_text.contains(label),
+                    "runtime label {label:?} reached the request"
+                );
+            }
+            assert!(no_context_text.contains("You are cake."));
+            assert!(no_context_text.contains("## Available tools"));
+        });
+    }
+
+    /// A resumed run rebuilds the leading prompt context instead of replaying
+    /// the Developer message an earlier invocation persisted.
+    #[test]
+    fn resumed_run_rebuilds_prompt_context_without_runtime_message() {
+        temp_env::with_var("SESSION_FACTORY_TEST_KEY", Some("test-key"), || {
+            let data_dir_dir = tempfile::tempdir().expect("temp data dir");
+            let data_dir = DataDir::new_in_dir(data_dir_dir.path());
+            let working_dir = tempfile::tempdir().expect("temp working dir");
+
+            let mut saved = Session::new(uuid::Uuid::new_v4(), working_dir.path().to_path_buf());
+            saved.model = Some("glm-5.1".to_string());
+            saved
+                .records
+                .push(SessionRecord::Message(crate::types::session::MessageData {
+                    role: crate::types::Role::Developer,
+                    content: "Current working directory: /stale\nToday's date: yesterday"
+                        .to_string(),
+                    id: None,
+                    status: None,
+                    timestamp: None,
+                    images: Vec::new(),
+                }));
+            data_dir
+                .save_session(&saved)
+                .expect("session fixture should save");
+
+            let run = build_for_mode(
+                &crate::CodingAssistant::parse_from(["cake", "--no-runtime-context"]),
+                &RunMode::Resume {
+                    session_id: saved.id,
+                },
+                &data_dir,
+                working_dir.path(),
+            )
+            .expect("resume should succeed");
+
+            let text = request_text(&run);
+            assert!(
+                !text.contains("Current working directory"),
+                "persisted runtime context was replayed"
+            );
+            assert!(
+                !text.contains("Today's date"),
+                "persisted runtime context was replayed"
+            );
+            assert!(text.contains("You are cake."));
+        });
     }
 
     #[test]
