@@ -10,7 +10,7 @@ Extraction does not qualify the external judge's policy quality. Corpus parity, 
 
 ## Progress
 
-Implementation completed on `feat/external-gate-extraction` on 2026-10-29. The branch is uncommitted pending review; no provider call, install, or user-settings change was made.
+Implementation completed and committed as `57a40d6` on `feat/external-gate-extraction` on 2026-10-29. No provider call, install, or user-settings change was made.
 
 - [x] (2026-10-25) Freeze the `cake-gate/1` contract, schema, configuration/security documentation, and Cake gate seam with offline fake-gate coverage (slices 0--1; see ADR 049).
 - [x] (2026-10-29) Decide extraction policy: remove parity, mandatory shadow, and one-release built-in prerequisites; retain no-gate disabling and explicit disablement (ADR 051).
