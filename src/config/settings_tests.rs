@@ -2745,6 +2745,77 @@ mode = "sometimes"
 }
 
 #[test]
+fn no_gate_skips_invalid_legacy_judge_model() {
+    let project = create_project_settings(
+        r#"
+[tools.bash.judge]
+model = "no-such-model"
+"#,
+    );
+    let home = create_home_dir();
+
+    with_var("HOME", Some(home.path()), || {
+        with_var("CAKE_GATE", None::<&str>, || {
+            with_var("CAKE_JUDGE", None::<&str>, || {
+                let error = SettingsLoader::load_with_profile_and_gate_bypass(
+                    Some(project.path()),
+                    None,
+                    false,
+                )
+                .expect_err("without bypass, an unknown judge model is a settings error");
+                assert!(matches!(
+                    error,
+                    SettingsError::JudgeModelNotFound { ref name } if name == "no-such-model"
+                ));
+
+                let loaded = SettingsLoader::load_with_profile_and_gate_bypass(
+                    Some(project.path()),
+                    None,
+                    true,
+                )
+                .expect("--no-gate skips the implicit judge model check");
+                assert_eq!(loaded.judge.model.as_deref(), Some("no-such-model"));
+                assert!(loaded.gates.bypassed(&loaded.judge, true));
+            });
+        });
+    });
+}
+
+#[test]
+fn no_gate_still_rejects_unrelated_settings_errors() {
+    let project = create_project_settings(
+        r#"
+default_model = "missing-default"
+
+[tools.bash]
+gates = ["safety"]
+
+[gates.safety]
+command = "cake-safety-judge"
+mode = "sometimes"
+"#,
+    );
+    let home = create_home_dir();
+
+    with_var("HOME", Some(home.path()), || {
+        with_var("CAKE_GATE", None::<&str>, || {
+            with_var("CAKE_JUDGE", None::<&str>, || {
+                let error = SettingsLoader::load_with_profile_and_gate_bypass(
+                    Some(project.path()),
+                    None,
+                    true,
+                )
+                .expect_err("--no-gate must not skip unrelated settings validation");
+                assert!(matches!(
+                    error,
+                    SettingsError::DefaultModelNotFound { ref name } if name == "missing-default"
+                ));
+            });
+        });
+    });
+}
+
+#[test]
 fn explicit_selection_ignores_disabled_and_misconfigured_legacy_judge() {
     let loaded = load_gate_settings(
         r#"
