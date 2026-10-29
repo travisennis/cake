@@ -57,7 +57,7 @@ landlock = "0.4.5"
 
 [dev-dependencies]
 insta = { version = "1", features = ["filters", "json"] }
-temp-env = "0.3"
+temp-env = { version = "0.3", features = ["async_closure"] }
 tempfile = "3"
 wiremock = "0.6"
 

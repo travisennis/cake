@@ -227,7 +227,13 @@ pub struct ApiAttemptTelemetry {
     pub request_overrides: RequestOverridesSnapshot,
 }
 
-/// Terminal outcome of one command-safety judge provider attempt.
+/// Historical terminal outcome of one in-process judge provider attempt.
+///
+/// Retained so old sidecars keep their schema; Cake no longer writes it.
+#[expect(
+    dead_code,
+    reason = "historical session sidecars deserialize this class; no producer remains"
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JudgeAttemptTerminalClass {
@@ -240,7 +246,8 @@ pub enum JudgeAttemptTerminalClass {
     Refusal,
 }
 
-/// Metadata-only diagnostics for one command-safety judge provider attempt.
+/// Historical metadata-only diagnostics for one in-process judge provider
+/// attempt. Cake no longer writes this record; old sidecars remain readable.
 ///
 /// Raw prompts, command text, reason text, cwd, request and response bodies,
 /// credentials, and authorization headers must never enter this type.
@@ -300,14 +307,9 @@ pub struct JudgeAttemptTelemetry {
     pub termination: Option<ProviderTermination>,
 }
 
-/// Metadata-only observation from the opt-in `TypeSafe` evaluator.
-///
-/// Emitted under `mode = "shadow"` and `mode = "cascade"`. Under `shadow` it
-/// changes no decision; under `cascade` it is the fast-approval stage, so a
-/// record with no `failure_class` and a `probability` at or above the compiled
-/// cutoff, with no `judge_attempt` for the same `call_id` and a `judge_verdict`
-/// event carrying the fast leg's `latency_ms`, is a command the judge never saw
-/// (ADR 034).
+/// Historical metadata-only observation from the removed in-process `TypeSafe`
+/// evaluator. Retained so old sidecars keep their schema; Cake no longer makes
+/// `TypeSafe` requests or writes this record.
 #[derive(Debug, Clone, Serialize)]
 pub struct TypeSafeShadowTelemetry {
     /// The originating tool call identifier, held raw in memory and serialized
@@ -500,17 +502,16 @@ pub enum CompensationKind {
     /// Recoverable malformed tool-call arguments repaired before parsing.
     /// `detail` names the tool whose arguments were repaired.
     JsonRepair,
-    /// LLM judge verdict on a Bash command. `detail` is `block:<code>`,
-    /// `warn:<code>`, or `allow`; `latency_ms` is the judge call duration, or
-    /// the fast leg's elapsed time when the `TypeSafe` cascade approved the
-    /// command without a judge call (ADR 034); `overridden` is set when an
-    /// allowlist entry overrode the verdict.
+    /// Compatibility projection of a current generic gate verdict on a Bash
+    /// command. `detail` is `block:<code>`, `warn:<code>`, or `allow`;
+    /// `latency_ms` is the pipeline latency; `overridden` is set when an
+    /// allowlist entry overrode the decision.
     JudgeVerdict,
-    /// The judge failed (timeout, transport, malformed, refusal) and the
-    /// command was blocked. `detail` names the failure class.
+    /// Compatibility projection of a current gate failure that blocked the
+    /// command. `detail` names the failure class.
     JudgeFailClosed,
-    /// The judge was disabled for the call (emergency bypass: `CAKE_JUDGE=off`
-    /// or `enabled = false`), so the command ran without a judge verdict.
+    /// Compatibility projection of an explicit gate bypass (`CAKE_GATE=off`,
+    /// `--no-gate`, or a legacy disablement), so the command ran ungated.
     /// Emitted per bypassed call so the escape hatch cannot be used silently.
     JudgeBypass,
     /// Emitted when a call's start was delayed behind an earlier call
@@ -540,18 +541,19 @@ pub struct CompensationEventTelemetry {
         serialize_with = "serialize_bounded_optional"
     )]
     pub detail: Option<String>,
-    /// Judge verdict call duration, when the event is a judge verdict.
+    /// Gate verdict duration, when the event is a compatibility verdict.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub latency_ms: Option<u64>,
-    /// Set on a judge verdict event when an allowlist entry overrode a block.
+    /// Set on a compatibility verdict event when an allowlist entry overrode a
+    /// block.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub overridden: Option<bool>,
     /// One-way digest of the transcript tool call this event belongs to.
     ///
     /// The field holds the transcript's raw `call_id` in memory and serializes
-    /// only its SHA-256 hex digest, so pairing a call with its judge outcome
-    /// cannot pull provider-controlled text into telemetry. A judge event
-    /// carries the same digest as the `judge_attempt.call_id` recorded for the
+    /// only its SHA-256 hex digest, so pairing a call with its gate outcome
+    /// cannot pull provider-controlled text into telemetry. A compatibility
+    /// event carries the same digest as the `gate_decision.call_id` for the
     /// call, which is what makes the session-metrics join deterministic
     /// (#404). Compensations that are not tied to one tool call leave it unset.
     #[serde(
@@ -572,10 +574,10 @@ impl CompensationEventTelemetry {
         }
     }
 
-    /// Build a judge verdict event: decision and verdict code (block and warn
-    /// verdicts carry a code; allow omits it), the judge call latency, and
-    /// whether an allowlist entry overrode the verdict. Metadata only — never
-    /// the command or reason text.
+    /// Build the compatibility verdict event for a generic gate decision:
+    /// decision and code (block and warn carry a code; allow omits it), the
+    /// pipeline latency, and whether an allowlist entry overrode the decision.
+    /// Metadata only — never the command or reason text.
     pub fn judge_verdict(
         decision: &str,
         code: Option<&str>,
@@ -592,8 +594,8 @@ impl CompensationEventTelemetry {
         }
     }
 
-    /// Build a fail-closed judge event: the judge error class that blocked
-    /// the command instead of a verdict.
+    /// Build the compatibility fail-closed event for a gate failure: the
+    /// failure class that blocked the command instead of a verdict.
     pub fn judge_fail_closed(error_class: &str) -> Self {
         Self {
             kind: CompensationKind::JudgeFailClosed,
@@ -604,8 +606,8 @@ impl CompensationEventTelemetry {
         }
     }
 
-    /// Build a judge-bypass event: the judge was disabled for this call, so
-    /// the command ran without a verdict. One event per bypassed call.
+    /// Build the compatibility bypass event for an explicit gate bypass. One
+    /// event per bypassed call.
     pub const fn judge_bypass() -> Self {
         Self {
             kind: CompensationKind::JudgeBypass,
@@ -638,9 +640,10 @@ impl CompensationEventTelemetry {
 /// Provider- and tool-controlled identifiers (a provider request id, an
 /// originating tool-call id) reach the sidecar only through this function, so
 /// the raw value never enters telemetry; a consumer correlates a record with
-/// its source by hashing the known raw value the same way. The judge attempt
-/// and the judge compensation event for one Bash call therefore carry the same
-/// digest, which is what makes the session-metrics join deterministic (#404).
+/// its source by hashing the known raw value the same way. A gate decision and
+/// its compatibility compensation event for one Bash call therefore carry the
+/// same digest, which is what makes the session-metrics join deterministic
+/// (#404).
 #[must_use]
 pub fn digest_identifier(value: &str) -> String {
     let mut hasher = Sha256::new();
@@ -839,6 +842,13 @@ pub enum SessionTelemetryRecord {
         #[serde(flatten)]
         attempt: ApiAttemptTelemetry,
     },
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "historical session sidecars deserialize this record; no producer remains"
+        )
+    )]
     JudgeAttempt {
         session_id: String,
         invocation_id: String,
@@ -846,6 +856,13 @@ pub enum SessionTelemetryRecord {
         #[serde(flatten)]
         attempt: JudgeAttemptTelemetry,
     },
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "historical session sidecars deserialize this record; no producer remains"
+        )
+    )]
     TypeSafeShadow {
         session_id: String,
         invocation_id: String,
@@ -1019,13 +1036,12 @@ pub enum TelemetryAppend {
 
 /// Shared session-telemetry writer with a fail-stop disabled state.
 ///
-/// The agent loop and the judge-attempt sink share one instance, so a write
+/// The agent loop and the gate telemetry sink share one instance, so a write
 /// failure on either path disables telemetry for both: once any append fails,
 /// no further records are written and a partial NDJSON line is never followed
-/// by more records (see the recovery contract in the judge-attempt-diagnostics
-/// exec plan). Availability and the failure transition are one mutex-wrapped
-/// state, so the pair cannot drift: exactly one caller observes `Failed`, and
-/// every later caller observes `Disabled`.
+/// by more records. Availability and the failure transition are one
+/// mutex-wrapped state, so the pair cannot drift: exactly one caller observes
+/// `Failed`, and every later caller observes `Disabled`.
 pub struct SharedSessionTelemetryWriter {
     state: Mutex<TelemetryWriterState>,
 }
@@ -1104,73 +1120,13 @@ impl SharedSessionTelemetryWriter {
     }
 }
 
-/// Shared handle that appends judge-attempt records to the session sidecar as
-/// soon as judging completes.
-///
-/// Judge attempts used to ride tool-result compensation events, so an
-/// interrupted command (for example Ctrl-C during a hung Bash call) dropped
-/// them before the tool result was recorded. The Bash preflight records each
-/// finalized attempt through this sink instead, so the sidecar keeps the
-/// append-only durability the ADR-007 rationale requires even when the run is
-/// cut short.
-#[derive(Clone)]
-pub struct JudgeAttemptSink {
-    writer: Arc<SharedSessionTelemetryWriter>,
-    context: SessionTelemetryContext,
-}
-
-impl JudgeAttemptSink {
-    pub const fn new(
-        writer: Arc<SharedSessionTelemetryWriter>,
-        context: SessionTelemetryContext,
-    ) -> Self {
-        Self { writer, context }
-    }
-
-    /// Append one finalized judge attempt to the sidecar, best-effort and
-    /// silent once telemetry has already been disabled by an earlier failure.
-    pub fn record(&self, attempt: JudgeAttemptTelemetry) {
-        let record = SessionTelemetryRecord::JudgeAttempt {
-            session_id: self.context.session_id.clone(),
-            invocation_id: self.context.invocation_id.clone(),
-            timestamp: Utc::now(),
-            attempt,
-        };
-        if let TelemetryAppend::Failed(error) = self.writer.append(&record) {
-            tracing::warn!(target: "cake", "Failed to record judge attempt: {error}");
-        }
-    }
-
-    /// Append one bounded `TypeSafe` observation without retaining command text,
-    /// prompts, provider bodies, or credentials. Under the cascade the record is
-    /// the fast leg's evidence, whether it approved the command or fell back.
-    pub fn record_typesafe(&self, mut observation: TypeSafeShadowTelemetry, call_id: Option<&str>) {
-        observation.call_id = call_id.filter(|id| !id.is_empty()).map(str::to_string);
-        let record = SessionTelemetryRecord::TypeSafeShadow {
-            session_id: self.context.session_id.clone(),
-            invocation_id: self.context.invocation_id.clone(),
-            timestamp: Utc::now(),
-            observation,
-        };
-        if let TelemetryAppend::Failed(error) = self.writer.append(&record) {
-            tracing::warn!(target: "cake", "Failed to record TypeSafe shadow observation: {error}");
-        }
-    }
-}
-
-impl std::fmt::Debug for JudgeAttemptSink {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("JudgeAttemptSink")
-            .field("context", &self.context)
-            .finish_non_exhaustive()
-    }
-}
-
 /// Shared handle that appends generic gate records to the session sidecar.
 ///
 /// The pipeline writes one `gate_startup` record per gate at startup and one
-/// `gate_decision` record for every gate that participated in a check. The
-/// one-release `judge_*` records remain alongside them.
+/// `gate_decision` record for every gate that participated in a check. Current
+/// decisions also emit compatibility `judge_*` compensation events; historical
+/// `judge_attempt` and `type_safe_shadow` records remain readable but are not
+/// produced.
 #[derive(Clone)]
 pub struct GateTelemetrySink {
     writer: Arc<SharedSessionTelemetryWriter>,
@@ -1481,29 +1437,6 @@ mod tests {
         ] {
             assert!(value.get(forbidden).is_none(), "unexpected {forbidden}");
         }
-    }
-
-    #[test]
-    fn judge_attempt_sink_appends_first_class_attempt_record() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let path = dir.path().join("telemetry.ndjson");
-        let writer = Arc::new(SharedSessionTelemetryWriter::new(
-            SessionTelemetryWriter::open(&path).unwrap(),
-        ));
-        let sink = JudgeAttemptSink::new(
-            Arc::clone(&writer),
-            SessionTelemetryContext {
-                session_id: "session".to_string(),
-                invocation_id: "invocation".to_string(),
-            },
-        );
-        sink.record(judge_attempt());
-
-        let contents = std::fs::read_to_string(&path).unwrap();
-        let record: serde_json::Value = serde_json::from_str(contents.trim()).unwrap();
-        assert_eq!(record["type"], "judge_attempt");
-        assert_eq!(record["session_id"], "session");
-        assert_eq!(record["attempt"], 1);
     }
 
     #[test]
@@ -2319,58 +2252,6 @@ mod tests {
                 model_config: Some("test".to_string()),
                 base_url,
             },
-        }
-    }
-
-    #[test]
-    fn typesafe_shadow_sink_links_calls_without_raw_identifiers() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let path = dir.path().join("telemetry.ndjson");
-        let writer = Arc::new(SharedSessionTelemetryWriter::new(
-            SessionTelemetryWriter::open(&path).unwrap(),
-        ));
-        let sink = JudgeAttemptSink::new(
-            writer,
-            SessionTelemetryContext {
-                session_id: "session".into(),
-                invocation_id: "invocation".into(),
-            },
-        );
-        let observation = TypeSafeShadowTelemetry {
-            call_id: None,
-            elapsed_ms: 15,
-            model: Some("jev-1.13.0".into()),
-            probability: Some(0.9),
-            usage_input_tokens: Some(20),
-            usage_output_tokens: Some(3),
-            failure_class: None,
-        };
-        sink.record_typesafe(observation.clone(), Some("raw-call-id-secret"));
-        sink.record_typesafe(observation, None);
-        let contents = std::fs::read_to_string(path).unwrap();
-        assert!(!contents.contains("raw-call-id-secret"));
-        let records: Vec<serde_json::Value> = contents
-            .lines()
-            .map(|line| serde_json::from_str(line).unwrap())
-            .collect();
-        assert_eq!(records.len(), 2);
-        assert_eq!(records[0]["type"], "type_safe_shadow");
-        assert_eq!(
-            records[0]["call_id"],
-            digest_identifier("raw-call-id-secret")
-        );
-        assert_eq!(records[0]["elapsed_ms"], 15);
-        assert_eq!(records[0]["session_id"], "session");
-        assert!(records[1].get("call_id").is_none());
-        for key in [
-            "command",
-            "reason",
-            "cwd",
-            "response_body",
-            "api_key",
-            "authorization",
-        ] {
-            assert!(records[0].get(key).is_none());
         }
     }
 }

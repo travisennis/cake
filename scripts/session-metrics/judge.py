@@ -1,19 +1,15 @@
 #!/usr/bin/env python3
-"""LLM-judge operational health from per-attempt telemetry.
+"""Historical LLM-judge operational health from per-attempt telemetry.
 
-The Bash command-safety judge is cake's only non-sandbox command gate. Its
-health in production (field) is measured here from `judge_attempt` telemetry
-records, complementing the fixed-corpus SLO benchmark (`just judge-bench`):
-latency percentiles and phase timing, terminal-class distribution (timeout,
-transport, http_error, response_parse, malformed_verdict, refusal), retry
-behavior, token cost, status codes, and near-timeout attempts, per model.
+Cake no longer runs an in-process judge, so current decisions appear in
+`gates.py` from generic `gate_decision` records. This report remains for
+older sidecars that contain `judge_attempt` records: latency percentiles and
+phase timing, terminal-class distribution, retry behavior, token cost, status
+codes, and near-timeout attempts per model.
 
-Source: telemetry `judge_attempt` records.
-
-This report owns judge latency, cost, and reliability. `compensations.py`
-keeps the `judge_verdict` / `judge_fail_closed` / `judge_bypass` counters,
-which measure how often cake compensates for a model weakness; the two
-sections do not duplicate the latency table.
+`compensations.py` keeps the compatibility `judge_verdict` /
+`judge_fail_closed` / `judge_bypass` counters emitted for current gate
+decisions; the two sections do not duplicate the latency table.
 """
 
 from collections import Counter
@@ -108,13 +104,13 @@ def _fmt_ratio(values: list[float], pct: float) -> str:
 
 
 def run(data: cakelib.Dataset) -> None:
-    print_header("JUDGE RELIABILITY")
+    print_header("HISTORICAL JUDGE RELIABILITY (legacy judge_attempt records)")
     print(cakelib.describe_window(data))
 
     by_model = aggregate(data)
     all_attempts = [a for stats in by_model.values() for a in stats["attempts"]]
     if not all_attempts:
-        print("\nNo telemetry judge_attempt records in window.")
+        print("\nNo historical judge_attempt records in window.")
         return
 
     terminal_totals = Counter()

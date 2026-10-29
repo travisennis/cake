@@ -433,11 +433,11 @@ fn sessions_list_json_reports_an_unreadable_directory_as_a_document() {
 // =============================================================================
 
 #[test]
-fn bash_check_json_is_one_versioned_document_for_a_disabled_judge() {
+fn bash_check_json_is_one_versioned_document_for_an_explicit_gate_bypass() {
     let env = cake_env();
 
-    // A disabled judge short-circuits before any model or provider work, so
-    // this exercises the machine output path without a network call.
+    // A bypass short-circuits before any gate process, model, or provider work,
+    // so this exercises the machine output path without a network call.
     let output = env
         .command()
         .args(["bash", "check", "--json", "--", "git status"])
@@ -452,7 +452,7 @@ fn bash_check_json_is_one_versioned_document_for_a_disabled_judge() {
     assert_eq!(stderr(&output), "");
 }
 
-/// The exact document for a bypassed judge: no call, no latency.
+/// The exact document for an explicit pipeline bypass: no gate, no latency.
 const BASH_CHECK_BYPASS_GOLDEN: &str = r#"{
   "schema_version": 1,
   "command": "bash check",
@@ -462,21 +462,23 @@ const BASH_CHECK_BYPASS_GOLDEN: &str = r#"{
   },
   "checks": [],
   "data": {
-    "verdict": null,
+    "bypassed": true,
     "code": null,
     "confidence": null,
-    "message": "the command-safety judge is disabled (CAKE_JUDGE=off or [tools.bash.judge] enabled = false); no judge call was made.",
-    "overridden": false,
-    "bypassed": true,
+    "gate": null,
     "latency_ms": 0,
-    "stage": null,
-    "probability": null,
+    "message": "gate checks were explicitly bypassed.",
     "observation": {
-      "outcome": "absent",
-      "probability": null,
+      "elapsed_ms": null,
       "failure_class": null,
-      "elapsed_ms": null
-    }
+      "outcome": "absent",
+      "probability": null
+    },
+    "overridden": false,
+    "probability": null,
+    "stage": null,
+    "stages": [],
+    "verdict": null
   }
 }
 "#;

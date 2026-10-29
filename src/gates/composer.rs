@@ -17,8 +17,7 @@ use crate::gates::protocol::{
     is_valid_evidence_kind, json_byte_len, sanitize_model_text,
 };
 use crate::session_telemetry::{
-    CompensationEventTelemetry, CompensationKind, GateDecisionTelemetry, GateEvidenceTelemetry,
-    GateStartupTelemetry, GateTelemetrySink, JudgeAttemptSink,
+    GateDecisionTelemetry, GateEvidenceTelemetry, GateStartupTelemetry, GateTelemetrySink,
 };
 
 /// Whether a gate can change authorization.
@@ -142,91 +141,32 @@ impl std::fmt::Display for GateFailure {
 
 impl std::error::Error for GateFailure {}
 
-/// The bounded `TypeSafe` observation a deciding stage reports. The generic
-/// pipeline keeps this as decision evidence; the slice-1 `bash check`
-/// compatibility projection renders it in the existing fields.
-#[derive(Debug, Clone, PartialEq)]
-pub struct StageObservation {
-    pub outcome: StageObservationOutcome,
-    pub probability: Option<f32>,
-    pub failure_class: Option<&'static str>,
-    pub elapsed_ms: Option<u64>,
-}
-
-impl StageObservation {
-    pub const fn absent() -> Self {
-        Self {
-            outcome: StageObservationOutcome::Absent,
-            probability: None,
-            failure_class: None,
-            elapsed_ms: None,
-        }
-    }
-}
-
-/// The bounded observation vocabulary `cake bash check` reports.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum StageObservationOutcome {
-    Absent,
-    Shadow,
-    Approved,
-    BelowCutoff,
-    Failed,
-}
-
 /// What a gate answered for one check.
 #[derive(Debug, Clone)]
 pub struct GateAnswer {
     pub kind: GateAnswerKind,
     pub latency: Duration,
-    pub observation: Option<StageObservation>,
-    pub fast_approved: bool,
-    /// Legacy `judge_*` telemetry for the one-release built-in path.
-    pub legacy_events: Vec<CompensationEventTelemetry>,
 }
 
 impl GateAnswer {
-    pub const fn decision(
-        frame: DecisionFrame,
-        latency: Duration,
-        observation: Option<StageObservation>,
-        fast_approved: bool,
-        legacy_events: Vec<CompensationEventTelemetry>,
-    ) -> Self {
+    pub const fn decision(frame: DecisionFrame, latency: Duration) -> Self {
         Self {
             kind: GateAnswerKind::Decision(frame),
             latency,
-            observation,
-            fast_approved,
-            legacy_events,
         }
     }
 
-    pub const fn bypassed(
-        latency: Duration,
-        legacy_events: Vec<CompensationEventTelemetry>,
-    ) -> Self {
+    pub const fn bypassed(latency: Duration) -> Self {
         Self {
             kind: GateAnswerKind::Bypassed,
             latency,
-            observation: None,
-            fast_approved: false,
-            legacy_events,
         }
     }
 
-    pub const fn failure(
-        failure: GateFailure,
-        disabled: bool,
-        latency: Duration,
-        legacy_events: Vec<CompensationEventTelemetry>,
-    ) -> Self {
+    pub const fn failure(failure: GateFailure, disabled: bool, latency: Duration) -> Self {
         Self {
             kind: GateAnswerKind::Failure { failure, disabled },
             latency,
-            observation: None,
-            fast_approved: false,
-            legacy_events,
         }
     }
 }
@@ -249,18 +189,9 @@ pub trait Gate: Send + Sync + std::fmt::Debug {
 
     fn check(&self, frame: CheckFrame) -> GateFuture<'_>;
 
-    /// Install the immediate judge-attempt sink when this is the built-in gate.
-    fn install_judge_attempt_sink(&self, _sink: &JudgeAttemptSink) {}
-
     /// Whether this gate is the global bypass rather than a checking gate.
     fn is_bypassed(&self) -> bool {
         false
-    }
-
-    /// The shared judge context when this is the built-in adapter. Test-only
-    /// compatibility accessor; the pipeline never uses it to decide.
-    fn judge_context(&self) -> Option<&Arc<crate::clients::judge::JudgeContext>> {
-        None
     }
 
     fn shutdown(&self) -> GateShutdownFuture<'_> {
@@ -367,9 +298,6 @@ pub struct StageOutcome {
     pub disabled: bool,
     pub failure: Option<GateFailure>,
     pub evidence: Vec<GateEvidence>,
-    pub observation: Option<StageObservation>,
-    pub fast_approved: bool,
-    pub legacy_events: Vec<CompensationEventTelemetry>,
 }
 
 impl StageOutcome {
@@ -413,24 +341,7 @@ pub struct PipelineOutcome {
     pub overridden: bool,
     pub latency: Duration,
     pub stages: Vec<StageOutcome>,
-    pub legacy_events: Vec<CompensationEventTelemetry>,
     pub deciding_gate: Option<String>,
-}
-
-impl PipelineOutcome {
-    /// The single enforce stage, when the pipeline has exactly one. Slice-1
-    /// `cake bash check` renders this stage in its existing document fields.
-    pub fn compatibility_stage(&self) -> Option<&StageOutcome> {
-        let mut enforce = self
-            .stages
-            .iter()
-            .filter(|stage| stage.mode == GateMode::Enforce);
-        let first = enforce.next()?;
-        if enforce.next().is_some() {
-            return None;
-        }
-        Some(first)
-    }
 }
 
 /// Why a pipeline could not produce a decision.
@@ -449,7 +360,6 @@ pub enum GatePipelineError {
         gate: String,
         failure: GateFailure,
         stages: Vec<StageOutcome>,
-        legacy_events: Vec<CompensationEventTelemetry>,
     },
 }
 
@@ -458,13 +368,6 @@ impl GatePipelineError {
         match self {
             Self::NoEnforceGate => GateErrorClass::Config,
             Self::Startup { failure, .. } | Self::Check { failure, .. } => failure.class.clone(),
-        }
-    }
-
-    pub fn legacy_events(&self) -> &[CompensationEventTelemetry] {
-        match self {
-            Self::NoEnforceGate | Self::Startup { .. } => &[],
-            Self::Check { legacy_events, .. } => legacy_events,
         }
     }
 
@@ -576,23 +479,6 @@ impl GatePipeline {
         drop(self.telemetry.set(sink));
     }
 
-    /// Install the immediate judge-attempt sink into the built-in gate, when
-    /// one is present.
-    pub fn install_judge_attempt_sink(&self, sink: &JudgeAttemptSink) {
-        for stage in &self.stages {
-            stage.gate.install_judge_attempt_sink(sink);
-        }
-    }
-
-    /// The built-in judge context, when the pipeline contains it. This backs a
-    /// test-only assertion that the run's Bash preflight has a judge; it is not
-    /// part of composition.
-    pub fn judge_context(&self) -> Option<&Arc<crate::clients::judge::JudgeContext>> {
-        self.stages
-            .iter()
-            .find_map(|stage| stage.gate.judge_context())
-    }
-
     /// One `gate_startup` record per gate, ready or failed.
     pub fn startup_records(&self) -> Vec<GateStartupTelemetry> {
         let mut records: Vec<_> = self
@@ -663,8 +549,6 @@ impl GatePipeline {
             .session
             .as_ref()
             .and_then(|session| session.call_id.as_deref());
-        let legacy_events =
-            vec![CompensationEventTelemetry::judge_bypass().with_call_id(raw_call_id)];
         if let Some(sink) = self.telemetry.get() {
             sink.record_decision(base_decision_record(
                 None,
@@ -683,7 +567,6 @@ impl GatePipeline {
             overridden: false,
             latency: Duration::ZERO,
             stages: Vec::new(),
-            legacy_events,
             deciding_gate: None,
         }
     }
@@ -785,9 +668,6 @@ fn stage_outcome(
         disabled: false,
         failure: None,
         evidence: Vec::new(),
-        observation: answer.observation,
-        fast_approved: false,
-        legacy_events: answer.legacy_events,
     };
     match answer.kind {
         GateAnswerKind::Decision(frame) => {
@@ -801,12 +681,11 @@ fn stage_outcome(
             StageOutcome {
                 decision: Some(frame.decision),
                 code: frame.code,
-                message: frame.message,
+                message: sanitize_model_text(&frame.message),
                 confidence: frame.confidence,
                 short_circuit: frame.short_circuit,
                 annotations: bounded_annotations(&frame.annotations),
                 evidence: frame.evidence,
-                fast_approved: answer.fast_approved,
                 ..base
             }
         },
@@ -908,7 +787,6 @@ struct Composer {
     configs: Vec<GateStageConfig>,
     command: String,
     stages: Vec<StageOutcome>,
-    legacy_events: Vec<CompensationEventTelemetry>,
     annotations: Vec<String>,
     first_warn: Option<usize>,
     first_allow: Option<usize>,
@@ -923,7 +801,6 @@ impl Composer {
             configs,
             command,
             stages: Vec::new(),
-            legacy_events: Vec::new(),
             annotations: Vec::new(),
             first_warn: None,
             first_allow: None,
@@ -964,7 +841,6 @@ impl Composer {
             && config.allowlist.iter().any(|entry| entry == &self.command)
         {
             stage.overridden = true;
-            mark_legacy_override(&mut stage.legacy_events);
         }
     }
 
@@ -1022,8 +898,6 @@ impl Composer {
     }
 
     fn push_stage(&mut self, stage: StageOutcome) {
-        self.legacy_events
-            .extend(stage.legacy_events.iter().cloned());
         self.stages.push(stage);
     }
 
@@ -1044,7 +918,6 @@ impl Composer {
                 gate,
                 failure,
                 stages: self.stages,
-                legacy_events: self.legacy_events,
             });
         }
         let (authorization, verdict, deciding_index) = if let Some(index) = self.blocking {
@@ -1085,17 +958,8 @@ impl Composer {
             overridden,
             latency,
             stages: self.stages,
-            legacy_events: self.legacy_events,
             deciding_gate,
         })
-    }
-}
-
-fn mark_legacy_override(events: &mut [CompensationEventTelemetry]) {
-    for event in events {
-        if event.kind == CompensationKind::JudgeVerdict {
-            event.overridden = Some(true);
-        }
     }
 }
 

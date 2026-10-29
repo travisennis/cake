@@ -19,6 +19,7 @@ import api
 import cache_breaks
 import cakelib
 import compensations
+import gates
 import hooks
 import judge
 import outcomes
@@ -29,7 +30,7 @@ import tokens
 import tools
 
 SECTIONS = (
-    overview, tokens, cache_breaks, tools, api, judge,
+    overview, tokens, cache_breaks, tools, api, gates, judge,
     time_breakdown, outcomes, hooks, compensations,
 )
 

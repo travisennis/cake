@@ -93,18 +93,10 @@ fn classify_typed_error(err: &anyhow::Error) -> Option<u8> {
         return Some(classify_settings_error(settings_err));
     }
 
-    // Judge failures are provider/agent errors: a timeout or transport
-    // failure is an API/network error, while a malformed verdict or refusal
-    // is a judge (agent) error. Matches the ApiError convention: auth,
-    // rate-limit, and request-timeout HTTP statuses are API errors.
-    if let Some(judge_err) = err.downcast_ref::<crate::clients::judge::JudgeError>() {
-        return Some(classify_judge_error(judge_err));
-    }
-
-    // A gate pipeline failure carries the protocol's failure class. The
-    // mapping preserves the existing judge exit classes: provider failures are
-    // API errors, configuration failures are input errors, and every other
-    // gate failure is an agent error.
+    // A gate pipeline failure carries the protocol's failure class: provider
+    // failures are API errors, configuration failures are input errors, and
+    // every other gate failure is an agent error. This preserves the exit
+    // classes callers saw for the former in-process judge.
     if let Some(gate_err) = err.downcast_ref::<crate::gates::composer::GatePipelineError>() {
         return Some(classify_gate_class(&gate_err.class()));
     }
@@ -155,7 +147,7 @@ fn is_cli_input_error(err: &anyhow::Error) -> bool {
 /// Class 2 is the provider-failure class: authentication (`401`, `403`), rate
 /// limiting (`429`), and request timeouts (`408`). A `408` is the status
 /// counterpart of the client-side timeouts that already map here ---
-/// `reqwest::Error::is_timeout()` and the typed judge timeout --- so the same
+/// `reqwest::Error::is_timeout()` and a typed request timeout --- so the same
 /// provider failure exits the same way whichever layer observed it.
 ///
 /// Retryability is a separate transport-recovery concern and does not decide
@@ -194,38 +186,16 @@ const fn classify_settings_error(error: &SettingsError) -> u8 {
         | SettingsError::UnknownProfile { .. }
         | SettingsError::DefaultModelNotFound { .. }
         | SettingsError::JudgeModelNotFound { .. }
+        | SettingsError::InvalidGateConfiguration { .. }
         | SettingsError::ParseError(_)
         | SettingsError::SerializeError(_)
         | SettingsError::IoError(_) => code::INPUT_ERROR,
     }
 }
 
-/// Classify a judge failure: timeouts and network/auth/rate-limit/request-timeout
-/// transport failures are API errors; other HTTP failures, malformed verdicts,
-/// and refusals are judge errors.
-fn classify_judge_error(error: &crate::clients::judge::JudgeError) -> u8 {
-    match error {
-        crate::clients::judge::JudgeError::Timeout(_) => code::API_ERROR,
-        crate::clients::judge::JudgeError::Transport {
-            status: Some(status),
-            ..
-        } => classify_api_error_status(*status),
-        crate::clients::judge::JudgeError::Transport {
-            status: None,
-            detail,
-        } => {
-            if is_api_network_error(detail) {
-                code::API_ERROR
-            } else {
-                code::AGENT_ERROR
-            }
-        },
-        crate::clients::judge::JudgeError::Malformed(_)
-        | crate::clients::judge::JudgeError::Refusal => code::AGENT_ERROR,
-    }
-}
-
-/// Classify a gate failure class into the documented exit classes.
+/// Classify a gate failure: timeouts and network/auth/rate-limit failures are
+/// API errors, configuration is an input error, and other failures are agent
+/// errors.
 const fn classify_gate_class(class: &crate::gates::protocol::GateErrorClass) -> u8 {
     use crate::gates::protocol::GateErrorClass;
 
@@ -305,7 +275,6 @@ const INPUT_ERROR_PATTERNS: &[&str] = &[
     "Invalid session reference",
     "No previous session found",
     "Failed to open session file",
-    "Failed to read judge rubric file",
     "Working directory mismatch",
     "Session model mismatch",
     "Failed to cd into worktree",
@@ -618,6 +587,12 @@ mod tests {
                 },
             ),
             (
+                "invalid gate configuration",
+                SettingsError::InvalidGateConfiguration {
+                    message: "selected gate 'safety' has no [gates.safety] table".to_string(),
+                },
+            ),
+            (
                 "unparsable settings file",
                 SettingsError::ParseError(
                     toml::from_str::<toml::Value>("not valid toml = [").unwrap_err(),
@@ -761,49 +736,6 @@ mod tests {
     // --- Agent error classification (default) ---
 
     #[test]
-    fn classify_judge_timeout_as_api_error() {
-        let err = anyhow::Error::new(crate::clients::judge::JudgeError::Timeout(
-            std::time::Duration::from_secs(30),
-        ));
-        assert_eq!(classify_to_u8(&err), code::API_ERROR);
-    }
-
-    #[test]
-    fn classify_judge_auth_transport_as_api_error() {
-        let err = anyhow::Error::new(crate::clients::judge::JudgeError::Transport {
-            status: Some(401),
-            detail: "invalid api key".to_string(),
-        });
-        assert_eq!(classify_to_u8(&err), code::API_ERROR);
-
-        let err = anyhow::Error::new(crate::clients::judge::JudgeError::Transport {
-            status: Some(429),
-            detail: "rate limited".to_string(),
-        });
-        assert_eq!(classify_to_u8(&err), code::API_ERROR);
-    }
-
-    #[test]
-    fn classify_judge_network_transport_as_api_error() {
-        let err = anyhow::Error::new(crate::clients::judge::JudgeError::Transport {
-            status: None,
-            detail: "error sending request: connection refused".to_string(),
-        });
-        assert_eq!(classify_to_u8(&err), code::API_ERROR);
-    }
-
-    #[test]
-    fn classify_judge_request_timeout_transport_as_api_error() {
-        // The judge path shares `classify_api_error_status`, so a `408` is the
-        // API class here too.
-        let err = anyhow::Error::new(crate::clients::judge::JudgeError::Transport {
-            status: Some(408),
-            detail: "request timeout".to_string(),
-        });
-        assert_eq!(classify_to_u8(&err), code::API_ERROR);
-    }
-
-    #[test]
     fn classify_gate_pipeline_failures_by_protocol_class() {
         let cases = [
             (
@@ -849,47 +781,10 @@ mod tests {
                 gate: "safety".to_string(),
                 failure,
                 stages: Vec::new(),
-                legacy_events: Vec::new(),
             });
             assert_eq!(classify_to_u8(&err), expected, "class {class}");
         }
         let err = anyhow::Error::new(crate::gates::composer::GatePipelineError::NoEnforceGate);
-        assert_eq!(classify_to_u8(&err), code::INPUT_ERROR);
-    }
-
-    #[test]
-    fn classify_judge_server_transport_as_agent_error() {
-        let err = anyhow::Error::new(crate::clients::judge::JudgeError::Transport {
-            status: Some(500),
-            // Provider bodies often quote upstream failures; the structured
-            // status must win over status-like text in the body.
-            detail: "upstream said HTTP 401: auth failed".to_string(),
-        });
-        assert_eq!(classify_to_u8(&err), code::AGENT_ERROR);
-
-        let err = anyhow::Error::new(crate::clients::judge::JudgeError::Transport {
-            status: Some(502),
-            detail: "error sending request to upstream".to_string(),
-        });
-        assert_eq!(classify_to_u8(&err), code::AGENT_ERROR);
-    }
-
-    #[test]
-    fn classify_judge_malformed_and_refusal_as_agent_error() {
-        let err = anyhow::Error::new(crate::clients::judge::JudgeError::Malformed(
-            "bad json".to_string(),
-        ));
-        assert_eq!(classify_to_u8(&err), code::AGENT_ERROR);
-
-        let err = anyhow::Error::new(crate::clients::judge::JudgeError::Refusal);
-        assert_eq!(classify_to_u8(&err), code::AGENT_ERROR);
-    }
-
-    #[test]
-    fn classify_unreadable_judge_rubric_as_input_error() {
-        let err = anyhow::anyhow!(
-            "Failed to read judge rubric file /work/rubric.md: No such file or directory"
-        );
         assert_eq!(classify_to_u8(&err), code::INPUT_ERROR);
     }
 

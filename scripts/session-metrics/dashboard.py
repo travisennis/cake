@@ -20,7 +20,7 @@ def bucket(rows, day, model, project):
                          interrupted=0, incomplete=0, invocations=0, summaries=0,
                          tools=0, tool_errors=0, attempts=0, api_errors=0,
                          retries=0, input_tokens=0, output_tokens=0, cached_tokens=0,
-                         cache_reported_input=0, judge_ms=0, wall_ms=0,
+                         cache_reported_input=0, judge_ms=0, gate_ms=0, wall_ms=0,
                          edit_write_retried=0, edit_write_recovered=0,
                          task_ms=[], api_ms=[], sessions=[], covered_sessions=[])
     return rows[key]
@@ -75,7 +75,8 @@ def aggregate(data, start, end):
         if row is not None:
             row['invocations'] += 1
         groups = [('attempts', inv.attempts), ('tools', inv.tool_calls),
-                  ('retries', inv.retries), ('judge', inv.judge_attempts)]
+                  ('retries', inv.retries), ('judge', inv.judge_attempts),
+                  ('gates', inv.gate_decisions)]
         if inv.summary:
             groups.append(('summary', [inv.summary]))
         for kind, records in groups:
@@ -104,6 +105,8 @@ def aggregate(data, start, end):
                     row['retries'] += 1
                 elif kind == 'judge':
                     row['judge_ms'] += record.get('total_ms') or 0
+                elif kind == 'gates':
+                    row['gate_ms'] += record.get('latency_ms') or 0
                 else:
                     row['summaries'] += 1
                     row['wall_ms'] += record.get('duration_ms') or 0

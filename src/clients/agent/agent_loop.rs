@@ -114,8 +114,11 @@ pub(super) fn judge_denial_label(event: &CompensationEventTelemetry) -> Option<S
             if event.overridden == Some(true) {
                 return None;
             }
-            let code = event.detail.as_deref()?.strip_prefix("block:")?;
-            Some(format!("judge block: {code}"))
+            let detail = event.detail.as_deref()?;
+            if let Some(code) = detail.strip_prefix("block:") {
+                return Some(format!("judge block: {code}"));
+            }
+            (detail == "block").then(|| "judge block".to_string())
         },
         CompensationKind::JudgeFailClosed => {
             let class = event.detail.as_deref()?;

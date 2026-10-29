@@ -190,6 +190,9 @@ enabled = ["Bash"]
         .command()
         .args(["inspect the Bash tool description"])
         .env(TEST_KEY, "test-token")
+        // Tool selection is not a gate-policy test; bypass the implicit gate
+        // so a machine without `cake-safety-judge` still exposes Bash.
+        .env("CAKE_GATE", "off")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
@@ -262,6 +265,9 @@ enabled = ["Bash"]
         .command()
         .args(["apply the debugging skill"])
         .env(TEST_KEY, "test-token")
+        // Tool selection is not a gate-policy test; bypass the implicit gate
+        // so a machine without `cake-safety-judge` still exposes Bash.
+        .env("CAKE_GATE", "off")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()

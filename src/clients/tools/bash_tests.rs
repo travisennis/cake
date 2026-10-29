@@ -1,17 +1,16 @@
 use super::*;
 use crate::clients::tools::ToolContext;
+use crate::clients::tools::bash_gate_fixture as gate_fixture;
 use crate::clients::tools::sandbox::SandboxPolicy;
-use sha2::{Digest, Sha256};
+use crate::gates::protocol::GateDecision;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::sync::Arc;
-use wiremock::matchers::method;
-use wiremock::{Mock, MockServer, ResponseTemplate};
 
 #[test]
 fn post_preflight_error_preserves_judge_telemetry() {
     let event = CompensationEventTelemetry::judge_verdict("allow", None, 12, false)
         .with_call_id(Some("call-123"));
-    let error = judge_tool_error(vec![event], "session read failed");
+    let error = gate_tool_error(vec![event], "session read failed");
     assert_eq!(error.message, "session read failed");
     assert_eq!(error.compensation_events.len(), 1);
     assert_eq!(
@@ -272,7 +271,7 @@ fn bash_reason_guidance_directs_supplying_context_for_state_changing_commands() 
     for phrase in [
         "state-changing, destructive-looking, or remote-effect commands",
         "intended effect",
-        "The judge sees each command alone",
+        "The policy gate receives each command as a standalone request",
         "never authorizes a remote destructive command",
     ] {
         assert!(
@@ -312,23 +311,11 @@ async fn bash_cwd_runs_in_a_relative_workspace_subdirectory() {
         "cwd": "nested",
     })
     .to_string();
-    let mock_server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(judge_chat_response(
-                r#"{"verdict":"allow","message":"Safe"}"#,
-            )),
-        )
-        .mount(&mock_server)
-        .await;
+    let gate = gate_fixture::decision(GateDecision::Allow, None, "Safe");
 
-    let result = execute_bash_with_judge_in(
-        &arguments,
-        Some(judge_context(&mock_server)),
-        workspace.path(),
-    )
-    .await
-    .expect("bash run should succeed");
+    let result = execute_bash_with_gates_in(&arguments, Some(gate.pipeline()), workspace.path())
+        .await
+        .expect("bash run should succeed");
 
     assert!(
         result
@@ -338,35 +325,14 @@ async fn bash_cwd_runs_in_a_relative_workspace_subdirectory() {
         result.output
     );
 
-    // The judge must be told about the same directory the command runs in.
-    // Assert the untrusted context object's `cwd` field from the recorded
-    // request instead of matching the path anywhere in the body, where the
-    // command text or a digest could satisfy the match.
-    let requests = mock_server
-        .received_requests()
-        .await
-        .expect("the judge request is recorded");
-    let body: serde_json::Value =
-        serde_json::from_slice(&requests[0].body).expect("judge request body is JSON");
-    let user_content = body["messages"]
-        .as_array()
-        .expect("judge history is a message list")
-        .iter()
-        .find(|message| message["role"] == "user")
-        .and_then(|message| message["content"].as_str())
-        .expect("judge history carries a user message");
-    let untrusted = user_content
-        .rsplit_once('\n')
-        .map(|(_, context)| context)
-        .expect("the judge prompt ends with the untrusted context object");
-    let judge_request_context: serde_json::Value =
-        serde_json::from_str(untrusted).expect("the untrusted context is a JSON object");
+    let frames = gate.frames();
+    let input = &frames[0].input;
     assert_eq!(
-        judge_request_context["cwd"],
-        serde_json::json!(expected.display().to_string()),
-        "the judge must see the resolved cwd"
+        input.cwd,
+        expected.display().to_string(),
+        "the gate must receive the resolved cwd"
     );
-    assert_eq!(judge_request_context["command"], "pwd -P");
+    assert_eq!(input.command, "pwd -P");
 }
 
 /// An absolute request inside the workspace is canonicalized and honored, so a
@@ -386,7 +352,7 @@ async fn bash_cwd_accepts_an_absolute_path_inside_the_workspace() {
     .to_string();
 
     let result =
-        execute_bash_with_judge_in(&arguments, Some(bypassed_judge_context()), workspace.path())
+        execute_bash_with_gates_in(&arguments, Some(bypassed_gate_context()), workspace.path())
             .await
             .expect("bash run should succeed");
 
@@ -417,13 +383,10 @@ async fn bash_cwd_rejects_missing_path_and_file_path_before_spawn() {
             "cwd": cwd.display().to_string(),
         })
         .to_string();
-        let error = execute_bash_with_judge_in(
-            &arguments,
-            Some(bypassed_judge_context()),
-            workspace.path(),
-        )
-        .await
-        .expect_err("invalid cwd must fail before spawning Bash");
+        let error =
+            execute_bash_with_gates_in(&arguments, Some(bypassed_gate_context()), workspace.path())
+                .await
+                .expect_err("invalid cwd must fail before spawning Bash");
         assert!(
             error.message.contains("Invalid Bash working directory"),
             "unexpected cwd error: {}",
@@ -452,7 +415,7 @@ fn admission_context_at(cwd: &std::path::Path, policy: SandboxPolicy) -> ToolCon
         Vec::new(),
     );
     context.sandbox_policy = policy;
-    context.judge = Some(bypassed_judge_context());
+    context.gates = Some(bypassed_gate_context());
     context
 }
 
@@ -689,11 +652,9 @@ async fn bash_cwd_runs_in_a_settings_directory_grant() {
     })
     .to_string();
 
-    let mock_server = MockServer::start().await;
-    mount_judge_verdict(&mock_server, r#"{"verdict":"allow","message":"Safe"}"#).await;
+    let gate = gate_fixture::decision(GateDecision::Allow, None, "Safe");
 
-    let mut context =
-        ToolContext::from_current_process().with_judge(Some(judge_context(&mock_server)));
+    let mut context = ToolContext::from_current_process().with_gates(Some(gate.pipeline()));
     context.cwd = workspace.path().to_path_buf();
     context.sandbox_policy = SandboxPolicy::WorkspaceWrite;
     context.settings_dirs = vec![settings_dir.path().to_path_buf()];
@@ -709,29 +670,12 @@ async fn bash_cwd_runs_in_a_settings_directory_grant() {
         result.output
     );
 
-    let requests = mock_server
-        .received_requests()
-        .await
-        .expect("the judge request is recorded");
-    let body: serde_json::Value =
-        serde_json::from_slice(&requests[0].body).expect("judge request body is JSON");
-    let user_content = body["messages"]
-        .as_array()
-        .expect("judge history is a message list")
-        .iter()
-        .find(|message| message["role"] == "user")
-        .and_then(|message| message["content"].as_str())
-        .expect("judge history carries a user message");
-    let untrusted = user_content
-        .rsplit_once('\n')
-        .map(|(_, context)| context)
-        .expect("the judge prompt ends with the untrusted context object");
-    let judge_request_context: serde_json::Value =
-        serde_json::from_str(untrusted).expect("the untrusted context is a JSON object");
+    let frames = gate.frames();
+    assert_eq!(frames.len(), 1, "the gate must receive exactly one request");
     assert_eq!(
-        judge_request_context["cwd"],
-        serde_json::json!(expected.display().to_string()),
-        "the judge must see the resolved cwd"
+        frames[0].input.cwd,
+        expected.display().to_string(),
+        "the gate must receive the resolved cwd"
     );
 }
 
@@ -760,8 +704,7 @@ async fn bash_cwd_selects_an_add_dir_grant_under_read_only_without_widening_auth
     })
     .to_string();
 
-    let mut context =
-        ToolContext::from_current_process().with_judge(Some(bypassed_judge_context()));
+    let mut context = ToolContext::from_current_process().with_gates(Some(bypassed_gate_context()));
     context.cwd = workspace.path().to_path_buf();
     context.sandbox_policy = SandboxPolicy::ReadOnly;
     context.additional_dirs = vec![granted.path().to_path_buf()];
@@ -966,7 +909,7 @@ async fn bash_read_cap_no_longer_kills_or_truncates_session_command() {
     let dir = tempfile::tempdir().unwrap();
     let mut context = crate::clients::tools::ToolContext::from_current_process();
     context.cwd = dir.path().to_path_buf();
-    context.judge = Some(bypassed_judge_context());
+    context.gates = Some(bypassed_gate_context());
     context.sandbox_policy = SandboxPolicy::DangerFullAccess;
     let mut limits = crate::config::settings::ToolLimits::defaults();
     limits.bash_read_cap = Some(100);
@@ -988,7 +931,7 @@ async fn bash_output_max_bytes_override_spills_at_custom_cap() {
     let dir = tempfile::tempdir().expect("hermetic temp dir for bash test");
     let mut context = crate::clients::tools::ToolContext::from_current_process();
     context.cwd = dir.path().to_path_buf();
-    context.judge = Some(bypassed_judge_context());
+    context.gates = Some(bypassed_gate_context());
     let mut limits = crate::config::settings::ToolLimits::defaults();
     limits.bash_output_max_bytes = Some(1000);
     context.limits = limits;
@@ -1025,7 +968,7 @@ async fn bash_output_max_bytes_unlimited_passes_large_output_through() {
     let dir = tempfile::tempdir().expect("hermetic temp dir for bash test");
     let mut context = crate::clients::tools::ToolContext::from_current_process();
     context.cwd = dir.path().to_path_buf();
-    context.judge = Some(bypassed_judge_context());
+    context.gates = Some(bypassed_gate_context());
     let mut limits = crate::config::settings::ToolLimits::defaults();
     limits.bash_output_max_bytes = None;
     limits.bash_read_cap = None;
@@ -1066,7 +1009,7 @@ async fn bash_output_max_bytes_unlimited_passes_large_output_through() {
 
 fn session_test_context() -> ToolContext {
     let mut context = ToolContext::from_current_process();
-    context.judge = Some(bypassed_judge_context());
+    context.gates = Some(bypassed_gate_context());
     context.sandbox_policy = SandboxPolicy::DangerFullAccess;
     context
 }
@@ -1116,28 +1059,15 @@ async fn trailing_ampersand_is_stripped_and_reported() {
 }
 
 #[tokio::test]
-async fn trailing_ampersand_is_removed_before_judge_request() {
-    let mock_server = MockServer::start().await;
-    mount_judge_verdict(&mock_server, r#"{"verdict":"allow","message":"Safe"}"#).await;
-    let result = execute_bash_with_judge(
-        r#"{"command":"printf safe &"}"#,
-        Some(judge_context(&mock_server)),
-    )
-    .await
-    .unwrap();
-    assert!(result.output.contains("Trailing & was removed"));
-    let requests = mock_server.received_requests().await.unwrap();
-    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
-    let user = body["messages"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|message| message["role"] == "user")
-        .unwrap()["content"]
-        .as_str()
+async fn trailing_ampersand_is_removed_before_the_gate_request() {
+    let gate = gate_fixture::decision(GateDecision::Allow, None, "Safe");
+    let result = execute_bash_with_gates(r#"{"command":"printf safe &"}"#, Some(gate.pipeline()))
+        .await
         .unwrap();
-    assert!(user.contains("printf safe"));
-    assert!(!user.contains("printf safe &"));
+    assert!(result.output.contains("Trailing & was removed"));
+    let frames = gate.frames();
+    assert_eq!(frames.len(), 1);
+    assert_eq!(frames[0].input.command, "printf safe");
 }
 
 #[tokio::test]
@@ -1259,7 +1189,7 @@ async fn sandboxed_bash_session_yields_and_completes_under_platform_policy() {
     let marker = dir.path().join("session-finished");
     let mut context = ToolContext::from_current_process();
     context.cwd = dir.path().to_path_buf();
-    context.judge = Some(bypassed_judge_context());
+    context.gates = Some(bypassed_gate_context());
     context.sandbox_policy = SandboxPolicy::WorkspaceWrite;
     let command = format!("sleep 2; touch '{}'", marker.display());
     let result = execute_bash(
@@ -1332,7 +1262,7 @@ async fn sandboxed_bash_session_finishes_when_descendant_holds_captured_pipe() {
     let pid_file = dir.path().join("pipe-holder.pid");
     let mut context = ToolContext::from_current_process();
     context.cwd = dir.path().to_path_buf();
-    context.judge = Some(bypassed_judge_context());
+    context.gates = Some(bypassed_gate_context());
     context.sandbox_policy = SandboxPolicy::WorkspaceWrite;
     let command = format!("sleep 30 & echo $! > '{}'; echo done", pid_file.display());
 
@@ -1602,9 +1532,9 @@ async fn grep_no_match_output_is_disambiguated() {
     let dir = tempfile::tempdir().expect("fixture temp dir for grep test");
     std::fs::write(dir.path().join("Cargo.toml"), "[package]\n").expect("write fixture");
     let args = r#"{"command": "grep definitely_missing Cargo.toml"}"#;
-    let result = Box::pin(execute_bash_with_judge_in(
+    let result = Box::pin(execute_bash_with_gates_in(
         args,
-        Some(bypassed_judge_context()),
+        Some(bypassed_gate_context()),
         dir.path(),
     ))
     .await
@@ -1625,8 +1555,7 @@ async fn grep_no_match_output_is_disambiguated() {
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 #[tokio::test]
 async fn unsupported_platform_default_sandbox_fails_closed() {
-    let mut context =
-        ToolContext::from_current_process().with_judge(Some(bypassed_judge_context()));
+    let mut context = ToolContext::from_current_process().with_gates(Some(bypassed_gate_context()));
     context.sandbox_policy = SandboxPolicy::WorkspaceWrite;
 
     let error = execute_bash(&context, r#"{"command": "echo should-not-run"}"#)
@@ -1641,8 +1570,7 @@ async fn unsupported_platform_default_sandbox_fails_closed() {
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 #[tokio::test]
 async fn unsupported_platform_danger_full_access_still_runs_bash() {
-    let mut context =
-        ToolContext::from_current_process().with_judge(Some(bypassed_judge_context()));
+    let mut context = ToolContext::from_current_process().with_gates(Some(bypassed_gate_context()));
     context.sandbox_policy = SandboxPolicy::DangerFullAccess;
 
     let result = execute_bash(&context, r#"{"command": "printf danger-full-access"}"#)
@@ -1842,8 +1770,7 @@ async fn test_sandbox_read_only_file_grant_runs_file_but_denies_sibling() {
 
     // `[sandbox].read_only` paths are loaded into `additional_dirs` by main.rs;
     // mirror that wiring here.
-    let mut context =
-        ToolContext::from_current_process().with_judge(Some(bypassed_judge_context()));
+    let mut context = ToolContext::from_current_process().with_gates(Some(bypassed_gate_context()));
     context.additional_dirs = vec![allowed.clone()];
     let context = Arc::new(context);
 
@@ -1882,8 +1809,7 @@ async fn test_sandbox_read_only_file_grant_runs_file_but_denies_sibling() {
 /// args-level default.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn context_with_policy_at(cwd: std::path::PathBuf, policy: SandboxPolicy) -> Arc<ToolContext> {
-    let mut context =
-        ToolContext::from_current_process().with_judge(Some(bypassed_judge_context()));
+    let mut context = ToolContext::from_current_process().with_gates(Some(bypassed_gate_context()));
     context.cwd = cwd;
     context.sandbox_policy = policy;
     Arc::new(context)
@@ -1902,7 +1828,7 @@ fn context_with_policy(policy: SandboxPolicy) -> Arc<ToolContext> {
 /// closed on an absent judge context.
 #[cfg(target_os = "macos")]
 fn sandbox_context() -> Arc<ToolContext> {
-    Arc::new(ToolContext::from_current_process().with_judge(Some(bypassed_judge_context())))
+    Arc::new(ToolContext::from_current_process().with_gates(Some(bypassed_gate_context())))
 }
 
 /// Read-only policy denies writes to the project directory.
@@ -2170,8 +2096,7 @@ fn test_bash_git_ignores_inherited_git_dir_canary() {
         .canonicalize()
         .expect("canary git directory");
 
-    let mut context =
-        ToolContext::from_current_process().with_judge(Some(bypassed_judge_context()));
+    let mut context = ToolContext::from_current_process().with_gates(Some(bypassed_gate_context()));
     context.cwd = workspace.path().to_path_buf();
     context.sandbox_policy = SandboxPolicy::WorkspaceWrite;
     let context = Arc::new(context);
@@ -2299,8 +2224,7 @@ async fn test_sandbox_linked_worktree_git_operations() {
     );
 
     // Create a ToolContext with cwd set to the linked worktree
-    let mut context =
-        ToolContext::from_current_process().with_judge(Some(bypassed_judge_context()));
+    let mut context = ToolContext::from_current_process().with_gates(Some(bypassed_gate_context()));
     context.cwd = wt_path.clone();
     for temp_dir in &context.temp_dirs {
         let canonical_temp = temp_dir.canonicalize().unwrap_or_else(|_| temp_dir.clone());
@@ -2931,204 +2855,99 @@ async fn test_streaming_empty_output_with_stderr() {
 }
 
 // =============================================================================
-// Judge preflight (Milestone 5): warn prepends, block and judge failure block.
+// Gate preflight: captured decisions, warn prepends, block and failure block.
 // =============================================================================
 
-/// Build a judge context whose judge client points at a wiremock server.
-fn judge_context(mock_server: &MockServer) -> std::sync::Arc<JudgeContext> {
-    use crate::config::model::{ApiType, ModelConfig};
-    use std::collections::HashMap;
-
-    let model_config = ModelConfig {
-        supports_images: false,
-        model: "judge/model".to_string(),
-        api_type: ApiType::ChatCompletions,
-        base_url: mock_server.uri(),
-        api_key_env: "JUDGE_TEST_KEY".to_string(),
-        provider: None,
-        provider_headers: None,
-        temperature: Some(0.0),
-        top_p: None,
-        top_k: None,
-        max_output_tokens: Some(128),
-        context_window: None,
-        reasoning_effort: None,
-        reasoning_summary: None,
-        reasoning_max_tokens: None,
-        providers: vec![],
-    };
-    std::sync::Arc::new(JudgeContext {
-        settings: crate::config::settings::JudgeSettings::default(),
-        bypass_env: None,
-        agent_model: crate::config::model::ResolvedModelConfig {
-            model_config,
-            api_key: "test-key".to_string(),
-        },
-        models: HashMap::new(),
-        client: std::sync::OnceLock::new(),
-        record_attempt: None,
-    })
+#[tokio::test]
+async fn script_evidence_reaches_the_gate_before_execution() {
+    let gate = gate_fixture::decision(GateDecision::Allow, None, "Safe");
+    let dir = tempfile::tempdir().unwrap();
+    let contents = "printf observed-script-output";
+    std::fs::write(dir.path().join("job.sh"), contents).unwrap();
+    let output = execute_bash_with_gates_in(
+        r#"{"command":"bash job.sh"}"#,
+        Some(gate.pipeline()),
+        dir.path(),
+    )
+    .await
+    .unwrap();
+    assert!(output.output.contains("observed-script-output"));
+    assert!(
+        output
+            .output
+            .contains("collected as untrusted evidence for the configured policy gate")
+    );
+    let frames = gate.frames();
+    assert_eq!(frames.len(), 1);
+    let evidence = &frames[0].input.script_evidence;
+    assert_eq!(evidence.len(), 1);
+    assert_eq!(evidence[0].contents, contents);
+    assert!(evidence[0].path.ends_with("job.sh"));
+    assert_eq!(frames[0].input.command, "bash job.sh");
 }
 
-/// Chat-completions response carrying one judge verdict for a mock server.
-fn judge_chat_response(verdict_json: &str) -> serde_json::Value {
-    serde_json::json!({
-        "id": "chatcmpl-judge",
-        "choices": [{
-            "index": 0,
-            "message": { "role": "assistant", "content": verdict_json },
-            "finish_reason": "stop"
-        }]
-    })
-}
-
-/// Mount a mock judge returning one canned verdict for every request.
-async fn mount_judge_verdict(mock_server: &MockServer, verdict_json: &str) {
-    Mock::given(method("POST"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(judge_chat_response(verdict_json)))
-        .mount(mock_server)
-        .await;
-}
-
-/// Run judge-enabled async tests with the emergency bypass explicitly disabled.
-///
-/// The production path intentionally gives `CAKE_JUDGE=off` precedence over a
-/// configured context, so these tests must not inherit the developer's shell.
-fn run_with_judge_enabled<F>(future: F) -> F::Output
-where
-    F: std::future::Future,
-{
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    temp_env::with_var("CAKE_JUDGE", Some("on"), || runtime.block_on(future))
-}
-
-#[test]
-fn script_evidence_reaches_judge_before_execution() {
-    run_with_judge_enabled(async {
-        let server = MockServer::start().await;
-        mount_judge_verdict(&server, r#"{"verdict":"allow","message":"Safe"}"#).await;
-        let dir = tempfile::tempdir().unwrap();
-        let contents = "printf observed-script-output";
-        std::fs::write(dir.path().join("job.sh"), contents).unwrap();
-        let output = execute_bash_with_judge_in(
-            r#"{"command":"bash job.sh"}"#,
-            Some(judge_context(&server)),
-            dir.path(),
-        )
-        .await
-        .unwrap();
-        assert!(output.output.contains("observed-script-output"));
-        assert!(
-            output
-                .output
-                .contains("Safety judge inspected referenced script")
-        );
-        let requests = server.received_requests().await.unwrap();
-        let body: serde_json::Value = requests[0].body_json().unwrap();
-        let prompt = body["messages"][1]["content"].as_str().unwrap();
-        let value: serde_json::Value =
-            serde_json::from_str(prompt.split_once('\n').unwrap().1).unwrap();
-        assert_eq!(value["script_evidence"]["contents"], contents);
-        assert_eq!(value["command"], "bash job.sh");
-    });
-}
-
-#[test]
-fn script_evidence_failure_prevents_provider_call_and_allowlist_override() {
-    run_with_judge_enabled(async {
-        let server = MockServer::start().await;
-        let dir = tempfile::tempdir().unwrap();
-        for shell in [
-            "bash", "sh", "zsh", "dash", "ksh", "ksh93", "ash", "mksh", "pdksh",
-        ] {
-            let command = format!("{shell} missing.sh");
-            let mut judge = (*judge_context(&server)).clone();
-            judge.settings.allowlist = vec![command.clone()];
-            let error = execute_bash_with_judge_in(
-                &serde_json::json!({"command": command}).to_string(),
-                Some(std::sync::Arc::new(judge)),
-                dir.path(),
-            )
-            .await
-            .unwrap_err();
-            assert!(error.message.starts_with("BLOCKED\n\n"));
-            assert!(error.message.contains("missing.sh"));
-            assert!(error.message.contains("judge was not called"));
-            assert!(error.message.contains("32 KiB"));
-            assert!(!error.message.contains("Safety judge inspected"));
-            assert!(!error.message.contains("judge was unavailable"));
-            assert_eq!(
-                error.compensation_events[0].detail.as_deref(),
-                Some("script_evidence")
-            );
-            assert!(server.received_requests().await.unwrap().is_empty());
-        }
-    });
-}
-
-#[test]
-fn script_collection_precedes_judge_configuration() {
-    run_with_judge_enabled(async {
-        let server = MockServer::start().await;
-        let dir = tempfile::tempdir().unwrap();
-        let mut judge = (*judge_context(&server)).clone();
-        judge.settings.model = Some("missing-model".to_string());
-        let error = execute_bash_with_judge_in(
-            r#"{"command":"bash missing.sh"}"#,
-            Some(std::sync::Arc::new(judge)),
+#[tokio::test]
+async fn script_evidence_failure_prevents_gate_call_and_allowlist_override() {
+    let dir = tempfile::tempdir().unwrap();
+    for shell in [
+        "bash", "sh", "zsh", "dash", "ksh", "ksh93", "ash", "mksh", "pdksh",
+    ] {
+        let command = format!("{shell} missing.sh");
+        let gate = gate_fixture::with_allowlist(&command);
+        let error = execute_bash_with_gates_in(
+            &serde_json::json!({"command": command}).to_string(),
+            Some(gate.pipeline()),
             dir.path(),
         )
         .await
         .unwrap_err();
+        assert!(error.message.starts_with("BLOCKED\n\n"));
         assert!(error.message.contains("missing.sh"));
-        assert!(error.message.contains("judge was not called"));
-        assert!(!error.message.contains("Unknown judge model"));
-        assert!(server.received_requests().await.unwrap().is_empty());
-    });
+        assert!(error.message.contains("no gate request was sent"));
+        assert!(error.message.contains("32 KiB"));
+        assert!(!error.message.contains("was unavailable"));
+        assert_eq!(
+            error.compensation_events[0].detail.as_deref(),
+            Some("script_evidence")
+        );
+        assert!(
+            gate.frames().is_empty(),
+            "evidence collection must fail before the gate runs"
+        );
+    }
 }
 
-#[test]
-fn script_evidence_block_prevents_script_execution() {
-    run_with_judge_enabled(async {
-        let server = MockServer::start().await;
-        mount_judge_verdict(
-            &server,
-            r#"{"verdict":"block","code":"unknown-destructive","message":"Denied"}"#,
+#[tokio::test]
+async fn script_evidence_block_prevents_script_execution() {
+    let gate = gate_fixture::decision(GateDecision::Block, Some("unknown-destructive"), "Denied");
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("job.sh"), "touch must-not-exist").unwrap();
+    for shell in [
+        "bash", "sh", "zsh", "dash", "ksh", "ksh93", "ash", "mksh", "pdksh",
+    ] {
+        let command = format!("{shell} job.sh");
+        let error = execute_bash_with_gates_in(
+            &serde_json::json!({"command": command}).to_string(),
+            Some(gate.pipeline()),
+            dir.path(),
         )
-        .await;
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("job.sh"), "touch must-not-exist").unwrap();
-        for shell in [
-            "bash", "sh", "zsh", "dash", "ksh", "ksh93", "ash", "mksh", "pdksh",
-        ] {
-            let command = format!("{shell} job.sh");
-            let error = execute_bash_with_judge_in(
-                &serde_json::json!({"command": command}).to_string(),
-                Some(judge_context(&server)),
-                dir.path(),
-            )
-            .await
-            .unwrap_err();
-            assert!(
-                error
-                    .message
-                    .contains("Safety judge inspected referenced script")
-            );
-            assert!(!dir.path().join("must-not-exist").exists());
-        }
-        let requests = server.received_requests().await.unwrap();
-        assert_eq!(requests.len(), 9);
-        for request in requests {
-            let body: serde_json::Value = request.body_json().unwrap();
-            let prompt = body["messages"][1]["content"].as_str().unwrap();
-            let value: serde_json::Value =
-                serde_json::from_str(prompt.split_once('\n').unwrap().1).unwrap();
-            assert_eq!(value["script_evidence"]["contents"], "touch must-not-exist");
-        }
-    });
+        .await
+        .unwrap_err();
+        assert!(
+            error
+                .message
+                .contains("collected as untrusted evidence for the configured policy gate")
+        );
+        assert!(!dir.path().join("must-not-exist").exists());
+    }
+    let frames = gate.frames();
+    assert_eq!(frames.len(), 9);
+    for frame in frames {
+        assert_eq!(
+            frame.input.script_evidence[0].contents,
+            "touch must-not-exist"
+        );
+    }
 }
 
 #[tokio::test]
@@ -3141,13 +2960,13 @@ async fn script_evidence_bypass_skips_collection() {
         vec![],
         vec![],
     );
-    context.judge = Some(bypassed_judge_context());
+    context.gates = Some(bypassed_gate_context());
     let args = BashExecutionArgs::from_json(
         r#"{"command":"bash missing.sh"}"#,
         super::super::sandbox::SandboxPolicy::WorkspaceWrite,
     )
     .unwrap();
-    let preflight = bash_judge_preflight(&context, &args, dir.path(), None)
+    let preflight = bash_gate_preflight(&context, &args, dir.path(), None)
         .await
         .unwrap();
     assert!(preflight.warnings.is_empty());
@@ -3157,655 +2976,93 @@ async fn script_evidence_bypass_skips_collection() {
     );
 }
 
-#[test]
-fn cascade_fast_approves_collected_script_evidence() {
-    // ADR 050: preflight still collects the script for the judge, but the
-    // cascade observes every request, so a clean TypeSafe answer runs the
-    // command without a judge call.
-    run_with_judge_enabled(async {
-        let judge_server = MockServer::start().await;
-        let typesafe_server = MockServer::start().await;
-        // `expect(0)` on the judge and `expect(1)` on the observation are the
-        // assertions: the fast leg decides and the judge never runs.
-        Mock::given(method("POST"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(judge_chat_response(
-                    r#"{"verdict":"allow","message":"Safe"}"#,
-                )),
-            )
-            .expect(0)
-            .mount(&judge_server)
-            .await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "model": "jev-1.13.0",
-                "answers": {"eligible": {"type": "noul", "noul": 0.99}},
-                "usage": {"input_tokens": 5, "output_tokens": 1}
-            })))
-            .expect(1)
-            .mount(&typesafe_server)
-            .await;
-
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("job.sh"), "printf cascade-script-evidence").unwrap();
-        let judge = cascade_judge_context(
-            &judge_server,
-            &typesafe_server,
-            std::time::Duration::from_millis(200),
-        );
-        let result = execute_bash_with_judge_in(
-            r#"{"command":"bash job.sh"}"#,
-            Some(std::sync::Arc::new(judge)),
-            dir.path(),
-        )
-        .await
-        .expect("a fast approval runs the command");
-
-        assert!(
-            result.output.contains("cascade-script-evidence"),
-            "the fast-approved command must run, got: {}",
-            result.output
-        );
-        assert!(
-            result
-                .output
-                .contains("its contents were not reviewed by the safety judge"),
-            "a fast approval must not claim the judge inspected the script, got: {}",
-            result.output
-        );
-        assert!(
-            !result
-                .output
-                .contains("Safety judge inspected referenced script"),
-            "the fast path never showed the script to the judge, got: {}",
-            result.output
-        );
-        judge_server.verify().await;
-        typesafe_server.verify().await;
-    });
-}
-
-#[test]
-fn cascade_falls_back_for_collected_script_evidence_below_the_cutoff() {
-    // A below-cutoff observation still reaches the judge, which sees the
-    // collected evidence and can block the script (ADR 050).
-    run_with_judge_enabled(async {
-        let judge_server = MockServer::start().await;
-        let typesafe_server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(judge_chat_response(
-                    r#"{"verdict":"block","code":"destructive-rm","message":"Denied"}"#,
-                )),
-            )
-            .expect(1)
-            .mount(&judge_server)
-            .await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "model": "jev-1.13.0",
-                "answers": {"eligible": {"type": "noul", "noul": 0.2}},
-                "usage": {"input_tokens": 5, "output_tokens": 1}
-            })))
-            .expect(1)
-            .mount(&typesafe_server)
-            .await;
-
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("job.sh"), "printf cascade-script-evidence").unwrap();
-        let judge = cascade_judge_context(
-            &judge_server,
-            &typesafe_server,
-            std::time::Duration::from_millis(200),
-        );
-        let outcome = execute_bash_with_judge_in(
-            r#"{"command":"bash job.sh"}"#,
-            Some(std::sync::Arc::new(judge)),
-            dir.path(),
-        )
-        .await;
-
-        let error = outcome.expect_err("a judge block stops the command");
-        assert!(
-            error.message.contains("Denied"),
-            "the judge's block must reach the model, got: {}",
-            error.message
-        );
-        assert!(
-            error
-                .message
-                .contains("Safety judge inspected referenced script"),
-            "the fallback note must report the inspected script, got: {}",
-            error.message
-        );
-        judge_server.verify().await;
-        typesafe_server.verify().await;
-    });
-}
-
 #[tokio::test]
-async fn test_judge_warn_prepends_notice() {
-    // A `warn` verdict runs the command and prepends the judge's message as a
+async fn warn_decision_prepends_notice_and_runs_command() {
+    // A `warn` decision runs the command and prepends its message as a
     // NOTICE, mirroring the old soft-warning behavior without reclassification.
-    let mock_server = MockServer::start().await;
-    mount_judge_verdict(
-        &mock_server,
-        r#"{"verdict":"warn","code":"rg-replace-footgun","message":"Use -r with an explicit replacement."}"#,
-    )
-    .await;
-
-    let args = r#"{"command": "echo judge-warn-test"}"#;
-    let result = Box::pin(execute_bash_with_judge(
-        args,
-        Some(judge_context(&mock_server)),
-    ))
-    .await
-    .unwrap();
+    let gate = gate_fixture::decision(
+        GateDecision::Warn,
+        Some("rg-replace-footgun"),
+        "Use -r with an explicit replacement.",
+    );
+    let args = r#"{"command": "echo gate-warn-test"}"#;
+    let result = Box::pin(execute_bash_with_gates(args, Some(gate.pipeline())))
+        .await
+        .unwrap();
     assert!(
         result
             .output
             .contains("NOTICE: Use -r with an explicit replacement."),
-        "warn verdict should prepend NOTICE, got: {}",
+        "warn decision should prepend NOTICE, got: {}",
         result.output
     );
-    assert!(result.output.contains("judge-warn-test"));
+    assert!(result.output.contains("gate-warn-test"));
     assert!(result.output.contains("[exit:0 |"));
-    // The warn verdict is recorded for telemetry with its code and latency.
-    assert_eq!(
-        result.compensation_events.len(),
-        1,
-        "warn verdict must record one judge verdict event"
-    );
-    assert_eq!(
-        result.compensation_events[0].kind,
-        CompensationKind::JudgeVerdict
-    );
-    assert_eq!(
-        result.compensation_events[0].detail.as_deref(),
-        Some("warn:rg-replace-footgun")
-    );
-    assert!(
-        result.compensation_events[0].latency_ms.is_some(),
-        "judge verdict event must carry the call latency"
-    );
+    assert_eq!(gate.frames().len(), 1, "the warn call reached the gate");
 }
 
 #[tokio::test]
-async fn test_judge_allow_records_attempt_through_sink() {
-    // The Bash preflight persists finalized judge attempts through the run's
-    // telemetry sink as soon as judging completes, instead of riding the tool
-    // result: an interrupted command must not drop the attempt.
-    let mock_server = MockServer::start().await;
-    mount_judge_verdict(&mock_server, r#"{"verdict":"allow","message":"Safe"}"#).await;
-
-    let dir = tempfile::TempDir::new().unwrap();
-    let path = dir.path().join("telemetry.ndjson");
-    let writer = std::sync::Arc::new(crate::session_telemetry::SharedSessionTelemetryWriter::new(
-        crate::session_telemetry::SessionTelemetryWriter::open(&path).unwrap(),
-    ));
-    let sink = crate::session_telemetry::JudgeAttemptSink::new(
-        std::sync::Arc::clone(&writer),
-        crate::session_telemetry::SessionTelemetryContext {
-            session_id: "session".to_string(),
-            invocation_id: "invocation".to_string(),
-        },
-    );
-    let mut judge = (*judge_context(&mock_server)).clone();
-    judge.record_attempt = Some(sink);
-    let mut tool_context = crate::clients::tools::ToolContext::from_current_process();
-    tool_context.judge = Some(std::sync::Arc::new(judge));
-
-    let args = r#"{"command": "echo judge-sink-test"}"#;
-    let result = Box::pin(execute_bash_for_call(
-        &tool_context,
-        args,
-        Some("call-42".to_string()),
-    ))
-    .await
-    .unwrap();
-    assert!(result.output.contains("judge-sink-test"));
-
-    let contents = std::fs::read_to_string(&path).unwrap();
-    let record: serde_json::Value = serde_json::from_str(contents.trim()).unwrap();
-    assert_eq!(record["type"], "judge_attempt");
-    assert_eq!(record["attempt"], 1);
-    let mut hasher = Sha256::new();
-    hasher.update(b"call-42");
-    let digest = hex::encode(hasher.finalize());
-    assert_eq!(
-        record["call_id"], digest,
-        "attempt must carry the digest of the originating tool call identifier"
-    );
-}
-
-#[tokio::test]
-async fn shadow_observation_reaches_the_telemetry_sink() {
-    // The Bash preflight reaches `TypeSafe` through the resolved settings, so a
-    // Bash-level shadow test would need a live endpoint. Exercise the emission
-    // helper directly: a present observation is recorded, an absent one is not.
-    let mock_server = MockServer::start().await;
-    let dir = tempfile::TempDir::new().unwrap();
-    let path = dir.path().join("telemetry.ndjson");
-    let writer = std::sync::Arc::new(crate::session_telemetry::SharedSessionTelemetryWriter::new(
-        crate::session_telemetry::SessionTelemetryWriter::open(&path).unwrap(),
-    ));
-    let sink = crate::session_telemetry::JudgeAttemptSink::new(
-        std::sync::Arc::clone(&writer),
-        crate::session_telemetry::SessionTelemetryContext {
-            session_id: "session".to_string(),
-            invocation_id: "invocation".to_string(),
-        },
-    );
-    let mut judge = (*judge_context(&mock_server)).clone();
-    judge.record_attempt = Some(sink);
-    let observation = crate::clients::typesafe::TypeSafeObservation {
-        elapsed: std::time::Duration::from_millis(120),
-        model: Some("jev-1.13.0".to_string()),
-        probability: Some(0.97),
-        usage_input_tokens: Some(11),
-        usage_output_tokens: Some(2),
-        failure_class: None,
-    };
-
-    record_typesafe_shadow(&judge, Some(&observation), Some("call-9"));
-    record_typesafe_shadow(&judge, None, Some("call-9"));
-
-    let contents = std::fs::read_to_string(&path).unwrap();
-    let lines = contents.lines().collect::<Vec<_>>();
-    assert_eq!(lines.len(), 1, "only the present observation is recorded");
-    let record: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
-    assert_eq!(record["type"], "type_safe_shadow");
-    assert_eq!(record["session_id"], "session");
-    assert_eq!(record["elapsed_ms"], 120);
-    assert_eq!(record["model"], "jev-1.13.0");
-    assert_eq!(record["probability"], serde_json::json!(0.97));
-    assert_eq!(record["usage_input_tokens"], 11);
-    assert_eq!(record["usage_output_tokens"], 2);
-    let mut hasher = Sha256::new();
-    hasher.update(b"call-9");
-    assert_eq!(
-        record["call_id"],
-        hex::encode(hasher.finalize()),
-        "the raw call identifier must not reach telemetry"
-    );
-}
-
-/// A cascade judge context: the observation may approve, the judge is the
-/// fallback.
-///
-/// The run's judge client is built lazily from settings, which would send the
-/// observation to the real endpoint. Pre-populating the cached client is the
-/// same wiring with the observation endpoint pointed at a mock server.
-fn cascade_judge_context(
-    judge: &MockServer,
-    typesafe: &MockServer,
-    timeout: std::time::Duration,
-) -> JudgeContext {
-    let mut context = (*judge_context(judge)).clone();
-    context.settings.typesafe = crate::config::settings::TypeSafeSettings {
-        mode: crate::config::settings::TypeSafeMode::Cascade,
-        model: "jev-1.13.0".to_string(),
-        timeout_ms: u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
-    };
-    let client = crate::clients::judge::JudgeClient::new(
-        context.agent_model.clone(),
-        std::time::Duration::from_secs(5),
-        std::time::Duration::ZERO,
-    )
-    .with_typesafe(Some(
-        crate::clients::typesafe::TypeSafeClient::new(
-            "test-typesafe-key".to_string(),
-            "jev-1.13.0".to_string(),
-            timeout,
-        )
-        .with_endpoint(typesafe.uri()),
-    ));
-    context
-        .client
-        .set(Ok(std::sync::Arc::new(client)))
-        .expect("the cached client is set once");
-    context
-}
-
-/// Mount one `TypeSafe` answer with `probability`, expecting one request.
-///
-/// The answer is delayed so the observation's elapsed time is a real
-/// measurement: an instant answer would record zero and make the latency
-/// assertions in the cascade tests vacuous.
-async fn mount_typesafe_answer(server: &MockServer, probability: f64) {
-    Mock::given(method("POST"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(serde_json::json!({
-                    "model": "jev-1.13.0",
-                    "answers": {"eligible": {"type": "noul", "noul": probability}},
-                    "usage": {"input_tokens": 5, "output_tokens": 1}
-                }))
-                .set_delay(std::time::Duration::from_millis(30)),
-        )
-        .expect(1)
-        .mount(server)
-        .await;
-}
-
-/// A telemetry sink writing to a fresh sidecar, with the temporary directory
-/// that owns it and the path it writes to.
-fn telemetry_sink() -> (
-    tempfile::TempDir,
-    crate::session_telemetry::JudgeAttemptSink,
-    std::path::PathBuf,
-) {
-    let dir = tempfile::TempDir::new().expect("a temp dir");
-    let path = dir.path().join("telemetry.ndjson");
-    let writer = std::sync::Arc::new(crate::session_telemetry::SharedSessionTelemetryWriter::new(
-        crate::session_telemetry::SessionTelemetryWriter::open(&path).expect("a sidecar"),
-    ));
-    let sink = crate::session_telemetry::JudgeAttemptSink::new(
-        std::sync::Arc::clone(&writer),
-        crate::session_telemetry::SessionTelemetryContext {
-            session_id: "session".to_string(),
-            invocation_id: "invocation".to_string(),
-        },
-    );
-    (dir, sink, path)
-}
-
-/// The one-way digest the sidecar stores for a provider-controlled identifier.
-fn call_digest(call_id: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(call_id.as_bytes());
-    hex::encode(hasher.finalize())
-}
-
-/// The telemetry records one Bash call wrote, in order.
-fn recorded_telemetry(path: &std::path::Path) -> Vec<serde_json::Value> {
-    std::fs::read_to_string(path)
-        .expect("the sidecar is readable")
-        .lines()
-        .map(|line| serde_json::from_str(line).expect("each record is one JSON object"))
-        .collect()
-}
-
-#[tokio::test]
-async fn cascade_fast_approval_executes_and_records_the_fast_path() {
-    // A clean observation at or above the cutoff approves the command without a
-    // judge call, and the command still runs under the sandbox as usual.
-    let judge_server = MockServer::start().await;
-    let typesafe_server = MockServer::start().await;
-    // `expect(0)`: a fast approval must not reach the judge at all.
-    Mock::given(method("POST"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(judge_chat_response(
-                r#"{"verdict":"allow","message":"Safe"}"#,
-            )),
-        )
-        .expect(0)
-        .mount(&judge_server)
-        .await;
-    mount_typesafe_answer(&typesafe_server, 0.97).await;
-
-    let (_dir, sink, path) = telemetry_sink();
-    let mut judge = cascade_judge_context(
-        &judge_server,
-        &typesafe_server,
-        std::time::Duration::from_millis(200),
-    );
-    judge.record_attempt = Some(sink);
-    let mut tool_context = crate::clients::tools::ToolContext::from_current_process();
-    tool_context.judge = Some(std::sync::Arc::new(judge));
-
-    let args = r#"{"command": "echo cascade-fast-path"}"#;
-    let result = Box::pin(execute_bash_for_call(
-        &tool_context,
-        args,
-        Some("call-cascade".to_string()),
-    ))
-    .await
-    .expect("a fast-approved command runs");
-
-    assert!(
-        result.output.contains("cascade-fast-path"),
-        "a fast approval runs the command, got: {}",
-        result.output
-    );
-    assert!(
-        !result.output.contains("NOTICE:"),
-        "a fast approval adds no annotation, got: {}",
-        result.output
-    );
-    assert_eq!(
-        result.compensation_events.len(),
-        1,
-        "a fast approval records one judge verdict event"
-    );
-    let event = &result.compensation_events[0];
-    assert_eq!(event.kind, CompensationKind::JudgeVerdict);
-    assert_eq!(event.detail.as_deref(), Some("allow"));
-    assert_eq!(event.overridden, None);
-    let serialized_event = serde_json::to_value(event).expect("event serializes");
-    assert_eq!(serialized_event["call_id"], call_digest("call-cascade"));
-
-    let records = recorded_telemetry(&path);
-    assert_eq!(
-        records.len(),
-        1,
-        "a fast approval records the observation and no judge attempt: {records:?}"
-    );
-    let observation = &records[0];
-    assert_eq!(observation["type"], "type_safe_shadow");
-    assert_eq!(observation["probability"], 0.97);
-    assert_eq!(observation["failure_class"], serde_json::Value::Null);
-    assert_eq!(observation["call_id"], call_digest("call-cascade"));
-    // The fast leg's elapsed time lands in the existing judge-verdict latency
-    // field, which is what makes the cascade measurable without a new record.
-    // The answer is delayed, so a zero here would mean the latency wiring read
-    // nothing at all rather than that the response was fast.
-    let elapsed_ms = observation["elapsed_ms"]
-        .as_u64()
-        .expect("the observation records its elapsed time");
-    assert!(
-        elapsed_ms > 0,
-        "the fast leg's elapsed time must be a real measurement: {records:?}"
-    );
-    assert_eq!(
-        event.latency_ms,
-        Some(elapsed_ms),
-        "the verdict latency must be the fast leg's elapsed time"
-    );
-
-    judge_server.verify().await;
-    typesafe_server.verify().await;
-}
-
-#[tokio::test]
-async fn cascade_fallback_runs_the_judge_and_a_warning_still_executes() {
-    // An observation below the cutoff falls back to the judge. A `warn` verdict
-    // still prints its NOTICE and still runs the command: the cascade changes
-    // neither (ADR 034).
-    let judge_server = MockServer::start().await;
-    let typesafe_server = MockServer::start().await;
-    mount_judge_verdict(
-        &judge_server,
-        r#"{"verdict":"warn","code":"rg-replace-footgun","message":"Prefer rg -n foo."}"#,
-    )
-    .await;
-    mount_typesafe_answer(&typesafe_server, 0.2).await;
-
-    let (_dir, sink, path) = telemetry_sink();
-    let mut judge = cascade_judge_context(
-        &judge_server,
-        &typesafe_server,
-        std::time::Duration::from_millis(200),
-    );
-    judge.record_attempt = Some(sink);
-    let mut tool_context = crate::clients::tools::ToolContext::from_current_process();
-    tool_context.judge = Some(std::sync::Arc::new(judge));
-
-    let args = r#"{"command": "echo cascade-fallback"}"#;
-    let result = Box::pin(execute_bash_for_call(&tool_context, args, None))
+async fn allow_decision_runs_the_command() {
+    // An `allow` decision runs the command with no annotation.
+    let gate = gate_fixture::decision(GateDecision::Allow, None, "Safe");
+    let args = r#"{"command": "echo gate-allow-test"}"#;
+    let result = Box::pin(execute_bash_with_gates(args, Some(gate.pipeline())))
         .await
-        .expect("a warned command runs");
-
+        .unwrap();
     assert!(
-        result.output.contains("NOTICE: Prefer rg -n foo."),
-        "a warn verdict still prints, got: {}",
-        result.output
-    );
-    assert!(
-        result.output.contains("cascade-fallback"),
-        "a warn verdict still executes, got: {}",
-        result.output
-    );
-    assert_eq!(
-        result.compensation_events[0].detail.as_deref(),
-        Some("warn:rg-replace-footgun")
-    );
-
-    let records = recorded_telemetry(&path);
-    let kinds = records
-        .iter()
-        .map(|record| record["type"].as_str().unwrap_or_default())
-        .collect::<Vec<_>>();
-    assert_eq!(
-        kinds,
-        ["judge_attempt", "type_safe_shadow"],
-        "the fallback records the judge attempt, then the observation: {records:?}"
-    );
-    assert_eq!(records[1]["probability"], 0.2);
-    judge_server.verify().await;
-}
-
-#[tokio::test]
-async fn test_judge_allow_runs_ungated() {
-    // An `allow` verdict runs the command with no annotation.
-    let mock_server = MockServer::start().await;
-    mount_judge_verdict(&mock_server, r#"{"verdict":"allow","message":"Safe"}"#).await;
-
-    let args = r#"{"command": "echo judge-allow-test"}"#;
-    let result = Box::pin(execute_bash_with_judge(
-        args,
-        Some(judge_context(&mock_server)),
-    ))
-    .await
-    .unwrap();
-    assert!(
-        result.output.contains("judge-allow-test"),
-        "allow verdict should run the command, got: {}",
+        result.output.contains("gate-allow-test"),
+        "allow decision should run the command, got: {}",
         result.output
     );
     assert!(
         !result.output.contains("NOTICE:"),
-        "allow verdict should not annotate output, got: {}",
+        "allow decision should not annotate output, got: {}",
         result.output
     );
-    // The allow verdict is still recorded for telemetry.
-    assert_eq!(
-        result.compensation_events.len(),
-        1,
-        "allow verdict must record one judge verdict event"
-    );
-    assert_eq!(
-        result.compensation_events[0].kind,
-        CompensationKind::JudgeVerdict
-    );
-    assert_eq!(
-        result.compensation_events[0].detail.as_deref(),
-        Some("allow")
-    );
-    assert_eq!(result.compensation_events[0].overridden, None);
+    assert_eq!(gate.frames().len(), 1);
 }
 
 #[tokio::test]
-async fn test_judge_verdict_survives_command_timeout() {
-    // A judge `allow` verdict followed by a command timeout must still reach
-    // telemetry: the gate's decision stays observable even when the tool call
-    // fails after the preflight (review F-001).
-    let mock_server = MockServer::start().await;
-    mount_judge_verdict(&mock_server, r#"{"verdict":"allow","message":"Safe"}"#).await;
-
-    let args = r#"{"command": "sleep 5", "timeout": 1}"#;
-    let result = Box::pin(execute_bash_with_judge(
-        args,
-        Some(judge_context(&mock_server)),
-    ))
-    .await
-    .unwrap();
-    assert!(
-        result.output.contains("[still running | session:"),
-        "expected a yielded session"
-    );
-    assert_eq!(
-        result.compensation_events.len(),
-        1,
-        "a yield after an allow verdict must keep the judge verdict event, got: {:?}",
-        result.compensation_events
-    );
-    assert_eq!(
-        result.compensation_events[0].kind,
-        CompensationKind::JudgeVerdict
-    );
-    assert_eq!(
-        result.compensation_events[0].detail.as_deref(),
-        Some("allow")
-    );
-}
-
-#[tokio::test]
-async fn test_judge_block_prevents_execution() {
-    // A `block` verdict prevents spawn and surfaces the judge's reason as the
+async fn block_decision_prevents_execution() {
+    // A `block` decision prevents spawn and surfaces the gate's reason as the
     // tool error.
-    let mock_server = MockServer::start().await;
-    mount_judge_verdict(
-        &mock_server,
-        r#"{"verdict":"block","code":"git-force-push","message":"Prefer push --force-with-lease."}"#,
-    )
-    .await;
-
-    let args = r#"{"command": "git push --force"}"#;
-    let err = Box::pin(execute_bash_with_judge(
-        args,
-        Some(judge_context(&mock_server)),
-    ))
-    .await
-    .unwrap_err();
-    assert!(
-        err.message.contains("BLOCKED"),
-        "block verdict must block, got: {err}"
+    let gate = gate_fixture::decision(
+        GateDecision::Block,
+        Some("git-force-push"),
+        "Prefer push --force-with-lease.",
     );
-    assert!(
-        err.message.contains("Prefer push --force-with-lease."),
-        "block must carry the judge's reason, got: {err}"
-    );
-    // The block verdict reaches telemetry even though the tool call failed.
-    assert_eq!(
-        err.compensation_events.len(),
-        1,
-        "block verdict must record one judge verdict event on the error path"
-    );
-    assert_eq!(
-        err.compensation_events[0].kind,
-        CompensationKind::JudgeVerdict
-    );
-    assert_eq!(
-        err.compensation_events[0].detail.as_deref(),
-        Some("block:git-force-push")
-    );
-    assert_eq!(err.compensation_events[0].overridden, None);
-}
-
-#[tokio::test]
-async fn test_judge_missing_context_fails_closed() {
-    // No judge context means the run has no command-safety gate; the command
-    // must not run ungated.
-    let args = r#"{"command": "echo hi"}"#;
-    let err = Box::pin(execute_bash_with_judge(args, None))
+    let args = r#"{"command": "echo gate-block-test"}"#;
+    let err = Box::pin(execute_bash_with_gates(args, Some(gate.pipeline())))
         .await
         .unwrap_err();
     assert!(
         err.message.contains("BLOCKED"),
-        "missing judge context must fail closed, got: {err}"
+        "block decision must block, got: {err}"
     );
-    assert!(err.message.contains("not configured"));
+    assert!(
+        err.message.contains("Prefer push --force-with-lease."),
+        "block must carry the gate's reason, got: {err}"
+    );
+    assert!(
+        !err.message.contains("gate-block-test"),
+        "the command must not run after a block, got: {err}"
+    );
+    assert_eq!(gate.frames().len(), 1);
+}
+
+#[tokio::test]
+async fn missing_gate_context_fails_closed() {
+    // No gate pipeline means the run has no command-policy gate; the command
+    // must not run ungated.
+    let args = r#"{"command": "echo hi"}"#;
+    let err = Box::pin(execute_bash_with_gates(args, None))
+        .await
+        .unwrap_err();
+    assert!(
+        err.message.contains("BLOCKED"),
+        "missing gate pipeline must fail closed, got: {err}"
+    );
+    assert!(err.message.contains("no command-policy gate is configured"));
     // The fail-closed denial is recorded with its failure class.
     assert_eq!(
         err.compensation_events.len(),
@@ -3823,32 +3080,30 @@ async fn test_judge_missing_context_fails_closed() {
 }
 
 #[tokio::test]
-async fn test_judge_unreachable_fails_closed() {
-    // A judge transport failure (here: HTTP 500) blocks the command with the
-    // fail-closed message instead of running it ungated.
-    let mock_server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .respond_with(ResponseTemplate::new(500))
-        .mount(&mock_server)
-        .await;
+async fn gate_failure_fails_closed() {
+    // A gate failure (here: transport) blocks the command with the fail-closed
+    // message instead of running it ungated.
+    let gate = gate_fixture::failing("transport", "HTTP 500");
 
-    let args = r#"{"command": "echo hi"}"#;
-    let err = Box::pin(execute_bash_with_judge(
-        args,
-        Some(judge_context(&mock_server)),
-    ))
-    .await
-    .unwrap_err();
+    let args = r#"{"command": "echo gate-failure-test"}"#;
+    let err = Box::pin(execute_bash_with_gates(args, Some(gate.pipeline())))
+        .await
+        .unwrap_err();
     assert!(
         err.message.contains("BLOCKED"),
-        "unreachable judge must fail closed, got: {err}"
+        "failed gate must fail closed, got: {err}"
     );
     assert!(err.message.contains("was unavailable"));
+    assert!(err.message.contains("HTTP 500"));
+    assert!(
+        !err.message.contains("gate-failure-test"),
+        "the command must not run after a gate failure, got: {err}"
+    );
     // The transport failure is recorded as a fail-closed denial.
     assert_eq!(
         err.compensation_events.len(),
         1,
-        "unreachable judge must record one fail-closed event"
+        "failed gate must record one fail-closed event"
     );
     assert_eq!(
         err.compensation_events[0].kind,
@@ -3861,72 +3116,13 @@ async fn test_judge_unreachable_fails_closed() {
 }
 
 #[tokio::test]
-async fn test_judge_exhausted_recovery_blocks_before_spawn() {
-    // A judge that times out on both its first call and its recovery attempt
-    // must block the command before spawn and record the final fail-closed
-    // class, exactly as an un-retried failure would.
-    let mock_server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(judge_chat_response(
-                    r#"{"verdict":"allow","message":"Safe"}"#,
-                ))
-                .set_delay(Duration::from_millis(1500)),
-        )
-        .mount(&mock_server)
-        .await;
-
-    let mut context = judge_context(&mock_server);
-    {
-        let settings = std::sync::Arc::get_mut(&mut context).unwrap();
-        settings.settings.timeout_secs = 1;
-        settings.settings.retry_budget_secs = 1;
-    }
-
-    let args = r#"{"command": "echo judge-exhausted-test"}"#;
-    let err = Box::pin(execute_bash_with_judge(args, Some(context)))
-        .await
-        .unwrap_err();
-    assert!(
-        err.message.contains("BLOCKED"),
-        "exhausted recovery must fail closed, got: {err}"
-    );
-    assert!(
-        err.message.contains("timed out"),
-        "fail-closed message must name the timeout, got: {err}"
-    );
-    assert!(
-        !err.message.contains("judge-exhausted-test"),
-        "the command must never run after exhausted recovery, got: {err}"
-    );
-    assert_eq!(
-        err.compensation_events.len(),
-        1,
-        "exhausted recovery must record one fail-closed event, got: {:?}",
-        err.compensation_events
-    );
-    assert_eq!(
-        err.compensation_events[0].kind,
-        CompensationKind::JudgeFailClosed
-    );
-    assert_eq!(
-        err.compensation_events[0].detail.as_deref(),
-        Some("timeout")
-    );
-}
-
-#[tokio::test]
 async fn test_judge_bypass_records_bypass_event() {
-    // A bypassed judge records one judge_bypass event per call, so the
+    // A bypassed pipeline records one judge_bypass event per call, so the
     // escape hatch cannot be used silently (ADR-018 decision log).
     let args = r#"{"command": "echo bypass-test"}"#;
-    let result = Box::pin(execute_bash_with_judge(
-        args,
-        Some(bypassed_judge_context()),
-    ))
-    .await
-    .unwrap();
+    let result = Box::pin(execute_bash_with_gates(args, Some(bypassed_gate_context())))
+        .await
+        .unwrap();
     assert!(result.output.contains("bypass-test"));
     assert_eq!(
         result.compensation_events.len(),
@@ -3941,66 +3137,15 @@ async fn test_judge_bypass_records_bypass_event() {
 }
 
 #[tokio::test]
-async fn test_judge_bypass_env_value_bypasses_without_a_judge_call() {
-    // The `CAKE_JUDGE=off` value carried on the judge context bypasses the
-    // judge even when settings enable it, and the escape hatch still records
-    // its event. The value is injected on the context instead of read from the
-    // process environment, so this assertion holds whatever the ambient
-    // `CAKE_JUDGE` is and cannot race other judge-path tests.
-    let mock_server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(judge_chat_response(
-            r#"{"verdict":"block","code":"destructive-rm","message":"Refusing."}"#,
-        )))
-        .expect(0) // bypassed: no judge call may be made
-        .mount(&mock_server)
-        .await;
-
-    let mut judge = (*judge_context(&mock_server)).clone();
-    judge.bypass_env = Some("off".to_string());
-    let args = r#"{"command": "echo bypass-env-test"}"#;
-    let result = Box::pin(execute_bash_with_judge(
-        args,
-        Some(std::sync::Arc::new(judge)),
-    ))
-    .await
-    .unwrap();
-
-    assert!(result.output.contains("bypass-env-test"));
-    assert_eq!(
-        result.compensation_events.len(),
-        1,
-        "bypassed call must record one judge_bypass event, got: {:?}",
-        result.compensation_events
-    );
-    assert_eq!(
-        result.compensation_events[0].kind,
-        CompensationKind::JudgeBypass
-    );
-    mock_server.verify().await;
-}
-
-#[tokio::test]
-async fn test_judge_allowlist_override_records_verdict_and_flag() {
-    // An allowlisted command is still judged; a block verdict is overridden
-    // and the original verdict plus the override flag reach telemetry. The
-    // allowlisted command is deliberately harmless (a bare echo) so the test
-    // never executes anything destructive.
-    let mock_server = MockServer::start().await;
-    mount_judge_verdict(
-        &mock_server,
-        r#"{"verdict":"block","code":"destructive-rm","message":"Refusing."}"#,
-    )
-    .await;
-
-    let mut context = judge_context(&mock_server);
-    std::sync::Arc::get_mut(&mut context)
-        .unwrap()
-        .settings
-        .allowlist = vec!["echo allowlisted".to_string()];
+async fn allowlist_override_runs_the_allowlisted_command() {
+    // An allowlisted command is still judged; a block decision is overridden
+    // and the command runs unannotated. The allowlisted command is
+    // deliberately harmless (a bare echo) so the test never executes anything
+    // destructive.
+    let gate = gate_fixture::with_allowlist("echo allowlisted");
 
     let args = r#"{"command": "echo allowlisted"}"#;
-    let result = Box::pin(execute_bash_with_judge(args, Some(context)))
+    let result = Box::pin(execute_bash_with_gates(args, Some(gate.pipeline())))
         .await
         .unwrap();
     assert!(
@@ -4008,10 +3153,16 @@ async fn test_judge_allowlist_override_records_verdict_and_flag() {
         "an allowlisted block must run unannotated, got: {}",
         result.output
     );
+    assert!(result.output.contains("allowlisted"));
+    assert_eq!(
+        gate.frames().len(),
+        1,
+        "an allowlisted command is still judged"
+    );
     assert_eq!(
         result.compensation_events.len(),
         1,
-        "overridden block must record one judge verdict event"
+        "an overridden block must still record a compatibility verdict"
     );
     assert_eq!(
         result.compensation_events[0].kind,
@@ -4019,32 +3170,25 @@ async fn test_judge_allowlist_override_records_verdict_and_flag() {
     );
     assert_eq!(
         result.compensation_events[0].detail.as_deref(),
-        Some("block:destructive-rm")
+        Some("block:fake-block")
     );
     assert_eq!(result.compensation_events[0].overridden, Some(true));
 }
 
 #[tokio::test]
-async fn test_judge_message_is_sanitized_before_entering_agent_loop() {
-    // A judge message is model-generated text entering the agent loop:
-    // control characters (here ANSI escapes) are stripped and the length is
-    // capped so a compromised or confused judge cannot inject terminal
-    // sequences or unbounded text into the model-visible output. The `[31m`
-    // marker text survives — only the ESC byte is a control character.
-    let mock_server = MockServer::start().await;
-    let payload = format!(
-        r#"{{"verdict":"warn","code":"rg-replace-footgun","message":"\u001b[31mANSI\u001b[0m{}"}}"#,
-        "x".repeat(2000)
-    );
-    mount_judge_verdict(&mock_server, &payload).await;
+async fn gate_message_is_sanitized_before_entering_agent_loop() {
+    // Gate text is model-generated: control characters (here ANSI escapes) are
+    // stripped and the length is capped so a compromised or confused gate
+    // cannot inject terminal sequences or unbounded text into the
+    // model-visible output. The `[31m` marker text survives — only the ESC
+    // byte is a control character.
+    let payload = format!("\u{1b}[31mANSI\u{1b}[0m{}", "x".repeat(2000));
+    let gate = gate_fixture::decision(GateDecision::Warn, Some("rg-replace-footgun"), &payload);
 
-    let args = r#"{"command": "echo judge-sanitize-test"}"#;
-    let result = Box::pin(execute_bash_with_judge(
-        args,
-        Some(judge_context(&mock_server)),
-    ))
-    .await
-    .unwrap();
+    let args = r#"{"command": "echo gate-sanitize-test"}"#;
+    let result = Box::pin(execute_bash_with_gates(args, Some(gate.pipeline())))
+        .await
+        .unwrap();
     assert!(
         result.output.contains("NOTICE: [31mANSI[0m"),
         "escape bytes must be stripped, got: {}",
@@ -4056,7 +3200,7 @@ async fn test_judge_message_is_sanitized_before_entering_agent_loop() {
     );
     assert!(
         result.output.matches('x').count() <= 1000,
-        "judge message must be length-capped"
+        "gate message must be length-capped"
     );
 }
 

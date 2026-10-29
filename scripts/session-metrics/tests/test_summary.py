@@ -69,6 +69,20 @@ def fixture():
     invocation.compensations = [
         {"kind": "judge_verdict", "detail": detail, "timestamp": T(days=-2)}
         for detail in ("allow", "block:rm-rf", "warn:code")]
+    invocation.gate_startups = [
+        {"gate": "safety", "mode": "enforce", "outcome": "ready",
+         "timestamp": T(days=-3)},
+    ]
+    invocation.gate_decisions = [
+        {"gate": "safety", "mode": "enforce", "decision": "allow",
+         "timestamp": T(days=-3)},
+        {"gate": "safety", "mode": "enforce", "decision": "block",
+         "timestamp": T(days=-3)},
+        {"gate": "safety", "mode": "enforce", "failure_class": "timeout",
+         "timestamp": T(days=-3)},
+        {"gate": None, "mode": "enforce", "bypassed": True,
+         "timestamp": T(days=-3)},
+    ]
     invocation.summary = {"success": True}
     unterminated = cakelib.Invocation(
         "s2", "i2", init={"model": "alpha", "timestamp": T(days=-4)})
@@ -108,6 +122,8 @@ class SummaryShapeTest(unittest.TestCase):
             "tokens.cache_hit_rate": 0.8,
             "api.latency.p95": 300,
             "api.failure_rate": 0.5,
+            "gates.failure_rate": 1 / 3,
+            "gates.block_rate": 0.5,
             "judge.timeout_rate": 1 / 3,
             "judge.failure_rate": 2 / 3,
             "judge.block_rate": 1 / 3,
@@ -117,8 +133,10 @@ class SummaryShapeTest(unittest.TestCase):
         self.assertEqual(doc["counts"], {
             "sessions": 1, "invocations": 2, "invocations_started": 2,
             "tasks": 2, "tasks_succeeded": 1, "tool_calls": 2, "edit_calls": 2,
-            "api_attempts": 2, "judge_attempts": 3, "judge_verdicts": 3,
-            "session_parse_errors": 0, "telemetry_parse_errors": 0,
+            "api_attempts": 2, "gate_startups": 1, "gate_decisions": 4,
+            "gate_blocks": 1, "gate_failures": 1, "judge_attempts": 3,
+            "judge_verdicts": 3, "session_parse_errors": 0,
+            "telemetry_parse_errors": 0,
         })
 
     def test_empty_window_keeps_shape_and_nulls_every_metric(self):

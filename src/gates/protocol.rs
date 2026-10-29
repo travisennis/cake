@@ -720,8 +720,7 @@ impl<'de> Deserialize<'de> for GateErrorClass {
 /// Sanitize gate text that may become model-visible.
 ///
 /// Control characters except newline, carriage return, and tab are stripped,
-/// and the result is capped at [`MAX_MODEL_TEXT_CHARS`], matching the existing
-/// judge message rule exactly.
+/// and the result is capped at [`MAX_MODEL_TEXT_CHARS`].
 #[must_use]
 pub fn sanitize_model_text(text: &str) -> String {
     text.chars()

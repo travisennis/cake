@@ -113,7 +113,7 @@ async fn sandbox_write_denial_reaches_tool_result_permission_denials() {
     let read_target = outside.path().join("denied-read.txt");
     std::fs::write(&read_target, "outside secret").expect("read fixture");
     let mut context = ToolContext::from_current_process();
-    context.judge = Some(bypassed_judge_context());
+    context.gates = Some(bypassed_gate_context());
     let args = serde_json::json!({
         "command": format!("touch {}", target.display()),
     })

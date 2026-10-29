@@ -11,8 +11,8 @@ use std::{
     os::unix::ffi::OsStrExt,
 };
 
-use crate::clients::judge::ScriptEvidence;
 use crate::clients::tools::{ToolContext, validate_path_in_cwd};
+use crate::gates::protocol::ScriptEvidence;
 
 const MAX_SCRIPT_BYTES: u64 = 32 * 1024;
 

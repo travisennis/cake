@@ -14,6 +14,7 @@
 mod agents;
 mod config_dir;
 mod data_dir;
+pub mod gates;
 pub mod git;
 pub mod hooks;
 pub mod model;

@@ -99,9 +99,10 @@ Delivery is staged: (0) freeze this contract; (1) put the current judge behind a
 
 ## More Information
 
-- Delivery plan and cross-project handoff: `docs/exec-plans/active/external-policy-gates.md` (the workspace-level initiative lives outside this repository).
+- Partially superseded by [ADR 051](./051-external-judge-extraction-with-offline-acceptance.md): parity, mandatory shadow comparison, and one release with the built-in judge are no longer extraction prerequisites. This ADR remains authoritative for the `cake-gate/1` protocol, ownership boundary, enforcement semantics, and telemetry contract.
+- Delivery plan and cross-project handoff: `docs/exec-plans/completed/external-policy-gates.md` (the workspace-level initiative lives outside this repository).
 - Backlog: 128 (this platform tracker), 128a (slice 0 contract), 033 (judge-quality tracker), 033b (trusted authorization context), 033c (structured Bash action packet).
 - Existing decisions: [ADR 018](./018-llm-judge-command-gate.md), the LLM judge command gate; [ADR 020](./020-bounded-llm-judge-recovery.md), bounded recovery; [ADR 033](./033-typesafe-judge-shadow-evaluation.md), TypeSafe shadow evaluation; [ADR 034](./034-typesafe-judge-cascade-cutoff.md), the cascade cutoff; [ADR 035](./035-judge-script-observations.md), script observations.
 - Contract authorities after acceptance: `docs/integrations.md` (wire protocol, composition, telemetry, `bash check`), `docs/configuration.md` (`[gates]` schema and precedence), `docs/security.md` (trust boundary and no-gate rule), and `docs/schemas/cake-gate-1.schema.json` (frame schema).
-- Delivery plan: `docs/exec-plans/active/external-policy-gates.md`.
+- Delivery plan: `docs/exec-plans/completed/external-policy-gates.md`.
 - The reference gate repository `cake-safety-judge` is created only after this contract is reviewed and frozen.

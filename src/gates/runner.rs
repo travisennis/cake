@@ -5,8 +5,8 @@
 //! deadlines, the 1 MiB frame bound, process-group teardown, restart after a
 //! per-check failure, and the two-consecutive-failure circuit breaker.
 //!
-//! The built-in judge does not use this module; slice 1 exercises it through
-//! the fake gate fixture.
+//! The fake gate fixture and the runtime tests exercise this module without a
+//! model provider.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -710,6 +710,7 @@ fn signal_process_group(_pgid: Option<u32>, _signal: i32) {}
 pub struct ProcessGate {
     describe: Describe,
     process: tokio::sync::Mutex<GateProcess>,
+    oneshot: bool,
 }
 
 impl ProcessGate {
@@ -717,11 +718,41 @@ impl ProcessGate {
     /// a shadow gate that the caller records and drops.
     pub async fn start(init: InitFrame, mut process: GateProcess) -> Result<Self, GateFailure> {
         let describe = process.describe().await?;
-        let _ready = process.start(init).await?;
+        if init
+            .models
+            .as_ref()
+            .is_some_and(|models| !models.is_empty())
+            && !describe
+                .capabilities
+                .iter()
+                .any(|cap| cap == "resolved-models")
+        {
+            return Err(GateFailure::config(
+                "gate models require resolved-models capability",
+            ));
+        }
+        let ready = process.start(init).await?;
+        for warning in ready.warnings {
+            eprintln!("gate warning: {warning}");
+        }
         Ok(Self {
             describe,
             process: tokio::sync::Mutex::new(process),
+            oneshot: false,
         })
+    }
+    pub fn with_oneshot(mut self) -> Result<Self, GateFailure> {
+        if !self
+            .describe
+            .transports
+            .contains(&crate::gates::protocol::GateTransport::Oneshot)
+        {
+            return Err(GateFailure::config(
+                "gate does not support oneshot transport",
+            ));
+        }
+        self.oneshot = true;
+        Ok(self)
     }
 }
 
@@ -734,19 +765,19 @@ impl crate::gates::composer::Gate for ProcessGate {
         Box::pin(async move {
             let started = std::time::Instant::now();
             let mut process = self.process.lock().await;
-            match process.check(frame).await {
-                Ok(decision) => crate::gates::composer::GateAnswer::decision(
-                    decision,
-                    started.elapsed(),
-                    None,
-                    false,
-                    Vec::new(),
-                ),
+            let result = process.check(frame).await;
+            if self.oneshot {
+                process.shutdown().await;
+            }
+            drop(process);
+            match result {
+                Ok(decision) => {
+                    crate::gates::composer::GateAnswer::decision(decision, started.elapsed())
+                },
                 Err(failure) => crate::gates::composer::GateAnswer::failure(
                     failure.failure().clone(),
                     failure.is_disabled(),
                     started.elapsed(),
-                    Vec::new(),
                 ),
             }
         })

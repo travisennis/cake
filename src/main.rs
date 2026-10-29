@@ -205,6 +205,10 @@ pub(crate) struct CodingAssistant {
     #[arg(long)]
     pub no_runtime_context: bool,
 
+    /// Explicitly bypass command-policy gates for this invocation
+    #[arg(long, global = true)]
+    pub no_gate: bool,
+
     #[command(subcommand)]
     pub command: Option<Commands>,
 }
@@ -1322,8 +1326,12 @@ impl CmdRunner for CodingAssistant {
             resources.tools_enabled.as_deref(),
             task_id,
             resources.loaded.system_prompt.as_deref(),
-            &resources.loaded.judge,
         )?;
+
+        run_session.agent = run_session
+            .agent
+            .with_policy_gates(&resources.loaded, self.no_gate)
+            .await;
 
         Self::warn_unavailable_tools(
             resources.tools_enabled.as_deref(),
@@ -1729,6 +1737,7 @@ async fn main() -> std::process::ExitCode {
     info!("data dir: {}", data_dir.get_cache_dir().display());
 
     let options = CommandRunOptions {
+        no_gate: args.no_gate,
         model: args.model.as_deref(),
         profile: args.profile.as_deref(),
         output_format: args.output_format,

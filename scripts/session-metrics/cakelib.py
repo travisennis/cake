@@ -7,9 +7,11 @@ Data sources:
   function_call_output, reasoning, hook_event, prompt_context,
   task_start, task_complete, result, skill_activated.
 - Telemetry sidecars: ~/.cache/cake/session-telemetry/{uuid}.ndjson
-  Record types: telemetry_init, api_attempt_in_flight, api_attempt, judge_attempt,
-  retry_scheduled, tool_call,
-  compensation, session_summary. One file can span multiple invocations (continue/resume).
+  Record types: telemetry_init, api_attempt_in_flight, api_attempt,
+  gate_startup, gate_decision, gate_evidence, retry_scheduled, retry_wait,
+  tool_call, compensation, session_summary, plus historical judge_attempt and
+  type_safe_shadow records. One file can span multiple invocations
+  (continue/resume).
 """
 
 from __future__ import annotations
@@ -304,6 +306,9 @@ class Invocation:
     init: dict | None = None
     attempts: list[dict] = field(default_factory=list)
     judge_attempts: list[dict] = field(default_factory=list)
+    gate_startups: list[dict] = field(default_factory=list)
+    gate_decisions: list[dict] = field(default_factory=list)
+    gate_evidence: list[dict] = field(default_factory=list)
     retries: list[dict] = field(default_factory=list)
     retry_waits: list[dict] = field(default_factory=list)
     tool_calls: list[dict] = field(default_factory=list)
@@ -344,8 +349,9 @@ class Invocation:
 
     def _records(self) -> list[dict]:
         recs = []
-        for group in (self.attempts, self.judge_attempts, self.retries, self.retry_waits,
-                      self.tool_calls, self.compensations, self.other):
+        for group in (self.attempts, self.judge_attempts, self.gate_startups,
+                      self.gate_decisions, self.gate_evidence, self.retries,
+                      self.retry_waits, self.tool_calls, self.compensations, self.other):
             recs.extend(group)
         if self.init is not None:
             recs.append(self.init)
@@ -542,6 +548,12 @@ def load_telemetry(
                         inv.attempts.append(rec)
                     elif t == "judge_attempt":
                         inv.judge_attempts.append(rec)
+                    elif t == "gate_startup":
+                        inv.gate_startups.append(rec)
+                    elif t == "gate_decision":
+                        inv.gate_decisions.append(rec)
+                    elif t == "gate_evidence":
+                        inv.gate_evidence.append(rec)
                     elif t == "retry_scheduled":
                         inv.retries.append(rec)
                     elif t == "retry_wait":
@@ -585,6 +597,27 @@ def load_telemetry(
 # event carries one; `fail_closed` and `bypass` are outcomes without a verdict.
 # Shared by the report sections and the machine-readable summary.
 JUDGE_VERDICTS = ("allow", "warn", "block")
+
+# The generic gate decision vocabulary. A current sidecar records one
+# gate_decision per gate that participated in a check; a record without a
+# decision is classified as a failure, disabled gate, or bypass.
+GATE_DECISIONS = ("allow", "warn", "block", "abstain")
+
+
+def gate_decision_outcome(record: dict) -> str:
+    """Bucket one generic gate_decision record into the report vocabulary.
+
+    Metadata only: the record carries no command, reason, message, or
+    credential, and an unrecognized decision stays visible as `other`.
+    """
+    if record.get("bypassed"):
+        return "bypass"
+    if record.get("disabled"):
+        return "disabled"
+    if record.get("failure_class"):
+        return "failure"
+    decision = record.get("decision")
+    return decision if decision in GATE_DECISIONS else "other"
 
 
 def judge_event_outcome(event: dict) -> str:

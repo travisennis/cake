@@ -44,6 +44,8 @@ METRICS = (
     Metric("tokens.cache_hit_rate", "rate", True),
     Metric("api.latency.p95", "ms", False),
     Metric("api.failure_rate", "rate", False),
+    Metric("gates.failure_rate", "rate", False),
+    Metric("gates.block_rate", "rate", False),
     Metric("judge.timeout_rate", "rate", False),
     Metric("judge.failure_rate", "rate", False),
     Metric("judge.block_rate", "rate", False),
@@ -80,6 +82,9 @@ def summarize(
         edit_calls.extend(call for call in calls if call.name == "Edit")
 
     api_attempts = _invocation_records(data.invocations, "attempts", start, end)
+    gate_startups = _invocation_records(data.invocations, "gate_startups", start, end)
+    gate_decisions = _invocation_records(data.invocations, "gate_decisions", start, end)
+    gate_outcomes = [cakelib.gate_decision_outcome(record) for record in gate_decisions]
     judge_attempts = _invocation_records(data.invocations, "judge_attempts", start, end)
     judge_verdicts = [record for invocation in data.invocations
                       for record in invocation.compensations
@@ -116,6 +121,12 @@ def summarize(
         "tokens.cache_hit_rate": _rate(cached_input, cache_input),
         "api.latency.p95": cakelib.percentile(latencies, 95) if latencies else None,
         "api.failure_rate": _rate(api_failures, len(api_attempts)),
+        "gates.failure_rate": _rate(
+            gate_outcomes.count("failure") + gate_outcomes.count("disabled"),
+            len(gate_outcomes) - gate_outcomes.count("bypass")),
+        "gates.block_rate": _rate(
+            gate_outcomes.count("block"),
+            sum(outcome in cakelib.GATE_DECISIONS for outcome in gate_outcomes)),
         "judge.timeout_rate": _rate(
             sum(attempt.get("terminal_class") == "timeout" for attempt in judge_attempts),
             len(judge_attempts)),
@@ -142,6 +153,11 @@ def summarize(
             "tool_calls": tool_calls,
             "edit_calls": len(edit_calls),
             "api_attempts": len(api_attempts),
+            "gate_startups": len(gate_startups),
+            "gate_decisions": len(gate_decisions),
+            "gate_blocks": gate_outcomes.count("block"),
+            "gate_failures": (gate_outcomes.count("failure")
+                              + gate_outcomes.count("disabled")),
             "judge_attempts": len(judge_attempts),
             "judge_verdicts": len(judge_verdicts),
             "session_parse_errors": data.session_parse_errors,
