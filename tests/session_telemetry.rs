@@ -1015,6 +1015,9 @@ async fn semantic_incomplete_recovery_reports_text_progress() {
     let output = env
         .command()
         .arg("test prompt")
+        // This test asserts exact stderr. Bypass the auto-selected safety gate
+        // so a missing `cake-safety-judge` cannot add a startup warning.
+        .env("CAKE_GATE", "off")
         .env("SESSION_TELEMETRY_TEST_KEY", "test-token")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
