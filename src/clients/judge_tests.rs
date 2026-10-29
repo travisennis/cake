@@ -228,6 +228,84 @@ async fn record_sink_captures_http_status_for_gate_replay() {
 }
 
 #[tokio::test]
+async fn record_sink_captures_refusal() {
+    let mock_server = MockServer::start().await;
+    let mut body = chat_response("");
+    body["choices"][0]["message"]["refusal"] = serde_json::json!("I cannot judge commands");
+    body["choices"][0]["message"]["content"] = serde_json::Value::Null;
+    body["choices"][0]["finish_reason"] = serde_json::json!("refusal");
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(&mock_server)
+        .await;
+    let directory = tempfile::TempDir::new().unwrap();
+    let path = directory.path().join("record.jsonl");
+    let record = std::sync::Arc::new(JudgeRecord::create(&path).unwrap());
+
+    let error = judge_client(&mock_server)
+        .with_record(Some(std::sync::Arc::clone(&record)))
+        .judge(request("git status", None))
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, JudgeError::Refusal));
+    let contents = std::fs::read_to_string(&path).unwrap();
+    let value: serde_json::Value = serde_json::from_str(contents.lines().next().unwrap()).unwrap();
+    assert_eq!(value["command"], "git status");
+    assert_eq!(value["refusal"], true);
+    assert!(value.get("assistant_content").is_none());
+    assert!(value.get("http_status").is_none());
+}
+
+#[tokio::test]
+async fn record_sink_captures_malformed_verdict_content() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(chat_response("not json")))
+        .mount(&mock_server)
+        .await;
+    let directory = tempfile::TempDir::new().unwrap();
+    let path = directory.path().join("record.jsonl");
+    let record = std::sync::Arc::new(JudgeRecord::create(&path).unwrap());
+
+    let error = judge_client(&mock_server)
+        .with_record(Some(std::sync::Arc::clone(&record)))
+        .judge(request("git status", None))
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, JudgeError::Malformed(_)));
+    let contents = std::fs::read_to_string(&path).unwrap();
+    let value: serde_json::Value = serde_json::from_str(contents.lines().next().unwrap()).unwrap();
+    assert_eq!(value["assistant_content"], "not json");
+    assert_eq!(value["http_status"], 200);
+    assert!(value.get("error_class").is_none());
+}
+
+#[tokio::test]
+async fn record_sink_captures_transport_failure_without_status() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let uri = format!("http://{}", listener.local_addr().unwrap());
+    drop(listener);
+    let directory = tempfile::TempDir::new().unwrap();
+    let path = directory.path().join("record.jsonl");
+    let record = std::sync::Arc::new(JudgeRecord::create(&path).unwrap());
+
+    let error = JudgeClient::new(test_config(uri), Duration::from_secs(1), Duration::ZERO)
+        .with_record(Some(std::sync::Arc::clone(&record)))
+        .judge(request("git status", None))
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, JudgeError::Transport { status: None, .. }));
+    let contents = std::fs::read_to_string(&path).unwrap();
+    let value: serde_json::Value = serde_json::from_str(contents.lines().next().unwrap()).unwrap();
+    assert_eq!(value["error_class"], "transport");
+    assert_eq!(value["retryable"], true);
+    assert!(value.get("http_status").is_none());
+}
+
+#[tokio::test]
 async fn judge_parses_allow_without_code() {
     let mock_server = MockServer::start().await;
     Mock::given(method("POST"))
