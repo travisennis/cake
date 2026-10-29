@@ -871,6 +871,7 @@ impl ToolRegistry {
     pub(super) fn remove_bash_tools(&mut self) {
         self.entries
             .retain(|entry| !matches!(entry.definition.name.as_str(), "Bash" | "BashSession"));
+        self.refresh_definitions();
     }
 
     pub(super) fn retain_read_safe_tools(&mut self) {

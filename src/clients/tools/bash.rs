@@ -8,9 +8,11 @@ use tokio::time::{Duration, timeout};
 use tracing::debug;
 
 use crate::clients::tools::secure_temp_dir::secure_temp_dir;
-use crate::gates::composer::{GatePipelineError, GateRequest, PipelineAuthorization};
+use crate::gates::composer::{
+    GateMode, GatePipelineError, GateRequest, PipelineAuthorization, StageOutcome,
+};
 use crate::gates::context::repo_state_digest;
-use crate::gates::protocol::{BashInput, CheckSession};
+use crate::gates::protocol::{BashInput, CheckSession, GateDecision};
 use crate::session_telemetry::{CompensationEventTelemetry, CompensationKind};
 use crate::time_format::format_seconds_tenths;
 
@@ -1506,22 +1508,33 @@ fn legacy_verdict_event(
     outcome: &crate::gates::composer::PipelineOutcome,
     raw_call_id: Option<&str>,
 ) -> Option<CompensationEventTelemetry> {
-    let decision = outcome.verdict?;
-    let code = outcome
-        .deciding_gate
-        .as_ref()
-        .and_then(|gate| outcome.stages.iter().find(|stage| &stage.gate == gate))
-        .and_then(|stage| stage.code.as_deref());
+    let (decision, code, overridden) = if let Some(decision) = outcome.verdict {
+        let code = outcome
+            .deciding_gate
+            .as_ref()
+            .and_then(|gate| outcome.stages.iter().find(|stage| &stage.gate == gate))
+            .and_then(|stage| stage.code.as_deref());
+        (decision, code, outcome.overridden)
+    } else {
+        // An allowlist override removes the block from authorization, so the
+        // composer reports no deciding verdict. The block was still observed
+        // and overridden, and the legacy event must keep that record.
+        let stage = overridden_block(outcome)?;
+        (GateDecision::Block, stage.code.as_deref(), true)
+    };
     let latency_ms = u64::try_from(outcome.latency.as_millis()).unwrap_or(u64::MAX);
     Some(
-        CompensationEventTelemetry::judge_verdict(
-            decision.as_str(),
-            code,
-            latency_ms,
-            outcome.overridden,
-        )
-        .with_call_id(raw_call_id),
+        CompensationEventTelemetry::judge_verdict(decision.as_str(), code, latency_ms, overridden)
+            .with_call_id(raw_call_id),
     )
+}
+
+fn overridden_block(outcome: &crate::gates::composer::PipelineOutcome) -> Option<&StageOutcome> {
+    outcome.stages.iter().find(|stage| {
+        stage.mode == GateMode::Enforce
+            && stage.overridden
+            && stage.decision == Some(GateDecision::Block)
+    })
 }
 
 /// Build the gate request for one Bash call, collecting any directly

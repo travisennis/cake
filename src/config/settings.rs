@@ -1469,10 +1469,20 @@ impl SettingsAccumulator {
     /// Union a profile overlay into the accumulated settings.
     fn apply_profile_overlay(&mut self, overlay: &ProfileSettings) {
         self.gates.merge(overlay.gates.clone());
-        if let Some(bash) = &overlay.tools.bash
-            && bash.gates.is_some()
+        if overlay
+            .tools
+            .bash
+            .as_ref()
+            .is_some_and(|bash| bash.judge.is_some())
         {
-            self.gates.selection.clone_from(&bash.gates);
+            // A profile-only TypeSafe overlay is still a legacy judge table for
+            // migration purposes, even when no lower-precedence file has one.
+            self.gates.legacy_present = true;
+        }
+        if let Some(bash) = &overlay.tools.bash
+            && let Some(gates) = &bash.gates
+        {
+            self.gates.selection = Some(gates.clone());
         }
         if let Some(ref profile_default) = overlay.default_model {
             self.default_model = Some(profile_default.clone());

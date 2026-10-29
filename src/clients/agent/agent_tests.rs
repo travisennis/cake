@@ -2293,6 +2293,14 @@ printf 'completed:%s' "$index"
                 .any(|name| matches!(name.as_str(), "Bash" | "BashSession")),
             "a failed enforce startup must remove both Bash surfaces"
         );
+        assert!(
+            !failed
+                .tools
+                .definitions()
+                .iter()
+                .any(|tool| matches!(tool.name.as_str(), "Bash" | "BashSession")),
+            "the model-facing definitions must not advertise a removed Bash surface"
+        );
 
         let bypassed = agent_after_gate_startup(true).await;
         assert!(

@@ -13,7 +13,7 @@ use crate::cli::{
 use crate::config::settings::LoadedSettings;
 use crate::config::{DataDir, ModelConfig, SettingsLoader};
 use crate::gates::composer::{
-    GatePipeline, GatePipelineError, GateRequest, PipelineAuthorization, PipelineOutcome,
+    GateMode, GatePipeline, GatePipelineError, GateRequest, PipelineAuthorization, PipelineOutcome,
     StageOutcome,
 };
 use crate::gates::protocol::{BashInput, GateDecision};
@@ -159,19 +159,11 @@ struct CheckOutcome {
 impl CheckOutcome {
     fn render_text(&self) -> String {
         let outcome = &self.outcome;
-        let verdict = if outcome.bypassed {
-            "bypassed"
-        } else {
-            outcome.verdict.map_or_else(
-                || authorization_label(&outcome.authorization),
-                GateDecision::as_str,
-            )
-        };
+        let verdict = summary_verdict(outcome);
+        let stage = deciding_stage(outcome);
         let mut text = format!("Verdict: {verdict}\n");
-        if let Some(gate) = &outcome.deciding_gate {
-            writeln!(text, "Gate: {gate}").unwrap_or_default();
-        }
-        if let Some(stage) = deciding_stage(outcome) {
+        if let Some(stage) = stage {
+            writeln!(text, "Gate: {}", stage.gate).unwrap_or_default();
             if let Some(code) = stage.code.as_deref().filter(|code| !code.is_empty()) {
                 writeln!(text, "Code: {code}").unwrap_or_default();
             }
@@ -204,10 +196,13 @@ fn summary_verdict(outcome: &PipelineOutcome) -> &'static str {
     if outcome.bypassed {
         return "bypassed";
     }
-    outcome.verdict.map_or_else(
-        || authorization_label(&outcome.authorization),
-        |decision| decision.as_str(),
-    )
+    if let Some(decision) = outcome.verdict {
+        return decision.as_str();
+    }
+    if overridden_block(outcome).is_some() {
+        return "block";
+    }
+    authorization_label(&outcome.authorization)
 }
 
 const fn authorization_label(authorization: &PipelineAuthorization) -> &'static str {
@@ -219,32 +214,28 @@ const fn authorization_label(authorization: &PipelineAuthorization) -> &'static 
 
 fn outcome_data(outcome: &PipelineOutcome) -> Value {
     let stage = deciding_stage(outcome);
-    let (verdict, code, confidence, message, overridden) = if outcome.bypassed {
-        (
-            None,
-            None,
-            None,
-            "gate checks were explicitly bypassed.",
-            false,
-        )
+    let (code, confidence, message, overridden) = if outcome.bypassed {
+        (None, None, "gate checks were explicitly bypassed.", false)
     } else if let Some(stage) = stage {
         (
-            outcome.verdict.map(GateDecision::as_str),
             stage.code.as_deref().filter(|code| !code.is_empty()),
             stage.confidence,
             stage.message.as_str(),
             stage.overridden,
         )
     } else {
-        (
-            None,
-            None,
-            None,
-            "no enforce gate expressed a decision.",
-            false,
-        )
+        (None, None, "no enforce gate expressed a decision.", false)
     };
-    let gate = outcome.deciding_gate.as_deref();
+    let verdict = if outcome.bypassed {
+        None
+    } else if let Some(decision) = outcome.verdict {
+        Some(decision.as_str())
+    } else if overridden_block(outcome).is_some() {
+        Some("block")
+    } else {
+        None
+    };
+    let gate = stage.map(|stage| stage.gate.as_str());
     let stages = outcome.stages.iter().map(stage_data).collect::<Vec<_>>();
     json!({
         "verdict": verdict,
@@ -268,8 +259,20 @@ fn outcome_data(outcome: &PipelineOutcome) -> Value {
 }
 
 fn deciding_stage(outcome: &PipelineOutcome) -> Option<&StageOutcome> {
-    let gate = outcome.deciding_gate.as_ref()?;
-    outcome.stages.iter().find(|stage| &stage.gate == gate)
+    if let Some(gate) = outcome.deciding_gate.as_ref()
+        && let Some(stage) = outcome.stages.iter().find(|stage| &stage.gate == gate)
+    {
+        return Some(stage);
+    }
+    overridden_block(outcome)
+}
+
+fn overridden_block(outcome: &PipelineOutcome) -> Option<&StageOutcome> {
+    outcome.stages.iter().find(|stage| {
+        stage.mode == GateMode::Enforce
+            && stage.overridden
+            && stage.decision == Some(GateDecision::Block)
+    })
 }
 
 fn stage_data(stage: &StageOutcome) -> Value {

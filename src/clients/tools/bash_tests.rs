@@ -3159,6 +3159,20 @@ async fn allowlist_override_runs_the_allowlisted_command() {
         1,
         "an allowlisted command is still judged"
     );
+    assert_eq!(
+        result.compensation_events.len(),
+        1,
+        "an overridden block must still record a compatibility verdict"
+    );
+    assert_eq!(
+        result.compensation_events[0].kind,
+        CompensationKind::JudgeVerdict
+    );
+    assert_eq!(
+        result.compensation_events[0].detail.as_deref(),
+        Some("block:fake-block")
+    );
+    assert_eq!(result.compensation_events[0].overridden, Some(true));
 }
 
 #[tokio::test]

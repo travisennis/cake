@@ -2753,6 +2753,52 @@ gates = []
 }
 
 #[test]
+fn profile_only_legacy_typesafe_table_reaches_the_implicit_safety_gate() {
+    let home = create_home_dir();
+    let project = create_project_settings(
+        r#"
+[profiles.review.tools.bash.judge.typesafe]
+mode = "shadow"
+model = "jev-profile"
+timeout_ms = 700
+"#,
+    );
+
+    let loaded = with_var("HOME", Some(home.path()), || {
+        with_var("CAKE_GATE", None::<&str>, || {
+            with_var("CAKE_JUDGE", None::<&str>, || {
+                SettingsLoader::load_with_profile(Some(project.path()), Some("review"))
+            })
+        })
+    })
+    .expect("a profile-only legacy table is a valid migration input");
+
+    assert!(loaded.gates.legacy_present);
+    let (name, settings) = loaded
+        .gates
+        .selected(&loaded.judge)
+        .into_iter()
+        .next()
+        .expect("the implicit safety gate");
+    assert_eq!(name, "safety");
+    let config = settings.config.expect("translated legacy config");
+    assert_eq!(config["typesafe"]["mode"], serde_json::json!("shadow"));
+    assert_eq!(
+        config["typesafe"]["model"],
+        serde_json::json!("jev-profile")
+    );
+    assert_eq!(config["typesafe"]["timeout_ms"], serde_json::json!(700));
+    assert!(
+        settings
+            .env
+            .unwrap_or_default()
+            .iter()
+            .any(|name| name == "TYPESAFE_AI_API_KEY"),
+        "the gate must receive the TypeSafe credential name"
+    );
+}
+
+#[test]
 fn unlisted_invalid_gate_table_is_ignored() {
     let loaded = load_gate_settings(
         r#"

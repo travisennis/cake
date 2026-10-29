@@ -73,6 +73,19 @@ fn pipeline(decision: GateDecision, mode: GateMode) -> GatePipeline {
         .expect("valid fake pipeline")
 }
 
+fn pipeline_with_allowlist(decision: GateDecision, command: &str) -> GatePipeline {
+    let gate = Arc::new(FixedGate::new(decision));
+    let config = GateStageConfig {
+        name: "safety".to_string(),
+        mode: GateMode::Enforce,
+        fail: FailMode::Closed,
+        short_circuit_on_allow: false,
+        allowlist: vec![command.to_string()],
+    };
+    GatePipeline::single(GateStartup::ready(config, gate, Duration::from_millis(4)))
+        .expect("valid fake pipeline")
+}
+
 #[test]
 fn parses_bash_check_with_or_without_double_dash() {
     for args in [
@@ -151,6 +164,22 @@ async fn gate_check_json_preserves_fields_and_adds_gate_stages() {
     assert_eq!(stages.len(), 1);
     assert_eq!(stages[0]["failed_open"], false);
     assert_eq!(stages[0]["disabled"], false);
+}
+
+#[tokio::test]
+async fn allowlist_override_keeps_the_block_verdict_and_flag() {
+    let pipeline = pipeline_with_allowlist(GateDecision::Block, "git status");
+    let outcome = evaluate_pipeline(&pipeline, Path::new("/repo"), "git status")
+        .await
+        .expect("check succeeds");
+    let document: Value = serde_json::from_str(&outcome.render_json(&[]).unwrap()).unwrap();
+
+    assert_eq!(document["summary"]["verdict"], "block");
+    assert_eq!(document["data"]["verdict"], "block");
+    assert_eq!(document["data"]["gate"], "safety");
+    assert_eq!(document["data"]["overridden"], true);
+    assert_eq!(document["data"]["stages"][0]["decision"], "block");
+    assert!(outcome.render_text().contains("Overridden: allowlist"));
 }
 
 #[tokio::test]

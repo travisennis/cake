@@ -681,7 +681,7 @@ fn stage_outcome(
             StageOutcome {
                 decision: Some(frame.decision),
                 code: frame.code,
-                message: frame.message,
+                message: sanitize_model_text(&frame.message),
                 confidence: frame.confidence,
                 short_circuit: frame.short_circuit,
                 annotations: bounded_annotations(&frame.annotations),
