@@ -653,7 +653,6 @@ async fn bash_cwd_runs_in_a_settings_directory_grant() {
     .to_string();
 
     let gate = gate_fixture::decision(GateDecision::Allow, None, "Safe");
-    let frames = gate.frames();
 
     let mut context = ToolContext::from_current_process().with_gates(Some(gate.pipeline()));
     context.cwd = workspace.path().to_path_buf();
@@ -671,6 +670,8 @@ async fn bash_cwd_runs_in_a_settings_directory_grant() {
         result.output
     );
 
+    let frames = gate.frames();
+    assert_eq!(frames.len(), 1, "the gate must receive exactly one request");
     assert_eq!(
         frames[0].input.cwd,
         expected.display().to_string(),
