@@ -1,4 +1,5 @@
 use super::*;
+use crate::clients::tools::bash_gate_fixture as gate_fixture;
 use crate::config::model::{ApiType, ResolvedModelConfig};
 use crate::config::settings::ResolvedLimits;
 use crate::types::{InputTokensDetails, OutputTokensDetails, ReasoningSummary};
@@ -473,6 +474,13 @@ fn judge_denial_label_maps_only_real_denials() {
         Some("judge block: git-force-push")
     );
 
+    // A block without a verdict code is still a denial.
+    let uncoded_block = CompensationEventTelemetry::judge_verdict("block", None, 42, false);
+    assert_eq!(
+        judge_denial_label(&uncoded_block).as_deref(),
+        Some("judge block")
+    );
+
     // A fail-closed denial carries its failure class.
     let fail_closed = CompensationEventTelemetry::judge_fail_closed("transport");
     assert_eq!(
@@ -826,9 +834,10 @@ fn stream_item_emits_function_call_output() {
 mod error_tests {
     use super::*;
     use crate::clients::agent::agent_loop::SEMANTIC_RECOVERY_PROMPT;
-    use crate::clients::judge::JudgeContext;
     use crate::config::hooks::{HookCommand, HookEvent, HookGroup, HookMatcher, LoadedHooks};
     use crate::config::model::ApiType;
+    use crate::gates::composer::GatePipeline;
+    use crate::gates::protocol::GateDecision;
     use crate::hooks::{HookContext, HookRunner};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
@@ -2145,72 +2154,20 @@ printf 'completed:%s' "$index"
         assert_no_dangling_function_calls(agent.history());
     }
 
-    /// Build a judge context whose judge client points at a wiremock server,
-    /// mirroring the helper in `src/clients/tools/bash_tests.rs`. The agent
-    /// runs the Responses API against `/responses`; the judge runs Chat
-    /// Completions against `/chat/completions` on the same server.
-    fn judge_context(mock_server: &MockServer) -> std::sync::Arc<JudgeContext> {
-        use crate::config::model::ModelConfig;
-        use std::collections::HashMap;
-
-        let model_config = ModelConfig {
-            supports_images: false,
-            model: "judge/model".to_string(),
-            api_type: ApiType::ChatCompletions,
-            base_url: mock_server.uri(),
-            api_key_env: "JUDGE_TEST_KEY".to_string(),
-            provider: None,
-            provider_headers: None,
-            temperature: Some(0.0),
-            top_p: None,
-            top_k: None,
-            max_output_tokens: Some(128),
-            context_window: None,
-            reasoning_effort: None,
-            reasoning_summary: None,
-            reasoning_max_tokens: None,
-            providers: vec![],
-        };
-        std::sync::Arc::new(JudgeContext {
-            settings: crate::config::settings::JudgeSettings::default(),
-            bypass_env: None,
-            agent_model: crate::config::model::ResolvedModelConfig {
-                model_config,
-                api_key: "test-key".to_string(),
-            },
-            models: HashMap::new(),
-            client: std::sync::OnceLock::new(),
-            record_attempt: None,
-        })
-    }
-
-    /// Chat-completions response carrying one judge verdict for a mock server.
-    fn judge_chat_response(verdict_json: &str) -> serde_json::Value {
-        serde_json::json!({
-            "id": "chatcmpl-judge",
-            "choices": [{
-                "index": 0,
-                "message": { "role": "assistant", "content": verdict_json },
-                "finish_reason": "stop"
-            }]
-        })
-    }
-
-    /// Build an agent whose Bash tool runs behind a judge context pointing at
-    /// `mock_server`, with the default tool registry so Bash exists.
-    fn test_agent_with_judge(mock_server: &MockServer) -> Agent {
+    /// Build an agent whose Bash tool runs behind `pipeline`, with the default
+    /// tool registry so Bash exists.
+    fn test_agent_with_gate(mock_server: &MockServer, pipeline: Arc<GatePipeline>) -> Agent {
         test_agent_with_url(&mock_server.uri())
             .with_tools(crate::clients::tools::default_tool_registry())
             .with_tool_context(Arc::new(
-                ToolContext::from_current_process().with_judge(Some(judge_context(mock_server))),
+                ToolContext::from_current_process().with_gates(Some(pipeline)),
             ))
     }
 
     #[tokio::test]
-    async fn judge_block_records_permission_denial_with_verdict_code() {
-        // A judge `block` verdict prevents the Bash command from spawning and
-        // appears in `task_complete.permission_denials` carrying the verdict
-        // code, through the same path hook denials use (#123).
+    async fn gate_block_reaches_the_model_and_stops_the_command() {
+        // A generic gate block prevents the Bash command from spawning and
+        // surfaces the gate's reason as the tool output.
         let mock_server = MockServer::start().await;
 
         Mock::given(method("POST"))
@@ -2224,99 +2181,48 @@ printf 'completed:%s' "$index"
             .respond_with(ResponseTemplate::new(200).set_body_json(success_response()))
             .mount(&mock_server)
             .await;
-        Mock::given(method("POST"))
-            .and(path("/chat/completions"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(judge_chat_response(
-                r#"{"verdict":"block","code":"git-force-push","message":"Prefer push --force-with-lease."}"#,
-            )))
-            .mount(&mock_server)
-            .await;
 
-        let captured = Arc::new(Mutex::new(String::new()));
-        let captured_clone = captured.clone();
-        let telemetry_dir = tempfile::TempDir::new().unwrap();
-        let telemetry_path = telemetry_dir.path().join("sidecar.ndjson");
-        let mut agent = test_agent_with_judge(&mock_server)
-            .with_streaming_json(move |json| {
-                *captured_clone.lock().unwrap() = json.to_string();
-            })
-            .with_session_telemetry(
-                SessionTelemetryWriter::open(&telemetry_path).unwrap(),
-                uuid::Uuid::new_v4(),
-            );
+        let gate = gate_fixture::decision(
+            GateDecision::Block,
+            Some("git-force-push"),
+            "Prefer push --force-with-lease.",
+        );
+        let mut agent = test_agent_with_gate(&mock_server, gate.pipeline());
         let result = agent.send("run a command".to_string()).await.unwrap();
 
         assert_eq!(result, "Hello!");
-        assert_eq!(
-            agent.permission_denials(),
-            &["Bash(call-1): judge block: git-force-push".to_string()]
-        );
-        // The blocked call surfaced the judge's reason to the model.
+        // The blocked call surfaced the gate's reason to the model.
         assert!(agent.history().iter().any(|item| matches!(
             item,
             ConversationItem::FunctionCallOutput { output, .. }
                 if output.contains("BLOCKED") && output.contains("Prefer push --force-with-lease.")
         )));
-
-        // The denial reaches `task_complete.permission_denials` with its
-        // verdict code (#123).
-        agent
-            .emit_task_complete_record(TaskOutcome::Success { result: None }, 1000)
-            .unwrap();
-        drop(agent);
-        let json: serde_json::Value = serde_json::from_str(&captured.lock().unwrap()).unwrap();
-        assert_eq!(json["type"], "task_complete");
-        assert_eq!(
-            json["permission_denials"],
-            serde_json::json!(["Bash(call-1): judge block: git-force-push"])
-        );
-
-        // The sidecar records the verdict as metadata only: the code and
-        // latency, never the command or reason text.
-        let sidecar = std::fs::read_to_string(&telemetry_path).unwrap();
-        let records: Vec<serde_json::Value> = sidecar
-            .lines()
-            .map(|line| serde_json::from_str(line).unwrap())
-            .collect();
-        let compensation = records
-            .iter()
-            .find(|record| record["type"] == "compensation")
-            .expect("judge verdict must reach the telemetry sidecar");
-        assert_eq!(compensation["kind"], "judge_verdict");
-        assert_eq!(compensation["detail"], "block:git-force-push");
-        assert!(compensation.get("latency_ms").is_some());
-        assert!(compensation.get("overridden").is_none());
-        let attempt = records
-            .iter()
-            .find(|record| record["type"] == "judge_attempt")
-            .expect("judge provider attempt must reach the telemetry sidecar");
-        assert_eq!(attempt["attempt"], 1);
-        assert_eq!(attempt["retry_ordinal"], 0);
-        assert_eq!(attempt["status_code"], 200);
-        assert_eq!(attempt["terminal_class"], "verdict");
-        assert_eq!(attempt["tool_count"], 0);
-        assert!(attempt["usage"].is_null());
-        let attempt_index = records
-            .iter()
-            .position(|record| record["type"] == "judge_attempt")
-            .unwrap();
-        let compensation_index = records
-            .iter()
-            .position(|record| {
-                record["type"] == "compensation" && record["kind"] == "judge_verdict"
-            })
-            .unwrap();
-        assert!(attempt_index < compensation_index);
         assert!(
-            !sidecar.contains("printf"),
-            "telemetry must not carry the command text, got: {sidecar}"
+            !agent.history().iter().any(|item| matches!(
+                item,
+                ConversationItem::FunctionCallOutput { output, .. }
+                    if output.contains("printf unsafe")
+            )),
+            "a blocked command must not run"
         );
+
+        // A generic block projects onto the legacy denial label, so the
+        // task-complete record attributes it like a judge block.
+        assert_eq!(
+            agent.permission_denials(),
+            &["Bash(call-1): judge block: git-force-push".to_string()]
+        );
+
+        // The gate saw the command before any spawn.
+        let frames = gate.frames();
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].input.command, "printf unsafe");
     }
 
     #[tokio::test]
-    async fn judge_fail_closed_records_distinct_permission_denial() {
-        // A judge failure (here: HTTP 500) fails closed and is recorded as a
-        // denial distinct from both hook denials and verdict blocks.
+    async fn gate_failure_records_distinct_permission_denial() {
+        // A gate failure (here: a transport failure) fails closed and is
+        // recorded as a denial distinct from both hook denials and blocks.
         let mock_server = MockServer::start().await;
 
         Mock::given(method("POST"))
@@ -2330,13 +2236,9 @@ printf 'completed:%s' "$index"
             .respond_with(ResponseTemplate::new(200).set_body_json(success_response()))
             .mount(&mock_server)
             .await;
-        Mock::given(method("POST"))
-            .and(path("/chat/completions"))
-            .respond_with(ResponseTemplate::new(500))
-            .mount(&mock_server)
-            .await;
 
-        let mut agent = test_agent_with_judge(&mock_server);
+        let gate = gate_fixture::failing("transport", "HTTP 500");
+        let mut agent = test_agent_with_gate(&mock_server, gate.pipeline());
         let result = agent.send("run a command".to_string()).await.unwrap();
 
         assert_eq!(result, "Hello!");
@@ -2344,6 +2246,65 @@ printf 'completed:%s' "$index"
             agent.permission_denials(),
             &["Bash(call-1): judge fail-closed: transport".to_string()]
         );
+    }
+
+    fn loaded_with_missing_gate() -> crate::config::settings::LoadedSettings {
+        crate::config::settings::LoadedSettings {
+            gates: crate::config::gates::GateConfiguration {
+                definitions: std::collections::BTreeMap::from([(
+                    "safety".to_string(),
+                    crate::config::gates::GateSettings {
+                        command: Some("/definitely/missing/cake-gate".to_string()),
+                        ..crate::config::gates::GateSettings::default()
+                    },
+                )]),
+                selection: Some(vec!["safety".to_string()]),
+                legacy_present: false,
+            },
+            models: std::collections::HashMap::default(),
+            default_model: None,
+            directories: Vec::new(),
+            sandbox: crate::config::settings::SandboxSettings::default(),
+            skills: crate::config::settings::SkillSettings::default(),
+            tools_enabled: None,
+            system_prompt: None,
+            judge: crate::config::settings::JudgeSettings::default(),
+            limits: crate::config::settings::ResolvedLimits::default(),
+            warnings: Vec::new(),
+        }
+    }
+
+    async fn agent_after_gate_startup(no_gate: bool) -> Agent {
+        test_agent_with_url("http://127.0.0.1:9")
+            .with_tools(crate::clients::tools::default_tool_registry())
+            .with_tool_context(Arc::new(ToolContext::from_current_process()))
+            .with_policy_gates(&loaded_with_missing_gate(), no_gate)
+            .await
+    }
+
+    #[tokio::test]
+    async fn enforce_startup_failure_removes_bash_and_an_explicit_bypass_keeps_it() {
+        let failed = agent_after_gate_startup(false).await;
+        assert!(failed.tool_context().gates.is_none());
+        assert!(
+            !failed
+                .tool_names()
+                .iter()
+                .any(|name| matches!(name.as_str(), "Bash" | "BashSession")),
+            "a failed enforce startup must remove both Bash surfaces"
+        );
+
+        let bypassed = agent_after_gate_startup(true).await;
+        assert!(
+            bypassed
+                .tool_context()
+                .gates
+                .as_ref()
+                .is_some_and(|pipeline| pipeline.is_bypass())
+        );
+        let names = bypassed.tool_names();
+        assert!(names.iter().any(|name| name == "Bash"));
+        assert!(names.iter().any(|name| name == "BashSession"));
     }
 
     // =========================================================================
@@ -3111,6 +3072,7 @@ printf 'completed:%s' "$index"
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
+            read_http_request(&mut stream).await.unwrap();
             stream
                 .write_all(
                     b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
@@ -3118,7 +3080,7 @@ printf 'completed:%s' "$index"
                 )
                 .await
                 .unwrap();
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            tokio::time::sleep(Duration::from_secs(30)).await;
         });
 
         let temp_dir = tempfile::TempDir::new().unwrap();
@@ -3131,7 +3093,15 @@ printf 'completed:%s' "$index"
                 crate::session_telemetry::SessionTelemetryWriter::open(&telemetry_path).unwrap(),
                 invocation_id,
             )
-            .with_request_timeout(Duration::from_millis(100));
+            .with_request_timeout(Duration::from_millis(1_000));
+        agent
+            .runner
+            .with_retry_policy(crate::clients::retry::RetryPolicy {
+                max_retries: 1,
+                base_delay: Duration::ZERO,
+                max_backoff: Duration::ZERO,
+                jitter_divisor: 1,
+            });
         agent.history_mut().push(ConversationItem::Message {
             role: Role::User,
             content: "test".to_string(),
@@ -3163,7 +3133,7 @@ printf 'completed:%s' "$index"
         assert_eq!(initial["phase"], "awaiting_headers");
         assert!(initial["started_at"].is_string());
 
-        let result = tokio::time::timeout(Duration::from_secs(1), &mut turn)
+        let result = tokio::time::timeout(Duration::from_secs(3), &mut turn)
             .await
             .expect("body timeout should be bounded");
         assert!(result.is_err());
@@ -3194,7 +3164,7 @@ printf 'completed:%s' "$index"
         assert_eq!(completed["terminal_class"], "timeout");
         assert_eq!(completed["phase"], "reading_body");
         assert_eq!(completed["status_code"], 200);
-        assert!(completed["total_ms"].as_u64().unwrap_or_default() >= 90);
+        assert!(completed["total_ms"].as_u64().unwrap_or_default() >= 900);
         assert!(
             completed["error"]
                 .as_str()
@@ -3207,15 +3177,26 @@ printf 'completed:%s' "$index"
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            stream
-                .write_all(
-                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
-                     Content-Length: 128\r\nConnection: keep-alive\r\n\r\n{\"id\":\"partial\"}",
-                )
-                .await
-                .unwrap();
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    if read_http_request(&mut stream).await.is_none() {
+                        return;
+                    }
+                    if stream
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                             Content-Length: 128\r\nConnection: keep-alive\r\n\r\n{\"id\":\"partial\"}",
+                        )
+                        .await
+                        .is_ok()
+                    {
+                        tokio::time::sleep(Duration::from_secs(30)).await;
+                    }
+                });
+            }
         });
 
         let temp_dir = tempfile::TempDir::new().unwrap();
@@ -3240,7 +3221,7 @@ printf 'completed:%s' "$index"
         let mut turn = Box::pin(agent.complete_turn(false));
         tokio::select! {
             result = &mut turn => panic!("incomplete response should remain pending: {result:?}"),
-            () = tokio::time::sleep(Duration::from_millis(20)) => {},
+            () = tokio::time::sleep(Duration::from_millis(500)) => {},
         }
         drop(turn);
         server.abort();
@@ -3252,7 +3233,9 @@ printf 'completed:%s' "$index"
             .collect::<Vec<_>>();
         let completed = records
             .iter()
-            .find(|record| record["type"] == "api_attempt")
+            .find(|record| {
+                record["type"] == "api_attempt" && record["terminal_class"] == "cancelled"
+            })
             .expect("cancellation should close the in-flight attempt");
         assert_eq!(completed["terminal_class"], "cancelled");
         assert!(

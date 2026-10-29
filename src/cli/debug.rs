@@ -413,6 +413,7 @@ mod tests {
         warnings: Vec<String>,
     ) -> LoadedSettings {
         LoadedSettings {
+            gates: crate::config::gates::GateConfiguration::default(),
             models,
             default_model: None,
             directories: Vec::new(),

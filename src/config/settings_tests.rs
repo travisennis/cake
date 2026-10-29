@@ -2510,3 +2510,258 @@ allowlist = ["git status", "git diff"]
         loaded.warnings
     );
 }
+
+// =============================================================================
+// External gate configuration
+// =============================================================================
+
+fn load_gate_settings(content: &str) -> Result<LoadedSettings, SettingsError> {
+    let dir = create_project_settings(content);
+    let home = create_home_dir();
+    with_var("CAKE_GATE", None::<&str>, || {
+        with_var("CAKE_JUDGE", None::<&str>, || {
+            with_var("HOME", Some(home.path()), || {
+                SettingsLoader::load(Some(dir.path()))
+            })
+        })
+    })
+}
+
+#[test]
+fn gate_global_project_and_profile_overlays_merge_fields_and_config() {
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"
+[gates.safety]
+command = "cake-safety-judge"
+models = ["judge"]
+allowlist = ["global-allow"]
+env = ["GLOBAL_ENV"]
+config = { model = "judge", nested = { a = 1, b = "global" } }
+"#,
+    );
+    let project = create_project_settings(
+        r#"
+[tools.bash]
+gates = ["safety"]
+
+[gates.safety]
+timeout_secs = 45
+allowlist = ["project-allow"]
+env = ["PROJECT_ENV"]
+config = { nested = { b = "project", c = true } }
+
+[profiles.review.tools.bash]
+gates = ["safety"]
+
+[profiles.review.gates.safety]
+mode = "shadow"
+config = { nested = { c = false } }
+"#,
+    );
+
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load_with_profile(Some(project.path()), Some("review"))
+    })
+    .unwrap();
+
+    assert_eq!(
+        loaded.gates.selection.as_deref(),
+        Some(["safety".to_string()].as_slice())
+    );
+    let gate = loaded.gates.definitions.get("safety").expect("merged gate");
+    assert_eq!(gate.command.as_deref(), Some("cake-safety-judge"));
+    assert_eq!(gate.timeout_secs, Some(45));
+    assert_eq!(gate.mode.as_deref(), Some("shadow"));
+    assert_eq!(
+        gate.allowlist.as_deref(),
+        Some(["project-allow".to_string()].as_slice())
+    );
+    assert_eq!(
+        gate.env.as_deref(),
+        Some(["PROJECT_ENV".to_string()].as_slice())
+    );
+    assert_eq!(
+        gate.models.as_deref(),
+        Some(["judge".to_string()].as_slice())
+    );
+    assert_eq!(
+        gate.config,
+        Some(serde_json::json!({
+            "model": "judge",
+            "nested": {"a": 1, "b": "project", "c": false}
+        }))
+    );
+}
+
+#[test]
+fn invalid_gate_selection_is_a_settings_error() {
+    for (content, expected) in [
+        (
+            r#"
+[tools.bash]
+gates = ["missing"]
+"#,
+            "selected gate 'missing' has no [gates.missing] table",
+        ),
+        (
+            r#"
+[tools.bash]
+gates = ["safety", "safety"]
+
+[gates.safety]
+command = "cake-safety-judge"
+"#,
+            "gate 'safety' is selected more than once",
+        ),
+        (
+            r#"
+[tools.bash]
+gates = ["builtin-safety"]
+
+[gates.builtin-safety]
+command = "cake"
+"#,
+            "builtin-safety was removed",
+        ),
+        (
+            r#"
+[tools.bash]
+gates = ["safety"]
+
+[gates.safety]
+command = ""
+"#,
+            "gate 'safety' has no command",
+        ),
+        (
+            r#"
+[tools.bash]
+gates = ["safety"]
+
+[gates.safety]
+command = "cake-safety-judge"
+mode = "sometimes"
+"#,
+            "unknown mode 'sometimes'",
+        ),
+        (
+            r#"
+[tools.bash]
+gates = ["safety"]
+
+[gates.safety]
+command = "cake-safety-judge"
+transport = "socket"
+"#,
+            "unknown transport 'socket'",
+        ),
+        (
+            r#"
+[tools.bash]
+gates = ["safety"]
+
+[gates.safety]
+command = "cake-safety-judge"
+fail = "sideways"
+"#,
+            "unknown failure mode 'sideways'",
+        ),
+        (
+            r#"
+[tools.bash]
+gates = ["safety"]
+
+[gates.safety]
+command = "cake-safety-judge"
+timeout_secs = 0
+"#,
+            "timeout_secs must be at least 1",
+        ),
+        (
+            r#"
+[tools.bash]
+gates = ["safety"]
+
+[gates.safety]
+command = "cake-safety-judge"
+env = ["BAD-NAME"]
+"#,
+            "env contains invalid variable name 'BAD-NAME'",
+        ),
+    ] {
+        let error = load_gate_settings(content).expect_err("invalid gate configuration");
+        let message = error.to_string();
+        assert!(
+            message.contains(expected),
+            "expected {expected:?} in {message:?}"
+        );
+    }
+}
+
+#[test]
+fn explicit_selection_ignores_disabled_and_misconfigured_legacy_judge() {
+    let loaded = load_gate_settings(
+        r#"
+[tools.bash]
+gates = ["safety"]
+
+[gates.safety]
+command = "cake-safety-judge"
+
+[tools.bash.judge]
+enabled = false
+model = "missing-judge-model"
+"#,
+    )
+    .expect("an explicit gate selection owns policy and ignores the legacy table");
+
+    assert!(!loaded.judge.enabled);
+    assert!(!loaded.gates.bypassed(&loaded.judge, false));
+    assert_eq!(
+        loaded.gates.selection.as_deref(),
+        Some(["safety".to_string()].as_slice())
+    );
+}
+
+#[test]
+fn disabled_legacy_judge_without_gate_selection_is_a_bypass() {
+    let loaded = load_gate_settings(
+        r"
+[tools.bash.judge]
+enabled = false
+",
+    )
+    .expect("legacy disablement remains a valid bypass");
+
+    assert!(loaded.gates.bypassed(&loaded.judge, false));
+}
+
+#[test]
+fn explicit_empty_gate_selection_is_no_gate_but_not_a_bypass() {
+    let loaded = load_gate_settings(
+        r"
+[tools.bash]
+gates = []
+",
+    )
+    .expect("an explicit empty selection is valid");
+
+    assert!(!loaded.gates.bypassed(&loaded.judge, false));
+    assert!(loaded.gates.selected(&loaded.judge).is_empty());
+}
+
+#[test]
+fn unlisted_invalid_gate_table_is_ignored() {
+    let loaded = load_gate_settings(
+        r#"
+[gates.unused]
+command = ""
+mode = "sometimes"
+"#,
+    )
+    .expect("an unselected table is ignored");
+
+    assert!(loaded.gates.selection.is_none());
+}

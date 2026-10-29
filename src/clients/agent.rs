@@ -20,9 +20,8 @@ use crate::config::skills::Skill;
 use crate::config::toolbox::ToolboxTool;
 use crate::hooks::HookRunner;
 use crate::session_telemetry::{
-    GateTelemetrySink, JudgeAttemptSink, ProviderTermination, SessionTelemetryContext,
-    SessionTelemetryRecord, SessionTelemetrySettings, SessionTelemetryWriter,
-    SharedSessionTelemetryWriter,
+    GateTelemetrySink, ProviderTermination, SessionTelemetryContext, SessionTelemetryRecord,
+    SessionTelemetrySettings, SessionTelemetryWriter, SharedSessionTelemetryWriter,
 };
 use crate::types::{
     ApiAttemptTerminalClass, ConversationItem, ReplaySafety, ReportedUsage, Role, SessionRecord,
@@ -257,6 +256,37 @@ impl Agent {
             self.tools.retain_read_safe_tools();
         }
         self.tool_context = context;
+        self
+    }
+
+    /// Initialize policy gates after resolving a new, resumed, or forked model.
+    /// Failed startup removes both execution surfaces; an explicit bypass is
+    /// the only way to expose Bash without a ready enforce gate.
+    pub async fn with_policy_gates(
+        mut self,
+        loaded: &crate::config::settings::LoadedSettings,
+        no_gate: bool,
+    ) -> Self {
+        let pipeline = crate::gates::runtime::start(
+            &loaded.gates,
+            &loaded.judge,
+            &loaded.models,
+            Some(&self.config.model_config),
+            &self.tool_context.cwd,
+            no_gate,
+        )
+        .await;
+        let gates = match pipeline {
+            Ok(pipeline) => Some(Arc::new(pipeline)),
+            Err(error) => {
+                eprintln!(
+                    "Bash and BashSession disabled: {error}. Run cake gates doctor or configure cake-safety-judge."
+                );
+                self.tools.remove_bash_tools();
+                None
+            },
+        };
+        self.tool_context = Arc::new((*self.tool_context).clone().with_gates(gates));
         self
     }
 
@@ -633,9 +663,9 @@ impl Agent {
 
     /// Enables best-effort session telemetry sidecar writing.
     ///
-    /// The writer is shared with a [`JudgeAttemptSink`] installed into the
-    /// tool context, so the Bash preflight records judge attempts as soon as
-    /// judging completes instead of waiting for the tool result.
+    /// The writer is shared with a gate telemetry sink installed into the
+    /// tool context, so gate decisions are recorded as soon as a check
+    /// completes instead of waiting for the tool result.
     pub fn with_session_telemetry(
         mut self,
         writer: SessionTelemetryWriter,
@@ -651,10 +681,6 @@ impl Agent {
             writer: Arc::clone(&writer),
         });
         if let Some(pipeline) = self.tool_context.gates.clone() {
-            pipeline.install_judge_attempt_sink(&JudgeAttemptSink::new(
-                Arc::clone(&writer),
-                context.clone(),
-            ));
             let gate_sink = GateTelemetrySink::new(Arc::clone(&writer), context);
             pipeline.install_telemetry_sink(gate_sink.clone());
             for startup in pipeline.startup_records() {

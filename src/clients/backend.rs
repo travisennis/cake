@@ -126,26 +126,8 @@ impl Backend {
         }
     }
 
-    /// Build the exact provider-transformed JSON body for a request.
-    pub(super) fn build_request_json<'a>(
-        self,
-        config: &ResolvedModelConfig,
-        history: &'a [ConversationItem],
-        tools: &'a [Tool],
-        overrides: &RequestOverrides,
-        constraint: Option<FinalOutputConstraint<'a>>,
-    ) -> anyhow::Result<Vec<u8>> {
-        match self {
-            Self::Responses => {
-                responses::build_request_json(config, history, tools, overrides, constraint)
-            },
-            Self::ChatCompletions => {
-                chat_completions::build_request_json(config, history, tools, overrides, constraint)
-            },
-        }
-    }
-
-    /// Send one request body previously returned by [`Self::build_request_json`].
+    /// Send one request body previously built by the provider module.
+    #[cfg(test)]
     pub(super) async fn send_request_json(
         self,
         client: &reqwest::Client,

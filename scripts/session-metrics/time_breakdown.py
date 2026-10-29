@@ -39,15 +39,15 @@ def _looks_like_digest(value: str) -> bool:
     return len(value) == 64 and all(character in "0123456789abcdef" for character in value)
 
 
-def _join_key(value: str, judge_ms: dict, shadow_ms: dict) -> str:
-    """Resolve a tool call's join key against the recorded judge/shadow keys.
+def _join_key(value: str, *maps: dict) -> str:
+    """Resolve a tool call's join key against recorded safety keys.
 
     A current-format sidecar records `call_id` already digested, so it joins
     as-is; re-digesting a digest could never match a record. A historical
-    sidecar records the raw provider identifier and keys its judge and shadow
-    records the same way, so that value is digested here to join them.
+    sidecar records the raw provider identifier and keys its judge, shadow,
+    and gate records the same way, so that value is digested here to join them.
     """
-    if value in judge_ms or value in shadow_ms:
+    if any(value in mapping for mapping in maps):
         return value
     if _looks_like_digest(value):
         return value
@@ -94,11 +94,16 @@ def invocation_timeline(inv: cakelib.Invocation) -> tuple[dict[str, float], dict
     if inv.retries and not inv.retry_waits:
         missing["retry waits"] += len(inv.retries)
 
-    # Judge attempts and TypeSafe observations identify the model time inside
-    # a Bash call. Shadow observations may overlap judging, so the reported
-    # safety slice uses the larger of the two totals, a conservative estimate.
+    # Gate decisions are the current surface for Bash policy time; historical
+    # judge attempts and TypeSafe observations remain readable. Where records
+    # overlap, the reported safety slice uses the largest total, a conservative
+    # estimate.
+    gate_ms = defaultdict(int)
     judge_ms = defaultdict(int)
     shadow_ms = defaultdict(int)
+    for decision in inv.gate_decisions:
+        if digest := decision.get("call_id"):
+            gate_ms[digest] += decision.get("latency_ms") or 0
     for attempt in inv.judge_attempts:
         if digest := attempt.get("call_id"):
             judge_ms[digest] += (attempt.get("total_ms") or 0) + (attempt.get("retry_delay_ms") or 0)
@@ -115,11 +120,12 @@ def invocation_timeline(inv: cakelib.Invocation) -> tuple[dict[str, float], dict
         if name == "tb__subagent":
             add(start, stop, "delegated agent")
         elif name == "Bash":
-            # The judge and shadow records key their model time by whichever
+            # Gate, judge, and shadow records key their time by whichever
             # identifier shape the sidecar recorded; `_join_key` resolves the
-            # tool call's value against both maps.
-            digest = _join_key(tool.get("call_id") or "", judge_ms, shadow_ms)
-            safety = min(stop - start, max(judge_ms[digest], shadow_ms[digest]))
+            # tool call's value against all maps.
+            digest = _join_key(tool.get("call_id") or "", gate_ms, judge_ms, shadow_ms)
+            safety = min(stop - start, max(
+                gate_ms[digest], judge_ms[digest], shadow_ms[digest]))
             add(start, start + safety, "Bash safety models")
             add(start + safety, stop, "Bash remaining")
         else:
@@ -169,7 +175,7 @@ def print_invocation_timelines(data: cakelib.Dataset) -> None:
             print("  Slowest operations: " + ", ".join(
                 f"{name} {fmt_ms(duration)}" for duration, name in slow
             ))
-    print("\nBash safety model time is estimated within each Bash span; Bash remaining "
+    print("\nBash policy-gate time is estimated within each Bash span; Bash remaining "
           "also includes command setup, execution, output handling, and hooks. "
           "Parallel activity is counted once. Unobserved includes setup, "
           "unmeasured waits, and historical records without spans.")

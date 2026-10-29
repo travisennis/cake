@@ -10,7 +10,7 @@ use crate::gates::protocol::{
     GateEvidence, GatePhase, GateTransport, PROTOCOL_VERSION,
 };
 use crate::session_telemetry::{
-    CompensationKind, GateTelemetrySink, SessionTelemetryContext, SessionTelemetryWriter,
+    GateTelemetrySink, SessionTelemetryContext, SessionTelemetryWriter,
     SharedSessionTelemetryWriter, digest_identifier,
 };
 
@@ -48,9 +48,6 @@ fn stage(config: &GateStageConfig, decision: GateDecision, message: &str) -> Sta
         disabled: false,
         failure: None,
         evidence: Vec::new(),
-        observation: None,
-        fast_approved: false,
-        legacy_events: Vec::new(),
     }
 }
 
@@ -80,9 +77,6 @@ fn allow_answer() -> GateAnswer {
     GateAnswer::decision(
         DecisionFrame::new("request".to_string(), GateDecision::Allow),
         Duration::from_millis(5),
-        None,
-        false,
-        Vec::new(),
     )
 }
 
@@ -207,15 +201,7 @@ fn exact_allowlist_overrides_only_its_own_block() {
         allowlist: vec!["git status".to_string()],
         ..GateStageConfig::enforce("safety")
     };
-    let mut blocked = stage(&config, GateDecision::Block, "blocked");
-    blocked.legacy_events = vec![
-        crate::session_telemetry::CompensationEventTelemetry::judge_verdict(
-            "block",
-            Some("fake-code"),
-            10,
-            false,
-        ),
-    ];
+    let blocked = stage(&config, GateDecision::Block, "blocked");
     let outcome = compose(std::slice::from_ref(&config), "git status", vec![blocked])
         .expect("override composes");
     assert!(matches!(outcome.authorization, PipelineAuthorization::Run));
@@ -223,11 +209,6 @@ fn exact_allowlist_overrides_only_its_own_block() {
     assert!(outcome.stages[0].overridden);
     assert_eq!(outcome.verdict, None);
     assert_eq!(outcome.deciding_gate, None);
-    assert_eq!(
-        outcome.legacy_events[0].overridden,
-        Some(true),
-        "the legacy verdict event carries the override"
-    );
 
     let other = compose(
         std::slice::from_ref(&config),
@@ -328,9 +309,6 @@ fn short_circuit_on_allow_stops_later_enforce_gates() {
     let answer = GateAnswer::decision(
         DecisionFrame::new("request".to_string(), GateDecision::Allow).with_short_circuit(true),
         Duration::from_millis(1),
-        None,
-        false,
-        Vec::new(),
     );
     let (first_startup, first_calls) = ready(first, answer);
     let (second_startup, second_calls) = ready(second, allow_answer());
@@ -414,7 +392,6 @@ fn bypass_pipeline_records_the_bypass_without_a_gate() {
     assert!(outcome.bypassed);
     assert!(matches!(outcome.authorization, PipelineAuthorization::Run));
     assert!(outcome.stages.is_empty());
-    assert_eq!(outcome.legacy_events[0].kind, CompensationKind::JudgeBypass);
 }
 
 #[test]
@@ -435,7 +412,7 @@ fn pipeline_telemetry_records_decisions_evidence_and_the_digest() {
             data: json!({"model": "judge", "latency_ms": 12}),
         },
     ]);
-    let answer = GateAnswer::decision(frame, Duration::from_millis(5), None, false, Vec::new());
+    let answer = GateAnswer::decision(frame, Duration::from_millis(5));
     let (startup, _) = ready(config, answer);
     let pipeline = GatePipeline::start(vec![startup]).expect("starts");
     pipeline.install_telemetry_sink(sink.clone());
@@ -495,7 +472,6 @@ fn telemetry_records_a_disabled_failed_open_gate_with_zero_latency() {
         GateFailure::new(GateErrorClass::Crash, "crashed"),
         true,
         Duration::from_millis(7),
-        Vec::new(),
     );
     let (startup, _) = ready(config, answer);
     let pipeline = GatePipeline::start(vec![startup]).expect("starts");
@@ -545,7 +521,7 @@ fn oversized_evidence_is_replaced_by_one_truncation_record() {
         .collect();
     let frame =
         DecisionFrame::new("request".to_string(), GateDecision::Allow).with_evidence(evidence);
-    let answer = GateAnswer::decision(frame, Duration::from_millis(1), None, false, Vec::new());
+    let answer = GateAnswer::decision(frame, Duration::from_millis(1));
     let (startup, _) = ready(config, answer);
     let pipeline = GatePipeline::start(vec![startup]).expect("starts");
     pipeline.install_telemetry_sink(sink);

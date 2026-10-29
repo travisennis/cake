@@ -49,11 +49,12 @@ class DashboardTests(unittest.TestCase):
                         dict(timestamp='2026-10-11T01:00:00Z', status_code=200,
                              usage=dict(input_tokens=200))]
         inv.judge_attempts = [dict(timestamp='2026-10-11T00:00:00Z', total_ms=42)]
+        inv.gate_decisions = [dict(timestamp='2026-10-11T00:00:00Z', latency_ms=7)]
         inv.tool_calls = [dict(timestamp='2026-10-11T00:00:00Z', was_error=True)]
         row, = dashboard.aggregate(dataset(invocations=[inv]), ts('2026-10-11'), ts('2026-10-12'))
         self.assertEqual((row['invocations'], row['attempts'], row['api_errors'], row['model']), (0, 2, 1, 'new'))
         self.assertEqual((row['input_tokens'], row['cache_reported_input'], row['cached_tokens']), (300, 100, 80))
-        self.assertEqual((row['judge_ms'], row['tool_errors']), (42, 1))
+        self.assertEqual((row['judge_ms'], row['gate_ms'], row['tool_errors']), (42, 7, 1))
 
     def test_edit_write_recovery_is_attributed_to_failed_call_day(self):
         session = cakelib.Session('s', Path('s'), 0, ts('2026-10-18'), [])

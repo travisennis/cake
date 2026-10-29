@@ -155,7 +155,7 @@ class RunTest(unittest.TestCase):
         with contextlib.redirect_stdout(buf):
             judge.run(make_dataset([]))
         output = buf.getvalue()
-        self.assertIn("No telemetry judge_attempt records in window.", output)
+        self.assertIn("No historical judge_attempt records in window.", output)
 
 
 class LoadAndRunIntegrationTest(unittest.TestCase):

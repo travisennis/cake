@@ -11,9 +11,7 @@ use std::sync::Arc;
 use tracing::info;
 
 use crate::cli::run_mode::{RunMode, SessionPersistencePlan};
-use crate::clients::judge::{JudgeContext, judge_is_enabled};
 use crate::clients::{Agent, ToolContext};
-use crate::config::settings::{JUDGE_BYPASS_ENV, JudgeSettings};
 use crate::config::skills::Skill;
 use crate::config::toolbox::ToolboxTool;
 use crate::config::{
@@ -238,7 +236,6 @@ impl crate::CodingAssistant {
         enabled_tools: Option<&[String]>,
         task_id: uuid::Uuid,
         loaded_system_prompt: Option<&str>,
-        judge: &JudgeSettings,
     ) -> anyhow::Result<RunSession> {
         let inputs = RunInputs {
             current_dir,
@@ -255,7 +252,6 @@ impl crate::CodingAssistant {
             tools_enabled: enabled_tools,
             include_runtime_context: !self.no_runtime_context,
             task_id,
-            judge,
         };
         match run_mode {
             RunMode::Resume { session_id } => self.resume_run(*session_id, data_dir, &inputs),
@@ -273,7 +269,7 @@ impl crate::CodingAssistant {
         }
     }
 
-    /// Resolve a restored session's model, attach the judge, rebuild the pair.
+    /// Resolve a restored session's model and rebuild the pair.
     fn restored_run(
         &self,
         restored: Session,
@@ -286,8 +282,7 @@ impl crate::CodingAssistant {
             restored.model_config.as_deref(),
         )?;
         let initial_messages = inputs.initial_messages(resolved.model_config.supports_images);
-        let tool_context =
-            attach_judge(inputs.tool_context, &resolved, inputs.judge, inputs.models);
+        let tool_context = Arc::clone(inputs.tool_context);
         Self::restored_client_and_session(
             restored,
             resolved,
@@ -332,8 +327,7 @@ impl crate::CodingAssistant {
             restored.model_config.as_deref(),
         )?;
         let initial_messages = inputs.initial_messages(resolved.model_config.supports_images);
-        let tool_context =
-            attach_judge(inputs.tool_context, &resolved, inputs.judge, inputs.models);
+        let tool_context = Arc::clone(inputs.tool_context);
         Self::forked_client_and_session(
             &restored,
             resolved,
@@ -359,12 +353,12 @@ impl crate::CodingAssistant {
         let resolved = ResolvedModelConfig::resolve(config)?;
         let initial_messages = inputs.initial_messages(resolved.model_config.supports_images);
         Ok(Self::new_client_and_session(
-            resolved.clone(),
+            resolved,
             model_config_name,
             inputs.current_dir.clone(),
             &initial_messages,
             inputs.skill_locations.clone(),
-            attach_judge(inputs.tool_context, &resolved, inputs.judge, inputs.models),
+            Arc::clone(inputs.tool_context),
             inputs.toolbox_tools.to_vec(),
             inputs.tools_enabled,
             inputs.task_id,
@@ -389,7 +383,6 @@ struct RunInputs<'a> {
     tools_enabled: Option<&'a [String]>,
     include_runtime_context: bool,
     task_id: uuid::Uuid,
-    judge: &'a JudgeSettings,
 }
 
 impl RunInputs<'_> {
@@ -430,51 +423,6 @@ fn fork_source(
             .ok_or_else(|| anyhow::anyhow!("Session {session_id} not found")),
         _ => unreachable!("fork arm only handles fork modes"),
     }
-}
-
-/// Attach the LLM-judge context to the tool context shared by the Bash
-/// preflight.
-///
-/// The judge defaults to the agent's resolved model; a `[tools.bash.judge]
-/// model` override is resolved lazily at call time (after the bypass check) so
-/// a broken judge config cannot defeat the emergency bypass.
-///
-/// The `CAKE_JUDGE` emergency bypass is read here, once, when the run's context
-/// is built, rather than on every Bash call. The value is carried on the
-/// context so the Bash preflight never consults the process environment and
-/// tests can supply the value directly.
-fn attach_judge(
-    tool_context: &Arc<ToolContext>,
-    agent_model: &ResolvedModelConfig,
-    judge: &JudgeSettings,
-    models: &HashMap<String, ModelDefinition>,
-) -> Arc<ToolContext> {
-    let bypass_env = std::env::var(JUDGE_BYPASS_ENV).ok();
-    let gates = if judge_is_enabled(judge, bypass_env.as_deref()) {
-        let context = JudgeContext {
-            settings: judge.clone(),
-            bypass_env,
-            agent_model: agent_model.clone(),
-            models: models.clone(),
-            client: std::sync::OnceLock::new(),
-            record_attempt: None,
-        };
-        crate::gates::judge_gate::builtin_pipeline(std::sync::Arc::new(context))
-            .map(std::sync::Arc::new)
-            .map_err(|error| {
-                tracing::warn!(
-                    target: "cake",
-                    "Failed to start the built-in safety gate: {error}"
-                );
-                error
-            })
-            .ok()
-    } else {
-        Some(std::sync::Arc::new(
-            crate::gates::composer::GatePipeline::bypass(),
-        ))
-    };
-    Arc::new((**tool_context).clone().with_gates(gates))
 }
 
 #[cfg(test)]
@@ -532,15 +480,10 @@ mod tests {
         restored
     }
 
-    /// A session built through `build_client_and_session` must carry the
-    /// command-safety judge context on the agent's tool context.
-    ///
-    /// The e2e session-mode tests (`tests/session_modes.rs`) never invoke
-    /// Bash, so they cannot observe this wiring; this unit test closes that
-    /// gap (review F-003): without `attach_judge`, every Bash call in a real
-    /// session fails closed.
+    /// A session is built before the asynchronous policy-gate startup, so its
+    /// initial tool context must not claim a gate that has not started yet.
     #[test]
-    fn new_session_carries_judge_on_tool_context() {
+    fn new_session_defers_gate_startup() {
         temp_env::with_var("SESSION_FACTORY_TEST_KEY", Some("test-key"), || {
             let cli = crate::CodingAssistant::parse_from(["cake"]);
             let data_dir_dir = tempfile::tempdir().expect("temp data dir");
@@ -595,13 +538,12 @@ mod tests {
                     None,
                     uuid::Uuid::new_v4(),
                     None,
-                    &JudgeSettings::default(),
                 )
                 .expect("session construction should succeed");
 
             assert!(
-                run_session.agent.tool_context().judge.is_some(),
-                "the run's tool context must carry the command-safety judge"
+                run_session.agent.tool_context().gates.is_none(),
+                "external gates initialize asynchronously after session construction"
             );
         });
     }
@@ -814,7 +756,6 @@ mod tests {
             None,
             uuid::Uuid::new_v4(),
             None,
-            &JudgeSettings::default(),
         )
     }
 

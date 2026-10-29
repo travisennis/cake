@@ -30,12 +30,8 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 
-#[cfg(test)]
-use crate::clients::judge::{JudgeContext, judge_is_enabled};
 use crate::config::settings::ToolLimits;
 use crate::gates::composer::GatePipeline;
-#[cfg(test)]
-use crate::gates::judge_gate::builtin_pipeline;
 use crate::session_telemetry::{CompensationEventTelemetry, CompensationKind};
 use crate::types::{ImagePart, ReplaySafety};
 
@@ -93,10 +89,7 @@ pub struct ToolContext {
     /// the run has no gate configured; the Bash tool fails closed on an absent
     /// pipeline rather than running a command ungated.
     pub gates: Option<Arc<GatePipeline>>,
-    /// Test-only compatibility view of the built-in judge context. Production
-    /// code reads `gates`; the slice-1 Bash tests still assert this field.
-    #[cfg(test)]
-    pub judge: Option<Arc<JudgeContext>>,
+
     /// Resolved tool output budgets from `[limits]` settings. Defaults to the
     /// compiled constants; `with_limits` applies configured overrides.
     pub limits: ToolLimits,
@@ -126,34 +119,6 @@ impl ToolContext {
 
     /// Attach the command-policy pipeline used by the Bash preflight.
     pub fn with_gates(mut self, gates: Option<Arc<GatePipeline>>) -> Self {
-        #[cfg(test)]
-        {
-            self.judge = gates
-                .as_deref()
-                .and_then(GatePipeline::judge_context)
-                .cloned();
-        }
-        self.gates = gates;
-        self
-    }
-
-    /// Attach the built-in judge by wrapping it in the gate pipeline. This is a
-    /// slice-1 test compatibility constructor for the existing judge tests and
-    /// for test helpers that still hold a `JudgeContext`; production session
-    /// wiring uses [`Self::with_gates`].
-    #[cfg(test)]
-    pub fn with_judge(mut self, judge: Option<Arc<JudgeContext>>) -> Self {
-        let gates = judge.as_ref().and_then(|judge| {
-            if judge_is_enabled(&judge.settings, judge.bypass_env.as_deref()) {
-                builtin_pipeline(Arc::clone(judge)).ok().map(Arc::new)
-            } else {
-                Some(Arc::new(GatePipeline::bypass()))
-            }
-        });
-        #[cfg(test)]
-        {
-            self.judge = judge;
-        }
         self.gates = gates;
         self
     }
@@ -191,8 +156,6 @@ impl ToolContext {
             settings_dirs,
             sandbox_policy: SandboxPolicy::WorkspaceWrite,
             gates: None,
-            #[cfg(test)]
-            judge: None,
             limits: ToolLimits::defaults(),
             bash_sessions: bash_session_core::SessionRegistry::new(
                 ToolLimits::defaults().bash_session_max,
@@ -216,8 +179,6 @@ impl ToolContext {
             settings_dirs: Vec::new(),
             sandbox_policy: SandboxPolicy::WorkspaceWrite,
             gates: None,
-            #[cfg(test)]
-            judge: None,
             limits: ToolLimits::defaults(),
             bash_sessions: bash_session_core::SessionRegistry::new(
                 ToolLimits::defaults().bash_session_max,
@@ -250,6 +211,8 @@ pub fn get_settings_dirs(context: &ToolContext) -> &[PathBuf] {
 // =============================================================================
 
 mod bash;
+#[cfg(test)]
+pub mod bash_gate_fixture;
 mod edit;
 mod file_access;
 mod json_repair;
@@ -697,7 +660,7 @@ pub struct ToolResult {
 /// Error from executing a tool.
 ///
 /// Carries the model-visible message plus any model-compensation events
-/// observed while the tool failed (for example a judge `block` verdict or a
+/// observed while the tool failed (for example a gate `block` decision or a
 /// fail-closed denial), so they still reach session telemetry on the error
 /// path instead of being dropped.
 #[derive(Debug, Clone)]
@@ -905,6 +868,11 @@ impl ToolRegistry {
     /// Bash), and toolbox tools run as unsandboxed external processes, so
     /// omitting them is what makes the policy's no-mutation guarantee hold
     /// for the whole agent, not just shell commands.
+    pub(super) fn remove_bash_tools(&mut self) {
+        self.entries
+            .retain(|entry| !matches!(entry.definition.name.as_str(), "Bash" | "BashSession"));
+    }
+
     pub(super) fn retain_read_safe_tools(&mut self) {
         self.entries.retain(|entry| entry.capabilities.read_safe);
         self.refresh_definitions();

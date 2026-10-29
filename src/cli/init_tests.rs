@@ -62,7 +62,7 @@ fn initialize_creates_behavior_preserving_settings() {
 
     let content = std::fs::read_to_string(&settings_path).unwrap();
     // The file must parse as valid TOML and activate no settings keys, so it
-    // cannot disable the judge, add allowlist entries, or select a model.
+    // cannot enable or disable a gate, add allowlist entries, or select a model.
     let parsed: toml::Value =
         toml::from_str(&content).expect("generated settings must be valid TOML");
     let table = parsed
@@ -81,12 +81,16 @@ fn initialize_creates_behavior_preserving_settings() {
         "generated settings must document profile tool selection"
     );
     assert!(
-        content.contains("[tools.bash.judge]"),
-        "generated settings must reference the judge vocabulary"
+        content.contains("[gates.safety]"),
+        "generated settings must reference the external gate vocabulary"
     );
     assert!(
-        content.contains("allowlist"),
-        "generated settings must document the judge allowlist key"
+        content.contains("[tools.bash.judge]"),
+        "generated settings must document the legacy migration surface"
+    );
+    assert!(
+        content.contains("gates = [\"safety\"]"),
+        "generated settings must document the tool-level gate selection"
     );
     assert!(
         content.contains("[limits]"),

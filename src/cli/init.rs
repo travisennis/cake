@@ -189,10 +189,9 @@ fn write_new(path: &Path, display: &str, content: &str) -> Result<(), InitError>
 /// Generated `.cake/settings.toml` content.
 ///
 /// Everything is commented out so the file is valid TOML and changes no
-/// behavior. It references the current `[tools.bash.judge]` vocabulary without
-/// disabling the judge, adding allowlist entries, selecting a model, or adding
-/// rubric guidance, and it does not claim any model or timeout is
-/// reliability-qualified (the judge benchmark owns that evidence).
+/// behavior. It shows the external policy-gate vocabulary and the legacy
+/// `[tools.bash.judge]` migration surface without enabling a gate, adding
+/// allowlist entries, selecting a model, or adding rubric guidance.
 const DEFAULT_SETTINGS: &str = r#"# Cake project settings, created by `cake init`.
 #
 # Cake loads project settings from `.cake/settings.toml` and overlays them on
@@ -228,20 +227,27 @@ const DEFAULT_SETTINGS: &str = r#"# Cake project settings, created by `cake init
 # [profiles.review.tools]
 # enabled = ["Read"]
 #
-# The LLM command-safety judge evaluates every Bash command before it runs and
-# is the command-safety gate above the OS sandbox. It is default-on and
-# fail-closed: an unavailable judge blocks the command instead of running it
-# ungated. The keys below are commented out so this file preserves Cake's
-# defaults. A `model` value is a `[[models]]` name, the same vocabulary as
-# `default_model` and `--model`. See docs/configuration.md and ADR-018 for the
-# full judge contract.
+# External policy gates evaluate Bash commands before they run. A pipeline
+# needs an enforce gate covering the pre_tool/bash.exec action; without one,
+# Cake removes Bash and BashSession rather than running commands ungated.
+# `CAKE_GATE=off` or `--no-gate` is the explicit, recorded bypass. The examples
+# below are commented out so this file preserves Cake's defaults.
+# [tools.bash]
+# gates = ["safety"]
+#
+# [gates.safety]
+# command = "cake-safety-judge"
+# transport = "stdio"
+# mode = "enforce"
+# fail = "closed"
+# timeout_secs = 30
+# env = ["TYPESAFE_AI_API_KEY"]
+#
+# Legacy `[tools.bash.judge]` tables are still accepted for migration. They
+# tune the auto-detected safety gate when no explicit `gates` list is present;
+# `enabled = false` remains an explicit bypass and never enables a gate.
 # [tools.bash.judge]
-# model = "my-model"             # optional: a [[models]] name for the judge
-# timeout_secs = 30              # default 30; never below 1
-# retry_budget_secs = 15         # default 15; 0 disables recovery
-# rubric_file = ".cake/judge-rubric.md"  # optional extra judge guidance
-# enabled = true                 # default true; false is the emergency bypass
-# allowlist = []                 # exact raw commands whose block is overridden
+# enabled = false
 
 # Optional limits bound the agent loop and the tool output budgets. The
 # agent-loop keys are off by default: an uncapped loop is deliberate, and no

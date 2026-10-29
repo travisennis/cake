@@ -83,6 +83,7 @@ pub struct ToolsSettingsOverlay {
 /// Profile-only observational settings; primary judge policy remains top-level.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProfileBashSettings {
+    pub gates: Option<Vec<String>>,
     pub judge: Option<ProfileJudgeSettings>,
 }
 
@@ -96,6 +97,7 @@ pub struct ProfileJudgeSettings {
 /// Bash tool settings loaded from `[tools.bash]`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BashToolSettings {
+    pub gates: Option<Vec<String>>,
     /// LLM judge settings for Bash command safety (`[tools.bash.judge]`).
     #[serde(default)]
     pub judge: Option<BashJudgeSettings>,
@@ -240,12 +242,6 @@ pub const DEFAULT_JUDGE_TIMEOUT_SECS: u64 = 30;
 /// `timeout_secs`. 0 disables recovery entirely.
 pub const DEFAULT_JUDGE_RETRY_BUDGET_SECS: u64 = 15;
 
-/// Emergency-bypass environment variable: `CAKE_JUDGE=off` disables the judge
-/// for every command, regardless of settings. It is the escape hatch when a
-/// failing judge strands sessions. Lives in the config layer so settings
-/// validation can honor it without importing client modules.
-pub const JUDGE_BYPASS_ENV: &str = "CAKE_JUDGE";
-
 /// Floor for the judge timeout in seconds. A `0` timeout would expire before
 /// the judge request is polled and fail every command closed; values below
 /// the floor are raised to it, matching the Bash tool's own timeout clamp.
@@ -273,6 +269,8 @@ pub struct SandboxSettings {
 /// Profile-specific behavior settings.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProfileSettings {
+    #[serde(default)]
+    pub gates: std::collections::BTreeMap<String, crate::config::gates::GateSettings>,
     /// Name of the model to use when `--model` is not specified.
     #[serde(default)]
     pub default_model: Option<String>,
@@ -313,6 +311,8 @@ pub struct ProfileSettings {
 /// settings files automatically.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Settings {
+    #[serde(default)]
+    pub gates: std::collections::BTreeMap<String, crate::config::gates::GateSettings>,
     /// Name of the model to use when `--model` is not specified
     #[serde(default)]
     pub default_model: Option<String>,
@@ -693,6 +693,7 @@ fn resolve_tool_limit(limit: Option<Limit>, default: u32) -> Option<usize> {
 /// Separate from [`Settings`] to represent the post-merge state.
 #[derive(Debug, Clone)]
 pub struct LoadedSettings {
+    pub gates: crate::config::gates::GateConfiguration,
     /// Map of model name to definition (global + project merged)
     pub models: HashMap<String, ModelDefinition>,
     /// Name of the default model from the highest-precedence settings file
@@ -898,6 +899,9 @@ pub enum SettingsError {
     )]
     JudgeModelNotFound { name: String },
 
+    #[error("Invalid gate configuration: {message}")]
+    InvalidGateConfiguration { message: String },
+
     #[error("Failed to parse settings file: {0}")]
     ParseError(#[from] toml::de::Error),
 
@@ -1055,6 +1059,7 @@ impl SettingsLoader {
         // Validate that the judge model (if set) refers to an existing model,
         // mirroring default_model (see [`Self::validate_judge_model`]).
         Self::validate_judge_model(&acc)?;
+        Self::validate_gate_configuration(&acc)?;
 
         Ok(acc.into_loaded())
     }
@@ -1151,7 +1156,8 @@ impl SettingsLoader {
     /// validation is skipped: `CAKE_JUDGE=off` or `enabled = false` stays the
     /// recovery path even for a misconfigured judge.
     fn validate_judge_model(acc: &SettingsAccumulator) -> Result<(), SettingsError> {
-        if !Self::judge_is_bypassed(acc)
+        if acc.gates.selection.is_none()
+            && !Self::judge_is_bypassed(acc)
             && let Some(ref name) = acc.judge_model
             && !acc.models.contains_key(name.as_str())
         {
@@ -1160,10 +1166,23 @@ impl SettingsLoader {
         Ok(())
     }
 
+    /// Validate the explicit `[tools.bash].gates` selection. An environment
+    /// bypass skips structural validation so the escape hatch can load a
+    /// broken configuration; a legacy `enabled = false` with no explicit
+    /// selection is already represented as a bypass by the resolver.
+    fn validate_gate_configuration(acc: &SettingsAccumulator) -> Result<(), SettingsError> {
+        if crate::config::gates::environment_bypass() {
+            return Ok(());
+        }
+        acc.gates
+            .validate()
+            .map_err(|message| SettingsError::InvalidGateConfiguration { message })
+    }
+
     /// Whether the judge is bypassed at settings load: `enabled = false` or
     /// the `CAKE_JUDGE=off` environment variable.
     fn judge_is_bypassed(acc: &SettingsAccumulator) -> bool {
-        acc.judge_enabled == Some(false) || std::env::var(JUDGE_BYPASS_ENV).as_deref() == Ok("off")
+        acc.judge_enabled == Some(false) || crate::config::gates::environment_bypass()
     }
 
     fn merge_settings(
@@ -1171,6 +1190,7 @@ impl SettingsLoader {
         acc: &mut SettingsAccumulator,
     ) -> Result<(), SettingsError> {
         Self::add_models_to_map(&mut acc.models, settings.models)?;
+        acc.gates.merge(settings.gates);
         if settings.default_model.is_some() {
             acc.default_model = settings.default_model;
         }
@@ -1268,6 +1288,12 @@ impl SettingsLoader {
         };
         if enabled.is_some() {
             acc.tools_enabled = enabled;
+        }
+        if let Some(bash) = &bash {
+            if bash.gates.is_some() {
+                acc.gates.selection.clone_from(&bash.gates);
+            }
+            acc.gates.legacy_present |= bash.judge.is_some();
         }
         Self::merge_judge_settings(bash, acc);
     }
@@ -1405,6 +1431,7 @@ impl SettingsLoader {
 /// project, and profile settings.
 #[derive(Default)]
 struct SettingsAccumulator {
+    gates: crate::config::gates::GateConfiguration,
     models: HashMap<String, ModelDefinition>,
     default_model: Option<String>,
     // Ordered sets preserve deduplication while making resolved grants stable.
@@ -1441,6 +1468,12 @@ struct SettingsAccumulator {
 impl SettingsAccumulator {
     /// Union a profile overlay into the accumulated settings.
     fn apply_profile_overlay(&mut self, overlay: &ProfileSettings) {
+        self.gates.merge(overlay.gates.clone());
+        if let Some(bash) = &overlay.tools.bash
+            && bash.gates.is_some()
+        {
+            self.gates.selection.clone_from(&bash.gates);
+        }
         if let Some(ref profile_default) = overlay.default_model {
             self.default_model = Some(profile_default.clone());
         }
@@ -1493,6 +1526,7 @@ impl SettingsAccumulator {
             hook_output_limit: self.hook_output_limit,
         };
         LoadedSettings {
+            gates: self.gates,
             models: self.models,
             default_model: self.default_model,
             directories: self.directories.into_iter().collect(),

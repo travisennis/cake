@@ -11,6 +11,7 @@ mod checkpoint;
 mod cmd_runner;
 mod debug;
 mod diagnostic;
+mod gates;
 mod init;
 mod output;
 mod persistence;
@@ -30,6 +31,7 @@ pub use diagnostic::{
     CHECK_SESSIONS_CHECKPOINT, CHECK_SESSIONS_DIRECTORY, CHECK_SETTINGS_LOAD_FAILED,
     DiagnosticCheck, DiagnosticDocument, report_failure, settings_warnings,
 };
+pub use gates::GatesCommand;
 pub use init::{InitCommand, InitError};
 pub use output::{CliOutputSink, TurnResult};
 pub use persistence::execute_persistence_plan;
@@ -68,6 +70,8 @@ pub enum Commands {
     Sessions(SessionsCommand),
     /// Inspect and explain Bash command-safety decisions
     Bash(BashCommand),
+    /// Inspect and validate configured policy gates
+    Gates(GatesCommand),
     /// Create `.cake/` project scaffolding and a behavior-preserving settings file
     Init(InitCommand),
     /// Replay an existing session transcript as stream-json events
@@ -91,6 +95,7 @@ impl Commands {
             Self::Debug(_) => "debug",
             Self::Sessions(_) => "sessions",
             Self::Bash(_) => "bash",
+            Self::Gates(_) => "gates",
             Self::Init(_) => "init",
             Self::Replay(_) => "replay",
         }
@@ -109,6 +114,7 @@ impl Commands {
             Self::Debug(command) => command.run(data_dir, options).await,
             Self::Sessions(command) => command.run(data_dir, options).await,
             Self::Bash(command) => command.run(data_dir, options).await,
+            Self::Gates(command) => command.run(data_dir, options).await,
             Self::Init(command) => command.run(data_dir, options).await,
             Self::Replay(command) => command.run(data_dir, options).await,
         }

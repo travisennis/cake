@@ -5,11 +5,12 @@ use crate::config::DataDir;
 /// profile selection.
 ///
 /// Passed to [`CmdRunner::run`] so introspection commands like
-/// `cake bash check` resolve the judge model the same way an agent turn would
+/// `cake bash check` resolve the model the same way an agent turn would
 /// (`--model`, then `default_model` under the selected profile), and so
 /// `cake replay` honors the top-level `--output-format` flag.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CommandRunOptions<'a> {
+    pub no_gate: bool,
     /// The top-level `--model` flag value, when provided.
     pub model: Option<&'a str>,
     /// The top-level `--profile` flag value, when provided.

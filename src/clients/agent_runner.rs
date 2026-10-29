@@ -227,6 +227,11 @@ impl AgentRunner {
         self.client = build_http_client_with_timeout(false, timeout);
     }
 
+    #[cfg(test)]
+    pub(super) const fn with_retry_policy(&mut self, policy: RetryPolicy) {
+        self.retry_policy = policy;
+    }
+
     #[expect(
         clippy::too_many_arguments,
         reason = "a turn naturally threads config, identity, history, tools, and constraint"

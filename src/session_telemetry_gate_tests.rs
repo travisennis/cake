@@ -17,7 +17,7 @@ fn sink_for(path: &std::path::Path) -> GateTelemetrySink {
 
 fn startup_record() -> GateStartupTelemetry {
     GateStartupTelemetry {
-        gate: "builtin-safety".to_string(),
+        gate: "safety".to_string(),
         version: Some("0.1.0".to_string()),
         mode: "enforce".to_string(),
         phases: vec!["pre_tool".to_string()],
@@ -30,7 +30,7 @@ fn startup_record() -> GateStartupTelemetry {
 
 fn decision_record() -> GateDecisionTelemetry {
     GateDecisionTelemetry {
-        gate: Some("builtin-safety".to_string()),
+        gate: Some("safety".to_string()),
         version: Some("0.1.0".to_string()),
         mode: "enforce".to_string(),
         phase: "pre_tool".to_string(),
@@ -87,7 +87,7 @@ fn gate_startup_and_decision_records_are_metadata_only() {
     let records = read_records(&path);
     assert_eq!(records.len(), 2);
     assert_eq!(records[0]["type"], json!("gate_startup"));
-    assert_eq!(records[0]["gate"], json!("builtin-safety"));
+    assert_eq!(records[0]["gate"], json!("safety"));
     assert_eq!(records[0]["version"], json!("0.1.0"));
     assert_eq!(records[0]["phases"], json!(["pre_tool"]));
     assert_eq!(records[0]["actions"], json!(["bash.exec"]));
@@ -117,7 +117,7 @@ fn gate_evidence_and_bypass_records_carry_the_digest_and_effect() {
     let path = dir.path().join("telemetry.ndjson");
     let sink = sink_for(&path);
     sink.record_evidence(GateEvidenceTelemetry {
-        gate: "builtin-safety".to_string(),
+        gate: "safety".to_string(),
         call_id: Some("raw-call-id-secret".to_string()),
         kind: "attempt".to_string(),
         data: json!({"model": "judge", "latency_ms": 12}),
