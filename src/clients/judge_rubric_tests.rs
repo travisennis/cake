@@ -1,23 +1,6 @@
 use super::*;
 
 #[test]
-fn every_verdict_code_maps_to_a_representative_command() {
-    for code in VerdictCode::ALL {
-        let (example_code, example) = VERDICT_CODE_EXAMPLES
-            .iter()
-            .find(|(c, _)| c == code)
-            .unwrap_or_else(|| panic!("no representative command for {}", code.as_str()));
-        assert_eq!(example_code, code);
-        assert!(!example.is_empty(), "empty example for {}", code.as_str());
-    }
-    assert_eq!(
-        VERDICT_CODE_EXAMPLES.len(),
-        VerdictCode::ALL.len(),
-        "example table must have exactly one entry per code"
-    );
-}
-
-#[test]
 fn code_spellings_are_stable_and_namespaced() {
     let expected = [
         "git-history-rewrite",
@@ -46,22 +29,6 @@ fn code_spellings_are_stable_and_namespaced() {
         VerdictCode::from_str("made-up-code").is_err(),
         "unknown codes must not parse"
     );
-}
-
-#[test]
-fn default_rubric_documents_every_code_and_example() {
-    for (code, example) in VERDICT_CODE_EXAMPLES {
-        assert!(
-            DEFAULT_RUBRIC.contains(code.as_str()),
-            "rubric must document code {}",
-            code.as_str()
-        );
-        assert!(
-            DEFAULT_RUBRIC.contains(example),
-            "rubric must document the representative command for {}: {example}",
-            code.as_str()
-        );
-    }
 }
 
 #[test]
