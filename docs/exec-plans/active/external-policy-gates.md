@@ -18,9 +18,9 @@ The current in-process judge remains the oracle and the only command gate until 
 - [x] (2026-10-24) Drafted this ExecPlan.
 - [x] (2026-10-25) Contract reviewed and frozen; ADR 049 moved to `accepted`.
 - [ ] Update the docs status notes when enforcement lands (slice 4).
-- [x] (2026-10-25) Slice 1 implemented on `feat/gates-seam`: `src/gates/` protocol, runner, composer, and built-in judge adapter; the Bash preflight and `cake bash check` run through `GatePipeline`; generic `gate_*` telemetry sits beside the legacy `judge_*` records; the fake gate proves allow, warn, block, abstain, malformed, timeout, crash, restart, fail-open, and fail-closed. Existing judge, Bash, and CLI tests pass without changed expectations; `just check` passes. PR pending review.
-- [ ] Slice 2 (cake-safety-judge): repository, `describe`, `check`, rubric and corpus, offline parity with the oracle.
-- [ ] Slice 2 (cake-safety-judge): `serve` with concurrent request IDs and graceful shutdown.
+- [x] (2026-10-25) Slice 1 implemented on `feat/gates-seam`: `src/gates/` protocol, runner, composer, and built-in judge adapter; the Bash preflight and `cake bash check` run through `GatePipeline`; generic `gate_*` telemetry sits beside the legacy `judge_*` records; the fake gate proves allow, warn, block, abstain, malformed, timeout, crash, restart, fail-open, and fail-closed. Existing judge, Bash, and CLI tests pass without changed expectations; `just check` passes. PR #752 merged as `507cfd7`; review fixes `d457666`.
+- [x] (2026-10-25) Slice 2 (cake-safety-judge): repository, `describe`, `check`, `serve` with concurrent request IDs and graceful shutdown, rubric and corpus copies, fake and recorded providers; offline tests pass at `3985a2e` (repo tip `3336ab7`).
+- [ ] Slice 2 exit: oracle parity on the frozen corpus (task 128c).
 - [ ] Slice 3 (cake): external gate in shadow beside the in-process judge; differential report; latency and cost measured.
 - [ ] Slice 4 (cake): `[gates]` recognized, external gate default when installed, no-gate Bash removal, aliases, `cake gates` CLI; one release dual-path.
 - [ ] Slice 5 (cake): delete judge internals, delegate `bash check`, move corpus/benchmark ownership, update session analysis.
@@ -74,6 +74,8 @@ Slice 0 has produced the accepted ADR, the wire contract, the configuration sche
 
 Slice 1 now makes the seam real without changing user-visible behavior. `src/gates/protocol.rs` mirrors the frozen schema, `runner.rs` owns the NDJSON transport and breaker, `composer.rs` owns ordered composition and the no-enforce-gate rule, and `judge_gate.rs` wraps the existing judge as the reserved `builtin-safety` gate. `ToolContext.gates` replaces the direct judge handle for the Bash preflight and the normal `cake bash check` path; `cake bash check` still writes the same document fields and exit codes, and its `--json` failure path still writes no document. Generic `gate_startup`, `gate_decision`, and `gate_evidence` records are written beside the legacy `judge_*` records, and a bypass is recorded as `gate: null`, `decision: null`, `bypassed: true`. The fake gate under `tests/fixtures/gates/` proves the protocol modes, restart, fail-open/closed, and the two-failure breaker without a provider. `[gates]` settings are still not read, no external gate is selected in production, and
 the in-process judge remains the oracle.
+
+Slice 2 is built in `../cake-safety-judge` at `3336ab7` (slice commit `3985a2e`): `describe`, `check`, `serve`, the rubric and corpus copies, the fake and recorded providers, and the offline suites pass. Its exit criterion is not met: no recorded or live oracle comparison has run (task 128c). Slices 3--5 have not started, and `[gates]` is still unread, so the external gate has no authority.
 
 Slice 1 verification: `cargo test gates`, `cargo test judge`, `cargo test bash`, the full `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo fmt -- --check`, and `just check` all pass. `cake bash check --json -- 'git status --short'` still prints the existing document fields and exits `0` on this machine's bypassed judge configuration. The PR records the task id (128b) and the checks that ran.
 
