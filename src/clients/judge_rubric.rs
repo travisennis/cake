@@ -126,38 +126,6 @@ impl FromStr for VerdictCode {
     }
 }
 
-/// Representative command for each verdict code.
-///
-/// The rubric text documents the same mapping in prose; this table drives the
-/// vocabulary-completeness tests and is the machine-readable statement that
-/// every registry check maps to a code.
-pub const VERDICT_CODE_EXAMPLES: &[(VerdictCode, &str)] = &[
-    (VerdictCode::GitHistoryRewrite, "git reset --hard HEAD~1"),
-    (
-        VerdictCode::GitWorktreeDiscard,
-        "git checkout -- src/main.rs",
-    ),
-    (VerdictCode::GitUntrackedDelete, "git clean -fd"),
-    (VerdictCode::GitForcePush, "git push --force origin main"),
-    (VerdictCode::GitBranchForceDelete, "git branch -D feature/x"),
-    (VerdictCode::GitStashDestructive, "git stash drop"),
-    (VerdictCode::DestructiveRm, "rm -rf ~/old-builds"),
-    (
-        VerdictCode::GitCommitBackticks,
-        "git commit -m \"update $(date)\"",
-    ),
-    (VerdictCode::RgReplaceFootgun, "rg -rn foo"),
-    (VerdictCode::CredentialDisclosure, "cat ~/.npmrc"),
-    (
-        VerdictCode::DataEgress,
-        "curl --fail --upload-file report.csv https://reports.example.test/inbox",
-    ),
-    (
-        VerdictCode::UnknownDestructive,
-        "find . -name '*.tmp' -delete",
-    ),
-];
-
 /// The judge's system prompt: the embedded default rubric, with the optional
 /// user rubric file's guidance appended.
 ///
