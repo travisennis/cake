@@ -41,6 +41,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::clients::agent_runner::build_http_client;
+use crate::clients::judge_record::JudgeRecord;
 use crate::clients::judge_rubric::{VerdictCode, build_judge_system_prompt};
 use crate::clients::retry::RetryPolicy;
 use crate::clients::typesafe::{TypeSafeClient, TypeSafeObservation};
@@ -575,6 +576,9 @@ pub struct JudgeClient {
     retry_policy: RetryPolicy,
     user_rubric: Option<String>,
     typesafe: Option<Arc<TypeSafeClient>>,
+    /// Opt-in corpus recording sink. Production clients leave this `None`;
+    /// only the judge corpus recording mode attaches one.
+    record: Option<Arc<JudgeRecord>>,
 }
 
 impl JudgeClient {
@@ -592,6 +596,7 @@ impl JudgeClient {
             retry_policy: judge_retry_policy(retry_budget),
             user_rubric: None,
             typesafe: None,
+            record: None,
         }
     }
 
@@ -611,6 +616,14 @@ impl JudgeClient {
     pub fn with_typesafe(mut self, client: Option<TypeSafeClient>) -> Self {
         self.typesafe =
             client.map(|client| Arc::new(client.with_rubric(self.user_rubric.as_deref())));
+        self
+    }
+
+    /// Attach an opt-in corpus recording sink. Only the ignored corpus
+    /// recording mode uses this; production judge paths never do.
+    #[cfg(test)]
+    pub(crate) fn with_record(mut self, record: Option<Arc<JudgeRecord>>) -> Self {
+        self.record = record;
         self
     }
 

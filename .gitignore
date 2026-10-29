@@ -19,6 +19,9 @@ scripts/evals/results/
 # Judge SLO benchmark generated output (per-trial records, run reports)
 scripts/judge-bench/results/
 
+# Judge corpus recording output (sensitive provider bodies)
+scripts/judge-corpus/results/
+
 # cargo-mutants generated reports
 mutants.out/
 

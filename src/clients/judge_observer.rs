@@ -1,11 +1,13 @@
 //! Per-attempt observability and bounded recovery for the command-safety judge.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tokio::time::sleep;
 
 use crate::clients::agent_runner::build_http_client;
 use crate::clients::backend::{Backend, ResponseDecodeError};
+use crate::clients::judge_record::{JudgeRecord, JudgeRecordEntry};
 use crate::clients::retry::{self, HttpFailure, RequestOverrides, RetryReason};
 use crate::config::model::ApiType;
 use crate::session_telemetry::{
@@ -334,6 +336,13 @@ struct ObservedJudgeCall {
     request_json: Vec<u8>,
     attempt: JudgeAttemptTelemetry,
     diagnostic: Option<JudgeDiagnostic>,
+    /// The exact command this attempt judged, used as the record key.
+    command: String,
+    /// Assistant text retained for the opt-in record. `None` on transport
+    /// failures and refusals.
+    content: Option<String>,
+    /// Opt-in corpus recording sink; production calls leave this `None`.
+    record: Option<Arc<JudgeRecord>>,
     /// The resolved API key, applied to the config-controlled model identifier.
     api_key: String,
     session_id: uuid::Uuid,
@@ -374,6 +383,9 @@ impl ObservedJudgeCall {
             request_json,
             attempt,
             diagnostic,
+            command: request.command.clone(),
+            content: None,
+            record: client.record.clone(),
             api_key: client.config.api_key.clone(),
             session_id,
         })
@@ -486,6 +498,7 @@ impl ObservedJudgeCall {
                 .clone_from(&turn.provider_request_id);
         }
         let content = assistant_message(&turn.items).map(str::to_string);
+        self.content.clone_from(&content);
         update_diagnostic(&mut self.diagnostic, client, turn, content.as_deref());
         let no_verdict_text = content.as_deref().is_none_or(str::is_empty);
         if let Some(error) = refusal_error(turn.termination.as_ref(), no_verdict_text) {
@@ -555,11 +568,51 @@ impl ObservedJudgeCall {
         // surrounding quotes), so raw provider-controlled text is never
         // persisted at all.
         sanitize_attempt_provider_fields(&mut self.attempt);
+        self.write_record(&result);
         AttemptCall {
             result,
             attempt: self.attempt,
             diagnostic: self.diagnostic,
             failure,
+        }
+    }
+
+    /// Persist this attempt in the gate's offline record format when the
+    /// corpus recording mode attached a sink. A failed write is reported to
+    /// stderr but never changes the judge decision.
+    fn write_record(&self, result: &Result<JudgeVerdict, JudgeError>) {
+        let Some(record) = self.record.as_deref() else {
+            return;
+        };
+        let command = self.command.clone();
+        let entry = match result {
+            Ok(_) | Err(JudgeError::Malformed(_)) => JudgeRecordEntry::success(
+                command,
+                self.attempt.status_code,
+                self.content.clone(),
+                self.attempt.usage,
+            ),
+            Err(JudgeError::Refusal) => JudgeRecordEntry::refusal(command),
+            Err(JudgeError::Timeout(_)) => JudgeRecordEntry::timeout(command),
+            Err(JudgeError::Transport {
+                status: Some(status),
+                ..
+            }) => JudgeRecordEntry::http_error(command, *status),
+            Err(JudgeError::Transport { status: None, .. }) => {
+                let message =
+                    if self.attempt.terminal_class == JudgeAttemptTerminalClass::ResponseParse {
+                        "judge response could not be parsed"
+                    } else {
+                        "judge transport failed"
+                    };
+                JudgeRecordEntry::transport(command, message)
+            },
+        };
+        if let Err(error) = record.append(&entry) {
+            eprintln!(
+                "judge corpus record: failed to write {}: {error}",
+                record.path().display()
+            );
         }
     }
 }

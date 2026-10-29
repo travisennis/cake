@@ -1,4 +1,5 @@
 use super::*;
+use crate::clients::judge_record::JudgeRecord;
 use crate::clients::typesafe::TypeSafeClient;
 use crate::config::settings::{TypeSafeMode, TypeSafeSettings};
 use sha2::{Digest, Sha256};
@@ -160,6 +161,70 @@ async fn judge_returns_block_verdict() {
     assert_eq!(verdict.code.as_deref(), Some("git-force-push"));
     assert_eq!(verdict.message, "Prefer push --force-with-lease.");
     assert_eq!(verdict.confidence, Some(0.93));
+}
+
+#[tokio::test]
+async fn record_sink_captures_successful_assistant_content_and_status() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(chat_response(r#"{"verdict":"allow","message":"Safe"}"#)),
+        )
+        .mount(&mock_server)
+        .await;
+    let directory = tempfile::TempDir::new().unwrap();
+    let path = directory.path().join("record.jsonl");
+    let record = std::sync::Arc::new(JudgeRecord::create(&path).unwrap());
+
+    let verdict = judge_client(&mock_server)
+        .with_record(Some(std::sync::Arc::clone(&record)))
+        .judge(request("git status", None))
+        .await
+        .unwrap();
+
+    assert_eq!(verdict.decision, JudgeDecision::Allow);
+    assert_eq!(record.count(), 1);
+    let contents = std::fs::read_to_string(&path).unwrap();
+    let value: serde_json::Value = serde_json::from_str(contents.lines().next().unwrap()).unwrap();
+    assert_eq!(value["command"], "git status");
+    assert_eq!(value["http_status"], 200);
+    assert_eq!(
+        value["assistant_content"],
+        r#"{"verdict":"allow","message":"Safe"}"#
+    );
+    assert!(value.get("error_class").is_none());
+}
+
+#[tokio::test]
+async fn record_sink_captures_http_status_for_gate_replay() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(503).set_body_string("provider unavailable"))
+        .mount(&mock_server)
+        .await;
+    let directory = tempfile::TempDir::new().unwrap();
+    let path = directory.path().join("record.jsonl");
+    let record = std::sync::Arc::new(JudgeRecord::create(&path).unwrap());
+
+    let error = judge_client(&mock_server)
+        .with_record(Some(std::sync::Arc::clone(&record)))
+        .judge(request("rm -rf src", None))
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        JudgeError::Transport {
+            status: Some(503),
+            ..
+        }
+    ));
+    let contents = std::fs::read_to_string(&path).unwrap();
+    let value: serde_json::Value = serde_json::from_str(contents.lines().next().unwrap()).unwrap();
+    assert_eq!(value["command"], "rm -rf src");
+    assert_eq!(value["http_status"], 503);
+    assert!(value.get("assistant_content").is_none());
 }
 
 #[tokio::test]

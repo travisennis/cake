@@ -135,6 +135,11 @@ judge-corpus-check:
 judge-corpus:
     cargo test judge_corpus_live_meets_tolerance -- --ignored --nocapture
 
+# Record judge provider outcomes for offline cake-safety-judge parity (requires credentials and authorized spend)
+judge-corpus-record record:
+    @mkdir -p "$(dirname {{quote(record)}})"
+    CAKE_JUDGE_CORPUS_RECORD={{quote(record)}} cargo test judge_corpus_live_meets_tolerance -- --ignored --nocapture
+
 # Run the judge SLO benchmark deterministic harness (fake provider; no credentials, no network)
 judge-bench-check:
     cargo test judge_bench

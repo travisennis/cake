@@ -21,6 +21,7 @@ pub mod judge;
 mod judge_benchmark_tests;
 #[cfg(test)]
 mod judge_corpus_tests;
+mod judge_record;
 pub mod judge_rubric;
 mod provider_strategy;
 mod responses;

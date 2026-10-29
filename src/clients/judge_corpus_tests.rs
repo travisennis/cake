@@ -5,7 +5,9 @@
 //! it explicitly with `just judge-corpus`.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::path::PathBuf;
 use std::str::FromStr as _;
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures::StreamExt;
@@ -16,6 +18,7 @@ use crate::clients::judge::{
     JudgeClient, JudgeDecision, JudgeOutcome, JudgeRequest, evaluate_command_observed,
     judge_is_enabled, read_user_rubric, repo_state_digest, resolve_judge_client_config,
 };
+use crate::clients::judge_record::JudgeRecord;
 use crate::clients::judge_rubric::VerdictCode;
 use crate::clients::typesafe::TypeSafeClient;
 use crate::config::SettingsLoader;
@@ -31,6 +34,11 @@ const PROFILE_ENV: &str = "CAKE_JUDGE_CORPUS_PROFILE";
 const REPETITIONS_ENV: &str = "CAKE_JUDGE_CORPUS_REPETITIONS";
 const DEFAULT_REPETITIONS: usize = 3;
 const CONCURRENCY_ENV: &str = "CAKE_JUDGE_CORPUS_CONCURRENCY";
+/// Opt-in path for the gate's offline record format. Recording runs one
+/// serial trial per case and disables the `TypeSafe` cascade so every case
+/// reaches the judge; the resulting file is replayed by
+/// `cake-safety-judge corpus -provider record -record <file>`.
+const RECORD_ENV: &str = "CAKE_JUDGE_CORPUS_RECORD";
 /// Peak in-flight judge requests. Kept small so a provider rate limit is
 /// unlikely to turn into retry storms across a full corpus run.
 const DEFAULT_CONCURRENCY: usize = 4;
@@ -466,10 +474,11 @@ async fn judge_corpus_live_meets_tolerance() {
     let profile = std::env::var(PROFILE_ENV).ok();
     let loaded = SettingsLoader::load_with_profile(Some(&cwd), profile.as_deref())
         .expect("judge corpus settings should load");
-    let (client, model) = live_judge_client(&loaded).unwrap_or_else(|error| panic!("{error}"));
+    let record = record_sink();
+    let (client, model) = live_judge_client_with_record(&loaded, record.clone())
+        .unwrap_or_else(|error| panic!("{error}"));
     let bypass_env = std::env::var(JUDGE_BYPASS_ENV).ok();
-    let repetitions = repetitions().unwrap_or_else(|error| panic!("{error}"));
-    let concurrency = concurrency().unwrap_or_else(|error| panic!("{error}"));
+    let (repetitions, concurrency) = trial_settings(record.as_ref());
     let digest = repo_state_digest(&cwd);
     let mut report = LiveReport::default();
     let total = entries.len() * repetitions;
@@ -524,13 +533,79 @@ async fn judge_corpus_live_meets_tolerance() {
 
     let rendered = report.render(entries.len(), repetitions, &model);
     eprintln!("{rendered}");
+    if let Some(record) = &record {
+        record
+            .flush()
+            .unwrap_or_else(|error| panic!("failed to flush judge corpus record: {error}"));
+        eprintln!(
+            "judge corpus record: wrote {} provider outcome(s) to {}; skipping the label-tolerance \
+             gate because this run captures evidence, not a pass/fail judgment",
+            record.count(),
+            record.path().display()
+        );
+        // One entry per trial is the minimum; retries add more. A shortfall
+        // means a trial never reached the provider, so the evidence is
+        // incomplete even though recording itself succeeded.
+        assert!(
+            record.count() >= total,
+            "record mode captured fewer provider outcomes than trials: {} < {total}",
+            record.count()
+        );
+        return;
+    }
     assert!(
         report.passes(),
         "judge corpus gate failed; see the complete report above"
     );
 }
 
+fn record_sink() -> Option<Arc<JudgeRecord>> {
+    let path = record_path()?;
+    let record = JudgeRecord::create(&path).unwrap_or_else(|error| {
+        panic!(
+            "failed to create judge corpus record {}: {error}",
+            path.display()
+        )
+    });
+    eprintln!(
+        "judge corpus record: writing provider outcomes to {}; one serial trial per case, \
+         TypeSafe cascade disabled",
+        record.path().display()
+    );
+    Some(Arc::new(record))
+}
+
+fn trial_settings(record: Option<&Arc<JudgeRecord>>) -> (usize, usize) {
+    if record.is_some() {
+        assert!(
+            std::env::var(REPETITIONS_ENV).is_err() && std::env::var(CONCURRENCY_ENV).is_err(),
+            "record mode runs one trial per case serially; unset {REPETITIONS_ENV} and \
+             {CONCURRENCY_ENV}"
+        );
+        (1, 1)
+    } else {
+        (
+            repetitions().unwrap_or_else(|error| panic!("{error}")),
+            concurrency().unwrap_or_else(|error| panic!("{error}")),
+        )
+    }
+}
+
+fn record_path() -> Option<PathBuf> {
+    std::env::var(RECORD_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from)
+}
+
 fn live_judge_client(loaded: &LoadedSettings) -> Result<(JudgeClient, String), String> {
+    live_judge_client_with_record(loaded, None)
+}
+
+fn live_judge_client_with_record(
+    loaded: &LoadedSettings,
+    record: Option<Arc<JudgeRecord>>,
+) -> Result<(JudgeClient, String), String> {
     let bypass_env = std::env::var(JUDGE_BYPASS_ENV).ok();
     if !judge_is_enabled(&loaded.judge, bypass_env.as_deref()) {
         return Err(
@@ -566,13 +641,22 @@ fn live_judge_client(loaded: &LoadedSettings) -> Result<(JudgeClient, String), S
     };
     let resolved_model = config.model_config.model.clone();
     let user_rubric = read_user_rubric(&loaded.judge)?;
+    // Recording captures the generative judge, not a cascade fast approval.
+    // Without a TypeSafe client the cascade's observation fails closed to the
+    // judge, so every case produces a provider outcome.
+    let typesafe = if record.is_none() {
+        TypeSafeClient::from_settings(&loaded.judge.typesafe)
+    } else {
+        None
+    };
     let client = JudgeClient::new(
         config,
         Duration::from_secs(loaded.judge.timeout_secs),
         Duration::from_secs(loaded.judge.retry_budget_secs),
     )
     .with_user_rubric(user_rubric)
-    .with_typesafe(TypeSafeClient::from_settings(&loaded.judge.typesafe));
+    .with_typesafe(typesafe)
+    .with_record(record);
     Ok((client, resolved_model))
 }
 
@@ -752,6 +836,46 @@ fn judge_corpus_bypass_off_refuses_live_run() {
         error.contains("judge enabled"),
         "expected an enabled-judge failure, got: {error}"
     );
+}
+
+#[test]
+fn judge_corpus_record_mode_forces_one_serial_trial() {
+    let directory = tempfile::TempDir::new().unwrap();
+    let record = Arc::new(JudgeRecord::create(&directory.path().join("record.jsonl")).unwrap());
+    temp_env::with_vars(
+        [
+            (REPETITIONS_ENV, None::<&str>),
+            (CONCURRENCY_ENV, None::<&str>),
+        ],
+        || assert_eq!(trial_settings(Some(&record)), (1, 1)),
+    );
+
+    temp_env::with_var(REPETITIONS_ENV, Some("3"), || {
+        let failure = std::panic::catch_unwind(|| trial_settings(Some(&record)));
+        assert!(
+            failure.is_err(),
+            "record mode must reject explicit repetitions"
+        );
+    });
+    temp_env::with_var(CONCURRENCY_ENV, Some("2"), || {
+        let failure = std::panic::catch_unwind(|| trial_settings(Some(&record)));
+        assert!(
+            failure.is_err(),
+            "record mode must reject explicit concurrency"
+        );
+    });
+}
+
+#[test]
+fn judge_corpus_record_sink_creates_the_requested_file() {
+    let directory = tempfile::TempDir::new().unwrap();
+    let path = directory.path().join("nested").join("record.jsonl");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let record = temp_env::with_var(RECORD_ENV, Some(path.to_str().unwrap()), record_sink)
+        .expect("a set record path must create a sink");
+    assert_eq!(record.path(), path);
+    assert_eq!(record.count(), 0);
+    assert!(path.exists());
 }
 
 #[test]
