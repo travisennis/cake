@@ -2701,6 +2701,50 @@ env = ["BAD-NAME"]
 }
 
 #[test]
+fn no_gate_skips_invalid_explicit_gate_configuration() {
+    let project = create_project_settings(
+        r#"
+[tools.bash]
+gates = ["safety"]
+
+[gates.safety]
+command = "cake-safety-judge"
+mode = "sometimes"
+"#,
+    );
+    let home = create_home_dir();
+
+    with_var("HOME", Some(home.path()), || {
+        with_var("CAKE_GATE", None::<&str>, || {
+            with_var("CAKE_JUDGE", None::<&str>, || {
+                let error = SettingsLoader::load_with_profile_and_gate_bypass(
+                    Some(project.path()),
+                    None,
+                    false,
+                )
+                .expect_err("without bypass, invalid gate config is a settings error");
+                assert!(matches!(
+                    error,
+                    SettingsError::InvalidGateConfiguration { .. }
+                ));
+
+                let loaded = SettingsLoader::load_with_profile_and_gate_bypass(
+                    Some(project.path()),
+                    None,
+                    true,
+                )
+                .expect("--no-gate skips gate configuration validation");
+                assert_eq!(
+                    loaded.gates.selection.as_deref(),
+                    Some(["safety".to_string()].as_slice())
+                );
+                assert!(loaded.gates.bypassed(&loaded.judge, true));
+            });
+        });
+    });
+}
+
+#[test]
 fn explicit_selection_ignores_disabled_and_misconfigured_legacy_judge() {
     let loaded = load_gate_settings(
         r#"

@@ -182,6 +182,35 @@ fn debug_models_prints_helpful_message_when_no_models_are_configured() {
 }
 
 #[test]
+fn debug_models_no_gate_accepts_invalid_gate_configuration() {
+    let env = cake_env();
+    env.write_project_settings(
+        r#"
+[tools.bash]
+gates = ["missing"]
+"#,
+    );
+
+    let output = env.command().args(["debug", "models"]).output().unwrap();
+    assert_eq!(output.status.code(), Some(3));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("selected gate 'missing' has no [gates.missing] table")
+    );
+
+    let output = env
+        .command()
+        .args(["--no-gate", "debug", "models"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{:?}", output.stderr);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "No models configured.\n"
+    );
+}
+
+#[test]
 fn debug_models_reports_settings_syntax_errors() {
     let env = cake_env();
     env.write_project_settings("not valid toml = [");
