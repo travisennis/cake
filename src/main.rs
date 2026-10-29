@@ -620,11 +620,11 @@ impl CodingAssistant {
     }
 
     fn load_settings(&self, current_dir: &Path) -> anyhow::Result<LoadedSettings> {
-        let loaded = if let Some(profile) = self.profile.as_deref() {
-            SettingsLoader::load_with_profile(Some(current_dir), Some(profile))?
-        } else {
-            SettingsLoader::load(Some(current_dir))?
-        };
+        let loaded = SettingsLoader::load_with_profile_and_gate_bypass(
+            Some(current_dir),
+            self.profile.as_deref(),
+            self.no_gate,
+        )?;
         Ok(loaded)
     }
 

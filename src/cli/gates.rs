@@ -63,15 +63,19 @@ fn load_settings(
 ) -> anyhow::Result<(LoadedSettings, std::path::PathBuf)> {
     let cwd = std::env::current_dir()
         .map_err(|error| anyhow::anyhow!("Failed to get current directory: {error}"))?;
-    let loaded =
-        SettingsLoader::load_with_profile(Some(&cwd), options.profile).map_err(|error| {
-            report_failure(
-                json_output,
-                command,
-                CHECK_SETTINGS_LOAD_FAILED,
-                error.into(),
-            )
-        })?;
+    let loaded = SettingsLoader::load_with_profile_and_gate_bypass(
+        Some(&cwd),
+        options.profile,
+        options.no_gate,
+    )
+    .map_err(|error| {
+        report_failure(
+            json_output,
+            command,
+            CHECK_SETTINGS_LOAD_FAILED,
+            error.into(),
+        )
+    })?;
     Ok((loaded, cwd))
 }
 

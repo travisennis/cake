@@ -306,9 +306,10 @@ pub struct ProfileSettings {
 ///
 /// # Examples
 ///
-/// Settings are loaded via [`SettingsLoader::load`] or
-/// [`SettingsLoader::load_with_profile`] which merge global and project-level
-/// settings files automatically.
+/// Settings are loaded via [`SettingsLoader::load`],
+/// [`SettingsLoader::load_with_profile`], or
+/// [`SettingsLoader::load_with_profile_and_gate_bypass`], which merge global
+/// and project-level settings files automatically.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Settings {
     #[serde(default)]
@@ -1044,7 +1045,7 @@ impl SettingsLoader {
     /// if duplicate model names are found within the same file,
     /// or if `default_model` references a model that doesn't exist.
     pub fn load(project_dir: Option<&Path>) -> Result<LoadedSettings, SettingsError> {
-        Self::load_with_profile(project_dir, None)
+        Self::load_with_profile_inner(project_dir, None, false)
     }
 
     /// Loads and merges settings, applying the selected profile if provided.
@@ -1052,14 +1053,42 @@ impl SettingsLoader {
         project_dir: Option<&Path>,
         profile: Option<&str>,
     ) -> Result<LoadedSettings, SettingsError> {
+        Self::load_with_profile_inner(project_dir, profile, false)
+    }
+
+    /// Loads and merges settings, applying the selected profile if provided.
+    ///
+    /// An explicit `--no-gate` bypass skips gate configuration validation so
+    /// the invocation can start from an otherwise broken selection. The
+    /// environment bypasses are handled inside validation.
+    pub fn load_with_profile_and_gate_bypass(
+        project_dir: Option<&Path>,
+        profile: Option<&str>,
+        no_gate: bool,
+    ) -> Result<LoadedSettings, SettingsError> {
+        if !no_gate {
+            return if profile.is_some() {
+                Self::load_with_profile(project_dir, profile)
+            } else {
+                Self::load(project_dir)
+            };
+        }
+        Self::load_with_profile_inner(project_dir, profile, true)
+    }
+
+    fn load_with_profile_inner(
+        project_dir: Option<&Path>,
+        profile: Option<&str>,
+        no_gate: bool,
+    ) -> Result<LoadedSettings, SettingsError> {
         let mut acc = Self::load_sources(project_dir)?;
         Self::apply_profile(profile, &mut acc)?;
         Self::validate_default_model(&acc)?;
 
         // Validate that the judge model (if set) refers to an existing model,
         // mirroring default_model (see [`Self::validate_judge_model`]).
-        Self::validate_judge_model(&acc)?;
-        Self::validate_gate_configuration(&acc)?;
+        Self::validate_judge_model(&acc, no_gate)?;
+        Self::validate_gate_configuration(&acc, no_gate)?;
 
         Ok(acc.into_loaded())
     }
@@ -1153,10 +1182,12 @@ impl SettingsLoader {
     /// Validate that the judge model (if set) refers to an existing model,
     /// mirroring `default_model`: a `[[models]]` name, resolved to that entry's
     /// full configuration. A bypassed judge's unused model config is inert, so
-    /// validation is skipped: `CAKE_JUDGE=off` or `enabled = false` stays the
-    /// recovery path even for a misconfigured judge.
-    fn validate_judge_model(acc: &SettingsAccumulator) -> Result<(), SettingsError> {
+    /// validation is skipped: `--no-gate`, `CAKE_JUDGE=off`, or
+    /// `enabled = false` stays the recovery path even for a misconfigured
+    /// judge.
+    fn validate_judge_model(acc: &SettingsAccumulator, no_gate: bool) -> Result<(), SettingsError> {
         if acc.gates.selection.is_none()
+            && !no_gate
             && !Self::judge_is_bypassed(acc)
             && let Some(ref name) = acc.judge_model
             && !acc.models.contains_key(name.as_str())
@@ -1166,12 +1197,16 @@ impl SettingsLoader {
         Ok(())
     }
 
-    /// Validate the explicit `[tools.bash].gates` selection. An environment
-    /// bypass skips structural validation so the escape hatch can load a
-    /// broken configuration; a legacy `enabled = false` with no explicit
-    /// selection is already represented as a bypass by the resolver.
-    fn validate_gate_configuration(acc: &SettingsAccumulator) -> Result<(), SettingsError> {
-        if crate::config::gates::environment_bypass() {
+    /// Validate the explicit `[tools.bash].gates` selection. An explicit
+    /// `--no-gate` or environment bypass skips structural validation so the
+    /// escape hatch can load a broken configuration; a legacy `enabled =
+    /// false` with no explicit selection is already represented as a bypass by
+    /// the resolver.
+    fn validate_gate_configuration(
+        acc: &SettingsAccumulator,
+        no_gate: bool,
+    ) -> Result<(), SettingsError> {
+        if no_gate || crate::config::gates::environment_bypass() {
             return Ok(());
         }
         acc.gates

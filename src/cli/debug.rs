@@ -68,8 +68,9 @@ impl CmdRunner for DebugCommand {
                 *no_skills,
                 skills.as_deref(),
                 options.profile,
+                options.no_gate,
             ),
-            DebugSubcommand::Models { json } => run_models(*json),
+            DebugSubcommand::Models { json } => run_models(*json, options.no_gate),
         }
     }
 }
@@ -79,17 +80,19 @@ impl CmdRunner for DebugCommand {
 /// In machine mode the document carries the configured models and the settings
 /// findings, so stderr stays quiet; without `--json` the warnings keep their
 /// existing stderr behavior.
-fn run_models(json: bool) -> anyhow::Result<()> {
+fn run_models(json: bool, no_gate: bool) -> anyhow::Result<()> {
     let current_dir = std::env::current_dir()
         .map_err(|e| anyhow::anyhow!("Failed to get current directory: {e}"))?;
-    let loaded = SettingsLoader::load(Some(&current_dir)).map_err(|error| {
-        report_failure(
-            json,
-            "debug models",
-            CHECK_SETTINGS_LOAD_FAILED,
-            error.into(),
-        )
-    })?;
+    let loaded =
+        SettingsLoader::load_with_profile_and_gate_bypass(Some(&current_dir), None, no_gate)
+            .map_err(|error| {
+                report_failure(
+                    json,
+                    "debug models",
+                    CHECK_SETTINGS_LOAD_FAILED,
+                    error.into(),
+                )
+            })?;
     print!("{}", render_models(&loaded, json)?);
     Ok(())
 }
@@ -112,10 +115,12 @@ fn run_skills(
     no_skills: bool,
     skills: Option<&str>,
     profile: Option<&str>,
+    no_gate: bool,
 ) -> anyhow::Result<()> {
     let current_dir = std::env::current_dir()
         .map_err(|e| anyhow::anyhow!("Failed to get current directory: {e}"))?;
-    let loaded = SettingsLoader::load_with_profile(Some(&current_dir), profile)?;
+    let loaded =
+        SettingsLoader::load_with_profile_and_gate_bypass(Some(&current_dir), profile, no_gate)?;
     loaded.print_warnings();
     let roots = loaded
         .skills
