@@ -1,4 +1,5 @@
 use super::*;
+use crate::clients::backend::{ResponseDecodeError, ResponseParseError};
 use crate::types::Role;
 
 use crate::config::model::ApiType;
@@ -1126,6 +1127,34 @@ fn sink_safe_error_text_strips_stall_body_preview() {
     assert!(text.contains("provider response stalled"), "{text}");
     assert!(!text.contains("body preview"), "{text}");
     assert!(!text.contains("assistant text"), "{text}");
+}
+
+#[test]
+fn sink_safe_error_text_strips_provider_body_previews() {
+    let body = br#"{"choices":"assistant text"#;
+    let source = serde_json::from_slice::<serde_json::Value>(body).unwrap_err();
+    let decode = anyhow::Error::new(ResponseDecodeError::new(
+        "Chat Completions",
+        body,
+        None,
+        source,
+    ));
+    assert!(format!("{decode:#}").contains("assistant text"));
+    let safe = sink_safe_error_text(&decode);
+    assert!(
+        safe.contains("failed to decode Chat Completions response body"),
+        "{safe}"
+    );
+    assert!(!safe.contains("assistant text"), "{safe}");
+
+    let parse = anyhow::Error::new(ResponseParseError::new_with_telemetry_detail(
+        anyhow::anyhow!("malformed streamed item; first 12 bytes: \"assistant text\""),
+        None,
+        "malformed streamed item: missing field".to_string(),
+    ));
+    assert!(format!("{parse:#}").contains("assistant text"));
+    let safe = sink_safe_error_text(&parse);
+    assert_eq!(safe, "malformed streamed item: missing field");
 }
 
 #[test]

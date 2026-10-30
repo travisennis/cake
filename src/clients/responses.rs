@@ -350,6 +350,15 @@ struct MalformedStreamOutputItemError {
     preview: String,
 }
 
+impl MalformedStreamOutputItemError {
+    fn telemetry_detail(&self) -> String {
+        format!(
+            "malformed Responses API streamed output item at output[{}]",
+            self.output_index
+        )
+    }
+}
+
 /// Mutable state accumulated while decoding a streaming Responses API body.
 #[derive(Default)]
 struct StreamAccumulator {
@@ -668,15 +677,18 @@ fn malformed_stream_output_item_error(
     usage: Option<ReportedUsage>,
 ) -> anyhow::Error {
     let (_, response_id) = bounded_diagnostic_text(response_id);
-    anyhow::Error::new(ResponseParseError::new(
-        anyhow::Error::new(MalformedStreamOutputItemError {
-            response_id,
-            output_index: failure.output_index,
-            reason: failure.reason,
-            preview_len: failure.preview_len,
-            preview: failure.preview,
-        }),
+    let error = MalformedStreamOutputItemError {
+        response_id,
+        output_index: failure.output_index,
+        reason: failure.reason,
+        preview_len: failure.preview_len,
+        preview: failure.preview,
+    };
+    let telemetry_detail = error.telemetry_detail();
+    anyhow::Error::new(ResponseParseError::new_with_telemetry_detail(
+        anyhow::Error::new(error),
         usage,
+        telemetry_detail,
     ))
 }
 

@@ -13,7 +13,7 @@ mod agent;
 mod agent_observer;
 mod agent_runner;
 mod agent_state;
-mod backend;
+pub mod backend;
 mod chat_completions;
 mod chat_types;
 mod provider_strategy;
@@ -36,3 +36,24 @@ pub use tools::{SandboxPolicy, resolve_linked_worktree_dirs, resolve_sandbox_pol
 /// no library target, so this is internal. Which tools repair is declared by
 /// each registry entry and queried per call (#277).
 pub use tools::repair_json_args;
+
+/// Return a provider-error detail that is safe for telemetry and other
+/// out-of-band sinks.
+///
+/// Typed provider errors keep a bounded response preview for human diagnostics.
+/// These sinks must not carry provider response bytes, so this walks the error
+/// chain and returns the preview-free detail for each known type.
+pub fn telemetry_safe_provider_error_detail(error: &anyhow::Error) -> Option<String> {
+    for cause in error.chain() {
+        if let Some(stall) = cause.downcast_ref::<response_stall::ResponseStall>() {
+            return Some(stall.telemetry_detail());
+        }
+        if let Some(decode) = cause.downcast_ref::<backend::ResponseDecodeError>() {
+            return Some(decode.telemetry_detail());
+        }
+        if let Some(parse) = cause.downcast_ref::<backend::ResponseParseError>() {
+            return Some(parse.telemetry_detail().to_string());
+        }
+    }
+    None
+}

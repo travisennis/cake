@@ -868,9 +868,8 @@ fn reported_usage_from_result(result: &Result<TurnResult, anyhow::Error>) -> Opt
 }
 
 fn parse_error_telemetry_detail(error: &anyhow::Error) -> String {
-    error
-        .downcast_ref::<ResponseStall>()
-        .map_or_else(|| format!("{error:#}"), ResponseStall::telemetry_detail)
+    crate::clients::telemetry_safe_provider_error_detail(error)
+        .unwrap_or_else(|| format!("{error:#}"))
 }
 
 /// Classify how an accepted 2xx provider attempt ended, for telemetry.

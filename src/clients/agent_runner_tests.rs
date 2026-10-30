@@ -135,6 +135,45 @@ fn incomplete_body_suppresses_the_codex_auth_remedy() {
 }
 
 #[test]
+fn parse_error_telemetry_detail_drops_decode_preview() {
+    let body = br#"{"choices":"assistant text"#;
+    let source = serde_json::from_slice::<serde_json::Value>(body).unwrap_err();
+    let error = anyhow::Error::new(ResponseDecodeError::new(
+        "Chat Completions",
+        body,
+        None,
+        source,
+    ));
+
+    let human = format!("{error:#}");
+    assert!(human.contains("assistant text"), "{human}");
+    assert!(human.contains("first"), "{human}");
+
+    let telemetry = parse_error_telemetry_detail(&error);
+    assert!(
+        telemetry.contains("failed to decode Chat Completions response body"),
+        "{telemetry}"
+    );
+    assert!(!telemetry.contains("assistant text"), "{telemetry}");
+    assert!(!telemetry.contains("first"), "{telemetry}");
+}
+
+#[test]
+fn parse_error_telemetry_detail_drops_parse_preview() {
+    let error = anyhow::Error::new(ResponseParseError::new_with_telemetry_detail(
+        anyhow::anyhow!("malformed streamed item; first 12 bytes: \"assistant text\""),
+        None,
+        "malformed streamed item: missing field".to_string(),
+    ));
+
+    let human = format!("{error:#}");
+    assert!(human.contains("assistant text"), "{human}");
+
+    let telemetry = parse_error_telemetry_detail(&error);
+    assert_eq!(telemetry, "malformed streamed item: missing field");
+}
+
+#[test]
 fn remedy_is_absent_for_other_backends_and_statuses() {
     let openai = "https://api.openai.com/v1";
     assert!(codex_auth_remedy(openai, &failure(401, TOKEN_EXPIRED_BODY), None).is_none());
