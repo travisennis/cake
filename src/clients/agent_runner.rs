@@ -955,7 +955,7 @@ async fn wait_for_retry(status: &RetryStatus, turn_index: u32) -> RetryWaitTelem
 fn http_failure_telemetry_text(status: u16, body: &str, stall: Option<&ResponseStall>) -> String {
     match stall {
         Some(stall) if body.is_empty() => format!("{status} {}", stall.telemetry_detail()),
-        Some(stall) => format!("{status} {body}\n{}", stall.telemetry_detail()),
+        Some(stall) => format!("{status} {}\n{body}", stall.telemetry_detail()),
         None => format!("{status} {body}"),
     }
 }
@@ -963,10 +963,18 @@ fn http_failure_telemetry_text(status: u16, body: &str, stall: Option<&ResponseS
 fn with_stall_detail(failure: HttpFailure, stall: Option<&ResponseStall>) -> HttpFailure {
     match stall {
         Some(stall) => {
-            let body = if failure.body.is_empty() {
+            // Keep the stall first so a large provider body cannot push the
+            // cause out of a bounded sink, and avoid repeating the body's
+            // preview when the body itself is already retained.
+            let detail = if failure.body.is_empty() {
                 stall.to_string()
             } else {
-                format!("{}\n{stall}", failure.body)
+                stall.telemetry_detail()
+            };
+            let body = if failure.body.is_empty() {
+                detail
+            } else {
+                format!("{detail}\n\n{}", failure.body)
             };
             HttpFailure { body, ..failure }
         },

@@ -12,6 +12,13 @@ Provider requests were bounded by a five-minute reqwest total timeout that ran f
 
 The timeout was the last wall-clock bound on a provider attempt. Removing it entirely would let a silent connection hold a turn open indefinitely, while keeping any fixed total limit preserves the class of false failure this change exists to fix. The bound has to follow progress.
 
+## Decision Drivers
+
+- Progress, not elapsed time, decides whether a provider attempt is healthy.
+- A silent connection must still fail so a turn cannot hang forever.
+- Reuse the existing retry cap, backoff, no-reuse policy, and exit classification rather than adding a second budget.
+- Keep the bytes already received usable for parsing and diagnostics.
+
 ## Considered Options
 
 - Keep the total timeout and raise it. Rejected: a larger fixed number still kills a progressing response, only later.

@@ -488,17 +488,25 @@ async fn stalled_non_2xx_body_keeps_the_stall_diagnostic() {
 async fn stalled_non_2xx_body_keeps_partial_provider_diagnostics() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
-    let partial = br#"{"error":"slow auth"}"#.to_vec();
+    let mut partial = b"{\"error\":\"slow auth\",\"padding\":\"".to_vec();
+    partial.extend(vec![b'x'; 2_048]);
+    partial.extend(b"\"}");
     let server = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
         read_request(&mut stream).await;
-        write_error_head(&mut stream, "401 Unauthorized", 128).await;
+        write_error_head(&mut stream, "401 Unauthorized", 4_096).await;
         stream.write_all(&partial).await.unwrap();
         stream.flush().await.unwrap();
         tokio::time::sleep(Duration::from_secs(30)).await;
     });
 
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let telemetry_path = temp_dir.path().join("telemetry.ndjson");
     let mut agent = test_agent(ApiType::ChatCompletions, &format!("http://{address}"))
+        .with_session_telemetry(
+            crate::session_telemetry::SessionTelemetryWriter::open(&telemetry_path).unwrap(),
+            uuid::uuid!("550e8400-e29b-41d4-a716-446655440003"),
+        )
         .with_stall_window(Duration::from_millis(150));
     agent.runner.with_retry_policy(no_retry_policy());
     push_user_message(&mut agent);
@@ -507,8 +515,25 @@ async fn stalled_non_2xx_body_keeps_partial_provider_diagnostics() {
     let text = format!("{error:#}");
     assert!(text.contains("slow auth"), "{text}");
     assert!(text.contains("provider response stalled"), "{text}");
-    assert!(text.contains("body preview"), "{text}");
+    assert!(
+        text.find("provider response stalled").unwrap() < text.find("slow auth").unwrap(),
+        "the stall cause should lead the retained body: {text}"
+    );
     assert_eq!(crate::exit_code::classify_to_u8(&error), 2);
+
+    let attempt = telemetry_records(&telemetry_path)
+        .into_iter()
+        .find(|record| record["type"] == "api_attempt")
+        .expect("a completed attempt record is expected");
+    let telemetry_error = attempt["error"].as_str().unwrap();
+    assert!(
+        telemetry_error.starts_with("401 provider response stalled"),
+        "the bounded telemetry error must keep the stall cause first: {telemetry_error}"
+    );
+    assert!(
+        !telemetry_error.contains("body preview"),
+        "{telemetry_error}"
+    );
     server.abort();
 }
 
