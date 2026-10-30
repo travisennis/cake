@@ -135,28 +135,89 @@ pub(super) struct StalledBody {
     pub(super) stall: ResponseStall,
 }
 
+/// A body read that ended before the complete body arrived.
+pub(super) struct FailedBody {
+    pub(super) bytes: Vec<u8>,
+    pub(super) error: anyhow::Error,
+}
+
+/// The terminal state of reading a response body.
+///
+/// The bytes received before a stall or transport failure are retained so a
+/// non-2xx handler can keep the provider's partial diagnostic text.
 pub(super) enum BodyReadOutcome {
     Complete(Vec<u8>),
     Stalled(StalledBody),
+    Failed(FailedBody),
+}
+
+/// Why a response body did not complete.
+///
+/// This stays typed on [`crate::exit_code::ApiError`] so status-only handling
+/// can distinguish a provider verdict from a body that never arrived.
+#[derive(Debug)]
+pub enum BodyReadFailure {
+    Stalled(ResponseStall),
+    Failed(anyhow::Error),
+}
+
+impl BodyReadFailure {
+    pub(crate) const fn stalled(stall: ResponseStall) -> Self {
+        Self::Stalled(stall)
+    }
+
+    pub(crate) const fn failed(error: anyhow::Error) -> Self {
+        Self::Failed(error)
+    }
+
+    pub(crate) const fn is_stalled(&self) -> bool {
+        matches!(self, Self::Stalled(_))
+    }
+
+    pub(crate) const fn error(&self) -> Option<&anyhow::Error> {
+        match self {
+            Self::Stalled(_) => None,
+            Self::Failed(error) => Some(error),
+        }
+    }
+
+    /// Detail without provider body bytes, safe for telemetry.
+    pub(crate) fn telemetry_detail(&self) -> String {
+        match self {
+            Self::Stalled(stall) => stall.telemetry_detail(),
+            Self::Failed(error) => format!("{error:#}"),
+        }
+    }
+
+    /// Human-facing detail, including a stalled body's bounded preview.
+    pub(crate) fn terminal_detail(&self) -> String {
+        match self {
+            Self::Stalled(stall) => stall.to_string(),
+            Self::Failed(error) => format!("{error:#}"),
+        }
+    }
 }
 
 /// Read a response body, resetting the stall deadline on every received chunk.
 ///
-/// Transport failures are returned as they arrive so the existing retry
-/// classifier keeps seeing the same `reqwest::Error` shapes. A stall is
-/// returned as data, letting the caller try the bytes already received with
-/// the normal parser before failing.
+/// Transport failures and stalls are returned as data with the bytes received
+/// so far, letting callers preserve a non-2xx body's partial diagnostic text.
 pub(super) async fn read_body(
     response: &mut reqwest::Response,
     model: &str,
     window: Duration,
-) -> anyhow::Result<BodyReadOutcome> {
+) -> BodyReadOutcome {
     let mut bytes = Vec::new();
     loop {
         match tokio::time::timeout(window, response.chunk()).await {
             Ok(Ok(Some(chunk))) => bytes.extend_from_slice(&chunk),
-            Ok(Ok(None)) => return Ok(BodyReadOutcome::Complete(bytes)),
-            Ok(Err(error)) => return Err(error.into()),
+            Ok(Ok(None)) => return BodyReadOutcome::Complete(bytes),
+            Ok(Err(error)) => {
+                return BodyReadOutcome::Failed(FailedBody {
+                    bytes,
+                    error: error.into(),
+                });
+            },
             Err(_elapsed) => {
                 let phase = if bytes.is_empty() {
                     StallPhase::FirstByte
@@ -164,10 +225,10 @@ pub(super) async fn read_body(
                     StallPhase::MidBody
                 };
                 let bytes_received = bytes.len();
-                return Ok(BodyReadOutcome::Stalled(StalledBody {
+                return BodyReadOutcome::Stalled(StalledBody {
                     bytes,
                     stall: ResponseStall::new(model, phase, window, bytes_received),
-                }));
+                });
             },
         }
     }

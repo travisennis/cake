@@ -13,6 +13,7 @@ use tokio::net::{TcpListener, TcpStream};
 use super::*;
 use crate::clients::retry::RetryPolicy;
 use crate::clients::tools::ToolRegistry;
+use crate::config::OutputSchema;
 use crate::config::model::{ApiType, ModelConfig};
 
 fn test_agent(api_type: ApiType, base_url: &str) -> Agent {
@@ -177,6 +178,52 @@ fn telemetry_records(path: &std::path::Path) -> Vec<serde_json::Value> {
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect()
+}
+
+fn test_schema() -> Arc<OutputSchema> {
+    let raw = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "summary": {"type": "string"}
+        },
+        "required": ["summary"],
+        "additionalProperties": false
+    });
+    let validator = jsonschema::draft202012::new(&raw).unwrap();
+    Arc::new(OutputSchema {
+        name: "final_output".to_string(),
+        raw,
+        validator,
+    })
+}
+
+fn api_error(error: &anyhow::Error) -> &crate::exit_code::ApiError {
+    error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<crate::exit_code::ApiError>())
+        .expect("the terminal error should be a typed ApiError")
+}
+
+/// Force an RST (linger 0) so the peer sees a reset rather than a clean close.
+fn force_rst(stream: TcpStream) {
+    if let Ok(std_stream) = stream.into_std() {
+        // SAFETY: `std_stream` is a live, owned socket descriptor; setting
+        // SO_LINGER=0 makes the closing `drop` emit an RST.
+        unsafe {
+            let fd = std::os::fd::AsRawFd::as_raw_fd(&std_stream);
+            let linger = libc::linger {
+                l_onoff: 1,
+                l_linger: 0,
+            };
+            libc::setsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_LINGER,
+                std::ptr::addr_of!(linger).cast::<libc::c_void>(),
+                libc::socklen_t::try_from(std::mem::size_of::<libc::linger>()).unwrap(),
+            );
+        }
+    }
 }
 
 #[tokio::test]
@@ -481,6 +528,160 @@ async fn stalled_non_2xx_body_keeps_the_stall_diagnostic() {
     assert!(text.contains("first byte"), "{text}");
     assert!(text.contains("0 bytes received"), "{text}");
     assert_eq!(crate::exit_code::classify_to_u8(&error), 2);
+    let api_error = api_error(&error);
+    assert_eq!(api_error.status, 401);
+    assert!(matches!(
+        api_error.body_read_failure,
+        Some(crate::clients::response_stall::BodyReadFailure::Stalled(_))
+    ));
+    server.abort();
+}
+
+#[tokio::test]
+async fn non_2xx_body_reset_retains_partial_provider_diagnostics() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let partial = b"{\"error\":\"partial reset\",\"padding\":\"".to_vec();
+    let accepts = Arc::new(AtomicUsize::new(0));
+    let server = tokio::spawn({
+        let accepts = Arc::clone(&accepts);
+        async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                accepts.fetch_add(1, Ordering::SeqCst);
+                let partial = partial.clone();
+                tokio::spawn(async move {
+                    read_request(&mut stream).await;
+                    let total = partial.len() + 256;
+                    let head = format!(
+                        "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\n\
+                         Content-Length: {total}\r\nConnection: keep-alive\r\n\r\n"
+                    );
+                    stream.write_all(head.as_bytes()).await.unwrap();
+                    stream.write_all(&partial).await.unwrap();
+                    stream.flush().await.unwrap();
+                    // Let the client consume the partial body before the reset.
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    force_rst(stream);
+                });
+            }
+        }
+    });
+
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let telemetry_path = temp_dir.path().join("telemetry.ndjson");
+    let mut agent = test_agent(ApiType::ChatCompletions, &format!("http://{address}"))
+        .with_session_telemetry(
+            crate::session_telemetry::SessionTelemetryWriter::open(&telemetry_path).unwrap(),
+            uuid::uuid!("550e8400-e29b-41d4-a716-446655440004"),
+        )
+        .with_stall_window(Duration::from_millis(500));
+    agent.runner.with_retry_policy(no_retry_policy());
+    push_user_message(&mut agent);
+
+    let error = agent.complete_turn(false).await.unwrap_err();
+    let text = format!("{error:#}");
+    assert!(text.contains("partial reset"), "{text}");
+    assert!(
+        [
+            "connection reset",
+            "broken pipe",
+            "unexpected eof",
+            "end of file"
+        ]
+        .iter()
+        .any(|cause| text.to_ascii_lowercase().contains(cause)),
+        "the terminal error should name the read failure: {text}"
+    );
+    assert_eq!(crate::exit_code::classify_to_u8(&error), 2);
+    let api_error = api_error(&error);
+    assert_eq!(api_error.status, 401);
+    assert!(matches!(
+        api_error.body_read_failure,
+        Some(crate::clients::response_stall::BodyReadFailure::Failed(_))
+    ));
+    assert_eq!(
+        accepts.load(Ordering::SeqCst),
+        1,
+        "a terminal 401 must not be retried after its body read fails"
+    );
+
+    let attempt = telemetry_records(&telemetry_path)
+        .into_iter()
+        .find(|record| record["type"] == "api_attempt")
+        .expect("a completed attempt record is expected");
+    let telemetry_error = attempt["error"].as_str().unwrap();
+    assert!(
+        telemetry_error.contains("partial reset"),
+        "{telemetry_error}"
+    );
+    assert!(
+        [
+            "connection reset",
+            "broken pipe",
+            "unexpected eof",
+            "end of file"
+        ]
+        .iter()
+        .any(|cause| telemetry_error.to_ascii_lowercase().contains(cause)),
+        "telemetry should retain the read cause: {telemetry_error}"
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn stalled_400_does_not_fall_back_from_a_native_constraint() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let accepts = Arc::new(AtomicUsize::new(0));
+    let server = tokio::spawn({
+        let accepts = Arc::clone(&accepts);
+        async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let attempt = accepts.fetch_add(1, Ordering::SeqCst);
+                tokio::spawn(async move {
+                    read_request(&mut stream).await;
+                    if attempt == 0 {
+                        let body = success_chat_body();
+                        write_json_head(&mut stream, body.len()).await;
+                        stream.write_all(&body).await.unwrap();
+                        stream.flush().await.unwrap();
+                    } else {
+                        write_error_head(&mut stream, "400 Bad Request", 128).await;
+                        tokio::time::sleep(Duration::from_secs(30)).await;
+                    }
+                });
+            }
+        }
+    });
+
+    let mut agent = test_agent(ApiType::ChatCompletions, &format!("http://{address}"))
+        .with_stall_window(Duration::from_millis(150))
+        .with_output_schema(test_schema());
+    agent.runner.with_retry_policy(no_retry_policy());
+
+    let error = agent.send("go".to_string()).await.unwrap_err();
+    let text = format!("{error:#}");
+    assert!(text.contains("provider response stalled"), "{text}");
+    assert!(text.contains("model 'test-model'"), "{text}");
+    assert!(text.contains("first byte"), "{text}");
+    assert!(text.contains("0 bytes received"), "{text}");
+    assert_eq!(
+        accepts.load(Ordering::SeqCst),
+        2,
+        "a stalled 400 must not spend an unconstrained retry"
+    );
+    let api_error = api_error(&error);
+    assert_eq!(api_error.status, 400);
+    assert!(matches!(
+        api_error.body_read_failure,
+        Some(crate::clients::response_stall::BodyReadFailure::Stalled(_))
+    ));
     server.abort();
 }
 

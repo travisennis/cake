@@ -1003,6 +1003,7 @@ fn fail_on_error_exit_codes_follow_the_documented_classes() {
                     status: 429,
                     body: "rate limit exceeded".to_string(),
                     input_overflow: None,
+                    body_read_failure: None,
                 }
                 .into()
             },
