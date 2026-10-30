@@ -1111,6 +1111,23 @@ fn sink_safe_error_text_strips_limit_exceeded_partial_result() {
 }
 
 #[test]
+fn sink_safe_error_text_strips_stall_body_preview() {
+    let stall = crate::clients::response_stall::ResponseStall::new(
+        "test-model",
+        crate::clients::response_stall::StallPhase::MidBody,
+        std::time::Duration::from_secs(10),
+        32,
+    )
+    .with_preview(br#"{"choices":"assistant text"}"#);
+    let error: anyhow::Error = stall.into();
+
+    let text = sink_safe_error_text(&error);
+    assert!(text.contains("provider response stalled"), "{text}");
+    assert!(!text.contains("body preview"), "{text}");
+    assert!(!text.contains("assistant text"), "{text}");
+}
+
+#[test]
 fn output_sink_no_session_suppresses_session_file() {
     temp_env::with_var("CAKE_TEST_VALID_KEY", Some("sk-test-123"), || {
         let agent = Agent::new(

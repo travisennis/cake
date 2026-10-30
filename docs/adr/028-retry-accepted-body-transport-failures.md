@@ -58,5 +58,6 @@ Unchanged behavior that this decision depends on:
 - Extends the request-phase transport retry from #292 to the accepted-body phase; the cap, backoff, and stale-connection no-reuse policy are unchanged.
 - Deliberately narrower than [ADR-022](./022-retry-undecodable-judge-responses.md), which retries undecodable judge bodies: the agent path retries only the transport nature of a failed body read.
 - Coordinates with #109, which owns whole-turn retry budgeting, and with #354/#439 for provider-attempt telemetry integrity. ADR-025 already records that unreported usage stays unmeasurable.
+- Partially superseded by [ADR 052](052-bound-provider-requests-by-silence.md): a post-header timeout remains terminal `timeout`, but the accepted body is no longer bounded by a total HTTP deadline; each received chunk resets a ten-minute no-data stall window. This decision's retry classification, no-reuse policy, and usage settlement otherwise stand.
 - Token-level streaming (#56) will need its own policy for failures after output has been emitted; this decision covers the current buffered body.
 - Current durable authorities remain `docs/configuration.md`, `docs/integrations.md`, `docs/security.md`, and `ARCHITECTURE.md`.

@@ -470,7 +470,7 @@ impl Agent {
         self
     }
 
-    /// Sets a short no-event stall window for provider tests.
+    /// Sets a short no-data stall window for provider tests.
     #[cfg(test)]
     pub(super) const fn with_stall_window(mut self, window: std::time::Duration) -> Self {
         self.runner.with_stall_window(window);

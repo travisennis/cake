@@ -218,6 +218,10 @@ pub(super) async fn parse_response(
             // with the stall error and a bounded preview of what arrived.
             match parse_body_bytes(&stalled.bytes, is_sse) {
                 Ok(turn) => Ok(turn),
+                // A terminal `response.failed` event already arrived before the
+                // stall. Keep its typed provider metadata and retry
+                // classification instead of replacing it with a generic stall.
+                Err(error) if error.downcast_ref::<ResponsesStreamFailed>().is_some() => Err(error),
                 Err(_) => Err(stalled.stall.with_preview(&stalled.bytes).into()),
             }
         },

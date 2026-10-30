@@ -1,4 +1,4 @@
-//! No-event stall deadline for provider responses.
+//! No-data stall deadline for provider responses.
 //!
 //! Providers can spend minutes on a single turn --- long reasoning, slow
 //! tool-argument generation, a slow proxy --- but a total wall-clock deadline
@@ -77,23 +77,32 @@ impl ResponseStall {
     pub(crate) fn retry_detail(&self) -> String {
         format!("provider stall ({})", self.phase.as_str())
     }
-}
 
-impl fmt::Display for ResponseStall {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
+    /// Full diagnostic without the body preview, safe for telemetry sinks
+    /// that must not carry provider response bytes.
+    pub(crate) fn telemetry_detail(&self) -> String {
+        self.describe(false)
+    }
+
+    fn describe(&self, include_preview: bool) -> String {
+        let head = format!(
             "provider response stalled: model '{}' received no data for {} during {} \
              ({} bytes received)",
             self.model,
             format_window(self.window),
             self.phase.as_str(),
             self.bytes_received
-        )?;
-        if let Some(preview) = &self.preview {
-            write!(f, "; body preview: {preview:?}")?;
+        );
+        match self.preview.as_ref().filter(|_| include_preview) {
+            Some(preview) => format!("{head}; body preview: {preview:?}"),
+            None => head,
         }
-        Ok(())
+    }
+}
+
+impl fmt::Display for ResponseStall {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.describe(true))
     }
 }
 

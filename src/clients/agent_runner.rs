@@ -434,7 +434,7 @@ impl AgentRunner {
         let error = parse_result
             .as_ref()
             .err()
-            .map(|error| format!("{error:#}"));
+            .map(parse_error_telemetry_detail);
         let attempt = in_flight.attempt;
         let request_ms = in_flight.request_ms();
         let status_code = in_flight.status_code;
@@ -617,7 +617,10 @@ impl AgentRunner {
                     ApiAttemptTerminalClass::Http
                 }
             });
-        let error = format!("{} {}", failure.status, failure.body);
+        let stall = body_error
+            .as_ref()
+            .and_then(|error| error.downcast_ref::<ResponseStall>());
+        let error = http_failure_telemetry_text(failure.status, &failure.body, stall);
         let attempt = in_flight.attempt;
         in_flight.finish(ApiAttemptTelemetry {
             turn_index,
@@ -687,6 +690,7 @@ impl AgentRunner {
                 AttemptResult::RetryNeeded
             },
             retry::RetryDecision::DoNotRetry => {
+                let failure = with_stall_detail(failure, stall);
                 AttemptResult::Terminal(api_error_from_failure(config, &failure).into())
             },
         }
@@ -858,6 +862,12 @@ fn reported_usage_from_result(result: &Result<TurnResult, anyhow::Error>) -> Opt
         })
 }
 
+fn parse_error_telemetry_detail(error: &anyhow::Error) -> String {
+    error
+        .downcast_ref::<ResponseStall>()
+        .map_or_else(|| format!("{error:#}"), ResponseStall::telemetry_detail)
+}
+
 /// Classify how an accepted 2xx provider attempt ended, for telemetry.
 ///
 /// The failure classes are ordered so the most specific cause wins: the HTTP
@@ -939,6 +949,28 @@ async fn wait_for_retry(status: &RetryStatus, turn_index: u32) -> RetryWaitTelem
         started_at,
         completed_at: Utc::now(),
         duration_ms: elapsed_ms(start),
+    }
+}
+
+fn http_failure_telemetry_text(status: u16, body: &str, stall: Option<&ResponseStall>) -> String {
+    match stall {
+        Some(stall) if body.is_empty() => format!("{status} {}", stall.telemetry_detail()),
+        Some(stall) => format!("{status} {body}\n{}", stall.telemetry_detail()),
+        None => format!("{status} {body}"),
+    }
+}
+
+fn with_stall_detail(failure: HttpFailure, stall: Option<&ResponseStall>) -> HttpFailure {
+    match stall {
+        Some(stall) => {
+            let body = if failure.body.is_empty() {
+                stall.to_string()
+            } else {
+                format!("{}\n{stall}", failure.body)
+            };
+            HttpFailure { body, ..failure }
+        },
+        None => failure,
     }
 }
 

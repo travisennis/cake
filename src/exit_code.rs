@@ -80,7 +80,7 @@ fn classify_typed_error(err: &anyhow::Error) -> Option<u8> {
         return Some(classify_api_error_status(api_err.status));
     }
 
-    // A no-event stall is a request timeout, so it shares the API-error class
+    // A no-data stall is a request timeout, so it shares the API-error class
     // with client-side reqwest timeouts and provider 408s.
     if err
         .downcast_ref::<crate::clients::response_stall::ResponseStall>()

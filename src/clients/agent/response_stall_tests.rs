@@ -1,4 +1,4 @@
-//! End-to-end fixture tests for the no-event stall deadline.
+//! End-to-end fixture tests for the no-data stall deadline.
 //!
 //! Each test uses a local TCP server, so no provider credentials or network
 //! access are involved. The stall window is shortened so the tests stay fast.
@@ -133,6 +133,15 @@ async fn write_json_head(stream: &mut TcpStream, content_length: usize) {
     stream.flush().await.unwrap();
 }
 
+async fn write_error_head(stream: &mut TcpStream, status: &str, content_length: usize) {
+    let head = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\n\
+         Content-Length: {content_length}\r\nConnection: keep-alive\r\n\r\n"
+    );
+    stream.write_all(head.as_bytes()).await.unwrap();
+    stream.flush().await.unwrap();
+}
+
 async fn write_sse_head(stream: &mut TcpStream) {
     stream
         .write_all(
@@ -160,6 +169,14 @@ fn one_retry_policy() -> RetryPolicy {
         max_backoff: Duration::ZERO,
         jitter_divisor: 1,
     }
+}
+
+fn telemetry_records(path: &std::path::Path) -> Vec<serde_json::Value> {
+    std::fs::read_to_string(path)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
 }
 
 #[tokio::test]
@@ -397,5 +414,133 @@ async fn sse_stall_without_a_terminal_event_reports_mid_body() {
     assert!(text.contains("mid-body"), "{text}");
     assert!(text.contains("body preview"), "{text}");
     assert!(text.contains("response.output_text.delta"), "{text}");
+    server.abort();
+}
+
+#[tokio::test]
+async fn mid_body_stall_keeps_provider_bytes_out_of_telemetry() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let body = success_chat_body();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        read_request(&mut stream).await;
+        write_json_head(&mut stream, body.len()).await;
+        stream.write_all(&body[..20]).await.unwrap();
+        stream.flush().await.unwrap();
+        tokio::time::sleep(Duration::from_secs(30)).await;
+    });
+
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let telemetry_path = temp_dir.path().join("telemetry.ndjson");
+    let mut agent = test_agent(ApiType::ChatCompletions, &format!("http://{address}"))
+        .with_session_telemetry(
+            crate::session_telemetry::SessionTelemetryWriter::open(&telemetry_path).unwrap(),
+            uuid::uuid!("550e8400-e29b-41d4-a716-446655440002"),
+        )
+        .with_stall_window(Duration::from_millis(150));
+    agent.runner.with_retry_policy(no_retry_policy());
+    push_user_message(&mut agent);
+
+    let error = agent.complete_turn(false).await.unwrap_err();
+    let text = format!("{error:#}");
+    assert!(text.contains("body preview"), "{text}");
+
+    let attempt = telemetry_records(&telemetry_path)
+        .into_iter()
+        .find(|record| record["type"] == "api_attempt")
+        .expect("a completed attempt record is expected");
+    let error = attempt["error"]
+        .as_str()
+        .expect("a failed attempt records its error");
+    assert!(error.contains("provider response stalled"), "{error}");
+    assert!(!error.contains("body preview"), "{error}");
+    assert!(!error.contains("chatcmpl-123"), "{error}");
+    server.abort();
+}
+
+#[tokio::test]
+async fn stalled_non_2xx_body_keeps_the_stall_diagnostic() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        read_request(&mut stream).await;
+        write_error_head(&mut stream, "401 Unauthorized", 64).await;
+        tokio::time::sleep(Duration::from_secs(30)).await;
+    });
+
+    let mut agent = test_agent(ApiType::ChatCompletions, &format!("http://{address}"))
+        .with_stall_window(Duration::from_millis(150));
+    agent.runner.with_retry_policy(no_retry_policy());
+    push_user_message(&mut agent);
+
+    let error = agent.complete_turn(false).await.unwrap_err();
+    let text = format!("{error:#}");
+    assert!(text.contains("provider response stalled"), "{text}");
+    assert!(text.contains("first byte"), "{text}");
+    assert!(text.contains("0 bytes received"), "{text}");
+    assert_eq!(crate::exit_code::classify_to_u8(&error), 2);
+    server.abort();
+}
+
+#[tokio::test]
+async fn stalled_non_2xx_body_keeps_partial_provider_diagnostics() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let partial = br#"{"error":"slow auth"}"#.to_vec();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        read_request(&mut stream).await;
+        write_error_head(&mut stream, "401 Unauthorized", 128).await;
+        stream.write_all(&partial).await.unwrap();
+        stream.flush().await.unwrap();
+        tokio::time::sleep(Duration::from_secs(30)).await;
+    });
+
+    let mut agent = test_agent(ApiType::ChatCompletions, &format!("http://{address}"))
+        .with_stall_window(Duration::from_millis(150));
+    agent.runner.with_retry_policy(no_retry_policy());
+    push_user_message(&mut agent);
+
+    let error = agent.complete_turn(false).await.unwrap_err();
+    let text = format!("{error:#}");
+    assert!(text.contains("slow auth"), "{text}");
+    assert!(text.contains("provider response stalled"), "{text}");
+    assert!(text.contains("body preview"), "{text}");
+    assert_eq!(crate::exit_code::classify_to_u8(&error), 2);
+    server.abort();
+}
+
+#[tokio::test]
+async fn stalled_stream_keeps_a_terminal_response_failed_event() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let body = concat!(
+        "data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp-failed\",",
+        "\"error\":{\"message\":\"server exploded\",\"type\":\"invalid_request_error\",",
+        "\"code\":\"invalid_request_error\"}}}\n\n",
+    );
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        read_request(&mut stream).await;
+        write_sse_head(&mut stream).await;
+        stream.write_all(body.as_bytes()).await.unwrap();
+        stream.flush().await.unwrap();
+        tokio::time::sleep(Duration::from_secs(30)).await;
+    });
+
+    let mut agent = test_agent(ApiType::Responses, &format!("http://{address}"))
+        .with_stall_window(Duration::from_millis(150));
+    agent.runner.with_retry_policy(no_retry_policy());
+    push_user_message(&mut agent);
+
+    let error = agent.complete_turn(false).await.unwrap_err();
+    let text = format!("{error:#}");
+    assert!(
+        text.contains("Responses API stream failed: server exploded"),
+        "{text}"
+    );
+    assert!(!text.contains("provider response stalled"), "{text}");
     server.abort();
 }
