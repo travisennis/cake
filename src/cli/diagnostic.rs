@@ -15,7 +15,7 @@
 //!   "status": "ok",
 //!   "summary": { "count": 1 },
 //!   "checks": [],
-//!   "data": { "models": [] }
+//!   "data": { "default_model": null, "models": [] }
 //! }
 //! ```
 //!

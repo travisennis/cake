@@ -100,6 +100,8 @@ fn debug_models_json_is_one_versioned_document() {
     let env = cake_env();
     env.write_project_settings(
         r#"
+default_model = "zen"
+
 [[models]]
 name = "zen"
 model = "glm-5.1"
@@ -138,6 +140,7 @@ const DEBUG_MODELS_GOLDEN: &str = r#"{
   },
   "checks": [],
   "data": {
+    "default_model": "zen",
     "models": [
       {
         "api_key_env": "SECRET_TOKEN",
@@ -196,6 +199,45 @@ api_key_env = "ALPHA_TOKEN"
 }
 
 #[test]
+fn debug_models_json_reports_the_profile_default_model() {
+    let env = cake_env();
+    env.write_project_settings(
+        r#"
+default_model = "zen"
+
+[[models]]
+name = "zen"
+model = "provider/zen"
+base_url = "https://zen.example.com/v1"
+api_key_env = "ZEN_TOKEN"
+
+[[models]]
+name = "alpha"
+model = "provider/alpha"
+base_url = "https://alpha.example.com/v1"
+api_key_env = "ALPHA_TOKEN"
+
+[profiles.review]
+default_model = "alpha"
+"#,
+    );
+
+    let output = run(&env, &["--profile", "review", "debug", "models", "--json"]);
+
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    let document: serde_json::Value =
+        serde_json::from_str(&stdout(&output)).expect("stdout must be one JSON document");
+    assert_eq!(document["data"]["default_model"], "alpha");
+    assert_eq!(
+        document["data"]["models"]
+            .as_array()
+            .expect("models must be an array")
+            .len(),
+        2
+    );
+}
+
+#[test]
 fn debug_models_json_reports_settings_findings_in_the_document() {
     let env = cake_env();
     env.write_project_settings(
@@ -232,6 +274,7 @@ typo_key = true
     );
     // The defect report stays machine-readable even with nothing configured.
     assert_eq!(document["data"]["models"], serde_json::json!([]));
+    assert_eq!(document["data"]["default_model"], serde_json::json!(null));
 }
 
 #[test]
