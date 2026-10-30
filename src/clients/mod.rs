@@ -17,6 +17,7 @@ mod backend;
 mod chat_completions;
 mod chat_types;
 mod provider_strategy;
+pub mod response_stall;
 mod responses;
 mod responses_types;
 pub mod retry;

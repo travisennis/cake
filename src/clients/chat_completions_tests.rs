@@ -13,6 +13,11 @@ use crate::types::{
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
+/// Parse with the production stall window and a test model identity.
+async fn parse_response(response: reqwest::Response) -> anyhow::Result<TurnResult> {
+    super::parse_response(response, "test-model", std::time::Duration::from_mins(10)).await
+}
+
 fn full_prompt_history() -> Vec<ConversationItem> {
     let config_dir = TempDir::new().unwrap();
     let agents_files = vec![AgentsFile {

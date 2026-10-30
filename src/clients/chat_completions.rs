@@ -11,6 +11,7 @@ use crate::clients::chat_types::{
     ChatTool, ChatToolCallRef, ChatUsage, ResponseFormat, ResponseFormatJsonSchema,
 };
 use crate::clients::provider_strategy::ProviderStrategy;
+use crate::clients::response_stall::{BodyReadOutcome, read_body};
 use crate::clients::retry::RequestOverrides;
 use crate::clients::tools::Tool;
 use crate::session_telemetry::{ProviderTermination, TerminationClassification};
@@ -142,8 +143,23 @@ fn build_chat_request(
 /// a bounded preview of the raw body to the error when the 2xx body is not the
 /// expected JSON shape, so an opaque provider or proxy body is diagnosable
 /// from the error text.
-async fn read_chat_response(response: reqwest::Response) -> anyhow::Result<ChatResponse> {
-    let bytes = response.bytes().await?;
+async fn read_chat_response(
+    response: reqwest::Response,
+    model: &str,
+    stall_window: std::time::Duration,
+) -> anyhow::Result<ChatResponse> {
+    let mut response = response;
+    let bytes = match read_body(&mut response, model, stall_window).await? {
+        BodyReadOutcome::Complete(bytes) => bytes,
+        BodyReadOutcome::Stalled(stalled) => {
+            // A complete JSON body that arrived just before the stall is still
+            // usable; a truncated one keeps the bounded preview on the error.
+            if let Ok(chat_response) = serde_json::from_slice::<ChatResponse>(&stalled.bytes) {
+                return Ok(chat_response);
+            }
+            return Err(stalled.stall.with_preview(&stalled.bytes).into());
+        },
+    };
     serde_json::from_slice::<ChatResponse>(&bytes).map_err(|error| {
         ResponseDecodeError::new("Chat Completions", &bytes, reported_usage(&bytes), error).into()
     })
@@ -167,8 +183,12 @@ pub(super) fn reported_usage(body: &[u8]) -> Option<ReportedUsage> {
 /// deserialization failure carries a bounded preview of the raw body so an
 /// opaque provider or proxy 2xx is diagnosable from the error text instead of
 /// reqwest's generic "error decoding response body".
-pub(super) async fn parse_response(response: reqwest::Response) -> anyhow::Result<TurnResult> {
-    let chat_response = read_chat_response(response).await?;
+pub(super) async fn parse_response(
+    response: reqwest::Response,
+    model: &str,
+    stall_window: std::time::Duration,
+) -> anyhow::Result<TurnResult> {
+    let chat_response = read_chat_response(response, model, stall_window).await?;
     trace!(target: "cake", "{chat_response:?}");
 
     let response_id = chat_response.id.as_deref().unwrap_or("<missing id>");

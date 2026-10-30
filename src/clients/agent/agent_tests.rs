@@ -3101,7 +3101,7 @@ printf 'completed:%s' "$index"
                 crate::session_telemetry::SessionTelemetryWriter::open(&telemetry_path).unwrap(),
                 invocation_id,
             )
-            .with_request_timeout(Duration::from_millis(1_000));
+            .with_stall_window(Duration::from_millis(1_000));
         agent
             .runner
             .with_retry_policy(crate::clients::retry::RetryPolicy {

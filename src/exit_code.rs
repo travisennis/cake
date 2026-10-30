@@ -80,6 +80,15 @@ fn classify_typed_error(err: &anyhow::Error) -> Option<u8> {
         return Some(classify_api_error_status(api_err.status));
     }
 
+    // A no-data stall is a request timeout, so it shares the API-error class
+    // with client-side reqwest timeouts and provider 408s.
+    if err
+        .downcast_ref::<crate::clients::response_stall::ResponseStall>()
+        .is_some()
+    {
+        return Some(code::API_ERROR);
+    }
+
     // Typed output-schema errors: pre-run schema file problems are input
     // errors; a run that cannot satisfy the schema is an agent error.
     if let Some(schema_err) = err.downcast_ref::<crate::config::OutputSchemaError>() {
@@ -688,6 +697,17 @@ mod tests {
             body: "glm-5\n\nRequest timeout".to_string(),
             input_overflow: None,
         });
+        assert_eq!(classify_to_u8(&err), code::API_ERROR);
+    }
+
+    #[test]
+    fn classify_no_event_stall_as_api_error() {
+        let err = anyhow::Error::new(crate::clients::response_stall::ResponseStall::new(
+            "glm-5",
+            crate::clients::response_stall::StallPhase::FirstByte,
+            std::time::Duration::from_mins(10),
+            0,
+        ));
         assert_eq!(classify_to_u8(&err), code::API_ERROR);
     }
 
