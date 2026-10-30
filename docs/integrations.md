@@ -114,6 +114,7 @@ Each finding carries a stable machine-readable `id`, a `status` of `warning` or 
 - `settings.unknown_key` --- one finding per unrecognized settings key, in loader order, with the source file and key in the message.
 - `settings.load_failed` --- settings could not be loaded or parsed. The message matches the stderr diagnostic.
 - `sessions.directory_unreadable` --- the sessions directory could not be read.
+- `sessions.discovery_failed` --- one warning per session file or directory entry that `sessions list` could not inspect. The message names the path and reason. At most eight are reported, with the last naming any omitted failures; working-directory filtering is not a failure.
 - `sessions.checkpoint_failed` --- a `cake sessions checkpoint` append failed. The message matches the stderr diagnostic, and the exit code follows that failure's class (see [Checkpoint append](#checkpoint-append)).
 
 Consumers switch on `id`, ignore unknown ids, and tolerate added fields and added findings.
@@ -126,7 +127,7 @@ Exit behavior follows the codes above: `ok` and `warning` exit `0`; `error` repo
 
 `debug models --json` reports the configured models: `summary.count` is the number of models, `data.models` holds the full model definitions in name order, and `data.default_model` is the `[[models]]` entry name a run selects when `--model` is omitted, after the selected profile's overlay, or `null` when none is configured. A consumer joins `data.default_model` to its `data.models` entry to inspect capability fields such as `supports_images`. Unrecognized settings keys appear in `checks` rather than on stderr.
 
-`sessions list --json` reports the sessions for the current working directory: `summary.count` is the number of listed sessions and `data.sessions` holds each `session_id`, `timestamp`, and `first_prompt`, newest first, with the session id breaking ties between equal timestamps.
+`sessions list --json` reports the sessions for the current working directory: `summary.count` is the number of listed sessions and `data.sessions` holds each `session_id`, `timestamp`, and `first_prompt`, newest first, with the session id breaking ties between equal timestamps. Unreadable, malformed, and unsupported session files appear as `sessions.discovery_failed` warnings without hiding valid sessions; a file excluded only because its working directory differs is not a warning.
 
 `cake sessions checkpoint --json` reports one append: `summary` carries `session_id`, `checkpoint_id`, `boundary`, `before_tokens`, `after_tokens`, and `retained_count`, and `data` carries `session_file` and `basis`.
 
@@ -176,7 +177,7 @@ A `partial` record still carries the counters the provider did send; an absent c
 
 Session consumers should ignore unknown optional fields. `terminal_class` uses the bounded values `completed`, `timeout`, `cancelled`, `transport`, `http`, `body_parse`, and `response_failed`; `transport` covers a failure while the request is sent and a transport failure while an accepted 2xx body is read, while `body_parse` covers a body that was received but could not be decoded or parsed into a provider response.
 
-`cake sessions list` displays session UUIDs. `--resume <UUID>` opens the selected session explicitly, while `--fork [UUID]` creates a new session identity seeded with conversation records and prior `skill_activated` metadata from the selected parent. It does not copy parent session, task, prompt-context, hook, or completion metadata.
+`cake sessions list` displays session UUIDs. Discovery warnings go to stderr in text mode and to `checks` in `--json`, so stdout remains the table or the diagnostic document. `--resume <UUID>` opens the selected session explicitly, while `--fork [UUID]` creates a new session identity seeded with conversation records and prior `skill_activated` metadata from the selected parent. It does not copy parent session, task, prompt-context, hook, or completion metadata.
 
 Session files are append-only and locked for one writer per invocation. Loading tolerates an interrupted final task without `task_complete`. Unsupported format versions fail explicitly; Cake does not silently rewrite older files.
 
