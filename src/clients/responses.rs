@@ -5,6 +5,7 @@ use crate::config::model::ResolvedModelConfig;
 use crate::clients::agent::TurnResult;
 use crate::clients::backend::{FinalOutputConstraint, ResponseDecodeError, ResponseParseError};
 use crate::clients::provider_strategy::ProviderStrategy;
+use crate::clients::response_stall::{BodyReadOutcome, read_body};
 use crate::clients::responses_types::{
     ApiResponse, ApiResponseEnvelope, ApiUsage, OutputContent, OutputMessage, ReasoningConfig,
     Request, ResponsesApiInputItem, ResponsesFunctionCallOutput, ResponsesMessageContent,
@@ -202,13 +203,34 @@ pub(super) fn reported_usage(body: &[u8]) -> Option<ReportedUsage> {
 /// opaque provider or proxy 2xx (empty body, HTML error page, wrong envelope)
 /// is diagnosable from the error text instead of reqwest's generic
 /// "error decoding response body".
-pub(super) async fn parse_response(response: reqwest::Response) -> anyhow::Result<TurnResult> {
-    if is_event_stream_response(&response) {
-        let body = response.text().await?;
+pub(super) async fn parse_response(
+    response: reqwest::Response,
+    model: &str,
+    stall_window: std::time::Duration,
+) -> anyhow::Result<TurnResult> {
+    let is_sse = is_event_stream_response(&response);
+    let mut response = response;
+    match read_body(&mut response, model, stall_window).await? {
+        BodyReadOutcome::Complete(bytes) => parse_body_bytes(&bytes, is_sse),
+        BodyReadOutcome::Stalled(stalled) => {
+            // A stream that already delivered its terminal event (or a complete
+            // JSON body) before the stall is still usable; anything else fails
+            // with the stall error and a bounded preview of what arrived.
+            match parse_body_bytes(&stalled.bytes, is_sse) {
+                Ok(turn) => Ok(turn),
+                Err(_) => Err(stalled.stall.with_preview(&stalled.bytes).into()),
+            }
+        },
+    }
+}
+
+fn parse_body_bytes(bytes: &[u8], is_event_stream: bool) -> anyhow::Result<TurnResult> {
+    if is_event_stream {
+        let body = String::from_utf8_lossy(bytes);
         return parse_streaming_response(&body);
     }
 
-    parse_json_or_sse_body(&response.bytes().await?)
+    parse_json_or_sse_body(bytes)
 }
 
 /// Whether the response advertises an SSE content type.

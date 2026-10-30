@@ -155,10 +155,14 @@ impl Backend {
     pub(super) async fn parse_response(
         self,
         response: reqwest::Response,
+        model: &str,
+        stall_window: std::time::Duration,
     ) -> anyhow::Result<TurnResult> {
         match self {
-            Self::Responses => responses::parse_response(response).await,
-            Self::ChatCompletions => chat_completions::parse_response(response).await,
+            Self::Responses => responses::parse_response(response, model, stall_window).await,
+            Self::ChatCompletions => {
+                chat_completions::parse_response(response, model, stall_window).await
+            },
         }
     }
 }

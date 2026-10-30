@@ -8,6 +8,9 @@ use crate::clients::agent::{TurnResult, TurnUsageSettlement};
 use crate::clients::backend::{
     Backend, FinalOutputConstraint, ResponseDecodeError, ResponseParseError,
 };
+use crate::clients::response_stall::{
+    BodyReadOutcome, ResponseStall, STALL_WINDOW, StallPhase, read_body,
+};
 use crate::clients::responses::ResponsesStreamFailed;
 use crate::clients::retry::{self, HttpFailure, RequestOverrides, RetryPolicy, RetryStatus};
 use crate::clients::termination::{self, IntendedLimits, TerminationOutcome, TurnEvidence};
@@ -21,23 +24,14 @@ use crate::session_telemetry::{
 use crate::types::{ApiAttemptTerminalClass, ConversationItem, ReportedUsage, UsagePresence};
 
 pub(super) fn build_http_client(disable_connection_reuse: bool) -> reqwest::Client {
-    build_http_client_with_timeout(disable_connection_reuse, Duration::from_mins(5))
-}
-
-fn build_http_client_with_timeout(
-    disable_connection_reuse: bool,
-    timeout: Duration,
-) -> reqwest::Client {
-    let mut builder = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(timeout);
+    let mut builder = reqwest::Client::builder().connect_timeout(Duration::from_secs(10));
 
     if disable_connection_reuse {
         builder = builder.pool_max_idle_per_host(0);
     }
 
     builder.build().unwrap_or_else(|error| {
-        panic!("HTTP client builder should be valid with fixed timeout and pool settings: {error}")
+        panic!("HTTP client builder should be valid with fixed pool settings: {error}")
     })
 }
 
@@ -45,6 +39,7 @@ pub(super) struct AgentRunner {
     backend: Backend,
     client: reqwest::Client,
     retry_policy: RetryPolicy,
+    stall_window: Duration,
 }
 
 /// Outcome of one provider attempt, driving the bounded retry loop.
@@ -219,17 +214,55 @@ impl AgentRunner {
             backend,
             client: build_http_client(false),
             retry_policy: RetryPolicy::default(),
+            stall_window: STALL_WINDOW,
         }
     }
 
     #[cfg(test)]
-    pub(super) fn with_request_timeout(&mut self, timeout: Duration) {
-        self.client = build_http_client_with_timeout(false, timeout);
+    pub(super) const fn with_stall_window(&mut self, window: Duration) {
+        self.stall_window = window;
     }
 
     #[cfg(test)]
     pub(super) const fn with_retry_policy(&mut self, policy: RetryPolicy) {
         self.retry_policy = policy;
+    }
+
+    /// Send one request while bounding the wait for response headers.
+    ///
+    /// The body reader applies the same deadline per chunk, so this covers the
+    /// gap between the request and the first byte of the response.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a provider turn threads identity, history, tools, and overrides"
+    )]
+    async fn send_with_stall_deadline<'a>(
+        &self,
+        client: &reqwest::Client,
+        config: &ResolvedModelConfig,
+        session_id: uuid::Uuid,
+        history: &'a [ConversationItem],
+        tools: &'a [Tool],
+        overrides: &RequestOverrides,
+        constraint: Option<FinalOutputConstraint<'a>>,
+    ) -> anyhow::Result<reqwest::Response> {
+        match tokio::time::timeout(
+            self.stall_window,
+            self.backend.send_request(
+                client, config, session_id, history, tools, overrides, constraint,
+            ),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_elapsed) => Err(ResponseStall::new(
+                config.model_config.model.clone(),
+                StallPhase::Connect,
+                self.stall_window,
+                0,
+            )
+            .into()),
+        }
     }
 
     #[expect(
@@ -273,8 +306,7 @@ impl AgentRunner {
                 &request_overrides,
             );
             let request_result = self
-                .backend
-                .send_request(
+                .send_with_stall_deadline(
                     &client,
                     config,
                     session_id,
@@ -293,6 +325,7 @@ impl AgentRunner {
                     if response.status().is_success() {
                         self.handle_success_response(
                             response,
+                            config,
                             session_id,
                             turn_index,
                             &mut in_flight,
@@ -356,6 +389,7 @@ impl AgentRunner {
     async fn handle_success_response<F>(
         &self,
         response: reqwest::Response,
+        config: &ResolvedModelConfig,
         session_id: uuid::Uuid,
         turn_index: u32,
         in_flight: &mut InFlightAttempt<'_, F>,
@@ -367,7 +401,10 @@ impl AgentRunner {
     where
         F: FnMut(AgentRunnerTelemetryEvent),
     {
-        let parse_result = self.backend.parse_response(response).await;
+        let parse_result = self
+            .backend
+            .parse_response(response, &config.model_config.model, self.stall_window)
+            .await;
         let parse_ms = in_flight.parse_ms();
         let total_ms = in_flight.total_ms();
 
@@ -520,6 +557,27 @@ impl AgentRunner {
         }
     }
 
+    /// Read a non-2xx body under the stall deadline, keeping whatever arrived
+    /// so the provider's diagnostic text is still available.
+    async fn read_failure_body(
+        &self,
+        response: reqwest::Response,
+        model: &str,
+    ) -> (String, Option<anyhow::Error>) {
+        let mut response = response;
+        match read_body(&mut response, model, self.stall_window).await {
+            Ok(BodyReadOutcome::Complete(bytes)) => {
+                (String::from_utf8_lossy(&bytes).into_owned(), None)
+            },
+            Ok(BodyReadOutcome::Stalled(stalled)) => {
+                let body = String::from_utf8_lossy(&stalled.bytes).into_owned();
+                let error = anyhow::Error::new(stalled.stall.with_preview(&stalled.bytes));
+                (body, Some(error))
+            },
+            Err(error) => (String::new(), Some(error)),
+        }
+    }
+
     /// Handle a non-2xx HTTP response: record attempt telemetry, then classify
     /// the failure for retry (rate-limit, overload, context overflow) or return
     /// it as an `ApiError`.
@@ -541,11 +599,9 @@ impl AgentRunner {
         F: FnMut(AgentRunnerTelemetryEvent),
     {
         let headers = response.headers().clone();
-        let body_result = response.text().await;
-        let (body, body_error) = match body_result {
-            Ok(body) => (body, None),
-            Err(error) => (String::new(), Some(error)),
-        };
+        let (body, body_error) = self
+            .read_failure_body(response, &config.model_config.model)
+            .await;
         let failure = HttpFailure {
             status: in_flight.status_code.unwrap_or_default(),
             headers,
@@ -555,7 +611,7 @@ impl AgentRunner {
         let terminal_class = body_error
             .as_ref()
             .map_or(ApiAttemptTerminalClass::Http, |error| {
-                if error.is_timeout() {
+                if error_is_timeout(error) {
                     ApiAttemptTerminalClass::Timeout
                 } else {
                     ApiAttemptTerminalClass::Http
@@ -834,9 +890,9 @@ fn accepted_body_terminal_class(
 /// body with `text()`/`bytes()` and propagates that error unchanged. A typed
 /// [`ResponseDecodeError`] (the 2xx body arrived but is not the expected
 /// envelope), a semantic parse failure, and a provider `response.failed`
-/// event carry no reqwest cause and stay terminal. A timeout is excluded: the
-/// accepted body is already bounded by the HTTP deadline, and whole-turn retry
-/// budgeting is tracked separately (issue #109).
+/// event carry no reqwest cause and stay terminal. A stall or timeout is
+/// excluded: a stall after the accepted headers is reported, not retried, and
+/// whole-turn retry budgeting is tracked separately (issue #109).
 fn is_body_read_transport_error(error: &anyhow::Error) -> bool {
     if error.downcast_ref::<ResponseDecodeError>().is_some() {
         return false;
@@ -849,11 +905,12 @@ fn is_body_read_transport_error(error: &anyhow::Error) -> bool {
 }
 
 fn error_is_timeout(error: &anyhow::Error) -> bool {
-    error.chain().any(|cause| {
-        cause
-            .downcast_ref::<reqwest::Error>()
-            .is_some_and(reqwest::Error::is_timeout)
-    })
+    error.downcast_ref::<ResponseStall>().is_some()
+        || error.chain().any(|cause| {
+            cause
+                .downcast_ref::<reqwest::Error>()
+                .is_some_and(reqwest::Error::is_timeout)
+        })
 }
 
 fn elapsed_ms(start: Instant) -> u64 {

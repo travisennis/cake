@@ -5,6 +5,11 @@ use crate::types::{ImagePart, ReasoningSummary, UsagePresence};
 use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+/// Parse with the production stall window and a test model identity.
+async fn parse_response(response: reqwest::Response) -> anyhow::Result<TurnResult> {
+    super::parse_response(response, "test-model", std::time::Duration::from_mins(10)).await
+}
+
 fn to_api_input_json(item: &ConversationItem) -> serde_json::Value {
     serde_json::to_value(ResponsesApiInputItem::from_item(item, true))
         .expect("Responses API input DTO serialization should be infallible")

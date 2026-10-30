@@ -7,6 +7,8 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tracing::debug;
 
+use crate::clients::response_stall::ResponseStall;
+
 const DEFAULT_MAX_RETRIES: u32 = 5;
 const DEFAULT_BASE_DELAY_MS: u64 = 500;
 const DEFAULT_MAX_BACKOFF_MS: u64 = 30_000;
@@ -243,12 +245,18 @@ pub fn classify_transport_error(
         return RetryDecision::DoNotRetry;
     };
 
+    let reason = if error.downcast_ref::<ResponseStall>().is_some() {
+        RetryReason::RequestTimeout
+    } else {
+        RetryReason::Network
+    };
+
     RetryDecision::Retry {
         status: RetryStatus {
             attempt: attempt + 1,
             max_retries: policy.max_retries,
             delay: fallback_delay(policy, attempt, session_id),
-            reason: RetryReason::Network,
+            reason,
             detail,
         },
     }
@@ -540,6 +548,10 @@ fn parse_last_u32(input: &str) -> Option<u32> {
 }
 
 fn transport_retry_detail(error: &Error) -> Option<String> {
+    if let Some(stall) = error.downcast_ref::<ResponseStall>() {
+        return Some(stall.retry_detail());
+    }
+
     stale_reqwest_retry_detail(error)
         .or_else(|| legacy_transport_retry_detail(error))
         .or_else(|| {
@@ -597,6 +609,7 @@ fn is_request_phase_transport_error(error: &Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::clients::response_stall::{ResponseStall, StallPhase};
     use chrono::TimeZone;
     use reqwest::header::HeaderValue;
     use tokio::io::AsyncWriteExt;
@@ -1155,6 +1168,24 @@ mod tests {
                 assert_eq!(status.detail, "stale connection reset");
             },
             other => panic!("expected transport retry, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stall_is_a_retryable_request_timeout() {
+        let error = anyhow::Error::new(ResponseStall::new(
+            "glm-5",
+            StallPhase::Connect,
+            Duration::from_mins(10),
+            0,
+        ));
+
+        match classify_transport_error(&retry_policy(), &error, 1, session_id()) {
+            RetryDecision::Retry { status } => {
+                assert_eq!(status.reason, RetryReason::RequestTimeout);
+                assert_eq!(status.detail, "provider stall (connect)");
+            },
+            other => panic!("expected a stall retry, got {other:?}"),
         }
     }
 

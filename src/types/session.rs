@@ -448,7 +448,7 @@ pub struct TaskCompleteData {
 pub enum ApiAttemptTerminalClass {
     /// The request completed and produced a parseable provider response.
     Completed,
-    /// The request exceeded the configured HTTP deadline.
+    /// The request stayed silent past the no-event stall deadline.
     Timeout,
     /// The provider attempt future was cancelled before it completed.
     Cancelled,

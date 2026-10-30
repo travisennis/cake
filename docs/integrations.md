@@ -13,6 +13,8 @@ This document describes Cake's stable shell-facing and machine-facing contracts.
 
 Class `2` is the provider-failure class: authentication (`401`, `403`), rate limiting (`429`), request timeouts (`408`), and transport failures such as connect errors or client timeouts. Retryability is a separate transport-recovery concern and does not decide the class: `409` (lock timeout), `5xx`, and `529` are retried but exit `1`, because the provider answered the request. A tool-level timeout --- a toolbox tool or a hook exceeding its timeout --- is a tool error, `1`; the Bash tool's own wait is a yield window, not a timeout failure. See [ADR 045](adr/045-classify-request-timeouts-as-api-errors.md).
 
+Provider requests use a ten-minute no-event stall deadline instead of a total wall-clock limit. A turn may run longer than ten minutes as long as data keeps arriving; ten minutes of silence fails the attempt with a request-timeout error that names the model, the stall phase (`connect`, `first byte`, or `mid-body`), the window, and the bytes received. The ten-second connect timeout is unchanged. A stall before response headers is retried under the existing transport retry policy; a stall after a `2xx` response is terminal and is not retried automatically.
+
 Human diagnostics go to stderr. Machine-readable stdout must contain only its declared JSON format.
 
 Root agent-run inputs, including a prompt and run-only flags such as `--output-schema`, cannot be combined with a selected subcommand. Cake reports that invalid usage on stderr and exits `3` before dispatching the subcommand. Options explicitly shared with a command, such as `--output-format stream-json replay <uuid>`, remain valid.

@@ -470,10 +470,10 @@ impl Agent {
         self
     }
 
-    /// Sets a short HTTP timeout for provider tests.
+    /// Sets a short no-event stall window for provider tests.
     #[cfg(test)]
-    pub(super) fn with_request_timeout(mut self, timeout: std::time::Duration) -> Self {
-        self.runner.with_request_timeout(timeout);
+    pub(super) const fn with_stall_window(mut self, window: std::time::Duration) -> Self {
+        self.runner.with_stall_window(window);
         self
     }
 
@@ -856,6 +856,10 @@ impl Agent {
 #[cfg(test)]
 #[path = "agent/agent_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "agent/response_stall_tests.rs"]
+mod response_stall_tests;
 
 #[cfg(test)]
 #[path = "agent/gate_telemetry_tests.rs"]
