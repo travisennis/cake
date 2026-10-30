@@ -5,17 +5,17 @@ use crate::config::model::{ApiType, ModelConfig, ResolvedModelConfig};
 use crate::config::skills::{Skill, SkillScope};
 use crate::config::{AgentsFile, SkillCatalog};
 use crate::prompts::build_initial_prompt_messages_with_enabled_tools;
-use crate::types::{ReasoningSummary, UsagePresence};
+use crate::types::{ImagePart, ReasoningSummary, UsagePresence};
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
 fn to_api_input_json(item: &ConversationItem) -> serde_json::Value {
-    serde_json::to_value(ResponsesApiInputItem::from(item))
+    serde_json::to_value(ResponsesApiInputItem::from_item(item, true))
         .expect("Responses API input DTO serialization should be infallible")
 }
 
 fn input_json(history: &[ConversationItem]) -> Vec<serde_json::Value> {
-    build_input(history)
+    build_input(history, true)
         .into_iter()
         .map(|item| serde_json::to_value(item).unwrap())
         .collect()
@@ -786,7 +786,7 @@ fn snapshot_responses_request_minimal() {
         model: "openai/gpt-4.1",
         store: None,
         stream: None,
-        input: build_input(&history),
+        input: build_input(&history, true),
         instructions: None,
         temperature: None,
         top_p: None,
@@ -855,7 +855,7 @@ fn snapshot_responses_request_with_tools_provider_and_reasoning() {
         model: "openai/gpt-5",
         store: None,
         stream: None,
-        input: build_input(non_system_history),
+        input: build_input(non_system_history, true),
         instructions,
         temperature: Some(0.3),
         top_p: Some(0.95),
@@ -903,7 +903,7 @@ fn snapshot_responses_request_with_output_schema_constraint() {
         model: "openai/gpt-5",
         store: None,
         stream: None,
-        input: build_input(&history),
+        input: build_input(&history, true),
         instructions: None,
         temperature: None,
         top_p: None,
@@ -938,7 +938,7 @@ fn snapshot_responses_request_full_with_agents_and_skills() {
         model: "test-responses-model",
         store: None,
         stream: None,
-        input: build_input(non_system_history),
+        input: build_input(non_system_history, true),
         instructions,
         temperature: Some(0.2),
         top_p: Some(0.9),
@@ -1853,6 +1853,42 @@ fn bearer_authorization(request: &reqwest::Request) -> Option<&str> {
         .headers()
         .get(reqwest::header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
+}
+
+#[test]
+fn build_request_json_omits_history_images_for_a_text_only_model() {
+    let config = request_config("https://api.example.com/v1", ApiType::Responses);
+    assert!(!config.model_config.supports_images);
+    let history = vec![ConversationItem::Message {
+        role: Role::User,
+        content: "What is in this picture?".to_string(),
+        id: None,
+        status: None,
+        timestamp: None,
+        images: vec![ImagePart {
+            media_type: "image/png".to_string(),
+            data_base64: "QUJD".to_string(),
+        }],
+    }];
+
+    let bytes = super::build_request_json(
+        &config,
+        &history,
+        &[],
+        &crate::clients::retry::RequestOverrides::default(),
+        None,
+    )
+    .unwrap();
+    let wire: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+    assert_eq!(
+        wire["input"][0]["content"][0]["text"],
+        "What is in this picture?"
+    );
+    assert!(
+        !wire.to_string().contains("input_image"),
+        "a text-only model must not receive image parts"
+    );
 }
 
 #[test]

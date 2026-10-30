@@ -57,6 +57,42 @@ pub fn skill_locations(skill_catalog: &SkillCatalog) -> HashMap<PathBuf, Skill> 
         .collect()
 }
 
+/// Warn once when a restored or forked history carries images the resolved
+/// model cannot accept.
+///
+/// The images stay in the stored session; request builders omit them. Emitting
+/// the warning here keeps it to one line per run instead of one per request.
+fn warn_omitted_history_images(
+    agent: &Agent,
+    resolved: &ResolvedModelConfig,
+    model_config_name: &str,
+) {
+    if let Some(warning) = omitted_history_images_warning(
+        resolved.model_config.supports_images,
+        agent.history_image_count(),
+        &resolved.model_config.model,
+        model_config_name,
+    ) {
+        eprintln!("warning: {warning}");
+    }
+}
+
+fn omitted_history_images_warning(
+    supports_images: bool,
+    image_count: usize,
+    model: &str,
+    model_config_name: &str,
+) -> Option<String> {
+    if supports_images || image_count == 0 {
+        return None;
+    }
+    let noun = if image_count == 1 { "image" } else { "images" };
+    Some(format!(
+        "model '{model}' (config '{model_config_name}') cannot accept images; \
+         omitting {image_count} {noun} from conversation history for this run"
+    ))
+}
+
 impl crate::CodingAssistant {
     /// Convert a restored session into the agent/session pair used for a continued run.
     #[expect(
@@ -93,6 +129,7 @@ impl crate::CodingAssistant {
             .with_last_usage(restored.last_turn_usage())
             .with_skill_locations(skill_locations.clone())
             .with_activated_skills(activated_skills);
+        warn_omitted_history_images(&agent, &resolved, &model_config_name);
         let mut session = Session::new(restored.id, restored.working_dir);
         session.model = Some(resolved.model_config.model);
         session.model_config = Some(model_config_name);
@@ -175,6 +212,7 @@ impl crate::CodingAssistant {
             // session's SkillActivated records; seed the same names so re-reads
             // do not emit duplicates.
             .with_activated_skills(restored.activated_skills());
+        warn_omitted_history_images(&agent, &resolved, &model_config_name);
         let latest_checkpoint = restored.latest_checkpoint_index();
         let seed_records: Vec<_> = restored
             .records
@@ -431,6 +469,7 @@ mod tests {
     use crate::SandboxPolicy;
     use crate::config::settings::ModelDefinition;
     use crate::config::skills::SkillCatalog;
+    use crate::types::ImagePart;
     use clap::Parser;
     use std::collections::HashSet;
 
@@ -478,6 +517,61 @@ mod tests {
             path: PathBuf::from("/work/.agents/skills/debugging-cake/SKILL.md"),
         });
         restored
+    }
+
+    #[test]
+    fn omitted_image_warning_names_the_count_and_model_identity() {
+        let warning = super::omitted_history_images_warning(false, 2, "glm-5.1", "fast")
+            .expect("a text-only model with images should warn");
+        assert!(warning.contains("'glm-5.1'"));
+        assert!(warning.contains("'fast'"));
+        assert!(warning.contains("omitting 2 images"));
+
+        let singular = super::omitted_history_images_warning(false, 1, "glm-5.1", "fast")
+            .expect("one image should still warn");
+        assert!(singular.contains("omitting 1 image "));
+    }
+
+    #[test]
+    fn omitted_image_warning_is_silent_without_images_or_with_image_support() {
+        assert!(super::omitted_history_images_warning(false, 0, "glm-5.1", "fast").is_none());
+        assert!(super::omitted_history_images_warning(true, 2, "gpt-5", "vision").is_none());
+    }
+
+    #[test]
+    fn restored_session_keeps_images_when_the_model_cannot_accept_them() {
+        let id = uuid::Uuid::new_v4();
+        let mut restored = Session::new(id, PathBuf::from("/work"));
+        restored.records.push(SessionRecord::Message(MessageData {
+            role: crate::types::Role::User,
+            content: "What is in this picture?".to_string(),
+            id: None,
+            status: None,
+            timestamp: None,
+            images: vec![ImagePart {
+                media_type: "image/png".to_string(),
+                data_base64: "QUJD".to_string(),
+            }],
+        }));
+
+        let run = crate::CodingAssistant::restored_client_and_session(
+            restored,
+            test_resolved_model_config(),
+            "test".to_string(),
+            &[(crate::types::Role::System, "test".to_string())],
+            &HashMap::new(),
+            test_tool_context(),
+            Vec::new(),
+            None,
+            uuid::Uuid::new_v4(),
+        )
+        .expect("restore should succeed");
+
+        assert_eq!(
+            run.agent.history_image_count(),
+            1,
+            "omission happens at request build; the restored session keeps its images"
+        );
     }
 
     /// A session is built before the asynchronous policy-gate startup, so its

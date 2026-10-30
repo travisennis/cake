@@ -6,7 +6,7 @@ use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn to_api_input_json(item: &ConversationItem) -> serde_json::Value {
-    serde_json::to_value(ResponsesApiInputItem::from(item))
+    serde_json::to_value(ResponsesApiInputItem::from_item(item, true))
         .expect("Responses API input DTO serialization should be infallible")
 }
 
@@ -492,6 +492,34 @@ fn to_api_input_user_message_with_images() {
         content[1]["image_url"],
         format!("data:image/png;base64,{TINY_PNG_BASE64}")
     );
+}
+
+#[test]
+fn to_api_input_omits_images_when_the_model_lacks_image_support() {
+    let message = ConversationItem::Message {
+        role: Role::User,
+        content: "What is in this picture?".to_string(),
+        id: None,
+        status: None,
+        timestamp: None,
+        images: vec![tiny_png_image()],
+    };
+    let json = serde_json::to_value(ResponsesApiInputItem::from_item(&message, false)).unwrap();
+    let content = json["content"]
+        .as_array()
+        .expect("message content is always a content array");
+    assert_eq!(content.len(), 1);
+    assert_eq!(content[0]["type"], "input_text");
+    assert_eq!(content[0]["text"], "What is in this picture?");
+
+    let output = ConversationItem::FunctionCallOutput {
+        call_id: "call-1".to_string(),
+        output: "ReadImage shot.png (69 bytes, image/png)".to_string(),
+        timestamp: None,
+        images: vec![tiny_png_image()],
+    };
+    let json = serde_json::to_value(ResponsesApiInputItem::from_item(&output, false)).unwrap();
+    assert_eq!(json["output"], "ReadImage shot.png (69 bytes, image/png)");
 }
 
 #[test]
