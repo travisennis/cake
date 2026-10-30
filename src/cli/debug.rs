@@ -70,7 +70,7 @@ impl CmdRunner for DebugCommand {
                 options.profile,
                 options.no_gate,
             ),
-            DebugSubcommand::Models { json } => run_models(*json, options.no_gate),
+            DebugSubcommand::Models { json } => run_models(*json, options.profile, options.no_gate),
         }
     }
 }
@@ -80,11 +80,11 @@ impl CmdRunner for DebugCommand {
 /// In machine mode the document carries the configured models and the settings
 /// findings, so stderr stays quiet; without `--json` the warnings keep their
 /// existing stderr behavior.
-fn run_models(json: bool, no_gate: bool) -> anyhow::Result<()> {
+fn run_models(json: bool, profile: Option<&str>, no_gate: bool) -> anyhow::Result<()> {
     let current_dir = std::env::current_dir()
         .map_err(|e| anyhow::anyhow!("Failed to get current directory: {e}"))?;
     let loaded =
-        SettingsLoader::load_with_profile_and_gate_bypass(Some(&current_dir), None, no_gate)
+        SettingsLoader::load_with_profile_and_gate_bypass(Some(&current_dir), profile, no_gate)
             .map_err(|error| {
                 report_failure(
                     json,
@@ -251,7 +251,10 @@ fn render_models_json(loaded: &LoadedSettings) -> anyhow::Result<String> {
         "debug models",
         serde_json::json!({ "count": models.len() }),
         settings_warnings(&loaded.warnings),
-        serde_json::json!({ "models": models }),
+        serde_json::json!({
+            "default_model": loaded.default_model,
+            "models": models,
+        }),
     )
     .render()
 }
@@ -332,7 +335,7 @@ mod tests {
     fn render_models_json_returns_a_diagnostic_document() {
         let mut models = std::collections::HashMap::new();
         models.insert("zen".to_string(), model("zen", ApiType::ChatCompletions));
-        let loaded = loaded_settings(models, Vec::new());
+        let loaded = loaded_settings(models, None, Vec::new());
 
         let output = render_models_json(&loaded).unwrap();
 
@@ -347,15 +350,29 @@ mod tests {
     }
 
     #[test]
+    fn render_models_json_reports_the_resolved_default_model() {
+        let mut models = std::collections::HashMap::new();
+        models.insert("zen".to_string(), model("zen", ApiType::ChatCompletions));
+
+        let output = render_models_json(&loaded_settings(models, Some("zen"), Vec::new())).unwrap();
+
+        let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(parsed["data"]["default_model"], "zen");
+        assert_eq!(parsed["data"]["models"][0]["name"], "zen");
+    }
+
+    #[test]
     fn render_models_json_empty() {
         let output = render_models_json(&loaded_settings(
             std::collections::HashMap::default(),
+            None,
             Vec::new(),
         ))
         .unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
         assert_eq!(parsed["summary"]["count"], 0);
         assert_eq!(parsed["data"]["models"], serde_json::json!([]));
+        assert_eq!(parsed["data"]["default_model"], serde_json::json!(null));
     }
 
     #[test]
@@ -364,7 +381,7 @@ mod tests {
         models.insert("zen".to_string(), model("zen", ApiType::ChatCompletions));
         models.insert("alpha".to_string(), model("alpha", ApiType::Responses));
 
-        let output = render_models_json(&loaded_settings(models, Vec::new())).unwrap();
+        let output = render_models_json(&loaded_settings(models, None, Vec::new())).unwrap();
 
         let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
         let arr = parsed["data"]["models"]
@@ -396,6 +413,7 @@ mod tests {
         let warnings = vec!["unknown key 'temparature' in .cake/settings.toml".to_string()];
         let output = render_models_json(&loaded_settings(
             std::collections::HashMap::default(),
+            None,
             warnings,
         ))
         .unwrap();
@@ -412,15 +430,16 @@ mod tests {
         );
     }
 
-    /// A loaded settings value with no models, for `--json` rendering tests.
+    /// A loaded settings value for `--json` rendering tests.
     fn loaded_settings(
         models: std::collections::HashMap<String, ModelDefinition>,
+        default_model: Option<&str>,
         warnings: Vec<String>,
     ) -> LoadedSettings {
         LoadedSettings {
             gates: crate::config::gates::GateConfiguration::default(),
             models,
-            default_model: None,
+            default_model: default_model.map(str::to_string),
             directories: Vec::new(),
             sandbox: crate::config::settings::SandboxSettings::default(),
             skills: crate::config::settings::SkillSettings::default(),

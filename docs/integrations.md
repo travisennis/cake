@@ -94,7 +94,7 @@ An automatic semantic continuation is visible as the provider's partial conversa
   "status": "ok",
   "summary": { "count": 1 },
   "checks": [],
-  "data": { "models": [] }
+  "data": { "default_model": null, "models": [] }
 }
 ```
 
@@ -124,7 +124,7 @@ Exit behavior follows the codes above: `ok` and `warning` exit `0`; `error` repo
 
 ### Diagnostic payloads
 
-`debug models --json` reports the configured models: `summary.count` is the number of models, `data.models` holds the full model definitions in name order, and unrecognized settings keys appear in `checks` rather than on stderr.
+`debug models --json` reports the configured models: `summary.count` is the number of models, `data.models` holds the full model definitions in name order, and `data.default_model` is the `[[models]]` entry name a run selects when `--model` is omitted, after the selected profile's overlay, or `null` when none is configured. A consumer joins `data.default_model` to its `data.models` entry to inspect capability fields such as `supports_images`. Unrecognized settings keys appear in `checks` rather than on stderr.
 
 `sessions list --json` reports the sessions for the current working directory: `summary.count` is the number of listed sessions and `data.sessions` holds each `session_id`, `timestamp`, and `first_prompt`, newest first, with the session id breaking ties between equal timestamps.
 
