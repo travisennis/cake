@@ -1190,6 +1190,25 @@ fn parse_streaming_response_bounds_output_item_decode_diagnostics() {
 }
 
 #[test]
+fn malformed_stream_output_item_keeps_preview_out_of_telemetry_detail() {
+    let error = parse_streaming_response(STREAM_MALFORMED_OUTPUT_ITEM_DECODE_FIXTURE).unwrap_err();
+    let human = error.to_string();
+    assert!(human.contains("first"), "{human}");
+    assert!(human.contains("not-an-array"), "{human}");
+
+    let telemetry = error
+        .downcast_ref::<ResponseParseError>()
+        .expect("malformed streamed output should retain its parse error type")
+        .telemetry_detail();
+    assert!(
+        telemetry.contains("malformed Responses API streamed output item"),
+        "{telemetry}"
+    );
+    assert!(!telemetry.contains("first"), "{telemetry}");
+    assert!(!telemetry.contains("not-an-array"), "{telemetry}");
+}
+
+#[test]
 fn parse_streaming_response_ignores_unknown_mixed_output_and_preserves_order() {
     let result = parse_streaming_response(STREAM_UNKNOWN_MIXED_OUTPUT_FIXTURE).unwrap();
 

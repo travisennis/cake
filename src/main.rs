@@ -1281,16 +1281,15 @@ fn is_output_schema_exhaustion(error: &anyhow::Error) -> bool {
 ///
 /// A [`LimitExceededError`]'s `Display` embeds the partial assistant message
 /// so text mode can surface it, but these sinks must not carry assistant
-/// text; they get the concise detail instead. A [`crate::clients::response_stall::ResponseStall`]
-/// keeps its bounded body preview for human diagnostics but is reduced to the
-/// preview-free stall detail for these sinks. Other errors retain their full
-/// cause chain.
+/// text; they get the concise detail instead. Typed provider errors keep a
+/// bounded response preview for human diagnostics but are reduced to their
+/// preview-free detail. Other errors retain their full cause chain.
 fn sink_safe_error_text(error: &anyhow::Error) -> String {
     if let Some(limit_exceeded) = error.downcast_ref::<LimitExceededError>() {
         return limit_exceeded.detail.clone();
     }
-    if let Some(stall) = error.downcast_ref::<crate::clients::response_stall::ResponseStall>() {
-        return stall.telemetry_detail();
+    if let Some(detail) = crate::clients::telemetry_safe_provider_error_detail(error) {
+        return detail;
     }
     format!("{error:#}")
 }

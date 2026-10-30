@@ -15,7 +15,7 @@ use crate::types::{ConversationItem, ReportedUsage};
 #[error(
     "failed to decode {backend} response body: {source}; first {preview_len} bytes: {preview:?}"
 )]
-pub(super) struct ResponseDecodeError {
+pub struct ResponseDecodeError {
     backend: &'static str,
     preview_len: usize,
     preview: String,
@@ -25,7 +25,7 @@ pub(super) struct ResponseDecodeError {
 }
 
 impl ResponseDecodeError {
-    pub(super) fn new(
+    pub fn new(
         backend: &'static str,
         body: &[u8],
         reported_usage: Option<ReportedUsage>,
@@ -44,6 +44,17 @@ impl ResponseDecodeError {
     pub(super) const fn usage(&self) -> Option<ReportedUsage> {
         self.reported_usage
     }
+
+    /// Detail without the response-body preview, safe for telemetry.
+    pub fn telemetry_detail(&self) -> String {
+        format!(
+            "failed to decode {} response body: {:?} error at line {} column {}",
+            self.backend,
+            self.source.classify(),
+            self.source.line(),
+            self.source.column()
+        )
+    }
 }
 
 /// A valid provider response whose content could not be converted into
@@ -51,22 +62,44 @@ impl ResponseDecodeError {
 /// even though the response itself is discarded.
 #[derive(Debug, thiserror::Error)]
 #[error("{source}")]
-pub(super) struct ResponseParseError {
+pub struct ResponseParseError {
     #[source]
     source: anyhow::Error,
+    telemetry_detail: String,
     reported_usage: Option<ReportedUsage>,
 }
 
 impl ResponseParseError {
-    pub(super) const fn new(source: anyhow::Error, reported_usage: Option<ReportedUsage>) -> Self {
+    pub fn new(source: anyhow::Error, reported_usage: Option<ReportedUsage>) -> Self {
+        let telemetry_detail = format!("{source:#}");
         Self {
             source,
+            telemetry_detail,
+            reported_usage,
+        }
+    }
+
+    /// Construct a parse error whose telemetry detail omits a body preview
+    /// that the human-facing `Display` text still carries.
+    pub const fn new_with_telemetry_detail(
+        source: anyhow::Error,
+        reported_usage: Option<ReportedUsage>,
+        telemetry_detail: String,
+    ) -> Self {
+        Self {
+            source,
+            telemetry_detail,
             reported_usage,
         }
     }
 
     pub(super) const fn usage(&self) -> Option<ReportedUsage> {
         self.reported_usage
+    }
+
+    /// Detail without the response-body preview, safe for telemetry.
+    pub fn telemetry_detail(&self) -> &str {
+        &self.telemetry_detail
     }
 }
 

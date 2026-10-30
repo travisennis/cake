@@ -739,6 +739,101 @@ async fn stalled_non_2xx_body_keeps_partial_provider_diagnostics() {
 }
 
 #[tokio::test]
+async fn decode_failure_keeps_preview_out_of_api_attempt_telemetry() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let body = serde_json::to_vec(&serde_json::json!({
+        "id": "chatcmpl-bad",
+        "choices": "assistant text"
+    }))
+    .unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        read_request(&mut stream).await;
+        write_json_head(&mut stream, body.len()).await;
+        stream.write_all(&body).await.unwrap();
+        stream.flush().await.unwrap();
+    });
+
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let telemetry_path = temp_dir.path().join("telemetry.ndjson");
+    let mut agent = test_agent(ApiType::ChatCompletions, &format!("http://{address}"))
+        .with_session_telemetry(
+            crate::session_telemetry::SessionTelemetryWriter::open(&telemetry_path).unwrap(),
+            uuid::uuid!("550e8400-e29b-41d4-a716-446655440005"),
+        );
+    push_user_message(&mut agent);
+
+    let error = agent.complete_turn(false).await.unwrap_err();
+    let human = format!("{error:#}");
+    assert!(human.contains("assistant text"), "{human}");
+    assert!(human.contains("first"), "{human}");
+
+    let attempt = telemetry_records(&telemetry_path)
+        .into_iter()
+        .find(|record| record["type"] == "api_attempt")
+        .expect("a completed attempt record is expected");
+    let telemetry_error = attempt["error"].as_str().unwrap();
+    assert!(
+        telemetry_error.contains("failed to decode Chat Completions response body"),
+        "{telemetry_error}"
+    );
+    assert!(
+        !telemetry_error.contains("assistant text"),
+        "{telemetry_error}"
+    );
+    assert!(!telemetry_error.contains("first"), "{telemetry_error}");
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn malformed_stream_output_item_keeps_preview_out_of_api_attempt_telemetry() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let body = concat!(
+        "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"message\",\"content\":\"not-an-array\"}}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-malformed\",\"status\":\"completed\"}}\n\n",
+    );
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        read_request(&mut stream).await;
+        write_sse_head(&mut stream).await;
+        stream.write_all(body.as_bytes()).await.unwrap();
+        stream.flush().await.unwrap();
+    });
+
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let telemetry_path = temp_dir.path().join("telemetry.ndjson");
+    let mut agent = test_agent(ApiType::Responses, &format!("http://{address}"))
+        .with_session_telemetry(
+            crate::session_telemetry::SessionTelemetryWriter::open(&telemetry_path).unwrap(),
+            uuid::uuid!("550e8400-e29b-41d4-a716-446655440006"),
+        );
+    push_user_message(&mut agent);
+
+    let error = agent.complete_turn(false).await.unwrap_err();
+    let human = format!("{error:#}");
+    assert!(human.contains("not-an-array"), "{human}");
+    assert!(human.contains("first"), "{human}");
+
+    let attempt = telemetry_records(&telemetry_path)
+        .into_iter()
+        .find(|record| record["type"] == "api_attempt")
+        .expect("a completed attempt record is expected");
+    let telemetry_error = attempt["error"].as_str().unwrap();
+    assert!(
+        telemetry_error.contains("malformed Responses API streamed output item at output[0]"),
+        "{telemetry_error}"
+    );
+    assert!(
+        !telemetry_error.contains("not-an-array"),
+        "{telemetry_error}"
+    );
+    assert!(!telemetry_error.contains("first"), "{telemetry_error}");
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn stalled_stream_keeps_a_terminal_response_failed_event() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
