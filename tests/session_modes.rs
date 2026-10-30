@@ -160,6 +160,52 @@ async fn resume_restores_named_session_and_reaches_provider() {
 }
 
 #[tokio::test]
+async fn resume_omits_history_images_for_a_text_only_model() {
+    let env = TestEnv::new("cake-resume-images-test");
+    let mock_server = MockServer::start().await;
+    write_responses_settings(&env, &mock_server.uri());
+    let mut records = minimal_records(&env);
+    records[2]["images"] = serde_json::json!([{
+        "media_type": "image/png",
+        "data_base64": "QUJD"
+    }]);
+    write_session_fixture(&env, &records);
+
+    let output = run_mode(&env, &mock_server, &["--resume", SESSION_ID, "carry on"]).await;
+    assert!(
+        output.status.success(),
+        "resume should succeed. stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let requests = mock_server
+        .received_requests()
+        .await
+        .expect("recorded requests");
+    assert_eq!(requests.len(), 1, "one provider call expected");
+    let body_text = String::from_utf8_lossy(&requests[0].body);
+    assert!(
+        body_text.contains("list the files"),
+        "restored text should still reach the provider, got: {body_text}"
+    );
+    assert!(
+        !body_text.contains("input_image"),
+        "a text-only model must not receive restored images, got: {body_text}"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        stderr.matches("cannot accept images").count(),
+        1,
+        "exactly one warning per run, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("omitting 1 image"),
+        "the warning should name the omitted count, got: {stderr}"
+    );
+}
+
+#[tokio::test]
 async fn fork_creates_new_session_and_reaches_provider() {
     let env = TestEnv::new("cake-fork-test");
     let mock_server = MockServer::start().await;

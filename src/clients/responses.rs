@@ -87,7 +87,7 @@ pub(super) fn build_request_json<'a>(
         model: &config.model_config.model,
         store: is_codex_backend.then_some(false),
         stream: is_codex_backend.then_some(true),
-        input: build_input(non_system_history),
+        input: build_input(non_system_history, config.model_config.supports_images),
         instructions,
         temperature: (!is_codex_backend)
             .then_some(config.model_config.temperature)
@@ -927,12 +927,23 @@ fn extract_instructions(
 }
 
 /// Build the input array for the Responses API from conversation history.
-fn build_input(history: &[ConversationItem]) -> Vec<ResponsesApiInputItem<'_>> {
-    history.iter().map(ResponsesApiInputItem::from).collect()
+///
+/// `include_images` mirrors the resolved model's image capability. A model
+/// without it receives text-only message and tool-result content, while the
+/// stored session keeps the images for a later run.
+fn build_input(
+    history: &[ConversationItem],
+    include_images: bool,
+) -> Vec<ResponsesApiInputItem<'_>> {
+    history
+        .iter()
+        .map(|item| ResponsesApiInputItem::from_item(item, include_images))
+        .collect()
 }
 
-impl<'a> From<&'a ConversationItem> for ResponsesApiInputItem<'a> {
-    fn from(item: &'a ConversationItem) -> Self {
+impl<'a> ResponsesApiInputItem<'a> {
+    /// Build one input item, optionally carrying its inline images.
+    fn from_item(item: &'a ConversationItem, include_images: bool) -> Self {
         match item {
             ConversationItem::Message {
                 role,
@@ -958,6 +969,11 @@ impl<'a> From<&'a ConversationItem> for ResponsesApiInputItem<'a> {
                 // A message that carries images leads with its text block and
                 // follows with one inline image block per image, so a user
                 // message can hand pixels to the provider directly.
+                let images = if include_images {
+                    images.as_slice()
+                } else {
+                    &[]
+                };
                 let mut blocks = Vec::with_capacity(images.len() + 1);
                 blocks.push(ResponsesMessageContent::text(
                     content_type,
@@ -990,9 +1006,16 @@ impl<'a> From<&'a ConversationItem> for ResponsesApiInputItem<'a> {
                 output,
                 images,
                 ..
-            } => Self::FunctionCallOutput {
-                call_id,
-                output: function_call_output(output, images),
+            } => {
+                let images = if include_images {
+                    images.as_slice()
+                } else {
+                    &[]
+                };
+                Self::FunctionCallOutput {
+                    call_id,
+                    output: function_call_output(output, images),
+                }
             },
             ConversationItem::Reasoning {
                 id,

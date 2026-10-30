@@ -96,7 +96,7 @@ fn build_messages_simple_conversation() {
             images: Vec::new(),
         },
     ];
-    let msgs = build_messages(&history);
+    let msgs = build_messages(&history, true);
     assert_eq!(msgs.len(), 2);
     assert_eq!(msgs[0].role, Role::System);
     assert_eq!(msgs[0].text(), Some("You are helpful."));
@@ -141,7 +141,7 @@ fn build_messages_preserves_developer_messages_separately() {
         },
     ];
 
-    let msgs = build_messages(&history);
+    let msgs = build_messages(&history, true);
     assert_eq!(msgs.len(), 4);
     assert_eq!(msgs[0].role, Role::System);
     assert_eq!(msgs[0].text(), Some("You are cake."));
@@ -182,7 +182,7 @@ fn build_messages_keeps_developer_messages_before_assistant() {
         },
     ];
 
-    let msgs = build_messages(&history);
+    let msgs = build_messages(&history, true);
     assert_eq!(msgs.len(), 3);
     assert_eq!(msgs[0].role, Role::Developer);
     assert_eq!(msgs[0].text(), Some("Project context"));
@@ -220,7 +220,7 @@ fn build_messages_flushes_pending_tool_calls_before_user_message() {
         },
     ];
 
-    let msgs = build_messages(&history);
+    let msgs = build_messages(&history, true);
     assert_eq!(msgs.len(), 3);
     assert_eq!(msgs[0].role, Role::User);
     assert_eq!(msgs[1].role, Role::Assistant);
@@ -267,7 +267,7 @@ fn build_messages_pairs_repaired_tool_call_before_next_user_message() {
         },
     ];
 
-    let msgs = build_messages(&history);
+    let msgs = build_messages(&history, true);
     assert_eq!(msgs.len(), 4);
     assert_eq!(msgs[0].role, Role::User);
     assert_eq!(msgs[1].role, Role::Assistant);
@@ -322,7 +322,7 @@ fn build_messages_groups_consecutive_function_calls() {
             images: Vec::new(),
         },
     ];
-    let msgs = build_messages(&history);
+    let msgs = build_messages(&history, true);
     // user + assistant(with 2 tool_calls) + tool + tool = 4 messages
     assert_eq!(msgs.len(), 4);
 
@@ -375,7 +375,7 @@ fn build_messages_preserves_reasoning_content_for_assistant_messages() {
             images: Vec::new(),
         },
     ];
-    let msgs = build_messages(&history);
+    let msgs = build_messages(&history, true);
     assert_eq!(msgs.len(), 2);
     assert_eq!(msgs[0].role, Role::User);
     assert_eq!(msgs[1].role, Role::Assistant);
@@ -432,7 +432,7 @@ fn build_messages_drops_unpaired_reasoning_before_semantic_recovery_prompt() {
         },
     ];
 
-    let msgs = build_messages(&history);
+    let msgs = build_messages(&history, true);
 
     assert_eq!(msgs.len(), 4);
     assert_eq!(msgs[0].role, Role::User);
@@ -478,7 +478,7 @@ fn build_messages_preserves_reasoning_content_for_assistant_tool_calls() {
         },
     ];
 
-    let msgs = build_messages(&history);
+    let msgs = build_messages(&history, true);
     assert_eq!(msgs.len(), 2);
     assert_eq!(msgs[1].role, Role::Assistant);
     assert_eq!(
@@ -522,7 +522,7 @@ fn build_messages_combines_tool_calls_with_assistant_text() {
         },
     ];
 
-    let msgs = build_messages(&history);
+    let msgs = build_messages(&history, true);
     assert_eq!(msgs.len(), 3);
     assert_eq!(msgs[1].role, Role::Assistant);
     assert_eq!(msgs[1].text(), Some("Let me check that."));
@@ -550,7 +550,7 @@ fn strategy_adds_reasoning_placeholder_to_tool_call_messages() {
         },
     ];
 
-    let mut msgs = build_messages(&history);
+    let mut msgs = build_messages(&history, true);
     ProviderStrategy::transform_chat_messages(&mut msgs);
     assert_eq!(msgs.len(), 2);
     assert_eq!(msgs[1].role, Role::Assistant);
@@ -588,7 +588,7 @@ fn strategy_preserves_existing_reasoning_content() {
         },
     ];
 
-    let mut msgs = build_messages(&history);
+    let mut msgs = build_messages(&history, true);
     ProviderStrategy::transform_chat_messages(&mut msgs);
     assert_eq!(
         msgs[1].reasoning_content.as_deref(),
@@ -617,7 +617,7 @@ fn strategy_does_not_affect_messages_without_tool_calls() {
         },
     ];
 
-    let mut msgs = build_messages(&history);
+    let mut msgs = build_messages(&history, true);
     ProviderStrategy::transform_chat_messages(&mut msgs);
     assert_eq!(msgs.len(), 2);
     assert!(msgs[1].reasoning_content.is_none());
@@ -780,7 +780,7 @@ fn snapshot_simple_conversation() {
             images: Vec::new(),
         },
     ];
-    let msgs = build_messages(&history);
+    let msgs = build_messages(&history, true);
     insta::assert_json_snapshot!("build_messages_simple_conversation", msgs);
 }
 
@@ -822,7 +822,7 @@ fn snapshot_grouped_function_calls() {
             images: Vec::new(),
         },
     ];
-    let msgs = build_messages(&history);
+    let msgs = build_messages(&history, true);
     insta::assert_json_snapshot!("build_messages_grouped_function_calls", msgs);
 }
 
@@ -856,7 +856,7 @@ fn snapshot_reasoning_with_assistant_text() {
             images: Vec::new(),
         },
     ];
-    let msgs = build_messages(&history);
+    let msgs = build_messages(&history, true);
     insta::assert_json_snapshot!("build_messages_reasoning_with_assistant_text", msgs);
 }
 
@@ -889,7 +889,7 @@ fn snapshot_reasoning_with_tool_calls() {
             timestamp: None,
         },
     ];
-    let msgs = build_messages(&history);
+    let msgs = build_messages(&history, true);
     insta::assert_json_snapshot!("build_messages_reasoning_with_tool_calls", msgs);
 }
 
@@ -928,7 +928,7 @@ fn snapshot_assistant_text_with_tool_calls_legacy_order() {
             images: Vec::new(),
         },
     ];
-    let msgs = build_messages(&history);
+    let msgs = build_messages(&history, true);
     insta::assert_json_snapshot!("build_messages_assistant_text_with_tool_calls_legacy", msgs);
 }
 
@@ -967,7 +967,7 @@ fn snapshot_assistant_text_with_tool_calls_new_order() {
             images: Vec::new(),
         },
     ];
-    let msgs = build_messages(&history);
+    let msgs = build_messages(&history, true);
     insta::assert_json_snapshot!("build_messages_assistant_text_with_tool_calls_new", msgs);
 }
 
@@ -1019,7 +1019,7 @@ fn snapshot_assistant_text_with_multiple_tool_calls_new_order() {
             images: Vec::new(),
         },
     ];
-    let msgs = build_messages(&history);
+    let msgs = build_messages(&history, true);
     insta::assert_json_snapshot!(
         "build_messages_assistant_text_with_multiple_tool_calls_new",
         msgs
@@ -1072,7 +1072,7 @@ fn build_messages_pairs_a_tool_image_with_a_following_user_message() {
         },
     ];
 
-    let msgs = build_messages(&history);
+    let msgs = build_messages(&history, true);
 
     let roles: Vec<Role> = msgs.iter().map(|message| message.role).collect();
     assert_eq!(
@@ -1134,7 +1134,7 @@ fn build_messages_keeps_tool_messages_adjacent_when_an_image_result_is_not_last(
         },
     ];
 
-    let msgs = build_messages(&history);
+    let msgs = build_messages(&history, true);
 
     // A strict provider rejects a user message between an assistant tool call
     // and its tool replies, so both tool messages stay adjacent and the image
@@ -1163,7 +1163,7 @@ fn build_messages_carries_user_message_images_as_content_parts() {
         images: vec![tiny_png_image(), tiny_png_image()],
     }];
 
-    let msgs = build_messages(&history);
+    let msgs = build_messages(&history, true);
 
     assert_eq!(msgs.len(), 1);
     assert_eq!(msgs[0].role, Role::User);
@@ -1178,6 +1178,100 @@ fn build_messages_carries_user_message_images_as_content_parts() {
             .iter()
             .all(|part| matches!(part, ChatContentPart::ImageUrl { .. }))
     );
+}
+
+#[test]
+fn build_messages_omits_images_when_the_model_lacks_image_support() {
+    let history = vec![
+        ConversationItem::Message {
+            role: Role::User,
+            content: "What is in this picture?".to_string(),
+            id: None,
+            status: None,
+            timestamp: None,
+            images: vec![tiny_png_image()],
+        },
+        ConversationItem::FunctionCallOutput {
+            call_id: "call-1".to_string(),
+            output: "ReadImage shot.png (69 bytes, image/png)".to_string(),
+            timestamp: None,
+            images: vec![tiny_png_image()],
+        },
+    ];
+
+    let msgs = build_messages(&history, false);
+
+    assert_eq!(
+        msgs.len(),
+        2,
+        "an omitted tool image must not add a synthetic user message"
+    );
+    assert_eq!(msgs[0].text(), Some("What is in this picture?"));
+    assert_eq!(msgs[1].role, Role::Tool);
+    assert_eq!(
+        msgs[1].text(),
+        Some("ReadImage shot.png (69 bytes, image/png)")
+    );
+}
+
+#[test]
+fn build_request_json_omits_history_images_for_a_text_only_model() {
+    let config = request_config("https://api.example.com/v1", ApiType::ChatCompletions);
+    assert!(!config.model_config.supports_images);
+    let history = vec![ConversationItem::Message {
+        role: Role::User,
+        content: "What is in this picture?".to_string(),
+        id: None,
+        status: None,
+        timestamp: None,
+        images: vec![tiny_png_image()],
+    }];
+
+    let bytes = super::build_request_json(
+        &config,
+        &history,
+        &[] as &[Tool],
+        &crate::clients::retry::RequestOverrides::default(),
+        None,
+    )
+    .unwrap();
+    let wire: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+    assert_eq!(wire["messages"][0]["content"], "What is in this picture?");
+    assert!(
+        !wire.to_string().contains("image_url"),
+        "a text-only model must not receive image parts"
+    );
+}
+
+#[test]
+fn build_request_json_keeps_history_images_for_a_vision_model() {
+    let mut config = request_config("https://api.example.com/v1", ApiType::ChatCompletions);
+    config.model_config.supports_images = true;
+    let history = vec![ConversationItem::Message {
+        role: Role::User,
+        content: "What is in this picture?".to_string(),
+        id: None,
+        status: None,
+        timestamp: None,
+        images: vec![tiny_png_image()],
+    }];
+
+    let bytes = super::build_request_json(
+        &config,
+        &history,
+        &[] as &[Tool],
+        &crate::clients::retry::RequestOverrides::default(),
+        None,
+    )
+    .unwrap();
+    let wire: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+    assert!(
+        wire["messages"][0]["content"].is_array(),
+        "a vision model still receives the image content array"
+    );
+    assert!(wire.to_string().contains("image_url"));
 }
 
 #[test]
@@ -1206,13 +1300,13 @@ fn snapshot_tool_image_parts() {
         },
     ];
 
-    let msgs = build_messages(&history);
+    let msgs = build_messages(&history, true);
     insta::assert_json_snapshot!("build_messages_tool_image_parts", msgs);
 }
 
 #[test]
 fn snapshot_empty_history() {
-    let msgs = build_messages(&[]);
+    let msgs = build_messages(&[], true);
     insta::assert_json_snapshot!("build_messages_empty_history", msgs);
 }
 
@@ -1236,7 +1330,7 @@ fn snapshot_reasoning_placeholder_injection() {
         },
     ];
 
-    let mut msgs = build_messages(&history);
+    let mut msgs = build_messages(&history, true);
     ProviderStrategy::transform_chat_messages(&mut msgs);
     insta::assert_json_snapshot!("build_messages_with_reasoning_placeholder", msgs);
 }
@@ -1260,7 +1354,7 @@ fn snapshot_chat_request_kimi_tool_calls() {
             timestamp: None,
         },
     ];
-    let mut messages = build_messages(&history);
+    let mut messages = build_messages(&history, true);
     ProviderStrategy::transform_chat_messages(&mut messages);
     let tools = vec![Tool {
         type_: "function".to_string(),
@@ -1314,7 +1408,7 @@ fn snapshot_chat_request_with_output_schema_constraint() {
     // Correction-turn shape: no tools offered, native constraint attached.
     let request = ChatRequest {
         model: "openai/gpt-5",
-        messages: build_messages(&history),
+        messages: build_messages(&history, true),
         temperature: None,
         top_p: None,
         top_k: None,
@@ -1344,7 +1438,7 @@ fn snapshot_chat_request_full_with_agents_and_skills() {
     let registry = default_tool_registry();
     let request = ChatRequest {
         model: "test-chat-model",
-        messages: build_messages(&history),
+        messages: build_messages(&history, true),
         temperature: Some(0.2),
         top_p: Some(0.9),
         top_k: None,

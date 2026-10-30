@@ -242,6 +242,19 @@ pub enum ConversationItem {
     },
 }
 
+impl ConversationItem {
+    /// Number of inline images attached to this item.
+    ///
+    /// Images can ride on a message or a tool result, so callers that need a
+    /// history-wide count must sum this across every item.
+    pub const fn image_count(&self) -> usize {
+        match self {
+            Self::Message { images, .. } | Self::FunctionCallOutput { images, .. } => images.len(),
+            Self::FunctionCall { .. } | Self::Reasoning { .. } => 0,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -281,6 +294,39 @@ mod tests {
         };
 
         assert_eq!(image.data_url(), "data:image/png;base64,QUJD");
+    }
+
+    #[test]
+    fn image_count_covers_messages_and_tool_results() {
+        let image = ImagePart {
+            media_type: "image/png".to_string(),
+            data_base64: "QUJD".to_string(),
+        };
+        let message = ConversationItem::Message {
+            role: Role::User,
+            content: "look".to_string(),
+            id: None,
+            status: None,
+            timestamp: None,
+            images: vec![image.clone(), image.clone()],
+        };
+        let output = ConversationItem::FunctionCallOutput {
+            call_id: "call-1".to_string(),
+            output: "ReadImage".to_string(),
+            timestamp: None,
+            images: vec![image],
+        };
+        let call = ConversationItem::FunctionCall {
+            id: "fc-1".to_string(),
+            call_id: "call-2".to_string(),
+            name: "Read".to_string(),
+            arguments: "{}".to_string(),
+            timestamp: None,
+        };
+
+        assert_eq!(message.image_count(), 2);
+        assert_eq!(output.image_count(), 1);
+        assert_eq!(call.image_count(), 0);
     }
 
     #[test]

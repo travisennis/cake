@@ -532,6 +532,19 @@ impl Agent {
         Ok(self)
     }
 
+    /// Number of inline images in the request-visible conversation history.
+    ///
+    /// A run whose model lacks image support warns from this count before the
+    /// first request. Request builders omit those images without rewriting the
+    /// stored session.
+    pub(crate) fn history_image_count(&self) -> usize {
+        self.conversation
+            .request_context()
+            .iter()
+            .map(ConversationItem::image_count)
+            .sum()
+    }
+
     /// The provider request context for the next turn (for tests).
     #[cfg(test)]
     pub(crate) fn request_context(&self) -> Vec<ConversationItem> {

@@ -58,7 +58,7 @@ pub(super) fn build_request_json<'a>(
     overrides: &RequestOverrides,
     constraint: Option<FinalOutputConstraint<'a>>,
 ) -> anyhow::Result<Vec<u8>> {
-    let mut messages = build_messages(history);
+    let mut messages = build_messages(history, config.model_config.supports_images);
     ProviderStrategy::transform_chat_messages(&mut messages);
     let chat_tools = convert_tools(tools);
 
@@ -299,6 +299,10 @@ fn chat_termination(reason: &str) -> ProviderTermination {
 
 /// Convert internal conversation history to Chat Completions messages.
 ///
+/// `include_images` mirrors the resolved model's image capability. A model
+/// without it receives the text of every message and tool result, without the
+/// inline images the stored history still carries.
+///
 /// This handles the key translation:
 /// - `ConversationItem::Message` → `ChatMessage` with role/content
 /// - Consecutive `FunctionCall` items → one assistant message with `tool_calls`
@@ -309,8 +313,8 @@ fn chat_termination(reason: &str) -> ProviderTermination {
 /// - `FunctionCallOutput` → tool role message with `tool_call_id`
 /// - `Reasoning` → preserved as provider-specific `reasoning_content` on the
 ///   next assistant message for providers like Moonshot/Kimi
-fn build_messages(history: &[ConversationItem]) -> Vec<ChatMessage<'_>> {
-    let mut builder = ChatMessageBuilder::new();
+fn build_messages(history: &[ConversationItem], include_images: bool) -> Vec<ChatMessage<'_>> {
+    let mut builder = ChatMessageBuilder::new(include_images);
     for item in history {
         builder.push_item(item);
     }
@@ -324,15 +328,18 @@ struct ChatMessageBuilder<'a> {
     /// Synthetic user messages carrying image tool results, held until the run
     /// of tool messages ends so a turn's tool messages stay adjacent.
     pending_image_messages: Vec<ChatMessage<'a>>,
+    /// Whether history images reach the wire.
+    include_images: bool,
 }
 
 impl<'a> ChatMessageBuilder<'a> {
-    const fn new() -> Self {
+    const fn new(include_images: bool) -> Self {
         Self {
             messages: Vec::new(),
             pending_tool_calls: Vec::new(),
             pending_reasoning_content: None,
             pending_image_messages: Vec::new(),
+            include_images,
         }
     }
 
@@ -349,6 +356,11 @@ impl<'a> ChatMessageBuilder<'a> {
                 ..
             } => {
                 self.flush_pending_image_messages();
+                let images = if self.include_images {
+                    images.as_slice()
+                } else {
+                    &[]
+                };
                 self.push_message(*role, content, images);
             },
             ConversationItem::FunctionCall {
@@ -366,6 +378,11 @@ impl<'a> ChatMessageBuilder<'a> {
                 images,
                 ..
             } => {
+                let images = if self.include_images {
+                    images.as_slice()
+                } else {
+                    &[]
+                };
                 self.push_function_call_output(call_id, output, images);
             },
             ConversationItem::Reasoning { content, .. } => {
