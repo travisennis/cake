@@ -28,8 +28,9 @@ pub use checkpoint::CheckpointError;
 pub use cmd_runner::{CmdRunner, CommandRunOptions};
 pub use debug::DebugCommand;
 pub use diagnostic::{
-    CHECK_SESSIONS_CHECKPOINT, CHECK_SESSIONS_DIRECTORY, CHECK_SETTINGS_LOAD_FAILED,
-    DiagnosticCheck, DiagnosticDocument, report_failure, settings_warnings,
+    CHECK_SESSIONS_CHECKPOINT, CHECK_SESSIONS_DIRECTORY, CHECK_SESSIONS_DISCOVERY,
+    CHECK_SETTINGS_LOAD_FAILED, DiagnosticCheck, DiagnosticDocument, report_failure,
+    settings_warnings,
 };
 pub use gates::GatesCommand;
 pub use init::{InitCommand, InitError};

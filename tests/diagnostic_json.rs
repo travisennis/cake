@@ -471,6 +471,76 @@ fn sessions_list_json_reports_an_unreadable_directory_as_a_document() {
     );
 }
 
+#[test]
+fn sessions_list_json_reports_discovery_failures_as_warnings() {
+    let env = cake_env();
+    write_session(&env, SESSION_ID, "2026-07-27T12:00:00Z", "list the files");
+    let malformed = env.data_dir.join("sessions").join("malformed.jsonl");
+    fs::write(&malformed, "{not json}\n").expect("failed to write malformed session");
+
+    let output = run(&env, &["sessions", "list", "--json"]);
+
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    assert_eq!(
+        stderr(&output),
+        "",
+        "machine findings belong in the document, not on stderr"
+    );
+    let document: serde_json::Value =
+        serde_json::from_str(&stdout(&output)).expect("stdout must be one JSON document");
+    assert_eq!(document["status"], "warning");
+    assert_eq!(document["summary"]["count"], 1);
+    assert_eq!(document["data"]["sessions"][0]["session_id"], SESSION_ID);
+    let checks = document["checks"]
+        .as_array()
+        .expect("checks must be an array");
+    assert_eq!(checks.len(), 1);
+    assert_eq!(checks[0]["id"], "sessions.discovery_failed");
+    assert_eq!(checks[0]["status"], "warning");
+    let message = checks[0]["message"]
+        .as_str()
+        .expect("message must be a string");
+    assert!(
+        message.contains(&malformed.display().to_string()),
+        "the warning must name the file: {message}"
+    );
+    assert!(
+        message.contains("failed to parse session header"),
+        "the warning must name the reason: {message}"
+    );
+}
+
+#[test]
+fn sessions_list_text_mode_reports_discovery_failures_on_stderr() {
+    let env = cake_env();
+    write_session(&env, SESSION_ID, "2026-07-27T12:00:00Z", "list the files");
+    let malformed = env.data_dir.join("sessions").join("malformed.jsonl");
+    fs::write(&malformed, "{not json}\n").expect("failed to write malformed session");
+
+    let output = run(&env, &["sessions", "list"]);
+
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    assert!(stdout(&output).contains("list the files"));
+    assert!(
+        !stdout(&output).contains("could not inspect session file"),
+        "warnings must not pollute the table: {}",
+        stdout(&output)
+    );
+    let diagnostic = stderr(&output);
+    assert!(
+        diagnostic.contains("warning: could not inspect session file"),
+        "stderr must carry the warning: {diagnostic}"
+    );
+    assert!(
+        diagnostic.contains(&malformed.display().to_string()),
+        "the warning must name the file: {diagnostic}"
+    );
+    assert!(
+        diagnostic.contains("failed to parse session header"),
+        "the warning must name the reason: {diagnostic}"
+    );
+}
+
 // =============================================================================
 // `cake bash check --json`
 // =============================================================================

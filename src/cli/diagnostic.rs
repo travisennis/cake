@@ -41,6 +41,10 @@ pub const CHECK_SETTINGS_LOAD_FAILED: &str = "settings.load_failed";
 /// Check id for a sessions directory that could not be read.
 pub const CHECK_SESSIONS_DIRECTORY: &str = "sessions.directory_unreadable";
 
+/// Check id for a session file or directory entry that could not be inspected
+/// during discovery.
+pub const CHECK_SESSIONS_DISCOVERY: &str = "sessions.discovery_failed";
+
 /// Check id for a checkpoint append that failed.
 pub const CHECK_SESSIONS_CHECKPOINT: &str = "sessions.checkpoint_failed";
 

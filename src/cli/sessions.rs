@@ -8,11 +8,16 @@ use serde::Serialize;
 
 use crate::cli::checkpoint::checkpoint_command;
 use crate::cli::{
-    CHECK_SESSIONS_DIRECTORY, CmdRunner, CommandRunOptions, DiagnosticDocument, report_failure,
+    CHECK_SESSIONS_DIRECTORY, CHECK_SESSIONS_DISCOVERY, CmdRunner, CommandRunOptions,
+    DiagnosticCheck, DiagnosticDocument, report_failure,
 };
 use crate::config::DataDir;
 use crate::config::session::CURRENT_FORMAT_VERSION;
 use crate::config::session_jsonl::SessionFramer;
+
+/// Maximum number of discovery failures reported by one listing. The last
+/// retained warning names any that were omitted.
+const MAX_DISCOVERY_WARNINGS: usize = 8;
 
 /// Session browsing commands.
 #[derive(Clone, Debug, Parser)]
@@ -81,9 +86,14 @@ impl CmdRunner for SessionsCommand {
 fn list_sessions_command(data_dir: &DataDir, json: bool) -> anyhow::Result<()> {
     let current_dir = std::env::current_dir()
         .map_err(|e| anyhow::anyhow!("Failed to get current directory: {e}"))?;
-    let sessions = list_sessions(data_dir, &current_dir)
+    let listing = list_sessions(data_dir, &current_dir)
         .map_err(|error| report_failure(json, "sessions list", CHECK_SESSIONS_DIRECTORY, error))?;
-    print!("{}", render_sessions(&sessions, json)?);
+    if !json {
+        for warning in listing.warning_messages() {
+            eprintln!("warning: {warning}");
+        }
+    }
+    print!("{}", render_sessions(&listing, json)?);
     Ok(())
 }
 
@@ -99,96 +109,147 @@ struct SessionInfo {
     first_prompt: String,
 }
 
-/// Scan session files, filter by working directory, and return sorted session info.
-fn list_sessions(data_dir: &DataDir, working_dir: &Path) -> anyhow::Result<Vec<SessionInfo>> {
-    let sessions_dir = data_dir.sessions_dir();
-    if !sessions_dir.exists() {
-        return Ok(Vec::new());
+/// The sessions found for one working directory, plus discovery warnings.
+#[derive(Debug, Default)]
+struct SessionListing {
+    sessions: Vec<SessionInfo>,
+    warnings: Vec<String>,
+}
+
+impl SessionListing {
+    fn warn_file(&mut self, path: &Path, error: &anyhow::Error) {
+        self.warnings.push(format!(
+            "could not inspect session file {}: {error:#}",
+            path.display()
+        ));
     }
 
-    let mut sessions: Vec<SessionInfo> = Vec::new();
+    fn warn_entry(&mut self, directory: &Path, error: &std::io::Error) {
+        self.warnings.push(format!(
+            "could not inspect sessions directory entry from {}: {error}",
+            directory.display()
+        ));
+    }
 
-    let entries = std::fs::read_dir(&sessions_dir)
-        .map_err(|e| anyhow::anyhow!("Failed to read sessions directory: {e}"))?;
+    /// Sorted, bounded warnings. The last retained warning names any omitted
+    /// failures so a truncated list is still diagnosable.
+    fn warning_messages(&self) -> Vec<String> {
+        let mut messages = self.warnings.clone();
+        messages.sort();
+        if messages.len() > MAX_DISCOVERY_WARNINGS {
+            let omitted = messages.len() - MAX_DISCOVERY_WARNINGS;
+            messages.truncate(MAX_DISCOVERY_WARNINGS);
+            let omitted_note = format!("; {omitted} more discovery failures not shown");
+            if let Some(last) = messages.last_mut() {
+                last.push_str(&omitted_note);
+            }
+        }
+        messages
+    }
+}
 
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().is_some_and(|ext| ext == "jsonl")
-            && let Some(info) = read_session_info(&path, working_dir)
-        {
-            sessions.push(info);
+/// Scan session files, filter by working directory, and return sorted session
+/// info plus warnings for files that could not be inspected. Working-directory
+/// filtering is intentional and stays quiet.
+fn list_sessions(data_dir: &DataDir, working_dir: &Path) -> anyhow::Result<SessionListing> {
+    let sessions_dir = data_dir.sessions_dir();
+    let mut listing = SessionListing::default();
+
+    let entries = match std::fs::read_dir(&sessions_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(listing),
+        Err(error) => {
+            return Err(anyhow::anyhow!(
+                "Failed to read sessions directory: {error}"
+            ));
+        },
+    };
+
+    for entry in entries {
+        match entry {
+            Ok(entry) => collect_session(&mut listing, &entry.path(), working_dir),
+            Err(error) => listing.warn_entry(&sessions_dir, &error),
         }
     }
 
     // Sort newest first, with the session id as the tiebreaker so two sessions
     // written in the same second always list in the same order.
-    sessions.sort_by(|left, right| {
+    listing.sessions.sort_by(|left, right| {
         right
             .timestamp
             .cmp(&left.timestamp)
             .then_with(|| left.session_id.cmp(&right.session_id))
     });
 
-    Ok(sessions)
+    Ok(listing)
+}
+
+/// Inspect one directory entry, recording a session or a discovery warning.
+fn collect_session(listing: &mut SessionListing, path: &Path, working_dir: &Path) {
+    if path.extension().is_none_or(|ext| ext != "jsonl") {
+        return;
+    }
+    match read_session_info(path, working_dir) {
+        Ok(Some(info)) => listing.sessions.push(info),
+        Ok(None) => {},
+        Err(error) => listing.warn_file(path, &error),
+    }
 }
 
 /// Minimal header struct parsed from the first line of a session file.
 #[derive(serde::Deserialize)]
 struct SessionFileHeader {
     format_version: u32,
+    session_id: String,
     working_directory: PathBuf,
     timestamp: DateTime<Utc>,
 }
 
-/// Read a session file's metadata and first user prompt, returning `None`
-/// when the working directory does not match or the file is unreadable.
-///
-/// The header is read through the shared [`SessionFramer`], so blank leading
-/// lines before `session_meta` are skipped, matching full load, replay, and
-/// discovery.
-fn read_session_info(path: &Path, working_dir: &Path) -> Option<SessionInfo> {
-    let file = std::fs::File::open(path).ok()?;
+/// Read a session file's metadata and first user prompt. `Ok(None)` means the
+/// file is valid but belongs to another working directory; every other
+/// discovery failure is returned with its cause.
+fn read_session_info(path: &Path, working_dir: &Path) -> anyhow::Result<Option<SessionInfo>> {
+    let file = std::fs::File::open(path)
+        .map_err(|error| anyhow::anyhow!("failed to open session file: {error}"))?;
     let mut reader = std::io::BufReader::new(file);
 
-    let (header, session_id) = read_header(&mut reader)?;
+    let header = read_header(&mut reader)?;
     if header.working_directory != working_dir {
-        return None;
+        return Ok(None);
     }
 
     // Scan subsequent lines for the first user message to get the first prompt.
     let first_prompt = find_first_user_prompt(&mut reader);
 
-    Some(SessionInfo {
-        session_id,
+    Ok(Some(SessionInfo {
+        session_id: header.session_id,
         timestamp: header.timestamp,
         first_prompt: first_prompt.unwrap_or_default(),
-    })
+    }))
 }
 
-/// Parse the `session_meta` header line and its `session_id` from a stream,
-/// returning `None` when the format version is unsupported or a field is
-/// missing or unreadable.
-fn read_header(reader: &mut impl std::io::BufRead) -> Option<(SessionFileHeader, String)> {
+/// Parse the `session_meta` header line once, rejecting unsupported versions.
+fn read_header(reader: &mut impl std::io::BufRead) -> anyhow::Result<SessionFileHeader> {
     let header_line = {
         let mut framer = SessionFramer::new(&mut *reader);
-        framer.next_record().ok()??.text
+        framer
+            .next_record()
+            .map_err(|error| anyhow::anyhow!("failed to read session header: {error}"))?
+            .ok_or_else(|| anyhow::anyhow!("session file is empty"))?
+            .text
     };
 
-    let header: SessionFileHeader = serde_json::from_str(&header_line).ok()?;
+    let header: SessionFileHeader = serde_json::from_str(&header_line)
+        .map_err(|error| anyhow::anyhow!("failed to parse session header: {error}"))?;
     if header.format_version != CURRENT_FORMAT_VERSION {
-        return None;
+        return Err(anyhow::anyhow!(
+            "Unsupported session format_version: {} (expected {})",
+            header.format_version,
+            CURRENT_FORMAT_VERSION
+        ));
     }
 
-    // Extract session_id from the header (it's in the JSON but
-    // SessionFileHeader doesn't carry it — re-parse as serde_json::Value to
-    // get it without changing the header struct).
-    let first_value: serde_json::Value = serde_json::from_str(&header_line).ok()?;
-    let session_id = first_value
-        .get("session_id")
-        .and_then(|v| v.as_str())
-        .map(ToString::to_string)?;
-
-    Some((header, session_id))
+    Ok(header)
 }
 
 /// Read lines after the `session_meta` to find the first `message` with `role: "user"`.
@@ -220,11 +281,11 @@ fn find_first_user_prompt(reader: &mut std::io::BufReader<std::fs::File>) -> Opt
 }
 
 /// Render the session list as a formatted table or one diagnostic document.
-fn render_sessions(sessions: &[SessionInfo], json: bool) -> anyhow::Result<String> {
+fn render_sessions(listing: &SessionListing, json: bool) -> anyhow::Result<String> {
     if json {
-        render_sessions_json(sessions)
+        render_sessions_json(listing)
     } else {
-        Ok(format_sessions_table(sessions))
+        Ok(format_sessions_table(&listing.sessions))
     }
 }
 
@@ -253,12 +314,17 @@ fn format_sessions_table(sessions: &[SessionInfo]) -> String {
 ///
 /// The order is the listing order, so the document is stable for a given set of
 /// session files.
-fn render_sessions_json(sessions: &[SessionInfo]) -> anyhow::Result<String> {
+fn render_sessions_json(listing: &SessionListing) -> anyhow::Result<String> {
+    let checks = listing
+        .warning_messages()
+        .into_iter()
+        .map(|message| DiagnosticCheck::warning(CHECK_SESSIONS_DISCOVERY, message))
+        .collect();
     DiagnosticDocument::new(
         "sessions list",
-        serde_json::json!({ "count": sessions.len() }),
-        Vec::new(),
-        serde_json::json!({ "sessions": sessions }),
+        serde_json::json!({ "count": listing.sessions.len() }),
+        checks,
+        serde_json::json!({ "sessions": &listing.sessions }),
     )
     .render()
 }
@@ -365,10 +431,11 @@ mod tests {
         let content = std::fs::read_to_string(&path).unwrap();
         std::fs::write(&path, format!("\n\n{content}")).unwrap();
 
-        let sessions = list_sessions(&dd, tmp.path()).unwrap();
-        assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0].session_id, session_id);
-        assert_eq!(sessions[0].first_prompt, "Leading blank header");
+        let listing = list_sessions(&dd, tmp.path()).unwrap();
+        assert_eq!(listing.sessions.len(), 1);
+        assert_eq!(listing.sessions[0].session_id, session_id);
+        assert_eq!(listing.sessions[0].first_prompt, "Leading blank header");
+        assert!(listing.warnings.is_empty());
     }
 
     #[test]
@@ -393,11 +460,117 @@ mod tests {
             Some("Other dir prompt"),
         );
 
-        let sessions = list_sessions(&dd, tmp.path()).unwrap();
-        assert_eq!(sessions.len(), 1);
+        let listing = list_sessions(&dd, tmp.path()).unwrap();
+        assert_eq!(listing.sessions.len(), 1);
         assert_eq!(
-            sessions[0].session_id,
+            listing.sessions[0].session_id,
             "11111111-1111-4111-8111-111111111111"
+        );
+        assert!(
+            listing.warnings.is_empty(),
+            "working-directory filtering must stay quiet: {:?}",
+            listing.warnings
+        );
+    }
+
+    #[test]
+    fn list_sessions_reports_discovery_failures_with_path_and_reason() {
+        let (dd, tmp) = make_data_dir();
+        let sessions_dir = dd.sessions_dir();
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+
+        let ts = "2026-07-09T12:00:00Z";
+        write_session(
+            &sessions_dir,
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            tmp.path(),
+            ts,
+            Some("valid session"),
+        );
+        write_session(
+            &sessions_dir,
+            "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            tmp.path(),
+            ts,
+            Some("unsupported session"),
+        );
+
+        let unsupported_path = sessions_dir.join("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb.jsonl");
+        let unsupported = std::fs::read_to_string(&unsupported_path).unwrap().replace(
+            &format!("\"format_version\":{CURRENT_FORMAT_VERSION}"),
+            &format!("\"format_version\":{}", CURRENT_FORMAT_VERSION + 1),
+        );
+        std::fs::write(&unsupported_path, unsupported).unwrap();
+
+        let malformed_path = sessions_dir.join("malformed.jsonl");
+        std::fs::write(&malformed_path, "{\"type\":\"session_meta\"\n").unwrap();
+
+        let unreadable_path = sessions_dir.join("unreadable.jsonl");
+        std::fs::create_dir_all(&unreadable_path).unwrap();
+
+        let listing = list_sessions(&dd, tmp.path()).unwrap();
+        assert_eq!(listing.sessions.len(), 1);
+        let warnings = listing.warning_messages();
+        assert_eq!(warnings.len(), 3);
+
+        let malformed_warning = warnings
+            .iter()
+            .find(|warning| warning.contains(&malformed_path.display().to_string()))
+            .expect("malformed session warning");
+        assert!(
+            malformed_warning.contains("failed to parse session header"),
+            "malformed warning must name the parse failure: {malformed_warning}"
+        );
+
+        let unsupported_warning = warnings
+            .iter()
+            .find(|warning| warning.contains(&unsupported_path.display().to_string()))
+            .expect("unsupported session warning");
+        assert!(
+            unsupported_warning.contains("Unsupported session format_version"),
+            "unsupported warning must name the format failure: {unsupported_warning}"
+        );
+
+        let unreadable_warning = warnings
+            .iter()
+            .find(|warning| warning.contains(&unreadable_path.display().to_string()))
+            .expect("unreadable session warning");
+        assert!(
+            unreadable_warning.contains("failed to open session file")
+                || unreadable_warning.contains("failed to read session header"),
+            "unreadable warning must name the read failure: {unreadable_warning}"
+        );
+    }
+
+    #[test]
+    fn list_sessions_bounds_discovery_warnings() {
+        let (dd, tmp) = make_data_dir();
+        let sessions_dir = dd.sessions_dir();
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+
+        for index in 0..(MAX_DISCOVERY_WARNINGS + 2) {
+            std::fs::write(
+                sessions_dir.join(format!("broken-{index:02}.jsonl")),
+                "not a session header\n",
+            )
+            .unwrap();
+        }
+
+        let listing = list_sessions(&dd, tmp.path()).unwrap();
+        assert_eq!(listing.warnings.len(), MAX_DISCOVERY_WARNINGS + 2);
+        let warnings = listing.warning_messages();
+        assert_eq!(warnings.len(), MAX_DISCOVERY_WARNINGS);
+        assert!(
+            warnings
+                .last()
+                .unwrap()
+                .contains("2 more discovery failures not shown"),
+            "the bounded list must name the omitted count: {warnings:?}"
+        );
+        assert_eq!(
+            warnings,
+            list_sessions(&dd, tmp.path()).unwrap().warning_messages(),
+            "warning order must not depend on directory iteration"
         );
     }
 
@@ -405,8 +578,9 @@ mod tests {
     fn list_sessions_returns_empty_when_no_sessions_dir() {
         let (dd, _tmp) = make_data_dir();
         let fake_dir = PathBuf::from("/nonexistent");
-        let sessions = list_sessions(&dd, &fake_dir).unwrap();
-        assert!(sessions.is_empty());
+        let listing = list_sessions(&dd, &fake_dir).unwrap();
+        assert!(listing.sessions.is_empty());
+        assert!(listing.warnings.is_empty());
     }
 
     #[test]
@@ -424,8 +598,9 @@ mod tests {
             None,
         );
 
-        let sessions = list_sessions(&dd, tmp.path()).unwrap();
-        assert!(sessions.is_empty());
+        let listing = list_sessions(&dd, tmp.path()).unwrap();
+        assert!(listing.sessions.is_empty());
+        assert!(listing.warnings.is_empty());
     }
 
     #[test]
@@ -449,14 +624,14 @@ mod tests {
             Some("Newer prompt"),
         );
 
-        let sessions = list_sessions(&dd, tmp.path()).unwrap();
-        assert_eq!(sessions.len(), 2);
+        let listing = list_sessions(&dd, tmp.path()).unwrap();
+        assert_eq!(listing.sessions.len(), 2);
         assert_eq!(
-            sessions[0].session_id,
+            listing.sessions[0].session_id,
             "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
         );
         assert_eq!(
-            sessions[1].session_id,
+            listing.sessions[1].session_id,
             "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
         );
     }
@@ -475,9 +650,9 @@ mod tests {
             Some("First line\nSecond line\nThird line"),
         );
 
-        let sessions = list_sessions(&dd, tmp.path()).unwrap();
-        assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0].first_prompt, "First line");
+        let listing = list_sessions(&dd, tmp.path()).unwrap();
+        assert_eq!(listing.sessions.len(), 1);
+        assert_eq!(listing.sessions[0].first_prompt, "First line");
     }
 
     #[test]
@@ -494,9 +669,9 @@ mod tests {
             None,
         );
 
-        let sessions = list_sessions(&dd, tmp.path()).unwrap();
-        assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0].first_prompt, "");
+        let listing = list_sessions(&dd, tmp.path()).unwrap();
+        assert_eq!(listing.sessions.len(), 1);
+        assert_eq!(listing.sessions[0].first_prompt, "");
     }
 
     #[test]
@@ -529,7 +704,11 @@ mod tests {
                 .with_timezone(&Utc),
             first_prompt: "Test prompt".to_string(),
         }];
-        let output = super::render_sessions_json(&sessions).unwrap();
+        let output = super::render_sessions_json(&SessionListing {
+            sessions,
+            warnings: Vec::new(),
+        })
+        .unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
 
         assert_eq!(parsed["schema_version"], 1);
@@ -544,6 +723,29 @@ mod tests {
             "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
         );
         assert_eq!(listed[0]["first_prompt"], "Test prompt");
+    }
+
+    #[test]
+    fn render_sessions_json_reports_discovery_warnings() {
+        let listing = SessionListing {
+            sessions: Vec::new(),
+            warnings: vec![
+                "could not inspect session file /tmp/bad.jsonl: failed to parse session header"
+                    .to_string(),
+            ],
+        };
+
+        let output = super::render_sessions_json(&listing).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(parsed["status"], "warning");
+        assert_eq!(parsed["summary"]["count"], 0);
+        assert_eq!(parsed["checks"][0]["id"], CHECK_SESSIONS_DISCOVERY);
+        assert_eq!(parsed["checks"][0]["status"], "warning");
+        assert_eq!(
+            parsed["checks"][0]["message"],
+            "could not inspect session file /tmp/bad.jsonl: failed to parse session header"
+        );
     }
 
     #[test]
@@ -562,14 +764,14 @@ mod tests {
             write_session(&sessions_dir, id, tmp.path(), ts, Some(prompt));
         }
 
-        let sessions = list_sessions(&dd, tmp.path()).unwrap();
-        assert_eq!(sessions.len(), 2);
+        let listing = list_sessions(&dd, tmp.path()).unwrap();
+        assert_eq!(listing.sessions.len(), 2);
         assert_eq!(
-            sessions[0].session_id,
+            listing.sessions[0].session_id,
             "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
         );
         assert_eq!(
-            sessions[1].session_id,
+            listing.sessions[1].session_id,
             "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
         );
     }
@@ -651,7 +853,11 @@ mod tests {
                 .with_timezone(&Utc),
             first_prompt: prompt.clone(),
         }];
-        let output = super::render_sessions_json(&sessions).unwrap();
+        let output = super::render_sessions_json(&SessionListing {
+            sessions,
+            warnings: Vec::new(),
+        })
+        .unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
         assert_eq!(parsed["data"]["sessions"][0]["first_prompt"], prompt);
     }
