@@ -149,7 +149,7 @@ async fn read_chat_response(
     stall_window: std::time::Duration,
 ) -> anyhow::Result<ChatResponse> {
     let mut response = response;
-    let bytes = match read_body(&mut response, model, stall_window).await? {
+    let bytes = match read_body(&mut response, model, stall_window).await {
         BodyReadOutcome::Complete(bytes) => bytes,
         BodyReadOutcome::Stalled(stalled) => {
             // A complete JSON body that arrived just before the stall is still
@@ -159,6 +159,7 @@ async fn read_chat_response(
             }
             return Err(stalled.stall.with_preview(&stalled.bytes).into());
         },
+        BodyReadOutcome::Failed(failed) => return Err(failed.error),
     };
     serde_json::from_slice::<ChatResponse>(&bytes).map_err(|error| {
         ResponseDecodeError::new("Chat Completions", &bytes, reported_usage(&bytes), error).into()

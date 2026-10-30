@@ -14,6 +14,7 @@
 
 use std::process::ExitCode;
 
+use crate::clients::response_stall::BodyReadFailure;
 use crate::config::settings::SettingsError;
 
 /// Exit code constants for cake.
@@ -51,6 +52,10 @@ pub struct ApiError {
     /// only rejected the requested output allowance. A context-compaction owner
     /// consumes this verdict instead of re-parsing the body (ADR 047).
     pub input_overflow: Option<crate::clients::retry::InputOverflow>,
+    /// Why the provider body did not arrive completely, when it did not.
+    /// Status-derived remedies and native-constraint fallback require this to
+    /// be `None`, so an incomplete body is never treated as a provider verdict.
+    pub body_read_failure: Option<BodyReadFailure>,
 }
 
 /// Classify an `anyhow::Error` into a `u8` exit code value.
@@ -666,6 +671,7 @@ mod tests {
             status: 429,
             body: "glm-5\n\nRate limit exceeded".to_string(),
             input_overflow: None,
+            body_read_failure: None,
         });
         assert_eq!(classify_to_u8(&err), code::API_ERROR);
     }
@@ -676,6 +682,7 @@ mod tests {
             status: 401,
             body: "glm-5\n\nInvalid API key".to_string(),
             input_overflow: None,
+            body_read_failure: None,
         });
         assert_eq!(classify_to_u8(&err), code::API_ERROR);
     }
@@ -686,6 +693,7 @@ mod tests {
             status: 403,
             body: "glm-5\n\nForbidden".to_string(),
             input_overflow: None,
+            body_read_failure: None,
         });
         assert_eq!(classify_to_u8(&err), code::API_ERROR);
     }
@@ -696,6 +704,7 @@ mod tests {
             status: 408,
             body: "glm-5\n\nRequest timeout".to_string(),
             input_overflow: None,
+            body_read_failure: None,
         });
         assert_eq!(classify_to_u8(&err), code::API_ERROR);
     }
@@ -717,6 +726,7 @@ mod tests {
             status: 500,
             body: "glm-5\n\nInternal server error".to_string(),
             input_overflow: None,
+            body_read_failure: None,
         });
         assert_eq!(classify_to_u8(&err), code::AGENT_ERROR);
     }
@@ -734,6 +744,7 @@ mod tests {
                 status,
                 body: format!("glm-5\n\nHTTP {status}"),
                 input_overflow: None,
+                body_read_failure: None,
             });
             assert_eq!(classify_to_u8(&err), code::AGENT_ERROR, "status {status}");
         }

@@ -40,7 +40,11 @@ fn config(base_url: &str) -> ResolvedModelConfig {
 
 #[test]
 fn codex_token_expired_error_adds_the_refresh_remedy() {
-    let error = api_error_from_failure(&config(CODEX_BASE_URL), &failure(401, TOKEN_EXPIRED_BODY));
+    let error = api_error_from_failure(
+        &config(CODEX_BASE_URL),
+        &failure(401, TOKEN_EXPIRED_BODY),
+        None,
+    );
 
     assert_eq!(error.status, 401);
     assert!(error.body.contains("token_expired"));
@@ -58,6 +62,7 @@ fn codex_401_without_the_expired_code_still_names_the_credential() {
     let error = api_error_from_failure(
         &config(CODEX_BASE_URL),
         &failure(401, r#"{"error":{"message":"Unauthorized"}}"#),
+        None,
     );
 
     assert!(
@@ -74,6 +79,7 @@ fn non_codex_401_keeps_the_plain_provider_body() {
     let error = api_error_from_failure(
         &config("https://api.openai.com/v1"),
         &failure(401, TOKEN_EXPIRED_BODY),
+        None,
     );
 
     assert!(error.body.starts_with("test-model"));
@@ -87,7 +93,11 @@ fn non_codex_401_keeps_the_plain_provider_body() {
 
 #[test]
 fn codex_non_401_keeps_the_plain_provider_body() {
-    let error = api_error_from_failure(&config(CODEX_BASE_URL), &failure(500, "upstream boom"));
+    let error = api_error_from_failure(
+        &config(CODEX_BASE_URL),
+        &failure(500, "upstream boom"),
+        None,
+    );
 
     assert_eq!(error.status, 500);
     assert!(error.body.starts_with("test-model"));
@@ -100,9 +110,34 @@ fn codex_non_401_keeps_the_plain_provider_body() {
 }
 
 #[test]
+fn incomplete_body_suppresses_the_codex_auth_remedy() {
+    let failure = failure(401, TOKEN_EXPIRED_BODY);
+    let stall = ResponseStall::new(
+        "test-model",
+        StallPhase::FirstByte,
+        Duration::from_secs(1),
+        0,
+    );
+    let stalled = BodyReadFailure::stalled(stall);
+
+    assert!(codex_auth_remedy(CODEX_BASE_URL, &failure, Some(&stalled)).is_none());
+    let error = api_error_from_failure(&config(CODEX_BASE_URL), &failure, Some(stalled));
+    assert_eq!(error.status, 401);
+    assert!(error.body_read_failure.is_some());
+    assert!(
+        !error.body.contains("auth.json"),
+        "a stalled 401 must not select a credential remedy: {}",
+        error.body
+    );
+
+    let failed = BodyReadFailure::failed(anyhow::anyhow!("connection reset"));
+    assert!(codex_auth_remedy(CODEX_BASE_URL, &failure, Some(&failed)).is_none());
+}
+
+#[test]
 fn remedy_is_absent_for_other_backends_and_statuses() {
     let openai = "https://api.openai.com/v1";
-    assert!(codex_auth_remedy(openai, &failure(401, TOKEN_EXPIRED_BODY)).is_none());
-    assert!(codex_auth_remedy(CODEX_BASE_URL, &failure(400, TOKEN_EXPIRED_BODY)).is_none());
-    assert!(codex_auth_remedy(CODEX_BASE_URL, &failure(401, TOKEN_EXPIRED_BODY)).is_some());
+    assert!(codex_auth_remedy(openai, &failure(401, TOKEN_EXPIRED_BODY), None).is_none());
+    assert!(codex_auth_remedy(CODEX_BASE_URL, &failure(400, TOKEN_EXPIRED_BODY), None).is_none());
+    assert!(codex_auth_remedy(CODEX_BASE_URL, &failure(401, TOKEN_EXPIRED_BODY), None).is_some());
 }

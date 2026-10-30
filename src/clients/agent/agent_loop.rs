@@ -1039,7 +1039,9 @@ fn is_native_constraint_rejection(error: &anyhow::Error) -> bool {
             // constraint: retrying without the schema cannot make the input fit
             // and would spend a second request before the compaction owner sees
             // the verdict (ADR 047).
-            api_error.status == 400 && api_error.input_overflow.is_none()
+            api_error.status == 400
+                && api_error.input_overflow.is_none()
+                && api_error.body_read_failure.is_none()
         })
 }
 

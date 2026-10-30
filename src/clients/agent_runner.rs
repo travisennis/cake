@@ -9,7 +9,8 @@ use crate::clients::backend::{
     Backend, FinalOutputConstraint, ResponseDecodeError, ResponseParseError,
 };
 use crate::clients::response_stall::{
-    BodyReadOutcome, ResponseStall, STALL_WINDOW, StallPhase, read_body,
+    BodyReadFailure, BodyReadOutcome, FailedBody, ResponseStall, STALL_WINDOW, StallPhase,
+    StalledBody, read_body,
 };
 use crate::clients::responses::ResponsesStreamFailed;
 use crate::clients::retry::{self, HttpFailure, RequestOverrides, RetryPolicy, RetryStatus};
@@ -50,6 +51,12 @@ enum AttemptResult {
     RetryNeeded,
     /// The attempt failed terminally; return the error.
     Terminal(anyhow::Error),
+}
+
+/// A non-2xx body and, when the read did not complete, its typed cause.
+struct FailureBody {
+    body: String,
+    failure: Option<BodyReadFailure>,
 }
 
 /// Emits a bounded start/phase record immediately and closes the attempt when
@@ -559,22 +566,25 @@ impl AgentRunner {
 
     /// Read a non-2xx body under the stall deadline, keeping whatever arrived
     /// so the provider's diagnostic text is still available.
-    async fn read_failure_body(
-        &self,
-        response: reqwest::Response,
-        model: &str,
-    ) -> (String, Option<anyhow::Error>) {
+    async fn read_failure_body(&self, response: reqwest::Response, model: &str) -> FailureBody {
         let mut response = response;
         match read_body(&mut response, model, self.stall_window).await {
-            Ok(BodyReadOutcome::Complete(bytes)) => {
-                (String::from_utf8_lossy(&bytes).into_owned(), None)
+            BodyReadOutcome::Complete(bytes) => FailureBody {
+                body: String::from_utf8_lossy(&bytes).into_owned(),
+                failure: None,
             },
-            Ok(BodyReadOutcome::Stalled(stalled)) => {
-                let body = String::from_utf8_lossy(&stalled.bytes).into_owned();
-                let error = anyhow::Error::new(stalled.stall.with_preview(&stalled.bytes));
-                (body, Some(error))
+            BodyReadOutcome::Stalled(StalledBody { bytes, stall }) => {
+                let body = String::from_utf8_lossy(&bytes).into_owned();
+                let failure = BodyReadFailure::stalled(stall.with_preview(&bytes));
+                FailureBody {
+                    body,
+                    failure: Some(failure),
+                }
             },
-            Err(error) => (String::new(), Some(error)),
+            BodyReadOutcome::Failed(FailedBody { bytes, error }) => FailureBody {
+                body: String::from_utf8_lossy(&bytes).into_owned(),
+                failure: Some(BodyReadFailure::failed(error)),
+            },
         }
     }
 
@@ -599,7 +609,10 @@ impl AgentRunner {
         F: FnMut(AgentRunnerTelemetryEvent),
     {
         let headers = response.headers().clone();
-        let (body, body_error) = self
+        let FailureBody {
+            body,
+            failure: body_read_failure,
+        } = self
             .read_failure_body(response, &config.model_config.model)
             .await;
         let failure = HttpFailure {
@@ -608,19 +621,9 @@ impl AgentRunner {
             body,
         };
         let usage = self.backend.reported_usage(failure.body.as_bytes());
-        let terminal_class = body_error
-            .as_ref()
-            .map_or(ApiAttemptTerminalClass::Http, |error| {
-                if error_is_timeout(error) {
-                    ApiAttemptTerminalClass::Timeout
-                } else {
-                    ApiAttemptTerminalClass::Http
-                }
-            });
-        let stall = body_error
-            .as_ref()
-            .and_then(|error| error.downcast_ref::<ResponseStall>());
-        let error = http_failure_telemetry_text(failure.status, &failure.body, stall);
+        let terminal_class = body_read_terminal_class(body_read_failure.as_ref());
+        let error =
+            http_failure_telemetry_text(failure.status, &failure.body, body_read_failure.as_ref());
         let attempt = in_flight.attempt;
         in_flight.finish(ApiAttemptTelemetry {
             turn_index,
@@ -690,8 +693,10 @@ impl AgentRunner {
                 AttemptResult::RetryNeeded
             },
             retry::RetryDecision::DoNotRetry => {
-                let failure = with_stall_detail(failure, stall);
-                AttemptResult::Terminal(api_error_from_failure(config, &failure).into())
+                let failure = with_body_read_detail(failure, body_read_failure.as_ref());
+                AttemptResult::Terminal(
+                    api_error_from_failure(config, &failure, body_read_failure).into(),
+                )
             },
         }
     }
@@ -923,6 +928,19 @@ fn error_is_timeout(error: &anyhow::Error) -> bool {
         })
 }
 
+fn body_read_terminal_class(
+    body_read_failure: Option<&BodyReadFailure>,
+) -> ApiAttemptTerminalClass {
+    body_read_failure.map_or(ApiAttemptTerminalClass::Http, |body_read_failure| {
+        if body_read_failure.is_stalled() || body_read_failure.error().is_some_and(error_is_timeout)
+        {
+            ApiAttemptTerminalClass::Timeout
+        } else {
+            ApiAttemptTerminalClass::Http
+        }
+    })
+}
+
 fn elapsed_ms(start: Instant) -> u64 {
     start.elapsed().as_millis().try_into().unwrap_or(u64::MAX)
 }
@@ -952,24 +970,35 @@ async fn wait_for_retry(status: &RetryStatus, turn_index: u32) -> RetryWaitTelem
     }
 }
 
-fn http_failure_telemetry_text(status: u16, body: &str, stall: Option<&ResponseStall>) -> String {
-    match stall {
-        Some(stall) if body.is_empty() => format!("{status} {}", stall.telemetry_detail()),
-        Some(stall) => format!("{status} {}\n{body}", stall.telemetry_detail()),
+fn http_failure_telemetry_text(
+    status: u16,
+    body: &str,
+    body_read_failure: Option<&BodyReadFailure>,
+) -> String {
+    match body_read_failure {
+        Some(body_read_failure) if body.is_empty() => {
+            format!("{status} {}", body_read_failure.telemetry_detail())
+        },
+        Some(body_read_failure) => {
+            format!("{status} {}\n{body}", body_read_failure.telemetry_detail())
+        },
         None => format!("{status} {body}"),
     }
 }
 
-fn with_stall_detail(failure: HttpFailure, stall: Option<&ResponseStall>) -> HttpFailure {
-    match stall {
-        Some(stall) => {
-            // Keep the stall first so a large provider body cannot push the
+fn with_body_read_detail(
+    failure: HttpFailure,
+    body_read_failure: Option<&BodyReadFailure>,
+) -> HttpFailure {
+    match body_read_failure {
+        Some(body_read_failure) => {
+            // Keep the read cause first so a large provider body cannot push the
             // cause out of a bounded sink, and avoid repeating the body's
             // preview when the body itself is already retained.
             let detail = if failure.body.is_empty() {
-                stall.to_string()
+                body_read_failure.terminal_detail()
             } else {
-                stall.telemetry_detail()
+                body_read_failure.telemetry_detail()
             };
             let body = if failure.body.is_empty() {
                 detail
@@ -985,6 +1014,7 @@ fn with_stall_detail(failure: HttpFailure, stall: Option<&ResponseStall>) -> Htt
 fn api_error_from_failure(
     config: &ResolvedModelConfig,
     failure: &HttpFailure,
+    body_read_failure: Option<BodyReadFailure>,
 ) -> crate::exit_code::ApiError {
     debug!(target: "cake", "{}", failure.body);
 
@@ -1006,16 +1036,23 @@ fn api_error_from_failure(
 
     crate::exit_code::ApiError {
         status: failure.status,
-        body: api_error_body(config, failure),
+        body: api_error_body(config, failure, body_read_failure.as_ref()),
         input_overflow,
+        body_read_failure,
     }
 }
 
 /// Builds the user-visible body: the provider's own text, plus the Codex credential
 /// remedy when the failure is a rejected `ChatGPT` credential on that backend.
-fn api_error_body(config: &ResolvedModelConfig, failure: &HttpFailure) -> String {
+fn api_error_body(
+    config: &ResolvedModelConfig,
+    failure: &HttpFailure,
+    body_read_failure: Option<&BodyReadFailure>,
+) -> String {
     let mut body = format_api_error_body(&config.model_config.model, &failure.body);
-    if let Some(remedy) = codex_auth_remedy(&config.model_config.base_url, failure) {
+    if let Some(remedy) =
+        codex_auth_remedy(&config.model_config.base_url, failure, body_read_failure)
+    {
         body.push_str("\n\n");
         body.push_str(remedy);
     }
@@ -1026,9 +1063,18 @@ fn api_error_body(config: &ResolvedModelConfig, failure: &HttpFailure) -> String
 ///
 /// The access token in the Codex credential store expires periodically and cake
 /// never refreshes it, so the provider's `token_expired` body alone leaves the
-/// user without an action. Every other failure keeps its current text.
-fn codex_auth_remedy(base_url: &str, failure: &HttpFailure) -> Option<&'static str> {
-    if failure.status != 401 || !crate::auth::is_chatgpt_codex_backend(base_url) {
+/// user without an action. Every other failure keeps its current text. A
+/// status alone is not enough: the body must have arrived completely before it
+/// can confirm that the credential was rejected.
+fn codex_auth_remedy(
+    base_url: &str,
+    failure: &HttpFailure,
+    body_read_failure: Option<&BodyReadFailure>,
+) -> Option<&'static str> {
+    if failure.status != 401
+        || body_read_failure.is_some()
+        || !crate::auth::is_chatgpt_codex_backend(base_url)
+    {
         return None;
     }
 

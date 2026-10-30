@@ -210,7 +210,7 @@ pub(super) async fn parse_response(
 ) -> anyhow::Result<TurnResult> {
     let is_sse = is_event_stream_response(&response);
     let mut response = response;
-    match read_body(&mut response, model, stall_window).await? {
+    match read_body(&mut response, model, stall_window).await {
         BodyReadOutcome::Complete(bytes) => parse_body_bytes(&bytes, is_sse),
         BodyReadOutcome::Stalled(stalled) => {
             // A stream that already delivered its terminal event (or a complete
@@ -225,6 +225,7 @@ pub(super) async fn parse_response(
                 Err(_) => Err(stalled.stall.with_preview(&stalled.bytes).into()),
             }
         },
+        BodyReadOutcome::Failed(failed) => Err(failed.error),
     }
 }
 
