@@ -24,13 +24,13 @@ Record and compare a deterministic agent-loop CPU profile without production API
 
 [Working on Branches and Worktrees](parallel-worktrees.md)
 
-Carry a change from a branch to a merged pull request, and run several changes at once in linked worktrees.
+Carry a change from a branch to `master`, or run several changes at once in linked worktrees.
 
-### CI Runner Images and Required Checks
+### CI Runner Images
 
-[CI Runner Images and Required Checks](ci-runner-images-and-required-checks.md)
+[CI Runner Images](ci-runner-images.md)
 
-Change a runner label or a workflow job name without breaking branch protection or silently moving platform coverage.
+Change a runner label or a workflow job name without silently moving platform coverage or renaming a check.
 
 ### Local Gate Prerequisites
 

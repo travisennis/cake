@@ -1,16 +1,10 @@
 # Working on Branches and Worktrees
 
-Carry a change from an idea to a merged pull request without touching `master` directly, and run several changes at once in linked worktrees.
+Carry a change from an idea to `master` on a branch, and run several changes at once in linked worktrees.
 
-## Enforcement
+## Branching Is Optional
 
-`master` is protected in two places, and both must be satisfied.
-
-A GitHub ruleset on `master` requires a pull request, requires the non-conditional CI checks to pass, and requires linear history. It has no bypass actors, so a direct push fails for everyone including the repository owner.
-
-The `branch-guard` hook in `prek.toml` runs `scripts/check-branch.sh` at the pre-commit and pre-push stages. It rejects a commit authored on `master` or `main`, and rejects a push whose destination is one of those branches. It exists so the failure arrives immediately rather than after a full `just pre-push` gate.
-
-Neither guard is a security boundary. Both stop the ordinary mistake of forgetting to branch.
+`master` has no remote ruleset and there is no local branch guard, so a direct commit and push is allowed. Use a branch when the change needs isolation, review, or a worktree beside other in-flight work. A branch is not a security boundary; it is a way to keep concurrent changes apart.
 
 ## Single change on a branch
 
@@ -36,9 +30,9 @@ The gate covers the checked-out branch rather than the branch being pushed. The 
 
 `scripts/test-classify-changes.sh` fixture-tests the classifier. It runs in CI's `changes` job and locally via `just test-classify-changes`.
 
-### 3. Open the pull request
+### 3. Open the pull request (optional)
 
-Open the pull request only after the change is ready to merge. Complete the acceptance notes, routed verification, documentation assessment, and any ExecPlan archival first. Use the pull request template, complete the ahm task before the final implementing commit, and reference its id in the body. The local task lifecycle is independent of GitHub closing keywords.
+For direct integration, push `master` after the acceptance notes, routed verification, documentation assessment, and any ExecPlan archival are complete. When the change needs review, open the pull request only after that work is complete. Use the pull request template, complete the ahm task before the final implementing commit, and reference its id in the body. The local task lifecycle is independent of GitHub closing keywords.
 
 ```bash
 git push -u origin HEAD
@@ -48,7 +42,7 @@ just pr labels="type:feature,area:cli" body=pr-body.md task=001
 just pr
 ```
 
-`just pr` runs `gh pr create --base master`, with `--label`, `--body-file`, `--title`, or `--fill` added from its arguments. It checks labels against `.github/labels.yml` before creating. With no body file, gh fills from commits; confirm that the generated PR body references the task id. CI runs the same checks the ruleset requires. Merge only after explicit user approval and successful review/checks; after integration, record the delivered/verified summary with `ahm task comment <id> <text>`.
+`just pr` runs `gh pr create --base master`, with `--label`, `--body-file`, `--title`, or `--fill` added from its arguments. It checks labels against `.github/labels.yml` before creating. With no body file, gh fills from commits; confirm that the generated PR body references the task id. CI runs the same routed checks that `just pre-push` runs locally. Merge only after explicit user approval and successful review/checks; after integration, record the delivered/verified summary with `ahm task comment <id> <text>`.
 
 ### 4. Clean up
 
@@ -113,17 +107,11 @@ ExecPlan and research records are committed markdown under `docs/`, so parallel 
 
 ## Coordinating Which Agent Takes Which Task
 
-All local clones and worktrees share the ahm store keyed by the remote. Coordinate task ids before parallel work and inspect `ahm task show <id>` before `ahm task start <id>`. An existing In Progress task is resumed only at the user's request; starting it again does not provide exclusive ownership. Keep each task on its own branch/worktree and record progress on the shared task.
+All local clones and worktrees share the ahm store keyed by the remote. Coordinate task ids before parallel work and inspect `ahm task show <id>` before `ahm task start <id>`. An existing In Progress task is resumed only at the user's request; starting it again does not provide exclusive ownership. Use a separate branch or worktree per parallel task and record progress on the shared task.
 
 ## Recovery
 
-**A commit was rejected by `branch-guard` and the work is on `master`.** Nothing is lost; the working tree is untouched. Move it to a branch and commit there:
-
-```bash
-git switch --create feat/turn-limits
-```
-
-**Work was committed to local `master` before the guard existed.** Move the commits onto a branch and reset `master` to the remote:
+**Work was committed to `master` but belongs on a branch.** Nothing is lost. Create a branch at the current commit and move `master` back:
 
 ```bash
 git switch --create feat/turn-limits
@@ -132,5 +120,3 @@ git reset --hard origin/master
 ```
 
 Confirm `git log origin/master..feat/turn-limits` lists the commits before running the reset.
-
-**A pull request cannot merge because a required check never ran.** The `coverage` job in `.github/workflows/ci.yml` is conditional on changed paths and is deliberately not a required check. If a required check is stuck pending, verify the ruleset's required-checks list still matches the job names in the workflow.

@@ -53,13 +53,13 @@ Follow the [Auditing Binary Size runbook](docs/runbooks/auditing-binary-size.md)
 ## Development loop
 
 1. Inspect `git status --short` and preserve unrelated work.
-2. If the task will change repository files, create the branch before editing: `just branch <type>/<slug>`, or `just worktree <type>/<slug>` to work in a linked worktree beside other in-flight work. Read-only analysis, triage, or research that produces no repository changes can stay on the current branch.
+2. If the task will change repository files, work on `master` for a small or single-task change, or create a branch when the change needs isolation or review: `just branch <type>/<slug>`, or `just worktree <type>/<slug>` to work in a linked worktree beside other in-flight work. Read-only analysis, triage, or research that produces no repository changes can stay on the current branch.
 3. Read the implementation and its focused tests before editing.
 4. Make the smallest coherent change.
 5. Run a focused test or check while iterating.
 6. Format changed code and run the applicable final gate.
 7. Review the diff for compatibility, security, and unnecessary complexity.
-8. Push the branch and open a pull request with `just pr`. Pass `labels="type:...,area:..."`, `body=<file>`, `title=<text>` (default: HEAD commit subject), and `task=<id>` to apply labels, use a body file, set the title, and comment the PR URL on the managed ahm task; without a body the recipe fills from commits. Opening the pull request is the default handoff; wait for explicit user approval before merging, enabling auto-merge, closing the PR, or deleting the remote branch.
+8. Push `master` when the change is ready, or push a branch and open a pull request with `just pr` when it needs review. For a pull request, pass `labels="type:...,area:..."`, `body=<file>`, `title=<text>` (default: HEAD commit subject), and `task=<id>` to apply labels, use a body file, set the title, and comment the PR URL on the managed ahm task; without a body the recipe fills from commits. Wait for explicit user approval before merging, enabling auto-merge, closing the PR, or deleting the remote branch.
 
 The crate has no library target. Do not use `cargo test --lib`.
 
@@ -144,9 +144,9 @@ Tasks, research notes, ExecPlans, and ADRs are managed records; follow the task 
 
 ## Git and commits
 
-Commit and push freely on a feature branch, and commit often --- uncommitted work is the fragile state. Stage the paths you changed rather than `git add -A`, so unrelated in-flight edits stay out of your pull request. Ask first before force-pushing (it discards history); open the pull request when the work is ready for review.
+Commit and push freely, and commit often --- uncommitted work is the fragile state. Stage the paths you changed rather than `git add -A`, so unrelated in-flight edits stay out of your change. Ask first before force-pushing (it discards history); open a pull request when the work is ready for review.
 
-Repository changes happen on a branch, which is what makes that safe: `master` is protected by a GitHub ruleset rejecting direct pushes, and by the `branch-guard` hook in `prek.toml`, which rejects commits and pushes on `master` at both `pre-commit` and `pre-push`. Branch names use the commit type as a prefix, such as `feat/turn-limits` or `fix/sandbox-read-only`. [Working on branches and worktrees](docs/runbooks/parallel-worktrees.md) covers the mechanics, including running several branches at once in linked worktrees.
+Repository changes may land directly on `master` or on a branch. A branch is useful for isolation, worktrees, or review: names use the commit type as a prefix, such as `feat/turn-limits` or `fix/sandbox-read-only`. There is no remote ruleset requiring pull requests and no local branch guard. [Working on branches and worktrees](docs/runbooks/parallel-worktrees.md) covers the mechanics, including running several branches at once in linked worktrees.
 
 `ci/cargo-crap-baseline.json` is generated and committed, so parallel branches that both cross the CC target can conflict on it. A three-way merge of that file is meaningless. Take `master`'s copy and regenerate with `just change-risk-baseline`. The file is small and deterministic now, so this is rare.
 
@@ -172,6 +172,6 @@ The vocabulary names the architecture domain that owns the change; the file or t
 
 ## Pull requests
 
-Explain the user-visible or maintainer-visible outcome, notable design choices, compatibility or security impact, and exact verification. Link the managed task or ADR when one exists. Open the pull request only when the change is ready for review: acceptance notes, verification, documentation assessment, and any ExecPlan archival must already be complete. The pull request is then handed off for review; do not merge or enable auto-merge without explicit user approval. Reference the managed ahm task id; run `ahm task complete <id>` before the final implementing commit and record the PR URL with `just pr task=<id>`. GitHub closing keywords do not complete local tasks. After authorized integration, record the delivered/verified summary on the task. Update documentation only when its authority is affected.
+Pull requests are optional; use one when the change benefits from review. Explain the user-visible or maintainer-visible outcome, notable design choices, compatibility or security impact, and exact verification. Link the managed task or ADR when one exists. Open the pull request only when the change is ready for review: acceptance notes, verification, documentation assessment, and any ExecPlan archival must already be complete. The pull request is then handed off for review; do not merge or enable auto-merge without explicit user approval. Reference the managed ahm task id; run `ahm task complete <id>` before the final implementing commit and record the PR URL with `just pr task=<id>`. GitHub closing keywords do not complete local tasks. After authorized integration, record the delivered/verified summary on the task. Update documentation only when its authority is affected.
 
-Use a Conventional Commit subject for the pull request title too, for example `feat(session): show timing breakdown`. Cake configures GitHub to use the PR title as the default squash-commit subject, including for one-commit pull requests. The required `Conventional PR Title` check reruns when a title changes; review any manually edited squash message in the merge dialog as well.
+Use a Conventional Commit subject for the pull request title too, for example `feat(session): show timing breakdown`. Cake configures GitHub to use the PR title as the default squash-commit subject, including for one-commit pull requests. The `Conventional PR Title` check reruns when a title changes; review any manually edited squash message in the merge dialog as well.

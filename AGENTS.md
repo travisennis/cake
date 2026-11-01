@@ -9,12 +9,12 @@ Users depend on CLI shape and exit behavior, machine-readable output, tool and s
 ## Operating loop
 
 1. Run `ahm prime` for managed work, then classify the change, pick the route below, and load only that route's documents.
-2. Decide whether the task edits repository files. Read-only audits, research, recommendations, and backlog inspection stay on the current branch with no branch, commit, GitHub, or pull-request side effects unless requested. If edits are needed, create the branch immediately before the first edit: `just branch <type>/<slug>`, or `just worktree <type>/<slug>` beside another agent.
+2. Decide whether the task edits repository files. Read-only audits, research, recommendations, and backlog inspection stay on the current branch with no branch, commit, GitHub, or pull-request side effects unless requested. If edits are needed, work on `master` for a small or single-task change; use `just branch <type>/<slug>`, or `just worktree <type>/<slug>` beside another agent, when the change needs isolation or review.
 3. Read the smallest relevant code and tests. [ARCHITECTURE.md](ARCHITECTURE.md) names the code authority for each surface.
 4. Keep the diff narrow: no mixing behavior changes, dependency updates, formatting, snapshot regeneration, or unrelated cleanup. Churn hides the change a reviewer needs to see.
 5. Run checks proportionate to the risk, per [CONTRIBUTING.md](CONTRIBUTING.md), and preflight before handoff.
 6. Track implementation or requested managed records in an ahm task per [docs/workflow/tasks.md](docs/workflow/tasks.md): start with `ahm task start <id>` and complete with `ahm task complete <id>` before the final implementing commit. Read-only reports stay in the response unless persistence is requested.
-7. Open a pull request when edits are complete and the task calls for one; then stop and hand off. Do not merge, auto-merge, close the PR, or delete the remote branch without explicit user approval.
+7. Push `master` or open a pull request when edits are complete, depending on whether the change needs review; then hand off. For a pull request, do not merge, auto-merge, close the PR, or delete the remote branch without explicit user approval.
 
 Implementation work follows the ExecPlan thresholds in [docs/workflow/tasks.md](docs/workflow/tasks.md); read-only audits, recommendations, and small documentation or skill edits do not require one unless requested.
 
@@ -86,16 +86,16 @@ Prose changes, whether they document a surface or change how an agent behaves.
 - [CONTRIBUTING.md](CONTRIBUTING.md), for the documentation checks.
 - The route for the surface, when the document states a contract or invariant.
 
-Documentation-only changes may skip the Rust gate and must say so in the pull request. A change touching any code, configuration, fixture, or snapshot is not documentation-only, whatever its prose ratio.
+Documentation-only changes may skip the Rust gate and must say so in the handoff or pull request. A change touching any code, configuration, fixture, or snapshot is not documentation-only, whatever its prose ratio.
 
 ### Dependencies, build, verification, and release
 
 `Cargo.toml`, `Cargo.lock`, the `justfile`, CI, toolchain, and release work.
 
 - [CONTRIBUTING.md](CONTRIBUTING.md), the command catalog and verification policy.
-- [Dependency posture](docs/dependencies.md), [Automation conventions](docs/automations/README.md), [Branches and worktrees](docs/runbooks/parallel-worktrees.md), and [CI runner images](docs/runbooks/ci-runner-images-and-required-checks.md).
+- [Dependency posture](docs/dependencies.md), [Automation conventions](docs/automations/README.md), [Branches and worktrees](docs/runbooks/parallel-worktrees.md), and [CI runner images](docs/runbooks/ci-runner-images.md).
 
-A workflow job name is a branch-protection identifier; renaming one without updating the ruleset blocks every pull request.
+A workflow job name identifies the check in the GitHub UI and in `gh` output; keep it stable unless the change intends to rename the check.
 
 ### Code quality, complexity, and coverage
 
@@ -105,8 +105,8 @@ Complexity targets, CRAP scores, coverage, and the coverage-first refactoring wo
 
 ## Repository rules
 
-- Commit and push freely on a feature branch for authorized implementation work; commit often. Stage specific paths, never `git add -A`. Ask before force-pushing.
-- One branch holds one task, cut from an up-to-date `master`.
+- Commit and push freely on `master` or a feature branch for authorized implementation work; commit often. Stage specific paths, never `git add -A`. Ask before force-pushing.
+- A task that uses a branch gets one branch, cut from an up-to-date `master`.
 - Preserve unrelated user changes; never clean or revert them.
 - Never resolve a merge conflict in `ci/cargo-crap-baseline.json` by hand. Take `master`'s copy, then regenerate it with `just change-risk-baseline`.
 - Use Conventional Commits, scoped only from the `cog.toml` allowlist; verified by the commit-msg hook. See [CONTRIBUTING.md](CONTRIBUTING.md) for scope selection.
@@ -114,11 +114,11 @@ Complexity targets, CRAP scores, coverage, and the coverage-first refactoring wo
 
 ## Pull requests
 
-State the change class and its compatibility impact. If it touches a compatibility surface named under [Project](#project), say which one and what preserves it.
+Use a pull request when the change benefits from review; a direct push to `master` is allowed. State the change class and its compatibility impact. If it touches a compatibility surface named under [Project](#project), say which one and what preserves it.
 
 Label with exactly one `type:*` and at least one `area:*` from `.github/labels.yml`; never invent or rename labels. Add a `risk:*` label when the change breaks a compatibility surface, depends on external service behavior, or touches a security boundary; those labels route review, so omitting one silently skips it.
 
-Record which checks ran and which did not; a skipped check belongs in the pull request with its reason.
+Record which checks ran and which did not; a skipped check belongs in the handoff or pull request with its reason.
 
 ## Final Handoff Instructions
 
