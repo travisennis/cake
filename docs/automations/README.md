@@ -8,7 +8,7 @@ Cake is the agent CLI such an automation would run, so an agent-run automation o
 
 Keep the scheduler's prompt slim. It should identify the role and point at the automation's document in this directory; the document holds the actual procedure, scope, and limits.
 
-The prompt is invisible to review. A document in this directory is versioned, diffable, and changes through the same pull request process as everything else, so behavior drift is visible rather than silent.
+The prompt is invisible to review. A document in this directory is versioned, diffable, and changes through the same review and integration process as everything else, so behavior drift is visible rather than silent.
 
 ## Marking machine-authored output
 
