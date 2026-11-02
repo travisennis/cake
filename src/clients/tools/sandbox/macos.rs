@@ -7,6 +7,7 @@
 
 use crate::clients::tools::sandbox::{SandboxConfig, SandboxGuard, SandboxPolicy, SandboxStrategy};
 use crate::clients::tools::secure_temp_dir::secure_temp_dir;
+use std::ffi::{OsStr, OsString};
 use std::io::Write;
 use std::os::unix::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
@@ -443,6 +444,11 @@ impl SandboxStrategy for MacOsSandbox {
             .map(|s| s.to_string_lossy().into_owned())
             .collect();
         let original_cwd = command.as_std().get_current_dir().map(Path::to_path_buf);
+        let original_env: Vec<(OsString, Option<OsString>)> = command
+            .as_std()
+            .get_envs()
+            .map(|(key, value)| (key.to_os_string(), value.map(OsStr::to_os_string)))
+            .collect();
 
         // Reconfigure the command to use sandbox-exec
         *command = tokio::process::Command::new("/usr/bin/sandbox-exec");
@@ -457,6 +463,20 @@ impl SandboxStrategy for MacOsSandbox {
 
         if let Some(cwd) = original_cwd {
             command.current_dir(cwd);
+        }
+
+        // `Command` has no API to transfer the configured environment to a new
+        // command, so reproduce every explicit set and removal. Without this,
+        // replacing the command drops values such as `AI_AGENT=cake`.
+        for (key, value) in original_env {
+            match value {
+                Some(value) => {
+                    command.env(key, value);
+                },
+                None => {
+                    command.env_remove(key);
+                },
+            }
         }
 
         // Re-apply stdio configuration
@@ -647,6 +667,30 @@ mod tests {
         assert_eq!(
             command.as_std().get_current_dir(),
             Some(expected_cwd.as_path())
+        );
+        // Guard falls out of scope, cleaning up the temp profile file.
+        drop(guard);
+    }
+
+    #[test]
+    fn apply_preserves_command_environment() {
+        let mut command = tokio::process::Command::new("bash");
+        command
+            .arg("-c")
+            .arg("true")
+            .env("AI_AGENT", "cake")
+            .env_remove("CAKE_SANDBOX_TEST_REMOVED");
+
+        let guard = MacOsSandbox.apply(&mut command, &test_config()).unwrap();
+
+        let envs: Vec<_> = command.as_std().get_envs().collect();
+        assert!(
+            envs.contains(&(OsStr::new("AI_AGENT"), Some(OsStr::new("cake")))),
+            "sandbox application dropped an explicit environment value: {envs:?}"
+        );
+        assert!(
+            envs.contains(&(OsStr::new("CAKE_SANDBOX_TEST_REMOVED"), None)),
+            "sandbox application dropped an explicit environment removal: {envs:?}"
         );
         // Guard falls out of scope, cleaning up the temp profile file.
         drop(guard);
