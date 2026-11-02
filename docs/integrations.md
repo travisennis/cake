@@ -282,6 +282,8 @@ Consumers must tolerate added enum values and optional fields; old sidecars rema
 
 Bash `timeout` is a foreground yield window in seconds (default 60, clamped to 1--60). A command that completes inside it keeps the ordinary output and exit footer. A command still running when the window ends, or started with `background: true`, returns output so far and a `bash_` session ID; it continues under the same sandbox. Polling and watch commands should start with `background: true` and use `BashSession`, rather than waiting in the foreground. When the shell exits, Cake stops remaining children in its process group. `BashSession` reads only new output, kills the process group, or lists live and recently exited sessions. Its `read.wait` defaults to 10 seconds, is capped at 120, and accepts `0` for a nonblocking poll. Completed sessions remain readable for a bounded time; an unknown ID explains that sessions do not survive Cake restarts. These results use existing function-call transcript records and do not change the completion JSON or stream JSON shapes.
 
+Every Bash and `BashSession` child process receives `AI_AGENT=cake`. Cake sets it unconditionally, so it replaces an inherited value; a command can still override or unset it for its own descendants. Other inherited environment variables and existing Git-variable scrubbing are unchanged.
+
 The Bash tool's optional `reason` is the model's untrusted intent report; guidance directs agents to supply it for state-changing, destructive-looking, and remote-effect commands, stating the intended effect. A `reason` never authorizes a remote destructive command on its own, so a merge or branch delete requires an in-command guard. The configured gate receives the reason with the command; it appears in transcripts, never telemetry. Cake sends each gate request as a standalone check --- command, cwd, repository digest, reason, and any collected script contents --- with no conversation history or earlier tool results, so remediation recommends a self-contained guarded command the next request can evaluate alone.
 
 Bash calls may also provide an optional `cwd`. Relative paths resolve from the invocation working directory; absolute paths are accepted only when they resolve to an existing directory inside that workspace or inside a directory the sandbox already grants (`--add-dir`, settings, a skill directory, a Cake-managed temporary path, or a built-in toolchain cache). Under `--sandbox danger-full-access` any existing directory is accepted, because that policy applies no profile. The selected directory applies to that call only and is used consistently by the child process, gate request, repository digest, and sandbox-denial diagnostics. A `cwd` outside the workspace and every grant fails before gate evaluation and before the process is spawned, with a message naming the boundary and the grant classes. Omitting `cwd` preserves the invocation directory.
@@ -607,7 +609,7 @@ The [Herdr integration guide](integrations/herdr.md) is a worked example of driv
 
 ## Toolbox protocol
 
-A toolbox tool is one executable implementing two actions selected with the `TOOLBOX_ACTION` environment variable.
+A toolbox tool is one executable implementing two actions selected with the `TOOLBOX_ACTION` environment variable. Both actions receive `AGENT=cake` and `AI_AGENT=cake`, which Cake sets unconditionally.
 
 ### Describe
 
@@ -626,7 +628,7 @@ A `safe` declaration is only a replay hint for future recovery; it does not make
 
 With `TOOLBOX_ACTION=execute`, JSON-described tools receive the raw JSON argument object on stdin. Text-described tools receive `key=value` lines and therefore cannot accept names or string values containing line breaks; Cake rejects those calls rather than changing their meaning.
 
-The process runs in the session working directory with `AGENT=cake` and the session id in `CAKE_THREAD_ID` and `AGENT_THREAD_ID`. Stdout becomes the model tool result. Non-zero status is an error. Execution time, stdout, and stderr are bounded, and timeout or output-cap handling terminates the tool's process group.
+The process runs in the session working directory with `AGENT=cake`, `AI_AGENT=cake`, and the session id in `CAKE_THREAD_ID` and `AGENT_THREAD_ID`. Stdout becomes the model tool result. Non-zero status is an error. Execution time, stdout, and stderr are bounded, and timeout or output-cap handling terminates the tool's process group.
 
 Toolbox executables are trusted and run outside the Bash sandbox. Their calls may execute concurrently, and Cake cannot infer mutation targets for same-path serialization.
 

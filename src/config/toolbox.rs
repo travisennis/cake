@@ -258,6 +258,7 @@ async fn describe_entry(entry: &ToolboxEntry) -> Result<ToolboxTool, String> {
     command
         .env("TOOLBOX_ACTION", "describe")
         .env("AGENT", "cake")
+        .env("AI_AGENT", "cake")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

@@ -223,6 +223,25 @@ fn discovery_skips_missing_directory() {
     assert!(entries.is_empty());
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn describe_environment_exposes_action_agent_and_ai_agent() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_executable(
+        dir.path(),
+        "env_probe",
+        "#!/bin/sh\nprintf 'name: env_probe\\ndescription: %s|%s|%s\\n' \\\n         \"$TOOLBOX_ACTION\" \"$AGENT\" \"$AI_AGENT\"\n",
+    );
+    let entry = ToolboxEntry {
+        filename: "env_probe".to_string(),
+        path,
+    };
+
+    let tool = describe_entry(&entry).await.unwrap();
+    assert_eq!(tool.registered_name, "tb__env_probe");
+    assert_eq!(tool.description, "describe|cake|cake");
+}
+
 // ── describe parsing: JSON format ──
 
 fn parse(stdout: &str) -> Result<ToolboxTool, String> {

@@ -3347,3 +3347,93 @@ fn secure_temp_dir_usable_for_truncation() {
     // Clean up
     _ = std::fs::remove_file(path);
 }
+
+#[tokio::test]
+async fn bash_child_receives_ai_agent_under_danger_full_access() {
+    let result = execute_bash_unsandboxed(
+        &serde_json::json!({ "command": "printf '%s' \"$AI_AGENT\"" }).to_string(),
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        result.output.starts_with("cake\n\n[exit:0 |"),
+        "Bash must set AI_AGENT=cake: {}",
+        result.output
+    );
+}
+
+#[tokio::test]
+async fn bash_command_can_override_ai_agent_for_its_children() {
+    let result = execute_bash_unsandboxed(
+        &serde_json::json!({
+            "command": "export AI_AGENT=custom; printf '%s' \"$AI_AGENT\""
+        })
+        .to_string(),
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        result.output.starts_with("custom\n\n[exit:0 |"),
+        "a command-level AI_AGENT override must be honored: {}",
+        result.output
+    );
+}
+
+#[tokio::test]
+async fn bash_session_child_receives_ai_agent() {
+    let context = session_test_context();
+    let started = execute_bash(
+        &context,
+        &serde_json::json!({
+            "command": "sleep 2; printf '%s' \"$AI_AGENT\"",
+            "timeout": 1
+        })
+        .to_string(),
+    )
+    .await
+    .unwrap();
+    assert!(started.output.contains("[still running | session: bash_"));
+    let id = context.bash_sessions.list(Instant::now())[0].id.clone();
+
+    let mut session_output = String::new();
+    loop {
+        let read = super::super::bash_session::execute(
+            &context,
+            &serde_json::json!({"action":"read","session":id,"wait":5}).to_string(),
+        )
+        .await
+        .unwrap();
+        session_output.push_str(&read.output);
+        if read.output.contains("[exit:0 | total") {
+            break;
+        }
+    }
+    assert!(
+        session_output.contains("cake"),
+        "BashSession must set AI_AGENT=cake: {session_output}"
+    );
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[tokio::test]
+async fn bash_child_receives_ai_agent_under_workspace_write_sandbox() {
+    if skip_if_sandbox_unavailable() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let context = context_with_policy_at(dir.path().to_path_buf(), SandboxPolicy::WorkspaceWrite);
+    let result = execute_bash(
+        &context,
+        &serde_json::json!({ "command": "printf '%s' \"$AI_AGENT\"" }).to_string(),
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        result.output.starts_with("cake\n\n[exit:0 |"),
+        "sandboxed Bash must set AI_AGENT=cake: {}",
+        result.output
+    );
+}

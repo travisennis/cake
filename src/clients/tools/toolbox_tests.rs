@@ -155,20 +155,20 @@ mod subprocess {
     }
 
     #[tokio::test]
-    async fn execute_environment_exposes_action_agent_and_session() {
+    async fn execute_environment_exposes_action_agent_ai_agent_and_session() {
         let dir = tempfile::tempdir().unwrap();
         let path = write_executable(
             dir.path(),
             "env_probe",
-            "#!/bin/sh\nprintf '%s|%s|%s|%s' \
-             \"$TOOLBOX_ACTION\" \"$AGENT\" \"$CAKE_THREAD_ID\" \"$AGENT_THREAD_ID\"\n",
+            "#!/bin/sh\nprintf '%s|%s|%s|%s|%s' \
+             \"$TOOLBOX_ACTION\" \"$AGENT\" \"$AI_AGENT\" \"$CAKE_THREAD_ID\" \"$AGENT_THREAD_ID\"\n",
         );
         let tool = fixture_tool(path, ToolboxFormat::Json);
 
         let result = run(&tool, dir.path(), "{}").await.unwrap();
         assert_eq!(
             result.output,
-            "execute|cake|11111111-2222-3333-4444-555555555555|\
+            "execute|cake|cake|11111111-2222-3333-4444-555555555555|\
              11111111-2222-3333-4444-555555555555"
         );
     }

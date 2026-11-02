@@ -76,6 +76,7 @@ async fn execute_toolbox_tool(
     command
         .env("TOOLBOX_ACTION", "execute")
         .env("AGENT", "cake")
+        .env("AI_AGENT", "cake")
         .env("CAKE_THREAD_ID", session_id)
         .env("AGENT_THREAD_ID", session_id)
         .current_dir(cwd)

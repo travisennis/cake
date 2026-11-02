@@ -967,6 +967,7 @@ fn prepare_bash_command(
         .arg("-c")
         .arg(&args.command)
         .current_dir(cwd)
+        .env("AI_AGENT", "cake")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
